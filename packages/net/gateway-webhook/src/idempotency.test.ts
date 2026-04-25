@@ -189,4 +189,32 @@ describe("createIdempotencyStore", () => {
     // The stale processing entry should be evicted by tryBegin's internal prune.
     expect(store.tryBegin("key-hung").state).toBe("ok");
   });
+
+  test("rejects zero ttlMs — prevents replay protection from silently degrading", () => {
+    expect(() => createIdempotencyStore({ ttlMs: 0 })).toThrow(/ttlMs must be a positive integer/);
+  });
+
+  test("rejects negative ttlMs", () => {
+    expect(() => createIdempotencyStore({ ttlMs: -1 })).toThrow(/ttlMs/);
+  });
+
+  test("rejects zero processingTtlMs", () => {
+    expect(() => createIdempotencyStore({ processingTtlMs: 0 })).toThrow(
+      /processingTtlMs must be a positive integer/,
+    );
+  });
+
+  test("rejects negative processingTtlMs", () => {
+    expect(() => createIdempotencyStore({ processingTtlMs: -100 })).toThrow(/processingTtlMs/);
+  });
+
+  test("rejects zero maxSize", () => {
+    expect(() => createIdempotencyStore({ maxSize: 0 })).toThrow(
+      /maxSize must be a positive integer/,
+    );
+  });
+
+  test("rejects negative maxSize", () => {
+    expect(() => createIdempotencyStore({ maxSize: -1 })).toThrow(/maxSize/);
+  });
 });

@@ -531,6 +531,39 @@ describe("WebhookServer — core dispatch", () => {
     expect(dispatched).toHaveLength(0);
   });
 
+  test("allowUnauthenticated does not bypass account binding when authenticator is present", async () => {
+    // Trust boundary: allowUnauthenticated must not weaken authenticated routes.
+    // An authenticator that echoes the URL account without accountVerified: true
+    // should still be rejected, even when allowUnauthenticated: true is set.
+    const secret = "test-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+    const echoAuthenticator: WebhookAuthenticator = async (req) => {
+      const urlAccount = new URL(req.url).pathname.split("/")[3];
+      return { ok: true, value: { agentId: "webhook", routing: { account: urlAccount } } };
+    };
+    server = createWebhookServer(
+      {
+        port: 0,
+        pathPrefix: "/webhook",
+        providerRouting: true,
+        allowReplayableProviders: true,
+        allowUnauthenticated: true, // must NOT bypass account binding with authenticator
+      },
+      dispatcher,
+      echoAuthenticator,
+      { github: secret },
+    );
+    await server.start();
+    const res = await fetch(`http://localhost:${server.port()}/webhook/github/my-org`, {
+      method: "POST",
+      headers: { "X-Hub-Signature-256": sig, "Content-Type": "application/json" },
+      body,
+    });
+    expect(res.status).toBe(401);
+    expect(dispatched).toHaveLength(0);
+  });
+
   test("dedup keys are scoped by provider+account — same Slack event_id from two tenants dispatches both", async () => {
     // Two Slack tenants with different secrets should have independent dedup spaces.
     // If keys were unscoped, the second delivery would be incorrectly blocked as duplicate.

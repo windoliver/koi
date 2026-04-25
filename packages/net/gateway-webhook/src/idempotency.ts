@@ -112,6 +112,18 @@ export function createIdempotencyStore(options: IdempotencyStoreOptions = {}): I
   const processingTtlMs = options.processingTtlMs ?? DEFAULT_PROCESSING_TTL_MS;
   const maxSize = options.maxSize ?? DEFAULT_MAX_SIZE;
 
+  if (!Number.isInteger(ttlMs) || ttlMs <= 0) {
+    throw new Error(`createIdempotencyStore: ttlMs must be a positive integer, got ${ttlMs}`);
+  }
+  if (!Number.isInteger(processingTtlMs) || processingTtlMs <= 0) {
+    throw new Error(
+      `createIdempotencyStore: processingTtlMs must be a positive integer, got ${processingTtlMs}`,
+    );
+  }
+  if (!Number.isInteger(maxSize) || maxSize <= 0) {
+    throw new Error(`createIdempotencyStore: maxSize must be a positive integer, got ${maxSize}`);
+  }
+
   const store = new Map<string, IdempotencyEntry>();
   // Amortize full-store pruning: run at most once per pruneIntervalMs to keep
   // the tryBegin hot path near O(1) instead of O(store size) per request.

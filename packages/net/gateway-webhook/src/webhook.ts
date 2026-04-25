@@ -497,12 +497,11 @@ export function createWebhookServer(
       // authenticated material rather than being copied from the unsigned URL.
       // Without (b), any caller with a valid shared secret could route to any
       // tenant by echoing the URL account in their authenticator.
-      if (
-        provider !== undefined &&
-        account !== undefined &&
-        !accountAuthenticated &&
-        config.allowUnauthenticated !== true
-      ) {
+      // Account binding is always enforced when an authenticator is present —
+      // allowUnauthenticated does not bypass this check. The authenticator has the
+      // context to verify accounts; skipping enforcement here would let any caller
+      // with a valid shared secret route to arbitrary tenants.
+      if (provider !== undefined && account !== undefined && !accountAuthenticated) {
         const accountMismatch = routing.account !== account;
         const accountUnverified = authResult.value.accountVerified !== true;
         if (accountMismatch || accountUnverified) {
