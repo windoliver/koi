@@ -162,10 +162,18 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
     async isHealthy(wsId: WorkspaceId): Promise<boolean> {
       const entry = registry.get(wsId);
       if (!entry) return false;
-      // Use the git-managed .git file as liveness signal (not the writable .koi-workspace marker).
-      // Git writes this file when creating the worktree and removes it on worktree remove.
-      // Agent code cannot remove it without also breaking the worktree linkage.
-      return Bun.file(join(entry.path, ".git")).exists();
+      // Validate via git-owned state: verify the path is still listed by git as a worktree.
+      // A mere `.git` file check is spoofable by agent code; git worktree list is authoritative.
+      const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
+      if (!listResult.ok) return false;
+      for (const block of listResult.value.split(/\n\n+/)) {
+        const pathLine = block
+          .trim()
+          .split("\n")
+          .find((l) => l.startsWith("worktree "));
+        if (pathLine && pathLine.slice("worktree ".length).trim() === entry.path) return true;
+      }
+      return false;
     },
 
     async findByAgentId(searchAgentId: AgentId): Promise<WorkspaceInfo | undefined> {

@@ -79,11 +79,28 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
         // Under "never" policy: reuse the preserved workspace rather than discarding it.
         // Only if healthy AND its prior setup completed — a failed-setup workspace must not
         // be silently resurrected even if it is technically alive on disk.
+        // For crash survivors (staleInfo is undefined → recovered from disk, not this process),
+        // re-run postCreate to verify setup: we cannot know if it completed before the crash.
         if (staleInfo2 !== undefined && policy === "never") {
           const wsId = staleInfo2.id;
+          const isCrashSurvivor = staleInfo === undefined;
           if (!setupFailed.has(wsId)) {
             const healthy = await config.backend.isHealthy(wsId);
             if (healthy) {
+              if (isCrashSurvivor && config.postCreate) {
+                // Re-run setup for recovered workspaces — setupFailed is not persisted,
+                // so we must re-verify. postCreate should be idempotent for recovery.
+                try {
+                  await config.postCreate(staleInfo2);
+                } catch (e: unknown) {
+                  const didDispose = await tryDispose(wsId);
+                  if (!didDispose) {
+                    setupFailed.add(wsId);
+                    attached.set(agentId, staleInfo2);
+                  }
+                  throw e;
+                }
+              }
               attached.set(agentId, staleInfo2);
               return makeResult(staleInfo2);
             }
