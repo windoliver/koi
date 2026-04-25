@@ -57,6 +57,29 @@ describe("createTemporalSpawnLedger", () => {
     ledger.acquire();
     expect(ledger.capacity()).toBe(7);
   });
+
+  test("invalid maxCapacity=0 throws", () => {
+    expect(() => createTemporalSpawnLedger({ maxCapacity: 0 })).toThrow("maxCapacity");
+  });
+
+  test("invalid maxCapacity=-1 throws", () => {
+    expect(() => createTemporalSpawnLedger({ maxCapacity: -1 })).toThrow("maxCapacity");
+  });
+
+  test("invalid maxCapacity=Infinity throws", () => {
+    expect(() => createTemporalSpawnLedger({ maxCapacity: Infinity })).toThrow("maxCapacity");
+  });
+
+  test("oversized initialActiveCount clamped to maxCapacity", () => {
+    const ledger = createTemporalSpawnLedger({ maxCapacity: 5 }, 99);
+    expect(ledger.activeCount()).toBe(5);
+    expect(ledger.acquire()).toBe(false); // already at capacity
+  });
+
+  test("negative initialActiveCount clamped to 0", () => {
+    const ledger = createTemporalSpawnLedger({ maxCapacity: 5 }, -10);
+    expect(ledger.activeCount()).toBe(0);
+  });
 });
 
 describe("DEFAULT_SPAWN_LEDGER_CONFIG", () => {

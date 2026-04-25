@@ -121,6 +121,27 @@ function mapEngineInputToMessages(input: EngineInput, baseId: string): readonly 
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if the error indicates a workflow or schedule already exists in
+ * Temporal. Used to implement idempotent retries for stable IDs.
+ *
+ * Structural check — no @temporalio/client import needed.
+ */
+function isAlreadyExistsError(e: unknown): boolean {
+  if (typeof e !== "object" || e === null) return false;
+  const r = e as Record<string, unknown>;
+  return (
+    r.name === "WorkflowExecutionAlreadyStartedError" ||
+    r.name === "AlreadyExistsError" ||
+    (typeof r.message === "string" &&
+      (r.message.includes("already exists") || r.message.includes("already started")))
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -284,21 +305,28 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       const task = buildTask(id, agentId, input, mode, options);
 
       const messages = mapEngineInputToMessages(input, rawId);
-      // Register only after a confirmed start so a failed start leaves no
-      // phantom entry in local tracking and callers can retry with a new ID.
-      await config.client.workflow.start(workflowType, {
-        taskQueue: config.taskQueue,
-        workflowId: rawId,
-        args: [{ agentId, sessionId: rawId, messages, mode }],
-        ...(options?.delayMs !== undefined && { startDelay: options.delayMs }),
-        ...(options?.timeoutMs !== undefined && { workflowExecutionTimeout: options.timeoutMs }),
-        ...(options?.maxRetries !== undefined && {
-          retryPolicy: { maximumAttempts: options.maxRetries },
-        }),
-      });
+      try {
+        await config.client.workflow.start(workflowType, {
+          taskQueue: config.taskQueue,
+          workflowId: rawId,
+          args: [{ agentId, sessionId: rawId, messages, mode }],
+          ...(options?.delayMs !== undefined && { startDelay: options.delayMs }),
+          ...(options?.timeoutMs !== undefined && { workflowExecutionTimeout: options.timeoutMs }),
+          ...(options?.maxRetries !== undefined && {
+            retryPolicy: { maximumAttempts: options.maxRetries },
+          }),
+        });
+      } catch (e: unknown) {
+        // When a stable ID was provided and Temporal already has that workflow,
+        // treat as idempotent replay (caller retried after a lost response).
+        if (idempotencyKey === undefined || !isAlreadyExistsError(e)) throw e;
+      }
 
-      tasks.set(id, task);
-      emit({ kind: "task:submitted", task });
+      // Guard against double-registration from concurrent or replayed submits.
+      if (!tasks.has(id)) {
+        tasks.set(id, task);
+        emit({ kind: "task:submitted", task });
+      }
       return id;
     },
 
@@ -336,28 +364,33 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         idempotencyKey ?? `sched-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const id = scheduleId(rawId);
 
-      await config.client.schedule.create(rawId, {
-        spec: { cronExpressions: [expression], timezone: options?.timezone },
-        action: {
-          type: "startWorkflow",
-          workflowType,
-          taskQueue: config.taskQueue,
-          // Pass raw engine input rather than pre-computed messages so each
-          // cron firing constructs per-run message IDs and timestamps from
-          // its own Temporal workflowId/execution time. Pre-computing messages
-          // here would bake in IDs and timestamps shared by all future runs.
-          // sessionId is absent for the same reason: each firing derives its
-          // session from workflowInfo().workflowId.
-          args: [{ agentId, input, mode }],
-          ...(options?.timeoutMs !== undefined && {
-            workflowExecutionTimeout: options.timeoutMs,
-          }),
-          ...(options?.maxRetries !== undefined && {
-            retryPolicy: { maximumAttempts: options.maxRetries },
-          }),
-        },
-        memo: { agentId, mode, metadata: options?.metadata },
-      });
+      try {
+        await config.client.schedule.create(rawId, {
+          spec: { cronExpressions: [expression], timezone: options?.timezone },
+          action: {
+            type: "startWorkflow",
+            workflowType,
+            taskQueue: config.taskQueue,
+            // Pass raw engine input rather than pre-computed messages so each
+            // cron firing constructs per-run message IDs and timestamps from
+            // its own Temporal workflowId/execution time. Pre-computing messages
+            // here would bake in IDs and timestamps shared by all future runs.
+            // sessionId is absent for the same reason: each firing derives its
+            // session from workflowInfo().workflowId.
+            args: [{ agentId, input, mode }],
+            ...(options?.timeoutMs !== undefined && {
+              workflowExecutionTimeout: options.timeoutMs,
+            }),
+            ...(options?.maxRetries !== undefined && {
+              retryPolicy: { maximumAttempts: options.maxRetries },
+            }),
+          },
+          memo: { agentId, mode, metadata: options?.metadata },
+        });
+      } catch (e: unknown) {
+        // Idempotent replay: caller retried after losing a creation response.
+        if (idempotencyKey === undefined || !isAlreadyExistsError(e)) throw e;
+      }
 
       const cronSchedule: CronSchedule = {
         id,
@@ -369,8 +402,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         timezone: options?.timezone,
         paused: false,
       };
-      schedules.set(id, cronSchedule);
-      emit({ kind: "schedule:created", schedule: cronSchedule });
+      // Guard against double-registration on idempotent replay.
+      if (!schedules.has(id)) {
+        schedules.set(id, cronSchedule);
+        emit({ kind: "schedule:created", schedule: cronSchedule });
+      }
       return id;
     },
 

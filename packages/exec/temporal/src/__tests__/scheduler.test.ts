@@ -474,6 +474,83 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
+  test("submit() treats WorkflowExecutionAlreadyStartedError as idempotent success for stable IDs", async () => {
+    const alreadyStarted = {
+      name: "WorkflowExecutionAlreadyStartedError",
+      message: "already started",
+    };
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => {
+          throw alreadyStarted;
+        }),
+        cancel: mock(async () => {}),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    // Should not throw — idempotent replay
+    const id = await sched.submit(A1, { kind: "text", text: "hi" }, "dispatch", {
+      metadata: { workflowId: "my-stable-id" },
+    });
+    expect(String(id)).toBe("my-stable-id");
+    expect(sched.stats().pending).toBe(1);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("submit() rethrows error when no stable ID supplied (non-idempotent path)", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => {
+          throw new Error("workflow start failed");
+        }),
+        cancel: mock(async () => {}),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await expect(sched.submit(A1, { kind: "text", text: "hi" }, "dispatch")).rejects.toThrow(
+      "workflow start failed",
+    );
+    expect(sched.stats().pending).toBe(0); // no phantom task
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("schedule() treats AlreadyExistsError as idempotent success for stable IDs", async () => {
+    const alreadyExists = { name: "AlreadyExistsError", message: "schedule already exists" };
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+      },
+      schedule: {
+        create: mock(async () => {
+          throw alreadyExists;
+        }),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const id = await sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch", {
+      metadata: { scheduleId: "my-stable-sched" },
+    });
+    expect(String(id)).toBe("my-stable-sched");
+    expect(sched.stats().activeSchedules).toBe(1);
+    await sched[Symbol.asyncDispose]();
+  });
+
   test("submit() uses metadata.workflowId as stable workflow ID when provided", async () => {
     const client = makeClient();
     const sched = createTemporalScheduler({ client, taskQueue: "test" });

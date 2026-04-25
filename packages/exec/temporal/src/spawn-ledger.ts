@@ -25,7 +25,11 @@ export function createTemporalSpawnLedger(
   config: TemporalSpawnLedgerConfig = DEFAULT_SPAWN_LEDGER_CONFIG,
   initialActiveCount = 0,
 ): SpawnLedger & { readonly snapshot: () => SpawnLedgerSnapshot } {
-  let active = initialActiveCount;
+  if (!Number.isFinite(config.maxCapacity) || config.maxCapacity <= 0) {
+    throw new Error(`maxCapacity must be a positive finite number, got ${config.maxCapacity}`);
+  }
+  // Clamp restored count to [0, maxCapacity] to guard against stale/corrupted state.
+  let active = Math.min(Math.max(0, initialActiveCount), config.maxCapacity);
 
   return {
     acquire(): boolean {
