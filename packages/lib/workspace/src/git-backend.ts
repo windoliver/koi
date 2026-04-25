@@ -309,23 +309,33 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
           if (parts.length !== 3) continue;
           const wsId = parts[2] ?? "";
           if (!wsId || alreadyFound.has(wsId)) continue;
-          // Only recover worktrees that still exist under this backend's base path.
-          const expectedPath = join(resolvedBase, wsId);
-          const inList = blocks.some((block) => {
+          // Search the actual worktree list under resolvedBase by basename — this handles
+          // the default case (wsId === directory name) and avoids a synthesized path that
+          // breaks after `git worktree move` changes the directory name.
+          // Note: if the worktree was both moved (renamed) AND drifted, the basename will
+          // no longer match wsId and recovery is not possible without ownership refs.
+          let foundPath = "";
+          for (const block of blocks) {
             const lines = block.trim().split("\n");
             const pathLine = lines.find((l) => l.startsWith("worktree "));
-            return pathLine?.slice("worktree ".length).trim() === expectedPath;
-          });
-          if (!inList) continue; // branch exists but worktree was already removed — skip
+            if (!pathLine) continue;
+            const candidate = pathLine.slice("worktree ".length).trim();
+            if (!candidate.startsWith(resolvedBase + sep)) continue;
+            if (candidate.split(sep).pop() === wsId) {
+              foundPath = candidate;
+              break;
+            }
+          }
+          if (!foundPath) continue; // not found under resolvedBase
           const id = workspaceId(wsId);
           if (!registry.has(id)) {
-            registry.set(id, { path: expectedPath, branchName, agentHex: searchHex });
+            registry.set(id, { path: foundPath, branchName, agentHex: searchHex });
           }
           const tsMatch = wsId.match(/^ws-(\d+)-/);
           const createdAt = tsMatch?.[1] !== undefined ? Number(tsMatch[1]) : 0;
           matches.push({
             id,
-            path: expectedPath,
+            path: foundPath,
             createdAt,
             metadata: { repoPath: config.repoPath },
           });
@@ -472,14 +482,22 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
       // Fail closed: if we cannot query git, assume the worktree still exists.
       if (!listResult.ok) return true;
+      // Prefer the registry path for an exact match — this correctly handles
+      // `git worktree move` where the destination basename may differ from wsId.
+      const registeredPath = registry.get(wsId)?.path;
       for (const block of listResult.value.split(/\n\n+/)) {
         const lines = block.trim().split("\n");
         const pathLine = lines.find((l) => l.startsWith("worktree "));
         if (!pathLine) continue;
         const worktreePath = pathLine.slice("worktree ".length).trim();
-        // Match by basename — wsId (ws-<timestamp>-<random>) is unique and is always the
-        // directory name. Basename matching survives git worktree move or filesystem relocation.
-        if (worktreePath.split(sep).pop() === (wsId as string)) return true;
+        if (registeredPath !== undefined) {
+          if (worktreePath === registeredPath) return true;
+        } else {
+          // No registry entry (after process restart): fall back to basename matching.
+          // After git worktree move with a renamed destination this may miss the worktree;
+          // that case requires an ownership ref or registry persistence to resolve.
+          if (worktreePath.split(sep).pop() === (wsId as string)) return true;
+        }
       }
       return false;
     },
