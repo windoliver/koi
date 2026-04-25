@@ -517,16 +517,19 @@ function assertJsonSerializable(value: unknown): void {
   assertJsonSafeValue(value, "payload");
 }
 
-// Strip non-serializable EngineInputBase fields (callHandlers, AbortSignal) before
-// embedding the input into a Temporal schedule definition.
+// Strip non-serializable EngineInputBase fields (callHandlers, signal, correlationIds)
+// before embedding the input into a Temporal schedule definition. maxStopRetries IS
+// preserved — silently dropping it causes stop-gated agents to use the default cap
+// instead of the caller-requested one, which is a behavioral regression.
 function mapEngineInputToScheduledPayload(input: EngineInput): ScheduledInputPayload {
+  const base = input.maxStopRetries !== undefined ? { maxStopRetries: input.maxStopRetries } : {};
   switch (input.kind) {
     case "text":
-      return { kind: "text", text: input.text };
+      return { ...base, kind: "text", text: input.text };
     case "messages":
-      return { kind: "messages", messages: input.messages };
+      return { ...base, kind: "messages", messages: input.messages };
     case "resume":
-      return { kind: "resume", state: input.state };
+      return { ...base, kind: "resume", state: input.state };
   }
 }
 
@@ -798,6 +801,20 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     }
   }
 
+  // Persist reconciled state so a second restart loads the already-resolved records
+  // instead of replaying the same recovery pass and duplicating history entries.
+  if (config.dbPath !== undefined) {
+    try {
+      persist();
+    } catch (e) {
+      durabilityFailed = true;
+      console.error(
+        "[temporal-scheduler] startup reconciliation persist failed — scheduler is fail-closed:",
+        e,
+      );
+    }
+  }
+
   // Reattach getResult watchers for spawn tasks that were running or pending at the time of
   // a previous shutdown, so completion/failure events are recorded after restart.
   // "pending" tasks had their workflow started but the process crashed before persisting "running".
@@ -986,6 +1003,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
                 sessionId: id,
                 stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
                 initialMessages: messages,
+                ...(snapshotInput.maxStopRetries !== undefined
+                  ? { maxStopRetries: snapshotInput.maxStopRetries }
+                  : {}),
               },
             ],
             ...(options?.delayMs !== undefined ? { startDelay: `${options.delayMs}ms` } : {}),

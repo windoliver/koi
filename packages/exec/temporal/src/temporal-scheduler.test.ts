@@ -1592,6 +1592,83 @@ describe("dispatch deliveredDispatchIds — prevents duplicate signal after rest
   });
 });
 
+describe("startup reconciliation — persisted so second restart does not duplicate history", () => {
+  test("history is not duplicated when the same pending dispatch snapshot is loaded twice", async () => {
+    const { mkdirSync, writeFileSync, readFileSync, rmdirSync } = await import("node:fs");
+    const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
+    mkdirSync(dir);
+    const dbPath = `${dir}/state.json`;
+    // Simulate a crash: pending dispatch task on disk, no deliveredDispatchIds.
+    const taskId = `${AGENT_ID}:dispatch:crash-key`;
+    const crashSnapshot = JSON.stringify({
+      tasks: [
+        [
+          taskId,
+          {
+            id: taskId,
+            agentId: AGENT_ID,
+            mode: "dispatch",
+            input: { kind: "text", text: "hello" },
+            priority: 0,
+            status: "pending",
+            createdAt: Date.now(),
+            retries: 0,
+            maxRetries: 3,
+          },
+        ],
+      ],
+      taskWorkflowIds: [],
+      cancelledTaskIds: [],
+      schedules: [],
+      history: [],
+      pendingScheduleIds: [],
+      deliveredDispatchIds: [],
+    });
+    writeFileSync(dbPath, crashSnapshot);
+
+    // First restart: reconciliation marks task as "failed" and persists.
+    const s1 = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
+    const hist1 = s1.history({});
+    expect(hist1).toHaveLength(1);
+    expect(hist1[0]?.status).toBe("failed");
+    await s1[Symbol.asyncDispose]();
+
+    // Second restart from the same dbPath: reconciliation must NOT run again (already committed).
+    const s2 = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
+    const hist2 = s2.history({});
+    // History must still be exactly 1 record — no duplicate from replaying the recovery.
+    expect(hist2).toHaveLength(1);
+    expect(hist2[0]?.status).toBe("failed");
+    await s2[Symbol.asyncDispose]();
+    rmdirSync(dir, { recursive: true });
+  });
+});
+
+describe("maxStopRetries — preserved through submit and schedule payloads", () => {
+  test("submit passes maxStopRetries through to the workflow start args", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.submit(AGENT_ID, { kind: "text", text: "hi", maxStopRetries: 7 }, "spawn");
+    const startArgs = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0];
+    const args = (startArgs?.[1] as Record<string, unknown>)?.args as unknown[];
+    // AgentWorkflowConfig is the direct spawn arg — maxStopRetries sits at the top level.
+    const spawnArg = args?.[0] as Record<string, unknown> | undefined;
+    expect(spawnArg?.maxStopRetries).toBe(7);
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("submit with no maxStopRetries omits it from the AgentWorkflowConfig", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    const startArgs = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0];
+    const args = (startArgs?.[1] as Record<string, unknown>)?.args as unknown[];
+    const spawnArg = args?.[0] as Record<string, unknown> | undefined;
+    expect("maxStopRetries" in (spawnArg ?? {})).toBe(false);
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
 describe("schedule() — create error path retains pending marker on failed delete", () => {
   test("pendingScheduleIds NOT cleared when create fails and delete also fails", async () => {
     const { readFileSync, writeFileSync, mkdirSync, rmdirSync } = await import("node:fs");

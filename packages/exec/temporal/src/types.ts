@@ -6,18 +6,25 @@ export interface AgentWorkflowConfig {
   readonly stateRefs: AgentStateRefs;
   readonly initialMessage?: IncomingMessage | undefined;
   readonly initialMessages?: readonly IncomingMessage[] | undefined;
+  readonly maxStopRetries?: number | undefined;
 }
 
 // Serializable-safe payload derived from EngineInput for embedding in Temporal schedules.
-// Non-durable fields from EngineInputBase (callHandlers, signal) are stripped at the
-// scheduling boundary before the payload crosses into Temporal.
+// Non-durable fields from EngineInputBase (callHandlers, signal, correlationIds) are
+// stripped at the scheduling boundary. maxStopRetries IS preserved — it changes agent
+// runtime behavior and silently dropping it would cause stop-gated agents to terminate
+// earlier than the caller requested.
+type ScheduledInputBase = { readonly maxStopRetries?: number | undefined };
 export type ScheduledInputPayload =
-  | { readonly kind: "text"; readonly text: string }
-  | { readonly kind: "messages"; readonly messages: readonly InboundMessage[] }
-  | {
+  | (ScheduledInputBase & { readonly kind: "text"; readonly text: string })
+  | (ScheduledInputBase & {
+      readonly kind: "messages";
+      readonly messages: readonly InboundMessage[];
+    })
+  | (ScheduledInputBase & {
       readonly kind: "resume";
       readonly state: { readonly engineId: string; readonly data: unknown };
-    };
+    });
 
 // Args for workflows started by a cron schedule (spawn mode).
 // sessionId is intentionally absent — each Temporal execution provides its own
