@@ -425,9 +425,9 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     // and a premature 200 would cause the provider to stop retrying.
     // Use a custom store that pretends the key is in-flight.
     const inFlightStore = {
-      tryBegin: (_key: string) => "in-flight" as const,
-      commit: (_key: string) => {},
-      abort: (_key: string) => {},
+      tryBegin: (_key: string) => ({ state: "in-flight" as const }),
+      commit: (_key: string, _token: string) => {},
+      abort: (_key: string, _token: string) => {},
       prune: () => {},
     };
     const secret = "test-secret";
@@ -700,6 +700,111 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     expect(b2.duplicate).toBeUndefined();
     expect(dispatchCount).toBe(2);
     srv.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// keyExtractor — per-provider replay protection for GitHub/generic
+// ---------------------------------------------------------------------------
+
+describe("WebhookServer — keyExtractor", () => {
+  let server: WebhookServer;
+  const dispatched: Array<{ session: Session; frame: GatewayFrame }> = [];
+
+  function dispatcher(session: Session, frame: GatewayFrame): void {
+    dispatched.push({ session, frame });
+  }
+
+  beforeEach(() => {
+    dispatched.length = 0;
+  });
+
+  afterEach(() => {
+    server?.stop();
+  });
+
+  test("keyExtractor enables dedup for GitHub provider via X-GitHub-Delivery header", async () => {
+    const secret = "gh-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+    const deliveryId = "unique-delivery-abc";
+
+    server = createWebhookServer(
+      {
+        port: 0,
+        pathPrefix: "/webhook",
+        providerRouting: true,
+        keyExtractor: (_provider, req) => req.headers.get("X-GitHub-Delivery") ?? undefined,
+      },
+      dispatcher,
+      undefined,
+      { github: secret },
+    );
+    await server.start();
+
+    const headers = {
+      "X-Hub-Signature-256": sig,
+      "X-GitHub-Delivery": deliveryId,
+      "Content-Type": "application/json",
+    };
+
+    // First delivery
+    const res1 = await fetch(`http://localhost:${server.port()}/webhook/github`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res1.status).toBe(200);
+    expect(dispatched).toHaveLength(1);
+
+    // Retry with same delivery ID — should be deduplicated
+    const res2 = await fetch(`http://localhost:${server.port()}/webhook/github`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res2.status).toBe(200);
+    const b2 = (await res2.json()) as { ok: boolean; duplicate?: boolean };
+    expect(b2.duplicate).toBe(true);
+    expect(dispatched).toHaveLength(1); // not re-dispatched
+  });
+
+  test("keyExtractor returning undefined skips dedup — delivery is always accepted", async () => {
+    const secret = "gh-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+
+    server = createWebhookServer(
+      {
+        port: 0,
+        pathPrefix: "/webhook",
+        providerRouting: true,
+        keyExtractor: () => undefined, // no key — no dedup
+      },
+      dispatcher,
+      undefined,
+      { github: secret },
+    );
+    await server.start();
+
+    const headers = {
+      "X-Hub-Signature-256": sig,
+      "Content-Type": "application/json",
+    };
+
+    const res1 = await fetch(`http://localhost:${server.port()}/webhook/github`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res1.status).toBe(200);
+    const res2 = await fetch(`http://localhost:${server.port()}/webhook/github`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res2.status).toBe(200);
+    expect(dispatched).toHaveLength(2); // both dispatched — no dedup
   });
 });
 

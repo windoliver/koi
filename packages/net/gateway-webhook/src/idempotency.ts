@@ -2,16 +2,20 @@
  * In-memory idempotency store — deduplicates webhook deliveries by key.
  *
  * Three-phase API prevents both concurrent double-dispatch and key burn on failure:
- *   1. `tryBegin(key)` — atomically reserves the key; returns false if already seen
- *      or currently in-flight (concurrent duplicate). Runs synchronously so the
- *      JS event loop prevents interleaving between check and reservation.
- *   2. `commit(key)` — permanently marks the key as seen after successful acceptance.
- *   3. `abort(key)` — releases the reservation after a transient failure so
- *      provider retries are accepted.
+ *   1. `tryBegin(key)` — atomically reserves the key; returns a reservation token
+ *      on success, or a rejection reason. Runs synchronously so the JS event loop
+ *      prevents interleaving between check and reservation.
+ *   2. `commit(key, token)` — permanently marks the key as seen after successful
+ *      acceptance. Token guards against stale commits: if the processing TTL expired
+ *      and a newer reservation won, the stale commit is a no-op.
+ *   3. `abort(key, token)` — releases the reservation after a transient failure so
+ *      provider retries are accepted. Token guards prevent stale aborts from
+ *      releasing a newer reservation.
  *
  * Processing reservations expire after `processingTtlMs` (default: 5 min) so that
- * hung or cancelled requests cannot permanently black-hole a delivery key. Tune
- * `processingTtlMs` to be longer than your slowest expected dispatch path.
+ * hung or cancelled requests cannot permanently black-hole a delivery key. If a
+ * request outlives its TTL and a retry takes over, the stale request's `commit` or
+ * `abort` call will be a token-mismatch no-op — the newer reservation is unaffected.
  * Committed entries expire after `ttlMs` (default: 24 h). Total store size is
  * bounded by `maxSize` (default: 10 000). At capacity, `tryBegin` evicts the
  * oldest committed entry to make room for new reservations (LRU-ish). If all
@@ -30,12 +34,25 @@ const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_PROCESSING_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_SIZE = 10_000;
 
-type EntryState = "processing" | "committed";
+// Monotonic counter — simpler and cheaper than crypto.randomUUID() for tokens.
+// Unique within a process lifetime, which is all we need for in-memory stores.
+let tokenCounter = 0;
+function nextToken(): string {
+  return (tokenCounter++).toString(36);
+}
 
-interface IdempotencyEntry {
-  readonly state: EntryState;
+interface ProcessingEntry {
+  readonly state: "processing";
+  readonly token: string;
   readonly expiresAt: number;
 }
+
+interface CommittedEntry {
+  readonly state: "committed";
+  readonly expiresAt: number;
+}
+
+type IdempotencyEntry = ProcessingEntry | CommittedEntry;
 
 export interface IdempotencyStoreOptions {
   readonly ttlMs?: number | undefined;
@@ -45,30 +62,38 @@ export interface IdempotencyStoreOptions {
   readonly maxSize?: number | undefined;
 }
 
-export type TryBeginResult = "ok" | "duplicate" | "in-flight" | "capacity-exceeded";
+export type TryBeginResult =
+  | { readonly state: "ok"; readonly token: string }
+  | { readonly state: "duplicate" | "in-flight" | "capacity-exceeded" };
 
 export interface IdempotencyStore {
   /**
    * Atomically check and reserve a key.
    *
    * Returns:
-   *  - `"ok"` — reservation won; proceed with auth + dispatch
-   *  - `"duplicate"` — key is already committed (seen); return 200 duplicate
-   *  - `"in-flight"` — key is currently processing by another request; return
-   *    a retryable non-2xx (503) so the provider keeps retrying until one
-   *    delivery is committed. Do NOT return 200 here — the original may fail.
-   *  - `"capacity-exceeded"` — store is full; return 503 so the provider retries
-   *    after expired entries are pruned and capacity is freed.
+   *  - `{ state: "ok", token }` — reservation won; pass the token to `commit`/`abort`
+   *  - `{ state: "duplicate" }` — key is already committed; return 200 duplicate
+   *  - `{ state: "in-flight" }` — key is currently processing by another request;
+   *    return 503 so the provider keeps retrying. Do NOT return 200 — the original
+   *    may still fail.
+   *  - `{ state: "capacity-exceeded" }` — store is full of in-flight entries;
+   *    return 503 so the provider retries after processing entries drain.
    *
    * Runs synchronously — the JS event loop guarantees no interleaving between
    * check and reservation, preventing concurrent duplicate dispatch.
    */
   readonly tryBegin: (key: string) => TryBeginResult;
-  /** Permanently mark the key as seen. Call after fully successful dispatch. */
-  readonly commit: (key: string) => void;
-  /** Release the reservation without committing. Call after transient failure. */
-  readonly abort: (key: string) => void;
-  /** Prune expired committed entries. Called automatically; exposed for testing. */
+  /**
+   * Permanently mark the key as seen. Requires the token from `tryBegin`.
+   * Token mismatch (stale commit after TTL expiry + newer reservation) is a no-op.
+   */
+  readonly commit: (key: string, token: string) => void;
+  /**
+   * Release the reservation without committing. Requires the token from `tryBegin`.
+   * Token mismatch (stale abort) is a no-op — prevents releasing a newer reservation.
+   */
+  readonly abort: (key: string, token: string) => void;
+  /** Prune expired entries. Called automatically; exposed for testing. */
   readonly prune: () => void;
 }
 
@@ -94,8 +119,8 @@ export function createIdempotencyStore(options: IdempotencyStoreOptions = {}): I
     prune();
     const existing = store.get(key);
     if (existing !== undefined) {
-      if (existing.state === "processing") return "in-flight";
-      if (existing.expiresAt > Date.now()) return "duplicate";
+      if (existing.state === "processing") return { state: "in-flight" };
+      if (existing.expiresAt > Date.now()) return { state: "duplicate" };
       // Expired committed entry — allow fresh delivery
       store.delete(key);
     }
@@ -112,24 +137,28 @@ export function createIdempotencyStore(options: IdempotencyStoreOptions = {}): I
           break;
         }
       }
-      if (!evicted) return "capacity-exceeded";
+      if (!evicted) return { state: "capacity-exceeded" };
     }
+    const token = nextToken();
     // Reserve with a processing TTL so hung requests cannot permanently tombstone a key.
-    store.set(key, { state: "processing", expiresAt: Date.now() + processingTtlMs });
-    return "ok";
+    store.set(key, { state: "processing", token, expiresAt: Date.now() + processingTtlMs });
+    return { state: "ok", token };
   }
 
-  function commit(key: string): void {
-    // commit() always replaces an existing processing reservation (same slot),
-    // so store.size does not change. Capacity was already enforced by tryBegin.
+  function commit(key: string, token: string): void {
+    const entry = store.get(key);
+    // Guard: only commit our own reservation. If the TTL expired and a newer
+    // reservation took over, the stale commit must not overwrite it.
+    if (entry?.state !== "processing" || entry.token !== token) return;
+    // commit() replaces the existing processing slot — store.size does not change.
     store.set(key, { state: "committed", expiresAt: Date.now() + ttlMs });
   }
 
-  function abort(key: string): void {
-    // Only release processing reservations. Committed entries are immutable —
-    // abort after commit (e.g. cleanup race) must not reopen the dedup window.
+  function abort(key: string, token: string): void {
     const entry = store.get(key);
-    if (entry?.state === "processing") {
+    // Only release our own processing reservation. Stale aborts (token mismatch)
+    // or aborts on committed entries must not reopen the dedup window.
+    if (entry?.state === "processing" && entry.token === token) {
       store.delete(key);
     }
   }

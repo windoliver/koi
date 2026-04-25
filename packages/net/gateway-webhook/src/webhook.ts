@@ -59,6 +59,24 @@ export interface WebhookConfig {
    * loses dedup state on restart and is not shared across replicas.
    */
   readonly idempotencyStore?: IdempotencyStore | undefined;
+  /**
+   * Extract a dedup key for providers that don't supply one natively (e.g. GitHub,
+   * generic). Called after signature verification succeeds, with the verified
+   * request and raw body. Return a string to enable replay protection for that
+   * delivery, or undefined to skip dedup (pass-through, default behavior).
+   *
+   * Example — deduplicate GitHub by X-GitHub-Delivery after independent validation:
+   * ```ts
+   * keyExtractor: (_provider, req) => req.headers.get("X-GitHub-Delivery") ?? undefined
+   * ```
+   * The extracted key is scoped to this config by the caller — use a prefix if
+   * multiple webhook instances share an IdempotencyStore.
+   */
+  readonly keyExtractor?: (
+    provider: ProviderKind | undefined,
+    request: Request,
+    rawBody: string,
+  ) => string | undefined | Promise<string | undefined>;
 }
 
 export interface WebhookServer {
@@ -174,7 +192,10 @@ export function createWebhookServer(
 
     // Provider-level signature verification (when providerRouting is enabled).
     // Dedup key is extracted here but NOT committed until after dispatch succeeds.
+    // pendingToken is the reservation token returned by tryBegin(); required for
+    // commit/abort so that stale requests cannot corrupt a newer reservation.
     let pendingDedupKey: string | undefined;
+    let pendingToken: string | undefined;
 
     // accountAuthenticated is true only when a per-account secret map was used.
     // A shared string secret authenticates the provider secret but NOT the URL
@@ -201,29 +222,30 @@ export function createWebhookServer(
       if (!verifyResult.ok) {
         return jsonResponse(401, { ok: false, error: "Invalid signature" });
       }
+      // Resolve dedup key: prefer provider-native ID (verified payload), fall back
+      // to caller-supplied keyExtractor (enables GitHub/generic replay protection).
+      let dedupKey = verifyResult.dedupKey;
+      if (dedupKey === undefined && config.keyExtractor !== undefined) {
+        dedupKey = await config.keyExtractor(provider.kind, request, rawBody);
+      }
       // Atomically reserve the dedup key — prevents concurrent duplicate dispatch.
       // tryBegin() is synchronous: no await between check and reservation, so
       // concurrent requests cannot both pass before either records.
-      if (verifyResult.dedupKey !== undefined) {
-        const beginResult = idempotencyStore.tryBegin(verifyResult.dedupKey);
-        if (beginResult === "duplicate") {
-          return jsonResponse(200, { ok: true, duplicate: true });
+      if (dedupKey !== undefined) {
+        const beginResult = idempotencyStore.tryBegin(dedupKey);
+        if (beginResult.state !== "ok") {
+          if (beginResult.state === "duplicate") {
+            return jsonResponse(200, { ok: true, duplicate: true });
+          }
+          // in-flight or capacity-exceeded — retryable
+          const error =
+            beginResult.state === "in-flight"
+              ? "Delivery already in-flight, retry shortly"
+              : "Idempotency store at capacity, retry shortly";
+          return jsonResponse(503, { ok: false, error });
         }
-        if (beginResult === "in-flight") {
-          // Another request is processing this key. Return 503 so the provider
-          // keeps retrying — do NOT return 200 here, as the original may still fail.
-          return jsonResponse(503, {
-            ok: false,
-            error: "Delivery already in-flight, retry shortly",
-          });
-        }
-        if (beginResult === "capacity-exceeded") {
-          return jsonResponse(503, {
-            ok: false,
-            error: "Idempotency store at capacity, retry shortly",
-          });
-        }
-        pendingDedupKey = verifyResult.dedupKey;
+        pendingDedupKey = dedupKey;
+        pendingToken = beginResult.token;
       }
     }
 
@@ -247,8 +269,8 @@ export function createWebhookServer(
     if (authenticator !== undefined) {
       const authResult = await authenticator(request, rawBody);
       if (!authResult.ok) {
-        if (pendingDedupKey !== undefined) {
-          idempotencyStore.abort(pendingDedupKey);
+        if (pendingDedupKey !== undefined && pendingToken !== undefined) {
+          idempotencyStore.abort(pendingDedupKey, pendingToken);
         }
         return jsonResponse(401, { ok: false, error: authResult.error.message });
       }
@@ -282,8 +304,8 @@ export function createWebhookServer(
       await Promise.resolve(dispatcher(session, frame));
     } catch (err: unknown) {
       // Abort dedup reservation so provider can retry and be accepted.
-      if (pendingDedupKey !== undefined) {
-        idempotencyStore.abort(pendingDedupKey);
+      if (pendingDedupKey !== undefined && pendingToken !== undefined) {
+        idempotencyStore.abort(pendingDedupKey, pendingToken);
       }
       const message = err instanceof Error ? err.message : String(err);
       return jsonResponse(500, { ok: false, error: `Dispatch failed: ${message}`, frameId });
@@ -291,8 +313,8 @@ export function createWebhookServer(
 
     // Commit dedup key only after full successful acceptance (auth + dispatch).
     // Provider retries after transient failures will not be silently dropped.
-    if (pendingDedupKey !== undefined) {
-      idempotencyStore.commit(pendingDedupKey);
+    if (pendingDedupKey !== undefined && pendingToken !== undefined) {
+      idempotencyStore.commit(pendingDedupKey, pendingToken);
     }
 
     return jsonResponse(200, { ok: true, frameId });
