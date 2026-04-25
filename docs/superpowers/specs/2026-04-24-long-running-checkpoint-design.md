@@ -156,10 +156,18 @@ interface Supervisor {
 
 **Reclaim probe-then-kill protocol.** Reclaim resolves the worker
 handle via `loadSession(prev.lastSessionId).workerHandle` first. If
-the session record is missing the handle (legacy data or activation
-crash before handle persistence), reclaim treats this as a
-`NOT_FOUND`-equivalent dead-owner signal and proceeds via the
-orphan-detection loop. Before any reclaim path issues a destructive
+the session record is missing the handle (legacy data, activation
+crash before handle persistence), or the session record itself is
+missing for the entire orphan-detection window, reclaim returns
+`Err(WORKER_HANDLE_MISSING, retryable: false)` — there is no safe
+automatic takeover without the durable supervisor identity, so the
+package never falls back to a sessionId-based kill. Recovery in
+these cases requires an out-of-band administrative path
+(`forceReclaim(sid, manualHandle)` or operator-supplied handle);
+this is the SINGLE rule for missing-handle and missing-session
+across all reclaim branches (probe-then-kill, orphan-detection,
+trustedSingleProcess outcome-replay). Before any reclaim path
+issues a destructive
 `killAndConfirm`, it MUST first call `probeAlive(handle)`. The
 **TTL-stale-but-alive case** (e.g., host sleep, VM suspension, long
 GC pause) is the precise scenario this design must solve, so
@@ -737,17 +745,34 @@ as `dispose`:
      kill — heartbeats keep running and the operator can retry.
      Then:
      - **Supervisor mode (default):** the harness invokes
-       `supervisor.killAndConfirm(workerHandle)` automatically after a
-       fixed grace period (`abortKillGraceMs`, default 30s). On
-       success, the harness uses its private cleanup authority to
-       CAS-advance to the target phase. Recovery is deterministic
-       inside the package contract — no reliance on host SIGKILL.
-       If `killAndConfirm` itself fails (`KILL_FAILED`), the
-       background cleanup watcher polls + retries every
-       `heartbeatIntervalMs` and re-issues `killAndConfirm` with
-       backoff until success or process exit. Heartbeats continue
-       throughout; peers cannot reclaim while the harness is
-       actively trying to kill its own engine.
+       `supervisor.killAndConfirm(workerHandle)` automatically after
+       a fixed grace period (`abortKillGraceMs`, default 30s).
+       **Ownership-of-recovery rule:** for `Supervisor`
+       implementations whose `killAndConfirm` terminates the
+       harness's own process (the typical case — `@koi/daemon`
+       SIGKILLs the worker that contains the harness; `kubectl`
+       deletes the pod the harness runs in; systemd stops the unit
+       the harness runs in), the harness CANNOT perform the
+       post-kill CAS itself, because the call returns only after the
+       caller is dead. In these implementations the durable
+       `RecoveryOutcome` written before kill is the entire recovery
+       contract: any reclaimer that subsequently calls `resume()`
+       (a peer process, a restart of the same supervisor, or the
+       next operator-initiated resume) finds the outcome via
+       `listRecoveryOutcomes` and CAS-applies it. The harness
+       process is not expected to survive `killAndConfirm`.
+       For supervisor implementations whose kill targets only a
+       child engine subprocess and leaves the harness alive, the
+       harness's private cleanup authority CAN run the post-kill
+       CAS in-process — but the contract does not require it. If
+       `killAndConfirm` itself fails (`KILL_FAILED`) AND the harness
+       process is still alive, a background watcher polls + retries
+       every `heartbeatIntervalMs` with backoff until success or
+       process exit. Either way the durable outcome guarantees
+       eventual recovery; this is not "deterministic inside the
+       package contract" if the supervisor kills the harness, it is
+       deterministic across the joint contract of the harness +
+       supervisor + reclaimer.
      - **`trustedSingleProcess=true` mode:** no supervisor is
        available. Heartbeats continue, the durable
        `cleanupHealth = "unhealthy"` breadcrumb is set, and
@@ -908,28 +933,21 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
      ```
 
      If the loop exits with NOT_FOUND sustained across the entire
-     `orphanWindow`, treat as **orphan-suspected**, but do NOT
-     automatically terminalize — a read-path fault could mimic this
-     signature even when the owner is healthy. Instead:
-     - Run the supervisor probe-then-kill protocol. If `probeAlive`
-       returns `"alive"` → return `Err(RECLAIM_LIVE_OWNER)`; do not
-       kill. If `probeAlive` returns `"dead"` (or sustained
-       `"unknown"` paired with the orphan-window NOT_FOUND signal),
-       call `killAndConfirm(workerHandle)` (idempotent on a dead
-       worker). On `killAndConfirm` success: apply any RecoveryOutcome
-       records first (see Reclaimer-side replay below), then if no
-       terminal outcomes exist, CAS-advance the snapshot to
-       `suspended` (NOT `failed`) with `failureReason =
-       "ORPHAN_RECOVERED"`, generation+1. `suspended` is recoverable:
-       a later `resume()` starts a fresh session. We never publish
-       `failed` from NOT_FOUND evidence alone.
-     - On `probeAlive === "unknown"` without corroborating signals or
-       on `Err(IO_ERROR)`: return `Err(SUPERVISOR_UNHEALTHY)`.
-     - On `killAndConfirm` returning `Err(KILL_FAILED)` (supervisor
-       unhealthy): return `Err(KILL_FAILED, retryable: true)` without
-       mutating state.
-     - Bounded recovery time: ≤ `leaseTtlMs + heartbeatIntervalMs` +
-       supervisor kill latency.
+     `orphanWindow`, the session record is genuinely missing —
+     which means there is no `workerHandle` to address the prior
+     worker. Per the single missing-handle rule above, this branch
+     CANNOT proceed to automatic kill: return
+     `Err(WORKER_HANDLE_MISSING, retryable: false)` and surface
+     `prev.lastSessionId` so the operator can drive
+     `forceReclaim(sid, manualHandle)` out of band. We never publish
+     `failed` from NOT_FOUND evidence alone, and we never call
+     `probeAlive` / `killAndConfirm` without a durable
+     supervisor-minted handle. This is intentional: a no-handle
+     orphan path that picked any synthetic identifier could fence
+     the wrong worker.
+     - Bounded recovery time for the supervised case where the
+       handle is recoverable later: ≤ `orphanWindow` (after which
+       the operator-driven path takes over).
 
    Read I/O errors (not NOT_FOUND) remain `RECLAIM_READ_FAILED`
    (retryable) — we do NOT treat a transient read error as a missing
@@ -1541,11 +1559,13 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   `RECLAIM_READ_FAILED` (retryable). Does NOT attempt reclaim, does NOT
   wedge the harness — the existing state is untouched and a later
   `resume()` call can proceed once the store recovers.
-- **Orphan session record + supervisor kill-ok:** `loadSession` returns
-  `NOT_FOUND` for the full orphan window. Supervisor returns `Ok` from
-  `killAndConfirm`. Harness CAS-advances to `suspended` with
-  `ORPHAN_RECOVERED`; next `resume()` starts a fresh session. Never
-  publishes `failed`.
+- **Orphan session record (no handle available):** `loadSession`
+  returns `NOT_FOUND` for the full orphan window, so no
+  `workerHandle` is recoverable. Harness returns
+  `Err(WORKER_HANDLE_MISSING, retryable: false)` — does NOT call
+  `killAndConfirm`, does NOT publish any phase change. Recovery
+  requires operator-driven `forceReclaim(sid, manualHandle)`.
+  Regression against unsafe sessionId-based fences.
 - **Orphan session record + supervisor reports live owner:** supervisor
   returns `Err(RECLAIM_LIVE_OWNER)`. Harness state unchanged; caller
   receives retryable error. Regression against killing a healthy worker
@@ -1562,10 +1582,18 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   `lastHeartbeatAt > leaseTtlMs` but a `heartbeatIntervalMs * 2` wait
   then shows a fresh heartbeat → `ALREADY_ACTIVE`, no reclaim.
   Regression against stale-replica misclassification of live owners.
-- **`trustedSingleProcess=true`:** `resume()` on any `active` snapshot
-  returns `ALREADY_ACTIVE` unconditionally, no reclaim attempted even
-  with stale heartbeats. Required for hosts without kill-on-takeover
-  supervisor; verified by test that asserts reclaim is never invoked.
+- **`trustedSingleProcess=true`, no RecoveryOutcome present:**
+  `resume()` on any `active` snapshot returns `ALREADY_ACTIVE`
+  unconditionally — no generic TTL reclaim is attempted even with
+  stale heartbeats. Required for hosts without kill-on-takeover
+  supervisor.
+- **`trustedSingleProcess=true`, RecoveryOutcome present:**
+  `resume()` on `active` finds a durable `RecoveryOutcome` for
+  `prev.lastSessionId` and CAS-replays it (terminal → returns
+  `TERMINAL`; `harness-suspended` → starts a fresh session). This is
+  the documented automatic-recovery path for ABORT_TIMEOUT after
+  host SIGKILL in trusted mode. Verified by test that asserts
+  outcome replay happens but generic TTL reclaim does not.
 - **`createLongRunningHarness` rejects missing supervisor:** config
   without `supervisor` AND without `trustedSingleProcess=true` returns
   `INVALID_CONFIG` at construction time.
