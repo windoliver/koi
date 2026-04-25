@@ -191,6 +191,14 @@ export function createWebhookServer(
   let frameCounter = 0;
 
   const maxBodyBytes = config.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  if (config.idempotencyStore !== undefined && config.leaseRenewalMs === undefined) {
+    throw new Error(
+      "createWebhookServer: leaseRenewalMs is required when a custom idempotencyStore is provided. " +
+        "Set leaseRenewalMs to less than half your store's processing TTL so the renewal " +
+        "interval fires before the lease expires.",
+    );
+  }
+
   const idempotencyStore: IdempotencyStore =
     config.idempotencyStore ?? createIdempotencyStore(config.idempotency ?? {});
   // Renewal interval must be shorter than the store's processing TTL.
@@ -322,12 +330,24 @@ export function createWebhookServer(
     // Runs AFTER provider signature check — can additionally authorize the
     // (provider, account) tuple to prevent cross-tenant injection.
     if (authenticator !== undefined) {
-      const authResult = await authenticator(request, rawBody);
+      let authResult: Awaited<ReturnType<WebhookAuthenticator>>;
+      try {
+        authResult = await authenticator(request, rawBody);
+      } catch (err: unknown) {
+        if (pendingDedupKey !== undefined && pendingToken !== undefined) {
+          idempotencyStore.abort(pendingDedupKey, pendingToken);
+          pendingDedupKey = undefined;
+          pendingToken = undefined;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        return jsonResponse(503, { ok: false, error: `Auth failed: ${message}` });
+      }
       if (!authResult.ok) {
         if (pendingDedupKey !== undefined && pendingToken !== undefined) {
           idempotencyStore.abort(pendingDedupKey, pendingToken);
         }
-        return jsonResponse(401, { ok: false, error: authResult.error.message });
+        const status = authResult.error.retryable ? 503 : 401;
+        return jsonResponse(status, { ok: false, error: authResult.error.message });
       }
       agentId = authResult.value.agentId;
       routing = authResult.value.routing ?? routing;

@@ -77,6 +77,44 @@ describe("WebhookServer — auth guard", () => {
       ),
     ).not.toThrow();
   });
+
+  test("throws when custom idempotencyStore is provided without leaseRenewalMs", () => {
+    const store = {
+      tryBegin: (_key: string) => ({ state: "ok" as const, token: "t" }),
+      renew: (_key: string, _token: string) => false,
+      commit: (_key: string, _token: string) => {},
+      abort: (_key: string, _token: string) => {},
+      prune: () => {},
+    };
+    expect(() =>
+      createWebhookServer(
+        { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true, idempotencyStore: store },
+        () => {},
+      ),
+    ).toThrow("leaseRenewalMs is required");
+  });
+
+  test("custom idempotencyStore with leaseRenewalMs does not throw", () => {
+    const store = {
+      tryBegin: (_key: string) => ({ state: "ok" as const, token: "t" }),
+      renew: (_key: string, _token: string) => false,
+      commit: (_key: string, _token: string) => {},
+      abort: (_key: string, _token: string) => {},
+      prune: () => {},
+    };
+    expect(() =>
+      createWebhookServer(
+        {
+          port: 0,
+          pathPrefix: "/webhook",
+          allowUnauthenticated: true,
+          idempotencyStore: store,
+          leaseRenewalMs: 150_000,
+        },
+        () => {},
+      ),
+    ).not.toThrow();
+  });
 });
 
 describe("WebhookServer — core dispatch", () => {
@@ -499,7 +537,13 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     const sig = `v0=${hex}`;
 
     server = createWebhookServer(
-      { port: 0, pathPrefix: "/webhook", providerRouting: true, idempotencyStore: inFlightStore },
+      {
+        port: 0,
+        pathPrefix: "/webhook",
+        providerRouting: true,
+        idempotencyStore: inFlightStore,
+        leaseRenewalMs: 150_000,
+      },
       dispatcher,
       undefined,
       { slack: secret },
@@ -682,13 +726,13 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
       "Content-Type": "application/json",
     };
 
-    // First delivery — authenticator fails → dedup key must be aborted
+    // First delivery — authenticator returns retryable error → 503, dedup key must be aborted
     const res1 = await fetch(`http://localhost:${srv.port()}/webhook/github`, {
       method: "POST",
       headers,
       body,
     });
-    expect(res1.status).toBe(401);
+    expect(res1.status).toBe(503);
     expect(dispatched).toHaveLength(0);
 
     // Retry — same delivery ID — must NOT be treated as duplicate
@@ -749,6 +793,54 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     expect(b2.ok).toBe(true);
     expect(b2.duplicate).toBeUndefined();
     expect(dispatchCount).toBe(2);
+    srv.stop();
+  });
+
+  test("throwing authenticator aborts dedup reservation — retry is accepted", async () => {
+    const secret = "test-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+    const dispatched2: Array<unknown> = [];
+
+    let authCallCount = 0;
+    const throwingAuthenticator: WebhookAuthenticator = async () => {
+      authCallCount++;
+      if (authCallCount === 1) throw new Error("auth backend timeout");
+      return { ok: true, value: { agentId: "webhook" } };
+    };
+
+    const srv = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
+      (_session, _frame) => {
+        dispatched2.push(1);
+      },
+      throwingAuthenticator,
+      { github: secret },
+    );
+    await srv.start();
+
+    const headers = {
+      "X-Hub-Signature-256": sig,
+      "X-GitHub-Delivery": "auth-throw-delivery-id",
+      "Content-Type": "application/json",
+    };
+
+    // First delivery — authenticator throws → 503, dedup key must be aborted
+    const res1 = await fetch(`http://localhost:${srv.port()}/webhook/github`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res1.status).toBe(503);
+
+    // Retry — same delivery ID — must NOT be treated as duplicate (key was aborted)
+    const res2 = await fetch(`http://localhost:${srv.port()}/webhook/github`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res2.status).toBe(200);
+    expect(dispatched2).toHaveLength(1);
     srv.stop();
   });
 });
