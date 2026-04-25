@@ -215,20 +215,24 @@ gated on its presence:
   `KoiError { code: "INVALID_CONFIG", message: "either supervisor or
   trustedSingleProcess must be set" }`.
 - If `config.trustedSingleProcess === true`: the harness refuses
-  generic TTL-based reclaim of any `active` snapshot on `resume()`,
-  but does honor a durable `RecoveryOutcome` written before host
-  SIGKILL (this is the recovery path for ABORT_TIMEOUT in trusted
-  mode — see "Abort timeout" branch). Specifically: on `resume()`,
-  if `prev.phase === "active"` AND
-  `listRecoveryOutcomes(prev.lastSessionId)` returns one record,
-  CAS-replay the outcome to advance the chain to its target phase,
-  then proceed normally (terminal → return `TERMINAL`; suspended →
-  start a fresh session). With NO outcome record, the harness
-  returns `ALREADY_ACTIVE` and requires explicit operator action
-  via the same out-of-band `forceReclaim` admin path. This closes
-  the documented post-host-SIGKILL wedge: callers that follow the
-  ABORT_TIMEOUT contract (which mandates writing the outcome BEFORE
-  kill) get automatic recovery on next resume.
+  ALL automatic reclaim of any `active` snapshot on `resume()` —
+  including outcome replay. The presence of a `RecoveryOutcome`
+  alone is NOT proof the prior worker is dead (the outcome is
+  written BEFORE kill on the ABORT_TIMEOUT path, and no supervisor
+  is available to verify that the host's SIGKILL actually fired).
+  Auto-replay in this mode would create split-brain risk: the prior
+  process could still be alive and emitting side effects when the
+  next resume CAS-advances the chain. Instead, recovery requires
+  an explicit operator-confirmed step: `forceReclaim(sid,
+  hostConfirmedDead: true)`. The operator asserts (out of band)
+  that the host has been SIGKILLed and the prior process is gone;
+  the admin call writes a durable host-confirmed-dead marker and
+  THEN replays any `RecoveryOutcome` (or, if none, CAS-advances to
+  `suspended` with `OPERATOR_FORCED`). On a fresh `resume()` with
+  the marker present, the chain is already past `active` and
+  resume proceeds normally. This is the documented availability
+  tradeoff for trusted mode: the gain is an unforgeable "dead
+  worker" assertion; the cost is one operator step.
 
 The same supervisor contract gates orphan-record recovery: CAS-advancing
 to `suspended` (NOT terminal) with `ORPHAN_RECOVERED` also requires a
@@ -996,21 +1000,32 @@ reflect stale or incorrect tombstone writes.
 (loop started in activation step 2) and holds the lease; a crashed
 mid-activation owner goes stale within TTL. This closes both the
 activation-latency race and the cross-store-lag race.
-3. To reclaim — outcome-driven, never bypass durable terminal state:
-   - First, `listRecoveryOutcomes(prev.lastSessionId)`.
-   - If a record exists (at most one — RecoveryOutcome is
-     harness-level only): CAS-replay it via the subsumption +
-     identity-match algorithm above. The chain ends in `completed`
-     or `failed`. Reclamation ENDS — future `resume()` returns
-     `TERMINAL`. We never bypass a durable terminal outcome.
-   - If no record exists: CAS-advance `prev` → `next` with
-     `phase = "suspended"`, `generation = prev.generation + 1`,
-     `failureReason = "RECLAIMED_FROM_DEAD_OWNER"`. Re-enter resume
-     flow.
-
-   Outcome replay is gated by the same `probeAlive`/`killAndConfirm`
-   protocol — never replay outcomes for a session whose worker the
-   supervisor reports as alive.
+3. To reclaim — strict ordering: **fence FIRST, replay SECOND.**
+   `RecoveryOutcome` records are intentionally written BEFORE
+   `killAndConfirm` on terminal/abort paths, so a live worker MAY
+   coexist with a durable outcome. Replaying before fencing would
+   advance the chain while the original process is still capable of
+   emitting side effects.
+   1. Run the supervisor probe-then-kill protocol against
+      `loadSession(prev.lastSessionId).workerHandle`. Reclaim
+      proceeds ONLY after `killAndConfirm` returns `Ok` (or the
+      probe path positively determines the worker is dead). Missing
+      handle → `WORKER_HANDLE_MISSING` (per single missing-handle
+      rule). Live owner → `RECLAIM_LIVE_OWNER`. Kill failure →
+      `KILL_FAILED`. None of these proceed to outcome replay.
+   2. Only after the worker is positively fenced:
+      `listRecoveryOutcomes(prev.lastSessionId)`.
+      - If a record exists (at most one — RecoveryOutcome is
+        harness-level only): CAS-replay it via the subsumption +
+        identity-match algorithm above. The chain ends in
+        `suspended`, `completed`, or `failed` per the record's
+        `kind`. Reclamation ENDS — future `resume()` returns
+        `TERMINAL` for terminal kinds, or starts a fresh session
+        for `harness-suspended`.
+      - If no record exists: CAS-advance `prev` → `next` with
+        `phase = "suspended"`, `generation = prev.generation + 1`,
+        `failureReason = "RECLAIMED_FROM_DEAD_OWNER"`. Re-enter
+        resume flow.
 
 **Heartbeat loop (mandatory, timer-driven).**
 
@@ -1058,11 +1073,19 @@ rejects with `INVALID_STATE` (caller should use `resume`).
 **Lease enforcement on mutating calls:**
 
 All mutating calls (`pause`, `fail`, `completeTask`, `failTask`, checkpoint
-middleware writes) take the `SessionLease` as an explicit argument. Before every
-store write, the harness asserts `lease.generation === currentSnapshot.generation`.
-Stale leases (timed-out sessions, superseded runs, reclaimed runs) are rejected
-with `KoiError { code: "STALE_SESSION", retryable: false }` and their writes
-are never persisted.
+middleware writes) take the `SessionLease` as an explicit argument. Before
+every store write the harness performs the SAME normative check used
+everywhere else in this spec: `activeLeases.has(lease) === true` (WeakSet
+membership on the live capability) AND object identity against the harness's
+internal current-lease pointer. The lease is an unforgeable runtime capability;
+generation is incidental metadata, not the authorization signal. A
+structurally-matching object (same `sessionId`/`generation` field values) that
+is NOT the WeakSet member fails the check. Stale leases (timed-out sessions,
+superseded runs, reclaimed runs) are rejected with
+`KoiError { code: "STALE_SESSION", retryable: false }` and their writes are
+never persisted. Generation may additionally be compared as a defense-in-depth
+consistency check, but it MUST NOT be the sole authorization signal — that
+would turn the lease from an opaque capability into a guessable token.
 
 **L0 prerequisites:** see the canonical "L0 Prerequisites (coordinated
 breaking change)" section below for the complete dependency list.
