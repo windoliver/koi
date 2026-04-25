@@ -248,24 +248,20 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       }
 
       if (matches.length === 0) return undefined;
-      // Multiple survivors: keep the newest; best-effort dispose all older ones now so they
-      // don't accumulate indefinitely. Disposal failures are intentionally swallowed here —
-      // the provider's tryDispose with its own timeout will retry on the next attach.
-      const best = matches.reduce((b, cur) => (cur.createdAt > b.createdAt ? cur : b));
-      for (const older of matches) {
-        if (older.id !== best.id) {
-          await runGit(["worktree", "remove", "--force", older.path], config.repoPath);
-          const olderBranch = older.metadata["branchName"] ?? "";
-          if (olderBranch) await runGit(["branch", "-D", olderBranch], config.repoPath);
-          await runGit(["update-ref", "-d", `refs/koi-setup-ok/${older.id}`], config.repoPath);
-          registry.delete(older.id);
-        }
-      }
-      return best;
+      // Multiple survivors: return the newest by embedded timestamp (git-owned, not agent-writable).
+      // Older survivors are intentionally NOT disposed here — the provider validates the chosen
+      // survivor before acting on it, and deleting alternatives before that check would cause
+      // irreversible loss if the newest survivor turns out to be incomplete or adversarial.
+      // Orphaned older survivors are disposed naturally when the agent next attaches and the
+      // provider disposes staleInfo before creating a fresh workspace.
+      return matches.reduce((b, cur) => (cur.createdAt > b.createdAt ? cur : b));
     },
 
-    // Use a git ref as the setup-complete attestation so the workspace process
-    // cannot spoof completion by writing a sibling file (the backend is not sandboxed).
+    // Use a git ref as the setup-complete attestation. Note: since isSandboxed is false,
+    // an agent running in the worktree can forge refs/koi-setup-ok/* via ordinary git
+    // plumbing. The provider therefore does NOT trust these methods for crash-survivor
+    // reuse on unsandboxed backends — they are useful only for in-process tracking and
+    // for sandboxed backends where the agent cannot reach the shared git repo.
     async attestSetupComplete(wsId: WorkspaceId): Promise<void> {
       const entry = registry.get(wsId);
       if (!entry) throw new Error(`Cannot attest setup for unknown workspace ${wsId}`);

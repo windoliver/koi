@@ -510,6 +510,35 @@ describe("createWorkspaceProvider", () => {
     expect(unsandboxedBackend.created.length).toBe(1);
   });
 
+  it("unsandboxed backend with verifySetupComplete is still NOT trusted for crash-survivor reuse", async () => {
+    // Even if the backend implements verifySetupComplete, an unsandboxed backend cannot
+    // prevent the agent from forging the attestation. Provider must require isSandboxed:true.
+    const survivorId = workspaceId("ws-survivor-unsandboxed-attest");
+    const unsandboxedWithAttest = makeBackend({
+      isSandboxed: false,
+      findByAgentId: async () => ({
+        id: survivorId,
+        path: `/tmp/${survivorId}`,
+        createdAt: Date.now() - 1000,
+        metadata: {},
+      }),
+      isHealthy(_wsId: WorkspaceId): boolean {
+        return true;
+      },
+      async verifySetupComplete(_wsId: WorkspaceId): Promise<boolean> {
+        return true;
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: unsandboxedWithAttest,
+      cleanupPolicy: "never",
+    });
+    await provider.attach(makeAgent());
+    // Survivor must be disposed even though verifySetupComplete returns true
+    expect(unsandboxedWithAttest.disposed).toContain(survivorId);
+    expect(unsandboxedWithAttest.created.length).toBe(1);
+  });
+
   it("attestation failure in cleanupPolicy=never disposes workspace and rethrows", async () => {
     const attestError = new Error("git update-ref failed");
     const attestingBackend = makeBackend({

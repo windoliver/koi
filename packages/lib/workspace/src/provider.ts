@@ -117,17 +117,22 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
 
         // Under "never" policy: reuse the preserved workspace rather than discarding it.
         // In-process reuse (staleInfo from attached map) is always trusted.
-        // Crash-survivor reuse (from findByAgentId) requires backend-level recovery proof:
-        // the backend must implement verifySetupComplete, which attests both ownership and
-        // setup completion in a form the provider trusts. Backends without this method
-        // cannot provide a non-forgeable recovery signal; their survivors are disposed+recreated.
+        // Crash-survivor reuse (from findByAgentId) requires BOTH:
+        //   1. Backend implements verifySetupComplete (attestation exists), AND
+        //   2. Backend is sandboxed (isSandboxed: true) so the workspace process cannot forge
+        //      the attestation by writing into the shared git repo or sibling filesystem.
+        // Unsandboxed backends (e.g. git-worktree with isSandboxed: false) can implement
+        // verifySetupComplete as a convenience for in-process reuse, but since the agent
+        // has write access to the same git repo, refs/koi-setup-ok/* is forgeable and must
+        // not be trusted as crash-recovery proof. Their survivors are always disposed+recreated.
         // When reusing a crash survivor, postCreate is re-run to repair any setup drift
         // (e.g. files deleted after setup). Callers using cleanupPolicy="never" must ensure
         // postCreate is idempotent.
         if (staleInfo2 !== undefined && policy === "never") {
           const wsId = staleInfo2.id;
           const hasTrustedRecovery =
-            !isFromCrashRecovery || config.backend.verifySetupComplete !== undefined;
+            !isFromCrashRecovery ||
+            (config.backend.isSandboxed && config.backend.verifySetupComplete !== undefined);
           if (!setupFailed.has(wsId) && hasTrustedRecovery) {
             const [healthy, setupComplete] = await Promise.all([
               config.backend.isHealthy(wsId),
