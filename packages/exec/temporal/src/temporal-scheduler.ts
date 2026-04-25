@@ -316,14 +316,16 @@ function saveStateSync(dbPath: string, state: PersistedState): void {
 // PID-based advisory lock for dbPath (single-writer invariant)
 // ---------------------------------------------------------------------------
 
-// Returns true when the process identified by (pid, sessionToken) is the live owner of
-// the lock. Both components must match: PID alone is insufficient because the OS can
-// reuse a PID from a crashed process, making a stale lock appear live.
+// Returns true when the lock holder identified by (pid, sessionToken) is a live owner.
+// Session token is only meaningful for our own PID: if the lock says our PID but a
+// different token, the OS reused our PID after a crash — treat as stale.
+// For a foreign PID, the session token is irrelevant; use kill(0) to probe liveness.
 function isLockOwnerAlive(pid: number, sessionToken: string): boolean {
-  if (sessionToken === PROCESS_SESSION_TOKEN && pid === process.pid) return true;
-  // Different session token → different process instance, even if PID matches.
-  if (sessionToken !== PROCESS_SESSION_TOKEN) return false;
-  // Same session token but different PID — should not happen, but treat as stale.
+  if (pid === process.pid) {
+    // Same PID: live only if the session token matches ours (rules out PID reuse).
+    return sessionToken === PROCESS_SESSION_TOKEN;
+  }
+  // Foreign PID: check OS-level liveness; session token does not apply.
   try {
     process.kill(pid, 0);
     return true;
@@ -966,6 +968,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       // Idempotency guard: short-circuit only for in-flight or successfully completed tasks.
       // Failed tasks are allowed to be retried with the same key — the prior attempt did not
       // produce durable remote work so the caller's retry is legitimate, not a duplicate.
+      // Track retry-after-cancel so the spawn path knows NOT to attach getResult to a
+      // workflow that is still shutting down from the prior cancel().
+      let isRetryAfterCancel = false;
       if (options?.idempotencyKey !== undefined) {
         const existing = tasks.get(id);
         if (existing !== undefined && existing.status !== "failed") {
@@ -976,8 +981,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           return id; // already succeeded — no-op
         }
         // If existing is "failed" or only in history as "failed": fall through and retry.
-        // Before retrying, clear the cancellation guard so that a prior cancel() call does
-        // not permanently block the retried getResult() callback from recording completion.
+        // Track whether this is immediately after a cancel() so we can suppress the
+        // ambiguous-start recovery path if workflow.start() is rejected while shutting down.
+        isRetryAfterCancel = cancelledTaskIds.has(id);
+        // Clear the cancellation guard so that a prior cancel() call does not permanently
+        // block the retried getResult() callback from recording completion.
         cancelledTaskIds.delete(id);
       }
 
@@ -1072,8 +1080,12 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         // have accepted the request (already-started, transport failures). For definite
         // rejections (bad workflow type, auth, namespace — where nothing was enqueued),
         // surface the original error so callers know the task was never created.
+        // Also exclude retry-after-cancel: if the previous execution is still shutting down,
+        // "already running" reflects the cancelling workflow, not a fresh one. Throwing
+        // lets the caller retry after the cancel completes rather than latching onto it.
         const isAmbiguousStart =
           skipCancel &&
+          !isRetryAfterCancel &&
           err instanceof Error &&
           /already.?started|already.?running|already.?exists|workflow.*running/i.test(err.message);
 

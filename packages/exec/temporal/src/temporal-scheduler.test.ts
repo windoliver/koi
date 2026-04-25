@@ -1479,6 +1479,54 @@ describe("idempotencyKey", () => {
   });
 });
 
+describe("idempotent spawn — retry after cancel does not attach to cancelling workflow", () => {
+  test("already-running error on retry-after-cancel throws instead of attaching to cancelled run", async () => {
+    // Simulate: workflow is still shutting down from cancel when retry calls workflow.start().
+    // The "already running" rejection must NOT be treated as an ambiguous success.
+    let getResultCalled = 0;
+    const client = makeMockClient({
+      start: mock(async () => {
+        throw new Error("Workflow execution already started");
+      }),
+      cancel: mock(async () => undefined),
+      getResult: mock(async () => {
+        getResultCalled++;
+        return Promise.resolve("result");
+      }),
+    });
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    // First submit succeeds (start mock isn't the first call - the default mock succeeds).
+    // We need a different setup: first call to start() succeeds, then cancel(), then retry fails.
+    await scheduler[Symbol.asyncDispose]();
+
+    // Fresh scheduler: start succeeds first, then we cancel, then retry start with "already running".
+    let callCount = 0;
+    const client2 = makeMockClient({
+      start: mock(async () => {
+        callCount++;
+        if (callCount === 1) return { workflowId: `${AGENT_ID}:spawn:cancel-retry` };
+        throw new Error("Workflow execution already started"); // retry hits shutting-down workflow
+      }),
+      cancel: mock(async () => undefined),
+      getResult: mock(async () => new Promise(() => {})), // never resolves (workflow running)
+    });
+    const s = createTemporalScheduler(makeConfig(client2));
+    const id = await s.submit(AGENT_ID, TEXT_INPUT, "spawn", { idempotencyKey: "cancel-retry" });
+    expect(typeof id).toBe("string");
+
+    // Cancel the workflow.
+    await s.cancel(id as TaskId);
+
+    // Retry with the same idempotencyKey — should throw because it's a retry-after-cancel
+    // and "already running" reflects the cancelling workflow, not a fresh one.
+    await expect(
+      s.submit(AGENT_ID, TEXT_INPUT, "spawn", { idempotencyKey: "cancel-retry" }),
+    ).rejects.toThrow(/already started/i);
+
+    await s[Symbol.asyncDispose]();
+  });
+});
+
 describe("idempotent spawn — definite rejection throws immediately", () => {
   test("non-ambiguous start failure (e.g. auth error) throws rather than returning running state", async () => {
     // A definite rejection (e.g. permission denied, bad workflow type) should NOT be
