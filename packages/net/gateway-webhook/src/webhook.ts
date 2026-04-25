@@ -77,10 +77,13 @@ export interface WebhookConfig {
    * dispatcher never returns (hung), the key expires after `processingTtlMs`
    * (default 5 min), at which point provider retries are accepted.
    *
+   * Default: `processingTtlMs` (5 min). Set lower (e.g. 2-3× p99 dispatch
+   * latency) to recover faster from hung dispatchers, or higher if your
+   * dispatchers are reliably slow-but-healthy and you prefer fewer retries.
+   *
    * **Note:** this option does not provide a hard HTTP-response deadline or
    * true cancellation. For real cancellation, pass an `AbortSignal` from your
-   * dispatcher and abort on a separate timer. Recommended: set to 2-3× your
-   * p99 dispatch latency to cover slow-but-healthy dispatches without renewal.
+   * dispatcher and abort on a separate timer.
    */
   readonly maxDispatchMs?: number | undefined;
   /**
@@ -272,6 +275,11 @@ export function createWebhookServer(
   // to match their store's TTL; otherwise we fall back to the default-store default.
   const leaseRenewalMs =
     config.leaseRenewalMs ?? Math.floor((config.idempotency?.processingTtlMs ?? 5 * 60 * 1000) / 2);
+  // Default maxDispatchMs to processingTtlMs (2× leaseRenewalMs) so hung dispatchers
+  // eventually stop renewing without requiring explicit configuration. Healthy dispatches
+  // that finish before this window are unaffected — the timer is cleared on settlement.
+  const effectiveMaxDispatchMs =
+    config.maxDispatchMs ?? config.idempotency?.processingTtlMs ?? 5 * 60 * 1000;
 
   const prefix = config.pathPrefix.endsWith("/")
     ? config.pathPrefix.slice(0, -1)
@@ -539,11 +547,10 @@ export function createWebhookServer(
 
     // Renew the processing lease periodically while dispatch is active so a
     // slow-but-healthy dispatcher does not lose its reservation to a provider retry.
-    // maxDispatchMs is opt-in: when set, renewal stops after the configured window
-    // so hung handlers eventually release their lease (accepting a concurrent-duplicate
-    // window). Without it, renewal continues until dispatch settles, which is safe
-    // for all healthy dispatchers but leaves hung dispatchers black-holed until
-    // process restart. Callers with unreliable dispatchers should set maxDispatchMs.
+    // After effectiveMaxDispatchMs (default: processingTtlMs), renewal stops so a
+    // hung handler's reservation eventually expires and provider retries are accepted.
+    // The dispatcher continues running — healthy dispatches that settle after the
+    // window still succeed and commit. Timer is cleared immediately on settlement.
     let renewalTimer: ReturnType<typeof setInterval> | undefined;
     let maxDispatchTimer: ReturnType<typeof setTimeout> | undefined;
     if (pendingDedupKey !== undefined && pendingToken !== undefined) {
@@ -552,15 +559,13 @@ export function createWebhookServer(
       renewalTimer = setInterval(() => {
         idempotencyStore.renew(key, token);
       }, leaseRenewalMs);
-      if (config.maxDispatchMs !== undefined) {
-        maxDispatchTimer = setTimeout(() => {
-          // Stop renewing so the processing TTL counts down. A hung handler's
-          // reservation expires after processingTtlMs, unblocking provider retries.
-          // We do NOT abort: explicit abort immediately allows a concurrent
-          // duplicate; TTL expiry gives a bounded delay instead.
-          clearInterval(renewalTimer);
-        }, config.maxDispatchMs);
-      }
+      maxDispatchTimer = setTimeout(() => {
+        // Stop renewing so the processing TTL counts down. A hung handler's
+        // reservation expires after processingTtlMs, unblocking provider retries.
+        // We do NOT abort: explicit abort immediately allows a concurrent
+        // duplicate; TTL expiry gives a bounded delay instead.
+        clearInterval(renewalTimer);
+      }, effectiveMaxDispatchMs);
     }
 
     try {
