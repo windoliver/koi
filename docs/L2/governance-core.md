@@ -99,9 +99,17 @@ createGovernanceMiddleware({
 ```
 
 `PersistentGrant` shape: `{ kind, agentId, sessionId, payload, grantKey,
-grantedAt }`. `grantKey` is a deterministic SHA-256 of canonicalized
-`{kind,payload}` via `computeGrantKey` — hosts can use it as a stable storage
-key without re-hashing.
+grantedAt }`. The type itself now lives in `@koi/core` (L0) and is re-exported
+from `@koi/governance-core` for backwards compatibility. `grantKey` is a
+deterministic SHA-256 of canonicalized `{kind,payload}` produced by the L0u
+helper `computeGrantKey` exported from `@koi/hash` — hosts can use it as a
+stable storage key without re-hashing.
+
+A separate L2 package, `@koi/governance-approval-tiers`, is the recommended
+backend for `onApprovalPersist`: it appends grants as JSON-Lines to
+`~/.koi/approvals.json`, short-circuits subsequent `ok:"ask"` verdicts to
+allow on a cached match, and emits `approval.persisted` info-violations into
+the host's audit channel.
 
 ### Architectural note — why the middleware owns ask routing
 
