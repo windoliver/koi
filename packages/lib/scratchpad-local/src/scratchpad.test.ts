@@ -497,6 +497,29 @@ describe("createLocalScratchpad", () => {
       }
     });
 
+    it("dormant store without reuseToken evicts on reopen (no credential to verify)", () => {
+      // If dormantTtlMs is set but reuseToken is omitted, there is no admission credential.
+      // Any reopener would silently inherit state from a prior lifecycle. Force fresh store.
+      const noTokenGid = agentGroupId(`group-no-token-${++gidCounter}`);
+      const sp1 = createLocalScratchpad({
+        groupId: noTokenGid,
+        authorId: aid,
+        dormantTtlMs: 60_000,
+        // no reuseToken — retention without authorization
+      });
+      sp1.write({ path: scratchpadPath("stale"), content: "should-not-survive" });
+      sp1.close(); // dormant
+
+      // Reopen: no token available → fresh store, prior entries not visible
+      const sp2 = createLocalScratchpad({ groupId: noTokenGid, authorId: aid });
+      try {
+        const r = sp2.read(scratchpadPath("stale"));
+        expect(r.ok).toBe(false); // evicted: fresh store has no entries
+      } finally {
+        sp2.close();
+      }
+    });
+
     it("closing one handle does not remove the same callback registered by another handle", () => {
       // Both handles register the EXACT same function reference.
       // With Set-based dedup, closing sp1 would delete the function from the Set,
