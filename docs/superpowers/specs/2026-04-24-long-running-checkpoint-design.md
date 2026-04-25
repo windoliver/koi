@@ -1816,13 +1816,19 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   `killAndConfirm`, does NOT publish any phase change. Recovery
   requires operator-driven `forceReclaim(sid, manualHandle)`.
   Regression against unsafe sessionId-based fences.
-- **Orphan session record + supervisor reports live owner:** supervisor
-  returns `Err(RECLAIM_LIVE_OWNER)`. Harness state unchanged; caller
-  receives retryable error. Regression against killing a healthy worker
-  based on a read-path fault.
-- **Orphan session record + supervisor unhealthy:** supervisor returns
-  `Err(KILL_FAILED)`. Harness state unchanged; caller receives
-  retryable error.
+- **forceReclaim(manualHandle) + supervisor reports live owner:**
+  operator invokes `forceReclaim(harnessId, sid, { kind:
+  "manualHandle", handle, supervisor, override: true })` for an
+  orphan-NOT_FOUND case. Supervisor returns `"alive"`. forceReclaim
+  refuses with `Err(RECLAIM_LIVE_OWNER, retryable: true)` and does
+  NOT advance state. Regression against killing a healthy worker
+  during operator-override recovery.
+- **forceReclaim(manualHandle) + supervisor unhealthy:** operator
+  invokes the same path; supervisor returns `Err(KILL_FAILED)`.
+  forceReclaim returns `Err(KILL_FAILED, retryable: true)`. Harness
+  state unchanged.
+  (These are explicit `forceReclaim` paths — automatic reclaim
+  NEVER probes or kills without a durable handle binding.)
 - **Transient NOT_FOUND (read replica lag):** first read returns
   `NOT_FOUND`, subsequent polls within `orphanWindow` see the actual
   record → orphan loop exits, reclamation re-runs with the visible
@@ -2105,6 +2111,48 @@ Additive changes required (part of the coordinated migration):
    semantics: the only path that uses the marker to advance state
    is `forceReclaim`. The marker exists so that a crashed/retried
    `forceReclaim` is idempotent and converges on retry.
+
+10a. `KoiErrorCode` union additions (errors.ts). The current
+   exhaustive union does not include the codes this design uses.
+   Add these to the union as part of the L0 migration; downstream
+   exhaustive switches and tests must be updated:
+
+   - `TERMINAL` (resume on completed/failed)
+   - `INVALID_STATE` (illegal phase transition)
+   - `ALREADY_ACTIVE` (concurrent resume against a live owner)
+   - `CONCURRENT_RESUME` (lost CAS to a peer activation)
+   - `STALE_SESSION` (revoked / superseded lease, or
+     forceReclaim sessionId mismatch)
+   - `CHECKPOINT_WRITE_FAILED` (CAS failed after retries)
+   - `HEARTBEAT_STALE` (heartbeat-write nearing TTL)
+   - `ABORT_TIMEOUT` (engine ignored abort)
+   - `INVALID_CONFIG` (config invariant violation;
+     wrong-mode forceReclaim evidence)
+   - `ACTIVATION_STATUS_WRITE_FAILED` (warning, returned in
+     StartResult, not as Err)
+   - `RECLAIM_READ_FAILED` (loadSession I/O after retries)
+   - `KILL_FAILED` (supervisor.killAndConfirm failed)
+   - `RECLAIM_LIVE_OWNER` (live owner detected; back off)
+   - `SUPERVISOR_UNHEALTHY` (probeAlive IO_ERROR or "unknown")
+   - `REPLAY_AUTHORITY_MISMATCH` (RecoveryOutcome predecessor
+     not subsumed and not equal to current head)
+   - `RESUME_CORRUPT` (snapshot fails isHarnessSnapshot)
+   - `WORKER_HANDLE_MISSING` (no durable handle / no session
+     record; operator forceReclaim required)
+   - `OPERATOR_FORCED` (informational on advance via
+     forceReclaim with no RecoveryOutcome)
+   - `PAUSE_WRITE_FAILED` / `DISPOSE_WRITE_FAILED` /
+     `TERMINAL_WRITE_FAILED` (cleanup-health reasons; carried
+     in error.context, not separate codes — but listed here for
+     completeness so reviewers know they map to
+     `CHECKPOINT_WRITE_FAILED` with a structured `reason` field)
+   - `DISPOSE_STORE_UNREACHABLE` (dispose deadline elapsed in
+     trustedSingleProcess background retry)
+   - `RECLAIM_LIVE_OWNER` (already listed)
+
+   The L2 package MUST NOT silently overload existing codes
+   (`NOT_FOUND`, `CONFLICT`, etc.) for these states — each row
+   above is a distinct callsite-observable condition.
 
 10. `HarnessSnapshot.mode: "supervised" | "trustedSingleProcess"`
    — recorded at activation so `forceReclaim` can mode-fence
