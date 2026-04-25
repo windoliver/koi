@@ -476,23 +476,37 @@ as `dispose`:
           readonly resultGeneration: number;             // snapshotDelta.generation
         }
         ```
-        Keyed by `(sessionId, seq)`. Carries CAS authority via
-        `expectedHead` (the chain head this delta was built against)
-        plus `resultGeneration` (the delta's own generation). On
-        replay, the reclaimer:
-        - Reads the current chain head H.
-        - For each outcome in seq order: if
-          `outcome.resultGeneration <= currentSnapshot.generation`,
-          this outcome was already applied (idempotent skip). Else
-          if `outcome.expectedHead === H`, perform
-          `compareAndPut(H, outcome.snapshotDelta)`; advance H to
-          the result. Else if `outcome.expectedHead < H` (chain
-          advanced past this outcome's predecessor by a previous
-          replay step), still skip — the outcome is already
-          subsumed. Else (`expectedHead` references a head we don't
-          have, or CAS mismatches): return
-          `Err(REPLAY_AUTHORITY_MISMATCH)`. This rule makes replay
-          fully idempotent across crash points.
+        Keyed by `(sessionId, seq)`. `expectedHead` is the chain
+        head this delta was built against; `resultGeneration` is the
+        delta's own generation (monotonic per harness, valid for
+        ordering because generation IS a number, unlike opaque
+        `ChainHead`).
+
+        On replay, the reclaimer:
+        - Reads the current chain head H and current snapshot's
+          `generation` G.
+        - For each outcome in seq order:
+          - **Subsumption check (generation, not head):** if
+            `outcome.resultGeneration <= G`, this outcome was
+            already applied — skip. (`generation` is a typed monotonic
+            counter; this comparison is valid.)
+          - **Identity match on predecessor:** else if
+            `outcome.expectedHead === H` (object/string equality on
+            the opaque token), perform
+            `compareAndPut(H, outcome.snapshotDelta)`; on success,
+            advance H to the returned new head and update G to
+            `outcome.resultGeneration`.
+          - **Mismatch:** else (`expectedHead` does not equal H AND
+            `resultGeneration > G`), return
+            `Err(REPLAY_AUTHORITY_MISMATCH)`. The chain advanced
+            via some path that is incompatible with this outcome's
+            predecessor; replay cannot continue safely.
+
+        Replay never compares `ChainHead` values for ordering — only
+        equality. Subsumption uses the typed `generation` counter,
+        which has well-defined ordering. The reclaimer threads H
+        forward CAS-by-CAS using the head returned from each
+        successful `compareAndPut`.
         Carrying the full snapshot delta makes exactly-once
         non-lossy: a reclaimer replays the snapshot from the record,
         not a reconstructed-from-outcomes partial view.
@@ -504,17 +518,26 @@ as `dispose`:
 
      **`failTask` retryability rule.** `failTask(lease, id, err)`
      checks `err.retryable`:
-     - **Retryable:** do NOT record a `TerminalOutcome`. Re-run the
-       standard non-terminal flow: quiesce, write a soft checkpoint
-       that returns the task to `pending` with incremented attempts,
-       CAS `active → active`. If the process crashes between engine
-       quiesce and the CAS, the reclaimer sees no outcome record and
-       simply resumes from the last authoritative snapshot — the
-       retry will happen again on its own, which matches retryable
-       semantics.
-     - **Non-retryable:** record `task-failed-terminal`. This is a
-       true terminal outcome for the task and must be preserved
-       exactly once.
+     - **Retryable:** truly in-session — no quiesce, no lease
+       revocation, no `TerminalOutcome`. The harness performs an
+       in-session soft checkpoint: CAS `active → active` with the
+       task returned to `pending` and `attempts` incremented. The
+       lease remains valid; the engine continues running and will
+       re-attempt the task on the next turn. The `active` snapshot
+       always means "a live lease holder is executing," matching
+       the rest of the phase invariants. If the process crashes
+       between the API call and the CAS, the reclaimer sees the
+       pre-CAS snapshot — the task is still in its pre-failure
+       state and a fresh session re-runs it. (At-least-once retry,
+       which is what retryable failures already imply.)
+     - **Non-retryable:** if it empties the task board, run the
+       full session-ending terminal flow above and record
+       `task-failed-terminal` as a `TerminalOutcome`. If pending
+       tasks remain, run the in-session non-terminal path with
+       `task-failed-terminal` reflected in the new `active`
+       snapshot's task board (no `TerminalOutcome` record needed
+       because the harness is still active; the snapshot itself
+       is authoritative).
 
      **Reclaimer-side replay.** On reclamation, after
      `killAndConfirm` succeeds, the reclaimer:
