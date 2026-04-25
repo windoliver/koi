@@ -10,6 +10,7 @@
 
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 import type {
+  AgentId,
   CronSchedule,
   EngineInput,
   KoiError,
@@ -377,9 +378,17 @@ export function createSqliteScheduleStore(db: Database): ScheduleStore {
 // SqliteRunStore — task run history for audit
 // ---------------------------------------------------------------------------
 
+export interface RunStoreFilter {
+  readonly agentId?: AgentId | undefined;
+  readonly status?: "completed" | "failed" | undefined;
+  readonly since?: number | undefined;
+  readonly limit?: number | undefined;
+}
+
 export interface RunStore extends AsyncDisposable {
   readonly saveRun: (run: TaskRunRecord) => void;
   readonly loadRuns: (taskId: TaskId) => readonly TaskRunRecord[];
+  readonly queryRuns: (filter: RunStoreFilter) => readonly TaskRunRecord[];
 }
 
 export function createSqliteRunStore(db: Database): RunStore {
@@ -418,6 +427,35 @@ export function createSqliteRunStore(db: Database): RunStore {
     return rows.map(rowToRunRecord);
   }
 
+  function queryRuns(filter: RunStoreFilter): readonly TaskRunRecord[] {
+    const conditions: string[] = [];
+    const params: Record<string, string | number | null> = {};
+
+    if (filter.agentId !== undefined) {
+      conditions.push("agent_id = $agent_id");
+      params.$agent_id = filter.agentId;
+    }
+    if (filter.status !== undefined) {
+      conditions.push("status = $status");
+      params.$status = filter.status;
+    }
+    if (filter.since !== undefined) {
+      conditions.push("started_at >= $since");
+      params.$since = filter.since;
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const limitClause = filter.limit !== undefined ? `LIMIT $limit` : "";
+    if (filter.limit !== undefined) {
+      params.$limit = filter.limit;
+    }
+
+    const sql = `SELECT * FROM koi_task_runs ${where} ORDER BY started_at DESC ${limitClause}`;
+    const stmt = db.prepare<RunRow, SQLQueryBindings>(sql);
+    const rows = stmt.all(params);
+    return rows.map(rowToRunRecord);
+  }
+
   async function asyncDispose(): Promise<void> {
     db.close();
   }
@@ -425,6 +463,7 @@ export function createSqliteRunStore(db: Database): RunStore {
   return {
     saveRun,
     loadRuns,
+    queryRuns,
     [Symbol.asyncDispose]: asyncDispose,
   };
 }

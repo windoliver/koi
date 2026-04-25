@@ -41,7 +41,11 @@ export function createFakeClock(initialTime = 0): FakeClock {
       timers.push({ fireAt: current + ms, fn, id });
       // FakeClock uses integer IDs internally; the platform handle type is opaque,
       // so a double-cast is required to satisfy the Clock interface signature.
-      return id as unknown as ReturnType<typeof globalThis.setTimeout>;
+      const handle = id as unknown as ReturnType<typeof globalThis.setTimeout>;
+      // Fire zero-delay timers immediately so callers can use setTimeout(fn, 0)
+      // as a microtask-yield pattern in tests without an extra tick() call.
+      if (ms === 0) fireElapsed();
+      return handle;
     },
     clearTimeout(id) {
       // Reverse the double-cast from setTimeout above.
