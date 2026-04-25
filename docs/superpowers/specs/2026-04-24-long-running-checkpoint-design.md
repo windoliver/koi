@@ -349,7 +349,8 @@ where automatic reclaim is forbidden:
 interface ForceReclaimInput {
   readonly harnessStore: HarnessSnapshotStore;
   readonly sessionPersistence: SessionPersistence;
-  readonly sessionId: SessionId;
+  readonly harnessId: HarnessId;     // identifies the snapshot chain
+  readonly sessionId: SessionId;     // the session being reclaimed
   /**
    * One of:
    *  - { kind: "manualHandle", handle: WorkerHandle, supervisor: Supervisor }
@@ -376,20 +377,41 @@ function forceReclaim(input: ForceReclaimInput): Promise<ForceReclaimResult>;
 ```
 
 Behavior:
-1. Read `harnessStore.latest()` for the harness containing
-   `sessionId`. If `prev.phase` is not `active`, return
-   `Ok({ kind: "noop", currentPhase: prev.phase })`.
+1. Read `harnessStore.latest(harnessId)` (the chain identifier comes
+   from `ForceReclaimInput`, not from a reverse `sessionId →
+   chainId` lookup which L0 does not provide). The caller is
+   expected to know both IDs from the diagnostic state that
+   prompted recovery (`HarnessStatus`, the original `start()` /
+   `resume()` result, or operator records). If `prev.phase` is not
+   `active`, return `Ok({ kind: "noop", currentPhase: prev.phase })`.
 2. For `manualHandle` evidence: run the supervisor probe-then-kill
    protocol against the supplied handle. Live owner →
    `Err(RECLAIM_LIVE_OWNER)`; kill failure → `Err(KILL_FAILED)`.
 3. For `hostConfirmedDead` evidence: write a durable
-   host-confirmed-dead marker on the session record (new
-   `SessionPersistence.markHostConfirmedDead(sid)` L0 prereq).
+   host-confirmed-dead marker on the session record
+   (`SessionPersistence.markHostConfirmedDead(sid)` — idempotent;
+   re-marking is a no-op). The marker is the durable resumption
+   point: even if the admin process crashes after this write but
+   before step 4, a later `forceReclaim(harnessId, sid,
+   { kind: "hostConfirmedDead" })` call observes the marker (idempotent
+   write succeeds), then proceeds to step 4 against the still-`active`
+   snapshot. The recovery is therefore retry-safe — running
+   `forceReclaim` until it returns `Ok({ kind: "replayed" | "advanced" })`
+   converges. `resume()` MUST treat the
+   marker as advisory only: it is NOT permitted to advance the
+   chain on its own based on the marker; only `forceReclaim`
+   completes the transition. Resume in this state still returns
+   `ALREADY_ACTIVE`, with the addition that the error context
+   includes a `recoveryAvailable: "forceReclaim-hostConfirmedDead"`
+   hint so operators are directed back to the admin path.
 4. Then `listRecoveryOutcomes(sid)`:
    - One record → CAS-replay; return `Ok({ kind: "replayed", outcome: record.kind })`.
    - No record → CAS-advance to `suspended` with
      `failureReason = "OPERATOR_FORCED"`; return
      `Ok({ kind: "advanced", newPhase: "suspended" })`.
+   CAS failure at step 4 returns `Err(CHECKPOINT_WRITE_FAILED,
+   retryable: true)` — operator retries the SAME `forceReclaim`
+   call; the marker remains durable and idempotent.
 
 This is the documented recovery entry point referenced by every
 `WORKER_HANDLE_MISSING` and `trustedSingleProcess` path in this
@@ -1304,10 +1326,20 @@ Unambiguous algorithm:
        automatic recovery. Operator must SIGKILL the host externally
        and then invoke `forceReclaim(sid, hostConfirmedDead: true)`
        to advance the chain to `suspended`.
-     - Subsequent `dispose()` calls on this harness object return
-       `Err(ABORT_TIMEOUT)` immediately (cleanup authority is
-       authoritative; phase check rejects re-entry). The original
-       `dispose()` returns `Err(ABORT_TIMEOUT)`.
+     - **Idempotent return shape on retry:** the harness records the
+       ABORT_TIMEOUT result on its internal state and returns the
+       SAME stable result on every subsequent `dispose()` call until
+       the cleanup authority succeeds (or process exit). Repeated
+       calls do NOT re-issue `killAndConfirm`, do NOT re-revoke any
+       lease, and do NOT advance any state — they observe the
+       latched outcome. Once the cleanup authority finalizes
+       (chain advanced to `suspended`), subsequent `dispose()` calls
+       observe the now non-`active` phase and return
+       `Ok(undefined)` per the step-3 short-circuit. This preserves
+       the documented idempotency contract: identical inputs produce
+       identical outputs across retries; the only state change is
+       driven by the cleanup authority asynchronously, not by
+       repeated calls.
 
 Invariant checklist an implementer MUST verify:
 - No code path between `start/resume` and `dispose` quiesce success stops
