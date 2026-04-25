@@ -11,6 +11,41 @@ Enable Koi agents to run over hours or days across many sessions. Provide atomic
 checkpoint/resume, progress tracking, timeout enforcement, and abandonment cleanup
 for long-running harnesses.
 
+## Scope of the Correctness Guarantee
+
+**This package guarantees exclusivity of durable state transitions.** At most
+one `SessionLease` is valid at a time; all mutating harness operations (pause,
+fail, complete/fail-task, checkpoint writes, dispose) are lease-fenced and use
+CAS against `SnapshotChainStore`. Under a cooperating supervisor, cross-process
+fencing adds `killAndConfirm` before reclaim. Under these conditions, **durable
+harness state is exactly-once**: a reclaimer cannot advance state from a stale
+view, and a terminalized run cannot be revived.
+
+**This package does NOT guarantee exactly-once external side effects.** Tools
+that write to external systems (HTTP POST, DB mutations, outbound messages,
+file writes outside the harness store) can be replayed across reclaim because:
+
+- A worker may emit a side effect AFTER its last durable checkpoint but
+  BEFORE `killAndConfirm` completes. The replacement session resumes from the
+  pre-side-effect snapshot and may re-execute that work.
+- Lease revocation fires `AbortSignal` cooperatively; tools that ignore the
+  signal continue emitting until SIGKILL.
+
+**Callers requiring exactly-once external effects MUST use one of:**
+1. **Idempotent tool invocations** keyed by `(harnessId, generation, toolCallId)`.
+2. **Transactional outbox pattern** where side effects are queued into the
+   harness state first, then published by a separate idempotent worker.
+3. **Tool-layer epoch check:** long-running tools accept the current
+   `lease.generation` and reject calls whose generation is no longer the
+   current snapshot's. See the Exclusivity Model section — this is a
+   downstream convention, not a package contract.
+
+The package contract is scoped accordingly: **exactly-once durable harness
+transitions; at-least-once external side effects unless caller adopts one of
+the three patterns above.** Issues expecting stronger guarantees must either
+land a separate L2 package (outbox, epoch-fencing middleware) or narrow
+their scope.
+
 ## Non-Goals
 
 The following concerns from v1 `@koi/long-running` are **out of scope** for this
@@ -752,29 +787,29 @@ Therefore the default path is:
    TTL**. This is critical: merely stopping heartbeats and marking the
    session `idle` leaves the authoritative snapshot as `active`, and
    reclaim rules require TTL staleness — so a single transient I/O fault
-   could block failover for up to `leaseTtlMs`. We fence via two
-   independent attempts, either of which makes the harness immediately
-   reclaimable:
-   - **Attempt A: retry the snapshot store.** I/O failures are often
-     transient; the initial `compareAndPut` is retried with exponential
-     backoff (default 3 tries, 100/500/2500ms). On success, advance to
-     `suspended` with `failureReason = "CHECKPOINT_WRITE_FAILED"` and a
-     new generation. The harness is now `suspended`; any `resume()`
-     proceeds immediately with no TTL wait.
-   - **Attempt B: write a tombstone to session persistence.** Regardless
-     of attempt A's outcome, mark the session with a new
-     `"abandoned"` status via `setSessionStatus(sid, "abandoned")`.
-     This is a different store from `harnessStore` and may be healthy
-     even when the snapshot store is not. Reclaim is extended to treat
-     `active + session.status === "abandoned"` AS IMMEDIATELY
-     RECLAIMABLE (no TTL wait required). The tombstone is
-     cryptographically meaningful because only the current lease
-     holder can write it after quiescence — cross-store lag only
-     delays observation, never creates a false positive.
-5. After step 4, stop the heartbeat loop. Whichever of A or B succeeded
-   makes the harness reclaimable within a heartbeat round-trip, not a TTL.
-   If BOTH A and B fail, fall back to TTL-based reclaim — no worse than
-   the prior design.
+   could block failover for up to `leaseTtlMs`. The only authoritative
+   fast-path is a successful snapshot-store CAS. We do not use the
+   `abandoned` tombstone as an immediate-reclaim primitive (see Reclaim
+   — status flags are advisory only; reclaim still requires
+   TTL-stale heartbeat OR sustained NOT_FOUND AND supervisor kill):
+   - **Retry the snapshot store.** I/O failures are often transient;
+     the initial `compareAndPut` is retried with exponential backoff
+     (default 3 tries, 100/500/2500ms). On success, advance to
+     `suspended` with `failureReason = "CHECKPOINT_WRITE_FAILED"` and
+     a new generation. The harness is now `suspended`; any `resume()`
+     proceeds immediately with no TTL wait. This is the only path to
+     sub-TTL recovery.
+   - **Write `abandoned` tombstone as an advisory hint.** Regardless
+     of CAS outcome, call `setSessionStatus(sid, "abandoned")`. This
+     accelerates operator diagnostics (monitoring can page on
+     abandoned records) but does NOT short-circuit reclaim rules. A
+     peer still needs TTL-stale heartbeat or sustained NOT_FOUND AND
+     supervisor kill.
+5. After step 4, stop the heartbeat loop. If the CAS succeeded, a peer
+   `resume()` finds `phase === "suspended"` and proceeds with no TTL
+   wait. If the CAS failed, recovery falls back to TTL-staleness of the
+   now-stopped heartbeat + supervisor kill — bounded by `leaseTtlMs +
+   2 * heartbeatIntervalMs` worst case.
 6. If `abortActive` times out (engine refuses to stop): keep heartbeating,
    keep session `"running"`, flip `durability` to `"unhealthy"`, return
    `Err(ABORT_TIMEOUT)` from the middleware path, loud escalation via
