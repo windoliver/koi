@@ -86,29 +86,62 @@ To close that gap, this package MUST run under a supervisor that provides
   (kubectl, launchd, systemd, PID-file-based orchestrator) is acceptable
   as long as it enforces kill-on-takeover.
 
+**Durable worker handle.** The supervisor identifies workers via a
+`WorkerHandle` (PID, pod name, systemd unit name, etc.) — NOT raw
+session IDs. During activation, the harness asks the supervisor to
+mint a handle for the new worker and persists it on the session
+record so peer reclaimers can address the right worker after process
+or supervisor restarts:
+
+```ts
+type WorkerHandle = string; // opaque, supervisor-defined; e.g. "pid:12345",
+                            // "pod:ns/name@uid", "unit:koi-worker@xyz.service"
+```
+
+`SessionRecord` gains `workerHandle: WorkerHandle | undefined` (set
+during activation, before the harness `active` snapshot is published;
+written via `saveSession`). Activation is atomic on the harness-side:
+if the supervisor cannot mint a handle, activation aborts before any
+snapshot CAS and no orphan worker exists. Uniqueness, persistence,
+and restart behavior are supervisor-defined — the contract is that
+two `WorkerHandle` values produced by the same supervisor at any
+point in time identify two distinct workers, and a handle remains
+addressable across supervisor restarts (e.g., systemd unit names
+survive systemctl restart; pod UIDs survive kubelet restart;
+PID-file plus liveness check covers `@koi/daemon`).
+
 **The harness makes the supervisor requirement enforceable via an explicit
 `Supervisor` config interface:**
 
 ```ts
 interface Supervisor {
   /**
-   * Non-destructive liveness probe. Returns the worker's current state
-   * without affecting it. Implementations:
+   * Mint a fresh worker handle for the worker that will run this
+   * session. Called during activation BEFORE the harness publishes
+   * the active snapshot. Persisted onto SessionRecord.workerHandle.
+   * Failure aborts activation with SUPERVISOR_UNHEALTHY.
+   */
+  readonly mintWorkerHandle: (sessionId: string) =>
+    Promise<Result<WorkerHandle, KoiError>>;
+
+  /**
+   * Non-destructive liveness probe keyed by the durable worker
+   * handle. Implementations:
    *  - @koi/daemon: kill -0 on the PID; check process table.
-   *  - kubectl: read pod.status.phase.
-   *  - launchd/systemd: query unit ActiveState.
+   *  - kubectl: read pod.status.phase by pod UID.
+   *  - launchd/systemd: query unit ActiveState by unit name.
    *
    * "alive"  — worker is running.
    * "dead"   — worker is confirmed exited / not in process table.
    * "unknown" — supervisor cannot determine state right now (transient
    *             query failure). Caller must NOT treat as dead.
    */
-  readonly probeAlive: (sessionId: string) =>
+  readonly probeAlive: (handle: WorkerHandle) =>
     Promise<Result<"alive" | "dead" | "unknown", KoiError>>;
 
   /**
-   * Forcibly terminate the worker that owns the given session and return
-   * only after termination is confirmed. Implementations:
+   * Forcibly terminate the worker identified by the given handle and
+   * return only after termination is confirmed. Implementations:
    *  - @koi/daemon: SIGKILL the worker PID, await its exit code.
    *  - kubectl: delete the pod, await pod phase === "Failed".
    *  - launchd/systemd: stop the unit, await inactive.
@@ -116,16 +149,34 @@ interface Supervisor {
    * Idempotent: on an already-dead worker returns Ok.
    * Returns Err(KILL_FAILED) only if the supervisor itself is unhealthy.
    */
-  readonly killAndConfirm: (sessionId: string) =>
+  readonly killAndConfirm: (handle: WorkerHandle) =>
     Promise<Result<void, KoiError>>;
 }
 ```
 
-**Reclaim probe-then-kill protocol.** Before any reclaim path issues a
-destructive `killAndConfirm`, it MUST first call `probeAlive`:
-- `probeAlive === "alive"` → return `Err(RECLAIM_LIVE_OWNER, retryable: true)`
-  WITHOUT killing. The owner is healthy; this is a read-path fault on
-  `loadSession`, not a dead owner.
+**Reclaim probe-then-kill protocol.** Reclaim resolves the worker
+handle via `loadSession(prev.lastSessionId).workerHandle` first. If
+the session record is missing the handle (legacy data or activation
+crash before handle persistence), reclaim treats this as a
+`NOT_FOUND`-equivalent dead-owner signal and proceeds via the
+orphan-detection loop. Before any reclaim path issues a destructive
+`killAndConfirm`, it MUST first call `probeAlive(handle)`. The
+**TTL-stale-but-alive case** (e.g., host sleep, VM suspension, long
+GC pause) is the precise scenario this design must solve, so
+process-existence is NOT proof of health: the heartbeat IS the
+health signal, and a double-confirmed-stale heartbeat plus the
+supervisor's own confirmation that the worker still exists is the
+trigger for kill-on-takeover.
+
+- `probeAlive === "alive"` AND heartbeat fresh (no double-confirmed
+  staleness) → return `Err(RECLAIM_LIVE_OWNER, retryable: true)`.
+  Owner is healthy; back off.
+- `probeAlive === "alive"` AND **double-confirmed heartbeat-stale**
+  (per the resume reclamation check) → **stalled-but-alive
+  takeover.** Issue `killAndConfirm(handle)` to interrupt the
+  stalled process so it cannot wake and emit side effects after a
+  peer takes over, then CAS-advance. This is the load-bearing
+  takeover path the supervisor requirement exists to enable.
 - `probeAlive === "dead"` → proceed to `killAndConfirm` (idempotent
   no-op) then CAS-advance.
 - `probeAlive === "unknown"` AND heartbeat-stale signal also present
@@ -722,11 +773,17 @@ protocol combines CAS fencing with startup reconciliation against
 **Activation ordering (crash-safe):** every state-advancing operation follows
 session-first, then snapshot. On `start()` / successful `resume()`:
 
-1. Write a session record with `status = "starting"` AND
-   `lastHeartbeatAt = Date.now()` via `sessionPersistence.saveSession`
-   **before** any harness snapshot advance.
-   If this fails → abort with `CHECKPOINT_WRITE_FAILED`; harness head is
-   unchanged, no orphan is possible.
+1. If a supervisor is configured, call
+   `supervisor.mintWorkerHandle(sid)` to obtain `workerHandle`.
+   Failure aborts activation with `SUPERVISOR_UNHEALTHY` (no
+   snapshot advance, no orphan). In `trustedSingleProcess` mode,
+   `workerHandle` is left undefined.
+   Write a session record with `status = "starting"`,
+   `lastHeartbeatAt = Date.now()`, and the minted `workerHandle`
+   via `sessionPersistence.saveSession` **before** any harness
+   snapshot advance. If this fails → abort with
+   `CHECKPOINT_WRITE_FAILED`; harness head is unchanged, no orphan
+   is possible.
 2. Start the heartbeat loop immediately so `lastHeartbeatAt` stays fresh
    through every subsequent step.
 3. Mint the `SessionLease` and add it to `activeLeases` WeakSet (but do NOT
@@ -1657,6 +1714,14 @@ Additive changes required (part of the coordinated migration):
 **`@koi/core` — `SessionRecord`/`SessionStatus`/`SessionPersistence`
 (session.ts):**
 3. `SessionRecord.lastHeartbeatAt: number | undefined` — liveness signal.
+3a. `SessionRecord.workerHandle: WorkerHandle | undefined` — durable
+   supervisor-minted worker identity. Persisted at activation
+   (BEFORE the harness `active` snapshot is published) so peer
+   reclaimers can call `probeAlive`/`killAndConfirm` against the
+   correct worker after process or supervisor restarts.
+   `WorkerHandle` is an opaque string supervisor-side; the contract
+   says two distinct values identify two distinct workers and a
+   handle remains addressable across supervisor restarts.
 4. `SessionStatus` gains `"starting"` (between `idle` and `running`) and
    `"abandoned"` (advisory tombstone; monitoring/diagnostics only —
    reclaim still requires TTL-stale heartbeat or sustained NOT_FOUND
