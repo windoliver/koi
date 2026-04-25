@@ -57,8 +57,9 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
   }
 
   // Prefer backend-level attestation (e.g. git ref) which the workspace process cannot spoof.
-  // Fall back to a filesystem sibling marker only when the backend does not implement attestation
-  // (acceptable for sandboxed backends where filesystem isolation is enforced at the OS level).
+  // Fall back to a filesystem sibling marker ONLY for sandboxed backends where OS-level isolation
+  // prevents the workspace process from writing outside its sandbox. Unsandboxed backends without
+  // explicit attestation support must not be trusted for crash-survivor reuse.
   function setupCompletePath(ws: WorkspaceInfo): string {
     return join(dirname(ws.path), `${ws.id}.setup-ok`);
   }
@@ -66,15 +67,21 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
   async function markSetupComplete(ws: WorkspaceInfo): Promise<void> {
     if (config.backend.attestSetupComplete) {
       await config.backend.attestSetupComplete(ws.id);
-    } else {
+    } else if (config.backend.isSandboxed) {
       await writeFile(setupCompletePath(ws), "", "utf8");
     }
+    // Unsandboxed backends without attestation: skip silently.
+    // isSetupComplete returns false for such backends, so crash-survivor reuse will
+    // always fall through to dispose+recreate — attestation is not needed.
   }
 
   async function isSetupComplete(ws: WorkspaceInfo): Promise<boolean> {
     if (config.backend.verifySetupComplete) {
       return config.backend.verifySetupComplete(ws.id);
     }
+    // For unsandboxed backends without attestation, the filesystem marker is writable by the
+    // workspace process — refuse to trust it and force workspace recreation instead.
+    if (!config.backend.isSandboxed) return false;
     try {
       await access(setupCompletePath(ws));
       return true;
@@ -106,9 +113,10 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
         }
 
         // Under "never" policy: reuse the preserved workspace rather than discarding it.
-        // Requires: healthy (git-validated) AND setup proved complete via out-of-worktree marker.
-        // The marker is written after postCreate succeeds and lives outside the worktree so
-        // agent code cannot spoof it. In-memory setupFailed catches failures within this process.
+        // Requires: healthy AND setup attestation (backend git ref, or filesystem marker for
+        // sandboxed backends). Attestation is written after postCreate completes; it is never
+        // written for unsandboxed backends without backend-level attestation support, so those
+        // always fall through to recreate. In-memory setupFailed catches in-process failures.
         if (staleInfo2 !== undefined && policy === "never") {
           const wsId = staleInfo2.id;
           if (!setupFailed.has(wsId)) {
@@ -169,9 +177,24 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
           }
         }
 
-        // Write setup-complete marker outside the worktree so crash recovery can
-        // confirm setup completed without replaying postCreate on the recovered workspace.
-        await markSetupComplete(ws);
+        // Attest setup completion — only for "never" policy, which is the only path
+        // that reuses a crash-surviving workspace. Other policies always dispose on recovery.
+        if (policy === "never") {
+          try {
+            await markSetupComplete(ws);
+          } catch (e: unknown) {
+            const didDispose = await tryDispose(ws.id);
+            if (!didDispose) {
+              setupFailed.add(ws.id);
+              attached.set(agentId, ws);
+              throw new Error(
+                `Workspace attestation failed; cleanup also timed out: workspace ${ws.id} is still alive`,
+                { cause: e },
+              );
+            }
+            throw e;
+          }
+        }
 
         attached.set(agentId, ws);
         return makeResult(ws);
@@ -197,9 +220,13 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       if (disposed) {
         attached.delete(agentId);
         setupFailed.delete(wsInfo.id);
-        // Filesystem marker cleanup — only needed when the backend uses the filesystem fallback.
-        // Backends with verifySetupComplete clean up their own attestation in dispose().
-        if (!config.backend.verifySetupComplete) {
+        // Filesystem marker cleanup — only written for sandboxed backends without backend
+        // attestation; backends with verifySetupComplete clean up in their own dispose().
+        if (
+          policy === "never" &&
+          !config.backend.verifySetupComplete &&
+          config.backend.isSandboxed
+        ) {
           await rm(setupCompletePath(wsInfo), { force: true });
         }
       }

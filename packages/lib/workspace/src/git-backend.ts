@@ -164,16 +164,24 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
     async isHealthy(wsId: WorkspaceId): Promise<boolean> {
       const entry = registry.get(wsId);
       if (!entry) return false;
-      // Validate via git-owned state: verify the path is still listed by git as a worktree.
-      // A mere `.git` file check is spoofable by agent code; git worktree list is authoritative.
+      // Validate via git-owned state: verify both the path AND expected branch still match.
+      // Path-only check would pass even if an agent has repointed the worktree to a different
+      // branch — the branch check prevents reuse of state that drifted from the attested setup.
       const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
       if (!listResult.ok) return false;
       for (const block of listResult.value.split(/\n\n+/)) {
-        const pathLine = block
-          .trim()
-          .split("\n")
-          .find((l) => l.startsWith("worktree "));
-        if (pathLine && pathLine.slice("worktree ".length).trim() === entry.path) return true;
+        const lines = block.trim().split("\n");
+        const pathLine = lines.find((l) => l.startsWith("worktree "));
+        if (!pathLine || pathLine.slice("worktree ".length).trim() !== entry.path) continue;
+        const branchRef =
+          lines
+            .find((l) => l.startsWith("branch "))
+            ?.slice("branch ".length)
+            .trim() ?? "";
+        const branchName = branchRef.startsWith("refs/heads/")
+          ? branchRef.slice("refs/heads/".length)
+          : branchRef;
+        return branchName === entry.branchName;
       }
       return false;
     },

@@ -45,7 +45,7 @@ function makeBackend(
   const disposed: WorkspaceId[] = [];
   return {
     name: "mock",
-    isSandboxed: false,
+    isSandboxed: true,
     created,
     disposed,
     async create(
@@ -420,5 +420,57 @@ describe("createWorkspaceProvider", () => {
   it("provider.name is set", () => {
     const provider = createWorkspaceProvider({ backend });
     expect(provider.name).toBe("workspace");
+  });
+
+  it("cleanupPolicy=never attach succeeds for unsandboxed backend without attestSetupComplete (reuse disabled implicitly)", async () => {
+    const unsandboxedBackend = makeBackend({ isSandboxed: false });
+    const provider = createWorkspaceProvider({
+      backend: unsandboxedBackend,
+      cleanupPolicy: "never",
+    });
+    const result = await provider.attach(makeAgent());
+    expect(isAttachResult(result)).toBe(true);
+    expect(unsandboxedBackend.created.length).toBe(1);
+  });
+
+  it("unsandboxed backend without verifySetupComplete returns false from isSetupComplete so crash-survivor is recreated", async () => {
+    const survivorId = workspaceId("ws-survivor-unsandboxed");
+    const unsandboxedBackend = makeBackend({
+      isSandboxed: false,
+      findByAgentId: async () => ({
+        id: survivorId,
+        path: `/tmp/${survivorId}`,
+        createdAt: Date.now() - 1000,
+        metadata: {},
+      }),
+      isHealthy(_wsId: WorkspaceId): boolean {
+        return true;
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: unsandboxedBackend,
+      cleanupPolicy: "never",
+    });
+    await provider.attach(makeAgent());
+    // Survivor should be disposed (not trusted) and a new workspace created
+    expect(unsandboxedBackend.disposed).toContain(survivorId);
+    expect(unsandboxedBackend.created.length).toBe(1);
+  });
+
+  it("attestation failure in cleanupPolicy=never disposes workspace and rethrows", async () => {
+    const attestError = new Error("git update-ref failed");
+    const attestingBackend = makeBackend({
+      isSandboxed: true,
+      attestSetupComplete: async () => {
+        throw attestError;
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: attestingBackend,
+      cleanupPolicy: "never",
+    });
+    await expect(provider.attach(makeAgent())).rejects.toThrow("git update-ref failed");
+    // Workspace should have been disposed during rollback
+    expect(attestingBackend.disposed.length).toBe(1);
   });
 });
