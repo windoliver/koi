@@ -570,7 +570,13 @@ describe("createTemporalScheduler", () => {
         pause: mock(async () => {}),
         unpause: mock(async () => {}),
         get: mock(async () => ({
-          memo: { agentId: A1, mode: "dispatch", expression: "0 * * * *", inputFingerprint },
+          memo: {
+            agentId: A1,
+            mode: "dispatch",
+            expression: "0 * * * *",
+            inputFingerprint,
+            // timezone absent in both sides — both undefined → match
+          },
         })),
       },
     };
@@ -580,6 +586,43 @@ describe("createTemporalScheduler", () => {
     });
     expect(String(id)).toBe("my-stable-sched");
     expect(sched.stats().activeSchedules).toBe(1);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("schedule() rejects replay when timezone differs", async () => {
+    const alreadyExists = { name: "AlreadyExistsError", message: "schedule already exists" };
+    const inputFingerprint = JSON.stringify({ kind: "text", text: "tick" });
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+      },
+      schedule: {
+        create: mock(async () => {
+          throw alreadyExists;
+        }),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+        get: mock(async () => ({
+          memo: {
+            agentId: A1,
+            mode: "dispatch",
+            expression: "0 * * * *",
+            timezone: "America/New_York", // different timezone
+            inputFingerprint,
+          },
+        })),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await expect(
+      sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch", {
+        metadata: { scheduleId: "my-stable-sched" },
+        timezone: "UTC",
+      }),
+    ).rejects.toThrow("collision");
+    expect(sched.stats().activeSchedules).toBe(0);
     await sched[Symbol.asyncDispose]();
   });
 
@@ -799,6 +842,40 @@ describe("createTemporalScheduler", () => {
     });
     expect(String(id)).toBe("stable-id");
     expect(sched.stats().pending).toBe(1);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("submit() does not register phantom pending task when replayed workflow already completed", async () => {
+    const alreadyStarted = { name: "WorkflowExecutionAlreadyStartedError", message: "started" };
+    const inputFingerprint = JSON.stringify({ kind: "text", text: "hi" });
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => {
+          throw alreadyStarted;
+        }),
+        cancel: mock(async () => {}),
+        describe: mock(
+          async (): Promise<WorkflowExecutionStatus> => ({
+            status: "COMPLETED", // already finished
+            memo: { agentId: A1, mode: "dispatch", inputFingerprint },
+          }),
+        ),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const id = await sched.submit(A1, { kind: "text", text: "hi" }, "dispatch", {
+      metadata: { workflowId: "stable-id" },
+    });
+    expect(String(id)).toBe("stable-id");
+    // Terminal workflow must NOT register as pending — no phantom task
+    expect(sched.stats().pending).toBe(0);
+    expect(sched.stats().running).toBe(0);
     await sched[Symbol.asyncDispose]();
   });
 

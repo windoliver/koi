@@ -172,6 +172,8 @@ function serializeEngineInput(input: EngineInput): Record<string, unknown> {
 /**
  * Verifies that an existing workflow's memo matches the full request fingerprint.
  * Absent memo or any mismatched field is treated as a collision — fail closed.
+ * Returns the execution status so the caller can handle terminal states
+ * (e.g., avoid re-registering a completed workflow as a new pending task).
  */
 async function verifyWorkflowOwnership(
   describeFn: (id: string) => Promise<WorkflowExecutionStatus>,
@@ -183,7 +185,7 @@ async function verifyWorkflowOwnership(
     readonly timeoutMs: number | undefined;
     readonly maxRetries: number | undefined;
   },
-): Promise<void> {
+): Promise<WorkflowExecutionStatus> {
   let info: WorkflowExecutionStatus;
   try {
     info = await describeFn(workflowId);
@@ -203,6 +205,7 @@ async function verifyWorkflowOwnership(
       `Workflow ID collision: "${workflowId}" already exists with different configuration`,
     );
   }
+  return info;
 }
 
 /**
@@ -216,6 +219,7 @@ async function verifyScheduleOwnership(
     readonly agentId: AgentId;
     readonly mode: "spawn" | "dispatch";
     readonly expression: string;
+    readonly timezone: string | undefined;
     readonly inputFingerprint: string;
     readonly timeoutMs: number | undefined;
     readonly maxRetries: number | undefined;
@@ -233,6 +237,7 @@ async function verifyScheduleOwnership(
     m.agentId !== claim.agentId ||
     m.mode !== claim.mode ||
     m.expression !== claim.expression ||
+    m.timezone !== claim.timezone ||
     m.inputFingerprint !== claim.inputFingerprint ||
     m.timeoutMs !== claim.timeoutMs ||
     m.maxRetries !== claim.maxRetries
@@ -410,6 +415,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       // Fingerprint the full request so idempotent replay can detect partial collisions
       // (same stable ID but different input/timeout/retries).
       const inputFingerprint = JSON.stringify(serializeEngineInput(input));
+      let replayStatus: WorkflowExecutionStatus | undefined;
       try {
         await config.client.workflow.start(workflowType, {
           taskQueue: config.taskQueue,
@@ -440,13 +446,20 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             `Stable workflow "${rawId}" already exists but describe() is not configured — cannot verify ownership`,
           );
         }
-        await verifyWorkflowOwnership(describeFn, rawId, {
+        replayStatus = await verifyWorkflowOwnership(describeFn, rawId, {
           agentId,
           mode,
           inputFingerprint,
           timeoutMs: options?.timeoutMs,
           maxRetries: options?.maxRetries,
         });
+      }
+
+      // For idempotent replays of terminal workflows, do not register a phantom
+      // pending task — the workflow already finished and there is no active execution.
+      if (replayStatus !== undefined) {
+        const s = replayStatus.status;
+        if (s !== "RUNNING" && s !== "CONTINUED_AS_NEW") return id;
       }
 
       // Guard against double-registration from concurrent or replayed submits.
@@ -522,6 +535,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             mode,
             expression,
             inputFingerprint,
+            ...(options?.timezone !== undefined && { timezone: options.timezone }),
             ...(options?.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
             ...(options?.maxRetries !== undefined && { maxRetries: options.maxRetries }),
           },
@@ -541,6 +555,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           agentId,
           mode,
           expression,
+          timezone: options?.timezone,
           inputFingerprint,
           timeoutMs: options?.timeoutMs,
           maxRetries: options?.maxRetries,
