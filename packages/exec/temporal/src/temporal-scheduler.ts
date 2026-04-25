@@ -866,7 +866,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     const completedAt = Date.now();
     const signalWasDelivered = deliveredDispatchIds.has(taskId);
     if (signalWasDelivered) {
-      tasks.set(taskId, { ...task, status: "completed", completedAt });
+      // Mirror the normal dispatch success terminal path: write history, then remove
+      // from the live task and workflow maps. Leaving the task in `tasks` as "completed"
+      // would pollute query()/stats() with stale one-shot dispatches indefinitely.
       history.push({
         taskId: taskId as TaskId,
         agentId: task.agentId,
@@ -876,6 +878,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         durationMs: completedAt - (task.startedAt ?? task.createdAt),
         retryAttempt: 0,
       });
+      tasks.delete(taskId);
+      taskWorkflowIds.delete(taskId);
       deliveredDispatchIds.delete(taskId); // history now records completion
     } else {
       const koiError: KoiError = {
@@ -1475,6 +1479,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         try {
           persist();
         } catch (persistErr: unknown) {
+          // Mark cancelled BEFORE the remote cancel call so any concurrent getResult()
+          // callback that fires during or after the cancel sees the gate first and becomes
+          // a no-op. Without this, a fast workflow completion can still run the watcher,
+          // re-insert the task, and emit terminal events after submit() has already thrown.
+          cancelledTaskIds.add(id);
           let cancelOk = true;
           try {
             await config.client.workflow.cancel(targetWorkflowId);

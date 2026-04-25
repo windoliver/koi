@@ -120,6 +120,24 @@ export async function createTemporalWorker(
     },
   };
 
+  // One-macrotask startup barrier: surfaces immediate failures (bad URL, wrong namespace,
+  // native binding error) so callers receive an error rather than a dead handle.
+  // Failures after this window are runtime crashes — callers should watch run() for those.
+  let startupError: unknown;
+  const earlyRun = wrappedWorker.run();
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, 0);
+    earlyRun.catch((err: unknown) => {
+      startupError = err;
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+  if (startupError !== undefined) {
+    await connection.close();
+    throw new Error("[temporal-worker] worker failed during startup", { cause: startupError });
+  }
+
   return {
     worker: wrappedWorker,
     connection,
