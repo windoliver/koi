@@ -58,6 +58,7 @@ import type {
   RuleDescriptor,
   SessionId,
   SessionTranscript,
+  Violation,
   ViolationStore,
 } from "@koi/core";
 import { COMPONENT_PRIORITY, GOVERNANCE, agentId as makeAgentId } from "@koi/core";
@@ -70,6 +71,7 @@ import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
 import {
   createJsonlApprovalStore,
   createPersistSink,
+  createViolationAuditAdapter,
   wrapBackendWithPersistedAllowlist,
 } from "@koi/governance-approval-tiers";
 import type { CostCalculator } from "@koi/governance-core";
@@ -2652,6 +2654,47 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       wrappedGovernanceBackend !== undefined
         ? await resolveGovernanceRules(wrappedGovernanceBackend)
         : [];
+    // Persist every violation to the SQLite store when configured.
+    // Handles both deny verdicts (ok:false + violations[]) and allow verdicts
+    // with info-level diagnostics (ok:true + diagnostics[]) so the gov-12
+    // `approval.persisted` audit signal emitted by `createViolationAuditAdapter`
+    // lands in violations.db alongside policy violations. sessionId is resolved
+    // from the live runtime at callback time so `cycleSession` /
+    // `rebindSessionId` keep persisted rows attributed to the current session.
+    const onGovernanceViolation =
+      violationStore !== undefined
+        ? (verdict: GovernanceVerdict, request: PolicyRequest): void => {
+            // ok:"ask" never reaches onViolation (middleware routes it through
+            // requestApproval instead). Handle only the two terminal variants.
+            const entries: readonly Violation[] =
+              verdict.ok === true
+                ? (verdict.diagnostics ?? [])
+                : verdict.ok === false
+                  ? verdict.violations
+                  : [];
+            if (entries.length === 0) return;
+            const sid = getLiveSessionId();
+            for (const v of entries) {
+              violationStore.record(v, request.agentId, sid, request.timestamp);
+            }
+          }
+        : undefined;
+
+    // gov-12 delta-audit: wrap the raw JSON-Lines sink so every persisted
+    // "always" grant also emits a synthetic `approval.persisted` info-violation
+    // through the host's onViolation channel. Without the wrap, persist is a
+    // silent disk append; with it, every grant is observable in violations.db
+    // and any downstream ndjson / sqlite audit sink.
+    const auditedPersistSink =
+      approvalStore !== undefined && onGovernanceViolation !== undefined
+        ? createViolationAuditAdapter({
+            sink: createPersistSink(approvalStore),
+            onViolation: onGovernanceViolation,
+          })
+        : approvalStore !== undefined
+          ? createPersistSink(approvalStore)
+          : undefined;
+
     const governanceMw =
       governanceEnabled &&
       wrappedGovernanceBackend !== undefined &&
@@ -2661,34 +2704,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             controller: sharedGovernanceController,
             cost: createPricingCostCalculator(),
             observerOnly: true,
-            ...(approvalStore !== undefined
-              ? { onApprovalPersist: createPersistSink(approvalStore) }
-              : {}),
+            ...(auditedPersistSink !== undefined ? { onApprovalPersist: auditedPersistSink } : {}),
             // --alert-threshold overrides the default [0.8, 0.95]. Passed
             // unconditionally when set — governance-middleware validates the
             // list and falls back to its default when undefined.
             ...(config.governanceAlertThresholds !== undefined
               ? { alertThresholds: config.governanceAlertThresholds }
               : {}),
-            // Persist every violation to the SQLite store when configured.
-            // Additive — does not remove any other subscribers (e.g. bridge).
-            // sessionId is resolved from the live runtime at callback time
-            // so `cycleSession` / `rebindSessionId` keep persisted rows
-            // attributed to the current session — the bridge's
-            // `loadRecentViolations({ sessionId })` query can find them
-            // against the rotated id, and pre-runtime fires fall back
-            // to the startup id (or "no-session" if the host omitted one).
-            ...(violationStore !== undefined
-              ? {
-                  onViolation: (verdict: GovernanceVerdict, request: PolicyRequest) => {
-                    if (verdict.ok) return;
-                    const sid = getLiveSessionId();
-                    for (const v of verdict.violations) {
-                      violationStore.record(v, request.agentId, sid, request.timestamp);
-                    }
-                  },
-                }
-              : {}),
+            ...(onGovernanceViolation !== undefined ? { onViolation: onGovernanceViolation } : {}),
           })
         : undefined;
 
