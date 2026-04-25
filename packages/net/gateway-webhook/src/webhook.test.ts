@@ -28,6 +28,55 @@ describe("WebhookServer — auth guard", () => {
       createWebhookServer({ port: 0, pathPrefix: "/webhook" }, () => {}, auth),
     ).not.toThrow();
   });
+
+  test("throws when github provider configured without keyExtractor", () => {
+    expect(() =>
+      createWebhookServer(
+        { port: 0, pathPrefix: "/webhook", providerRouting: true },
+        () => {},
+        undefined,
+        { github: "secret" },
+      ),
+    ).toThrow("replay protection");
+  });
+
+  test("allowReplayableProviders bypasses the github/generic dedup guard", () => {
+    expect(() =>
+      createWebhookServer(
+        { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
+        () => {},
+        undefined,
+        { github: "secret" },
+      ),
+    ).not.toThrow();
+  });
+
+  test("keyExtractor satisfies the github/generic dedup guard", () => {
+    expect(() =>
+      createWebhookServer(
+        {
+          port: 0,
+          pathPrefix: "/webhook",
+          providerRouting: true,
+          keyExtractor: (_p, req) => req.headers.get("X-GitHub-Delivery") ?? undefined,
+        },
+        () => {},
+        undefined,
+        { github: "secret" },
+      ),
+    ).not.toThrow();
+  });
+
+  test("slack and stripe providers do not trigger the replay guard", () => {
+    expect(() =>
+      createWebhookServer(
+        { port: 0, pathPrefix: "/webhook", providerRouting: true },
+        () => {},
+        undefined,
+        { slack: "secret", stripe: "secret2" },
+      ),
+    ).not.toThrow();
+  });
 });
 
 describe("WebhookServer — core dispatch", () => {
@@ -305,7 +354,7 @@ describe("WebhookServer — provider routing", () => {
 
   test("unknown provider returns 400", async () => {
     server = createWebhookServer(
-      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
       dispatcher,
       undefined,
       { github: "secret" },
@@ -324,7 +373,7 @@ describe("WebhookServer — provider routing", () => {
 
   test("missing secret for known provider returns 401", async () => {
     server = createWebhookServer(
-      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
       dispatcher,
       undefined,
       { github: "secret" }, // no slack secret
@@ -340,7 +389,7 @@ describe("WebhookServer — provider routing", () => {
 
   test("invalid signature returns 401", async () => {
     server = createWebhookServer(
-      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
       dispatcher,
       undefined,
       { github: "real-secret" },
@@ -381,7 +430,7 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     const sig = await computeGitHubSig(secret, body);
 
     server = createWebhookServer(
-      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
       dispatcher,
       undefined,
       { github: secret },
@@ -485,7 +534,7 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     }
 
     server = createWebhookServer(
-      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
       failingDispatcher,
       undefined,
       { github: secret },
@@ -620,7 +669,7 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     };
 
     const srv = createWebhookServer(
-      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
       dispatcher,
       flakyAuthenticator,
       { github: secret },
@@ -668,7 +717,7 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     }
 
     const srv = createWebhookServer(
-      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
       asyncFailingDispatcher,
       undefined,
       { github: secret },

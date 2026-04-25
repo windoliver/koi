@@ -60,23 +60,51 @@ export interface WebhookConfig {
    */
   readonly idempotencyStore?: IdempotencyStore | undefined;
   /**
+   * Interval for renewing the processing lease while dispatch is active.
+   * Must be less than the `IdempotencyStore`'s processing TTL — typically half.
+   *
+   * **Required when using a custom `idempotencyStore`** whose processing TTL
+   * differs from the default 5-minute value. Mismatching lease renewal to the
+   * store's TTL can cause mid-dispatch expiry and duplicate dispatch.
+   *
+   * Default: `processingTtlMs / 2` from `config.idempotency` (or 150 000 ms).
+   */
+  readonly leaseRenewalMs?: number | undefined;
+  /**
+   * Hard cap on how long dispatch may hold a dedup reservation. After this many
+   * milliseconds, the renewal loop stops and the reservation is aborted so
+   * provider retries can be accepted. The dispatcher continues running but its
+   * eventual `commit`/`abort` will be a token-mismatch no-op.
+   *
+   * Without this, a permanently-stuck dispatcher renews forever and permanently
+   * blocks its delivery key. Recommended: set to 2-3× your p99 dispatch latency.
+   */
+  readonly maxDispatchMs?: number | undefined;
+  /**
    * Extract a dedup key for providers that don't supply one natively (e.g. GitHub,
    * generic). Called after signature verification succeeds, with the verified
    * request and raw body. Return a string to enable replay protection for that
    * delivery, or undefined to skip dedup (pass-through, default behavior).
    *
+   * **Required** when `providerRouting: true` and `providerSecrets` includes
+   * `github` or `generic`, unless `allowReplayableProviders: true` is set.
+   *
    * Example — deduplicate GitHub by X-GitHub-Delivery after independent validation:
    * ```ts
    * keyExtractor: (_provider, req) => req.headers.get("X-GitHub-Delivery") ?? undefined
    * ```
-   * The extracted key is scoped to this config by the caller — use a prefix if
-   * multiple webhook instances share an IdempotencyStore.
    */
   readonly keyExtractor?: (
     provider: ProviderKind | undefined,
     request: Request,
     rawBody: string,
   ) => string | undefined | Promise<string | undefined>;
+  /**
+   * Opt out of the startup guard that requires `keyExtractor` when GitHub or
+   * generic providers are configured. Only set this if your dispatcher is fully
+   * idempotent and can safely handle duplicate deliveries.
+   */
+  readonly allowReplayableProviders?: boolean | undefined;
 }
 
 export interface WebhookServer {
@@ -136,6 +164,28 @@ export function createWebhookServer(
     );
   }
 
+  // Guard: GitHub and generic providers have no built-in replay protection
+  // (no provider-vended stable event ID in the signed payload). Without a
+  // keyExtractor, every valid redelivery is dispatched again — including
+  // provider auto-retries and manual replays of captured signed requests.
+  const replayableKinds = ["github", "generic"] as const;
+  const hasReplayableProvider =
+    config.providerRouting === true &&
+    providerSecrets !== undefined &&
+    replayableKinds.some((k) => providerSecrets[k] !== undefined);
+  if (
+    hasReplayableProvider &&
+    config.keyExtractor === undefined &&
+    config.allowReplayableProviders !== true
+  ) {
+    throw new Error(
+      "createWebhookServer: GitHub and generic providers have no built-in replay " +
+        "protection. Provide a keyExtractor to supply a verified dedup key per " +
+        "delivery (e.g. req.headers.get('X-GitHub-Delivery')), or set " +
+        "allowReplayableProviders: true if your dispatcher is fully idempotent.",
+    );
+  }
+
   let server: ReturnType<typeof Bun.serve> | undefined;
   let resolvedPort: number = config.port;
   let frameCounter = 0;
@@ -143,9 +193,11 @@ export function createWebhookServer(
   const maxBodyBytes = config.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const idempotencyStore: IdempotencyStore =
     config.idempotencyStore ?? createIdempotencyStore(config.idempotency ?? {});
-  // Renew processing leases at half the processingTtlMs so a slow-but-healthy
-  // dispatcher never loses its reservation to an impatient retry.
-  const leaseRenewalMs = Math.floor((config.idempotency?.processingTtlMs ?? 5 * 60 * 1000) / 2);
+  // Renewal interval must be shorter than the store's processing TTL.
+  // When a custom store is injected, the caller must set leaseRenewalMs explicitly
+  // to match their store's TTL; otherwise we fall back to the default-store default.
+  const leaseRenewalMs =
+    config.leaseRenewalMs ?? Math.floor((config.idempotency?.processingTtlMs ?? 5 * 60 * 1000) / 2);
 
   const prefix = config.pathPrefix.endsWith("/")
     ? config.pathPrefix.slice(0, -1)
@@ -305,18 +357,31 @@ export function createWebhookServer(
 
     // Renew the processing lease periodically while dispatch is active so a
     // slow-but-healthy dispatcher does not lose its reservation to a provider retry.
+    // maxDispatchMs caps total renewal time: after that, the reservation is aborted
+    // so stuck handlers cannot permanently block their delivery key.
     let renewalTimer: ReturnType<typeof setInterval> | undefined;
+    let maxDispatchTimer: ReturnType<typeof setTimeout> | undefined;
     if (pendingDedupKey !== undefined && pendingToken !== undefined) {
       const key = pendingDedupKey;
       const token = pendingToken;
       renewalTimer = setInterval(() => {
         idempotencyStore.renew(key, token);
       }, leaseRenewalMs);
+      if (config.maxDispatchMs !== undefined) {
+        maxDispatchTimer = setTimeout(() => {
+          clearInterval(renewalTimer);
+          // Abort reservation — retries are accepted; stale commit/abort will no-op.
+          idempotencyStore.abort(key, token);
+          pendingDedupKey = undefined;
+          pendingToken = undefined;
+        }, config.maxDispatchMs);
+      }
     }
 
     try {
       await Promise.resolve(dispatcher(session, frame));
     } catch (err: unknown) {
+      clearTimeout(maxDispatchTimer);
       clearInterval(renewalTimer);
       // Abort dedup reservation so provider can retry and be accepted.
       if (pendingDedupKey !== undefined && pendingToken !== undefined) {
@@ -325,6 +390,7 @@ export function createWebhookServer(
       const message = err instanceof Error ? err.message : String(err);
       return jsonResponse(500, { ok: false, error: `Dispatch failed: ${message}`, frameId });
     }
+    clearTimeout(maxDispatchTimer);
     clearInterval(renewalTimer);
 
     // Commit dedup key only after full successful acceptance (auth + dispatch).
