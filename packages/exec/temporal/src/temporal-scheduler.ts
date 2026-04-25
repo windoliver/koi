@@ -58,14 +58,35 @@ interface PersistedState {
   readonly history: readonly TaskRunRecord[];
 }
 
+function validatePersistedState(raw: unknown, dbPath: string): PersistedState {
+  if (
+    typeof raw !== "object" ||
+    raw === null ||
+    !Array.isArray((raw as Record<string, unknown>).tasks) ||
+    !Array.isArray((raw as Record<string, unknown>).schedules) ||
+    !Array.isArray((raw as Record<string, unknown>).taskWorkflowIds) ||
+    !Array.isArray((raw as Record<string, unknown>).cancelledTaskIds) ||
+    !Array.isArray((raw as Record<string, unknown>).history)
+  ) {
+    throw new Error(
+      `[temporal-scheduler] dbPath "${dbPath}" contains an incompatible snapshot — ` +
+        "expected {tasks, schedules, taskWorkflowIds, cancelledTaskIds, history} arrays. " +
+        "Remove or migrate the file before restarting.",
+    );
+  }
+  return raw as PersistedState;
+}
+
 function loadStateSync(dbPath: string): PersistedState | undefined {
   try {
-    return JSON.parse(readFileSync(dbPath, "utf8")) as PersistedState;
+    const raw: unknown = JSON.parse(readFileSync(dbPath, "utf8"));
+    return validatePersistedState(raw, dbPath);
   } catch (err: unknown) {
     // File not found is normal on first run — return empty state.
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    // File exists but cannot be read or parsed — fail loudly so the operator
+    // File exists but cannot be read, parsed, or validated — fail loudly so the operator
     // is alerted rather than silently booting with empty/stale state.
+    if (err instanceof Error && err.message.includes("incompatible snapshot")) throw err;
     throw new Error(
       `[temporal-scheduler] dbPath "${dbPath}" cannot be loaded — ` +
         "fix or remove the file before restarting. " +
@@ -438,7 +459,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         if (disposed || cancelledTaskIds.has(taskId)) return;
         const completedAt = Date.now();
         const safeResult = sanitizeResult(result);
-        tasks.set(taskId, { ...task, status: "completed" });
+        tasks.set(taskId, { ...task, status: "completed", completedAt });
         history.push({
           taskId: taskId as TaskId,
           agentId,
@@ -469,7 +490,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           retryable: false,
           context: { taskId, agentId },
         };
-        tasks.set(taskId, { ...task, status: "failed" });
+        tasks.set(taskId, { ...task, status: "failed", completedAt });
         history.push({
           taskId: taskId as TaskId,
           agentId,
@@ -511,6 +532,12 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         throw new Error(
           "submit() does not enforce timeoutMs or maxRetries. Remove these options or implement them inside the target workflow.",
         );
+      }
+      // Validate metadata before the remote call so a non-serializable value does not cause
+      // persist() to fail after the workflow has already been accepted by Temporal.
+      if (options?.metadata !== undefined) {
+        assertJsonSafeValue(options.metadata, "options.metadata");
+        assertJsonSerializable(options.metadata);
       }
 
       const id = toTaskId(`task:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`);
@@ -633,18 +660,18 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       } else {
         // Spawn: track actual workflow completion via getResult.
         // Gate on cancelledTaskIds so a raced cancel wins and prevents double terminal events.
-        const runningTask: ScheduledTask = { ...task, status: "running" };
+        const startedAt = Date.now();
+        const runningTask: ScheduledTask = { ...task, status: "running", startedAt };
         tasks.set(id, runningTask);
         // Attach the watcher BEFORE persist so we never lose tracking of a live workflow.
         // If persist subsequently fails, we cancel the workflow and re-throw rather than
         // leaving it running without local observability or restart-recovery coverage.
-        const startedAt = now;
         void config.client.workflow.getResult(targetWorkflowId).then(
           (result: unknown) => {
             if (disposed || cancelledTaskIds.has(id)) return;
             const completedAt = Date.now();
             const safeResult = sanitizeResult(result);
-            tasks.set(id, { ...runningTask, status: "completed" });
+            tasks.set(id, { ...runningTask, status: "completed", completedAt });
             history.push({
               taskId: id,
               agentId,
@@ -669,7 +696,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           (error: unknown) => {
             if (disposed || cancelledTaskIds.has(id)) return;
             const completedAt = Date.now();
-            tasks.set(id, { ...runningTask, status: "failed" });
+            tasks.set(id, { ...runningTask, status: "failed", completedAt });
             const koiError: KoiError = {
               code: "EXTERNAL",
               message: error instanceof Error ? error.message : String(error),
