@@ -212,16 +212,12 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
-  test("cancel returns true and emits event even when task not in local cache", async () => {
-    const client = makeClient();
+  test("cancel throws for unknown task when describe not configured — fail closed", async () => {
+    const client = makeClient(); // no describe method
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
-    const events: string[] = [];
-    sched.watch((e) => events.push(e.kind));
     const foreignId = taskId("task-external-999");
-    const result = await sched.cancel(foreignId);
-    expect(result).toBe(true);
-    expect(client.workflow.cancel).toHaveBeenCalledTimes(1);
-    expect(events).not.toContain("task:cancelled");
+    // Unknown ID + no describe → cannot verify ownership → refuse.
+    await expect(sched.cancel(foreignId)).rejects.toThrow("describe not available");
     await sched[Symbol.asyncDispose]();
   });
 
@@ -1427,7 +1423,7 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
-  test("describe error is swallowed — task stays pending", async () => {
+  test("describe error during reconcile surfaces to query() caller — prevents stale data", async () => {
     const client: TemporalClientLike = {
       workflow: {
         start: mock(async () => ({ workflowId: "wf-1" })),
@@ -1445,8 +1441,8 @@ describe("createTemporalScheduler", () => {
     };
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
     await sched.submit(A1, { kind: "text", text: "x" }, "dispatch");
-    await sched.query({}); // reconcile attempt fails silently
-    expect(sched.stats().pending).toBe(1); // still pending
+    // Reconcile failure surfaces to caller — they know status is unknown, not stale data.
+    await expect(sched.query({})).rejects.toThrow("Reconciliation failed");
     await sched[Symbol.asyncDispose]();
   });
 });

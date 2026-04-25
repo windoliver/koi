@@ -352,8 +352,8 @@ export function createTemporalScheduler(
       let info: WorkflowExecutionStatus;
       try {
         info = await describeFn(id as string);
-      } catch {
-        return;
+      } catch (e: unknown) {
+        throw new Error(`Reconciliation failed for task "${String(id)}"`, { cause: e });
       }
       const current = tasks.get(id);
       if (current === undefined) return;
@@ -481,8 +481,10 @@ export function createTemporalScheduler(
     },
 
     async cancel(id): Promise<boolean> {
-      const describeFn = config.client.workflow.describe;
-      if (describeFn !== undefined && (!tasks.has(id) || bootstrappedTaskIds.has(id))) {
+      if (!tasks.has(id) || bootstrappedTaskIds.has(id)) {
+        const describeFn = config.client.workflow.describe;
+        if (describeFn === undefined)
+          throw new Error(`Cannot verify ownership: describe not available for "${String(id)}"`);
         let info: WorkflowExecutionStatus;
         try {
           info = await describeFn(String(id));
@@ -597,8 +599,12 @@ export function createTemporalScheduler(
     },
 
     async unschedule(id): Promise<boolean> {
-      const getFn = config.client.schedule.get;
-      if (getFn !== undefined && (!schedules.has(id) || bootstrappedScheduleIds.has(id))) {
+      if (!schedules.has(id) || bootstrappedScheduleIds.has(id)) {
+        const getFn = config.client.schedule.get;
+        if (getFn === undefined)
+          throw new Error(
+            `Cannot verify ownership: schedule.get not available for "${String(id)}"`,
+          );
         let info: ScheduleGetInfo;
         try {
           info = await getFn(String(id));
@@ -624,8 +630,12 @@ export function createTemporalScheduler(
     },
 
     async pause(id): Promise<boolean> {
-      const getFn = config.client.schedule.get;
-      if (getFn !== undefined && (!schedules.has(id) || bootstrappedScheduleIds.has(id))) {
+      if (!schedules.has(id) || bootstrappedScheduleIds.has(id)) {
+        const getFn = config.client.schedule.get;
+        if (getFn === undefined)
+          throw new Error(
+            `Cannot verify ownership: schedule.get not available for "${String(id)}"`,
+          );
         let info: ScheduleGetInfo;
         try {
           info = await getFn(String(id));
@@ -654,8 +664,12 @@ export function createTemporalScheduler(
     },
 
     async resume(id): Promise<boolean> {
-      const getFn = config.client.schedule.get;
-      if (getFn !== undefined && (!schedules.has(id) || bootstrappedScheduleIds.has(id))) {
+      if (!schedules.has(id) || bootstrappedScheduleIds.has(id)) {
+        const getFn = config.client.schedule.get;
+        if (getFn === undefined)
+          throw new Error(
+            `Cannot verify ownership: schedule.get not available for "${String(id)}"`,
+          );
         let info: ScheduleGetInfo;
         try {
           info = await getFn(String(id));
