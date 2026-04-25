@@ -275,9 +275,23 @@ trigger for kill-on-takeover.
   can look heartbeat-stale while the supervisor is temporarily
   unable to answer. The retryable error puts the takeover on the
   caller's clock; if the supervisor recovers, the next retry sees
-  a positive `"alive"` or `"dead"` answer. If the supervisor
-  remains unhealthy, operator action via the `forceReclaim`
-  `manualHandle` path is the documented escalation.
+  a positive `"alive"` or `"dead"` answer.
+
+  **Supervisor-independent escalation.** During a sustained
+  supervisor outage, supervised harnesses can recover via
+  `forceReclaim` with `evidence = { kind: "manualHandle", handle,
+  supervisor, override: true, hostConfirmedDead: true,
+  skipSupervisorProbe: true }`. The `skipSupervisorProbe` flag
+  (only honored when both `override` AND `hostConfirmedDead` are
+  set) allows the admin path to advance state WITHOUT invoking
+  `probeAlive` / `killAndConfirm`. The trust model: the operator
+  has out-of-band evidence the worker is dead (the supervisor
+  itself is dead, the host has been rebooted, the pod is in
+  `Terminated` per a separate cluster query, etc.). The
+  durable host-confirmed-dead marker provides the audit trail.
+  This is the ONLY genuine supervisor-independent recovery path
+  for supervised mode; without `skipSupervisorProbe`,
+  forceReclaim still depends on the supervisor.
 - `probeAlive` returns `Err(IO_ERROR)` → return
   `Err(SUPERVISOR_UNHEALTHY, retryable: true)`. Never kill on a
   failed probe.
@@ -421,6 +435,18 @@ interface ForceReclaimInput {
   readonly harnessId: HarnessId;     // identifies the snapshot chain
   readonly sessionId: SessionId;     // the session being reclaimed
   /**
+   * Admin capability — REQUIRED. Production hosts MUST supply a
+   * non-empty AdminCapability minted via createAdminCapability(secret)
+   * (or platform equivalent). The capability is verified out of
+   * band by the host; this package only checks it is present and
+   * non-empty. forceReclaim is destructive (kills workers, advances
+   * durable state) and MUST NOT be exposed to in-process callers
+   * that lack the privileged token. Hosts SHOULD scope tokens per
+   * harnessId so a token leaked from one harness cannot reclaim
+   * another.
+   */
+  readonly adminCapability: AdminCapability;
+  /**
    * One of:
    *  - { kind: "manualHandle", handle: WorkerHandle, supervisor: Supervisor }
    *      Operator supplies a handle they have validated out of band; the
@@ -441,11 +467,24 @@ interface ForceReclaimInput {
         // hostConfirmedDead MUST also be true when override is true.
         readonly override?: boolean;
         // Operator attestation that the prior worker process is
-        // dead. Mandatory when override=true; ignored otherwise.
-        // Writes a durable host-confirmed-dead marker.
+        // dead. Mandatory when override=true. Writes a durable
+        // host-confirmed-dead marker before any CAS. The marker
+        // makes the override path retry-safe.
         readonly hostConfirmedDead?: boolean;
+        // Supervisor-independent emergency recovery. Honored ONLY
+        // when override=true AND hostConfirmedDead=true. Skips
+        // probe/kill of the supplied handle. Trust model: operator
+        // has out-of-band evidence the worker is dead during a
+        // supervisor outage.
+        readonly skipSupervisorProbe?: boolean;
       }
     | { readonly kind: "hostConfirmedDead" };
+
+// Opaque admin capability — host mints these out of band; the
+// package only checks presence and non-emptiness. Forge / leak
+// resistance is the host's responsibility.
+type AdminCapability = string & { readonly __admin: unique symbol };
+function createAdminCapability(secret: string): AdminCapability;
 }
 
 type ForceReclaimResult = Result<
@@ -543,8 +582,17 @@ Behavior:
    for a trusted harness) returns
    `Err(INVALID_CONFIG, retryable: false)`.
 2. For `manualHandle` evidence: run the supervisor probe-then-kill
-   protocol against the supplied handle. Live owner →
+   protocol against the supplied handle (skipped when
+   `skipSupervisorProbe: true` is also set; see supervisor-
+   independent escalation in the reclaim section). Live owner →
    `Err(RECLAIM_LIVE_OWNER)`; kill failure → `Err(KILL_FAILED)`.
+   When `evidence.hostConfirmedDead === true` is also set
+   (override path), write the same harness-scoped
+   `markHostConfirmedDead(harnessId, sessionId)` marker BEFORE the
+   replay/CAS step in (4). This makes the override path retry-safe
+   against admin-process failure between probe/kill and the final
+   CAS: a crashed admin retry observes the durable marker and
+   converges via the same outcome-replay/CAS step.
 3. For `hostConfirmedDead` evidence: write a durable
    host-confirmed-dead marker keyed by `(harnessId, sessionId)`
    to a harness-scoped store, NOT to the session row. The
