@@ -210,6 +210,13 @@ async function verifyChain(
   if (!parent) {
     return deny({ ok: false, reason: "unknown_grant" });
   }
+  // Bind the lookup result to the requested id. A stale or buggy
+  // tokenStore could return a *different* valid token for an unknown
+  // parentId — without this guard the signed child would verify against
+  // that unrelated parent. Treat the mismatch as unknown_grant.
+  if (parent.id !== child.parentId) {
+    return deny({ ok: false, reason: "unknown_grant" });
+  }
 
   // Structural validation of the parent (recursive — re-runs every check).
   const parentStructural = await verifyStructural(parent, ctx, opts);

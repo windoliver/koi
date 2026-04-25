@@ -528,6 +528,57 @@ describe("round-2 hardening", () => {
     expect(result.reason).toBe("invalid_signature");
   });
 
+  test("tokenStore.get returning a different-id token rejected (codex round-6: high)", async () => {
+    // A stale or buggy tokenStore could return a valid but unrelated
+    // token for an unknown parentId lookup. Without binding parent.id
+    // to child.parentId after the lookup, the signed child would verify
+    // against the wrong parent.
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const real = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: ["*"] }, sessionId: sessionId("sess-1") },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+    const { signHmac } = await import("./hmac.js");
+    const { capabilityId } = await import("@koi/core");
+
+    // Forge a child claiming parentId='dangling' (not the real root's id).
+    const danglingId = capabilityId("dangling");
+    const forgedUnsigned = {
+      id: capabilityId("forged-store-mismatch"),
+      issuerId: agentId("alice"),
+      delegateeId: agentId("eve"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sessionId("sess-1") },
+      parentId: danglingId,
+      chainDepth: 1,
+      maxChainDepth: 3,
+      createdAt: 1000,
+      expiresAt: 30_000,
+      proof: { kind: "hmac-sha256" as const, digest: "" },
+    };
+    const digest = signHmac(forgedUnsigned, signer.secret);
+    const forged = { ...forgedUnsigned, proof: { kind: "hmac-sha256" as const, digest } };
+
+    // Buggy tokenStore: returns the real root for any id, including the
+    // dangling lookup. Must NOT be sufficient to verify the forged child.
+    const buggyStore = {
+      get: async () => real,
+    };
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret },
+      scopeChecker: createGlobScopeChecker(),
+      tokenStore: buggyStore,
+    });
+    const result = await verifier.verify(forged, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("unknown_grant");
+  });
+
   test("Ed25519 delegatee key cannot mint root (codex round-5: critical)", async () => {
     // Setup: two Ed25519 keys configured. Engine's key (fpEngine) is the
     // sanctioned root authority. Delegatee's key (fpDelegatee) is in
