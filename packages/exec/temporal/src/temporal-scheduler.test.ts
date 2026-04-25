@@ -1398,7 +1398,7 @@ describe("two-phase pre-commit", () => {
   test("schedule: pendingScheduleId is persisted before schedule.create completes", async () => {
     const { readFileSync } = await import("node:fs");
     const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
-    let preCommitState: { pendingScheduleIds?: string[] } | undefined;
+    let preCommitState: { pendingSchedules?: unknown[] } | undefined;
     const client: TemporalClientLike = {
       workflow: {
         start: mock(async () => ({ workflowId: "wf-1" })),
@@ -1409,7 +1409,7 @@ describe("two-phase pre-commit", () => {
       schedule: {
         create: mock(async () => {
           preCommitState = JSON.parse(readFileSync(dbPath, "utf-8")) as {
-            pendingScheduleIds?: string[];
+            pendingSchedules?: unknown[];
           };
         }),
         delete: mock(async () => undefined),
@@ -1424,8 +1424,8 @@ describe("two-phase pre-commit", () => {
     };
     const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
     await scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn");
-    // The pre-commit must have written one pending schedule ID before remote create.
-    expect(preCommitState?.pendingScheduleIds).toHaveLength(1);
+    // The pre-commit must have written one pending schedule (with full metadata) before remote create.
+    expect(preCommitState?.pendingSchedules).toHaveLength(1);
     await scheduler[Symbol.asyncDispose]();
   });
 
@@ -1810,11 +1810,13 @@ describe("startup reconciliation — persisted so second restart does not duplic
     });
     writeFileSync(dbPath, crashSnapshot);
 
-    // First restart: reconciliation marks task as "failed" and persists.
+    // First restart: reconciliation marks task as "completed" (optimistic delivery) and persists.
+    // Delivery-unknown dispatch tasks are marked completed, not failed, to prevent retries that
+    // would re-send with a different task ID and produce duplicate signals.
     const s1 = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
     const hist1 = await s1.history({});
     expect(hist1).toHaveLength(1);
-    expect(hist1[0]?.status).toBe("failed");
+    expect(hist1[0]?.status).toBe("completed");
     await s1[Symbol.asyncDispose]();
 
     // Second restart from the same dbPath: reconciliation must NOT run again (already committed).
@@ -1822,7 +1824,7 @@ describe("startup reconciliation — persisted so second restart does not duplic
     const hist2 = await s2.history({});
     // History must still be exactly 1 record — no duplicate from replaying the recovery.
     expect(hist2).toHaveLength(1);
-    expect(hist2[0]?.status).toBe("failed");
+    expect(hist2[0]?.status).toBe("completed");
     await s2[Symbol.asyncDispose]();
     rmdirSync(dir, { recursive: true });
   });
@@ -1897,9 +1899,11 @@ describe("schedule() — create error path retains pending marker on failed dele
     await expect(scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow(
       "create timeout",
     );
-    const state = JSON.parse(readFileSync(dbPath, "utf-8")) as { pendingScheduleIds?: string[] };
-    // Delete also failed → pending ID must remain for restart reconciliation
-    expect(state.pendingScheduleIds?.length).toBe(1);
+    const state = JSON.parse(readFileSync(dbPath, "utf-8")) as {
+      pendingSchedules?: { id: string }[];
+    };
+    // Delete also failed → pending schedule (with metadata) must remain for restart reconciliation
+    expect(state.pendingSchedules?.length).toBe(1);
     rmdirSync(dir, { recursive: true });
     await scheduler[Symbol.asyncDispose]();
   });
@@ -1945,9 +1949,9 @@ describe("schedule() — create error path retains pending marker on failed dele
     await expect(scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow(
       "create failed",
     );
-    const state = JSON.parse(readFileSync(dbPath, "utf-8")) as { pendingScheduleIds?: string[] };
-    // Delete succeeded → pending ID cleared from disk
-    expect(state.pendingScheduleIds?.length).toBe(0);
+    const state = JSON.parse(readFileSync(dbPath, "utf-8")) as { pendingSchedules?: unknown[] };
+    // Delete succeeded → pending schedule cleared from disk
+    expect(state.pendingSchedules?.length).toBe(0);
     rmdirSync(dir, { recursive: true });
     await scheduler[Symbol.asyncDispose]();
   });

@@ -67,8 +67,11 @@ interface PersistedState {
   readonly schedules: readonly [string, PersistedSchedule][];
   readonly history: readonly TaskRunRecord[];
   // Schedule IDs that were persisted as a pre-commit intent before remote create.
-  // On restart, these are deleted (cleaning any Temporal orphan) and removed from local state.
-  readonly pendingScheduleIds: readonly string[];
+  // Kept for backward compat reading old snapshots. New writes use pendingSchedules.
+  readonly pendingScheduleIds?: readonly string[];
+  // Full schedule metadata for each pending schedule. Supersedes pendingScheduleIds.
+  // On restart, if the remote schedule exists, we can reconstruct local state from this entry.
+  readonly pendingSchedules?: readonly PersistedSchedule[];
   // Task IDs for which a dispatch signal was durably confirmed as sent, even if the
   // full post-signal persist failed. On restart, "pending" dispatch tasks in this set
   // are treated as "completed" (not retried), preventing duplicate signal delivery.
@@ -611,9 +614,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
   const cancelledTaskIds = new Set<string>();
   // Maps taskId → the actual Temporal workflowId used (spawn = task id, dispatch = agentId)
   const taskWorkflowIds = new Map<string, string>();
-  // Schedule IDs that were persisted as a pre-commit intent before remote create.
-  // On restart these are cleaned up (remote delete + local removal) to handle orphans.
-  const pendingScheduleIds = new Set<string>();
+  // Schedule metadata for pre-commit pending entries (id → PersistedSchedule | undefined).
+  // Written before schedule.create() so crash recovery can reconstruct local state.
+  // Legacy entries loaded from old pendingScheduleIds snapshots have undefined metadata.
+  const pendingSchedules = new Map<string, PersistedSchedule | undefined>();
   // Dispatch task IDs for which the signal was durably confirmed as sent (written to disk
   // immediately after workflow.signal() succeeds). Prevents dispatch retry after restart
   // for tasks whose signal was delivered even if the post-signal full-state persist failed.
@@ -642,7 +646,12 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         for (const id of saved.cancelledTaskIds) cancelledTaskIds.add(id);
         for (const [k, v] of saved.schedules) schedules.set(k, reconstructSchedule(v));
         for (const record of saved.history) history.push(record);
-        for (const id of saved.pendingScheduleIds ?? []) pendingScheduleIds.add(id);
+        for (const s of saved.pendingSchedules ?? []) pendingSchedules.set(s.id, s);
+        // Legacy: old snapshots stored only IDs — load without metadata so recovery can still
+        // clear the marker (but cannot reconstruct local state for entries without metadata).
+        for (const id of saved.pendingScheduleIds ?? []) {
+          if (!pendingSchedules.has(id)) pendingSchedules.set(id, undefined);
+        }
         for (const id of saved.deliveredDispatchIds ?? []) deliveredDispatchIds.add(id);
       }
     } catch (startupErr: unknown) {
@@ -693,7 +702,14 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           } satisfies PersistedSchedule,
         ]),
         history,
-        pendingScheduleIds: [...pendingScheduleIds],
+        // Legacy entries (undefined metadata, loaded from old snapshots) survive in
+        // pendingScheduleIds so they are not lost across persist cycles.
+        pendingScheduleIds: [...pendingSchedules.entries()]
+          .filter(([, v]) => v === undefined)
+          .map(([k]) => k),
+        pendingSchedules: [...pendingSchedules.values()].filter(
+          (s): s is PersistedSchedule => s !== undefined,
+        ),
         deliveredDispatchIds: [...deliveredDispatchIds],
       });
     } catch (err: unknown) {
@@ -773,16 +789,27 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
   //     We lose local tracking for this restart cycle, but the schedule keeps firing in Temporal.
   //   - Schedule not found → create() never completed; safe to clear the marker (no-op).
   //   - Transient error → keep the marker and retry on the next restart.
-  if (pendingScheduleIds.size > 0) {
+  if (pendingSchedules.size > 0) {
     startupCleanupPromise = (async () => {
       let anyCleared = false;
-      for (const id of [...pendingScheduleIds]) {
+      for (const [id, metadata] of [...pendingSchedules]) {
         try {
           await config.client.schedule.getHandle(id).describe();
-          // Schedule exists in Temporal — do NOT delete it. The create() call succeeded
-          // before the crash; the schedule is valid and actively firing. Clear the pending
-          // marker so future restarts don't revisit it.
-          pendingScheduleIds.delete(id);
+          // Schedule exists in Temporal — it was successfully created before the crash.
+          if (metadata !== undefined) {
+            // Reconstruct local state from stored metadata so the schedule is manageable
+            // via stats(), pause(), resume(), and unschedule() after restart.
+            schedules.set(id, reconstructSchedule(metadata));
+          } else {
+            // Legacy snapshot: metadata not stored (old format). Cannot reconstruct.
+            // The schedule is alive in Temporal but untracked locally — log for operator.
+            console.warn(
+              `[temporal-scheduler] pending schedule "${id}" exists in Temporal but its ` +
+                "metadata was not stored (old snapshot format). It will continue firing but " +
+                "cannot be managed via this scheduler instance. Reconcile manually.",
+            );
+          }
+          pendingSchedules.delete(id);
           anyCleared = true;
         } catch (describeErr: unknown) {
           const isNotFound =
@@ -791,7 +818,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           if (isNotFound) {
             // Schedule does not exist in Temporal — create() never completed.
             // Clear the marker; nothing to clean up remotely.
-            pendingScheduleIds.delete(id);
+            pendingSchedules.delete(id);
             anyCleared = true;
           }
           // Transient error (connection, timeout): keep the ID so the next restart retries.
@@ -834,15 +861,21 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       });
       deliveredDispatchIds.delete(taskId); // history now records completion
     } else {
-      tasks.set(taskId, { ...task, status: "failed", completedAt });
+      // Delivery unknown: crash occurred after workflow.signal() was called but before the
+      // durable delivery marker was persisted. We cannot determine if the signal arrived.
+      // Mark as "completed" (optimistic) rather than "failed" (retriable): if we mark failed,
+      // a caller retry will re-submit with a different task ID and may deliver a duplicate
+      // signal — causing irreversible side effects (duplicate tool calls, duplicate messages).
+      // Operators who need exact delivery semantics should supply an idempotencyKey so the
+      // caller can detect the completed state on retry and skip re-submission.
+      tasks.set(taskId, { ...task, status: "completed", completedAt });
       history.push({
         taskId: taskId as TaskId,
         agentId: task.agentId,
-        status: "failed",
+        status: "completed",
         startedAt: task.startedAt ?? task.createdAt,
         completedAt,
         durationMs: completedAt - (task.startedAt ?? task.createdAt),
-        error: "signal delivery status unknown after process restart",
         retryAttempt: 0,
       });
     }
@@ -1567,15 +1600,23 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         };
       }
 
-      // Two-phase pre-commit: durably record the schedule ID as "pending" before calling
-      // schedule.create() so a crash between create() and the post-create persist() is
-      // recoverable. On restart, pendingScheduleIds cleanup deletes the orphaned schedule
-      // (a no-op if create() never completed), preventing duplicate recurring executions.
-      pendingScheduleIds.add(id);
+      // Two-phase pre-commit: durably record the schedule with its full metadata before
+      // calling schedule.create() so crash recovery can reconstruct local state and make the
+      // schedule manageable via stats()/pause()/unschedule() after restart.
+      const pendingEntry: PersistedSchedule = {
+        id,
+        expression,
+        agentId: String(agentId),
+        input: mapEngineInputToScheduledPayload(schedule.input),
+        mode,
+        timezone: options?.timezone,
+        paused: false,
+      };
+      pendingSchedules.set(id, pendingEntry);
       try {
         persist();
       } catch (preCommitErr: unknown) {
-        pendingScheduleIds.delete(id);
+        pendingSchedules.delete(id);
         throw preCommitErr; // durabilityFailed already set
       }
 
@@ -1592,39 +1633,38 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         });
       } catch (createErr: unknown) {
         // create() may have succeeded even if the client saw an error (ACK lost on timeout/reset).
-        // Attempt a best-effort compensating delete. Only clear pendingScheduleIds if the delete
+        // Attempt a best-effort compensating delete. Only clear pendingSchedules if the delete
         // succeeds — if it fails (transient or schedule genuinely absent), retain the marker so
-        // startup reconciliation can retry the delete rather than permanently forgetting a live cron.
+        // startup reconciliation can retry rather than permanently forgetting a live cron.
         let deleteConfirmed = false;
         try {
           await config.client.schedule.delete(id);
           deleteConfirmed = true;
         } catch {
           // Inconclusive: may be "not found" (create never completed) or transient failure.
-          // Keep pendingScheduleIds so the next restart retries.
+          // Keep pendingSchedules so the next restart retries.
         }
         if (deleteConfirmed) {
-          pendingScheduleIds.delete(id);
+          pendingSchedules.delete(id);
           try {
             persist(); // clear the pre-commit intent from disk
           } catch {
             // durabilityFailed already set; swallow so the original createErr surfaces
           }
         }
-        // If deleteConfirmed is false: pendingScheduleIds still has id; next restart will retry.
+        // If deleteConfirmed is false: pendingSchedules still has the entry; next restart retries.
         throw createErr;
       }
 
       schedules.set(id, schedule);
-      // Remove from pendingScheduleIds: the schedule is now durably tracked in schedules.
-      // If persist() below fails, we restore it so the rollback path and startup cleanup
-      // can still remove the orphaned Temporal schedule.
-      pendingScheduleIds.delete(id);
+      // Remove from pendingSchedules: the schedule is now durably tracked in schedules.
+      // If persist() below fails, we restore it so crash recovery can reconstruct local state.
+      pendingSchedules.delete(id);
       try {
         persist();
       } catch (persistErr: unknown) {
-        // Restore so startup cleanup can delete the orphan if the process restarts.
-        pendingScheduleIds.add(id);
+        // Restore pending entry so crash recovery can reconstruct the schedule from metadata.
+        pendingSchedules.set(id, pendingEntry);
         // Compensate: delete the remote schedule so a caller retry does not create a second
         // live schedule with a different id. The schedule id is random so retries are not
         // idempotent without this rollback.
