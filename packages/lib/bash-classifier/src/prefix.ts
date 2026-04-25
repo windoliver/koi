@@ -293,82 +293,71 @@ function peelWrapperOptions(tokens: readonly string[], from: number, spec: Wrapp
   return i;
 }
 
-/** Single peel: strip leading env assignments + one wrapper (if any). */
-function normalizeOnce(tokens: readonly string[]): readonly string[] {
-  let i = 0;
-  while (i < tokens.length) {
-    const t = tokens[i];
-    if (t === undefined || !ENV_ASSIGN.test(t)) break;
-    i++;
-  }
-  const head = tokens[i];
-  if (head === undefined) return tokens.slice(i);
-  const base = basenameTrusted(head);
-
-  if (FLAGLESS_WRAPPERS.has(base)) {
-    let wrapperEnd = i + 1;
-    // Accept `--` end-of-options — the next token(s) are the inner
-    // command (`command -- sudo rm`, `exec -- git push`).
-    if (tokens[wrapperEnd] === "--") wrapperEnd++;
-    const next = tokens[wrapperEnd] ?? "";
-    // Flagged forms we haven't modeled (`command -p`, `exec -a fake`,
-    // `nohup -x …`) must NOT collapse to the wrapper name — that
-    // would let an inner denied command hide behind a broadly-
-    // allowed wrapper prefix. Signal fail-closed via the sentinel so
-    // prefix() propagates UNSAFE_PREFIX.
-    if (next.startsWith("-")) return [UNSAFE_SENTINEL_TOKEN];
-    return tokens.slice(wrapperEnd);
-  }
-
-  const spec = WRAPPER_SPECS[base];
-  if (spec !== undefined) {
-    const wrapperStart = i;
-    i++;
-    // env: also consume post-wrapper VAR=value assignments
-    if (base === "env") {
-      while (i < tokens.length && ENV_ASSIGN.test(tokens[i] ?? "")) i++;
-    }
-    const afterOpts1 = peelWrapperOptions(tokens, i, spec);
-    if (afterOpts1 < 0) {
-      // Unknown flag — fail closed: preserve wrapper as head.
-      return [base, ...tokens.slice(wrapperStart + 1)];
-    }
-    i = afterOpts1;
-    if (base === "timeout") {
-      // Optional duration arg between flag groups.
-      if (i < tokens.length && /^\d/.test(tokens[i] ?? "")) i++;
-      const afterOpts2 = peelWrapperOptions(tokens, i, spec);
-      if (afterOpts2 < 0) return [base, ...tokens.slice(wrapperStart + 1)];
-      i = afterOpts2;
-    }
-    return tokens.slice(i);
-  }
-
-  // Not a wrapper — basename the head and leave the rest alone.
-  return [base, ...tokens.slice(i + 1)];
+function skipLeadingEnvAssignments(tokens: readonly string[], from: number): number {
+  let i = from;
+  while (i < tokens.length && ENV_ASSIGN.test(tokens[i] ?? "")) i++;
+  return i;
 }
 
 /**
- * Iterate `normalizeOnce` to a true fixed point. Each peel consumes at
- * least one token, so the loop terminates in at most `tokens.length`
- * iterations regardless of stacking depth. No arbitrary cutoff — an
- * attacker cannot silently retain a harmless-looking wrapper prefix by
- * chaining more than N wrappers.
+ * Peel wrappers to a true fixed point without repeatedly allocating new
+ * arrays. Each successful peel advances the leading cursor, so wrapper
+ * stacks remain linear-time even at adversarial depth.
  */
 function normalize(tokens: readonly string[]): readonly string[] {
-  let current = tokens;
-  // Safety guard: each iteration strictly reduces or preserves length and
-  // returns a different array when it peels. `max` is an upper bound on
-  // possible peels (never reachable in practice).
-  const max = current.length + 1;
-  for (let i = 0; i < max; i++) {
-    const next = normalizeOnce(current);
-    if (next.length === current.length && next.every((t, idx) => t === current[idx])) {
-      return current;
+  let i = 0;
+  const max = tokens.length + 1;
+  for (let iteration = 0; iteration < max; iteration++) {
+    i = skipLeadingEnvAssignments(tokens, i);
+    const head = tokens[i];
+    if (head === undefined) return [];
+    const base = basenameTrusted(head);
+
+    if (FLAGLESS_WRAPPERS.has(base)) {
+      let wrapperEnd = i + 1;
+      // Accept `--` end-of-options — the next token(s) are the inner
+      // command (`command -- sudo rm`, `exec -- git push`).
+      if (tokens[wrapperEnd] === "--") wrapperEnd++;
+      const next = tokens[wrapperEnd] ?? "";
+      // Flagged forms we haven't modeled (`command -p`, `exec -a fake`,
+      // `nohup -x …`) must NOT collapse to the wrapper name — that
+      // would let an inner denied command hide behind a broadly-
+      // allowed wrapper prefix. Signal fail-closed via the sentinel so
+      // prefix() propagates UNSAFE_PREFIX.
+      if (next.startsWith("-")) return [UNSAFE_SENTINEL_TOKEN];
+      i = wrapperEnd;
+      continue;
     }
-    current = next;
+
+    const spec = WRAPPER_SPECS[base];
+    if (spec !== undefined) {
+      const wrapperStart = i;
+      let nextIndex = i + 1;
+      // env: also consume post-wrapper VAR=value assignments
+      if (base === "env") {
+        nextIndex = skipLeadingEnvAssignments(tokens, nextIndex);
+      }
+      const afterOpts1 = peelWrapperOptions(tokens, nextIndex, spec);
+      if (afterOpts1 < 0) {
+        // Unknown flag — fail closed: preserve wrapper as head.
+        return [base, ...tokens.slice(wrapperStart + 1)];
+      }
+      nextIndex = afterOpts1;
+      if (base === "timeout") {
+        // Optional duration arg between flag groups.
+        if (nextIndex < tokens.length && /^\d/.test(tokens[nextIndex] ?? "")) nextIndex++;
+        const afterOpts2 = peelWrapperOptions(tokens, nextIndex, spec);
+        if (afterOpts2 < 0) return [base, ...tokens.slice(wrapperStart + 1)];
+        nextIndex = afterOpts2;
+      }
+      i = nextIndex;
+      continue;
+    }
+
+    // Not a wrapper — basename the head and leave the rest alone.
+    return base === head ? tokens.slice(i) : [base, ...tokens.slice(i + 1)];
   }
-  return current;
+  return [];
 }
 
 /** Shell interpreter binaries whose `-c <arg>` form wraps a nested command. */
@@ -517,6 +506,15 @@ function extractShellDashCArgFromTokens(tokens: readonly string[]): string | nul
 
 function extractShellDashCArg(cmdLine: string): string | null {
   return extractShellDashCArgFromTokens(shellTokenize(cmdLine));
+}
+
+export function extractShellDashCArgFromCommand(cmdLine: string): string | null {
+  const trimmed = cmdLine.trim();
+  if (trimmed.length === 0) return null;
+  const directInner = extractShellDashCArg(trimmed);
+  if (directInner !== null) return directInner;
+  const normalized = normalize(shellTokenize(trimmed));
+  return extractShellDashCArgFromTokens(normalized);
 }
 
 const MAX_INTERP_DEPTH = 4;

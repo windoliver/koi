@@ -13,7 +13,8 @@ export type Category =
   | "network-exfil"
   | "code-exec"
   | "module-load"
-  | "privilege-escalation";
+  | "privilege-escalation"
+  | "persistence";
 
 /** Severity ordering: low < medium < high < critical. */
 export type Severity = "low" | "medium" | "high" | "critical";

@@ -24,6 +24,7 @@ describe("DANGEROUS_PATTERNS", () => {
         "code-exec",
         "module-load",
         "privilege-escalation",
+        "persistence",
       ]).toContain(p.category);
     }
   });
@@ -40,7 +41,7 @@ describe("DANGEROUS_PATTERNS", () => {
     }
   });
 
-  test("covers the six required categories", () => {
+  test("covers the required categories", () => {
     const cats = new Set(DANGEROUS_PATTERNS.map((p) => p.category));
     expect(cats.has("process-spawn")).toBe(true);
     expect(cats.has("file-destructive")).toBe(true);
@@ -48,5 +49,6 @@ describe("DANGEROUS_PATTERNS", () => {
     expect(cats.has("code-exec")).toBe(true);
     expect(cats.has("module-load")).toBe(true);
     expect(cats.has("privilege-escalation")).toBe(true);
+    expect(cats.has("persistence")).toBe(true);
   });
 });
