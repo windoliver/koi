@@ -20,7 +20,7 @@ import type {
   TaskRunRecord,
   TaskScheduler,
 } from "@koi/core";
-import { scheduleId, taskId } from "@koi/core";
+import { agentId, scheduleId, taskId } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Structural types (no @temporalio/* imports)
@@ -53,6 +53,18 @@ export interface ScheduleGetInfo {
   readonly memo?: Readonly<Record<string, unknown>> | undefined;
 }
 
+/** Single workflow entry returned by list — used for bootstrap state reconstruction. */
+export interface WorkflowListEntry {
+  readonly workflowId: string;
+  readonly status: WorkflowExecutionStatus;
+}
+
+/** Single schedule entry returned by list — used for bootstrap state reconstruction. */
+export interface ScheduleListEntry {
+  readonly scheduleId: string;
+  readonly info: ScheduleGetInfo;
+}
+
 export interface TemporalClientLike {
   readonly workflow: {
     readonly start: (
@@ -66,6 +78,14 @@ export interface TemporalClientLike {
      * Temporal reconciliation.
      */
     readonly describe?: (workflowId: string) => Promise<WorkflowExecutionStatus>;
+    /**
+     * List workflows matching the given filter — used by bootstrap() to rebuild
+     * in-memory task state after a process restart.
+     */
+    readonly list?: (filter: {
+      readonly workflowType: string;
+      readonly taskQueue: string;
+    }) => Promise<readonly WorkflowListEntry[]>;
   };
   readonly schedule: {
     readonly create: (scheduleId: string, options: Record<string, unknown>) => Promise<unknown>;
@@ -77,6 +97,8 @@ export interface TemporalClientLike {
      * Optional — when absent, stable-ID replays fail closed to prevent silent collisions.
      */
     readonly get?: (scheduleId: string) => Promise<ScheduleGetInfo>;
+    /** List all schedules — used by bootstrap() to rebuild in-memory schedule state. */
+    readonly list?: () => Promise<readonly ScheduleListEntry[]>;
   };
 }
 
@@ -173,6 +195,29 @@ function serializeEngineInput(input: EngineInput): Record<string, unknown> {
 }
 
 /**
+ * Reconstructs an EngineInput from the stored inputFingerprint memo field.
+ * Falls back to an empty text input when the stored value cannot be parsed.
+ */
+function parseStoredEngineInput(fingerprint: string): EngineInput {
+  const v: unknown = JSON.parse(fingerprint);
+  if (typeof v === "object" && v !== null) {
+    const r = v as Record<string, unknown>; // safe: just narrowed to object
+    if (r.kind === "text" && typeof r.text === "string") return { kind: "text", text: r.text };
+    if (r.kind === "resume") {
+      // Reconstruct EngineState from stored memo — engineId is required, data is opaque.
+      const s =
+        typeof r.state === "object" && r.state !== null ? (r.state as Record<string, unknown>) : {};
+      const engineId = typeof s.engineId === "string" ? s.engineId : "";
+      return { kind: "resume", state: { engineId, data: s.data } };
+    }
+    if (r.kind === "messages" && Array.isArray(r.messages))
+      // Messages are opaque blobs from storage — cast through unknown for type safety.
+      return { kind: "messages", messages: r.messages as unknown as readonly never[] };
+  }
+  return { kind: "text", text: "" };
+}
+
+/**
  * Verifies that an existing workflow's memo matches the full request fingerprint.
  * Absent memo or any mismatched field is treated as a collision — fail closed.
  * Returns the execution status so the caller can handle terminal states
@@ -263,7 +308,9 @@ async function verifyScheduleOwnership(
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskScheduler {
+export function createTemporalScheduler(
+  config: TemporalSchedulerConfig,
+): TaskScheduler & { readonly bootstrap: () => Promise<void> } {
   const workflowType = config.workflowType ?? "agentWorkflow";
 
   const tasks = new Map<TaskId, ScheduledTask>();
@@ -488,6 +535,16 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     },
 
     async cancel(id): Promise<boolean> {
+      if (!tasks.has(id)) {
+        const describeFn = config.client.workflow.describe;
+        if (describeFn !== undefined) {
+          const info = await describeFn(String(id)); // throws → propagate
+          const m = info.memo;
+          if (m?.workflowType !== workflowType || m?.taskQueue !== config.taskQueue) {
+            throw new Error(`Operation refused: "${String(id)}" not owned by this scheduler`);
+          }
+        }
+      }
       try {
         await config.client.workflow.cancel(id);
         const task = tasks.get(id);
@@ -603,6 +660,16 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     },
 
     async unschedule(id): Promise<boolean> {
+      if (!schedules.has(id)) {
+        const getFn = config.client.schedule.get;
+        if (getFn !== undefined) {
+          const info = await getFn(String(id)); // throws → propagate
+          const m = info.memo;
+          if (m?.workflowType !== workflowType || m?.taskQueue !== config.taskQueue) {
+            throw new Error(`Operation refused: "${String(id)}" not owned by this scheduler`);
+          }
+        }
+      }
       try {
         await config.client.schedule.delete(id);
         schedules.delete(id);
@@ -614,6 +681,16 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     },
 
     async pause(id): Promise<boolean> {
+      if (!schedules.has(id)) {
+        const getFn = config.client.schedule.get;
+        if (getFn !== undefined) {
+          const info = await getFn(String(id)); // throws → propagate
+          const m = info.memo;
+          if (m?.workflowType !== workflowType || m?.taskQueue !== config.taskQueue) {
+            throw new Error(`Operation refused: "${String(id)}" not owned by this scheduler`);
+          }
+        }
+      }
       try {
         await config.client.schedule.pause(id);
         const existing = schedules.get(id);
@@ -628,6 +705,16 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     },
 
     async resume(id): Promise<boolean> {
+      if (!schedules.has(id)) {
+        const getFn = config.client.schedule.get;
+        if (getFn !== undefined) {
+          const info = await getFn(String(id)); // throws → propagate
+          const m = info.memo;
+          if (m?.workflowType !== workflowType || m?.taskQueue !== config.taskQueue) {
+            throw new Error(`Operation refused: "${String(id)}" not owned by this scheduler`);
+          }
+        }
+      }
       try {
         await config.client.schedule.unpause(id);
         const existing = schedules.get(id);
@@ -703,6 +790,59 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       return () => {
         listeners.delete(listener);
       };
+    },
+
+    async bootstrap(): Promise<void> {
+      const [wfEntries, schedEntries] = await Promise.all([
+        config.client.workflow.list?.({ workflowType, taskQueue: config.taskQueue }) ??
+          Promise.resolve([]),
+        config.client.schedule.list?.() ?? Promise.resolve([]),
+      ]);
+      for (const entry of wfEntries) {
+        const m = entry.status.memo;
+        if (m?.workflowType !== workflowType || m?.taskQueue !== config.taskQueue) continue;
+        const s = entry.status.status;
+        if (s !== "RUNNING" && s !== "CONTINUED_AS_NEW") continue;
+        const id = taskId(entry.workflowId);
+        if (tasks.has(id)) continue;
+        const rawAgentId = typeof m.agentId === "string" ? m.agentId : "";
+        const mode = m.mode === "dispatch" ? "dispatch" : "spawn";
+        const fp =
+          typeof m.inputFingerprint === "string" ? m.inputFingerprint : '{"kind":"text","text":""}';
+        tasks.set(id, {
+          id,
+          agentId: agentId(rawAgentId),
+          input: parseStoredEngineInput(fp),
+          mode,
+          priority: 5,
+          status: "running",
+          createdAt: entry.status.startTime ?? Date.now(),
+          startedAt: entry.status.startTime,
+          retries: 0,
+          maxRetries: typeof m.maxRetries === "number" ? m.maxRetries : DEFAULT_MAX_RETRIES,
+          timeoutMs: typeof m.timeoutMs === "number" ? m.timeoutMs : undefined,
+        });
+      }
+      for (const entry of schedEntries) {
+        const m = entry.info.memo;
+        if (m?.workflowType !== workflowType || m?.taskQueue !== config.taskQueue) continue;
+        const id = scheduleId(entry.scheduleId);
+        if (schedules.has(id)) continue;
+        const rawAgentId = typeof m.agentId === "string" ? m.agentId : "";
+        const mode = m.mode === "dispatch" ? "dispatch" : "spawn";
+        const fp =
+          typeof m.inputFingerprint === "string" ? m.inputFingerprint : '{"kind":"text","text":""}';
+        schedules.set(id, {
+          id,
+          agentId: agentId(rawAgentId),
+          input: parseStoredEngineInput(fp),
+          mode,
+          expression: typeof m.expression === "string" ? m.expression : "",
+          timezone: typeof m.timezone === "string" ? m.timezone : undefined,
+          paused: false,
+          taskOptions: undefined,
+        });
+      }
     },
 
     async [Symbol.asyncDispose](): Promise<void> {

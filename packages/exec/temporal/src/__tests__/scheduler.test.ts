@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { agentId, taskId } from "@koi/core";
+import { agentId, scheduleId as makeScheduleId, taskId } from "@koi/core";
 import type { TemporalClientLike, WorkflowExecutionStatus } from "../scheduler.js";
 import { createTemporalScheduler } from "../scheduler.js";
 
@@ -986,6 +986,256 @@ describe("createTemporalScheduler", () => {
       }),
     ).rejects.toThrow("collision");
     expect(sched.stats().pending).toBe(0);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Fix 1: Destructive operations ownership verification
+  // ---------------------------------------------------------------------------
+
+  test("cancel() refuses foreign workflow when describe reveals different taskQueue", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+        describe: mock(async () => ({
+          status: "RUNNING" as const,
+          memo: { workflowType: "agentWorkflow", taskQueue: "other-queue" },
+        })),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const foreignId = taskId("task-external-999");
+    await expect(sched.cancel(foreignId)).rejects.toThrow("Operation refused");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("cancel() proceeds for unknown task when describe confirms matching ownership", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+        describe: mock(async () => ({
+          status: "RUNNING" as const,
+          memo: { workflowType: "agentWorkflow", taskQueue: "test" },
+        })),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const foreignId = taskId("task-external-999");
+    const result = await sched.cancel(foreignId);
+    expect(result).toBe(true);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("unschedule() refuses foreign schedule when get reveals different taskQueue", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+        get: mock(async () => ({
+          memo: { workflowType: "agentWorkflow", taskQueue: "other-queue" },
+        })),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const foreignId = makeScheduleId("sched-external-999");
+    await expect(sched.unschedule(foreignId)).rejects.toThrow("Operation refused");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("pause() refuses foreign schedule when get reveals different taskQueue", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+        get: mock(async () => ({
+          memo: { workflowType: "agentWorkflow", taskQueue: "other-queue" },
+        })),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const foreignId = makeScheduleId("sched-external-999");
+    await expect(sched.pause(foreignId)).rejects.toThrow("Operation refused");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Fix 2: Bootstrap from Temporal list APIs
+  // ---------------------------------------------------------------------------
+
+  test("bootstrap() rebuilds running tasks from workflow.list", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+        list: mock(async () => [
+          {
+            workflowId: "wf-restored-1",
+            status: {
+              status: "RUNNING" as const,
+              startTime: 1000,
+              memo: {
+                workflowType: "agentWorkflow",
+                taskQueue: "test",
+                agentId: "agent-bootstrap",
+                mode: "dispatch",
+                inputFingerprint: JSON.stringify({ kind: "text", text: "hello" }),
+                maxRetries: 3,
+              },
+            },
+          },
+        ]),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.bootstrap();
+    expect(sched.stats().running).toBe(1);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("bootstrap() skips terminal workflows from list", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+        list: mock(async () => [
+          {
+            workflowId: "wf-done-1",
+            status: {
+              status: "COMPLETED" as const,
+              startTime: 1000,
+              memo: {
+                workflowType: "agentWorkflow",
+                taskQueue: "test",
+                agentId: "agent-bootstrap",
+                mode: "dispatch",
+                inputFingerprint: JSON.stringify({ kind: "text", text: "done" }),
+                maxRetries: 3,
+              },
+            },
+          },
+        ]),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.bootstrap();
+    expect(sched.stats().running).toBe(0);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("bootstrap() skips list entries with mismatched taskQueue", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+        list: mock(async () => [
+          {
+            workflowId: "wf-other-1",
+            status: {
+              status: "RUNNING" as const,
+              startTime: 1000,
+              memo: {
+                workflowType: "agentWorkflow",
+                taskQueue: "other-queue",
+                agentId: "agent-bootstrap",
+                mode: "dispatch",
+                inputFingerprint: JSON.stringify({ kind: "text", text: "hello" }),
+                maxRetries: 3,
+              },
+            },
+          },
+        ]),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.bootstrap();
+    expect(sched.stats().running).toBe(0);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("bootstrap() rebuilds schedules from schedule.list", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+        list: mock(async () => [
+          {
+            scheduleId: "sched-restored-1",
+            info: {
+              memo: {
+                workflowType: "agentWorkflow",
+                taskQueue: "test",
+                agentId: "agent-bootstrap",
+                mode: "dispatch",
+                expression: "0 * * * *",
+                inputFingerprint: JSON.stringify({ kind: "text", text: "tick" }),
+                maxRetries: 3,
+              },
+            },
+          },
+        ]),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.bootstrap();
+    expect(sched.stats().activeSchedules).toBe(1);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("bootstrap() is a no-op when list APIs are absent", async () => {
+    const client = makeClient(); // no list methods
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await expect(sched.bootstrap()).resolves.toBeUndefined();
+    expect(sched.stats().running).toBe(0);
     await sched[Symbol.asyncDispose]();
   });
 
