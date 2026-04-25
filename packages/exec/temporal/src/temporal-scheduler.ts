@@ -1622,6 +1622,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       // creating a schedule before reconciliation completes would see an empty local map
       // and might create a duplicate of a schedule that already exists in Temporal.
       if (startupCleanupPromise !== undefined) await startupCleanupPromise;
+      assertDurabilityOk(); // re-check after async barrier — startup cleanup may have tripped fail-closed
       // timeoutMs, maxRetries, delayMs, priority, metadata, and idempotencyKey cannot be
       // plumbed into Temporal schedule policies — accepting them silently would give callers
       // a false guarantee that these options survive persistence and affect fired executions.
@@ -1798,6 +1799,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     async unschedule(id: ScheduleId): Promise<boolean> {
       assertDurabilityOk();
       if (startupCleanupPromise !== undefined) await startupCleanupPromise;
+      assertDurabilityOk(); // re-check after async barrier — startup cleanup may have tripped fail-closed
       if (!schedules.has(id)) return false;
       try {
         await config.client.schedule.delete(id);
@@ -1824,11 +1826,17 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
               );
             }
           }
+        } else if (isNotFoundError(err)) {
+          // Temporal says the schedule doesn't exist, but we have a local record for it.
+          // This happens when a previous unschedule() successfully deleted the remote schedule
+          // but then its post-delete persist() failed, leaving a stale entry on disk that was
+          // reloaded on restart. Treat as success and clean up the local ghost entry.
         } else {
           return false;
         }
       }
-      // Remote delete confirmed (or reconciled as not-found) — update local state and persist.
+      // Remote delete confirmed (transport-reconciled, not-found-on-retry, or definite not-found
+      // for known local schedule) — update local state and persist.
       // Propagate persist errors rather than collapsing them into `false`:
       // after a successful remote delete, returning false would misrepresent the outcome.
       schedules.delete(id);
@@ -1840,6 +1848,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     async pause(id: ScheduleId): Promise<boolean> {
       assertDurabilityOk();
       if (startupCleanupPromise !== undefined) await startupCleanupPromise;
+      assertDurabilityOk(); // re-check after async barrier — startup cleanup may have tripped fail-closed
       const schedule = schedules.get(id);
       if (schedule === undefined) return false;
       try {
@@ -1887,6 +1896,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     async resume(id: ScheduleId): Promise<boolean> {
       assertDurabilityOk();
       if (startupCleanupPromise !== undefined) await startupCleanupPromise;
+      assertDurabilityOk(); // re-check after async barrier — startup cleanup may have tripped fail-closed
       const schedule = schedules.get(id);
       if (schedule === undefined) return false;
       try {
