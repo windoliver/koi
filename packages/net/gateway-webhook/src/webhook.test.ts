@@ -10,6 +10,18 @@ describe("WebhookServer — auth guard", () => {
     );
   });
 
+  test("throws when pathPrefix is '/'", () => {
+    expect(() =>
+      createWebhookServer({ port: 0, pathPrefix: "/", allowUnauthenticated: true }, () => {}),
+    ).toThrow("pathPrefix cannot be");
+  });
+
+  test("throws when pathPrefix is empty string", () => {
+    expect(() =>
+      createWebhookServer({ port: 0, pathPrefix: "", allowUnauthenticated: true }, () => {}),
+    ).toThrow("pathPrefix cannot be");
+  });
+
   test("allowUnauthenticated bypasses the guard (testing only)", () => {
     expect(() =>
       createWebhookServer(
@@ -271,6 +283,37 @@ describe("WebhookServer — core dispatch", () => {
     });
     expect(res.status).toBe(200);
     expect(dispatched[0]?.session.routing?.peer).toBe("internal-service");
+  });
+
+  test("URL channel is undefined on authenticated non-provider routes — authenticator must bind it", async () => {
+    // On authenticated routes, channel from URL is unsigned and untrusted.
+    // The authenticator must explicitly set routing.channel.
+    const authenticator: WebhookAuthenticator = async () => ({
+      ok: true,
+      value: { agentId: "webhook" }, // no routing.channel — intentionally
+    });
+    server = createWebhookServer({ port: 0, pathPrefix: "/webhook" }, dispatcher, authenticator);
+    await server.start();
+    const res = await fetch(`http://localhost:${server.port()}/webhook/my-app`, {
+      method: "POST",
+      body: JSON.stringify({ data: true }),
+    });
+    expect(res.status).toBe(200);
+    expect(dispatched[0]?.session.routing?.channel).toBeUndefined();
+  });
+
+  test("URL channel is trusted on allowUnauthenticated routes", async () => {
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
+      dispatcher,
+    );
+    await server.start();
+    const res = await fetch(`http://localhost:${server.port()}/webhook/my-app`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(200);
+    expect(dispatched[0]?.session.routing?.channel).toBe("my-app");
   });
 
   test("path prefix with trailing slash works", async () => {

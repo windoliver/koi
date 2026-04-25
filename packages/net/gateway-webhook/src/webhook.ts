@@ -211,6 +211,12 @@ export function createWebhookServer(
   const prefix = config.pathPrefix.endsWith("/")
     ? config.pathPrefix.slice(0, -1)
     : config.pathPrefix;
+  if (prefix === "") {
+    throw new Error(
+      "createWebhookServer: pathPrefix cannot be '/' or empty. " +
+        "Use a specific path like '/webhook' to avoid matching every POST route.",
+    );
+  }
 
   function nextFrameId(): string {
     return `wh-${Date.now().toString(36)}-${(frameCounter++).toString(36)}`;
@@ -239,10 +245,13 @@ export function createWebhookServer(
         return jsonResponse(400, { ok: false, error: "Unknown webhook provider" });
       }
       provider = getProvider(seg0);
-      channel = seg0;
+      channel = seg0; // provider kind is verified by signature — trusted
       account = seg1;
     } else {
-      channel = seg0;
+      // URL-derived channel is unsigned on non-provider routes. Trust it only
+      // when routing risks are explicitly accepted (allowUnauthenticated). On
+      // authenticated routes the authenticator must bind channel via routing.
+      channel = config.allowUnauthenticated === true ? seg0 : undefined;
       account = seg1;
     }
 
