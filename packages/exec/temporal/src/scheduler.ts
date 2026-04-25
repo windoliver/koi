@@ -51,6 +51,7 @@ export interface WorkflowExecutionStatus {
 /** Subset of schedule state fetched for ownership verification on idempotent replay. */
 export interface ScheduleGetInfo {
   readonly memo?: Readonly<Record<string, unknown>> | undefined;
+  readonly paused?: boolean | undefined;
 }
 
 /** Single workflow entry returned by list — used for bootstrap state reconstruction. */
@@ -820,7 +821,7 @@ export function createTemporalScheduler(
           mode,
           expression: m.expression,
           timezone: typeof m.timezone === "string" ? m.timezone : undefined,
-          paused: false,
+          paused: entry.info.paused === true,
           taskOptions: undefined,
         });
       }

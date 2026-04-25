@@ -1226,6 +1226,7 @@ describe("createTemporalScheduler", () => {
           {
             scheduleId: "sched-restored-1",
             info: {
+              paused: false,
               memo: {
                 workflowType: "agentWorkflow",
                 taskQueue: "test",
@@ -1243,6 +1244,44 @@ describe("createTemporalScheduler", () => {
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
     await sched.bootstrap();
     expect(sched.stats().activeSchedules).toBe(1);
+    expect(sched.stats().pausedSchedules).toBe(0);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("bootstrap() restores paused state from schedule.list — does not default to active", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+        list: mock(async () => [
+          {
+            scheduleId: "sched-paused-1",
+            info: {
+              paused: true,
+              memo: {
+                workflowType: "agentWorkflow",
+                taskQueue: "test",
+                agentId: "agent-bootstrap",
+                mode: "dispatch",
+                expression: "0 * * * *",
+                inputFingerprint: JSON.stringify({ kind: "text", text: "tick" }),
+                maxRetries: 3,
+              },
+            },
+          },
+        ]),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.bootstrap();
+    expect(sched.stats().pausedSchedules).toBe(1);
+    expect(sched.stats().activeSchedules).toBe(0);
     await sched[Symbol.asyncDispose]();
   });
 

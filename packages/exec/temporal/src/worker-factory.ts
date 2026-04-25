@@ -103,19 +103,32 @@ export async function createTemporalWorker(
   });
 
   // Tracks the promise returned by worker.run() so dispose() can drain.
+  // wrappedWorker intercepts run() so any call path — handle.run() or
+  // handle.worker.run() — always records runPromise.
   let runPromise: Promise<void> | undefined;
 
+  const wrappedWorker: WorkerLike = {
+    run(): Promise<void> {
+      if (runPromise === undefined) {
+        runPromise = worker.run();
+      }
+      return runPromise;
+    },
+    shutdown(): void {
+      worker.shutdown();
+    },
+  };
+
   return {
-    worker,
+    worker: wrappedWorker,
     connection,
 
     run(): Promise<void> {
-      runPromise = worker.run();
-      return runPromise;
+      return wrappedWorker.run();
     },
 
     async dispose(): Promise<void> {
-      worker.shutdown();
+      wrappedWorker.shutdown();
       // Wait for the worker loop to drain before closing the transport.
       // If run() was never called, shutdown is a no-op on a stopped worker.
       if (runPromise !== undefined) {

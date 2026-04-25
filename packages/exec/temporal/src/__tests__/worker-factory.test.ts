@@ -35,11 +35,13 @@ describe("createTemporalWorker", () => {
   });
 
   test("dispose without run: calls shutdown then connection.close", async () => {
-    const factory = makeWorkerFactory();
+    const innerWorker = { run: mock(async () => {}), shutdown: mock(() => {}) };
+    const innerConnection = { close: mock(async () => {}) };
+    const factory = mock(async () => ({ worker: innerWorker, connection: innerConnection }));
     const handle = await createTemporalWorker({ taskQueue: "q" }, {}, "/wf.js", factory);
     await handle.dispose();
-    expect(handle.worker.shutdown).toHaveBeenCalledTimes(1);
-    expect(handle.connection.close).toHaveBeenCalledTimes(1);
+    expect(innerWorker.shutdown).toHaveBeenCalledTimes(1);
+    expect(innerConnection.close).toHaveBeenCalledTimes(1);
   });
 
   test("dispose after run: drains worker before closing connection", async () => {
@@ -106,5 +108,38 @@ describe("createTemporalWorker", () => {
     await expect(
       createTemporalWorker({ taskQueue: "q" }, {}, "/wf.js", badFactory),
     ).rejects.toThrow("worker create failed");
+  });
+
+  test("dispose drains when started via handle.worker.run() (not handle.run())", async () => {
+    const order: string[] = [];
+    let resolveRun!: () => void;
+    const worker = {
+      run: mock(
+        () =>
+          new Promise<void>((res) => {
+            resolveRun = () => {
+              order.push("run-settled");
+              res();
+            };
+          }),
+      ),
+      shutdown: mock(() => {
+        order.push("shutdown");
+        resolveRun();
+      }),
+    };
+    const connection = {
+      close: mock(async () => {
+        order.push("connection-close");
+      }),
+    };
+    const factory = mock(async () => ({ worker, connection }));
+    const handle = await createTemporalWorker({ taskQueue: "q" }, {}, "/wf.js", factory);
+
+    // Start via the exposed worker property (the path that bypassed drain before this fix).
+    void handle.worker.run();
+    await handle.dispose();
+
+    expect(order).toEqual(["shutdown", "run-settled", "connection-close"]);
   });
 });
