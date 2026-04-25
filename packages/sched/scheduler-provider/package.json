@@ -1,0 +1,26 @@
+{
+  "name": "@koi/scheduler-provider",
+  "description": "Agent-facing tools for scheduler interaction (9 tools via SchedulerComponent)",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/scheduler": "workspace:*"
+  },
+  "koi": {
+    "optional": true
+  }
+}
