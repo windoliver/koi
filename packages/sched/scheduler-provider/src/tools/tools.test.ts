@@ -76,7 +76,7 @@ describe("scheduler_schedule tool", () => {
   it("rejects invalid cron", async () => {
     const comp = makeComponent();
     const tool = createScheduleTool(comp);
-    await expect(
+    void expect(
       tool.execute({ expression: "bad-cron", input: "x", mode: "spawn" }),
     ).rejects.toThrow();
   });
