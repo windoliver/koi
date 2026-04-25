@@ -15,6 +15,10 @@ import { resolveWorktreeBasePath, runGit } from "@koi/git-utils";
 export interface GitWorktreeBackendConfig {
   readonly repoPath: string;
   readonly worktreeBasePath?: string;
+  // Only enable in sandboxed backends where agents cannot forge git refs.
+  // On unsandboxed backends, an agent with repo access can write ownership refs
+  // under another agent's hex, causing cross-agent workspace collisions.
+  readonly trustOwnershipRefs?: boolean;
 }
 
 interface RegistryEntry {
@@ -289,8 +293,11 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       }
 
       // Second pass: recover branch-drifted workspaces via ownership refs.
-      // If the agent switched branches inside the worktree, the first pass missed it.
-      // refs/koi-ownership/<hex>/<wsId> is written at create time and survives branch changes.
+      // Only enabled when trustOwnershipRefs=true (sandboxed backends). On unsandboxed
+      // backends, an agent with repo access can forge ownership refs under another agent's
+      // hex, which would cause the victim's next attach() to try disposing an unrelated
+      // live workspace — a cross-agent DoS via forgeable git state.
+      if (!config.trustOwnershipRefs) return matches.sort((a, b) => b.createdAt - a.createdAt);
       const alreadyFound = new Set(matches.map((m) => m.id as string));
       const ownershipResult = await runGit(
         ["for-each-ref", "--format=%(refname)", `refs/koi-ownership/${searchHex}/`],

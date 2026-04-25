@@ -169,13 +169,14 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
     const callerToken = config.reuseToken ?? null;
 
     if (sharedStore.dormantTimer !== null) {
-      // Dormant store: only reuse when the caller presents the exact token it was created with.
-      // Without a match, evict so a recycled groupId does not inherit prior-lifecycle state.
-      if (callerToken === null || callerToken !== sharedStore.reuseToken) {
-        clearTimeout(sharedStore.dormantTimer);
-        if (sharedStore.timer !== null) clearInterval(sharedStore.timer);
-        groupRegistry.delete(groupId as string);
-        sharedStore = undefined;
+      // Dormant store: reject callers with a mismatched or absent token.
+      // Evicting would destroy state the original owner expects to reclaim within dormantTtlMs.
+      // The dormant TTL will naturally expire the store; rejected callers must use a different
+      // groupId or wait. Only evict-and-replace when the token matches (legitimate reopen).
+      if (sharedStore.reuseToken !== null && callerToken !== sharedStore.reuseToken) {
+        throw new Error(
+          `Scratchpad group "${groupId}" is dormant and owned by a different reuseToken`,
+        );
       }
     } else if (sharedStore.reuseToken !== null && callerToken !== sharedStore.reuseToken) {
       // Active store with a reuseToken fence: ALL new handles must present the exact token,

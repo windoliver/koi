@@ -168,10 +168,10 @@ describe("createGitWorktreeBackend", () => {
   it("findByAgentId still finds workspace after agent switched branches (via ownership ref)", async () => {
     // An unsandboxed agent can switch branches, breaking git-owned branch-name discovery.
     // The ownership ref (refs/koi-ownership/<hex>/<wsId>) is written at create time in the
-    // main repo and survives branch changes — findByAgentId uses it as a fallback so the
-    // provider can discover and dispose the drifted workspace before creating a new one,
-    // upholding the single-workspace-per-agent invariant.
-    const backend = createGitWorktreeBackend({ repoPath });
+    // main repo and survives branch changes. When trustOwnershipRefs=true (safe for sandboxed
+    // backends), findByAgentId uses it as a fallback so the provider can discover and dispose
+    // the drifted workspace before creating a new one.
+    const backend = createGitWorktreeBackend({ repoPath, trustOwnershipRefs: true });
     const result = await backend.create(aid, defaultConfig);
     expect(result.ok).toBe(true);
     if (!result.ok) return;

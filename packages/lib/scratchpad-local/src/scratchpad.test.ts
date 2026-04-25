@@ -463,7 +463,10 @@ describe("createLocalScratchpad", () => {
       }
     });
 
-    it("dormant store is evicted when new handle opens without a matching reuseToken", () => {
+    it("dormant store rejects caller with wrong token instead of evicting retained state", () => {
+      // Evicting on bad-token was a data-loss risk: the legitimate owner could no longer
+      // reclaim the store within dormantTtlMs after a single bad-token open attempt.
+      // Now we reject the mismatched caller and leave the dormant store intact.
       const evictGid = agentGroupId(`group-evict-${++gidCounter}`);
       const sp1 = createLocalScratchpad({
         groupId: evictGid,
@@ -471,14 +474,24 @@ describe("createLocalScratchpad", () => {
         dormantTtlMs: 60_000,
         reuseToken: "original-token",
       });
-      sp1.write({ path: scratchpadPath("data"), content: "should-be-evicted" });
+      sp1.write({ path: scratchpadPath("data"), content: "should-survive" });
       sp1.close(); // refCount → 0; dormant window starts
 
-      // New handle — no token (or wrong token) — should NOT inherit prior entries
-      const sp2 = createLocalScratchpad({ groupId: evictGid, authorId: aid });
+      // Caller with wrong token: rejected; dormant state must be preserved
+      expect(() => createLocalScratchpad({ groupId: evictGid, authorId: aid })).toThrow(
+        "dormant and owned by a different reuseToken",
+      );
+
+      // Legitimate owner with correct token can still reclaim the dormant store
+      const sp2 = createLocalScratchpad({
+        groupId: evictGid,
+        authorId: aid,
+        reuseToken: "original-token",
+      });
       try {
         const r = sp2.read(scratchpadPath("data"));
-        expect(r.ok).toBe(false); // store was evicted; entry not found
+        expect(r.ok).toBe(true); // state was preserved
+        if (r.ok) expect(r.value.content).toBe("should-survive");
       } finally {
         sp2.close();
       }

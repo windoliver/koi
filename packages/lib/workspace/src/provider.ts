@@ -217,7 +217,6 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       }
       throw e; // re-attestation failed but disposed cleanly — bubble up
     }
-    attached.set(agentId, candidate);
     return makeResult(candidate);
   }
 
@@ -329,6 +328,8 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
                     );
                   }
                 }
+                // Commit only after all cleanup succeeds — makes reuse atomic from the caller's view.
+                attached.set(agentId, candidate);
                 return reused;
               }
             }
