@@ -586,6 +586,7 @@ export interface TemporalClientLike {
     readonly delete: (scheduleId: string) => Promise<void>;
     readonly pause: (scheduleId: string, note?: string) => Promise<void>;
     readonly unpause: (scheduleId: string, note?: string) => Promise<void>;
+    readonly getHandle: (scheduleId: string) => { readonly describe: () => Promise<unknown> };
   };
 }
 
@@ -763,25 +764,37 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     return { pending, running, completed, failed, deadLettered, activeSchedules, pausedSchedules };
   }
 
-  // On restart, clean up pending schedule IDs: try to delete any orphaned Temporal schedule
-  // that was created before a crash (between remote create and local persist). Only remove the
-  // pending marker after a CONFIRMED delete so a transient Temporal failure does not permanently
-  // lose track of a live recurring schedule. Failed IDs stay in pendingScheduleIds and are
-  // retried on the next restart.
+  // On restart, reconcile pending schedule IDs. A pending marker means: the pre-commit
+  // persist ran, but we don't know if schedule.create() succeeded (process may have crashed
+  // between remote create and the local-tracking persist). We MUST NOT blindly delete: if
+  // create() succeeded but persist() failed, deletion would silently remove a valid recurring
+  // schedule. Instead, query Temporal first:
+  //   - Schedule exists → it was successfully created; leave it alive and clear the marker.
+  //     We lose local tracking for this restart cycle, but the schedule keeps firing in Temporal.
+  //   - Schedule not found → create() never completed; safe to clear the marker (no-op).
+  //   - Transient error → keep the marker and retry on the next restart.
   if (pendingScheduleIds.size > 0) {
     startupCleanupPromise = (async () => {
       let anyCleared = false;
       for (const id of [...pendingScheduleIds]) {
         try {
-          await config.client.schedule.delete(id);
-          schedules.delete(id);
+          await config.client.schedule.getHandle(id).describe();
+          // Schedule exists in Temporal — do NOT delete it. The create() call succeeded
+          // before the crash; the schedule is valid and actively firing. Clear the pending
+          // marker so future restarts don't revisit it.
           pendingScheduleIds.delete(id);
           anyCleared = true;
-        } catch {
-          // Delete failed (transient error or schedule already gone) — retain the ID so
-          // the next restart retries. The cost is one extra no-op delete per restart if the
-          // schedule never existed, which is acceptable compared to permanently forgetting a
-          // live schedule.
+        } catch (describeErr: unknown) {
+          const isNotFound =
+            describeErr instanceof Error &&
+            /not.?found|does.?not.?exist|schedule.*not.*exist/i.test(describeErr.message);
+          if (isNotFound) {
+            // Schedule does not exist in Temporal — create() never completed.
+            // Clear the marker; nothing to clean up remotely.
+            pendingScheduleIds.delete(id);
+            anyCleared = true;
+          }
+          // Transient error (connection, timeout): keep the ID so the next restart retries.
         }
       }
       if (anyCleared && config.dbPath !== undefined) {
@@ -1174,19 +1187,23 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           return id;
         }
 
-        // Dispatch: ambiguous signal failure — the signal may have been delivered but the
-        // client lost the ACK (timeout, connection reset, transport failure). If we mark
-        // as failed and rethrow, the caller will retry with a NEW task ID, producing a
-        // duplicate signal into the live workflow. Duplicate dispatch causes irreversible
-        // side effects (duplicate tool calls, duplicate messages). Instead, treat delivery
-        // as optimistically successful and return the task ID without throwing — the caller
-        // gets no exception and will not generate a retry. Only throw for definitive
-        // rejections where the signal was provably not enqueued (workflow not found).
-        const isDefiniteSignalReject =
+        // Dispatch: if workflow.signal() throws a genuine transport-level failure (timeout,
+        // connection reset, gRPC UNAVAILABLE/GOAWAY), the signal MAY have been delivered but
+        // the client lost the ACK. Rethrowing lets callers retry with a NEW task ID, which
+        // produces a duplicate signal into the live workflow — duplicate irreversible tool
+        // calls, duplicate messages. For these ambiguous cases, mark as optimistically
+        // completed and return the task ID without throwing.
+        // For all other errors — auth failures, bad namespace/task-queue, invalid arguments,
+        // workflow not found, etc. — the signal was provably never enqueued, so we fail+throw
+        // so callers know the task was not delivered and can take corrective action.
+        // We use a narrow transport-failure allowlist (not a "definite rejection" denylist)
+        // because new rejection classes should default to surfacing, not suppressing.
+        const isAmbiguousSignal =
           mode === "dispatch" &&
           err instanceof Error &&
-          /not.?found|does.?not.?exist|no.*workflow|workflow.*not.*exist/i.test(err.message);
-        const isAmbiguousSignal = mode === "dispatch" && !isDefiniteSignalReject;
+          /timeout|timed.?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|connection.?reset|connection.?refused|UNAVAILABLE|GOAWAY|transport/i.test(
+            err.message,
+          );
         if (isAmbiguousSignal) {
           const errorMsg = err instanceof Error ? err.message : String(err);
           const completedAt = Date.now();

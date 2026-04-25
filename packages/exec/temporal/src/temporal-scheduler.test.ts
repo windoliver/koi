@@ -21,6 +21,12 @@ function makeMockClient(wfOverrides?: Partial<TemporalClientLike["workflow"]>): 
       delete: mock(async () => undefined),
       pause: mock(async () => undefined),
       unpause: mock(async () => undefined),
+      // Default: schedule does not exist (not-found) — pending IDs are cleared on startup.
+      getHandle: mock(() => ({
+        describe: mock(async () => {
+          throw new Error("schedule not found");
+        }),
+      })),
     },
   };
 }
@@ -292,14 +298,14 @@ describe("rollback safety", () => {
     expect(client.workflow.cancel).toHaveBeenCalled();
   });
 
-  test("dispatch signal failure — ambiguous transport error marks completed and does not throw", async () => {
-    // When workflow.signal() throws an ambiguous error (timeout, connection reset), we cannot
-    // tell if the signal was delivered. Rethrowing would let callers retry with a NEW task ID,
-    // producing a duplicate signal into the live workflow (irreversible side effects). Instead:
-    // treat delivery as optimistically successful, return the task ID, record completed.
+  test("dispatch signal failure — transport error (ECONNRESET) marks completed and does not throw", async () => {
+    // When workflow.signal() throws a transport-level error (connection reset, timeout, UNAVAILABLE),
+    // the signal MAY have been delivered — the client lost the ACK, not the signal. Rethrowing
+    // would let callers retry with a NEW task ID, duplicating the signal in the live workflow.
+    // Instead: treat delivery as optimistically successful, return the task ID, record completed.
     const client = makeMockClient({
       signal: mock(async () => {
-        throw new Error("signal failed — transport error");
+        throw new Error("ECONNRESET: connection reset by peer");
       }),
     });
     const scheduler = createTemporalScheduler(makeConfig(client));
@@ -327,6 +333,21 @@ describe("rollback safety", () => {
     const tasks = await scheduler.query({});
     expect(tasks[0]?.status).toBe("failed");
     expect(client.workflow.cancel).not.toHaveBeenCalled();
+  });
+
+  test("dispatch signal failure — auth/permission error marks failed and throws (not ambiguous)", async () => {
+    // Auth failures are definite rejections — the signal was never enqueued. Surface the error.
+    const client = makeMockClient({
+      signal: mock(async () => {
+        throw new Error("permission denied: unauthorized");
+      }),
+    });
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await expect(scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch")).rejects.toThrow(
+      "permission denied",
+    );
+    const tasks = await scheduler.query({});
+    expect(tasks[0]?.status).toBe("failed");
   });
 
   test("dispatch sends whole message batch as single signal (atomic delivery)", async () => {
@@ -470,6 +491,11 @@ describe("schedule / unschedule", () => {
         delete: mock(async () => undefined),
         pause: mock(async () => undefined),
         unpause: mock(async () => undefined),
+        getHandle: mock(() => ({
+          describe: mock(async () => {
+            throw new Error("schedule not found");
+          }),
+        })),
       },
     };
     const scheduler = createTemporalScheduler(makeConfig(client));
@@ -923,7 +949,7 @@ describe("state persistence (dbPath)", () => {
     expect(client.workflow.cancel).not.toHaveBeenCalled();
 
     // Task must be "running" (watcher attached), not "failed".
-    const [task] = scheduler.query({});
+    const [task] = await scheduler.query({});
     expect(task?.status).toBe("running");
     expect(events).toContain("task:submitted");
 
@@ -1340,7 +1366,9 @@ describe("two-phase pre-commit", () => {
     const client = makeMockClient({
       start: mock(async () => {
         // Inspect in-memory state mid-start — pre-commit must have already happened.
-        pendingCount = (schedulerRef?.query({}) ?? []).filter((t) => t.status === "pending").length;
+        pendingCount = ((await schedulerRef?.query({})) ?? []).filter(
+          (t) => t.status === "pending",
+        ).length;
         return { workflowId: "wf-1" };
       }),
     });
@@ -1355,7 +1383,9 @@ describe("two-phase pre-commit", () => {
     let schedulerRef: ReturnType<typeof createTemporalScheduler> | undefined;
     const client = makeMockClient({
       signal: mock(async () => {
-        pendingCount = (schedulerRef?.query({}) ?? []).filter((t) => t.status === "pending").length;
+        pendingCount = ((await schedulerRef?.query({})) ?? []).filter(
+          (t) => t.status === "pending",
+        ).length;
       }),
     });
     schedulerRef = createTemporalScheduler(makeConfig(client));
@@ -1385,6 +1415,11 @@ describe("two-phase pre-commit", () => {
         delete: mock(async () => undefined),
         pause: mock(async () => undefined),
         unpause: mock(async () => undefined),
+        getHandle: mock(() => ({
+          describe: mock(async () => {
+            throw new Error("schedule not found");
+          }),
+        })),
       },
     };
     const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
@@ -1451,8 +1486,8 @@ describe("idempotencyKey", () => {
       idempotencyKey: "stable-key",
     });
     // ID is namespaced: agentId:mode:key — prevents cross-agent key collisions.
-    expect(id1).toBe(`${AGENT_ID}:dispatch:stable-key`);
-    expect(id2).toBe(`${AGENT_ID}:dispatch:stable-key`);
+    expect(String(id1)).toBe(`${AGENT_ID}:dispatch:stable-key`);
+    expect(String(id2)).toBe(`${AGENT_ID}:dispatch:stable-key`);
     await scheduler[Symbol.asyncDispose]();
   });
 
@@ -1546,7 +1581,7 @@ describe("idempotent spawn — retry after cancel does not attach to cancelling 
     expect(typeof id).toBe("string");
 
     // Cancel the workflow.
-    await s.cancel(id as TaskId);
+    await s.cancel(id);
 
     // Retry with the same idempotencyKey — should throw because it's a retry-after-cancel
     // and "already running" reflects the cancelling workflow, not a fresh one.
@@ -1576,7 +1611,7 @@ describe("idempotent spawn — definite rejection throws immediately", () => {
     // cancel must NOT be called (idempotencyKey present)
     expect(client.workflow.cancel).not.toHaveBeenCalled();
     // task should be failed, not running
-    const tasks = scheduler.query({});
+    const tasks = await scheduler.query({});
     expect(tasks[0]?.status).toBe("failed");
     await scheduler[Symbol.asyncDispose]();
   });
@@ -1620,15 +1655,15 @@ describe("idempotencyKey — failed submissions allow retry", () => {
     const client = makeMockClient({
       signal: mock(async () => {
         callCount++;
-        if (callCount === 1) throw new Error("transient");
+        if (callCount === 1) throw new Error("ECONNRESET: connection reset by peer");
       }),
     });
     const scheduler = createTemporalScheduler(makeConfig(client));
-    // First attempt: signal throws "transient" — treated as possibly delivered, does NOT throw
+    // First attempt: signal throws "ECONNRESET" — treated as possibly delivered, does NOT throw
     const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", {
       idempotencyKey: "retry-key",
     });
-    expect(id).toBe(`${AGENT_ID}:dispatch:retry-key`);
+    expect(String(id)).toBe(`${AGENT_ID}:dispatch:retry-key`);
     const tasks = await scheduler.query({});
     expect(tasks[0]?.status).toBe("completed"); // optimistic delivery
     // Second call with same key — idempotency guard short-circuits (already completed), no second signal
@@ -1777,14 +1812,14 @@ describe("startup reconciliation — persisted so second restart does not duplic
 
     // First restart: reconciliation marks task as "failed" and persists.
     const s1 = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
-    const hist1 = s1.history({});
+    const hist1 = await s1.history({});
     expect(hist1).toHaveLength(1);
     expect(hist1[0]?.status).toBe("failed");
     await s1[Symbol.asyncDispose]();
 
     // Second restart from the same dbPath: reconciliation must NOT run again (already committed).
     const s2 = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
-    const hist2 = s2.history({});
+    const hist2 = await s2.history({});
     // History must still be exactly 1 record — no duplicate from replaying the recovery.
     expect(hist2).toHaveLength(1);
     expect(hist2[0]?.status).toBe("failed");
@@ -1851,6 +1886,11 @@ describe("schedule() — create error path retains pending marker on failed dele
         }),
         pause: mock(async () => undefined),
         unpause: mock(async () => undefined),
+        getHandle: mock(() => ({
+          describe: mock(async () => {
+            throw new Error("schedule not found");
+          }),
+        })),
       },
     };
     const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
@@ -1894,6 +1934,11 @@ describe("schedule() — create error path retains pending marker on failed dele
         delete: mock(async () => undefined), // delete succeeds
         pause: mock(async () => undefined),
         unpause: mock(async () => undefined),
+        getHandle: mock(() => ({
+          describe: mock(async () => {
+            throw new Error("schedule not found");
+          }),
+        })),
       },
     };
     const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
@@ -1914,8 +1959,8 @@ describe("input snapshot — caller mutation safety", () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     await scheduler.submit(AGENT_ID, input, "spawn");
     // Mutate after submit
-    (input as Record<string, unknown>).text = "mutated";
-    const tasks = scheduler.query({});
+    (input as unknown as Record<string, unknown>).text = "mutated";
+    const tasks = await scheduler.query({});
     // Stored task should still reflect the original text
     const storedInput = tasks[0]?.input as { text?: string } | undefined;
     expect(storedInput?.text).toBe("original");
@@ -1923,8 +1968,9 @@ describe("input snapshot — caller mutation safety", () => {
   });
 });
 
-describe("pending-schedule cleanup — retain on failed delete", () => {
-  test("cleanup retains pendingScheduleId in persisted state when delete fails", async () => {
+describe("pending-schedule cleanup — query-first, no blind deletion", () => {
+  test("cleanup retains pendingScheduleId when describe throws a transient error", async () => {
+    // Transient describe failure (connection error) — keep the ID so the next restart retries.
     const { readFileSync, writeFileSync } = await import("node:fs");
     const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
     const pendingId = "sched:pending-123";
@@ -1948,20 +1994,111 @@ describe("pending-schedule cleanup — retain on failed delete", () => {
       },
       schedule: {
         create: mock(async () => undefined),
-        delete: mock(async () => {
-          throw new Error("transient network error");
-        }),
+        delete: mock(async () => undefined),
         pause: mock(async () => undefined),
         unpause: mock(async () => undefined),
+        getHandle: mock(() => ({
+          describe: mock(async () => {
+            throw new Error("UNAVAILABLE: upstream connect error"); // transient, not "not found"
+          }),
+        })),
       },
     };
-    // Wait for async cleanup to run
     const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
     await new Promise((r) => setTimeout(r, 50));
-    // pendingScheduleId must still be in persisted state since delete failed
     const state = JSON.parse(readFileSync(dbPath, "utf-8")) as { pendingScheduleIds?: string[] };
-    // Delete failed — pending ID should NOT have been cleared from disk
+    // Transient error — pending ID must NOT have been cleared from disk
     expect(state.pendingScheduleIds).toContain(pendingId);
+    // Schedule must NOT have been deleted
+    expect(client.schedule.delete).not.toHaveBeenCalled();
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("cleanup clears pendingScheduleId when schedule does not exist in Temporal", async () => {
+    // create() never completed — schedule is not-found. Clear the marker, nothing to clean up.
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const pendingId = "sched:pending-456";
+    writeFileSync(
+      dbPath,
+      JSON.stringify({
+        tasks: [],
+        taskWorkflowIds: [],
+        cancelledTaskIds: [],
+        schedules: [],
+        history: [],
+        pendingScheduleIds: [pendingId],
+      }),
+    );
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        signal: mock(async () => undefined),
+        cancel: mock(async () => undefined),
+        getResult: mock(async () => new Promise<unknown>(() => {})),
+      },
+      schedule: {
+        create: mock(async () => undefined),
+        delete: mock(async () => undefined),
+        pause: mock(async () => undefined),
+        unpause: mock(async () => undefined),
+        getHandle: mock(() => ({
+          describe: mock(async () => {
+            throw new Error("schedule not found"); // definite not-found
+          }),
+        })),
+      },
+    };
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    await new Promise((r) => setTimeout(r, 50));
+    const state = JSON.parse(readFileSync(dbPath, "utf-8")) as { pendingScheduleIds?: string[] };
+    // Not-found → cleared
+    expect(state.pendingScheduleIds).not.toContain(pendingId);
+    // No delete call — nothing to remove
+    expect(client.schedule.delete).not.toHaveBeenCalled();
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("cleanup clears pendingScheduleId without deleting when schedule exists in Temporal", async () => {
+    // create() succeeded before crash — schedule is alive. Do NOT delete. Clear the marker.
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const pendingId = "sched:pending-789";
+    writeFileSync(
+      dbPath,
+      JSON.stringify({
+        tasks: [],
+        taskWorkflowIds: [],
+        cancelledTaskIds: [],
+        schedules: [],
+        history: [],
+        pendingScheduleIds: [pendingId],
+      }),
+    );
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        signal: mock(async () => undefined),
+        cancel: mock(async () => undefined),
+        getResult: mock(async () => new Promise<unknown>(() => {})),
+      },
+      schedule: {
+        create: mock(async () => undefined),
+        delete: mock(async () => undefined),
+        pause: mock(async () => undefined),
+        unpause: mock(async () => undefined),
+        getHandle: mock(() => ({
+          describe: mock(async () => ({ scheduleId: pendingId })), // schedule exists
+        })),
+      },
+    };
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    await new Promise((r) => setTimeout(r, 50));
+    const state = JSON.parse(readFileSync(dbPath, "utf-8")) as { pendingScheduleIds?: string[] };
+    // Schedule existed → marker cleared (schedule kept alive)
+    expect(state.pendingScheduleIds).not.toContain(pendingId);
+    // MUST NOT have deleted the live schedule
+    expect(client.schedule.delete).not.toHaveBeenCalled();
     await scheduler[Symbol.asyncDispose]();
   });
 });
@@ -1982,6 +2119,11 @@ describe("schedule() — idempotent on create failure", () => {
         delete: mock(async () => undefined),
         pause: mock(async () => undefined),
         unpause: mock(async () => undefined),
+        getHandle: mock(() => ({
+          describe: mock(async () => {
+            throw new Error("schedule not found");
+          }),
+        })),
       },
     };
     const scheduler = createTemporalScheduler(makeConfig(client));
