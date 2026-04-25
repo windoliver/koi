@@ -359,6 +359,60 @@ describe("WebhookServer — core dispatch", () => {
     expect(dispatched[0]?.session.routing?.account).toBe("my-tenant");
   });
 
+  test("authenticator without account binding rejects account-scoped URL with shared secret", async () => {
+    // An authenticator that doesn't bind routing.account cannot authorize account paths
+    // when the provider secret is shared (not per-account). The URL account is not
+    // verified by the signature, so accepting it without explicit binding is unsafe.
+    const secret = "test-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+    const ignorantAuthenticator: WebhookAuthenticator = async () => ({
+      ok: true,
+      value: { agentId: "webhook" }, // no routing.account set
+    });
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
+      dispatcher,
+      ignorantAuthenticator,
+      { github: secret },
+    );
+    await server.start();
+    const res = await fetch(`http://localhost:${server.port()}/webhook/github/some-tenant`, {
+      method: "POST",
+      headers: { "X-Hub-Signature-256": sig, "Content-Type": "application/json" },
+      body,
+    });
+    expect(res.status).toBe(401);
+    expect(dispatched).toHaveLength(0);
+  });
+
+  test("authenticator that explicitly binds routing.account accepts account-scoped URL", async () => {
+    const secret = "test-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+    const bindingAuthenticator: WebhookAuthenticator = async (req) => {
+      const urlAccount = new URL(req.url).pathname.split("/")[3]; // extract from path
+      return {
+        ok: true,
+        value: { agentId: "webhook", routing: { account: urlAccount } },
+      };
+    };
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
+      dispatcher,
+      bindingAuthenticator,
+      { github: secret },
+    );
+    await server.start();
+    const res = await fetch(`http://localhost:${server.port()}/webhook/github/my-org`, {
+      method: "POST",
+      headers: { "X-Hub-Signature-256": sig, "Content-Type": "application/json" },
+      body,
+    });
+    expect(res.status).toBe(200);
+    expect(dispatched[0]?.session.routing?.account).toBe("my-org");
+  });
+
   test("dedup keys are scoped by provider+account — same Slack event_id from two tenants dispatches both", async () => {
     // Two Slack tenants with different secrets should have independent dedup spaces.
     // If keys were unscoped, the second delivery would be incorrectly blocked as duplicate.

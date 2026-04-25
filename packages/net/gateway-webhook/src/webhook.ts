@@ -388,6 +388,26 @@ export function createWebhookServer(
       // not accidentally clear the already-verified channel or authenticated account.
       routing = { ...routing, ...(authResult.value.routing ?? {}) };
       metadata = authResult.value.metadata ?? metadata;
+
+      // Account binding enforcement: if the URL has an account path that was NOT
+      // authenticated by the provider secret, require the authenticator to have
+      // explicitly bound the same account in routing. Without this check, an
+      // authenticator that omits routing.account silently accepts any account URL.
+      if (
+        provider !== undefined &&
+        account !== undefined &&
+        !accountAuthenticated &&
+        config.allowUnauthenticated !== true &&
+        routing.account !== account
+      ) {
+        if (pendingDedupKey !== undefined && pendingToken !== undefined) {
+          idempotencyStore.abort(pendingDedupKey, pendingToken);
+        }
+        return jsonResponse(401, {
+          ok: false,
+          error: "Authenticator did not bind the URL account — route rejected",
+        });
+      }
     }
 
     const frameId = nextFrameId();
@@ -428,12 +448,12 @@ export function createWebhookServer(
       }, leaseRenewalMs);
       if (config.maxDispatchMs !== undefined) {
         maxDispatchTimer = setTimeout(() => {
+          // Mark timed out but keep renewal running — the lease must stay live
+          // until the handler actually finishes. Stopping renewal here would let
+          // the lease expire while the handler is still in flight, opening a window
+          // where a provider retry and the original handler run concurrently and
+          // both commit side effects.
           dispatchTimedOut = true;
-          // Stop renewing — lease will expire after processingTtlMs, at which point
-          // provider retries are accepted. Do NOT abort here: aborting immediately
-          // would open a window where the original handler and a provider retry both
-          // run concurrently, producing duplicate side effects.
-          clearInterval(renewalTimer);
         }, config.maxDispatchMs);
       }
     }
@@ -453,9 +473,10 @@ export function createWebhookServer(
     clearTimeout(maxDispatchTimer);
     clearInterval(renewalTimer);
 
-    // Timeout fired: stop renewing so the lease will expire on its own — provider
-    // retries will be accepted once processingTtlMs elapses. Abort now that work
-    // is done (no concurrent retry risk) and return 503 so the provider retries.
+    // Timeout fired: dispatch took too long. Abort now that work has actually
+    // finished (no concurrent retry can start from this abort) and return 503
+    // so the provider retries. Replay protection held throughout dispatch —
+    // no duplicate side-effect window was opened.
     if (dispatchTimedOut) {
       if (pendingDedupKey !== undefined && pendingToken !== undefined) {
         idempotencyStore.abort(pendingDedupKey, pendingToken);
