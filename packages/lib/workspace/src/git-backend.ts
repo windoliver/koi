@@ -85,12 +85,10 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       _cfg: ResolvedWorkspaceConfig,
     ): Promise<Result<WorkspaceInfo, KoiError>> {
       const id = workspaceId(`ws-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-      // Sanitize agentId for use in a git ref: replace non-alphanumeric chars, collapse runs of dashes
-      const safeAgentSlug = (agentId as string)
-        .replace(/[^a-zA-Z0-9_]/g, "-")
-        .replace(/-+/g, "-")
-        .replace(/^-|-$/g, "");
-      const branchName = `workspace/${safeAgentSlug}/${id}`;
+      // Hex-encode agentId for the branch name: reversible and collision-free, unlike
+      // slug normalization which maps e.g. "a/b" and "a:b" to the same "a-b" slug.
+      const agentIdHex = Buffer.from(agentId as string).toString("hex");
+      const branchName = `workspace/${agentIdHex}/${id}`;
       const path = join(basePath, id);
 
       await mkdir(basePath, { recursive: true });
@@ -169,18 +167,20 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       return { ok: true, value: undefined };
     },
 
-    isHealthy(wsId: WorkspaceId): boolean {
-      return registry.has(wsId);
+    async isHealthy(wsId: WorkspaceId): Promise<boolean> {
+      const entry = registry.get(wsId);
+      if (!entry) return false;
+      // Also verify the worktree still exists on disk — external prune/delete
+      // would leave the registry entry stale but the workspace unusable.
+      return Bun.file(join(entry.path, ".koi-workspace")).exists();
     },
 
     async findByAgentId(searchAgentId: AgentId): Promise<WorkspaceId | undefined> {
-      // Derive ownership from the git-owned branch name (set at create time, not writable
-      // by agent code) rather than the .koi-workspace marker inside the worktree.
-      // Branch format: workspace/<safeAgentSlug>/<wsId>
-      const expectedSlug = (searchAgentId as string)
-        .replace(/[^a-zA-Z0-9_]/g, "-")
-        .replace(/-+/g, "-")
-        .replace(/^-|-$/g, "");
+      // Derive ownership from the git-owned branch name.
+      // New format: workspace/<hex(agentId)>/<wsId>  (current, reversible, collision-free)
+      // Legacy format: workspace/<agentId>/<wsId>    (prior deployments where agentId was URL-safe)
+      const searchHex = Buffer.from(searchAgentId as string).toString("hex");
+      const searchRaw = searchAgentId as string;
 
       const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
       if (!listResult.ok) return undefined;
@@ -196,9 +196,17 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         const branchName = branchRef.startsWith("refs/heads/")
           ? branchRef.slice("refs/heads/".length)
           : branchRef;
-        // Expected: workspace/<expectedSlug>/<wsId>
         const parts = branchName.split("/");
-        if (parts.length !== 3 || parts[0] !== "workspace" || parts[1] !== expectedSlug) continue;
+        if (parts.length !== 3 || parts[0] !== "workspace") continue;
+        const segment = parts[1] ?? "";
+        // Match new hex format or legacy direct-agentId format (migration window)
+        const isHexMatch = segment === searchHex;
+        const isLegacyMatch =
+          !isHexMatch &&
+          segment === searchRaw &&
+          // Guard: only treat as legacy if segment is NOT valid hex for a different ID
+          !/^[0-9a-f]+$/.test(segment);
+        if (!isHexMatch && !isLegacyMatch) continue;
         const wsId = parts[2];
         if (wsId) return workspaceId(wsId);
       }

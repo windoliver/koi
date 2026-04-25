@@ -405,12 +405,17 @@ describe("createLocalScratchpad", () => {
     });
 
     it("entries survive last handle close and are visible to a new handle", () => {
-      const reopenGid = agentGroupId("group-reopen");
-      const sp1 = createLocalScratchpad({ groupId: reopenGid, authorId: aid });
+      // Use a long dormantTtlMs so the entry persists for the synchronous re-open below
+      const reopenGid = agentGroupId(`group-reopen-${++gidCounter}`);
+      const sp1 = createLocalScratchpad({
+        groupId: reopenGid,
+        authorId: aid,
+        dormantTtlMs: 60_000,
+      });
       sp1.write({ path: scratchpadPath("checkpoint"), content: "state-v1" });
-      sp1.close(); // refCount → 0; timer stopped but entries kept
+      sp1.close(); // refCount → 0; timer stopped, dormant eviction scheduled
 
-      // New handle for same groupId sees the surviving entries
+      // New handle for same groupId cancels the dormant timer and sees the surviving entries
       const sp2 = createLocalScratchpad({ groupId: reopenGid, authorId: aid });
       try {
         const r = sp2.read(scratchpadPath("checkpoint"));
@@ -418,6 +423,36 @@ describe("createLocalScratchpad", () => {
         if (r.ok) expect(r.value.content).toBe("state-v1");
       } finally {
         sp2.close();
+      }
+    });
+
+    it("dormantTtlMs is fixed by first handle; later handles with different config do not override it", () => {
+      // First handle sets a long TTL
+      const ttlGid = agentGroupId(`group-ttl-${++gidCounter}`);
+      const first = createLocalScratchpad({
+        groupId: ttlGid,
+        authorId: aid,
+        dormantTtlMs: 60_000,
+      });
+      first.write({ path: scratchpadPath("state"), content: "hello" });
+      // Second handle opens with TTL=0 (immediate eviction) — should NOT override first
+      const second = createLocalScratchpad({
+        groupId: ttlGid,
+        authorId: agentId("agent-2"),
+        dormantTtlMs: 0,
+      });
+      first.close(); // refCount still 1 (second open), no dormant eviction triggered
+      // Third handle closes last — should use store-level TTL (60_000), not 0
+      second.close(); // refCount → 0; dormant eviction scheduled with 60_000 ms
+
+      // Immediately re-open (within ms): state should still be present
+      const third = createLocalScratchpad({ groupId: ttlGid, authorId: aid });
+      try {
+        const r = third.read(scratchpadPath("state"));
+        expect(r.ok).toBe(true);
+        if (r.ok) expect(r.value.content).toBe("hello");
+      } finally {
+        third.close();
       }
     });
 

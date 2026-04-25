@@ -18,6 +18,12 @@ export interface LocalScratchpadConfig {
   readonly groupId: AgentGroupId;
   readonly authorId: AgentId;
   readonly sweepIntervalMs?: number;
+  /**
+   * How long (ms) to retain a dormant group store after the last handle closes.
+   * Allows reattachment cycles to find prior cross-turn state.
+   * Defaults to 300_000 ms (5 min). Set to 0 to evict immediately on last close.
+   */
+  readonly dormantTtlMs?: number;
 }
 
 interface MutableEntry {
@@ -52,6 +58,9 @@ interface GroupStore {
   subscribers: Set<(event: ScratchpadChangeEvent) => void>;
   refCount: number;
   timer: ReturnType<typeof setInterval> | null;
+  dormantTimer: ReturnType<typeof setTimeout> | null;
+  /** Fixed at store creation (first-handle-wins). All handles in the group share this TTL. */
+  readonly dormantTtlMs: number;
 }
 
 const groupRegistry = new Map<string, GroupStore>();
@@ -139,11 +148,22 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
 
   let sharedStore = groupRegistry.get(groupId as string);
   if (sharedStore === undefined) {
-    sharedStore = { entries: new Map(), subscribers: new Set(), refCount: 0, timer: null };
+    sharedStore = {
+      entries: new Map(),
+      subscribers: new Set(),
+      refCount: 0,
+      timer: null,
+      dormantTimer: null,
+      dormantTtlMs: config.dormantTtlMs ?? 300_000,
+    };
     groupRegistry.set(groupId as string, sharedStore);
   }
-  // (Re)start sweep timer when a new handle joins a dormant group (timer was stopped
-  // after the last handle closed, but entries and the registry entry were kept alive).
+  // Cancel any pending dormant eviction — a new handle is reopening this group.
+  if (sharedStore.dormantTimer !== null) {
+    clearTimeout(sharedStore.dormantTimer);
+    sharedStore.dormantTimer = null;
+  }
+  // (Re)start sweep timer when a new handle joins a dormant group.
   if (sharedStore.timer === null && sweepIntervalMs > 0) {
     const dormantStore = sharedStore;
     const t = setInterval(() => {
@@ -387,11 +407,23 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
     instanceSubs.clear();
     store.refCount--;
     if (store.refCount <= 0) {
-      // Stop the sweep timer when no handles are active, but keep entries and the
-      // registry entry alive — store data outlives individual handles so that
-      // cross-turn coordination state survives detach/reattach cycles.
       if (store.timer !== null) clearInterval(store.timer);
       store.timer = null;
+      // Schedule bounded eviction so dormant groups don't leak indefinitely.
+      // Any new handle opening for the same groupId cancels this timer.
+      const evict = (): void => {
+        store.entries.clear();
+        groupRegistry.delete(groupId as string);
+      };
+      if (store.dormantTtlMs <= 0) {
+        evict();
+      } else {
+        const dt = setTimeout(evict, store.dormantTtlMs);
+        if (dt && typeof dt === "object" && "unref" in dt) {
+          (dt as { unref: () => void }).unref();
+        }
+        store.dormantTimer = dt;
+      }
     }
   }
 
