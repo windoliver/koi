@@ -413,25 +413,39 @@ as `dispose`:
 3. Keep the heartbeat loop running.
 4. Signal the engine adapter and `await quiesce(abortTimeoutMs)`.
 5. Branch on quiesce outcome:
-   - **Quiescent:** CAS-advance to the target phase. For
-     **non-terminal** transitions (`pause → suspended`), retry the
-     CAS up to 4 times with exponential backoff
-     100/500/2500/12500 ms. **Heartbeats stay running until the CAS
-     succeeds** — stopping them before durable publication would, in
-     `trustedSingleProcess` mode (where reclaim is disabled), wedge
-     the harness in `active` indefinitely with no recovery path. On
-     CAS success, stop heartbeats and return `Ok`. On retry
-     exhaustion: keep heartbeats running, transition
-     `durability = "unhealthy"`, durably call
-     `markCleanupUnhealthy(sid, "PAUSE_WRITE_FAILED")`, schedule the
-     same background retry loop used for terminal failures
-     (15s exponential, 5min cap; CAS continues until success or the
-     harness object is released), and return
-     `Err(CHECKPOINT_WRITE_FAILED, retryable: true)`. The pause()
-     contract therefore guarantees: either the snapshot is durably
-     `suspended` and heartbeats stop, or the harness remains
-     reclaim-safe (heartbeats live, snapshot still `active`) while
-     background retry drives convergence — no wedged middle state.
+   - **Quiescent:** for **non-terminal** transitions (`pause →
+     suspended`), follow the same durability protocol as terminal
+     paths:
+     1. Build the full next snapshot (target phase = `suspended`,
+        generation+1, `failureReason = "paused"`).
+     2. Write a `harness-suspended` `RecoveryOutcome` via
+        `sessionPersistence.recordRecoveryOutcome(sid, outcome)`
+        BEFORE attempting the snapshot CAS. This is the durable
+        crash-safety boundary: once the outcome record lands, a
+        reclaimer can complete the transition even if this process
+        dies. If the outcome write itself fails, retry 3 times; on
+        sustained failure, return
+        `Err(CHECKPOINT_WRITE_FAILED, retryable: true)` WITHOUT
+        stopping heartbeats — the engine is quiesced but the harness
+        remains reclaim-safe and the operator can retry pause().
+     3. Attempt the snapshot CAS up to 4 times
+        (100/500/2500/12500 ms). On success, stop heartbeats and
+        return `Ok`.
+     4. On CAS retry exhaustion: keep heartbeats running, transition
+        `durability = "unhealthy"`, durably call
+        `markCleanupUnhealthy(sid, "PAUSE_WRITE_FAILED")`, schedule
+        the same background retry loop used for terminal failures
+        (15s exponential, 5min cap; CAS uses the durable outcome
+        record's snapshotDelta and continues until success or the
+        harness object is released), and return
+        `Err(CHECKPOINT_WRITE_FAILED, retryable: true)`. A reclaimer
+        on a peer process can also drive this CAS via the outcome
+        record.
+     The pause() contract therefore guarantees: either the snapshot
+     is durably `suspended` and heartbeats stop, or a durable
+     `harness-suspended` outcome exists that ANY reclaimer can apply
+     (heartbeats live, snapshot still `active`) — no wedged middle
+     state and no lost post-quiesce delta.
      For **terminal** transitions (`completed` / `failed`), CAS failure
      MUST retry until either success or a hard retry budget exhausts
      (4 tries, same backoff). Terminal transitions cannot fall back to
@@ -447,7 +461,7 @@ as `dispose`:
        pending tasks after the update. The harness writes a regular
        soft-checkpoint (CAS `active → active` with new task-board
        state, lease still valid, engine still running, no quiesce).
-       No `TerminalOutcome` record. Heartbeats unchanged.
+       No `RecoveryOutcome` record. Heartbeats unchanged.
      - **Session-ending (terminal):** the update would leave the
        task board with no pending tasks (last task done) AND the
        caller is `completeTask`/non-retryable `failTask`. OR the
@@ -458,7 +472,7 @@ as `dispose`:
      not know the difference; they always invoke `completeTask`/
      `failTask`/`fail` and the harness routes correctly.
 
-     **TerminalOutcome (durable, full-delta-carrying).** There is NO
+     **RecoveryOutcome (durable, full-delta-carrying).** There is NO
      caller-visible "record-intent-before-branch" API. The terminal
      path applies to: (a) `completeTask` that empties the task board,
      (b) non-retryable `failTask` that empties the task board, (c)
@@ -470,20 +484,23 @@ as `dispose`:
         This includes updated task board, accumulated metrics,
         summaries, key artifacts, `lastSessionEndedAt`, generation+1,
         etc.
-     3. **Write a durable `TerminalOutcome` record** via
-        `sessionPersistence.recordTerminalOutcome(sid, outcome)`. The
+     3. **Write a durable `RecoveryOutcome` record** via
+        `sessionPersistence.recordRecoveryOutcome(sid, outcome)`. The
         record carries both the discriminated-union outcome AND the
         full serialized next snapshot:
         ```
-        // TerminalOutcome is HARNESS-LEVEL ONLY. The snapshotDelta's
-        // task-board carries individual task results; the discriminant
-        // captures only why the harness reached a terminal phase.
-        type TerminalOutcomeKind =
+        // RecoveryOutcome is HARNESS-LEVEL ONLY (formerly
+        // "TerminalOutcome"; renamed because it now also covers
+        // post-quiesce SUSPENDED targets). The snapshotDelta's
+        // task-board carries individual task results; the
+        // discriminant captures the post-quiesce target phase.
+        type RecoveryOutcomeKind =
           | { kind: "harness-completed" }              // all tasks done
           | { kind: "harness-failed"; error: KoiError } // fail()/timeout/non-retryable-failTask-empties-board
+          | { kind: "harness-suspended"; reason: string } // pause()/dispose-after-kill/ABORT_TIMEOUT-with-suspended-target
 
-        interface TerminalOutcome {
-          readonly kind: TerminalOutcomeKind;
+        interface RecoveryOutcome {
+          readonly kind: RecoveryOutcomeKind;
           readonly seq: number;                          // monotonic per session
           readonly committedAt: number;
           readonly expectedHead: ChainHead | undefined;  // CAS authority for replay
@@ -534,7 +551,7 @@ as `dispose`:
      **`failTask` retryability rule.** `failTask(lease, id, err)`
      checks `err.retryable`:
      - **Retryable:** truly in-session — no quiesce, no lease
-       revocation, no `TerminalOutcome`. The harness performs an
+       revocation, no `RecoveryOutcome`. The harness performs an
        in-session soft checkpoint: CAS `active → active` with the
        task returned to `pending` and `attempts` incremented. The
        lease remains valid; the engine continues running and will
@@ -547,34 +564,39 @@ as `dispose`:
        which is what retryable failures already imply.)
      - **Non-retryable:** if it empties the task board, run the
        full session-ending terminal flow above and record a
-       `harness-failed` `TerminalOutcome` (the snapshot delta
+       `harness-failed` `RecoveryOutcome` (the snapshot delta
        carries the failed task's details in its task board). If
        pending tasks remain, run the in-session non-terminal path
        — the failed task is recorded in the new `active`
-       snapshot's task board (no `TerminalOutcome` because the
+       snapshot's task board (no `RecoveryOutcome` because the
        harness is still active; the snapshot is authoritative).
 
      **Reclaimer-side replay.** On reclamation, after
      `killAndConfirm` succeeds, the reclaimer:
-     1. Calls `sessionPersistence.listTerminalOutcomes(sid)`. Because
-        `TerminalOutcome` is harness-level only, the list contains AT
-        MOST ONE record (a session can transition terminal exactly
-        once).
+     1. Calls `sessionPersistence.listRecoveryOutcomes(sid)`. Because
+        `RecoveryOutcome` is harness-level only and a session
+        transitions to `suspended` / `completed` / `failed` exactly
+        once, the list contains AT MOST ONE record.
      2. If there is one record: CAS-replay it using the algorithm
         above (subsumption check on `resultGeneration`, identity
-        check on `expectedHead`). The chain ends in `completed` or
-        `failed`. Reclaim is done; future `resume()` returns
-        `TERMINAL`.
+        check on `expectedHead`). The chain ends in `suspended`,
+        `completed`, or `failed` per the record's `kind`. Reclaim is
+        done; future `resume()` returns `TERMINAL` for terminal
+        outcomes, or starts a fresh session for `harness-suspended`.
      3. If there are no records: the original session never reached
-        terminalization. Reclaim falls through to the standard
+        a post-quiesce intent. Reclaim falls through to the standard
         "active → suspended" recovery (CAS to `suspended` with
         `RECLAIMED_FROM_DEAD_OWNER`), and `resume()` can start a
         fresh session normally. Task-board state from the last
         durable snapshot is preserved; in-progress tasks remain in
-        whatever state they were last checkpointed at.
+        whatever state they were last checkpointed at. **Note:** any
+        cleanup path that has already quiesced the engine MUST write
+        a `harness-suspended` `RecoveryOutcome` BEFORE relinquishing
+        control (see pause and ABORT_TIMEOUT cleanup sections), so
+        this fallback applies only to true crashes mid-execution.
 
      Retryable task failures and in-session updates never appear in
-     `TerminalOutcome` records — they are encoded in regular soft
+     `RecoveryOutcome` records — they are encoded in regular soft
      checkpoints on the snapshot chain itself.
 
      This closes the gaps from earlier rounds: the terminal-intent
@@ -602,7 +624,7 @@ as `dispose`:
      failure and on every backoff tick.
 
      **Exactly-once across process death.** The combination of the
-     durable `TerminalOutcome` record (written before the snapshot
+     durable `RecoveryOutcome` record (written before the snapshot
      CAS) + background retry + reclaimer-side outcome application
      guarantees exactly-once durable terminal state even if the
      original process dies before the CAS succeeds: the reclaimer
@@ -615,6 +637,22 @@ as `dispose`:
      `durability = "unhealthy"` and call
      `sessionPersistence.markCleanupUnhealthy(sid, "ABORT_TIMEOUT")`
      so the durable breadcrumb is set BEFORE any further action.
+     **Then write a durable `RecoveryOutcome` carrying the intended
+     post-kill snapshot** via `recordRecoveryOutcome(sid, outcome)` —
+     `kind = "harness-failed"` (for fail/timeout/completeTask-terminal
+     callers) or `kind = "harness-suspended"; reason = "disposed
+     after kill"` (for `dispose()`). This MUST happen before any
+     `killAndConfirm` call. Without this record, a process death
+     between successful kill and the follow-up snapshot CAS would
+     let the next reclaimer fall back to generic
+     `RECLAIMED_FROM_DEAD_OWNER` suspension, resurrecting work that
+     was supposed to terminate. With it, any reclaimer (including
+     one in this process after kill) consumes the outcome via
+     `listRecoveryOutcomes` and CAS-applies the authoritative
+     post-quiesce snapshot. If the outcome write fails, retry 3
+     times; on sustained failure, return
+     `Err(ABORT_TIMEOUT, retryable: true)` and do NOT proceed to
+     kill — heartbeats keep running and the operator can retry.
      Then:
      - **Supervisor mode (default):** the harness invokes
        `supervisor.killAndConfirm(sessionId)` automatically after a
@@ -790,7 +828,7 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
        kill. If `probeAlive` returns `"dead"` (or sustained
        `"unknown"` paired with the orphan-window NOT_FOUND signal),
        call `killAndConfirm(lastSessionId)` (idempotent on a dead
-       worker). On `killAndConfirm` success: apply any TerminalOutcome
+       worker). On `killAndConfirm` success: apply any RecoveryOutcome
        records first (see Reclaimer-side replay below), then if no
        terminal outcomes exist, CAS-advance the snapshot to
        `suspended` (NOT `failed`) with `failureReason =
@@ -853,8 +891,8 @@ reflect stale or incorrect tombstone writes.
 mid-activation owner goes stale within TTL. This closes both the
 activation-latency race and the cross-store-lag race.
 3. To reclaim — outcome-driven, never bypass durable terminal state:
-   - First, `listTerminalOutcomes(prev.lastSessionId)`.
-   - If a record exists (at most one — TerminalOutcome is
+   - First, `listRecoveryOutcomes(prev.lastSessionId)`.
+   - If a record exists (at most one — RecoveryOutcome is
      harness-level only): CAS-replay it via the subsumption +
      identity-match algorithm above. The chain ends in `completed`
      or `failed`. Reclamation ENDS — future `resume()` returns
@@ -926,7 +964,7 @@ That section is authoritative — implementers MUST consult it (not any
 shorter summary) before treating prereqs as met. The list there
 includes generation, CAS, lastHeartbeatAt, the SessionStatus delta,
 `SnapshotChainStore.latest()`, `setHeartbeat()`,
-`recordTerminalOutcome()`/`listTerminalOutcomes()`,
+`recordRecoveryOutcome()`/`listRecoveryOutcomes()`,
 `HarnessStatus.durability`, and `cleanupHealth` +
 `markCleanupUnhealthy`/`clearCleanupUnhealthy`. Skipping any of them
 silently drops reclaim safety or post-crash terminal recovery.
@@ -1527,7 +1565,7 @@ All errors are `KoiError` from L0. Codes used:
 | `KILL_FAILED` | `supervisor.killAndConfirm` could not terminate the owner worker | true |
 | `RECLAIM_LIVE_OWNER` | supervisor reports owner is still alive despite TTL-stale heartbeat or NOT_FOUND; caller investigates | true |
 | `SUPERVISOR_UNHEALTHY` | `supervisor.probeAlive` returned IO_ERROR; reclaim aborted to avoid killing on a failed probe | true |
-| `REPLAY_AUTHORITY_MISMATCH` | TerminalOutcome.expectedHead does not match observed chain head and is not subsumed; replay aborted | false |
+| `REPLAY_AUTHORITY_MISMATCH` | RecoveryOutcome.expectedHead does not match observed chain head and is not subsumed; replay aborted | false |
 | `RESUME_CORRUPT` | snapshot fails `isHarnessSnapshot` | false |
 
 ## References
@@ -1626,13 +1664,16 @@ Additive changes required (part of the coordinated migration):
 5. `SessionPersistence.setHeartbeat(sessionId, timestampMs)` — dedicated
    cheap-write method so the heartbeat loop does not compete with full
    `saveSession` writes.
-6. `SessionPersistence.recordTerminalOutcome(sid, outcome)` +
-   `listTerminalOutcomes(sid)` — durable record of the harness-level
-   terminal outcome (`harness-completed` | `harness-failed`). At most
-   one record per session. Written after engine quiescence but before
-   the snapshot CAS; consulted by reclaimers to deferred-CAS the
-   missed terminal phase. Enforces exactly-once terminal durable
-   state across process death. See TerminalOutcome in phase machine.
+6. `SessionPersistence.recordRecoveryOutcome(sid, outcome)` +
+   `listRecoveryOutcomes(sid)` — durable record of the harness-level
+   post-quiesce intent (`harness-completed` | `harness-failed` |
+   `harness-suspended`). At most one record per session. Written
+   after engine quiescence but before the snapshot CAS (and, for
+   ABORT_TIMEOUT, before `killAndConfirm`); consulted by reclaimers
+   to deferred-CAS the missed phase advance. Enforces exactly-once
+   durable state across process death for both terminal and
+   post-quiesce-suspended transitions. See `RecoveryOutcome` in
+   phase machine.
 
 **`@koi/core` — `HarnessStatus` (harness.ts):**
 7. `durability: "ok" | "unhealthy"` — in-memory observable degraded-
