@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { agentId, type JsonObject } from "@koi/core";
 import {
   askId,
@@ -117,6 +117,50 @@ describe("wrapBackendWithPersistedAllowlist", () => {
     const wrapped = wrapBackendWithPersistedAllowlist(inner, makeStore([]));
     const v = await wrapped.evaluator.evaluate(allowRequest);
     expect(v.ok).toBe("ask");
+  });
+
+  // Codex round-2 finding: a throwing store.match must NOT turn an
+  // ok:"ask" verdict into an evaluator-failure POLICY_VIOLATION; the
+  // wrapper is fail-closed by falling through to the original ask.
+  it("falls through to the original ask when store.match throws", async () => {
+    const failingStore: ApprovalStore = {
+      append: async () => undefined,
+      load: async () => [],
+      match: async () => {
+        throw new Error("I/O");
+      },
+    };
+    const ask: GovernanceVerdict = {
+      ok: "ask",
+      prompt: "?",
+      askId: askId("x"),
+    };
+    const inner: GovernanceBackend = { evaluator: { evaluate: () => ask } };
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const wrapped = wrapBackendWithPersistedAllowlist(inner, failingStore);
+    const v = await wrapped.evaluator.evaluate(allowRequest);
+    expect(v.ok).toBe("ask");
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("falls through to the original ask when resolveAgentId throws", async () => {
+    const ask: GovernanceVerdict = {
+      ok: "ask",
+      prompt: "?",
+      askId: askId("x"),
+    };
+    const inner: GovernanceBackend = { evaluator: { evaluate: () => ask } };
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const wrapped = wrapBackendWithPersistedAllowlist(inner, makeStore([]), {
+      resolveAgentId: () => {
+        throw new Error("host bug");
+      },
+    });
+    const v = await wrapped.evaluator.evaluate(allowRequest);
+    expect(v.ok).toBe("ask");
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it("preserves optional sub-interfaces of the wrapped backend", async () => {

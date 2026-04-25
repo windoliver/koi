@@ -2698,8 +2698,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // and any downstream ndjson / sqlite audit sink.
     const auditedPersistSink =
       approvalStore !== undefined && onGovernanceViolation !== undefined
-        ? createViolationAuditAdapter({
-            sink: createPersistSink(approvalStore, { resolveAgentId: resolveStableAgentId }),
+        ? // Audit adapter calls store.append directly so the
+          // approval.persisted info-violation is emitted ONLY after a
+          // confirmed durable write. Failures are absorbed (fire-and-forget
+          // contract) but never produce a misleading audit row.
+          createViolationAuditAdapter({
+            store: approvalStore,
             onViolation: onGovernanceViolation,
             resolveAgentId: resolveStableAgentId,
           })

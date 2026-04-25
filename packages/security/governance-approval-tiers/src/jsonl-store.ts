@@ -116,8 +116,14 @@ export function createJsonlApprovalStore(config: JsonlApprovalStoreConfig): Appr
           `[governance-approval-tiers] persisted grant exceeds maxRowBytes (${maxRowBytes}); refusing to append`,
         );
       }
-      writeQueue = writeQueue.then(() => writeLine(line));
-      await writeQueue;
+      // Recover the queue past prior failures: chain from a swallowed
+      // tail so a single rejected writeLine does not poison every later
+      // append. Callers still observe THIS append's outcome via the
+      // returned promise, so transient EACCES/ENOSPC for one row never
+      // becomes a process-lifetime durability outage.
+      const next = writeQueue.catch(() => undefined).then(() => writeLine(line));
+      writeQueue = next.catch(() => undefined);
+      await next;
     },
 
     async match(query: ApprovalQuery) {

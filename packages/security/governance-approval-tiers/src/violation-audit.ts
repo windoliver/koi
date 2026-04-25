@@ -1,39 +1,62 @@
 import type { AgentId, PersistentGrant, PersistentGrantCallback } from "@koi/core";
 import type { GovernanceVerdict, PolicyRequest, Violation } from "@koi/core/governance-backend";
+import type { ApprovalStore } from "./types.js";
 
 export interface ViolationAuditConfig {
-  readonly sink: PersistentGrantCallback;
+  /**
+   * Store the audit adapter writes the persisted approval to. The
+   * adapter calls `store.append` directly (NOT through `createPersistSink`),
+   * so it can distinguish a confirmed durable write from a swallowed
+   * failure. The audit verdict is emitted only after `append` resolves —
+   * never on failure — so the audit trail can be trusted as evidence
+   * that approvals.json contains a matching row.
+   */
+  readonly store: ApprovalStore;
   readonly onViolation: (verdict: GovernanceVerdict, request: PolicyRequest) => void;
   /**
-   * Resolve the agentId stamped onto the synthetic audit request.
-   * Defaults to `grant.agentId`. Hosts that pin a stable scope on the
-   * persisted record (e.g. CLI uses manifest hostId via `createPersistSink`'s
-   * `resolveAgentId`) MUST pass the same resolver here so the audit row
-   * agrees with the persisted approval.
+   * Resolve the agentId stamped onto the persisted record AND the
+   * synthetic audit request. Defaults to `grant.agentId`. Hosts that
+   * pin a stable scope across restarts (e.g. CLI uses manifest hostId)
+   * pass a function returning that stable id; both writes and reads use
+   * the same key.
    */
   readonly resolveAgentId?: (grant: PersistentGrant) => AgentId;
 }
 
 /**
- * Wrap a PersistentGrantCallback so that every appended grant also
- * emits a synthetic info-severity Violation through the host's
- * existing onViolation channel. gov-2 audit sinks (ndjson, sqlite)
- * pick it up automatically — no direct coupling to the audit layer.
+ * Wrap an ApprovalStore so that every appended grant also emits a
+ * synthetic info-severity Violation through the host's existing
+ * onViolation channel. gov-2 audit sinks (ndjson, sqlite) pick it up
+ * automatically — no direct coupling to the audit layer.
  *
- * Both `sink` and `onViolation` are protected by an internal try/catch:
  * `onApprovalPersist` is fire-and-forget at the governance-middleware
- * boundary, so a rejected promise here would surface as an unhandled
- * rejection AFTER the user already received a session grant. Failures
- * are logged and absorbed; in-memory grants still cover the live call.
+ * boundary. The adapter therefore:
+ *   1. Builds the PersistedApproval and calls `store.append` directly.
+ *   2. If append rejects, console.warn and RETURN — no audit row, no
+ *      rejected promise. The user already received an in-memory grant
+ *      for the live call; durability failed but the session is unaffected.
+ *   3. If append resolves, emit the synthetic `approval.persisted`
+ *      verdict via `onViolation`. The audit row is therefore evidence
+ *      that approvals.json contains the grant.
+ *
+ * A buggy onViolation subscriber that throws is also caught so it cannot
+ * crash the fire-and-forget callback.
  */
 export function createViolationAuditAdapter(config: ViolationAuditConfig): PersistentGrantCallback {
   const resolveAgentId = config.resolveAgentId ?? ((grant: PersistentGrant) => grant.agentId);
   return async (grant: PersistentGrant) => {
+    const scope = resolveAgentId(grant);
     try {
-      await config.sink(grant);
+      await config.store.append({
+        kind: grant.kind,
+        agentId: scope,
+        payload: grant.payload,
+        grantKey: grant.grantKey,
+        grantedAt: grant.grantedAt,
+      });
     } catch (err) {
       console.warn(
-        `[governance-approval-tiers] audit adapter sink failed for grantKey=${grant.grantKey}`,
+        `[governance-approval-tiers] persistent approval append failed for grantKey=${grant.grantKey}; in-memory grant still applies for this session`,
         err,
       );
       return;
@@ -51,7 +74,7 @@ export function createViolationAuditAdapter(config: ViolationAuditConfig): Persi
     const verdict: GovernanceVerdict = { ok: true, diagnostics: [audit] };
     const request: PolicyRequest = {
       kind: grant.kind,
-      agentId: resolveAgentId(grant),
+      agentId: scope,
       payload: grant.payload,
       timestamp: grant.grantedAt,
     };

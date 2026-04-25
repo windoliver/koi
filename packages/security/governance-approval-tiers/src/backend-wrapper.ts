@@ -34,11 +34,25 @@ export function wrapBackendWithPersistedAllowlist(
     async evaluate(request) {
       const verdict = await inner.evaluator.evaluate(request);
       if (verdict.ok !== "ask") return verdict;
-      const hit = await store.match({
-        kind: request.kind,
-        agentId: resolveAgentId(request),
-        payload: request.payload,
-      });
+      // Fail-closed on every persistence-side failure: store.match may
+      // reject (I/O race the inner store missed, malformed config), and
+      // resolveAgentId may throw (host bug). Any of these must NOT turn
+      // the user-facing ok:"ask" into an evaluator-failure POLICY_VIOLATION.
+      // Log and fall through to the original ask so the user is re-prompted.
+      let hit: Awaited<ReturnType<typeof store.match>>;
+      try {
+        hit = await store.match({
+          kind: request.kind,
+          agentId: resolveAgentId(request),
+          payload: request.payload,
+        });
+      } catch (err) {
+        console.warn(
+          "[governance-approval-tiers] persistent allowlist match failed; falling through to ask",
+          err,
+        );
+        return verdict;
+      }
       return hit === undefined ? verdict : GOVERNANCE_ALLOW;
     },
     ...(inner.evaluator.scope !== undefined ? { scope: inner.evaluator.scope } : {}),

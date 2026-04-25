@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JsonObject } from "@koi/core";
@@ -219,6 +219,46 @@ describe("createJsonlApprovalStore", () => {
     });
     const loaded = await store.load();
     expect(loaded.length).toBe(1);
+  });
+
+  // Codex round-2 finding: a single rejected writeLine must not poison
+  // every later append. The previous implementation chained from a
+  // permanently-rejected promise, dropping all subsequent writes.
+  // Force a real writeLine failure by pointing at a path under a
+  // read-only directory, then restore write permission and verify
+  // the next append lands.
+  it("recovers the write queue after a transient writeLine failure", async () => {
+    const lockedDir = join(dir, "locked");
+    const lockedPath = join(lockedDir, "approvals.json");
+    const store = createJsonlApprovalStore({ path: lockedPath });
+    const ok1: JsonObject = { tool: "bash", cmd: "ls" };
+    const ok2: JsonObject = { tool: "bash", cmd: "rm" };
+    await mkdir(lockedDir, { recursive: true });
+    await chmod(lockedDir, 0o500); // r-x — append cannot create approvals.json
+    try {
+      await expect(
+        store.append({
+          kind: "tool_call",
+          agentId: AID,
+          payload: ok1,
+          grantKey: computeGrantKey("tool_call", ok1),
+          grantedAt: 1,
+        }),
+      ).rejects.toThrow();
+      await chmod(lockedDir, 0o700); // restore — next append must succeed
+      await store.append({
+        kind: "tool_call",
+        agentId: AID,
+        payload: ok2,
+        grantKey: computeGrantKey("tool_call", ok2),
+        grantedAt: 2,
+      });
+      const loaded = await store.load();
+      expect(loaded.length).toBe(1);
+      expect(loaded[0]?.grantKey).toBe(computeGrantKey("tool_call", ok2));
+    } finally {
+      await chmod(lockedDir, 0o700).catch(() => undefined);
+    }
   });
 
   // Codex round-1 finding: refuse rows above maxRowBytes so a malicious
