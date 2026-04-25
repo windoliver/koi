@@ -851,6 +851,8 @@
         "@koi/replay": "workspace:*",
         "@koi/rules-loader": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
+        "@koi/scheduler": "workspace:*",
+        "@koi/scheduler-provider": "workspace:*",
         "@koi/session": "workspace:*",
         "@koi/settings": "workspace:*",
         "@koi/skill-scanner": "workspace:*",

@@ -71,6 +71,8 @@
     { "path": "../../lib/bash-security" },
     { "path": "../../lib/tools-bash" },
     { "path": "../../sandbox/sandbox-os" },
+    { "path": "../../sched/scheduler" },
+    { "path": "../../sched/scheduler-provider" },
     { "path": "../../lib/session" },
     { "path": "../../lib/settings" },
     { "path": "../../lib/plugins" },

@@ -77,6 +77,8 @@
     "@koi/bash-security": "workspace:*",
     "@koi/tools-bash": "workspace:*",
     "@koi/sandbox-os": "workspace:*",
+    "@koi/scheduler": "workspace:*",
+    "@koi/scheduler-provider": "workspace:*",
     "@koi/session": "workspace:*",
     "@koi/settings": "workspace:*",
     "@koi/skill-scanner": "workspace:*",

@@ -57,6 +57,7 @@ import type {
 import {
   artifactId,
   createSingleToolProvider,
+  DEFAULT_SCHEDULER_CONFIG,
   memoryRecordId,
   sessionId,
   taskItemId,
@@ -120,6 +121,8 @@ import {
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import type { Cassette } from "@koi/replay";
 import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
+import { createScheduler, createSchedulerComponent, createSqliteTaskStore } from "@koi/scheduler";
+import { createSchedulerProvider } from "@koi/scheduler-provider";
 import {
   createInMemoryTranscript,
   createSessionTranscriptMiddleware,
@@ -505,6 +508,34 @@ const planPersistBundle = createPlanPersistMiddleware({
 const planningBundle = createPlanMiddleware({
   onPlanUpdate: planPersistBundle.onPlanUpdate,
 });
+
+// ---------------------------------------------------------------------------
+// @koi/scheduler + @koi/scheduler-provider — 9 agent-facing scheduler tools
+// Uses in-memory SQLite and a no-op dispatcher (no real agents are spawned).
+// All submitted tasks use a 1-hour delay so they stay pending during recording.
+// ---------------------------------------------------------------------------
+
+const { Database: SchedulerDatabase } = await import("bun:sqlite");
+const schedulerDb = new SchedulerDatabase(":memory:");
+const schedulerStore = createSqliteTaskStore(schedulerDb);
+const schedulerInstance = createScheduler(DEFAULT_SCHEDULER_CONFIG, schedulerStore, async () => {});
+const schedulerComponent = createSchedulerComponent(
+  schedulerInstance,
+  "golden-recorder" as import("@koi/core").AgentId,
+);
+const schedulerTools = createSchedulerProvider(schedulerComponent);
+// createSchedulerProvider returns [submit, cancel, schedule, unschedule, pause, resume, query, stats, history]
+const [stSubmit, , , , , , stQuery, stStats] = schedulerTools as [
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+];
 
 // ---------------------------------------------------------------------------
 // @koi/spawn-tools — agent_spawn tool with stub SpawnFn
@@ -4248,6 +4279,38 @@ const queries: readonly QueryConfig[] = [
         ],
       }),
     ],
+  },
+
+  // @koi/scheduler + @koi/scheduler-provider — scheduler_submit + scheduler_query flow.
+  // Submits a delayed task (1 hour) so it stays pending during the test, then queries.
+  {
+    name: "scheduler-tools",
+    prompt:
+      "Use the scheduler_submit tool to submit a delayed task with input 'run nightly report' in spawn mode with a 3600000ms delay. " +
+      "Then use scheduler_query to list all pending tasks. " +
+      "Finally use scheduler_stats to report the current queue statistics.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "scheduler-submit",
+        toolName: "scheduler_submit",
+        createTool: () => stSubmit,
+      }),
+      createSingleToolProvider({
+        name: "scheduler-query",
+        toolName: "scheduler_query",
+        createTool: () => stQuery,
+      }),
+      createSingleToolProvider({
+        name: "scheduler-stats",
+        toolName: "scheduler_stats",
+        createTool: () => stStats,
+      }),
+    ],
+    maxTurns: 4,
   },
 ];
 
