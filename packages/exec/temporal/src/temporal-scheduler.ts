@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import type {
   AgentId,
   CronSchedule,
@@ -66,11 +66,33 @@ function loadStateSync(dbPath: string): PersistedState | undefined {
   }
 }
 
+// Strip non-serializable values from workflow results (unknown type) so a
+// single unserializable result does not disable the entire persistence layer.
+function persistenceReplacer(_key: string, value: unknown): unknown {
+  switch (typeof value) {
+    case "function":
+    case "symbol":
+    case "bigint":
+      return undefined;
+    default:
+      return value;
+  }
+}
+
+// Atomic write: write to a temp file then rename, so a crash mid-write cannot
+// corrupt or erase the last good snapshot.
 function saveStateSync(dbPath: string, state: PersistedState): void {
+  const tmp = `${dbPath}.tmp`;
   try {
-    writeFileSync(dbPath, JSON.stringify(state));
-  } catch {
-    // best-effort — failure must never propagate to callers
+    writeFileSync(tmp, JSON.stringify(state, persistenceReplacer));
+    renameSync(tmp, dbPath);
+  } catch (err: unknown) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // best-effort cleanup of orphaned temp file
+    }
+    throw err;
   }
 }
 
@@ -273,43 +295,48 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
   function persist(): void {
     if (config.dbPath === undefined) return;
-    saveStateSync(config.dbPath, {
-      tasks: [...tasks.entries()].map(([k, v]) => [
-        k,
-        {
-          id: v.id,
-          agentId: v.agentId,
-          mode: v.mode,
-          input: mapEngineInputToScheduledPayload(v.input),
-          priority: v.priority,
-          status: v.status,
-          createdAt: v.createdAt,
-          scheduledAt: v.scheduledAt,
-          startedAt: v.startedAt,
-          completedAt: v.completedAt,
-          retries: v.retries,
-          maxRetries: v.maxRetries,
-          timeoutMs: v.timeoutMs,
-          lastError: v.lastError,
-          metadata: v.metadata as Record<string, unknown> | undefined,
-        } satisfies PersistedTask,
-      ]),
-      taskWorkflowIds: [...taskWorkflowIds.entries()],
-      cancelledTaskIds: [...cancelledTaskIds],
-      schedules: [...schedules.entries()].map(([k, v]) => [
-        k,
-        {
-          id: v.id,
-          expression: v.expression,
-          agentId: v.agentId,
-          mode: v.mode,
-          input: mapEngineInputToScheduledPayload(v.input),
-          timezone: v.timezone,
-          paused: v.paused,
-        } satisfies PersistedSchedule,
-      ]),
-      history,
-    });
+    try {
+      saveStateSync(config.dbPath, {
+        tasks: [...tasks.entries()].map(([k, v]) => [
+          k,
+          {
+            id: v.id,
+            agentId: v.agentId,
+            mode: v.mode,
+            input: mapEngineInputToScheduledPayload(v.input),
+            priority: v.priority,
+            status: v.status,
+            createdAt: v.createdAt,
+            scheduledAt: v.scheduledAt,
+            startedAt: v.startedAt,
+            completedAt: v.completedAt,
+            retries: v.retries,
+            maxRetries: v.maxRetries,
+            timeoutMs: v.timeoutMs,
+            lastError: v.lastError,
+            metadata: v.metadata as Record<string, unknown> | undefined,
+          } satisfies PersistedTask,
+        ]),
+        taskWorkflowIds: [...taskWorkflowIds.entries()],
+        cancelledTaskIds: [...cancelledTaskIds],
+        schedules: [...schedules.entries()].map(([k, v]) => [
+          k,
+          {
+            id: v.id,
+            expression: v.expression,
+            agentId: v.agentId,
+            mode: v.mode,
+            input: mapEngineInputToScheduledPayload(v.input),
+            timezone: v.timezone,
+            paused: v.paused,
+          } satisfies PersistedSchedule,
+        ]),
+        history,
+      });
+    } catch (err: unknown) {
+      // Hard error: log so operators are alerted — silently swallowing would hide data loss
+      console.error("[temporal-scheduler] persistence write failed:", err);
+    }
   }
 
   function emit(event: SchedulerEvent): void {
@@ -353,6 +380,57 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       }
     }
     return { pending, running, completed, failed, deadLettered, activeSchedules, pausedSchedules };
+  }
+
+  // Reattach getResult watchers for spawn tasks that were running at the time of
+  // a previous shutdown, so completion/failure events are recorded after restart.
+  for (const [taskId, task] of tasks) {
+    if (task.mode !== "spawn" || task.status !== "running") continue;
+    const workflowId = taskWorkflowIds.get(taskId) ?? taskId;
+    const startedAt = task.startedAt ?? task.createdAt;
+    const agentId = task.agentId;
+    void config.client.workflow.getResult(workflowId).then(
+      (result: unknown) => {
+        if (cancelledTaskIds.has(taskId)) return;
+        const completedAt = Date.now();
+        tasks.set(taskId, { ...task, status: "completed" });
+        history.push({
+          taskId: taskId as TaskId,
+          agentId,
+          status: "completed",
+          startedAt,
+          completedAt,
+          durationMs: completedAt - startedAt,
+          result,
+          retryAttempt: 0,
+        });
+        emit({ kind: "task:completed", taskId: taskId as TaskId, result });
+        persist();
+      },
+      (error: unknown) => {
+        if (cancelledTaskIds.has(taskId)) return;
+        const completedAt = Date.now();
+        const koiError: KoiError = {
+          code: "EXTERNAL",
+          message: error instanceof Error ? error.message : String(error),
+          retryable: false,
+          context: { taskId, agentId },
+        };
+        tasks.set(taskId, { ...task, status: "failed" });
+        history.push({
+          taskId: taskId as TaskId,
+          agentId,
+          status: "failed",
+          startedAt,
+          completedAt,
+          durationMs: completedAt - startedAt,
+          error: koiError.message,
+          retryAttempt: 0,
+        });
+        emit({ kind: "task:failed", taskId: taskId as TaskId, error: koiError });
+        persist();
+      },
+    );
   }
 
   return {

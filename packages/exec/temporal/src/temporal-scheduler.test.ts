@@ -676,6 +676,30 @@ describe("state persistence (dbPath)", () => {
     await s2[Symbol.asyncDispose]();
   });
 
+  test("reattaches getResult for running spawn tasks after restart", async () => {
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    let resolveResult!: (value: unknown) => void;
+    const resultPromise = new Promise<unknown>((resolve) => {
+      resolveResult = resolve;
+    });
+    const client = makeMockClient({ getResult: mock(async () => resultPromise) });
+
+    // First scheduler: submit and persist running state.
+    const s1 = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    await s1.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    await s1[Symbol.asyncDispose]();
+
+    // Second scheduler restores state and reattaches getResult tracking.
+    const s2 = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    expect((await s2.query({}))[0]?.status).toBe("running");
+
+    // Workflow completes — second scheduler should record completion.
+    resolveResult({ done: true });
+    await new Promise((r) => setTimeout(r, 20));
+    expect((await s2.query({}))[0]?.status).toBe("completed");
+    await s2[Symbol.asyncDispose]();
+  });
+
   test("works without dbPath (no persistence, no error)", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
