@@ -288,7 +288,9 @@ export function createTemporalScheduler(
   const schedules = new Map<ScheduleId, CronSchedule>();
   const history: TaskRunRecord[] = [];
   const listeners = new Set<(event: SchedulerEvent) => void>();
-  const reconciling = new Set<TaskId>();
+  // Per-task reconciliation promises: concurrent callers await the same promise instead of
+  // returning stale state while reconciliation is in-flight.
+  const reconcilePromises = new Map<TaskId, Promise<void>>();
   // Bootstrap-restored IDs require remote re-verify on destructive ops (not locally submitted).
   const bootstrappedTaskIds = new Set<TaskId>();
   const bootstrappedScheduleIds = new Set<ScheduleId>();
@@ -342,13 +344,16 @@ export function createTemporalScheduler(
     tasks.delete(id);
   }
 
-  // Reconciles a task against Temporal; guards against concurrent calls for the same ID.
+  // Reconciles a task against Temporal; deduplicates concurrent calls via per-task promises.
   async function reconcileTask(id: TaskId, _task: ScheduledTask): Promise<void> {
     const describeFn = config.client.workflow.describe;
     if (describeFn === undefined) return;
-    if (reconciling.has(id)) return;
-    reconciling.add(id);
-    try {
+    const existing = reconcilePromises.get(id);
+    if (existing !== undefined) {
+      await existing;
+      return;
+    }
+    const promise = (async (): Promise<void> => {
       let info: WorkflowExecutionStatus;
       try {
         info = await describeFn(id as string);
@@ -400,8 +405,12 @@ export function createTemporalScheduler(
           emit({ kind: "task:cancelled", taskId: id });
           break;
       }
+    })();
+    reconcilePromises.set(id, promise);
+    try {
+      await promise;
     } finally {
-      reconciling.delete(id);
+      reconcilePromises.delete(id);
     }
   }
 
@@ -481,10 +490,9 @@ export function createTemporalScheduler(
     },
 
     async cancel(id): Promise<boolean> {
-      if (!tasks.has(id) || bootstrappedTaskIds.has(id)) {
-        const describeFn = config.client.workflow.describe;
-        if (describeFn === undefined)
-          throw new Error(`Cannot verify ownership: describe not available for "${String(id)}"`);
+      const describeFn = config.client.workflow.describe;
+      if (describeFn !== undefined) {
+        // Always verify when describe is available — prevents stale-cache ownership bypass.
         let info: WorkflowExecutionStatus;
         try {
           info = await describeFn(String(id));
@@ -498,6 +506,8 @@ export function createTemporalScheduler(
           config.taskQueue,
           tasks.get(id)?.agentId,
         );
+      } else if (!tasks.has(id) || bootstrappedTaskIds.has(id)) {
+        throw new Error(`Cannot verify ownership: describe not available for "${String(id)}"`);
       }
       try {
         await config.client.workflow.cancel(id);
@@ -599,12 +609,8 @@ export function createTemporalScheduler(
     },
 
     async unschedule(id): Promise<boolean> {
-      if (!schedules.has(id) || bootstrappedScheduleIds.has(id)) {
-        const getFn = config.client.schedule.get;
-        if (getFn === undefined)
-          throw new Error(
-            `Cannot verify ownership: schedule.get not available for "${String(id)}"`,
-          );
+      const getFn = config.client.schedule.get;
+      if (getFn !== undefined) {
         let info: ScheduleGetInfo;
         try {
           info = await getFn(String(id));
@@ -618,6 +624,8 @@ export function createTemporalScheduler(
           config.taskQueue,
           schedules.get(id)?.agentId,
         );
+      } else if (!schedules.has(id) || bootstrappedScheduleIds.has(id)) {
+        throw new Error(`Cannot verify ownership: schedule.get not available for "${String(id)}"`);
       }
       try {
         await config.client.schedule.delete(id);
@@ -630,12 +638,8 @@ export function createTemporalScheduler(
     },
 
     async pause(id): Promise<boolean> {
-      if (!schedules.has(id) || bootstrappedScheduleIds.has(id)) {
-        const getFn = config.client.schedule.get;
-        if (getFn === undefined)
-          throw new Error(
-            `Cannot verify ownership: schedule.get not available for "${String(id)}"`,
-          );
+      const getFn = config.client.schedule.get;
+      if (getFn !== undefined) {
         let info: ScheduleGetInfo;
         try {
           info = await getFn(String(id));
@@ -649,6 +653,8 @@ export function createTemporalScheduler(
           config.taskQueue,
           schedules.get(id)?.agentId,
         );
+      } else if (!schedules.has(id) || bootstrappedScheduleIds.has(id)) {
+        throw new Error(`Cannot verify ownership: schedule.get not available for "${String(id)}"`);
       }
       try {
         await config.client.schedule.pause(id);
@@ -664,12 +670,8 @@ export function createTemporalScheduler(
     },
 
     async resume(id): Promise<boolean> {
-      if (!schedules.has(id) || bootstrappedScheduleIds.has(id)) {
-        const getFn = config.client.schedule.get;
-        if (getFn === undefined)
-          throw new Error(
-            `Cannot verify ownership: schedule.get not available for "${String(id)}"`,
-          );
+      const getFn = config.client.schedule.get;
+      if (getFn !== undefined) {
         let info: ScheduleGetInfo;
         try {
           info = await getFn(String(id));
@@ -683,6 +685,8 @@ export function createTemporalScheduler(
           config.taskQueue,
           schedules.get(id)?.agentId,
         );
+      } else if (!schedules.has(id) || bootstrappedScheduleIds.has(id)) {
+        throw new Error(`Cannot verify ownership: schedule.get not available for "${String(id)}"`);
       }
       try {
         await config.client.schedule.unpause(id);
@@ -720,11 +724,12 @@ export function createTemporalScheduler(
     stats(): SchedulerStats {
       const all = [...tasks.values()];
       const allSchedules = [...schedules.values()];
+      // Terminal tasks are removed from `tasks` on completion — derive counts from history.
       return {
         pending: all.filter((t) => t.status === "pending").length,
         running: all.filter((t) => t.status === "running").length,
-        completed: all.filter((t) => t.status === "completed").length,
-        failed: all.filter((t) => t.status === "failed").length,
+        completed: history.filter((r) => r.status === "completed").length,
+        failed: history.filter((r) => r.status === "failed").length,
         deadLettered: all.filter((t) => t.status === "dead_letter").length,
         activeSchedules: allSchedules.filter((s) => !s.paused).length,
         pausedSchedules: allSchedules.filter((s) => s.paused).length,
@@ -827,6 +832,7 @@ export function createTemporalScheduler(
       schedules.clear();
       bootstrappedTaskIds.clear();
       bootstrappedScheduleIds.clear();
+      reconcilePromises.clear();
     },
   };
 }

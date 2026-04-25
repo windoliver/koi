@@ -391,6 +391,25 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
+  test("stats() reflects terminal counts from history, not live task map", async () => {
+    const client = makeClientWithDescribe(() => ({
+      status: "COMPLETED",
+      startTime: 0,
+      closeTime: 1,
+    }));
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.submit(A1, { kind: "text", text: "a" }, "dispatch");
+    await sched.submit(A1, { kind: "text", text: "b" }, "dispatch");
+    // Before reconciliation: 2 pending, 0 completed
+    expect(sched.stats().pending).toBe(2);
+    expect(sched.stats().completed).toBe(0);
+    await sched.query({}); // reconcile both to completed
+    // After reconciliation: 0 pending, 2 completed
+    expect(sched.stats().pending).toBe(0);
+    expect(sched.stats().completed).toBe(2);
+    await sched[Symbol.asyncDispose]();
+  });
+
   test("concurrent query() calls on the same task produce exactly one history entry", async () => {
     let resolveDescribe!: () => void;
     const blockedDescribe = new Promise<void>((r) => {
