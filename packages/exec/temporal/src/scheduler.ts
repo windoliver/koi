@@ -48,6 +48,11 @@ export interface WorkflowExecutionStatus {
   readonly memo?: Readonly<Record<string, unknown>> | undefined;
 }
 
+/** Subset of schedule state fetched for ownership verification on idempotent replay. */
+export interface ScheduleGetInfo {
+  readonly memo?: Readonly<Record<string, unknown>> | undefined;
+}
+
 export interface TemporalClientLike {
   readonly workflow: {
     readonly start: (
@@ -67,6 +72,11 @@ export interface TemporalClientLike {
     readonly delete: (scheduleId: string) => Promise<void>;
     readonly pause: (scheduleId: string, note?: string) => Promise<void>;
     readonly unpause: (scheduleId: string, note?: string) => Promise<void>;
+    /**
+     * Fetch existing schedule metadata for ownership verification on idempotent replay.
+     * Optional — when absent, stable-ID replays fail closed to prevent silent collisions.
+     */
+    readonly get?: (scheduleId: string) => Promise<ScheduleGetInfo>;
   };
 }
 
@@ -156,6 +166,63 @@ function serializeEngineInput(input: EngineInput): Record<string, unknown> {
       return { kind: input.kind, messages: [...input.messages] };
     case "resume":
       return { kind: input.kind, state: input.state };
+  }
+}
+
+/**
+ * Verifies that an existing workflow belongs to the same agent + mode.
+ * Throws if describe() fails or memo shows a different owner.
+ * Always called on the stable-ID idempotent path — fail closed is intentional.
+ */
+async function verifyWorkflowOwnership(
+  describeFn: (id: string) => Promise<WorkflowExecutionStatus>,
+  workflowId: string,
+  expectedAgentId: AgentId,
+  expectedMode: "spawn" | "dispatch",
+): Promise<void> {
+  let info: WorkflowExecutionStatus;
+  try {
+    info = await describeFn(workflowId);
+  } catch {
+    throw new Error(`Cannot verify ownership of workflow "${workflowId}": describe call failed`);
+  }
+  const m = info.memo;
+  if (
+    (m?.agentId !== undefined && m.agentId !== expectedAgentId) ||
+    (m?.mode !== undefined && m.mode !== expectedMode)
+  ) {
+    throw new Error(
+      `Workflow ID collision: "${workflowId}" already exists with different agent or mode`,
+    );
+  }
+}
+
+/**
+ * Verifies that an existing schedule belongs to the same agent, mode, and cron expression.
+ * Throws if get() fails or memo shows a different owner.
+ */
+async function verifyScheduleOwnership(
+  getFn: (id: string) => Promise<ScheduleGetInfo>,
+  rawId: string,
+  expectedAgentId: AgentId,
+  expectedMode: "spawn" | "dispatch",
+  expectedExpression: string,
+): Promise<void> {
+  let info: ScheduleGetInfo;
+  try {
+    info = await getFn(rawId);
+  } catch {
+    throw new Error(`Cannot verify ownership of schedule "${rawId}": get call failed`);
+  }
+  const m = info.memo;
+  if (
+    (m?.agentId !== undefined && m.agentId !== expectedAgentId) ||
+    (m?.mode !== undefined && m.mode !== expectedMode) ||
+    (m?.expression !== undefined && m.expression !== expectedExpression)
+  ) {
+    throw new Error(
+      `Schedule ID collision: "${rawId}" already exists with different configuration`,
+    );
   }
 }
 
@@ -341,23 +408,14 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         // Stable ID provided and Temporal already has that workflow →
         // idempotent replay (caller retried after a lost response).
         if (idempotencyKey === undefined || !isAlreadyExistsError(e)) throw e;
-        // Verify ownership via describe to guard against ID collisions.
+        // Ownership MUST be verified — fail closed if describe is not configured.
         const describeFn = config.client.workflow.describe;
-        if (describeFn !== undefined) {
-          let collisionError: Error | undefined;
-          try {
-            const info = await describeFn(rawId);
-            const memoAgentId = info.memo?.agentId;
-            if (memoAgentId !== undefined && memoAgentId !== agentId) {
-              collisionError = new Error(
-                `Workflow ID collision: "${rawId}" already exists for agent "${String(memoAgentId)}"`,
-              );
-            }
-          } catch {
-            // describe unavailable or transient error — accept idempotent replay
-          }
-          if (collisionError !== undefined) throw collisionError;
+        if (describeFn === undefined) {
+          throw new Error(
+            `Stable workflow "${rawId}" already exists but describe() is not configured — cannot verify ownership`,
+          );
         }
+        await verifyWorkflowOwnership(describeFn, rawId, agentId, mode);
       }
 
       // Guard against double-registration from concurrent or replayed submits.
@@ -425,11 +483,21 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
               retryPolicy: { maximumAttempts: options.maxRetries },
             }),
           },
-          memo: { agentId, mode, metadata: options?.metadata },
+          // expression stored in memo enables collision detection on idempotent replay.
+          memo: { agentId, mode, expression, metadata: options?.metadata },
         });
       } catch (e: unknown) {
-        // Idempotent replay: caller retried after losing a creation response.
+        // Stable ID provided and Temporal already has that schedule →
+        // idempotent replay (caller retried after a lost response).
         if (idempotencyKey === undefined || !isAlreadyExistsError(e)) throw e;
+        // Ownership MUST be verified — fail closed if get is not configured.
+        const getFn = config.client.schedule.get;
+        if (getFn === undefined) {
+          throw new Error(
+            `Stable schedule "${rawId}" already exists but schedule.get() is not configured — cannot verify ownership`,
+          );
+        }
+        await verifyScheduleOwnership(getFn, rawId, agentId, mode, expression);
       }
 
       const cronSchedule: CronSchedule = {

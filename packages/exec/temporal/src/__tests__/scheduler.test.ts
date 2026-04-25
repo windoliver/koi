@@ -474,7 +474,7 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
-  test("submit() treats WorkflowExecutionAlreadyStartedError as idempotent success for stable IDs", async () => {
+  test("submit() fails closed when describe unavailable and AlreadyExistsError on stable ID", async () => {
     const alreadyStarted = {
       name: "WorkflowExecutionAlreadyStartedError",
       message: "already started",
@@ -485,6 +485,7 @@ describe("createTemporalScheduler", () => {
           throw alreadyStarted;
         }),
         cancel: mock(async () => {}),
+        // NO describe — must fail closed
       },
       schedule: {
         create: mock(async () => {}),
@@ -494,12 +495,12 @@ describe("createTemporalScheduler", () => {
       },
     };
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
-    // Should not throw — idempotent replay
-    const id = await sched.submit(A1, { kind: "text", text: "hi" }, "dispatch", {
-      metadata: { workflowId: "my-stable-id" },
-    });
-    expect(String(id)).toBe("my-stable-id");
-    expect(sched.stats().pending).toBe(1);
+    await expect(
+      sched.submit(A1, { kind: "text", text: "hi" }, "dispatch", {
+        metadata: { workflowId: "my-stable-id" },
+      }),
+    ).rejects.toThrow("describe()");
+    expect(sched.stats().pending).toBe(0); // no phantom task registered
     await sched[Symbol.asyncDispose]();
   });
 
@@ -526,7 +527,7 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
-  test("schedule() treats AlreadyExistsError as idempotent success for stable IDs", async () => {
+  test("schedule() fails closed when schedule.get unavailable and AlreadyExistsError on stable ID", async () => {
     const alreadyExists = { name: "AlreadyExistsError", message: "schedule already exists" };
     const client: TemporalClientLike = {
       workflow: {
@@ -540,6 +541,36 @@ describe("createTemporalScheduler", () => {
         delete: mock(async () => {}),
         pause: mock(async () => {}),
         unpause: mock(async () => {}),
+        // NO get — must fail closed
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await expect(
+      sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch", {
+        metadata: { scheduleId: "my-stable-sched" },
+      }),
+    ).rejects.toThrow("schedule.get()");
+    expect(sched.stats().activeSchedules).toBe(0); // no phantom schedule registered
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("schedule() accepts stable-sched replay when get confirms same configuration", async () => {
+    const alreadyExists = { name: "AlreadyExistsError", message: "schedule already exists" };
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+      },
+      schedule: {
+        create: mock(async () => {
+          throw alreadyExists;
+        }),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+        get: mock(async () => ({
+          memo: { agentId: A1, mode: "dispatch", expression: "0 * * * *" },
+        })),
       },
     };
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
@@ -548,6 +579,35 @@ describe("createTemporalScheduler", () => {
     });
     expect(String(id)).toBe("my-stable-sched");
     expect(sched.stats().activeSchedules).toBe(1);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("schedule() throws on collision when get reveals different cron expression", async () => {
+    const alreadyExists = { name: "AlreadyExistsError", message: "schedule already exists" };
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+      },
+      schedule: {
+        create: mock(async () => {
+          throw alreadyExists;
+        }),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+        get: mock(async () => ({
+          memo: { agentId: A1, mode: "dispatch", expression: "0 0 * * *" }, // different expression
+        })),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await expect(
+      sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch", {
+        metadata: { scheduleId: "my-stable-sched" },
+      }),
+    ).rejects.toThrow("collision");
+    expect(sched.stats().activeSchedules).toBe(0); // no phantom schedule
     await sched[Symbol.asyncDispose]();
   });
 
@@ -614,7 +674,36 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
-  test("submit() throws on stable-ID collision when describe reveals different agentId", async () => {
+  test("submit() fails closed when describe throws during ownership verification", async () => {
+    const alreadyStarted = { name: "WorkflowExecutionAlreadyStartedError", message: "started" };
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => {
+          throw alreadyStarted;
+        }),
+        cancel: mock(async () => {}),
+        describe: mock(async () => {
+          throw new Error("network error");
+        }),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await expect(
+      sched.submit(A1, { kind: "text", text: "hi" }, "dispatch", {
+        metadata: { workflowId: "stable-id" },
+      }),
+    ).rejects.toThrow("describe call failed");
+    expect(sched.stats().pending).toBe(0);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("submit() throws on stable-ID collision when describe reveals different agentId or mode", async () => {
     const alreadyStarted = { name: "WorkflowExecutionAlreadyStartedError", message: "started" };
     const client: TemporalClientLike = {
       workflow: {
@@ -625,7 +714,7 @@ describe("createTemporalScheduler", () => {
         describe: mock(
           async (): Promise<WorkflowExecutionStatus> => ({
             status: "RUNNING",
-            memo: { agentId: "other-agent" },
+            memo: { agentId: "other-agent", mode: "spawn" }, // different agent + mode
           }),
         ),
       },
@@ -646,7 +735,7 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
-  test("submit() accepts stable-ID replay when describe confirms same agentId", async () => {
+  test("submit() accepts stable-ID replay when describe confirms same agentId and mode", async () => {
     const alreadyStarted = { name: "WorkflowExecutionAlreadyStartedError", message: "started" };
     const client: TemporalClientLike = {
       workflow: {
@@ -657,7 +746,7 @@ describe("createTemporalScheduler", () => {
         describe: mock(
           async (): Promise<WorkflowExecutionStatus> => ({
             status: "RUNNING",
-            memo: { agentId: A1 },
+            memo: { agentId: A1, mode: "dispatch" },
           }),
         ),
       },
