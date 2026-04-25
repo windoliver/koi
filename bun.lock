@@ -851,6 +851,7 @@
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
         "@koi/gateway": "workspace:*",
+        "@koi/gateway-webhook": "workspace:*",
         "@koi/governance-core": "workspace:*",
         "@koi/governance-defaults": "workspace:*",
         "@koi/harness": "workspace:*",

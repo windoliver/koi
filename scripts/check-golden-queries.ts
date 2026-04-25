@@ -25,6 +25,7 @@ const ROOT = new URL("../", import.meta.url).pathname;
 const GOLDEN_QUERY_EXEMPT: ReadonlySet<string> = new Set([
   "@koi/query-engine", // Internal stream consumer, tested via other packages' golden queries
   "@koi/cost-aggregator", // Infrastructure: cost tracking runs outside the agent loop, no tool surface
+  "@koi/gateway-webhook", // HTTP ingress server — sits outside the agent loop, no tool/middleware surface
 ]);
 
 /** Files that count as golden query test files. */
