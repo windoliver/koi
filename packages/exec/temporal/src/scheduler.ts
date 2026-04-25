@@ -335,7 +335,6 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       const rawId =
         idempotencyKey ?? `sched-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const id = scheduleId(rawId);
-      const messages = mapEngineInputToMessages(input, rawId);
 
       await config.client.schedule.create(rawId, {
         spec: { cronExpressions: [expression], timezone: options?.timezone },
@@ -343,10 +342,13 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           type: "startWorkflow",
           workflowType,
           taskQueue: config.taskQueue,
-          // sessionId is intentionally absent: each Temporal execution gets a
-          // unique workflowId and should derive its sessionId from
-          // workflowInfo().workflowId so independent firings never share state.
-          args: [{ agentId, messages, mode }],
+          // Pass raw engine input rather than pre-computed messages so each
+          // cron firing constructs per-run message IDs and timestamps from
+          // its own Temporal workflowId/execution time. Pre-computing messages
+          // here would bake in IDs and timestamps shared by all future runs.
+          // sessionId is absent for the same reason: each firing derives its
+          // session from workflowInfo().workflowId.
+          args: [{ agentId, input, mode }],
           ...(options?.timeoutMs !== undefined && {
             workflowExecutionTimeout: options.timeoutMs,
           }),

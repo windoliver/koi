@@ -154,19 +154,25 @@ describe("createTemporalScheduler", () => {
     expect(sched.stats().pending).toBe(0);
   });
 
-  test("schedule omits sessionId from workflow args — each firing derives session from Temporal workflowId", async () => {
+  test("schedule passes raw input (not pre-computed messages) so each firing gets unique message identity", async () => {
     const client = makeClient();
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
-    await sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch");
+    const engineInput = { kind: "text" as const, text: "tick" };
+    await sched.schedule("0 * * * *", A1, engineInput, "dispatch");
     const createCall = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0] as [
       string,
       Record<string, unknown>,
     ];
     const action = createCall[1].action as Record<string, unknown>;
     const args = action.args as [Record<string, unknown>];
-    // sessionId must NOT be present — cron firings must NOT share a session
+    // raw input must be present so each firing constructs per-run message IDs
+    expect(args[0]).toHaveProperty("input");
+    expect(args[0].input).toEqual(engineInput);
+    // messages must NOT be pre-computed into the schedule action
+    expect(args[0]).not.toHaveProperty("messages");
+    // sessionId must NOT be present — each firing derives its session from workflowId
     expect(args[0]).not.toHaveProperty("sessionId");
-    // but agentId and mode must still be present
+    // agentId and mode must still be present
     expect(args[0]).toHaveProperty("agentId");
     expect(args[0]).toHaveProperty("mode");
     await sched[Symbol.asyncDispose]();
