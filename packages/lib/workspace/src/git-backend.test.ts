@@ -151,17 +151,18 @@ describe("createGitWorktreeBackend", () => {
     if (!result.ok) return;
 
     const ws = result.value;
-    const found = await backend.findByAgentId?.(aid);
-    expect(found?.id).toBe(ws.id);
-    expect(found?.path).toBe(ws.path);
+    const survivors = await backend.findByAgentId?.(aid);
+    expect(survivors).toHaveLength(1);
+    expect(survivors?.[0]?.id).toBe(ws.id);
+    expect(survivors?.[0]?.path).toBe(ws.path);
 
     await backend.dispose(ws.id);
   });
 
-  it("findByAgentId returns undefined when no workspace for that agent", async () => {
+  it("findByAgentId returns empty array when no workspace for that agent", async () => {
     const backend = createGitWorktreeBackend({ repoPath });
-    const found = await backend.findByAgentId?.(agentId("unknown-agent"));
-    expect(found).toBeUndefined();
+    const survivors = await backend.findByAgentId?.(agentId("unknown-agent"));
+    expect(survivors).toHaveLength(0);
   });
 
   it("findByAgentId ignores worktrees outside this backend's base path", async () => {
@@ -179,7 +180,7 @@ describe("createGitWorktreeBackend", () => {
 
     // backend1 should not see backend2's worktree for a different agent
     const found = await backend1.findByAgentId?.(aid2);
-    expect(found).toBeUndefined();
+    expect(found).toHaveLength(0);
 
     await backend1.dispose(r1.value.id);
     await backend2.dispose(r2.value.id);

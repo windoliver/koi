@@ -192,7 +192,7 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       return false;
     },
 
-    async findByAgentId(searchAgentId: AgentId): Promise<WorkspaceInfo | undefined> {
+    async findByAgentId(searchAgentId: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
       // Derive ownership from the git-owned branch name.
       // New format: workspace/<hex(agentId)>/<wsId>  (current, reversible, collision-free)
       // Legacy format: workspace/<agentId>/<wsId>    (prior deployments where agentId was URL-safe)
@@ -200,7 +200,7 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       const searchRaw = searchAgentId as string;
 
       const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
-      if (!listResult.ok) return undefined;
+      if (!listResult.ok) return [];
 
       // Collect all matching survivors — multiple can exist when a prior dispose timed out.
       // We return the newest (by createdAt) so the caller operates on the most recent state.
@@ -247,14 +247,12 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         matches.push({ id, path, createdAt, metadata });
       }
 
-      if (matches.length === 0) return undefined;
-      // Multiple survivors: return the newest by embedded timestamp (git-owned, not agent-writable).
-      // Older survivors are intentionally NOT disposed here — the provider validates the chosen
-      // survivor before acting on it, and deleting alternatives before that check would cause
-      // irreversible loss if the newest survivor turns out to be incomplete or adversarial.
-      // Orphaned older survivors are disposed naturally when the agent next attaches and the
-      // provider disposes staleInfo before creating a fresh workspace.
-      return matches.reduce((b, cur) => (cur.createdAt > b.createdAt ? cur : b));
+      if (matches.length === 0) return [];
+      // Return all survivors newest-first. The caller validates each candidate in order and
+      // stops at the first healthy, setup-complete one. Older orphans are not pre-disposed here —
+      // deleting alternatives before validation could cause irreversible loss if the newest
+      // turns out incomplete; the provider disposes failed candidates as it iterates.
+      return matches.sort((a, b) => b.createdAt - a.createdAt);
     },
 
     // Use a git ref as the setup-complete attestation. Note: since isSandboxed is false,

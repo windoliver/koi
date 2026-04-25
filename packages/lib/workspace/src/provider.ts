@@ -90,6 +90,52 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
     }
   }
 
+  // Attempt to reuse a single crash-survivor candidate. Returns true if the candidate was
+  // successfully reused (caller should return its result). Returns false if the candidate
+  // failed validation and was disposed — caller should try the next candidate or create fresh.
+  // Throws only for unrecoverable errors (e.g. cleanup timed out on a poisoned workspace).
+  async function tryReuseCrashSurvivor(
+    agentId: AgentId,
+    candidate: WorkspaceInfo,
+  ): Promise<AttachResult | false> {
+    const wsId = candidate.id;
+    if (setupFailed.has(wsId)) {
+      await tryDispose(wsId);
+      return false;
+    }
+    const [healthy, setupComplete] = await Promise.all([
+      config.backend.isHealthy(wsId),
+      isSetupComplete(candidate),
+    ]);
+    if (!healthy || !setupComplete) {
+      setupFailed.delete(wsId);
+      await tryDispose(wsId);
+      return false;
+    }
+    // Found a valid survivor — re-run postCreate to repair any setup drift
+    // (e.g. files deleted after setup). Callers using cleanupPolicy="never" must ensure
+    // postCreate is idempotent.
+    if (config.postCreate) {
+      try {
+        await config.postCreate(candidate);
+      } catch (e: unknown) {
+        const didDispose = await tryDispose(wsId);
+        if (!didDispose) {
+          setupFailed.add(wsId);
+          attached.set(agentId, candidate);
+          throw new Error(
+            `Crash-survivor postCreate failed; cleanup also timed out: workspace ${wsId} is still alive`,
+            { cause: e },
+          );
+        }
+        setupFailed.delete(wsId);
+        return false; // postCreate failed but disposed — try next candidate
+      }
+    }
+    attached.set(agentId, candidate);
+    return makeResult(candidate);
+  }
+
   return {
     name: "workspace",
 
@@ -107,72 +153,73 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
         const staleInfo = attached.get(agentId);
 
         // Scan for workspaces that survived a process restart (not in the in-memory map).
-        let recoveredInfo: WorkspaceInfo | undefined;
-        if (staleInfo === undefined && config.backend.findByAgentId) {
-          recoveredInfo = await config.backend.findByAgentId(agentId);
-        }
+        const crashSurvivors: ReadonlyArray<WorkspaceInfo> =
+          staleInfo === undefined && config.backend.findByAgentId
+            ? await config.backend.findByAgentId(agentId)
+            : [];
 
-        const staleInfo2 = staleInfo ?? recoveredInfo;
-        const isFromCrashRecovery = staleInfo === undefined && recoveredInfo !== undefined;
-
-        // Under "never" policy: reuse the preserved workspace rather than discarding it.
-        // In-process reuse (staleInfo from attached map) is always trusted.
-        // Crash-survivor reuse (from findByAgentId) requires BOTH:
-        //   1. Backend implements verifySetupComplete (attestation exists), AND
-        //   2. Backend is sandboxed (isSandboxed: true) so the workspace process cannot forge
-        //      the attestation by writing into the shared git repo or sibling filesystem.
-        // Unsandboxed backends (e.g. git-worktree with isSandboxed: false) can implement
-        // verifySetupComplete as a convenience for in-process reuse, but since the agent
-        // has write access to the same git repo, refs/koi-setup-ok/* is forgeable and must
-        // not be trusted as crash-recovery proof. Their survivors are always disposed+recreated.
-        // When reusing a crash survivor, postCreate is re-run to repair any setup drift
-        // (e.g. files deleted after setup). Callers using cleanupPolicy="never" must ensure
-        // postCreate is idempotent.
-        if (staleInfo2 !== undefined && policy === "never") {
-          const wsId = staleInfo2.id;
-          const hasTrustedRecovery =
-            !isFromCrashRecovery ||
-            (config.backend.isSandboxed && config.backend.verifySetupComplete !== undefined);
-          if (!setupFailed.has(wsId) && hasTrustedRecovery) {
-            const [healthy, setupComplete] = await Promise.all([
-              config.backend.isHealthy(wsId),
-              isSetupComplete(staleInfo2),
-            ]);
-            if (healthy && setupComplete) {
-              if (isFromCrashRecovery && config.postCreate) {
-                try {
-                  await config.postCreate(staleInfo2);
-                } catch (e: unknown) {
-                  const didDispose = await tryDispose(wsId);
-                  if (!didDispose) {
-                    setupFailed.add(wsId);
-                    attached.set(agentId, staleInfo2);
-                    throw new Error(
-                      `Crash-survivor postCreate failed; cleanup also timed out: workspace ${wsId} is still alive`,
-                      { cause: e },
-                    );
-                  }
-                  attached.delete(agentId);
-                  throw e;
-                }
+        if (policy === "never") {
+          // In-process reuse: workspace was preserved from last detach — always trusted.
+          if (staleInfo !== undefined) {
+            const wsId = staleInfo.id;
+            if (!setupFailed.has(wsId)) {
+              const [healthy, setupComplete] = await Promise.all([
+                config.backend.isHealthy(wsId),
+                isSetupComplete(staleInfo),
+              ]);
+              if (healthy && setupComplete) {
+                attached.set(agentId, staleInfo);
+                return makeResult(staleInfo);
               }
-              attached.set(agentId, staleInfo2);
-              return makeResult(staleInfo2);
+            }
+            setupFailed.delete(wsId);
+            attached.delete(agentId);
+            // Unhealthy/incomplete — dispose and fall through to create
+            const disposed = await tryDispose(wsId);
+            if (!disposed) {
+              throw new Error(
+                `Cannot reattach agent ${agentId}: workspace ${wsId} could not be disposed`,
+              );
             }
           }
-          setupFailed.delete(wsId);
-          attached.delete(agentId);
-          // Unhealthy, setup incomplete, or no trusted recovery proof — dispose + recreate
-        }
 
-        if (staleInfo2 !== undefined) {
-          const disposed = await tryDispose(staleInfo2.id);
-          if (!disposed) {
-            throw new Error(
-              `Cannot reattach agent ${agentId}: previous workspace ${staleInfo2.id} could not be disposed`,
-            );
+          // Crash-survivor reuse: try candidates newest-first.
+          // Only sandboxed backends can guarantee the agent process cannot forge the attestation
+          // signal (e.g. an unsandboxed git-worktree agent can write refs/koi-setup-ok/* directly).
+          if (config.backend.isSandboxed && crashSurvivors.length > 0) {
+            for (const candidate of crashSurvivors) {
+              const reused = await tryReuseCrashSurvivor(agentId, candidate);
+              if (reused !== false) {
+                // Dispose any remaining older survivors before returning
+                for (const other of crashSurvivors) {
+                  if (other.id !== candidate.id) await tryDispose(other.id);
+                }
+                return reused;
+              }
+            }
+            // All candidates exhausted — fall through to create
+          } else {
+            // Unsandboxed or no survivors: dispose all crash survivors (not trusted / not present)
+            for (const survivor of crashSurvivors) {
+              await tryDispose(survivor.id);
+            }
           }
-          attached.delete(agentId);
+        } else {
+          // Non-"never" policy: dispose in-process workspace if present (it wasn't cleaned up
+          // on last detach, e.g. because the previous tryDispose timed out).
+          if (staleInfo !== undefined) {
+            const disposed = await tryDispose(staleInfo.id);
+            if (!disposed) {
+              throw new Error(
+                `Cannot reattach agent ${agentId}: previous workspace ${staleInfo.id} could not be disposed`,
+              );
+            }
+            attached.delete(agentId);
+          }
+          // Crash survivors under non-"never" policy are not reused — best-effort dispose.
+          for (const survivor of crashSurvivors) {
+            await tryDispose(survivor.id);
+          }
         }
 
         const result = await config.backend.create(agentId, {

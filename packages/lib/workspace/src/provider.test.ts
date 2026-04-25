@@ -317,8 +317,8 @@ describe("createWorkspaceProvider", () => {
       metadata: {},
     };
     const backendWithFind = makeBackend({
-      async findByAgentId(_aid: AgentId): Promise<WorkspaceInfo | undefined> {
-        return survivorInfo;
+      async findByAgentId(_aid: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
+        return [survivorInfo];
       },
     });
     const provider = createWorkspaceProvider({ backend: backendWithFind });
@@ -345,8 +345,8 @@ describe("createWorkspaceProvider", () => {
       metadata: {},
     };
     const backendWithFind = makeBackend({
-      async findByAgentId(_aid: AgentId): Promise<WorkspaceInfo | undefined> {
-        return survivorInfo;
+      async findByAgentId(_aid: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
+        return [survivorInfo];
       },
       isHealthy(_wsId: WorkspaceId): boolean {
         return true;
@@ -384,8 +384,8 @@ describe("createWorkspaceProvider", () => {
       metadata: {},
     };
     const backendWithFind = makeBackend({
-      async findByAgentId(_aid: AgentId): Promise<WorkspaceInfo | undefined> {
-        return survivorInfo;
+      async findByAgentId(_aid: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
+        return [survivorInfo];
       },
       isHealthy(_wsId: WorkspaceId): boolean {
         return true;
@@ -414,8 +414,8 @@ describe("createWorkspaceProvider", () => {
       metadata: {},
     };
     const backendWithFind = makeBackend({
-      async findByAgentId(_aid: AgentId): Promise<WorkspaceInfo | undefined> {
-        return survivorInfo;
+      async findByAgentId(_aid: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
+        return [survivorInfo];
       },
       isHealthy(_wsId: WorkspaceId): boolean {
         return true;
@@ -441,8 +441,8 @@ describe("createWorkspaceProvider", () => {
     };
     let postCreateCallCount = 0;
     const backendWithFind = makeBackend({
-      async findByAgentId(_aid: AgentId): Promise<WorkspaceInfo | undefined> {
-        return survivorInfo;
+      async findByAgentId(_aid: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
+        return [survivorInfo];
       },
       isHealthy(_wsId: WorkspaceId): boolean {
         return true;
@@ -490,12 +490,9 @@ describe("createWorkspaceProvider", () => {
     const survivorId = workspaceId("ws-survivor-unsandboxed");
     const unsandboxedBackend = makeBackend({
       isSandboxed: false,
-      findByAgentId: async () => ({
-        id: survivorId,
-        path: `/tmp/${survivorId}`,
-        createdAt: Date.now() - 1000,
-        metadata: {},
-      }),
+      findByAgentId: async () => [
+        { id: survivorId, path: `/tmp/${survivorId}`, createdAt: Date.now() - 1000, metadata: {} },
+      ],
       isHealthy(_wsId: WorkspaceId): boolean {
         return true;
       },
@@ -516,12 +513,9 @@ describe("createWorkspaceProvider", () => {
     const survivorId = workspaceId("ws-survivor-unsandboxed-attest");
     const unsandboxedWithAttest = makeBackend({
       isSandboxed: false,
-      findByAgentId: async () => ({
-        id: survivorId,
-        path: `/tmp/${survivorId}`,
-        createdAt: Date.now() - 1000,
-        metadata: {},
-      }),
+      findByAgentId: async () => [
+        { id: survivorId, path: `/tmp/${survivorId}`, createdAt: Date.now() - 1000, metadata: {} },
+      ],
       isHealthy(_wsId: WorkspaceId): boolean {
         return true;
       },
@@ -537,6 +531,50 @@ describe("createWorkspaceProvider", () => {
     // Survivor must be disposed even though verifySetupComplete returns true
     expect(unsandboxedWithAttest.disposed).toContain(survivorId);
     expect(unsandboxedWithAttest.created.length).toBe(1);
+  });
+
+  it("cleanupPolicy=never tries older survivor when newest is unhealthy", async () => {
+    // Multiple crash survivors: newest is unhealthy, older one is valid.
+    // Provider should dispose the newest, reuse the older one.
+    const newerBadId = workspaceId("ws-newer-bad");
+    const olderGoodId = workspaceId("ws-older-good");
+    const newerBad: WorkspaceInfo = {
+      id: newerBadId,
+      path: "/tmp/ws-newer-bad",
+      createdAt: Date.now(),
+      metadata: {},
+    };
+    const olderGood: WorkspaceInfo = {
+      id: olderGoodId,
+      path: "/tmp/ws-older-good",
+      createdAt: Date.now() - 5000,
+      metadata: {},
+    };
+    const backendWithFind = makeBackend({
+      async findByAgentId(_aid: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
+        // Return newest-first (as the backend contract requires)
+        return [newerBad, olderGood];
+      },
+      isHealthy(wsId: WorkspaceId): boolean {
+        return wsId === olderGoodId; // newer is unhealthy
+      },
+      async verifySetupComplete(_wsId: WorkspaceId): Promise<boolean> {
+        return true;
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: backendWithFind,
+      cleanupPolicy: "never",
+    });
+    const result = await provider.attach(makeAgent());
+    // Newer bad survivor was disposed
+    expect(backendWithFind.disposed).toContain(newerBadId);
+    // Older good survivor was reused
+    expect(backendWithFind.disposed).not.toContain(olderGoodId);
+    expect(backendWithFind.created.length).toBe(0);
+    const attachResult2 = isAttachResult(result) ? result : { components: result, skipped: [] };
+    const ws = attachResult2.components.get(WORKSPACE as string) as WorkspaceInfo;
+    expect(ws.id).toBe(olderGoodId);
   });
 
   it("attestation failure in cleanupPolicy=never disposes workspace and rethrows", async () => {

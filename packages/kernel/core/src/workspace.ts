@@ -72,11 +72,12 @@ export interface WorkspaceBackend {
   readonly dispose: (workspaceId: WorkspaceId) => Promise<Result<void, KoiError>>;
   readonly isHealthy: (workspaceId: WorkspaceId) => boolean | Promise<boolean>;
   /**
-   * Optional: scan for a workspace previously created for this agent (e.g. after process restart).
-   * Returns full WorkspaceInfo so callers can reuse the workspace (e.g. under `cleanupPolicy="never"`)
-   * without needing a separate round-trip to reconstruct path/metadata.
+   * Optional: scan for workspaces previously created for this agent (e.g. after process restart).
+   * Returns all survivors sorted newest-first so callers can try them in order and fall back to
+   * older candidates when the newest is unhealthy or setup-incomplete.
+   * Empty array (or absent method) means no survivors found.
    */
-  readonly findByAgentId?: (agentId: AgentId) => Promise<WorkspaceInfo | undefined>;
+  readonly findByAgentId?: (agentId: AgentId) => Promise<ReadonlyArray<WorkspaceInfo>>;
   /**
    * Optional: durably record that setup (postCreate) completed for this workspace.
    * Backends should use storage that workspace-process code cannot spoof (e.g. git refs).
