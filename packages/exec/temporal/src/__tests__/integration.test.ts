@@ -204,8 +204,8 @@ describe.skipIf(SKIP)("Scheduler integration (real Temporal)", () => {
       // Either the task is still live (running/pending) OR already completed into history
       const liveStatus = tasks[0]?.status;
       const histStatus = hist[0]?.status;
-      const observed = liveStatus ?? histStatus;
-      expect(observed).toBeDefined();
+      const observed = liveStatus ?? histStatus ?? "";
+      expect(observed).toBeTruthy();
       expect(["running", "completed", "failed", "pending"]).toContain(observed);
 
       await scheduler[Symbol.asyncDispose]();
@@ -253,7 +253,7 @@ describe.skipIf(SKIP)("Scheduler integration (real Temporal)", () => {
 
       // cancel on a completed workflow: assertMemoOwner still verifies but
       // the underlying cancel call should swallow WorkflowNotFound/already done
-      const result = await scheduler.cancel(id).catch(() => false);
+      const result = await Promise.resolve(scheduler.cancel(id)).catch(() => false);
       expect(typeof result).toBe("boolean"); // false or threw — either is acceptable
 
       await scheduler[Symbol.asyncDispose]();
