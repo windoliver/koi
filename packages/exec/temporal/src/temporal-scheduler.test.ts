@@ -1594,7 +1594,7 @@ describe("dispatch deliveredDispatchIds — prevents duplicate signal after rest
 
 describe("startup reconciliation — persisted so second restart does not duplicate history", () => {
   test("history is not duplicated when the same pending dispatch snapshot is loaded twice", async () => {
-    const { mkdirSync, writeFileSync, readFileSync, rmdirSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync, rmdirSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
