@@ -200,17 +200,24 @@ describe("createWorkspaceProvider", () => {
     await provider.detach?.(agent);
   });
 
-  it("reattach with cleanupPolicy=never does not dispose preserved workspace", async () => {
+  it("reattach with cleanupPolicy=never reuses preserved workspace, no new create", async () => {
     const provider = createWorkspaceProvider({ backend, cleanupPolicy: "never" });
     const agent = makeAgent();
-    await provider.attach(agent);
+    const first = await provider.attach(agent);
     await provider.detach?.(agent); // never policy: workspace kept
     expect(backend.disposed.length).toBe(0);
 
-    // Reattach — policy=never must not auto-dispose the preserved workspace
-    await provider.attach(agent);
+    // Reattach — policy=never must reuse the preserved workspace, not create a new one
+    const second = await provider.attach(agent);
     expect(backend.disposed.length).toBe(0); // still not disposed
-    expect(backend.created.length).toBe(2); // new workspace created alongside the old one
+    expect(backend.created.length).toBe(1); // no second create
+
+    const firstResult = isAttachResult(first) ? first : { components: first, skipped: [] };
+    const secondResult = isAttachResult(second) ? second : { components: second, skipped: [] };
+    const firstWs = firstResult.components.get(WORKSPACE as string) as WorkspaceInfo;
+    const secondWs = secondResult.components.get(WORKSPACE as string) as WorkspaceInfo;
+    expect(secondWs.id).toBe(firstWs.id); // same workspace returned
+
     await provider.detach?.(agent);
   });
 

@@ -139,25 +139,22 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
 
   let sharedStore = groupRegistry.get(groupId as string);
   if (sharedStore === undefined) {
-    const newStore: GroupStore = {
-      entries: new Map(),
-      subscribers: new Set(),
-      refCount: 0,
-      timer: null,
-    };
-    if (sweepIntervalMs > 0) {
-      const t = setInterval(() => {
-        for (const [path, entry] of newStore.entries) {
-          if (isExpired(entry)) newStore.entries.delete(path);
-        }
-      }, sweepIntervalMs);
-      if (t && typeof t === "object" && "unref" in t) {
-        (t as { unref: () => void }).unref();
+    sharedStore = { entries: new Map(), subscribers: new Set(), refCount: 0, timer: null };
+    groupRegistry.set(groupId as string, sharedStore);
+  }
+  // (Re)start sweep timer when a new handle joins a dormant group (timer was stopped
+  // after the last handle closed, but entries and the registry entry were kept alive).
+  if (sharedStore.timer === null && sweepIntervalMs > 0) {
+    const dormantStore = sharedStore;
+    const t = setInterval(() => {
+      for (const [path, entry] of dormantStore.entries) {
+        if (isExpired(entry)) dormantStore.entries.delete(path);
       }
-      newStore.timer = t;
+    }, sweepIntervalMs);
+    if (t && typeof t === "object" && "unref" in t) {
+      (t as { unref: () => void }).unref();
     }
-    groupRegistry.set(groupId as string, newStore);
-    sharedStore = newStore;
+    sharedStore.timer = t;
   }
   sharedStore.refCount++;
   const store = sharedStore;
@@ -187,6 +184,19 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
     if (closed) return { ok: false, error: CLOSED_ERROR };
     const pathErr = validatePath(input.path);
     if (pathErr) return { ok: false, error: pathErr };
+
+    if (input.ttlSeconds !== undefined) {
+      if (!Number.isFinite(input.ttlSeconds) || input.ttlSeconds <= 0) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: "ttlSeconds must be a finite positive number",
+            retryable: false,
+          },
+        };
+      }
+    }
 
     const sizeBytes = new TextEncoder().encode(input.content).byteLength;
     if (sizeBytes > SCRATCHPAD_DEFAULTS.MAX_FILE_SIZE_BYTES) {
@@ -377,10 +387,11 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
     instanceSubs.clear();
     store.refCount--;
     if (store.refCount <= 0) {
+      // Stop the sweep timer when no handles are active, but keep entries and the
+      // registry entry alive — store data outlives individual handles so that
+      // cross-turn coordination state survives detach/reattach cycles.
       if (store.timer !== null) clearInterval(store.timer);
       store.timer = null;
-      store.entries.clear();
-      groupRegistry.delete(groupId as string);
     }
   }
 

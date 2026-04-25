@@ -21,8 +21,8 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
   const policy = config.cleanupPolicy ?? DEFAULT_CLEANUP_POLICY;
   const timeoutMs = config.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS;
 
-  // Map agent.pid.id → workspace ID for cleanup on detach
-  const attached = new Map<AgentId, WorkspaceId>();
+  // Map agent.pid.id → WorkspaceInfo for cleanup/reuse on detach/attach
+  const attached = new Map<AgentId, WorkspaceInfo>();
   // Tracks agents with an in-progress attach to prevent concurrent double-creation
   const inFlight = new Set<AgentId>();
 
@@ -46,6 +46,12 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
     return agent.terminationOutcome === "success";
   }
 
+  function makeResult(ws: WorkspaceInfo): AttachResult {
+    // WORKSPACE is a SubsystemToken<WorkspaceInfo> — a branded string — use it as the map key
+    const components = new Map<string, unknown>([[WORKSPACE as string, ws]]);
+    return { components, skipped: [] };
+  }
+
   return {
     name: "workspace",
 
@@ -60,17 +66,21 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       inFlight.add(agentId);
 
       try {
-        // Dispose any stale workspace from a previous attach (e.g. after an intentional
-        // preserve or a crash followed by re-attach). Also scan via findByAgentId for
-        // workspaces that survived a process restart and are no longer in the in-memory map.
-        // Abort if cleanup fails — keeping old tracking is preferable to orphaning the worktree.
-        let staleWsId = attached.get(agentId);
+        const staleInfo = attached.get(agentId);
+
+        // Under cleanupPolicy="never", reuse the preserved workspace rather than creating
+        // a new one — auto-disposing would destroy the workspace the operator asked to keep.
+        if (staleInfo !== undefined && policy === "never") {
+          return makeResult(staleInfo);
+        }
+
+        // For non-"never" policies, also scan via findByAgentId for workspaces that survived
+        // a process restart and are no longer in the in-memory map, then dispose them.
+        let staleWsId = staleInfo?.id;
         if (staleWsId === undefined && config.backend.findByAgentId) {
           staleWsId = await config.backend.findByAgentId(agentId);
         }
-        // Honour cleanupPolicy: "never" on reattach too — auto-disposing would silently
-        // destroy workspaces the operator explicitly chose to preserve for inspection.
-        if (staleWsId !== undefined && policy !== "never") {
+        if (staleWsId !== undefined) {
           const disposed = await tryDispose(staleWsId);
           if (!disposed) {
             throw new Error(
@@ -101,7 +111,7 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
             const didDispose = await tryDispose(ws.id);
             if (!didDispose) {
               // Cleanup timed out or failed — keep tracking so detach can retry later
-              attached.set(agentId, ws.id);
+              attached.set(agentId, ws);
               throw new Error(
                 `Workspace setup failed; cleanup also timed out or failed: workspace ${ws.id} is still alive`,
                 { cause: e },
@@ -111,11 +121,8 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
           }
         }
 
-        attached.set(agentId, ws.id);
-
-        // WORKSPACE is a SubsystemToken<WorkspaceInfo> — a branded string — use it as the map key
-        const components = new Map<string, unknown>([[WORKSPACE as string, ws]]);
-        return { components, skipped: [] };
+        attached.set(agentId, ws);
+        return makeResult(ws);
       } finally {
         inFlight.delete(agentId);
       }
@@ -123,18 +130,18 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
 
     async detach(agent: Agent): Promise<void> {
       const agentId = agent.pid.id;
-      const wsId = attached.get(agentId);
-      if (!wsId) return;
+      const wsInfo = attached.get(agentId);
+      if (!wsInfo) return;
 
       if (!shouldDispose(agent)) {
         // Intentionally preserved — keep tracking so a later attach for the
-        // same agent can reclaim the workspace before creating a new one.
+        // same agent can reuse the workspace under "never" or reclaim it otherwise.
         return;
       }
 
       // Only remove from tracking after confirmed successful disposal.
       // On failure or timeout, workspace remains in `attached` for retry or manual recovery.
-      const disposed = await tryDispose(wsId);
+      const disposed = await tryDispose(wsInfo.id);
       if (disposed) {
         attached.delete(agentId);
       }

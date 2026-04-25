@@ -261,6 +261,42 @@ describe("createLocalScratchpad", () => {
       if (wr.ok) return;
       expect(wr.error.code).toBe("VALIDATION");
     });
+
+    it("rejects NaN ttlSeconds", () => {
+      const wr = sp.write({
+        path: scratchpadPath("ttl-nan"),
+        content: "x",
+        ttlSeconds: Number.NaN,
+      });
+      expect(wr.ok).toBe(false);
+      if (wr.ok) return;
+      expect(wr.error.code).toBe("VALIDATION");
+    });
+
+    it("rejects Infinity ttlSeconds", () => {
+      const wr = sp.write({
+        path: scratchpadPath("ttl-inf"),
+        content: "x",
+        ttlSeconds: Number.POSITIVE_INFINITY,
+      });
+      expect(wr.ok).toBe(false);
+      if (wr.ok) return;
+      expect(wr.error.code).toBe("VALIDATION");
+    });
+
+    it("rejects zero ttlSeconds", () => {
+      const wr = sp.write({ path: scratchpadPath("ttl-zero"), content: "x", ttlSeconds: 0 });
+      expect(wr.ok).toBe(false);
+      if (wr.ok) return;
+      expect(wr.error.code).toBe("VALIDATION");
+    });
+
+    it("rejects negative ttlSeconds", () => {
+      const wr = sp.write({ path: scratchpadPath("ttl-neg"), content: "x", ttlSeconds: -1 });
+      expect(wr.ok).toBe(false);
+      if (wr.ok) return;
+      expect(wr.error.code).toBe("VALIDATION");
+    });
   });
 
   describe("concurrent access", () => {
@@ -368,17 +404,18 @@ describe("createLocalScratchpad", () => {
       }
     });
 
-    it("entries are cleared when last handle closes", () => {
+    it("entries survive last handle close and are visible to a new handle", () => {
       const reopenGid = agentGroupId("group-reopen");
       const sp1 = createLocalScratchpad({ groupId: reopenGid, authorId: aid });
       sp1.write({ path: scratchpadPath("checkpoint"), content: "state-v1" });
-      sp1.close(); // refCount → 0, store cleared
+      sp1.close(); // refCount → 0; timer stopped but entries kept
 
-      // New handle for same groupId starts with a fresh store
+      // New handle for same groupId sees the surviving entries
       const sp2 = createLocalScratchpad({ groupId: reopenGid, authorId: aid });
       try {
         const r = sp2.read(scratchpadPath("checkpoint"));
-        expect(r.ok).toBe(false); // entries cleared on last close
+        expect(r.ok).toBe(true); // entries persist across handle gap
+        if (r.ok) expect(r.value.content).toBe("state-v1");
       } finally {
         sp2.close();
       }
