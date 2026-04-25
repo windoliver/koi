@@ -7,7 +7,7 @@ import type {
   ScopeChecker,
   VerifyContext,
 } from "@koi/core";
-import { isPermissionSubset } from "@koi/core";
+import { isPermissionSubsetWithAsk } from "./attenuation.js";
 import { verifyEd25519 } from "./ed25519.js";
 import { verifyHmac } from "./hmac.js";
 import type { CapabilityRevocationRegistry, CapabilityTokenStore } from "./revocation.js";
@@ -214,8 +214,9 @@ async function verifyChain(
   if (parent.scope.sessionId !== child.scope.sessionId) {
     return deny({ ok: false, reason: "session_invalid" });
   }
-  // Attenuation: child permissions must be a subset of parent permissions.
-  if (!isPermissionSubset(child.scope.permissions, parent.scope.permissions)) {
+  // Attenuation: child permissions must be a subset of parent permissions
+  // AND child must preserve every parent.ask entry (or strengthen to deny).
+  if (!isPermissionSubsetWithAsk(child.scope.permissions, parent.scope.permissions)) {
     return deny({ ok: false, reason: "scope_exceeded" });
   }
   // Attenuation: child resources must be a subset of parent resources (when parent restricts).

@@ -34,12 +34,16 @@ L2 library that implements the L0 capability + delegation contracts in
     chainDepth>0 tokens. The verifier walks the chain via
     `tokenStore.get(parentId)` and validates signature, expiry,
     session, attenuation, and continuity at each level.
-- `createGlobScopeChecker()` — default `ScopeChecker` matching
-  `permissions.allow`/`deny` with `*` wildcard support. **Fails closed on
-  resource-scoped tokens**: `VerifyContext` carries no requested resource,
-  so this checker cannot enforce `scope.resources` and rejects any token
-  with non-empty resources. Production deployments that issue
-  resource-scoped tokens MUST inject a resource-aware scope checker.
+- `createGlobScopeChecker()` — default `ScopeChecker` applying deny-first
+  glob matching against `permissions.allow`/`deny` with `*` and `prefix*`
+  support (e.g. `db:*` matches `db:delete`). Mirrors the matcher used by
+  `@koi/middleware-permissions`. Fails closed on:
+  - tokens with non-empty `scope.resources` — `VerifyContext` carries no
+    requested resource, so resource-aware checks require a custom checker
+  - tokens whose `permissions.ask` matches the requested toolId — the
+    default checker has no human-in-the-loop mechanism; production
+    deployments that issue ask-bearing tokens MUST inject an interactive
+    scope checker capable of returning true after explicit approval.
 - `issueRootCapability(opts)` — produces a signed root `CapabilityToken`.
 - `delegateCapability(opts)` — produces a signed child `CapabilityToken`
   after verifying attenuation, chain depth, parent expiry, session match,
@@ -90,7 +94,11 @@ For the leaf token only:
 
 ## Issue-time checks (`delegateCapability`)
 
-- `isPermissionSubset(child.scope.permissions, parent.scope.permissions)`
+- `isPermissionSubsetWithAsk(child.scope.permissions, parent.scope.permissions)`
+  — wraps L0's `isPermissionSubset` (allow ⊆ parent, deny only grows) and
+  adds **ask preservation**: every entry in `parent.ask` must remain in
+  `child.ask` OR be promoted to `child.deny` (strictly more restrictive).
+  Without this, a child could silently drop human-approval requirements.
 - Resource subset: when parent has resources, child must declare a
   subset; missing or broader resources → `scope_exceeded`.
 - `child.scope.sessionId === parent.scope.sessionId` (cascade)

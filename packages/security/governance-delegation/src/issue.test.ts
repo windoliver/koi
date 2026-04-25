@@ -336,4 +336,61 @@ describe("delegateCapability", () => {
     });
     expect(okResult.ok).toBe(true);
   });
+
+  test("ask preservation enforced at issue time (codex round-4: critical)", async () => {
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const root = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: {
+        permissions: { allow: ["*"], ask: ["bash"] },
+        sessionId: sessionId("sess-1"),
+      },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+
+    // Strip ask — must fail.
+    const stripped = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: { permissions: { allow: ["*"] }, sessionId: sessionId("sess-1") },
+      ttlMs: 30_000,
+      now: () => 1000,
+    });
+    expect(stripped.ok).toBe(false);
+    if (stripped.ok) return;
+    expect((stripped.error.context as { reason: string }).reason).toBe("scope_exceeded");
+
+    // Preserve ask — must pass.
+    const preserved = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: {
+        permissions: { allow: ["*"], ask: ["bash"] },
+        sessionId: sessionId("sess-1"),
+      },
+      ttlMs: 30_000,
+      now: () => 1000,
+    });
+    expect(preserved.ok).toBe(true);
+
+    // Promote ask → deny — strictly more restrictive, must pass.
+    const promoted = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: {
+        permissions: { allow: ["*"], deny: ["bash"] },
+        sessionId: sessionId("sess-1"),
+      },
+      ttlMs: 30_000,
+      now: () => 1000,
+    });
+    expect(promoted.ok).toBe(true);
+  });
 });

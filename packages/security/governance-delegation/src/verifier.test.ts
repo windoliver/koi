@@ -523,6 +523,55 @@ describe("round-2 hardening", () => {
     expect(result.reason).toBe("invalid_signature");
   });
 
+  test("forged child stripping parent.ask rejected at verify time (codex round-4: critical)", async () => {
+    // Parent says ask:["bash"]. Forged child claims allow:["*"] and no ask
+    // — bypassing the human-approval gate. delegateCapability would refuse
+    // (issue-time ask preservation), but a malicious holder of the secret
+    // can mint the child directly. The verifier must reject it via chain
+    // attenuation.
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const registry = createMemoryCapabilityRevocationRegistry();
+    const root = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: {
+        permissions: { allow: ["*"], ask: ["bash"] },
+        sessionId: sessionId("sess-1"),
+      },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      registry,
+      now: () => 1000,
+    });
+    const { signHmac } = await import("./hmac.js");
+    const { capabilityId } = await import("@koi/core");
+    const forgedUnsigned = {
+      id: capabilityId("forged-ask-strip"),
+      issuerId: agentId("alice"),
+      delegateeId: agentId("eve"),
+      // Note: no `ask` — strips parent.ask:["bash"].
+      scope: { permissions: { allow: ["*"] }, sessionId: sessionId("sess-1") },
+      parentId: root.id,
+      chainDepth: 1,
+      maxChainDepth: 3,
+      createdAt: 1000,
+      expiresAt: 30_000,
+      proof: { kind: "hmac-sha256" as const, digest: "" },
+    };
+    const digest = signHmac(forgedUnsigned, signer.secret);
+    const forged = { ...forgedUnsigned, proof: { kind: "hmac-sha256" as const, digest } };
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret },
+      scopeChecker: createGlobScopeChecker(),
+      tokenStore: registry,
+    });
+    const result = await verifier.verify(forged, ctx({ toolId: "bash" }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("scope_exceeded");
+  });
+
   test("non-finite ttlMs rejected at issue time (codex round-3: high)", async () => {
     const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
     await expect(

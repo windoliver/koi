@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentId, CapabilityScope, CapabilityToken, KoiError, Result } from "@koi/core";
-import { capabilityId, isPermissionSubset, permission, validation } from "@koi/core";
+import { capabilityId, permission, validation } from "@koi/core";
+import { isPermissionSubsetWithAsk } from "./attenuation.js";
 import type { CapabilityRevocationRegistry } from "./revocation.js";
 import type { CapabilitySigner } from "./signer.js";
 import { buildProof } from "./signer.js";
@@ -117,7 +118,7 @@ export async function delegateCapability(
   if (parent.scope.sessionId !== opts.scope.sessionId) {
     return { ok: false, error: fail("session_mismatch") };
   }
-  if (!isPermissionSubset(opts.scope.permissions, parent.scope.permissions)) {
+  if (!isPermissionSubsetWithAsk(opts.scope.permissions, parent.scope.permissions)) {
     return { ok: false, error: fail("scope_exceeded") };
   }
   if (!isResourceSubset(opts.scope.resources, parent.scope.resources)) {
