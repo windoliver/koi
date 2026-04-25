@@ -94,9 +94,31 @@ record so peer reclaimers can address the right worker after process
 or supervisor restarts:
 
 ```ts
-type WorkerHandle = string; // opaque, supervisor-defined; e.g. "pid:12345",
-                            // "pod:ns/name@uid", "unit:koi-worker@xyz.service"
+type WorkerHandle = string; // opaque, supervisor-defined; MUST embed
+                            // a non-reusable identity component
+                            // (e.g. "pid:12345@start=1714000000",
+                            // "pod:ns/name@uid=abc-123",
+                            // "unit:koi-worker@invocation=def-456").
 ```
+
+**Non-reusability requirement.** `WorkerHandle` MUST include a
+non-reusable identity component so that probe/kill cannot target a
+reused OS identifier. Bare PIDs are NOT acceptable (PIDs are
+reused; a PID file alone can point at an unrelated later process).
+Acceptable composites:
+- `@koi/daemon`: PID + Linux/macOS process start time (or
+  Linux boot ID) read from `/proc/<pid>/stat` or `kinfo_proc`. The
+  supervisor MUST validate the start time on every `probeAlive` /
+  `killAndConfirm` and treat a mismatch as `"dead"` (the original
+  worker is gone; whatever inhabits the PID now is unrelated).
+- Kubernetes: pod UID (immutable across pod restarts of the same
+  name within a namespace).
+- launchd/systemd: invocation ID / generation ID, which the
+  service manager regenerates on every unit start.
+
+Implementations that cannot guarantee non-reuse (e.g., a plain
+PID-file with no start-time validation) MUST NOT be used as the
+`Supervisor` for this package.
 
 `SessionRecord` gains `workerHandle: WorkerHandle | undefined` (set
 during activation, before the harness `active` snapshot is published;
@@ -106,9 +128,7 @@ snapshot CAS and no orphan worker exists. Uniqueness, persistence,
 and restart behavior are supervisor-defined — the contract is that
 two `WorkerHandle` values produced by the same supervisor at any
 point in time identify two distinct workers, and a handle remains
-addressable across supervisor restarts (e.g., systemd unit names
-survive systemctl restart; pod UIDs survive kubelet restart;
-PID-file plus liveness check covers `@koi/daemon`).
+addressable across supervisor restarts.
 
 **The harness makes the supervisor requirement enforceable via an explicit
 `Supervisor` config interface:**
@@ -299,6 +319,7 @@ L0 interfaces. It owns zero I/O directly; all durability is delegated.
 export { createLongRunningHarness } from "./harness.js";
 export { createCheckpointMiddleware } from "./checkpoint-middleware.js";
 export { computeCheckpointId, shouldSoftCheckpoint } from "./checkpoint-policy.js";
+export { forceReclaim } from "./admin.js";
 export type {
   LongRunningConfig,
   LongRunningHarness,
@@ -309,9 +330,71 @@ export type {
   OnCompletedCallback,
   OnFailedCallback,
   CheckpointMiddlewareConfig,
+  ForceReclaimInput,
+  ForceReclaimResult,
 } from "./types.js";
 export { DEFAULT_LONG_RUNNING_CONFIG } from "./types.js";
 ```
+
+### `forceReclaim` (admin recovery API)
+
+`forceReclaim` is the operator-driven recovery entry point for cases
+where automatic reclaim is forbidden:
+- `WORKER_HANDLE_MISSING` (legacy session with no durable handle, or
+  session record itself missing across the orphan window).
+- `trustedSingleProcess=true` after the host has externally SIGKILLed
+  the prior worker.
+
+```ts
+interface ForceReclaimInput {
+  readonly harnessStore: HarnessSnapshotStore;
+  readonly sessionPersistence: SessionPersistence;
+  readonly sessionId: SessionId;
+  /**
+   * One of:
+   *  - { kind: "manualHandle", handle: WorkerHandle, supervisor: Supervisor }
+   *      Operator supplies a handle they have validated out of band; the
+   *      supervisor performs probe-then-kill against it before any CAS.
+   *  - { kind: "hostConfirmedDead" }
+   *      Operator asserts the prior process is dead. Writes a durable
+   *      host-confirmed-dead marker before any CAS. Used in
+   *      trustedSingleProcess mode.
+   */
+  readonly evidence:
+    | { readonly kind: "manualHandle"; readonly handle: WorkerHandle; readonly supervisor: Supervisor }
+    | { readonly kind: "hostConfirmedDead" };
+}
+
+type ForceReclaimResult = Result<
+  | { readonly kind: "replayed"; readonly outcome: RecoveryOutcomeKind }
+  | { readonly kind: "advanced"; readonly newPhase: "suspended" }
+  | { readonly kind: "noop"; readonly currentPhase: HarnessPhase },
+  KoiError
+>;
+
+function forceReclaim(input: ForceReclaimInput): Promise<ForceReclaimResult>;
+```
+
+Behavior:
+1. Read `harnessStore.latest()` for the harness containing
+   `sessionId`. If `prev.phase` is not `active`, return
+   `Ok({ kind: "noop", currentPhase: prev.phase })`.
+2. For `manualHandle` evidence: run the supervisor probe-then-kill
+   protocol against the supplied handle. Live owner →
+   `Err(RECLAIM_LIVE_OWNER)`; kill failure → `Err(KILL_FAILED)`.
+3. For `hostConfirmedDead` evidence: write a durable
+   host-confirmed-dead marker on the session record (new
+   `SessionPersistence.markHostConfirmedDead(sid)` L0 prereq).
+4. Then `listRecoveryOutcomes(sid)`:
+   - One record → CAS-replay; return `Ok({ kind: "replayed", outcome: record.kind })`.
+   - No record → CAS-advance to `suspended` with
+     `failureReason = "OPERATOR_FORCED"`; return
+     `Ok({ kind: "advanced", newPhase: "suspended" })`.
+
+This is the documented recovery entry point referenced by every
+`WORKER_HANDLE_MISSING` and `trustedSingleProcess` path in this
+spec; it is part of the package surface and ships in the same PR as
+the rest of the public API.
 
 ### `LongRunningConfig`
 
@@ -1866,6 +1949,17 @@ Additive changes required (part of the coordinated migration):
    activation, and the breadcrumb re-clears on the next resume.
    Hosts SHOULD page on
    `cleanupHealth === "unhealthy"` regardless of process state.
+
+9. `SessionPersistence.markHostConfirmedDead(sid)` — DURABLE
+   one-shot marker written by the `forceReclaim(sid,
+   { kind: "hostConfirmedDead" })` admin path before any chain
+   advance. The marker is idempotent (re-marking is a no-op) and
+   intentionally one-way (cleared only when the session record is
+   removed). On `resume()` reading an `active` snapshot in
+   `trustedSingleProcess` mode, the harness consults this marker;
+   if absent, resume returns `ALREADY_ACTIVE`. This is the
+   unforgeable post-host-SIGKILL evidence trusted-mode recovery
+   relies on.
 
 These land across the migration PRs listed above, not a single "prereq PR".
 Implementation of `@koi/long-running` is blocked on ALL of the above.
