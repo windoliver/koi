@@ -1,6 +1,8 @@
 # `@koi/long-running` — Agent Checkpointing (Issue #1386)
 
-**Status:** Design approved 2026-04-24
+**Status:** Design — BLOCKED on L0 migration (see L0 Prerequisites
+section). Not ready for implementation until all prereq PRs land and
+pass contract tests.
 **Issue:** [#1386](https://github.com/windoliver/koi/issues/1386) — v2 Phase 3-sched-2: long-running agent checkpointing
 **Scope estimate:** ~500 LOC
 **Layer:** L2 (feature package)
@@ -165,7 +167,14 @@ L0 interfaces. It owns zero I/O directly; all durability is delegated.
 
 ## Layer Contract
 
-- **Depends on:** `@koi/core` (L0) only.
+- **Depends on:** `@koi/core` (L0) only, BUT requires a coordinated
+  breaking L0 migration to land first (see L0 Prerequisites). Current
+  main does not expose the L0 surface this design needs —
+  `SnapshotChainStore` has no `compareAndPut`/`latest`; `SessionStatus`
+  is `running|idle|done`; `HarnessSnapshot` has no `generation`;
+  `HarnessStatus` has no `durability`; `SessionPersistence` has no
+  heartbeat or terminal-outcome methods. Implementation is blocked on
+  those prereqs.
 - **Imports from L2:** none.
 - **Exports:** runtime functions + config types. No framework types leak out.
 
@@ -387,65 +396,88 @@ as `dispose`:
      violation: a peer reclaiming later would replay already-emitted
      side effects.
 
-     **TerminalOutcome (durable, outcome-carrying).** There is NO
-     caller-visible "record-intent-before-branch" API; it would be too
-     easy for callers to forget and would not prove the branch
-     completed. Instead, `completeTask(lease, id, result)`,
-     `failTask(lease, id, err)`, `fail(lease, err)`, and timeout
-     handlers internally use the following ordering:
+     **TerminalOutcome (durable, full-delta-carrying).** There is NO
+     caller-visible "record-intent-before-branch" API. Instead,
+     `completeTask(lease, id, result)`,
+     `failTask(lease, id, err)` (non-retryable only — see below),
+     `fail(lease, err)`, and timeout handlers internally use the
+     following ordering:
 
      1. Validate lease, revoke lease, quiesce engine (phase-machine
         steps 1–5).
-     2. **Write a durable `TerminalOutcome` record** via
-        `sessionPersistence.recordTerminalOutcome(sid, outcome)`.
-        `outcome` is a discriminated union carrying the full terminal
-        result:
+     2. Build the **full next snapshot** in memory (as would be CAS'd).
+        This includes updated task board, accumulated metrics,
+        summaries, key artifacts, `lastSessionEndedAt`, generation+1,
+        etc.
+     3. **Write a durable `TerminalOutcome` record** via
+        `sessionPersistence.recordTerminalOutcome(sid, outcome)`. The
+        record carries both the discriminated-union outcome AND the
+        full serialized next snapshot:
         ```
-        type TerminalOutcome =
+        type TerminalOutcomeKind =
           | { kind: "task-completed"; taskId: TaskItemId; result: TaskResult }
-          | { kind: "task-failed";    taskId: TaskItemId; error: KoiError }
-          | { kind: "harness-failed"; error: KoiError }  // fail()/timeout
-          | { kind: "harness-completed" };               // all tasks done
+          | { kind: "task-failed-terminal"; taskId: TaskItemId; error: KoiError }
+          | { kind: "harness-failed"; error: KoiError }   // fail()/timeout
+          | { kind: "harness-completed" };                // all tasks done
+
+        interface TerminalOutcome {
+          readonly kind: TerminalOutcomeKind;
+          readonly seq: number;                           // monotonic per session
+          readonly committedAt: number;
+          readonly snapshotDelta: HarnessSnapshot;        // the full next snapshot
+        }
         ```
-        The record is keyed by `(sessionId, monotonically-increasing seq)`
-        so a session can have multiple outcomes (task-level + eventual
-        harness-level). The write is durable and must succeed before
-        the snapshot CAS is attempted. Failure at this step: retry 4
-        times with backoff, then return
-        `Err(TERMINAL_WRITE_FAILED)` — but **engine is already
-        quiesced and the terminal outcome has NOT been committed**,
-        so the reclaimer will see no outcome record and correctly
-        treat the task as still pending.
-     3. Attempt the snapshot CAS to the terminal phase. If it
-        succeeds, the outcome record is redundant (snapshot already
-        encodes it) but harmless. If it fails, background retry +
-        reclaimer-side replay (below).
+        Keyed by `(sessionId, seq)`. Carrying the full snapshot delta
+        is what makes exactly-once non-lossy: a reclaimer replays the
+        snapshot from the record, not a reconstructed-from-outcomes
+        partial view.
+     4. Attempt the snapshot CAS to `snapshotDelta`. If it succeeds
+        the outcome record is redundant (matches the now-authoritative
+        head). If it fails, the harness performs background CAS retry
+        using the same `snapshotDelta` until success; a reclaimer can
+        also perform the CAS using the durable record.
+
+     **`failTask` retryability rule.** `failTask(lease, id, err)`
+     checks `err.retryable`:
+     - **Retryable:** do NOT record a `TerminalOutcome`. Re-run the
+       standard non-terminal flow: quiesce, write a soft checkpoint
+       that returns the task to `pending` with incremented attempts,
+       CAS `active → active`. If the process crashes between engine
+       quiesce and the CAS, the reclaimer sees no outcome record and
+       simply resumes from the last authoritative snapshot — the
+       retry will happen again on its own, which matches retryable
+       semantics.
+     - **Non-retryable:** record `task-failed-terminal`. This is a
+       true terminal outcome for the task and must be preserved
+       exactly once.
 
      **Reclaimer-side replay.** On reclamation, after
      `killAndConfirm` succeeds, the reclaimer:
      1. Calls `sessionPersistence.listTerminalOutcomes(sid)` →
-        ordered list of committed outcomes.
-     2. Applies each outcome to the snapshot's task board in order
-        (e.g. `task-completed` → mark `taskId` completed with
-        `result`).
-     3. If the outcomes include `harness-completed` or
-        `harness-failed`, CAS-advances the snapshot directly to
-        `completed`/`failed` with the recorded outcome — this is the
-        deferred terminalization the original process could not
-        finish. No replay of the terminal branch occurs; the
-        branch's side effects and task-board updates are taken from
-        the durable record.
-     4. Otherwise, if only task-level outcomes are recorded,
-        CAS-advances to `suspended` with updated task board, and
-        `resume()` proceeds normally.
+        ordered list of committed outcomes (by `seq`).
+     2. For each outcome in order, CAS-advance the snapshot chain
+        using `outcome.snapshotDelta` as `next`. Order is critical:
+        each delta was built against the previous snapshot, and CAS
+        enforces that chain.
+     3. Retryable task failures leave no outcome record, so the
+        reclaimer correctly returns the task to `pending` only via
+        the pre-crash snapshot's own retry bookkeeping — no
+        permanent-failure resurrection.
+     4. If the last outcome in the list is harness-level
+        (`harness-completed` / `harness-failed`), the snapshot is
+        now terminal. If the last is task-level, the snapshot is
+        `suspended` with updated task board, and `resume()` proceeds
+        normally.
 
-     This closes three gaps: the terminal-intent API is internal
-     (callers cannot forget it); "started" is never an authoritative
-     signal (the record is written AFTER the branch's logical
-     completion but BEFORE the snapshot CAS, so it represents a
-     committed outcome, not a started-but-incomplete branch);
-     and the same mechanism covers task-level, harness-fail, and
-     timeout-terminalization paths uniformly.
+     This closes the gaps from earlier rounds: the terminal-intent
+     API is internal; "started" is never an authoritative signal
+     (the record is written AFTER the branch's logical completion
+     but BEFORE the snapshot CAS); the same mechanism covers
+     task-level, harness-fail, and timeout paths uniformly;
+     retryable task failures stay retryable; and the full snapshot
+     delta (not just task outcomes) is what replay uses, so
+     summaries/artifacts/metrics/`lastSessionEndedAt` are preserved
+     exactly.
 
      **Terminal CAS authority.** The CAS itself takes the harness's
      internal head pointer + the next snapshot; it does not need a
