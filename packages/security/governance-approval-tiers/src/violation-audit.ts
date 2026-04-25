@@ -46,8 +46,9 @@ export function createViolationAuditAdapter(config: ViolationAuditConfig): Persi
   const resolveAgentId = config.resolveAgentId ?? ((grant: PersistentGrant) => grant.agentId);
   return async (grant: PersistentGrant) => {
     const scope = resolveAgentId(grant);
+    let stored: Awaited<ReturnType<typeof config.store.append>>;
     try {
-      await config.store.append({
+      stored = await config.store.append({
         kind: grant.kind,
         agentId: scope,
         payload: grant.payload,
@@ -62,21 +63,26 @@ export function createViolationAuditAdapter(config: ViolationAuditConfig): Persi
       return;
     }
 
+    // Codex round-3 finding: emit the audit with the CANONICAL stored
+    // grantKey (post-alias canonicalisation), not the incoming
+    // pre-alias one. When the store rewrote the payload, `aliasOf`
+    // carries the original key for migration forensics.
     const audit: Violation = {
       rule: "approval.persisted",
       severity: "info",
       message: "Persistent approval recorded",
       context: {
-        grantKey: grant.grantKey,
-        grantedAt: grant.grantedAt,
+        grantKey: stored.grantKey,
+        grantedAt: stored.grantedAt,
+        ...(stored.aliasOf !== undefined ? { aliasOf: stored.aliasOf } : {}),
       },
     };
     const verdict: GovernanceVerdict = { ok: true, diagnostics: [audit] };
     const request: PolicyRequest = {
-      kind: grant.kind,
-      agentId: scope,
+      kind: stored.kind,
+      agentId: stored.agentId,
       payload: grant.payload,
-      timestamp: grant.grantedAt,
+      timestamp: stored.grantedAt,
     };
     try {
       config.onViolation(verdict, request);

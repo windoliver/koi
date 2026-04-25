@@ -42,7 +42,7 @@ describe("types.ts", () => {
 
   it("ApprovalStore surface is append + match + load", () => {
     const stub: ApprovalStore = {
-      append: async () => undefined,
+      append: async (g) => g,
       match: async () => undefined,
       load: async () => [],
     };

@@ -13,6 +13,7 @@ function makeStore(): { readonly store: ApprovalStore; readonly appended: Persis
     store: {
       append: async (g) => {
         appended.push(g);
+        return g;
       },
       match: async () => undefined,
       load: async () => appended,
@@ -63,8 +64,9 @@ describe("createViolationAuditAdapter", () => {
   it("emits onViolation after the append resolves (ordering)", async () => {
     const order: string[] = [];
     const store: ApprovalStore = {
-      append: async () => {
+      append: async (g) => {
         order.push("append");
+        return g;
       },
       match: async () => undefined,
       load: async () => [],

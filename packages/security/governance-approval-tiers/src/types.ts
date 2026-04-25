@@ -13,15 +13,26 @@ export type ApprovalScope = "once" | "session" | "always";
  * whose ask decision depends on the requesting agent could replay a
  * lower-trust agent's approval as `GOVERNANCE_ALLOW` for a higher-trust
  * one.
+ *
+ * `payload` is OPTIONAL. The default JSONL store omits it for privacy:
+ * tool-call payloads typically contain shell commands, file paths,
+ * model prompts, or other sensitive content. Hosts that need forensic
+ * display or retroactive alias migration opt in via the store's
+ * `persistPayload: true` config.
  */
 export interface PersistedApproval {
   readonly kind: PolicyRequestKind;
   readonly agentId: AgentId;
-  readonly payload: JsonObject;
   /** Stable SHA-256 hex of (kind, payload) via @koi/hash.computeGrantKey. */
   readonly grantKey: string;
   /** Unix timestamp (ms) when the grant was recorded. */
   readonly grantedAt: number;
+  /**
+   * Optional raw payload. Stored only when the host opts in via
+   * `persistPayload: true` on the store config. See PersistedApproval
+   * doc for the security rationale.
+   */
+  readonly payload?: JsonObject;
   /**
    * Optional: the grantKey this record supersedes when the grant was
    * migrated via an AliasSpec. Preserves a history trail without
@@ -55,9 +66,14 @@ export interface AliasSpec {
   readonly to: string;
 }
 
-/** Persistent approval allowlist. All methods are async. */
+/**
+ * Persistent approval allowlist. All methods are async. `append`
+ * returns the canonical PersistedApproval the store wrote — callers
+ * (notably the audit adapter) need this so the recorded grantKey
+ * matches the durable row even when an AliasSpec rewrites the input.
+ */
 export interface ApprovalStore {
-  readonly append: (g: PersistedApproval) => Promise<void>;
+  readonly append: (g: PersistedApproval) => Promise<PersistedApproval>;
   readonly match: (q: ApprovalQuery) => Promise<PersistedApproval | undefined>;
   readonly load: () => Promise<readonly PersistedApproval[]>;
 }

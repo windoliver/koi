@@ -26,6 +26,7 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
@@ -2640,20 +2641,27 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // approvals to the store. Path defaults to ~/.koi/approvals.json; override
     // with KOI_APPROVALS_PATH for tests and sandboxed invocations.
     //
-    // Scope key for both writes and reads is the manifest-derived hostId
-    // (`precomputedAgentId`), so:
+    // Scope key for both writes and reads is `${hostId}:${cwdHash}` so:
     //   1. Different logical agents cannot replay each other's approvals
     //      even when (kind, payload) collide (codex round-1 finding).
-    //   2. The same logical agent matches across process restarts —
-    //      `ctx.session.agentId` is already pre-computed from hostId in
-    //      this factory, so the live agentId is identical to the scope.
+    //   2. The same logical agent matches across process restarts in the
+    //      SAME workspace — both pieces of the scope are deterministic.
+    //   3. Approvals do NOT cross workspaces: a user who approves
+    //      "Bash: echo X" in /home/alice/projectA is re-prompted when
+    //      they run the same command in /home/alice/projectB even with
+    //      the same hostId (codex round-3 finding).
     const approvalStore =
       governanceBackend !== undefined
         ? createJsonlApprovalStore({
             path: process.env.KOI_APPROVALS_PATH ?? join(homedir(), ".koi", "approvals.json"),
           })
         : undefined;
-    const resolveStableAgentId = (): typeof precomputedAgentId => precomputedAgentId;
+    const workspaceFingerprint = createHash("sha256")
+      .update(config.cwd ?? process.cwd())
+      .digest("hex")
+      .slice(0, 16);
+    const stableScopeId = makeAgentId(`${hostId}:${workspaceFingerprint}`);
+    const resolveStableAgentId = (): typeof stableScopeId => stableScopeId;
     const wrappedGovernanceBackend =
       governanceBackend !== undefined && approvalStore !== undefined
         ? wrapBackendWithPersistedAllowlist(governanceBackend, approvalStore, {

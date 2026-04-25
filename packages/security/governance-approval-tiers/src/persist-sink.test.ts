@@ -10,6 +10,7 @@ function makeStore(): { readonly store: ApprovalStore; readonly appended: Persis
     store: {
       append: async (g) => {
         appended.push(g);
+        return g;
       },
       match: async () => undefined,
       load: async () => appended,

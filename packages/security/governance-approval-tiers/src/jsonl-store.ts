@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, chmod, mkdir, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { computeGrantKey } from "@koi/hash";
 import { applyAliases } from "./aliases.js";
@@ -18,6 +18,15 @@ export interface JsonlApprovalStoreConfig {
    * physical write under O_APPEND.
    */
   readonly maxRowBytes?: number;
+  /**
+   * Persist the raw payload alongside grantKey. DEFAULT FALSE for
+   * privacy: payload typically contains shell commands, file paths,
+   * model prompts, and other sensitive content that is not needed for
+   * matching (matching only uses grantKey). Hosts that need forensic
+   * display or retroactive alias migration of historical records opt
+   * in here.
+   */
+  readonly persistPayload?: boolean;
 }
 
 const DEFAULT_MAX_ROW_BYTES = 4096;
@@ -25,12 +34,16 @@ const DEFAULT_MAX_ROW_BYTES = 4096;
 function isPersistedApproval(x: unknown): x is PersistedApproval {
   if (typeof x !== "object" || x === null) return false;
   const r = x as Record<string, unknown>;
+  // payload is optional — when persistPayload is false, the column is
+  // absent. When present, it must still be a non-array JSON object.
+  if (r.payload !== undefined) {
+    if (typeof r.payload !== "object" || r.payload === null || Array.isArray(r.payload)) {
+      return false;
+    }
+  }
   return (
     typeof r.kind === "string" &&
     typeof r.agentId === "string" &&
-    typeof r.payload === "object" &&
-    r.payload !== null &&
-    !Array.isArray(r.payload) &&
     typeof r.grantKey === "string" &&
     typeof r.grantedAt === "number"
   );
@@ -39,6 +52,7 @@ function isPersistedApproval(x: unknown): x is PersistedApproval {
 export function createJsonlApprovalStore(config: JsonlApprovalStoreConfig): ApprovalStore {
   const aliases = config.aliases ?? [];
   const maxRowBytes = config.maxRowBytes ?? DEFAULT_MAX_ROW_BYTES;
+  const persistPayload = config.persistPayload === true;
   let writeQueue: Promise<void> = Promise.resolve();
 
   async function readAll(): Promise<readonly PersistedApproval[]> {
@@ -85,28 +99,50 @@ export function createJsonlApprovalStore(config: JsonlApprovalStoreConfig): Appr
     // contention; O_APPEND with a row size guard is the fix.
     await mkdir(dirname(config.path), { recursive: true });
     await appendFile(config.path, `${line}\n`);
+    // Restrict to owner-read/write. Newly-created files inherit the
+    // process umask; defensively chmod after every write so an existing
+    // file with weaker permissions is tightened too.
+    try {
+      const s = await stat(config.path);
+      if ((s.mode & 0o777) !== 0o600) {
+        await chmod(config.path, 0o600);
+      }
+    } catch {
+      // Best-effort — failing to tighten permissions on the audit log
+      // must not break the durable write itself.
+    }
   }
 
   return {
-    async append(grant) {
+    async append(grant): Promise<PersistedApproval> {
       // Canonicalise on append so historical grants written under an
       // OLD payload value still match queries that arrive with the NEW
       // value after a migration. We rewrite the payload via aliases and
       // recompute grantKey from the canonical form. The original
       // (un-aliased) grantKey is preserved on `aliasOf` so an audit
       // trail can reconstruct the pre-migration record.
-      const canonical = applyAliases(grant.kind, grant.payload, aliases);
-      const aliased = canonical !== grant.payload;
-      const stored: PersistedApproval = aliased
-        ? {
-            kind: grant.kind,
-            agentId: grant.agentId,
-            payload: canonical,
-            grantKey: computeGrantKey(grant.kind, canonical),
-            grantedAt: grant.grantedAt,
-            aliasOf: grant.grantKey,
-          }
-        : grant;
+      //
+      // The input `grant.payload` is treated as the user-intent payload;
+      // when persistPayload is false we still need it here for alias
+      // canonicalisation (and to recompute the grantKey) but drop it
+      // before writing to disk.
+      const incomingPayload = grant.payload;
+      const canonical =
+        incomingPayload !== undefined
+          ? applyAliases(grant.kind, incomingPayload, aliases)
+          : undefined;
+      const aliased = canonical !== undefined && canonical !== incomingPayload;
+      const canonicalGrantKey =
+        canonical !== undefined ? computeGrantKey(grant.kind, canonical) : grant.grantKey;
+
+      const stored: PersistedApproval = {
+        kind: grant.kind,
+        agentId: grant.agentId,
+        grantKey: canonicalGrantKey,
+        grantedAt: grant.grantedAt,
+        ...(persistPayload && canonical !== undefined ? { payload: canonical } : {}),
+        ...(aliased ? { aliasOf: grant.grantKey } : {}),
+      };
 
       const line = JSON.stringify(stored);
       if (Buffer.byteLength(line, "utf8") + 1 > maxRowBytes) {
@@ -124,6 +160,7 @@ export function createJsonlApprovalStore(config: JsonlApprovalStoreConfig): Appr
       const next = writeQueue.catch(() => undefined).then(() => writeLine(line));
       writeQueue = next.catch(() => undefined);
       await next;
+      return stored;
     },
 
     async match(query: ApprovalQuery) {

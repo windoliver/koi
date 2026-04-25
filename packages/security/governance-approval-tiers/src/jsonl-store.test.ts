@@ -261,11 +261,87 @@ describe("createJsonlApprovalStore", () => {
     }
   });
 
+  // Codex round-3 finding: raw payload must NOT be persisted by
+  // default — it can carry shell commands, file paths, prompts, and
+  // other sensitive content that is not needed for matching.
+  it("omits payload from the persisted record by default", async () => {
+    const store = createJsonlApprovalStore({ path });
+    const payload = { tool: "bash", cmd: "echo super-secret" } satisfies JsonObject;
+    await store.append({
+      kind: "tool_call",
+      agentId: AID,
+      payload,
+      grantKey: computeGrantKey("tool_call", payload),
+      grantedAt: 1,
+    });
+    const raw = await readFile(path, "utf8");
+    expect(raw).not.toContain("super-secret");
+    expect(raw).not.toContain("echo");
+    // Match still works — grantKey is recomputed from the live query.
+    const hit = await store.match({ kind: "tool_call", agentId: AID, payload });
+    expect(hit?.grantKey).toBe(computeGrantKey("tool_call", payload));
+    expect(hit?.payload).toBeUndefined();
+  });
+
+  it("retains payload when persistPayload: true", async () => {
+    const store = createJsonlApprovalStore({ path, persistPayload: true });
+    const payload = { tool: "bash", cmd: "ls" } satisfies JsonObject;
+    await store.append({
+      kind: "tool_call",
+      agentId: AID,
+      payload,
+      grantKey: computeGrantKey("tool_call", payload),
+      grantedAt: 1,
+    });
+    const hit = await store.match({ kind: "tool_call", agentId: AID, payload });
+    expect(hit?.payload).toEqual(payload);
+  });
+
+  // Codex round-3 finding: tighten file mode to 0o600 so other local
+  // users cannot read durable approval grants.
+  it("restricts the approvals file mode to owner-only (0o600)", async () => {
+    const store = createJsonlApprovalStore({ path });
+    const payload = { tool: "bash" } satisfies JsonObject;
+    await store.append({
+      kind: "tool_call",
+      agentId: AID,
+      payload,
+      grantKey: computeGrantKey("tool_call", payload),
+      grantedAt: 1,
+    });
+    const { stat } = await import("node:fs/promises");
+    const s = await stat(path);
+    expect(s.mode & 0o777).toBe(0o600);
+  });
+
+  // Codex round-3 finding: append must return the canonical stored
+  // record so the audit adapter can emit grantKey/aliasOf that match
+  // what is durably written.
+  it("returns the canonicalised stored record from append", async () => {
+    const aliases: readonly AliasSpec[] = [
+      { kind: "tool_call", field: "tool", from: "bash_exec", to: "bash" },
+    ];
+    const store = createJsonlApprovalStore({ path, aliases });
+    const oldPayload = { tool: "bash_exec" } satisfies JsonObject;
+    const oldGrantKey = computeGrantKey("tool_call", oldPayload);
+    const stored = await store.append({
+      kind: "tool_call",
+      agentId: AID,
+      payload: oldPayload,
+      grantKey: oldGrantKey,
+      grantedAt: 1,
+    });
+    const newPayload = { tool: "bash" } satisfies JsonObject;
+    expect(stored.grantKey).toBe(computeGrantKey("tool_call", newPayload));
+    expect(stored.aliasOf).toBe(oldGrantKey);
+  });
+
   // Codex round-1 finding: refuse rows above maxRowBytes so a malicious
   // or buggy caller cannot generate a record larger than the kernel's
-  // atomic-write threshold.
-  it("rejects oversized rows", async () => {
-    const store = createJsonlApprovalStore({ path, maxRowBytes: 200 });
+  // atomic-write threshold. With persistPayload enabled the row size
+  // grows with the input — verify the guard fires before write.
+  it("rejects oversized rows when payload retention pushes the row past the limit", async () => {
+    const store = createJsonlApprovalStore({ path, maxRowBytes: 200, persistPayload: true });
     const payload = { tool: "bash", filler: "x".repeat(500) } satisfies JsonObject;
     await expect(
       store.append({

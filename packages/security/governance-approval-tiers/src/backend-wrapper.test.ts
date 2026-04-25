@@ -12,7 +12,7 @@ import type { ApprovalStore, PersistedApproval } from "./types.js";
 
 function makeStore(entries: readonly PersistedApproval[]): ApprovalStore {
   return {
-    append: async () => undefined,
+    append: async (g) => g,
     load: async () => entries,
     async match(q) {
       const target = computeGrantKey(q.kind, q.payload);
@@ -124,7 +124,7 @@ describe("wrapBackendWithPersistedAllowlist", () => {
   // wrapper is fail-closed by falling through to the original ask.
   it("falls through to the original ask when store.match throws", async () => {
     const failingStore: ApprovalStore = {
-      append: async () => undefined,
+      append: async (g) => g,
       load: async () => [],
       match: async () => {
         throw new Error("I/O");
