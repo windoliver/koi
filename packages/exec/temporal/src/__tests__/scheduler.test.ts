@@ -243,8 +243,8 @@ describe("createTemporalScheduler", () => {
       Record<string, unknown>,
     ];
     const action = createCall[1].action as Record<string, unknown>;
-    expect(action["workflowExecutionTimeout"]).toBe(60000);
-    expect((action["retryPolicy"] as Record<string, unknown>)["maximumAttempts"]).toBe(3);
+    expect(action.workflowExecutionTimeout).toBe(60000);
+    expect((action.retryPolicy as Record<string, unknown>).maximumAttempts).toBe(3);
     await sched[Symbol.asyncDispose]();
   });
 
@@ -260,8 +260,8 @@ describe("createTemporalScheduler", () => {
       Record<string, unknown>,
     ];
     const opts = startCall[1];
-    expect(opts["workflowExecutionTimeout"]).toBe(30000);
-    expect((opts["retryPolicy"] as Record<string, unknown>)["maximumAttempts"]).toBe(2);
+    expect(opts.workflowExecutionTimeout).toBe(30000);
+    expect((opts.retryPolicy as Record<string, unknown>).maximumAttempts).toBe(2);
     await sched[Symbol.asyncDispose]();
   });
 
@@ -274,8 +274,8 @@ describe("createTemporalScheduler", () => {
       string,
       Record<string, unknown>,
     ];
-    const args = startCall[1]["args"] as [Record<string, unknown>];
-    const messages = args[0]["messages"] as [Record<string, unknown>];
+    const args = startCall[1].args as [Record<string, unknown>];
+    const messages = args[0].messages as [Record<string, unknown>];
     expect(messages[0]).toHaveProperty("resumeState", resumeState);
     await sched[Symbol.asyncDispose]();
   });
@@ -394,13 +394,13 @@ describe("createTemporalScheduler", () => {
     const blockedDescribe = new Promise<void>((r) => {
       resolveDescribe = r;
     });
-    let describeCallCount = 0;
+    let _describeCallCount = 0;
     const client: TemporalClientLike = {
       workflow: {
         start: mock(async () => ({ workflowId: "wf-1" })),
         cancel: mock(async () => {}),
         describe: mock(async (): Promise<WorkflowExecutionStatus> => {
-          describeCallCount++;
+          _describeCallCount++;
           await blockedDescribe;
           return { status: "COMPLETED", startTime: 0, closeTime: 1 };
         }),
@@ -465,6 +465,33 @@ describe("createTemporalScheduler", () => {
     await sched.submit(A1, { kind: "text", text: "c" }, "dispatch");
     await sched.query({}); // reconcile all three
     expect(await sched.history({ limit: 2 })).toHaveLength(2);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("submit() uses metadata.workflowId as stable workflow ID when provided", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const id = await sched.submit(A1, { kind: "text", text: "hi" }, "dispatch", {
+      metadata: { workflowId: "my-stable-id" },
+    });
+    expect(String(id)).toBe("my-stable-id");
+    const [_type, startOpts] = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(startOpts.workflowId).toBe("my-stable-id");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("schedule() uses metadata.scheduleId as stable schedule ID when provided", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const id = await sched.schedule("0 * * * *", A1, { kind: "text", text: "hi" }, "dispatch", {
+      metadata: { scheduleId: "my-stable-sched" },
+    });
+    expect(String(id)).toBe("my-stable-sched");
+    const [schedId] = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0] as [string];
+    expect(schedId).toBe("my-stable-sched");
     await sched[Symbol.asyncDispose]();
   });
 

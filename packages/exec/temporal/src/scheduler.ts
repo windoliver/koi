@@ -163,7 +163,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
   // Reconciles a single task against Temporal describe result.
   // Guards against concurrent reconciliation of the same task ID.
-  async function reconcileTask(id: TaskId, task: ScheduledTask): Promise<void> {
+  async function reconcileTask(id: TaskId, _task: ScheduledTask): Promise<void> {
     const describeFn = config.client.workflow.describe;
     if (describeFn === undefined) return;
     if (reconciling.has(id)) return;
@@ -274,7 +274,12 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
   return {
     async submit(agentId, input, mode, options): Promise<TaskId> {
-      const rawId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      // Callers may supply metadata.workflowId for a stable, retry-safe ID.
+      // Without it, a random ID is minted (no idempotency guarantee on retries).
+      const idempotencyKey =
+        typeof options?.metadata?.workflowId === "string" ? options.metadata.workflowId : undefined;
+      const rawId =
+        idempotencyKey ?? `task-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const id = taskId(rawId);
       const task = buildTask(id, agentId, input, mode, options);
 
@@ -324,7 +329,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     },
 
     async schedule(expression, agentId, input, mode, options): Promise<ScheduleId> {
-      const rawId = `sched-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      // Callers may supply metadata.scheduleId for a stable, retry-safe ID.
+      const idempotencyKey =
+        typeof options?.metadata?.scheduleId === "string" ? options.metadata.scheduleId : undefined;
+      const rawId =
+        idempotencyKey ?? `sched-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const id = scheduleId(rawId);
       const messages = mapEngineInputToMessages(input, rawId);
 
