@@ -476,16 +476,16 @@ export function createWebhookServer(
       }
       agentId = authResult.value.agentId;
       // Merge authenticator routing into the verified baseline. Provider-authenticated
-      // channel and account are immutable after signature verification — if an
-      // authenticator supplies a different account, treat it as a mismatch (see
-      // account-binding check below) rather than silently rerouting to the wrong tenant.
+      // channel (provider kind) and account are immutable after signature verification.
+      // Re-apply both after the merge to prevent authenticator bugs or misconfiguration
+      // from rerouting signed traffic across provider or tenant boundaries.
       const authRouting = authResult.value.routing ?? {};
       routing = {
         ...routing,
         ...authRouting,
+        // Re-apply provider-authenticated channel — verified by signature, immutable.
+        ...(provider !== undefined && channel !== undefined ? { channel } : {}),
         // Re-apply provider-authenticated account — signature-verified, immutable.
-        // An authenticator supplying a different account would silently reroute
-        // to the wrong tenant; this keeps the verified identity authoritative.
         ...(accountAuthenticated && account !== undefined ? { account } : {}),
       };
       metadata = authResult.value.metadata ?? metadata;
@@ -540,14 +540,11 @@ export function createWebhookServer(
 
     // Renew the processing lease periodically while dispatch is active so a
     // slow-but-healthy dispatcher does not lose its reservation to a provider retry.
-    // For hung dispatchers that never settle, maxDispatchMs stops renewal so the
-    // processing TTL expires and providers can retry. This accepts a concurrent-
-    // duplicate window in exchange for recovery from truly hung handlers. Slow-
-    // but-healthy dispatchers that succeed after maxDispatchMs still commit.
-    // Default maxDispatchMs to 2× the processing TTL so hung dispatchers always
-    // release their lease within a bounded window even without explicit config.
-    const maxDispatchMs =
-      config.maxDispatchMs ?? 2 * (config.idempotency?.processingTtlMs ?? 5 * 60 * 1000);
+    // maxDispatchMs is opt-in: when set, renewal stops after the configured window
+    // so hung handlers eventually release their lease (accepting a concurrent-duplicate
+    // window). Without it, renewal continues until dispatch settles, which is safe
+    // for all healthy dispatchers but leaves hung dispatchers black-holed until
+    // process restart. Callers with unreliable dispatchers should set maxDispatchMs.
     let renewalTimer: ReturnType<typeof setInterval> | undefined;
     let maxDispatchTimer: ReturnType<typeof setTimeout> | undefined;
     if (pendingDedupKey !== undefined && pendingToken !== undefined) {
@@ -556,13 +553,15 @@ export function createWebhookServer(
       renewalTimer = setInterval(() => {
         idempotencyStore.renew(key, token);
       }, leaseRenewalMs);
-      maxDispatchTimer = setTimeout(() => {
-        // Stop renewing so the processing TTL counts down. A hung handler's
-        // reservation expires after processingTtlMs, unblocking provider retries.
-        // We do NOT abort: explicit abort would immediately allow a concurrent
-        // duplicate; TTL expiry gives a bounded delay instead.
-        clearInterval(renewalTimer);
-      }, maxDispatchMs);
+      if (config.maxDispatchMs !== undefined) {
+        maxDispatchTimer = setTimeout(() => {
+          // Stop renewing so the processing TTL counts down. A hung handler's
+          // reservation expires after processingTtlMs, unblocking provider retries.
+          // We do NOT abort: explicit abort immediately allows a concurrent
+          // duplicate; TTL expiry gives a bounded delay instead.
+          clearInterval(renewalTimer);
+        }, config.maxDispatchMs);
+      }
     }
 
     try {
