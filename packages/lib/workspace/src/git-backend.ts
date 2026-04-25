@@ -22,12 +22,6 @@ interface RegistryEntry {
   readonly branchName: string;
 }
 
-interface WorkspaceMarker {
-  readonly id?: string;
-  readonly branchName?: string;
-  readonly agentId?: string;
-}
-
 export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): WorkspaceBackend {
   const registry = new Map<WorkspaceId, RegistryEntry>();
   const basePath = resolveWorktreeBasePath(config.repoPath, config.worktreeBasePath);
@@ -40,8 +34,10 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
     );
   }
 
-  // Scan git worktree list and on-disk markers to recover an entry that
-  // survived a process restart and is no longer in the in-memory registry.
+  // Scan git worktree list to recover an entry that survived a process restart.
+  // Identity is derived exclusively from git-owned state (branch name suffix + path basename),
+  // never from the writable marker file, so agent code cannot tamper recoverEntry into
+  // deleting the wrong worktree.
   async function recoverEntry(wsId: WorkspaceId): Promise<RegistryEntry | null> {
     const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
     if (!listResult.ok) return null;
@@ -52,8 +48,6 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       const pathLine = lines.find((l) => l.startsWith("worktree "));
       if (!pathLine) continue;
       const path = pathLine.slice("worktree ".length).trim();
-      // Derive branch name from git-owned porcelain output — never trust the marker file
-      // for destructive operations (agent code running in the worktree could tamper it).
       const branchRef =
         lines
           .find((l) => l.startsWith("branch "))
@@ -63,15 +57,13 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         ? branchRef.slice("refs/heads/".length)
         : branchRef;
       if (!branchName) continue;
-      try {
-        const markerText = await Bun.file(join(path, ".koi-workspace")).text();
-        const marker = JSON.parse(markerText) as WorkspaceMarker;
-        if (marker.id === wsId) {
-          return { path, branchName };
-        }
-      } catch {
-        // Marker missing or unreadable — skip this worktree
-      }
+      // Derive wsId from git-owned branch suffix — branch format: workspace/<agent>/<wsId>
+      const branchParts = branchName.split("/");
+      const branchWsId = branchParts[branchParts.length - 1];
+      // Require path basename to also match so a moved/renamed worktree is not mistakenly claimed
+      const pathWsId = path.split(sep).pop();
+      if (branchWsId !== wsId || pathWsId !== wsId) continue;
+      return { path, branchName };
     }
     return null;
   }
@@ -185,6 +177,10 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
       if (!listResult.ok) return undefined;
 
+      // Collect all matching survivors — multiple can exist when a prior dispose timed out.
+      // We return the newest (by createdAt) so the caller operates on the most recent state.
+      const matches: WorkspaceInfo[] = [];
+
       const blocks = listResult.value.split(/\n\n+/);
       for (const block of blocks) {
         const lines = block.trim().split("\n");
@@ -210,7 +206,7 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         const wsId = parts[2];
         if (!wsId) continue;
 
-        // Read marker for createdAt and metadata; fall back to sensible defaults if unreadable
+        // Read marker for createdAt; marker is non-destructive metadata, not identity.
         let createdAt = 0;
         let metadata: Record<string, string> = { branchName, repoPath: config.repoPath };
         try {
@@ -229,9 +225,12 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         const id = workspaceId(wsId);
         // Populate registry so subsequent isHealthy() calls work without rescanning
         if (!registry.has(id)) registry.set(id, { path, branchName });
-        return { id, path, createdAt, metadata };
+        matches.push({ id, path, createdAt, metadata });
       }
-      return undefined;
+
+      if (matches.length === 0) return undefined;
+      // Multiple survivors: return newest. Caller is responsible for disposing the rest.
+      return matches.reduce((best, cur) => (cur.createdAt > best.createdAt ? cur : best));
     },
   };
 }
