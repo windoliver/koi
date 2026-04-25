@@ -31,6 +31,7 @@ export interface WebhookProvider {
     secret: string,
     rawBody: string,
     request: Request,
+    rawBodyBytes?: Uint8Array,
   ) => Promise<ProviderVerifyResult>;
 }
 
@@ -72,8 +73,8 @@ function extractSlackEventId(rawBody: string): string | undefined {
 
 const githubProvider: WebhookProvider = {
   kind: "github",
-  async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
-    const ok = await verifyGitHubSignature(secret, rawBody, request);
+  async verify(secret, rawBody, request, rawBodyBytes): Promise<ProviderVerifyResult> {
+    const ok = await verifyGitHubSignature(secret, rawBody, request, rawBodyBytes);
     if (!ok) return { ok: false };
     // No dedup key: GitHub provides X-GitHub-Delivery but it is not covered by
     // the HMAC signature, so it cannot be trusted for idempotency. Content-based
@@ -86,8 +87,8 @@ const githubProvider: WebhookProvider = {
 
 const slackProvider: WebhookProvider = {
   kind: "slack",
-  async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
-    const ok = await verifySlackSignature(secret, rawBody, request);
+  async verify(secret, rawBody, request, rawBodyBytes): Promise<ProviderVerifyResult> {
+    const ok = await verifySlackSignature(secret, rawBody, request, undefined, rawBodyBytes);
     if (!ok) return { ok: false };
     // Events API: use event_id — a stable, provider-vended identifier present in
     // the verified payload. No dedup key for other Slack shapes (slash commands,
@@ -100,8 +101,8 @@ const slackProvider: WebhookProvider = {
 
 const stripeProvider: WebhookProvider = {
   kind: "stripe",
-  async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
-    const ok = await verifyStripeSignature(secret, rawBody, request);
+  async verify(secret, rawBody, request, rawBodyBytes): Promise<ProviderVerifyResult> {
+    const ok = await verifyStripeSignature(secret, rawBody, request, undefined, rawBodyBytes);
     // Derive dedup from event.id in the verified payload.
     // The Stripe-Signature header's Idempotency-Key is for API requests, not webhooks.
     const dedupKey = ok ? extractStripeEventId(rawBody) : undefined;
@@ -111,8 +112,8 @@ const stripeProvider: WebhookProvider = {
 
 const genericProvider: WebhookProvider = {
   kind: "generic",
-  async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
-    const ok = await verifyGenericSignature(secret, rawBody, request);
+  async verify(secret, rawBody, request, rawBodyBytes): Promise<ProviderVerifyResult> {
+    const ok = await verifyGenericSignature(secret, rawBody, request, undefined, rawBodyBytes);
     if (!ok) return { ok: false };
     // X-Webhook-ID is part of the signing string ("${id}.${ts}.${body}") and is
     // therefore verified by the HMAC. Use it directly as the dedup key.

@@ -363,7 +363,7 @@ export function createWebhookServer(
       if (secret === undefined) {
         return jsonResponse(401, { ok: false, error: "No secret configured for provider" });
       }
-      const verifyResult = await provider.verify(secret, rawBody, request);
+      const verifyResult = await provider.verify(secret, rawBody, request, bodyResult.rawBytes);
       if (!verifyResult.ok) {
         return jsonResponse(401, { ok: false, error: "Invalid signature" });
       }
