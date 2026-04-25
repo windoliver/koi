@@ -25,6 +25,8 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
   const attached = new Map<AgentId, WorkspaceInfo>();
   // Tracks agents with an in-progress attach to prevent concurrent double-creation
   const inFlight = new Set<AgentId>();
+  // Workspaces whose postCreate failed and cleanup also failed — must not be reused
+  const setupFailed = new Set<WorkspaceId>();
 
   async function tryDispose(wsId: WorkspaceId): Promise<boolean> {
     const timeout = new Promise<false>((resolve) => setTimeout(() => resolve(false), timeoutMs));
@@ -68,32 +70,27 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       try {
         const staleInfo = attached.get(agentId);
 
-        // Under cleanupPolicy="never", reuse the preserved workspace rather than creating
-        // a new one. Validate liveness first — the worktree may have been manually deleted
-        // or pruned since detach. If unhealthy, drop the stale entry and recreate.
-        if (staleInfo !== undefined && policy === "never") {
-          const healthy = await config.backend.isHealthy(staleInfo.id);
-          if (healthy) {
-            return makeResult(staleInfo);
-          }
-          attached.delete(agentId);
-        }
-
         // Scan for workspaces that survived a process restart (not in the in-memory map).
         let staleInfo2 = staleInfo;
         if (staleInfo2 === undefined && config.backend.findByAgentId) {
           staleInfo2 = await config.backend.findByAgentId(agentId);
         }
 
-        // Under "never" policy: reuse a crash-surviving workspace rather than discarding it.
-        // Health-check first — the worktree may have been manually pruned since the process died.
+        // Under "never" policy: reuse the preserved workspace rather than discarding it.
+        // Only if healthy AND its prior setup completed — a failed-setup workspace must not
+        // be silently resurrected even if it is technically alive on disk.
         if (staleInfo2 !== undefined && policy === "never") {
-          const healthy = await config.backend.isHealthy(staleInfo2.id);
-          if (healthy) {
-            attached.set(agentId, staleInfo2);
-            return makeResult(staleInfo2);
+          const wsId = staleInfo2.id;
+          if (!setupFailed.has(wsId)) {
+            const healthy = await config.backend.isHealthy(wsId);
+            if (healthy) {
+              attached.set(agentId, staleInfo2);
+              return makeResult(staleInfo2);
+            }
           }
-          // Unhealthy — fall through to dispose + recreate
+          setupFailed.delete(wsId);
+          attached.delete(agentId);
+          // Unhealthy or setup-failed — fall through to dispose + recreate
         }
 
         if (staleInfo2 !== undefined) {
@@ -126,7 +123,9 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
             // Route rollback through timeout-bounded disposal (same as normal cleanup)
             const didDispose = await tryDispose(ws.id);
             if (!didDispose) {
-              // Cleanup timed out or failed — keep tracking so detach can retry later
+              // Cleanup timed out or failed — keep tracking for retry; mark as setup-failed
+              // so a "never" policy reuse path does not silently resurrect a broken workspace.
+              setupFailed.add(ws.id);
               attached.set(agentId, ws);
               throw new Error(
                 `Workspace setup failed; cleanup also timed out or failed: workspace ${ws.id} is still alive`,
@@ -160,6 +159,7 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       const disposed = await tryDispose(wsInfo.id);
       if (disposed) {
         attached.delete(agentId);
+        setupFailed.delete(wsInfo.id);
       }
     },
   };

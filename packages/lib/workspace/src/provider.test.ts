@@ -263,6 +263,38 @@ describe("createWorkspaceProvider", () => {
     await expect(provider.detach?.(agent)).resolves.toBeUndefined();
   });
 
+  it("failed-setup workspace is not reused on next attach under cleanupPolicy=never", async () => {
+    let disposeCount = 0;
+    const failOnceDisposeBackend = makeBackend({
+      async dispose(): Promise<Result<void, KoiError>> {
+        if (disposeCount++ === 0) {
+          // First dispose fails (cleanup of failed-setup workspace)
+          return {
+            ok: false,
+            error: { code: "EXTERNAL", message: "cleanup failed", retryable: false },
+          };
+        }
+        return { ok: true, value: undefined };
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: failOnceDisposeBackend,
+      cleanupPolicy: "never",
+      postCreate: async () => {
+        if (failOnceDisposeBackend.created.length === 1) throw new Error("setup failed");
+      },
+    });
+    const agent = makeAgent();
+    // First attach fails setup; cleanup also fails → workspace tracked as setup-failed
+    await expect(provider.attach(agent)).rejects.toThrow("cleanup also timed out or failed");
+    expect(failOnceDisposeBackend.created.length).toBe(1);
+
+    // Second attach under "never" policy must NOT reuse the broken workspace
+    await provider.attach(agent);
+    expect(failOnceDisposeBackend.created.length).toBe(2); // new workspace created
+    await provider.detach?.(agent);
+  });
+
   it("backend create failure propagates as thrown error", async () => {
     const failBackend = makeBackend({
       async create(): Promise<Result<WorkspaceInfo, KoiError>> {

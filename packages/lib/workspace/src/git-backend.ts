@@ -162,9 +162,10 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
     async isHealthy(wsId: WorkspaceId): Promise<boolean> {
       const entry = registry.get(wsId);
       if (!entry) return false;
-      // Also verify the worktree still exists on disk — external prune/delete
-      // would leave the registry entry stale but the workspace unusable.
-      return Bun.file(join(entry.path, ".koi-workspace")).exists();
+      // Use the git-managed .git file as liveness signal (not the writable .koi-workspace marker).
+      // Git writes this file when creating the worktree and removes it on worktree remove.
+      // Agent code cannot remove it without also breaking the worktree linkage.
+      return Bun.file(join(entry.path, ".git")).exists();
     },
 
     async findByAgentId(searchAgentId: AgentId): Promise<WorkspaceInfo | undefined> {
@@ -206,21 +207,12 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         const wsId = parts[2];
         if (!wsId) continue;
 
-        // Read marker for createdAt; marker is non-destructive metadata, not identity.
-        let createdAt = 0;
-        let metadata: Record<string, string> = { branchName, repoPath: config.repoPath };
-        try {
-          const markerText = await Bun.file(join(path, ".koi-workspace")).text();
-          const marker = JSON.parse(markerText) as {
-            createdAt?: number;
-            branchName?: string;
-            repoPath?: string;
-          };
-          if (typeof marker.createdAt === "number") createdAt = marker.createdAt;
-          if (marker.branchName) metadata = { ...metadata, branchName: marker.branchName };
-        } catch {
-          // Marker unreadable — use defaults constructed from git output
-        }
+        // Derive recency from the wsId itself (format: ws-<timestamp>-<random>), which is
+        // embedded in the git-owned branch name — not from the writable marker file.
+        const tsMatch = wsId.match(/^ws-(\d+)-/);
+        const createdAt =
+          tsMatch !== undefined && tsMatch[1] !== undefined ? Number(tsMatch[1]) : 0;
+        const metadata: Record<string, string> = { branchName, repoPath: config.repoPath };
 
         const id = workspaceId(wsId);
         // Populate registry so subsequent isHealthy() calls work without rescanning
@@ -229,7 +221,8 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       }
 
       if (matches.length === 0) return undefined;
-      // Multiple survivors: return newest. Caller is responsible for disposing the rest.
+      // Multiple survivors: return the one with the highest timestamp embedded in the wsId
+      // (git-owned, not agent-writable). Caller is responsible for disposing older survivors.
       return matches.reduce((best, cur) => (cur.createdAt > best.createdAt ? cur : best));
     },
   };
