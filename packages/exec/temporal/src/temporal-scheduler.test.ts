@@ -1810,13 +1810,14 @@ describe("startup reconciliation — persisted so second restart does not duplic
     });
     writeFileSync(dbPath, crashSnapshot);
 
-    // First restart: reconciliation marks task as "completed" (optimistic delivery) and persists.
-    // Delivery-unknown dispatch tasks are marked completed, not failed, to prevent retries that
-    // would re-send with a different task ID and produce duplicate signals.
+    // First restart: reconciliation marks delivery-unknown dispatch tasks as "dead_letter" —
+    // an explicit terminal state that is NOT "success" and NOT "failed" (retriable). This
+    // surfaces the uncertainty to operators while preventing automatic duplicate dispatch
+    // (marking "failed" would allow retries with a new task ID, producing duplicate signals).
     const s1 = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
     const hist1 = await s1.history({});
     expect(hist1).toHaveLength(1);
-    expect(hist1[0]?.status).toBe("completed");
+    expect(hist1[0]?.status).toBe("dead_letter");
     await s1[Symbol.asyncDispose]();
 
     // Second restart from the same dbPath: reconciliation must NOT run again (already committed).
@@ -1824,7 +1825,7 @@ describe("startup reconciliation — persisted so second restart does not duplic
     const hist2 = await s2.history({});
     // History must still be exactly 1 record — no duplicate from replaying the recovery.
     expect(hist2).toHaveLength(1);
-    expect(hist2[0]?.status).toBe("completed");
+    expect(hist2[0]?.status).toBe("dead_letter");
     await s2[Symbol.asyncDispose]();
     rmdirSync(dir, { recursive: true });
   });

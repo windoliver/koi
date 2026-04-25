@@ -162,7 +162,7 @@ export interface CronSchedule {
 export interface TaskRunRecord {
   readonly taskId: TaskId;
   readonly agentId: AgentId;
-  readonly status: "completed" | "failed";
+  readonly status: "completed" | "failed" | "dead_letter";
   readonly startedAt: number;
   readonly completedAt: number;
   readonly durationMs: number;
@@ -173,7 +173,7 @@ export interface TaskRunRecord {
 
 export interface TaskHistoryFilter {
   readonly agentId?: AgentId | undefined;
-  readonly status?: "completed" | "failed" | undefined;
+  readonly status?: "completed" | "failed" | "dead_letter" | undefined;
   readonly since?: number | undefined;
   readonly limit?: number | undefined;
 }

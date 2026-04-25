@@ -90,7 +90,7 @@ const VALID_TASK_STATUSES = new Set<string>([
   "failed",
   "dead_letter",
 ]);
-const VALID_HISTORY_STATUSES = new Set<string>(["completed", "failed"]);
+const VALID_HISTORY_STATUSES = new Set<string>(["completed", "failed", "dead_letter"]);
 
 function isValidMode(v: unknown): v is "spawn" | "dispatch" {
   return v === "spawn" || v === "dispatch";
@@ -554,6 +554,22 @@ function assertJsonSerializable(value: unknown): void {
   assertJsonSafeValue(value, "payload");
 }
 
+// Transport-failure allowlist for ambiguous remote calls.
+// A narrow allowlist (not a broad denylist) ensures new error classes default to
+// surfacing rather than being silently classified as ambiguous.
+const TRANSPORT_ERROR_RE =
+  /timeout|timed.?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|connection.?reset|connection.?refused|UNAVAILABLE|GOAWAY|transport/i;
+
+function isTransportError(err: unknown): boolean {
+  return err instanceof Error && TRANSPORT_ERROR_RE.test(err.message);
+}
+
+function isNotFoundError(err: unknown): boolean {
+  return (
+    err instanceof Error && /not.?found|does.?not.?exist|schedule.*not.*exist/i.test(err.message)
+  );
+}
+
 // Strip non-serializable EngineInputBase fields (callHandlers, signal, correlationIds)
 // before embedding the input into a Temporal schedule definition. maxStopRetries IS
 // preserved — silently dropping it causes stop-gated agents to use the default cap
@@ -812,10 +828,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           pendingSchedules.delete(id);
           anyCleared = true;
         } catch (describeErr: unknown) {
-          const isNotFound =
-            describeErr instanceof Error &&
-            /not.?found|does.?not.?exist|schedule.*not.*exist/i.test(describeErr.message);
-          if (isNotFound) {
+          if (isNotFoundError(describeErr)) {
             // Schedule does not exist in Temporal — create() never completed.
             // Clear the marker; nothing to clean up remotely.
             pendingSchedules.delete(id);
@@ -839,11 +852,15 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
   }
 
   // Mark "pending" dispatch tasks on restart. Two cases:
-  // 1. deliveredDispatchIds contains the task ID → signal was durably confirmed as sent
-  //    (intermediate persist succeeded before the full post-signal persist failed).
-  //    Record as "completed" to suppress retry — the signal was already delivered.
+  // 1. deliveredDispatchIds contains the task ID → signal was durably confirmed as sent.
+  //    Record as "completed" — the signal was already delivered.
   // 2. Not in deliveredDispatchIds → crash occurred before or during signal send.
-  //    Record as "failed" (retryable) — the signal may not have been sent.
+  //    Delivery is unknown: the signal may or may not have reached Temporal.
+  //    Mark as "dead_letter" — an explicit terminal state that is NOT "success" and NOT
+  //    "failed" (retriable). Using "failed" would cause callers to retry with a new task ID,
+  //    potentially delivering a duplicate signal to a live agent. Using "completed" would
+  //    silently hide a potential delivery failure. "dead_letter" surfaces the uncertainty to
+  //    operators while preventing automatic duplicate dispatch.
   for (const [taskId, task] of tasks) {
     if (task.mode !== "dispatch" || task.status !== "pending") continue;
     const completedAt = Date.now();
@@ -861,23 +878,27 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       });
       deliveredDispatchIds.delete(taskId); // history now records completion
     } else {
-      // Delivery unknown: crash occurred after workflow.signal() was called but before the
-      // durable delivery marker was persisted. We cannot determine if the signal arrived.
-      // Mark as "completed" (optimistic) rather than "failed" (retriable): if we mark failed,
-      // a caller retry will re-submit with a different task ID and may deliver a duplicate
-      // signal — causing irreversible side effects (duplicate tool calls, duplicate messages).
-      // Operators who need exact delivery semantics should supply an idempotencyKey so the
-      // caller can detect the completed state on retry and skip re-submission.
-      tasks.set(taskId, { ...task, status: "completed", completedAt });
+      const koiError: KoiError = {
+        code: "EXTERNAL",
+        message:
+          `[temporal-scheduler] dispatch task "${taskId}" was left in pending state at shutdown — ` +
+          "delivery to Temporal is unknown (crash occurred in the signal send window). " +
+          "Manual reconciliation required: verify whether the target workflow received the signal.",
+        retryable: false,
+        context: { taskId, agentId: task.agentId },
+      };
+      tasks.set(taskId, { ...task, status: "dead_letter", completedAt, lastError: koiError });
       history.push({
         taskId: taskId as TaskId,
         agentId: task.agentId,
-        status: "completed",
+        status: "dead_letter",
         startedAt: task.startedAt ?? task.createdAt,
         completedAt,
         durationMs: completedAt - (task.startedAt ?? task.createdAt),
+        error: koiError.message,
         retryAttempt: 0,
       });
+      emit({ kind: "task:dead_letter", taskId: taskId as TaskId, error: koiError });
     }
   }
 
@@ -1231,12 +1252,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         // so callers know the task was not delivered and can take corrective action.
         // We use a narrow transport-failure allowlist (not a "definite rejection" denylist)
         // because new rejection classes should default to surfacing, not suppressing.
-        const isAmbiguousSignal =
-          mode === "dispatch" &&
-          err instanceof Error &&
-          /timeout|timed.?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|connection.?reset|connection.?refused|UNAVAILABLE|GOAWAY|transport/i.test(
-            err.message,
-          );
+        const isAmbiguousSignal = mode === "dispatch" && isTransportError(err);
         if (isAmbiguousSignal) {
           const errorMsg = err instanceof Error ? err.message : String(err);
           const completedAt = Date.now();
@@ -1524,6 +1540,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       options?: TaskOptions & { readonly timezone?: string | undefined },
     ): Promise<ScheduleId> {
       assertDurabilityOk();
+      // Block until startup schedule reconciliation finishes. Without this gate, a caller
+      // creating a schedule before reconciliation completes would see an empty local map
+      // and might create a duplicate of a schedule that already exists in Temporal.
+      if (startupCleanupPromise !== undefined) await startupCleanupPromise;
       // timeoutMs, maxRetries, delayMs, priority, metadata, and idempotencyKey cannot be
       // plumbed into Temporal schedule policies — accepting them silently would give callers
       // a false guarantee that these options survive persistence and affect fired executions.
@@ -1695,13 +1715,38 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
     async unschedule(id: ScheduleId): Promise<boolean> {
       assertDurabilityOk();
+      if (startupCleanupPromise !== undefined) await startupCleanupPromise;
       if (!schedules.has(id)) return false;
       try {
         await config.client.schedule.delete(id);
-      } catch {
-        return false;
+      } catch (err: unknown) {
+        if (isTransportError(err)) {
+          // Delete call had an ambiguous transport failure — the remote may or may not have
+          // applied the delete. Reconcile by querying Temporal: if the schedule is gone, the
+          // delete succeeded and the ACK was lost; treat as success. If still present, fail
+          // cleanly so the caller can retry. If the query itself fails with a transport error,
+          // throw to surface the true ambiguity rather than returning a misleading false.
+          try {
+            await config.client.schedule.getHandle(id).describe();
+            // Schedule still exists — delete did not take effect.
+            return false;
+          } catch (describeErr: unknown) {
+            if (isNotFoundError(describeErr)) {
+              // Schedule is gone — delete succeeded, ACK was lost; fall through to local update.
+            } else {
+              throw new Error(
+                `[temporal-scheduler] unschedule "${id}" failed with a transport error and ` +
+                  "reconciliation describe also failed — schedule state is unknown. " +
+                  "Operator reconciliation required.",
+                { cause: err },
+              );
+            }
+          }
+        } else {
+          return false;
+        }
       }
-      // Remote delete succeeded — update local state and persist.
+      // Remote delete confirmed (or reconciled as not-found) — update local state and persist.
       // Propagate persist errors rather than collapsing them into `false`:
       // after a successful remote delete, returning false would misrepresent the outcome.
       schedules.delete(id);
@@ -1712,11 +1757,22 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
     async pause(id: ScheduleId): Promise<boolean> {
       assertDurabilityOk();
+      if (startupCleanupPromise !== undefined) await startupCleanupPromise;
       const schedule = schedules.get(id);
       if (schedule === undefined) return false;
       try {
         await config.client.schedule.pause(id);
-      } catch {
+      } catch (err: unknown) {
+        if (isTransportError(err)) {
+          // Ambiguous transport failure: remote may have applied the pause. Throw rather than
+          // returning false (which implies "definitely not paused") — surfacing ambiguity lets
+          // callers reconcile via describe() or retry with knowledge of the uncertainty.
+          throw new Error(
+            `[temporal-scheduler] pause "${id}" failed with a transport error — ` +
+              "whether the pause was applied remotely is unknown. Retry or reconcile manually.",
+            { cause: err },
+          );
+        }
         return false;
       }
       schedules.set(id, { ...schedule, paused: true });
@@ -1748,11 +1804,22 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
     async resume(id: ScheduleId): Promise<boolean> {
       assertDurabilityOk();
+      if (startupCleanupPromise !== undefined) await startupCleanupPromise;
       const schedule = schedules.get(id);
       if (schedule === undefined) return false;
       try {
         await config.client.schedule.unpause(id);
-      } catch {
+      } catch (err: unknown) {
+        if (isTransportError(err)) {
+          // Ambiguous transport failure: remote may have applied the resume. Throw rather than
+          // returning false (which implies "definitely not resumed") — surfacing ambiguity lets
+          // callers reconcile via describe() or retry with knowledge of the uncertainty.
+          throw new Error(
+            `[temporal-scheduler] resume "${id}" failed with a transport error — ` +
+              "whether the resume was applied remotely is unknown. Retry or reconcile manually.",
+            { cause: err },
+          );
+        }
         return false;
       }
       schedules.set(id, { ...schedule, paused: false });
