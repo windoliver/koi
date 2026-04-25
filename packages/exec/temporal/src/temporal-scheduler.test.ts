@@ -1468,6 +1468,35 @@ describe("idempotencyKey", () => {
   });
 });
 
+describe("idempotencyKey — delimiter validation prevents ID aliasing", () => {
+  test("idempotencyKey containing ':' is rejected to prevent cross-agent ID collision", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await expect(
+      scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "agent:x:key" }),
+    ).rejects.toThrow(/idempotencyKey must not contain ':'/);
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("agentId containing ':' is rejected when idempotencyKey is set", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    const colonAgentId = "agent:with:colons" as AgentId;
+    await expect(
+      scheduler.submit(colonAgentId, TEXT_INPUT, "dispatch", { idempotencyKey: "key" }),
+    ).rejects.toThrow(/agentId must not contain ':'/);
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("schedule() rejects idempotencyKey — not a dedup primitive for scheduled firings", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await expect(
+      scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn", {
+        idempotencyKey: "my-key",
+      }),
+    ).rejects.toThrow(/does not support.*idempotencyKey/);
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
 describe("idempotencyKey — failed submissions allow retry", () => {
   test("retrying a failed dispatch with same key sends a new signal", async () => {
     let callCount = 0;

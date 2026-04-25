@@ -917,6 +917,22 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       // Use caller-supplied idempotency key as the task ID so message IDs derived from it
       // are stable across retries, enabling workflow-side deduplication after ACK-lost failures.
       // Namespace by agentId + mode so keys from different agents or modes never collide.
+      // Validate that neither component contains the delimiter (':') to prevent ID aliasing
+      // between (agentA, "x") and (agentB, "agentA:mode:x") with different components.
+      if (options?.idempotencyKey !== undefined) {
+        if (options.idempotencyKey.includes(":")) {
+          throw new Error(
+            `idempotencyKey must not contain ':' — it is used as a delimiter in the stable ` +
+              `task ID. Received: "${options.idempotencyKey}"`,
+          );
+        }
+        if (String(agentId).includes(":")) {
+          throw new Error(
+            `agentId must not contain ':' when using idempotencyKey — it is used as a ` +
+              `delimiter in the stable task ID. Received: "${String(agentId)}"`,
+          );
+        }
+      }
       const id = toTaskId(
         options?.idempotencyKey !== undefined
           ? `${agentId}:${mode}:${options.idempotencyKey}`
@@ -1361,20 +1377,23 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       options?: TaskOptions & { readonly timezone?: string | undefined },
     ): Promise<ScheduleId> {
       assertDurabilityOk();
-      // timeoutMs, maxRetries, delayMs, priority, and metadata cannot be plumbed into Temporal
-      // schedule policies — accepting them silently would give callers a false guarantee that
-      // these options survive persistence and affect fired executions.
+      // timeoutMs, maxRetries, delayMs, priority, metadata, and idempotencyKey cannot be
+      // plumbed into Temporal schedule policies — accepting them silently would give callers
+      // a false guarantee that these options survive persistence and affect fired executions.
+      // idempotencyKey is explicitly rejected rather than ignored so callers do not mistake
+      // schedule() for a deduplication primitive (it has no scheduled-firing dedup semantics).
       if (
         options?.timeoutMs !== undefined ||
         options?.maxRetries !== undefined ||
         options?.delayMs !== undefined ||
         options?.priority !== undefined ||
-        options?.metadata !== undefined
+        options?.metadata !== undefined ||
+        options?.idempotencyKey !== undefined
       ) {
         throw new Error(
-          "schedule() does not support timeoutMs, maxRetries, delayMs, priority, or metadata — " +
-            "these options cannot be persisted or enforced by Temporal schedule policies. " +
-            "Remove them or implement the constraints inside the target workflow.",
+          "schedule() does not support timeoutMs, maxRetries, delayMs, priority, metadata, " +
+            "or idempotencyKey — these options cannot be persisted or enforced by Temporal " +
+            "schedule policies. Remove them or implement the constraints inside the target workflow.",
         );
       }
 
