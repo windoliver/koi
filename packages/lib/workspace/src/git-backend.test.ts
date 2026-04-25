@@ -374,6 +374,33 @@ describe("createGitWorktreeBackend", () => {
     await backend.dispose(r.value.id);
   });
 
+  it("exists returns true after git worktree move (in-process, no drift)", async () => {
+    // After git worktree move the directory basename changes, so basename matching fails.
+    // exists() must fall back to the managed branch name to locate the moved worktree.
+    const backend = createGitWorktreeBackend({ repoPath });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const ws = result.value;
+    const newPath = ws.path + "-moved";
+    // Move the worktree — basename changes from wsId to wsId+"-moved"
+    await Bun.spawn(["git", "worktree", "move", ws.path, newPath], { cwd: repoPath }).exited;
+
+    // exists() should return true (worktree physically present at new path, found via branch)
+    expect(await backend.exists?.(ws.id)).toBe(true);
+    // isHealthy uses the registry path (stale after move) and correctly returns false.
+    // This is intentional: the provider treats moved workspaces as needing re-verification.
+    expect(await backend.isHealthy(ws.id)).toBe(false);
+
+    // Cleanup
+    await Bun.spawn(["git", "worktree", "remove", "--force", newPath], { cwd: repoPath }).exited;
+    await Bun.spawn(
+      ["git", "branch", "-D", `workspace/${Buffer.from(aid as string).toString("hex")}/${ws.id}`],
+      { cwd: repoPath },
+    ).exited;
+  });
+
   it("recoverEntry is scoped to this backend's base path", async () => {
     const basePath1 = join(repoPath, "..", `wt-recover1-${Date.now()}`);
     const basePath2 = join(repoPath, "..", `wt-recover2-${Date.now()}`);

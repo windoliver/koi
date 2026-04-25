@@ -482,24 +482,45 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
       // Fail closed: if we cannot query git, assume the worktree still exists.
       if (!listResult.ok) return true;
-      // Prefer the registry path for an exact match — this correctly handles
-      // `git worktree move` where the destination basename may differ from wsId.
-      const registeredPath = registry.get(wsId)?.path;
+      const entry = registry.get(wsId);
+      const registeredPath = entry?.path;
+      // The managed branch is move-stable: it stays in the repo even after
+      // git worktree move (as long as no branch drift). Use it as a secondary
+      // identity check when the registered path is not found in the live list.
+      const registeredBranch = entry?.branchName;
+      let pathFound = false;
+      let branchFound = false;
       for (const block of listResult.value.split(/\n\n+/)) {
         const lines = block.trim().split("\n");
         const pathLine = lines.find((l) => l.startsWith("worktree "));
         if (!pathLine) continue;
         const worktreePath = pathLine.slice("worktree ".length).trim();
-        if (registeredPath !== undefined) {
-          if (worktreePath === registeredPath) return true;
-        } else {
-          // No registry entry (after process restart): fall back to basename matching.
-          // After git worktree move with a renamed destination this may miss the worktree;
-          // that case requires an ownership ref or registry persistence to resolve.
+        if (registeredPath !== undefined && worktreePath === registeredPath) {
+          pathFound = true;
+          break;
+        }
+        // If registered path is gone (moved), check by managed branch under resolvedBase.
+        // This correctly returns true after git worktree move without branch drift.
+        if (registeredBranch !== undefined && !pathFound) {
+          const branchRef =
+            lines
+              .find((l) => l.startsWith("branch "))
+              ?.slice("branch ".length)
+              .trim() ?? "";
+          const branchName = branchRef.startsWith("refs/heads/")
+            ? branchRef.slice("refs/heads/".length)
+            : branchRef;
+          if (branchName === registeredBranch && worktreePath.startsWith(resolvedBase + sep)) {
+            branchFound = true;
+          }
+        }
+        // No registry entry (post-restart): fall back to basename.
+        // Renamed destinations require ownership refs to resolve.
+        if (registeredPath === undefined && registeredBranch === undefined) {
           if (worktreePath.split(sep).pop() === (wsId as string)) return true;
         }
       }
-      return false;
+      return pathFound || branchFound;
     },
   };
 }
