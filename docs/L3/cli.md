@@ -6,6 +6,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`koi tui` progressive skill injection (#1986)**: `koi tui` now uses `createSkillProvider(runtime, { progressive: true })` and `createSkillInjectorMiddleware({ agent: thunk, progressive: true })` instead of eagerly loading all skill bodies into the system prompt at startup. Phase 1 injects a compact `<available_skills>` XML block (~100 tokens) listing available skills before each model call; Phase 2 loads the full skill body on-demand when the model invokes the `Skill` tool. A lazy agent-ref thunk (`skillAgentRef.current`) is wired in the post-`createKoiRuntime` `.then()` callback so the middleware can be constructed before the ECS entity is assembled. `skillProvider` is now always included in `extraProviders` (previously it was conditional on the artifact-extras block). The `skillsRuntime` field is still passed to `createKoiRuntime` for Skill tool / MCP bridge wiring. `extraMiddleware` on `KoiRuntimeConfig` now accepts host-provided middleware that is appended to `presetExtras` inside `composeRuntimeMiddleware`.
+
 - **`@koi/settings` wired into CLI (#1958)**: `@koi/settings` added as a direct CLI dependency. `runtime-factory.ts` calls `loadSettings()` at startup (resolving user, project, local, flag, and policy layers from `cwd` + `homeDir`) and passes the merged `KoiSettings` into `mapSettingsToSourcedRules` to populate the permission backend's rule set. The `koi start --settings <path>` flag maps to the `flag` layer. Policy layer failures (missing or malformed policy file) throw a `PolicyLoadError` and exit with code 2 — fail-closed. `koi start --settings` now also accepts settings via the `flagPath` field for the flag layer. No new TUI surface changes — settings are applied transparently at runtime startup.
 
 - **`@koi/tasks` local_agent lifecycle wired into spawn stack (#1657)**: `spawn.ts` now creates a `TaskRunner` backed by `createLocalAgentLifecycle` whenever the execution stack's `getTaskBoard`/`getStore` getters are present. A `store.watch()` watcher auto-starts any `pending` task with `metadata.kind === "local_agent"` by calling `capturedSpawnFn` (the same `SpawnFn` used by the Spawn tool) with the task's `agentType` and `inputs`. An idempotency guard (`claimedTaskIds: Set<string>`) prevents duplicate starts from re-entrant store writes. On session reset (`onResetSession`), the runner and watcher are torn down and recreated against the fresh board/store pair. On shutdown (`onShutdown`), both are disposed before returning. The runner is only created when all three host keys are present (`getTaskBoard`, `getStore`, `agentId`) — hosts without the execution stack continue to receive only the Spawn tool, unchanged.
@@ -806,3 +808,9 @@ See `docs/L3/runtime.md` for the `activityTimeout` config, telemetry events (`ac
 `@koi/tasks` received correctness fixes for the `remote_agent` lifecycle. No CLI
 surface changes. See `docs/L2/tasks.md` for the detailed change log and
 `docs/L3/runtime.md` for the runtime-boundary impact summary.
+
+---
+
+## @koi/mcp `triggerAuth` lint fix (PR #2046)
+
+Replaced `conn.triggerAuth!()` non-null assertions in `connection.test.ts` with explicit `if (conn.triggerAuth === undefined) throw` guards to satisfy `noNonNullAssertion`. No CLI surface change; `triggerAuth?()` remains an optional method on `McpConnection` callable via `koi mcp auth`.

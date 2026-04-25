@@ -356,6 +356,13 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/ipc-local": {
+      "name": "@koi/ipc-local",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/loop": {
       "name": "@koi/loop",
       "version": "0.0.0",
@@ -839,6 +846,7 @@
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
+        "@koi/ipc-local": "workspace:*",
         "@koi/loop": "workspace:*",
         "@koi/lsp": "workspace:*",
         "@koi/mcp": "workspace:*",
@@ -1015,6 +1023,14 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-reconcile": "workspace:*",
+      },
+    },
+    "packages/net/gateway": {
+      "name": "@koi/gateway",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/net/mcp": {
@@ -1604,6 +1620,8 @@
 
     "@koi/fs-scoped": ["@koi/fs-scoped@workspace:packages/lib/fs-scoped"],
 
+    "@koi/gateway": ["@koi/gateway@workspace:packages/net/gateway"],
+
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
     "@koi/governance-core": ["@koi/governance-core@workspace:packages/security/governance-core"],
@@ -1617,6 +1635,8 @@
     "@koi/hook-prompt": ["@koi/hook-prompt@workspace:packages/exec/hook-prompt"],
 
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
+
+    "@koi/ipc-local": ["@koi/ipc-local@workspace:packages/lib/ipc-local"],
 
     "@koi/loop": ["@koi/loop@workspace:packages/lib/loop"],
 

@@ -1,7 +1,8 @@
 {
+  "schemaVersion": "cassette-v1",
   "name": "skill-load",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775698507635,
+  "recordedAt": 1776924118478,
   "chunks": [
     {
       "kind": "text_delta",
@@ -26,6 +27,7 @@
         "content": "Red, yellow, and blue.\n",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "stop",
+        "responseId": "gen-1776924118-yEcmu5elkY1EMx0l3Ccz",
         "richContent": [
           {
             "kind": "text",
@@ -35,9 +37,11 @@
         "usage": {
           "inputTokens": 9,
           "outputTokens": 8
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
         }
       }
     }
-  ],
-  "schemaVersion": "cassette-v1"
+  ]
 }

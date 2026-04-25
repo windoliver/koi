@@ -127,8 +127,8 @@ import {
 } from "@koi/session";
 import { createSkillTool } from "@koi/skill-tool";
 import {
+  createProgressiveSkillProvider,
   createSkillInjectorMiddleware,
-  createSkillProvider,
   createSkillsRuntime,
 } from "@koi/skills-runtime";
 import { createSpawnTools } from "@koi/spawn-tools";
@@ -1247,6 +1247,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
       if (agentRef.current === undefined) throw new Error("Agent not yet wired");
       return agentRef.current;
     },
+    progressive: true,
   });
 
   const tracedMiddleware = [
@@ -1598,16 +1599,17 @@ console.log(
   `Skills registry query verified: tags=["formatting"] → [${queryResult.value.map((s) => s.name).join(", ")}]`,
 );
 
-const skillProvider = createSkillProvider(skillRuntime);
+const { provider: skillProvider, pinnedRuntime: pinnedSkillRuntime } =
+  createProgressiveSkillProvider(skillRuntime);
 console.log(`Skills golden query: dir=${skillsTmpDir}, skill=bullet-points`);
 
 // ---------------------------------------------------------------------------
 // @koi/skill-tool — SkillTool meta-tool golden query setup
-// Uses the same skillRuntime to create a Skill tool the model can invoke.
+// Uses the pinned runtime so Skill tool loads match what was advertised.
 // ---------------------------------------------------------------------------
 
 const skillToolResult = await createSkillTool({
-  resolver: skillRuntime,
+  resolver: pinnedSkillRuntime,
   signal: AbortSignal.timeout(300_000),
 });
 if (!skillToolResult.ok) {

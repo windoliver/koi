@@ -27,13 +27,15 @@ createSkillTool(config)
 
 ### Skill Advertising
 
-The Skill tool description dynamically lists available skills. Three-phase budget formatting within `MAX_DESCRIPTION_CHARS` (8000):
+**Eager mode (default):** The Skill tool description dynamically lists available skills. Three-phase budget formatting within `MAX_DESCRIPTION_CHARS` (8000):
 
 1. **Full**: `"- name: description"` for all skills
 2. **Truncated**: Bundled keep full; non-bundled truncated to 250 chars
 3. **Names-only**: Just `"- name"` with overflow indicator
 
 Only executable skills are advertised — fork skills are filtered out when `spawnFn` is absent.
+
+**Progressive mode (`config.progressive: true`):** The tool description emits `"Available skills are listed in the system prompt above."` instead of a static listing. The middleware injects an `<available_skills>` XML block at each model call from live ECS state — that block is the authoritative catalog. The static listing is skipped to avoid contradicting the system prompt with stale data. `discover()` still runs at creation time as a startup health check.
 
 ### Variable Substitution
 
@@ -61,7 +63,9 @@ import type { SkillToolConfig, SkillResolver } from "@koi/skill-tool";
 
 ### `createSkillTool(config: SkillToolConfig): Promise<Result<Tool, KoiError>>`
 
-Async factory. Calls `resolver.discover()` to build the tool description, returns a `Tool` that loads skills lazily at invocation time.
+Async factory. Calls `resolver.discover()` for a startup health check and (in eager mode) to build the tool description. Returns a `Tool` that loads skills lazily at invocation time.
+
+`config.progressive?: boolean` — when `true`, switches to progressive mode: discovery result is not used for the tool description; instead the middleware injects the catalog per model call. Defaults to `false` (eager mode).
 
 ### `extractSpawnConfig(skill: SkillMeta): Result<SpawnConfig, KoiError>`
 

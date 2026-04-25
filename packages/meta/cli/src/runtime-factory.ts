@@ -678,6 +678,13 @@ export interface KoiRuntimeConfig {
    */
   readonly skillsRuntime?: SkillsRuntime | undefined;
   /**
+   * When true, the Skill meta-tool description omits the static skill listing
+   * and defers to the per-turn `<available_skills>` XML block injected by the
+   * progressive middleware. Must be forwarded into `earlyContextHost` so the
+   * `skillsStack` preset picks it up via `ctx.host.skillsProgressive`.
+   */
+  readonly skillsProgressive?: boolean | undefined;
+  /**
    * Optional OAuthChannel for MCP server OAuth flows.
    * When provided, wired into every MCP connection so auth_required /
    * auth_complete events render inline as chat messages.
@@ -834,6 +841,26 @@ export interface KoiRuntimeConfig {
    * tools backed by a host-owned ArtifactStore). Order preserved.
    */
   readonly extraProviders?: readonly ComponentProvider[] | undefined;
+  /**
+   * Host-provided middleware appended to the `presetExtras` slot (phase
+   * "resolve", after stack middleware). Used to wire host-owned middleware
+   * that doesn't fit a preset stack. Order preserved.
+   */
+  readonly extraMiddleware?: readonly KoiMiddleware[] | undefined;
+  /**
+   * Progressive skill injector middleware for the root agent.
+   * Placed in the post-permissions slot (zone C-bottom, after planPersist and
+   * before systemPrompt) so `request.tools` is permissions-filtered when the
+   * injector checks whether the Skill tool is active.
+   */
+  readonly skillInjector?: KoiMiddleware | undefined;
+  /**
+   * Skill injector middleware to propagate into spawned child agents.
+   * When set, child model calls receive the same `<available_skills>` injection
+   * as the root agent. The middleware reads from its original agent reference
+   * (typically the root agent's ECS), which reflects the global skill set.
+   */
+  readonly childSkillInjector?: KoiMiddleware | undefined;
 }
 
 export interface KoiRuntimeHandle {
@@ -1436,6 +1463,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
   const earlyContextHost: Record<string, unknown> = {
     ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
+    ...(config.skillsProgressive === true ? { skillsProgressive: true } : {}),
     ...(config.mcpOAuthChannel !== undefined ? { mcpOAuthChannel: config.mcpOAuthChannel } : {}),
     ...(config.otel !== undefined ? { otelConfig: config.otel } : {}),
     approvalHandler,
@@ -2074,6 +2102,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // to intercept those calls with the parent's backend.
       ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
       ...(planPersistBundle !== undefined ? { planPersist: planPersistBundle.middleware } : {}),
+      // Thread skill injector into children so spawned agents also receive
+      // the <available_skills> XML block in progressive mode. The middleware
+      // reads from its original agent reference (root), whose skill set
+      // is global — the same skills apply to all children.
+      ...(config.childSkillInjector !== undefined
+        ? { skillInjector: config.childSkillInjector }
+        : {}),
     });
     // Build the per-child manifest-middleware factory. Each call
     // re-runs `resolveManifestMiddleware` with a fresh context so
@@ -2791,8 +2826,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ...stackContribution.middleware,
         ...auditPresetExtras,
         ...(governanceMw !== undefined ? [governanceMw] : []),
+        ...(config.extraMiddleware ?? []),
       ],
       manifestMiddleware: zoneBMiddleware,
+      ...(config.skillInjector !== undefined ? { skillInjector: config.skillInjector } : {}),
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
       ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
     });

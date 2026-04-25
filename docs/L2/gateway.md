@@ -1,641 +1,289 @@
-# @koi/gateway — WebSocket Control Plane
+# @koi/gateway — WebSocket Gateway Core
 
-WebSocket gateway for Koi's multi-node architecture. Manages two distinct connection types through a single transport: **client sessions** (browsers, CLIs) exchanging `GatewayFrame` messages, and **compute nodes** (`@koi/node`) exchanging `NodeFrame` messages for tool routing, capacity reporting, and agent dispatch. Handles authentication, protocol negotiation, sequencing, backpressure, routing, scheduled dispatch, and cross-node tool execution.
+Minimal WebSocket gateway for Koi v2. Manages client connections via a single transport: **client sessions** exchanging `GatewayFrame` messages. Handles authentication, protocol negotiation, session sequencing, backpressure, and routing.
 
-> **Package split (Issue #718)**: Canvas and webhook subsystems have been extracted into separate packages. See [`@koi/gateway-canvas`](./gateway-canvas.md), [`@koi/gateway-webhook`](./gateway-webhook.md), and [`@koi/gateway-stack`](../L3/gateway-stack.md) for the convenience bundle.
+**v2 scope** (Issue #1365): single-node, no Nexus/HA, no node registry, no tool routing. Those are future issues.
+
+> **v1 reference**: The v1 implementation lived in `archive/v1/packages/net/gateway`. The v2 package is intentionally minimal — ~600 LOC vs ~4K LOC in v1. Features not yet ported are listed at the bottom of this doc.
 
 ---
 
 ## Why It Exists
 
-Koi agents run on distributed compute nodes — a laptop running a Pi agent, a cloud VM exposing search tools, a Raspberry Pi with camera access. These nodes need a central coordination point that:
+Agents need a stable connection endpoint that:
 
-- **Routes tool calls** — Agent A on Node-1 calls `camera.capture`, which only Node-2 provides. The gateway discovers the target, forwards the call, tracks the response, and routes the result back.
-- **Manages sessions** — Clients connect, authenticate, resume after disconnects, and receive ordered, deduplicated frames.
-- **Tracks capacity** — Nodes report their load. The gateway selects the best target for each tool call (affinity > capacity > queue).
-- **Handles backpressure** — Per-connection and global buffer monitoring prevents slow consumers from overwhelming the system.
-Without this package, every agent would need direct knowledge of every other agent's location, tools, and availability.
-
-> Webhook ingestion and canvas rendering are now in separate L2 packages — see [`@koi/gateway-webhook`](./gateway-webhook.md) and [`@koi/gateway-canvas`](./gateway-canvas.md).
+- **Authenticates** — validates tokens and creates typed sessions
+- **Orders and deduplicates** — sliding-window sequence tracker prevents replay and reordering
+- **Manages backpressure** — per-connection and global buffer watermarks prevent OOM
+- **Routes frames** — dispatches to registered handlers with routing context
 
 ---
 
 ## Architecture
 
-`@koi/gateway` is an **L2 feature package** — it depends on L0 (`@koi/core`), L0u (`@koi/errors`, `@koi/gateway-types`).
+`@koi/gateway` is an **L2 feature package** — depends only on L0 (`@koi/core`) and L0u (`@koi/errors`).
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  @koi/gateway  (L2)                                          │
-│                                                              │
-│  gateway.ts          ← factory: createGateway()              │
-│  transport.ts        ← Bun.serve() WebSocket abstraction     │
-│  auth.ts             ← handshake + heartbeat sweep           │
-│  protocol.ts         ← frame parsing, negotiation, encoding  │
-│  routing.ts          ← dispatch key + pattern binding        │
-│  session-store.ts    ← pluggable session persistence         │
-│  sequence-tracker.ts ← ordering + deduplication              │
-│  backpressure.ts     ← per-conn + global buffer monitoring   │
-│  node-handler.ts     ← node frame parsing + validation       │
-│  node-connection.ts  ← node lifecycle + stale sweep          │
-│  node-registry.ts    ← node registration + inverted index    │
-│  tool-router.ts      ← cross-node tool call routing          │
-│  scheduler.ts        ← periodic frame generation             │
-│  types.ts            ← re-exports from @koi/gateway-types    │
-│                                                              │
-├──────────────────────────────────────────────────────────────┤
-│  Dependencies                                                │
-│                                                              │
-│  @koi/core          (L0)   Result, KoiError, AdvertisedTool  │
-│  @koi/errors        (L0u)  error factories                   │
-│  @koi/gateway-types (L0u)  wire protocol, session, config    │
-│  Bun.serve()        (rt)   built-in WebSocket server         │
-│                                                              │
-│  Related packages (separate L2, not dependencies):           │
-│  @koi/gateway-canvas   canvas HTTP + SSE                     │
-│  @koi/gateway-webhook  webhook HTTP ingestion                │
-│  @koi/gateway-stack    L3 bundle wiring all three            │
-└──────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│  @koi/gateway  (L2)                             │
+│                                                 │
+│  gateway.ts          ← createGateway() factory  │
+│  transport.ts        ← Bun.serve() WebSocket    │
+│  auth.ts             ← handshake orchestration  │
+│  protocol.ts         ← frame parsing/encoding   │
+│  routing.ts          ← dispatch key + matching  │
+│  session-store.ts    ← pluggable persistence    │
+│  sequence-tracker.ts ← ordering + deduplication │
+│  backpressure.ts     ← buffer watermark monitor │
+│  close-codes.ts      ← WS close code constants  │
+│  types.ts            ← all wire/config types    │
+│                                                 │
+├─────────────────────────────────────────────────┤
+│  Dependencies                                   │
+│  @koi/core    (L0)   Result, KoiError, notFound │
+│  @koi/errors  (L0u)  swallowError               │
+│  Bun.serve()  (rt)   built-in WebSocket server  │
+└─────────────────────────────────────────────────┘
 ```
-
-For the full architecture deep-dive (wire protocol, connection lifecycle, close codes), see [docs/architecture/Gateway.md](../architecture/Gateway.md).
 
 ---
 
-## Two Connection Types
-
-The gateway serves two kinds of peers over the same WebSocket port:
-
-```
-┌──────────────────┐                        ┌──────────────────┐
-│  CLIENT           │                        │  COMPUTE NODE     │
-│  (browser, CLI)   │                        │  (full or thin)   │
-│                   │                        │                   │
-│  Sends:           │                        │  Sends:           │
-│  ConnectFrame     │                        │  node:handshake   │
-│  GatewayFrame     │                        │  node:capabilities│
-│                   │                        │  tool_call        │
-│  Receives:        │                        │  tool_result      │
-│  HandshakeAck     │                        │  node:heartbeat   │
-│  GatewayFrame     │                        │                   │
-└────────┬─────────┘                        └────────┬─────────┘
-         │                                           │
-         │        ┌───────────────────────┐          │
-         └───────▶│      GATEWAY          │◀─────────┘
-                  │                       │
-                  │  First message peek   │
-                  │  determines path:     │
-                  │  "connect" → client   │
-                  │  "node:*" → node      │
-                  └───────────────────────┘
-```
-
-### Node Types
-
-| | Full Node | Thin Node |
-|---|-----------|-----------|
-| Agents | Runs Pi/Loop engines | None |
-| Tools | Optional local tools | Exposes local tools |
-| Tool calls | Dispatches `tool_call` frames | Executes `tool_call` frames |
-| Use case | Laptop running an agent | Raspberry Pi with camera |
-
-A full node's agent calls a tool. If the tool isn't local, the gateway routes it to a thin node that has it.
-
----
-
-## Node Registry
-
-The registry tracks connected nodes, their tools, and their capacity. An **inverted tool index** provides O(1) tool-to-nodes lookup.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Node Registry                                               │
-│                                                              │
-│  Nodes:                  Inverted Index:                     │
-│  ┌───────────────────┐   ┌──────────────────────────────┐   │
-│  │ node-laptop        │   │ "search"     → {node-laptop} │   │
-│  │  mode: full        │   │ "camera.*"   → {node-pi}     │   │
-│  │  tools: [search]   │   │ "fetch_url"  → {node-laptop, │   │
-│  │  cap: 8/10         │   │                node-cloud}   │   │
-│  ├───────────────────┤   └──────────────────────────────┘   │
-│  │ node-pi            │                                      │
-│  │  mode: thin        │   Events:                            │
-│  │  tools: [camera.*] │   ├ registered                       │
-│  │  cap: 2/4          │   ├ deregistered                     │
-│  ├───────────────────┤   ├ heartbeat                         │
-│  │ node-cloud         │   ├ capacity_updated                 │
-│  │  mode: thin        │   ├ tools_added                      │
-│  │  tools: [fetch_url]│   └ tools_removed                    │
-│  │  cap: 50/100       │                                      │
-│  └───────────────────┘                                       │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Registration Flow
-
-```
-Node                           Gateway
-  │                              │
-  │── node:handshake ──────────▶│  validate nodeId, version, capacity
-  │── node:capabilities ───────▶│  validate tools + nodeType
-  │                              │  register in NodeRegistry
-  │                              │  build inverted tool index
-  │◀── node:registered ────────│  ack with timestamp
-```
-
-### Dynamic Tool Re-advertisement
-
-Nodes can update their tool set at runtime without disconnecting:
-
-```
-Node                           Gateway
-  │                              │
-  │── node:tools_updated ──────▶│  payload: {
-  │   {                          │    added: [{ name: "deploy" }],
-  │     added: [deploy],         │    removed: ["search"]
-  │     removed: [search]        │  }
-  │   }                          │
-  │                              │  registry.updateTools():
-  │                              │    add "deploy" to inverted index
-  │                              │    remove "search" from index
-  │                              │    emit tools_added event
-  │                              │    emit tools_removed event
-  │                              │
-  │                              │  toolRouter.handleToolsUpdated():
-  │                              │    drain queued calls matching "deploy"
-```
-
-This enables hot-plugging: a node starts with a base tool set and advertises new capabilities as plugins load.
-
----
-
-## Tool Routing
-
-Cross-node tool execution with a 5-priority decision tree. Entirely opt-in — disabled by default.
-
-### Routing Algorithm
-
-```
-tool_call arrives from Node-A
-          │
-          ▼
-1. isToolCallPayload(payload)?  ──no──▶ VALIDATION error
-          │ yes
-          ▼
-2. pending.size < maxPendingCalls?  ──no──▶ RATE_LIMIT error
-          │ yes
-          ▼
-3. registry.findByTool(toolName)
-          │
-          ├── no candidates ──▶ queue (if space) or NOT_FOUND error
-          │
-          ▼
-4. exclude source node (Node-A)
-          │
-          ├── no remote candidates ──▶ queue or NOT_FOUND error
-          │
-          ▼
-5a. affinity match?  ──yes──▶ route to preferred node
-          │ no
-          ▼
-5b. O(N) capacity scan ──▶ route to highest-available node
-```
-
-### Error Codes
-
-All tool routing errors use typed constants:
+## Quick Start
 
 ```typescript
-const TOOL_ROUTING_ERROR_CODES = {
-  NOT_FOUND: "not_found",       // no node available for tool
-  TIMEOUT: "timeout",           // routed call exceeded TTL
-  RATE_LIMIT: "rate_limit",     // maxPendingCalls reached
-  VALIDATION: "validation",     // malformed tool_call payload
-} as const;
-```
-
-### Cross-Node Round Trip
-
-```
-Full Node (Agent)              Gateway                  Thin Node (Tools)
-     │                            │                            │
-     │── tool_call ──────────────▶│                            │
-     │   corr: "abc"              │  resolve → thin-node       │
-     │                            │  track: "route-abc-{ts}"   │
-     │                            │── tool_call ──────────────▶│
-     │                            │   corr: "route-abc-{ts}"   │
-     │                            │                            │
-     │                            │                            │ execute tool
-     │                            │                            │
-     │                            │◀── tool_result ───────────│
-     │                            │   corr: "route-abc-{ts}"   │
-     │                            │                            │
-     │                            │  lookup pending → restore  │
-     │◀── tool_result ───────────│                            │
-     │   corr: "abc"  (restored)  │                            │
-```
-
-The gateway generates a routing correlation ID to track forwarded calls. When the result returns, it restores the original caller's correlation ID — the calling agent sees a transparent tool invocation.
-
-### Affinity
-
-Static tool-to-node preferences via glob patterns:
-
-```typescript
-const config: ToolRoutingConfig = {
-  defaultTimeoutMs: 30_000,
-  maxPendingCalls: 10_000,
-  maxQueuedCalls: 1_000,
-  queueTimeoutMs: 60_000,
-  affinities: [
-    { pattern: "camera.*", nodeId: "node-pi" },
-    { pattern: "db_*", nodeId: "node-cloud" },
-  ],
-};
-```
-
-Patterns are compiled to `RegExp` at construction time. Affinity is a preference — if the preferred node is offline, the router falls back to capacity-based selection.
-
-### Queue and Drain
-
-When no node is available, tool calls are queued with a TTL:
-
-```
-t=0  tool_call("deploy") arrives
-     → no node has "deploy" → QUEUED (TTL: 60s)
-
-     Queue: [ deploy (TTL: 60s) ]
-
-t=5  Node-3 connects, advertises: [deploy]
-     → handleNodeRegistered("node-3")
-     → scan queue → match "deploy" → DRAIN
-
-     Queue: [ ] (empty)
-
-     tool_call forwarded to Node-3 → result back to caller
-```
-
-Queue drain also triggers on `node:tools_updated` — when an existing node adds a tool that matches queued calls.
-
----
-
-## API Reference
-
-### Factory Functions
-
-#### `createGateway(config, deps)`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `config` | `Partial<GatewayConfig>` | Merged with `DEFAULT_GATEWAY_CONFIG` |
-| `deps.transport` | `Transport` | WebSocket server (use `createBunTransport()`) |
-| `deps.auth` | `GatewayAuthenticator` | Authentication provider |
-| `deps.store` | `SessionStore?` | Session persistence (defaults to in-memory) |
-| `deps.webhookAuth` | `WebhookAuthenticator?` | Webhook HMAC verification |
-
-Returns `Gateway`.
-
-#### `createBunTransport()`
-
-Returns `BunTransport` wrapping `Bun.serve()` with WebSocket upgrade.
-
-#### `createInMemorySessionStore()`
-
-Returns `SessionStore`. Map-based. Process-lifetime only.
-
-#### `createInMemoryNodeRegistry()`
-
-Returns `NodeRegistry` with inverted tool index.
-
-#### `createToolRouter(config, deps)`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `config` | `ToolRoutingConfig` | Timeouts, limits, affinities |
-| `deps.registry` | `NodeRegistry` | Node lookup |
-| `deps.sendToNode` | `(nodeId, frame) => Result<number, KoiError>` | Frame delivery |
-
-Returns `ToolRouter`.
-
-#### `createBackpressureMonitor(config)`
-
-Returns `BackpressureMonitor` with per-connection and global tracking.
-
-#### `createSequenceTracker(windowSize)`
-
-Returns `SequenceTracker` for ordering and deduplication.
-
-#### `createScheduler(defs, dispatcher)`
-
-Returns `GatewayScheduler` for periodic frame generation.
-
-#### `createWebhookServer(config, dispatcher, auth?)`
-
-Returns `WebhookServer` for HTTP POST ingestion.
-
-### Pure Functions
-
-| Function | Purpose |
-|----------|---------|
-| `parseFrame(raw)` | Parse JSON string to `GatewayFrame` |
-| `parseConnectFrame(data)` | Parse connect handshake |
-| `encodeFrame(frame)` | Serialize `GatewayFrame` to JSON |
-| `parseNodeFrame(data)` | Parse JSON string to `NodeFrame` |
-| `encodeNodeFrame(frame)` | Serialize `NodeFrame` to JSON |
-| `peekFrameKind(data)` | Extract frame kind without full parse |
-| `negotiateProtocol(cMin, cMax, sMin, sMax)` | Highest mutual version |
-| `handleHandshake(conn, auth, timeout, opts, onMsg)` | Client handshake orchestration |
-| `startHeartbeatSweep(store, auth, interval, sweep, onExpired)` | Periodic session validation |
-| `computeDispatchKey(scopingMode, routing)` | Generate dispatch key |
-| `validateBindingPattern(pattern)` | Validate route pattern |
-| `resolveBinding(dispatchKey, bindings)` | Match pattern to agent |
-| `resolveRoute(config, ctx, agentId, channelMap)` | Full route resolution |
-| `resolveTargetNode(tool, source, registry, affinities)` | Tool routing resolution |
-| `compileAffinities(affinities)` | Pre-compile glob patterns |
-| `matchAffinity(toolName, compiled)` | Match tool against affinities |
-| `validateHandshakePayload(p)` | Validate node handshake |
-| `validateCapabilitiesPayload(p)` | Validate node capabilities |
-| `validateCapacityPayload(p)` | Validate capacity report |
-
-### Types
-
-| Type | Description |
-|------|-------------|
-| `Gateway` | Main gateway interface (start, stop, send, dispatch, routing) |
-| `GatewayDeps` | Dependencies for `createGateway` |
-| `GatewayConfig` | Full configuration (see architecture doc for all fields) |
-| `GatewayFrame` | Client frame (kind, id, seq, ref, payload, timestamp) |
-| `NodeFrame` | Compute node frame (kind, nodeId, agentId, correlationId, payload) |
-| `Session` | Client session state |
-| `SessionStore` | Pluggable persistence interface |
-| `SessionEvent` | Session lifecycle event |
-| `RegisteredNode` | Registered compute node |
-| `NodeRegistry` | Node management + inverted tool index |
-| `NodeRegistryEvent` | Node lifecycle event |
-| `ToolRouter` | Cross-node tool call router |
-| `ToolRoutingConfig` | Router configuration |
-| `ToolAffinity` | Pattern-to-node preference |
-| `RouteResult` | Routing resolution outcome |
-| `Transport` | WebSocket server abstraction |
-| `TransportConnection` | Individual connection handle |
-| `BackpressureMonitor` | Buffer tracking per connection |
-| `SequenceTracker` | Ordering + deduplication |
-| `AcceptResult` | Frame accept outcome |
-| `GatewayScheduler` | Timer-based frame generator |
-### Constants
-
-| Constant | Value |
-|----------|-------|
-| `DEFAULT_GATEWAY_CONFIG` | Full config defaults (see architecture doc) |
-| `DEFAULT_TOOL_ROUTING_CONFIG` | `{ defaultTimeoutMs: 30_000, maxPendingCalls: 10_000, maxQueuedCalls: 1_000, queueTimeoutMs: 60_000 }` |
-| `TOOL_ROUTING_ERROR_CODES` | `{ NOT_FOUND, TIMEOUT, RATE_LIMIT, VALIDATION }` |
-
----
-
-## Examples
-
-### Minimal Gateway
-
-```typescript
-import { createGateway, createBunTransport } from "@koi/gateway";
-import type { GatewayAuthenticator, ConnectFrame, AuthResult } from "@koi/gateway";
+import { createBunTransport, createGateway } from "@koi/gateway";
+import type { GatewayAuthenticator } from "@koi/gateway";
 
 const auth: GatewayAuthenticator = {
-  authenticate: async (frame: ConnectFrame): Promise<AuthResult> => ({
-    ok: true,
-    sessionId: `session-${Date.now()}`,
-    agentId: "default-agent",
-    metadata: {},
-  }),
-  validate: async (_sessionId: string): Promise<boolean> => true,
+  async authenticate(frame) {
+    if (frame.auth.token !== "secret") {
+      return { ok: false, code: "INVALID_TOKEN", message: "bad token" };
+    }
+    return { ok: true, sessionId: crypto.randomUUID(), agentId: "agent-1", metadata: {} };
+  },
 };
 
-const gateway = createGateway({}, {
-  transport: createBunTransport(),
-  auth,
+const transport = createBunTransport();
+const gateway = createGateway({}, { transport, auth });
+
+gateway.onFrame((session, frame) => {
+  console.log(`[${session.id}] received:`, frame.kind, frame.seq);
+});
+
+gateway.onSessionEvent((ev) => {
+  if (ev.kind === "created") console.log("session created:", ev.session.id);
+  if (ev.kind === "destroyed") console.log("session destroyed:", ev.sessionId);
 });
 
 await gateway.start(8080);
 ```
 
-### Gateway with Tool Routing
+---
+
+## Gateway Interface
 
 ```typescript
-import { createGateway, createBunTransport } from "@koi/gateway";
+interface Gateway {
+  start(port: number): Promise<void>;
+  stop(): Promise<void>;
+  sessions(): SessionStore;
+  onFrame(handler: (session: Session, frame: GatewayFrame) => void): () => void;
+  send(sessionId: string, frame: GatewayFrame): Result<number, KoiError>;
+  dispatch(session: Session, frame: GatewayFrame): void;
+  destroySession(sessionId: string, reason?: string): Result<void, KoiError>;
+  onSessionEvent(handler: (event: SessionEvent) => void): () => void;
+}
+```
 
-const gateway = createGateway(
-  {
-    toolRouting: {
-      defaultTimeoutMs: 30_000,
-      maxPendingCalls: 10_000,
-      maxQueuedCalls: 1_000,
-      queueTimeoutMs: 60_000,
-      affinities: [
-        { pattern: "camera.*", nodeId: "node-pi" },
-        { pattern: "search_*", nodeId: "node-cloud" },
-      ],
-    },
-  },
-  { transport: createBunTransport(), auth },
-);
+| Method | Purpose |
+|--------|---------|
+| `start(port)` | Bind transport and start accepting connections |
+| `stop()` | Stop transport; clears critical sweep timer |
+| `sessions()` | Access the session store (read/write) |
+| `onFrame(h)` | Subscribe to incoming frames; returns unsubscribe fn |
+| `send(id, frame)` | Send a frame to a connected session |
+| `dispatch(session, frame)` | Inject a synthetic frame into onFrame handlers |
+| `destroySession(id, reason?)` | Force-close a session with ADMIN_CLOSED code |
+| `onSessionEvent(h)` | Subscribe to session create/destroy events |
 
-// Subscribe to node lifecycle events
-const unsub = gateway.onNodeEvent((event) => {
-  switch (event.kind) {
-    case "registered":
-      console.log(`Node ${event.nodeId} connected`);
-      break;
-    case "tools_added":
-      console.log(`Node ${event.nodeId} added tools: ${event.tools.map((t) => t.name)}`);
-      break;
-    case "tools_removed":
-      console.log(`Node ${event.nodeId} removed tools: ${event.toolNames}`);
-      break;
+---
+
+## Wire Protocol
+
+### Handshake
+
+Every connection starts with a `ConnectFrame`:
+
+```json
+{
+  "kind": "connect",
+  "minProtocol": 1,
+  "maxProtocol": 1,
+  "auth": { "token": "..." },
+  "client": { "id": "cli-1", "version": "1.0.0", "platform": "cli" }
+}
+```
+
+Server responds with an `ack` frame containing `HandshakeAckPayload`:
+
+```json
+{
+  "kind": "ack",
+  "seq": 0,
+  "payload": {
+    "sessionId": "sess-...",
+    "protocol": 1,
+    "capabilities": { "compression": false, "maxFrameBytes": 1048576 },
+    "snapshot": { "serverTime": 1714000000000, "activeConnections": 42 }
   }
-});
-
-await gateway.start(8080);
+}
 ```
 
-### Direct Tool Routing (Unit-Level)
+Legacy `"protocol": N` (single field) is also accepted for backward compatibility.
+
+### Post-Handshake Frames
 
 ```typescript
-import {
-  createInMemoryNodeRegistry,
-  createToolRouter,
-  resolveTargetNode,
-  compileAffinities,
-  DEFAULT_TOOL_ROUTING_CONFIG,
-} from "@koi/gateway";
-import type { AdvertisedTool, CapacityReport } from "@koi/core";
-
-const registry = createInMemoryNodeRegistry();
-
-// Register two thin nodes with different tools
-registry.register({
-  nodeId: "node-pi",
-  mode: "thin",
-  tools: [{ name: "camera.capture" }, { name: "camera.zoom" }],
-  capacity: { current: 1, max: 4, available: 3 },
-  connectedAt: Date.now(),
-  lastHeartbeat: Date.now(),
-  connId: "conn-1",
-});
-
-registry.register({
-  nodeId: "node-cloud",
-  mode: "thin",
-  tools: [{ name: "search" }, { name: "fetch_url" }],
-  capacity: { current: 10, max: 100, available: 90 },
-  connectedAt: Date.now(),
-  lastHeartbeat: Date.now(),
-  connId: "conn-2",
-});
-
-// Resolve routing with affinity
-const affinities = compileAffinities([
-  { pattern: "camera.*", nodeId: "node-pi" },
-]);
-
-const result = resolveTargetNode("camera.capture", "node-agent", registry, affinities);
-// result = { kind: "routed", targetNodeId: "node-pi" }
+interface GatewayFrame {
+  kind: "request" | "response" | "event" | "ack" | "error";
+  id: string;       // unique frame ID (dedup key)
+  seq: number;      // monotonic sequence number
+  ref?: string;     // correlates response to request
+  payload: unknown;
+  timestamp: number;
+}
 ```
 
-### Dynamic Tool Updates
+---
+
+## Sequencing
+
+Per-connection sliding-window sequence tracker (`createSequenceTracker(windowSize)`):
+
+| Result | Meaning |
+|--------|---------|
+| `accepted` | In-order; frame dispatched immediately |
+| `buffered` | Out-of-order but within window; waits for gap to fill |
+| `duplicate` | Seen before (by seq or frame ID); sends ack, not dispatched |
+| `out_of_window` | Beyond `nextExpected + windowSize`; sends ack, dropped |
+
+Default window size: 128 frames (`dedupWindowSize` in config).
+
+---
+
+## Routing
+
+Pure functional routing — no side effects, WeakMap-cached compiled patterns.
 
 ```typescript
-import { createInMemoryNodeRegistry } from "@koi/gateway";
+// Dispatch key computed from scoping mode + routing context
+computeDispatchKey("per-channel-peer", { channel: "payments", peer: "u42" })
+// → "payments:u42"
 
-const registry = createInMemoryNodeRegistry();
-
-// Node starts with search only
-registry.register({
-  nodeId: "node-a",
-  mode: "thin",
-  tools: [{ name: "search" }],
-  capacity: { current: 0, max: 10, available: 10 },
-  connectedAt: Date.now(),
-  lastHeartbeat: Date.now(),
-  connId: "conn-1",
-});
-
-// Later: node loads a plugin, adds "deploy" tool
-const result = registry.updateTools(
-  "node-a",
-  [{ name: "deploy", description: "Deploy to staging" }],  // added
-  ["search"],                                                // removed
-);
-// result.ok === true
-
-// Registry now reflects the change
-const deployers = registry.findByTool("deploy");
-// deployers = [{ nodeId: "node-a", tools: [deploy], ... }]
-
-const searchers = registry.findByTool("search");
-// searchers = [] (removed)
+// Pattern matching: *, ** wildcards
+resolveBinding("acme:payments:u1", [
+  { pattern: "acme:payments:*", agentId: "billing" },
+  { pattern: "acme:**",         agentId: "fallback" },
+])
+// → "billing"
 ```
 
-### Scheduler
-
-```typescript
-const gateway = createGateway(
-  {
-    schedulers: [
-      {
-        id: "health-check",
-        intervalMs: 60_000,
-        agentId: "monitor-agent",
-        payload: { type: "health_check" },
-      },
-    ],
-  },
-  { transport: createBunTransport(), auth },
-);
-
-// Scheduler ticks every 60s, dispatched as GatewayFrame events
-```
-
-### Full Stack (Gateway + Canvas + Webhook)
-
-```typescript
-import { createGatewayStack } from "@koi/gateway-stack";
-
-const stack = createGatewayStack(
-  {
-    gateway: { maxConnections: 5_000 },
-    canvas: { port: 8081 },
-    webhook: { port: 8082, pathPrefix: "/hook" },
-  },
-  { transport: createBunTransport(), auth },
-);
-
-await stack.start(8080);
-// Canvas: http://localhost:8081/gateway/canvas/:surfaceId
-// Webhook: http://localhost:8082/hook/:channel/:account
-```
+Scoping modes: `"main"`, `"per-peer"`, `"per-channel-peer"`, `"per-account-channel-peer"`.
 
 ---
 
 ## Backpressure
 
-Three-state model per connection with global limits:
+Per-connection buffer watermarks (configurable):
 
-```
-normal ──▶ warning ──▶ critical ──▶ force-close
-          (80% buffer)  (100% buffer)  (30s timeout)
-```
+| State | Trigger |
+|-------|---------|
+| `normal` | `buffered < 80% of maxBufferBytesPerConnection` |
+| `warning` | `buffered >= 80%` |
+| `critical` | `buffered >= maxBufferBytesPerConnection` |
 
-| State | Threshold | Behavior |
-|-------|-----------|----------|
-| `normal` | `< 80% of maxBuffer` | All frames processed |
-| `warning` | `>= 80% of maxBuffer` | Signal only (observable) |
-| `critical` | `>= maxBufferBytesPerConnection` | Frames dropped; timeout starts |
+Critical connections that don't drain within `backpressureCriticalTimeoutMs` (default 30s) are force-closed with `BACKPRESSURE_TIMEOUT` (4009).
 
-Global limit: 500MB across all connections. New connections rejected when exceeded.
+Global limit (`globalBufferLimitBytes`, default 500 MB): new connections rejected when exceeded.
 
 ---
 
-## Session Lifecycle
+## Session Store
 
+Pluggable interface — in-memory default included:
+
+```typescript
+interface SessionStore {
+  get(id: string): Result<Session, KoiError> | Promise<Result<Session, KoiError>>;
+  set(session: Session): Result<void, KoiError> | Promise<Result<void, KoiError>>;
+  delete(id: string): Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+  has(id: string): Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+  size(): number;
+  entries(): IterableIterator<readonly [string, Session]>;
+}
 ```
-connect ──▶ authenticate ──▶ session created
-                                   │
-                              disconnect
-                                   │
-               ┌───────────────────┼───────────────────┐
-               ▼                   ▼                   ▼
-          sessionTtlMs=0    sessionTtlMs>0       destroySession()
-               │                   │                   │
-               ▼                   ▼                   ▼
-           destroyed          kept alive           destroyed
-                               (buffering)
-                                   │
-                    ┌──────────────┼──────────────┐
-                    ▼                             ▼
-              reconnect within TTL          TTL expires
-                    │                             │
-                    ▼                             ▼
-              session resumed               session expired
-              (flush buffer)
+
+Provide a custom store via `createGateway({}, { transport, auth, store })`.
+
+---
+
+## Configuration
+
+```typescript
+interface GatewayConfig {
+  minProtocolVersion: number;             // default: 1
+  maxProtocolVersion: number;             // default: 1
+  capabilities: GatewayCapabilities;     // default: { compression: false, maxFrameBytes: 1MB }
+  includeSnapshot: boolean;              // default: true
+  maxConnections: number;                // default: 10_000
+  backpressureHighWatermark: number;     // default: 0.8 (80%)
+  maxBufferBytesPerConnection: number;   // default: 1MB
+  globalBufferLimitBytes: number;        // default: 500MB
+  dedupWindowSize: number;               // default: 128
+  authTimeoutMs: number;                 // default: 5_000
+  backpressureCriticalTimeoutMs: number; // default: 30_000
+  routing?: RoutingConfig;               // optional
+}
 ```
+
+Pass partial overrides to `createGateway`: `createGateway({ maxConnections: 100 }, deps)`.
+
+---
+
+## Close Codes
+
+| Code | Name | Retryable | Meaning |
+|------|------|-----------|---------|
+| 1000 | NORMAL | ✗ | Clean closure |
+| 1001 | SERVER_SHUTTING_DOWN | ✓ | Restart |
+| 4001 | AUTH_TIMEOUT | ✗ | Handshake timed out |
+| 4002 | INVALID_HANDSHAKE | ✗ | Malformed connect frame |
+| 4003 | AUTH_FAILED | ✗ | Invalid/expired token |
+| 4005 | MAX_CONNECTIONS | ✓ | Server at capacity |
+| 4006 | BUFFER_LIMIT | ✓ | Global buffer limit |
+| 4008 | SESSION_STORE_FAILURE | ✓ | Store unavailable |
+| 4009 | BACKPRESSURE_TIMEOUT | ✓ | Slow consumer |
+| 4010 | PROTOCOL_MISMATCH | ✗ | No protocol overlap |
+| 4012 | ADMIN_CLOSED | ✗ | Force-destroyed |
 
 ---
 
 ## Layer Compliance
 
-```
-L0  @koi/core ───────────────────────────────────────┐
-    Result, KoiError, AdvertisedTool, CapacityReport,  │
-    ToolCallPayload, isToolCallPayload                 │
-                                                       │
-L0u @koi/errors ────────────────────┐                 │
-    error factories                 │                 │
-                                    ▼                 ▼
-L2  @koi/gateway ◀─────────────────┴─────────────────┘
-    imports from L0 + L0u only
-    ✗ never imports @koi/engine (L1)
-    ✗ never imports peer L2 packages (@koi/node, @koi/forge, etc.)
-    ✓ Bun.serve() is a runtime built-in
-```
+- Depends on `@koi/core` (L0) and `@koi/errors` (L0u) only
+- No `@koi/engine` (L1) or peer L2 imports
+- All interface properties `readonly`
+- No vendor-specific types in public API
+- `SessionStore` methods return `T | Promise<T>` — sync or async implementations supported
 
-Shared wire types (`AdvertisedTool`, `CapacityReport`, `ToolCallPayload`) live in `@koi/core` (L0) — both `@koi/gateway` and `@koi/node` import from the same source, eliminating duplication between L2 peers.
+---
+
+## What's Not Included (Future Issues)
+
+| Feature | Issue |
+|---------|-------|
+| Node registry + tool routing | gateway-2 |
+| Session resume TTL + pending frame buffer | gateway-3 |
+| Heartbeat re-validation sweep | gateway-3 |
+| Channel runtime binding | gateway-4 |
+| Scheduler (periodic frame dispatch) | gateway-5 |

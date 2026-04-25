@@ -56,7 +56,7 @@ describe("E2E: MCP server round-trip", () => {
 
     // Start
     await server.start();
-    expect(server.toolCount()).toBe(2); // koi_send_message + koi_list_messages
+    expect(server.toolCount()).toBe(3); // koi_send_message + koi_list_messages + koi_list_mailbox
 
     const client = new Client({ name: "e2e-client", version: "1.0.0" });
     await client.connect(clientTransport);
@@ -64,6 +64,7 @@ describe("E2E: MCP server round-trip", () => {
     // List tools
     const tools = await client.listTools();
     expect(tools.tools.map((t) => t.name).sort()).toEqual([
+      "koi_list_mailbox",
       "koi_list_messages",
       "koi_send_message",
     ]);
