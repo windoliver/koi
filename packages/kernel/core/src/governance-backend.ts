@@ -174,6 +174,37 @@ export function isAskVerdict(v: GovernanceVerdict): v is Extract<GovernanceVerdi
 }
 
 // ---------------------------------------------------------------------------
+// PersistentGrant — record of an always-scoped approval (gov-11/12 bridge)
+// ---------------------------------------------------------------------------
+
+/**
+ * An always-scoped approval grant recorded by governance middleware.
+ *
+ * Emitted by governance-core when a user chooses scope "always" on an
+ * ok:"ask" verdict, and consumed by gov-12 persistence layers to replay
+ * the grant on future sessions. `grantKey` is a stable SHA-256 hex digest
+ * of (kind, payload) — see `@koi/hash`.`computeGrantKey`.
+ */
+export interface PersistentGrant {
+  readonly kind: PolicyRequestKind;
+  readonly agentId: AgentId;
+  readonly sessionId: SessionId;
+  readonly payload: JsonObject;
+  readonly grantKey: string;
+  readonly grantedAt: number;
+}
+
+/**
+ * Callback invoked exactly once per always-scoped approval.
+ *
+ * The governance middleware calls this fire-and-forget — it does NOT await
+ * the returned Promise. Async sinks MUST handle their own errors; unhandled
+ * rejections surface as process-level `unhandledRejection` events rather
+ * than reaching the caller.
+ */
+export type PersistentGrantCallback = (grant: PersistentGrant) => void | Promise<void>;
+
+// ---------------------------------------------------------------------------
 // ConstraintQuery — input to constraint checking
 // ---------------------------------------------------------------------------
 

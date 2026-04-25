@@ -1,6 +1,6 @@
 {
-  "name": "@koi/governance-core",
-  "description": "Governance middleware bundle — policy gate, setpoint enforcement, cost recording",
+  "name": "@koi/governance-approval-tiers",
+  "description": "Persistent approval allowlist (JSON-lines) with scope tiers, aliasing, and delta audit",
   "version": "0.0.0",
   "private": true,
   "type": "module",

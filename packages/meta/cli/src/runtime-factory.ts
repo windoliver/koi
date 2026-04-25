@@ -26,6 +26,7 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
@@ -36,6 +37,7 @@ import { createConfigManager } from "@koi/config";
 import type { BudgetConfig } from "@koi/context-manager";
 import type {
   Agent,
+  AgentId,
   ApprovalHandler,
   AuditSink,
   ComplianceRecorder,
@@ -58,6 +60,7 @@ import type {
   RuleDescriptor,
   SessionId,
   SessionTranscript,
+  Violation,
   ViolationStore,
 } from "@koi/core";
 import { COMPONENT_PRIORITY, GOVERNANCE, agentId as makeAgentId } from "@koi/core";
@@ -67,6 +70,12 @@ import { createDecisionLedger } from "@koi/decision-ledger";
 import type { GovernanceConfig, KoiRuntime } from "@koi/engine";
 import { createGovernanceController, createKoi } from "@koi/engine";
 import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
+import {
+  createJsonlApprovalStore,
+  createPersistSink,
+  createViolationAuditAdapter,
+  wrapBackendWithPersistedAllowlist,
+} from "@koi/governance-approval-tiers";
 import type { CostCalculator } from "@koi/governance-core";
 import { createGovernanceMiddleware } from "@koi/governance-core";
 import type { PatternRule } from "@koi/governance-defaults";
@@ -2755,42 +2764,122 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             ...(violationStore !== undefined ? { violations: violationStore } : {}),
           }
         : rawGovernanceBackend;
+
+    // gov-12: persistent approval allowlist. When governance is enabled, wrap
+    // the backend so `ok:"ask"` verdicts short-circuit to allow on a cached
+    // grant, and install a persistence sink that appends scope:"always"
+    // approvals to the store. Path defaults to ~/.koi/approvals.json; override
+    // with KOI_APPROVALS_PATH for tests and sandboxed invocations.
+    //
+    // Scope key for both writes and reads is `${hostId}:${cwdHash}:${actor}` so:
+    //   1. The same logical host matches across process restarts in the SAME
+    //      workspace. `actor = hostId` for the live host agent (whose pid.id
+    //      is `crypto.randomUUID()` and CHANGES every launch — hence we
+    //      rewrite it to the manifest-derived stable hostId before keying).
+    //   2. Sub-agents/spawned children DON'T replay the host's grants. Their
+    //      `request.agentId !== livePidId`, so we keep the unstable
+    //      pid.id as the actor — a child's grant is bounded to its own
+    //      lifetime (the random UUID won't collide with any future child or
+    //      with the next launch's host) — codex round-4 actor boundary.
+    //   3. Approvals do NOT cross workspaces: a user who approves
+    //      "Bash: echo X" in /home/alice/projectA is re-prompted when
+    //      they run the same command in /home/alice/projectB even with
+    //      the same hostId — codex round-3 workspace boundary.
+    const approvalStore =
+      governanceBackend !== undefined
+        ? createJsonlApprovalStore({
+            path: process.env.KOI_APPROVALS_PATH ?? join(homedir(), ".koi", "approvals.json"),
+          })
+        : undefined;
+    const workspaceFingerprint = createHash("sha256")
+      .update(config.cwd ?? process.cwd())
+      .digest("hex")
+      .slice(0, 16);
+    const scopePrefix = `${hostId}:${workspaceFingerprint}`;
+    // Captured by the resolver closure; populated immediately after
+    // `createKoi` returns and before any verdict can be evaluated.
+    // No verdict path runs during construction, so the read-after-set
+    // ordering is guaranteed by the engine itself.
+    let livePidId: string | undefined;
+    const resolveStableAgentId = (reqOrGrant: { readonly agentId: AgentId }): AgentId => {
+      const actor =
+        livePidId !== undefined && reqOrGrant.agentId === livePidId ? hostId : reqOrGrant.agentId;
+      return makeAgentId(`${scopePrefix}:${actor}`);
+    };
+    const wrappedGovernanceBackend =
+      governanceBackend !== undefined && approvalStore !== undefined
+        ? wrapBackendWithPersistedAllowlist(governanceBackend, approvalStore, {
+            resolveAgentId: resolveStableAgentId,
+          })
+        : governanceBackend;
+
     const governanceRules: readonly RuleDescriptor[] =
-      governanceBackend !== undefined ? await resolveGovernanceRules(governanceBackend) : [];
+      wrappedGovernanceBackend !== undefined
+        ? await resolveGovernanceRules(wrappedGovernanceBackend)
+        : [];
+    // Persist every violation to the SQLite store when configured.
+    // Handles both deny verdicts (ok:false + violations[]) and allow verdicts
+    // with info-level diagnostics (ok:true + diagnostics[]) so the gov-12
+    // `approval.persisted` audit signal emitted by `createViolationAuditAdapter`
+    // lands in violations.db alongside policy violations. sessionId is resolved
+    // from the live runtime at callback time so `cycleSession` /
+    // `rebindSessionId` keep persisted rows attributed to the current session.
+    const onGovernanceViolation =
+      violationStore !== undefined
+        ? (verdict: GovernanceVerdict, request: PolicyRequest): void => {
+            // ok:"ask" never reaches onViolation (middleware routes it through
+            // requestApproval instead). Handle only the two terminal variants.
+            const entries: readonly Violation[] =
+              verdict.ok === true
+                ? (verdict.diagnostics ?? [])
+                : verdict.ok === false
+                  ? verdict.violations
+                  : [];
+            if (entries.length === 0) return;
+            const sid = getLiveSessionId();
+            for (const v of entries) {
+              violationStore.record(v, request.agentId, sid, request.timestamp);
+            }
+          }
+        : undefined;
+
+    // gov-12 delta-audit: wrap the raw JSON-Lines sink so every persisted
+    // "always" grant also emits a synthetic `approval.persisted` info-violation
+    // through the host's onViolation channel. Without the wrap, persist is a
+    // silent disk append; with it, every grant is observable in violations.db
+    // and any downstream ndjson / sqlite audit sink.
+    const auditedPersistSink =
+      approvalStore !== undefined && onGovernanceViolation !== undefined
+        ? // Audit adapter calls store.append directly so the
+          // approval.persisted info-violation is emitted ONLY after a
+          // confirmed durable write. Failures are absorbed (fire-and-forget
+          // contract) but never produce a misleading audit row.
+          createViolationAuditAdapter({
+            store: approvalStore,
+            onViolation: onGovernanceViolation,
+            resolveAgentId: resolveStableAgentId,
+          })
+        : approvalStore !== undefined
+          ? createPersistSink(approvalStore, { resolveAgentId: resolveStableAgentId })
+          : undefined;
+
     const governanceMw =
       governanceEnabled &&
-      governanceBackend !== undefined &&
+      wrappedGovernanceBackend !== undefined &&
       sharedGovernanceController !== undefined
         ? createGovernanceMiddleware({
-            backend: governanceBackend,
+            backend: wrappedGovernanceBackend,
             controller: sharedGovernanceController,
             cost: createPricingCostCalculator(),
             observerOnly: true,
+            ...(auditedPersistSink !== undefined ? { onApprovalPersist: auditedPersistSink } : {}),
             // --alert-threshold overrides the default [0.8, 0.95]. Passed
             // unconditionally when set — governance-middleware validates the
             // list and falls back to its default when undefined.
             ...(config.governanceAlertThresholds !== undefined
               ? { alertThresholds: config.governanceAlertThresholds }
               : {}),
-            // Persist every violation to the SQLite store when configured.
-            // Additive — does not remove any other subscribers (e.g. bridge).
-            // sessionId is resolved from the live runtime at callback time
-            // so `cycleSession` / `rebindSessionId` keep persisted rows
-            // attributed to the current session — the bridge's
-            // `loadRecentViolations({ sessionId })` query can find them
-            // against the rotated id, and pre-runtime fires fall back
-            // to the startup id (or "no-session" if the host omitted one).
-            ...(violationStore !== undefined
-              ? {
-                  onViolation: (verdict: GovernanceVerdict, request: PolicyRequest) => {
-                    if (verdict.ok) return;
-                    const sid = getLiveSessionId();
-                    for (const v of verdict.violations) {
-                      violationStore.record(v, request.agentId, sid, request.timestamp);
-                    }
-                  },
-                }
-              : {}),
+            ...(onGovernanceViolation !== undefined ? { onViolation: onGovernanceViolation } : {}),
           })
         : undefined;
 
@@ -3003,6 +3092,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // (only from a later `cycleSession()`), so this assignment
     // happens before any rotation can fire.
     runtimeForRotation = runtime;
+    // Publish the live host pid.id to the gov-12 scope resolver. The
+    // resolver rewrites only when `request.agentId === livePidId`, so
+    // sub-agents (which carry their own pid) keep their unstable UUID
+    // and stay isolated from the host's grants. No verdict path runs
+    // during `createKoi` itself, so this assignment lands before the
+    // first request can be evaluated.
+    livePidId = runtime.agent.pid.id;
 
     // Wrap runtime.dispose so manifest-middleware cleanup (audit sink
     // close, etc.) runs AFTER the engine's dispose path completes.

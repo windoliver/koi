@@ -105,11 +105,16 @@ interface PatternRule {
     readonly toolId?: string | undefined; // matched against payload.toolId for tool_call
     readonly model?: string | undefined;  // matched against payload.model for model_call
   };
-  readonly decision: "allow" | "deny";
+  readonly decision: "allow" | "deny" | "ask";
   readonly rule?: string | undefined;     // default: "pattern.<idx>"
   readonly severity?: ViolationSeverity | undefined; // default: "critical"
   readonly message?: string | undefined;  // default: "denied by pattern backend"
+  readonly prompt?: string | undefined;   // ask-only: shown in the host approval UI
 }
+
+The `ask` decision (gov-11 bridge) emits `{ ok: "ask", prompt, askId }` so the
+governance middleware can route the request through `TurnContext.requestApproval`.
+The backend always mints a fresh UUID for `askId` per evaluation.
 
 interface PatternBackendConfig {
   readonly rules: readonly PatternRule[];
