@@ -38,10 +38,19 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
     });
     try {
       return await Promise.race([
-        config.backend.dispose(wsId).then((r) => {
-          // NOT_FOUND means workspace already gone — treat as idempotent success
-          if (!r.ok && r.error.code === "NOT_FOUND") return true;
-          return r.ok;
+        config.backend.dispose(wsId).then(async (r) => {
+          if (r.ok) return true;
+          if (r.error.code === "NOT_FOUND") {
+            // On unsandboxed backends, NOT_FOUND can mean "lookup incomplete" rather than
+            // "confirmed absent" — e.g. a moved worktree whose path no longer matches the
+            // registered basename is unrecoverable by name alone. If exists() is available,
+            // use it as the authoritative oracle before treating NOT_FOUND as success.
+            if (!config.backend.isSandboxed && config.backend.exists !== undefined) {
+              return !(await config.backend.exists(wsId));
+            }
+            return true; // sandboxed or no exists(): trust NOT_FOUND as confirmed absent
+          }
+          return false;
         }),
         timeoutPromise,
       ]);
