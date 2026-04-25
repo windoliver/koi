@@ -44,6 +44,8 @@ export interface WorkflowExecutionStatus {
   readonly closeTime?: number | undefined;
   /** Failure message for FAILED/TIMED_OUT workflows. */
   readonly failure?: { readonly message: string } | undefined;
+  /** Memo fields written at workflow start — used for ownership verification. */
+  readonly memo?: Readonly<Record<string, unknown>> | undefined;
 }
 
 export interface TemporalClientLike {
@@ -139,6 +141,22 @@ function isAlreadyExistsError(e: unknown): boolean {
     (typeof r.message === "string" &&
       (r.message.includes("already exists") || r.message.includes("already started")))
   );
+}
+
+/**
+ * Strips non-serializable runtime fields (callHandlers, correlationIds,
+ * maxStopRetries) from EngineInput before passing it to Temporal.
+ * Temporal serializes args to JSON; functions cause a runtime error.
+ */
+function serializeEngineInput(input: EngineInput): Record<string, unknown> {
+  switch (input.kind) {
+    case "text":
+      return { kind: input.kind, text: input.text };
+    case "messages":
+      return { kind: input.kind, messages: [...input.messages] };
+    case "resume":
+      return { kind: input.kind, state: input.state };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +327,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         await config.client.workflow.start(workflowType, {
           taskQueue: config.taskQueue,
           workflowId: rawId,
+          // memo is persisted with the workflow and used to detect ID collisions
+          // when a stable idempotencyKey is reused with a different agentId.
+          memo: { agentId, mode },
           args: [{ agentId, sessionId: rawId, messages, mode }],
           ...(options?.delayMs !== undefined && { startDelay: options.delayMs }),
           ...(options?.timeoutMs !== undefined && { workflowExecutionTimeout: options.timeoutMs }),
@@ -317,9 +338,26 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           }),
         });
       } catch (e: unknown) {
-        // When a stable ID was provided and Temporal already has that workflow,
-        // treat as idempotent replay (caller retried after a lost response).
+        // Stable ID provided and Temporal already has that workflow →
+        // idempotent replay (caller retried after a lost response).
         if (idempotencyKey === undefined || !isAlreadyExistsError(e)) throw e;
+        // Verify ownership via describe to guard against ID collisions.
+        const describeFn = config.client.workflow.describe;
+        if (describeFn !== undefined) {
+          let collisionError: Error | undefined;
+          try {
+            const info = await describeFn(rawId);
+            const memoAgentId = info.memo?.agentId;
+            if (memoAgentId !== undefined && memoAgentId !== agentId) {
+              collisionError = new Error(
+                `Workflow ID collision: "${rawId}" already exists for agent "${String(memoAgentId)}"`,
+              );
+            }
+          } catch {
+            // describe unavailable or transient error — accept idempotent replay
+          }
+          if (collisionError !== undefined) throw collisionError;
+        }
       }
 
       // Guard against double-registration from concurrent or replayed submits.
@@ -371,13 +409,15 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             type: "startWorkflow",
             workflowType,
             taskQueue: config.taskQueue,
-            // Pass raw engine input rather than pre-computed messages so each
+            // Pass serialized engine input rather than pre-computed messages so each
             // cron firing constructs per-run message IDs and timestamps from
             // its own Temporal workflowId/execution time. Pre-computing messages
             // here would bake in IDs and timestamps shared by all future runs.
             // sessionId is absent for the same reason: each firing derives its
             // session from workflowInfo().workflowId.
-            args: [{ agentId, input, mode }],
+            // serializeEngineInput strips non-serializable runtime fields
+            // (callHandlers) that would cause Temporal JSON serialization to fail.
+            args: [{ agentId, input: serializeEngineInput(input), mode }],
             ...(options?.timeoutMs !== undefined && {
               workflowExecutionTimeout: options.timeoutMs,
             }),

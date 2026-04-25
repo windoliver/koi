@@ -123,10 +123,10 @@ function isKoiErrorPayload(v: unknown): v is KoiError {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Record<string, unknown>;
   return (
-    typeof r["code"] === "string" &&
-    VALID_KOI_CODES.has(r["code"]) &&
-    typeof r["message"] === "string" &&
-    typeof r["retryable"] === "boolean"
+    typeof r.code === "string" &&
+    VALID_KOI_CODES.has(r.code) &&
+    typeof r.message === "string" &&
+    typeof r.retryable === "boolean"
   );
 }
 

@@ -601,6 +601,103 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
+  test("submit() stores agentId and mode in workflow memo for collision detection", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.submit(A1, { kind: "text", text: "hi" }, "dispatch");
+    const [_type, startOpts] = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect((startOpts.memo as Record<string, unknown>).agentId).toBe(A1);
+    expect((startOpts.memo as Record<string, unknown>).mode).toBe("dispatch");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("submit() throws on stable-ID collision when describe reveals different agentId", async () => {
+    const alreadyStarted = { name: "WorkflowExecutionAlreadyStartedError", message: "started" };
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => {
+          throw alreadyStarted;
+        }),
+        cancel: mock(async () => {}),
+        describe: mock(
+          async (): Promise<WorkflowExecutionStatus> => ({
+            status: "RUNNING",
+            memo: { agentId: "other-agent" },
+          }),
+        ),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await expect(
+      sched.submit(A1, { kind: "text", text: "hi" }, "dispatch", {
+        metadata: { workflowId: "stable-id" },
+      }),
+    ).rejects.toThrow("collision");
+    expect(sched.stats().pending).toBe(0); // no phantom task registered
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("submit() accepts stable-ID replay when describe confirms same agentId", async () => {
+    const alreadyStarted = { name: "WorkflowExecutionAlreadyStartedError", message: "started" };
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => {
+          throw alreadyStarted;
+        }),
+        cancel: mock(async () => {}),
+        describe: mock(
+          async (): Promise<WorkflowExecutionStatus> => ({
+            status: "RUNNING",
+            memo: { agentId: A1 },
+          }),
+        ),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const id = await sched.submit(A1, { kind: "text", text: "hi" }, "dispatch", {
+      metadata: { workflowId: "stable-id" },
+    });
+    expect(String(id)).toBe("stable-id");
+    expect(sched.stats().pending).toBe(1);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("schedule() strips non-serializable callHandlers from input before Temporal transport", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const engineInput = {
+      kind: "text" as const,
+      text: "tick",
+      callHandlers: { handle: () => {} },
+    } as unknown as import("@koi/core").EngineInput;
+    await sched.schedule("0 * * * *", A1, engineInput, "dispatch");
+    const createCall = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    const action = createCall[1].action as Record<string, unknown>;
+    const args = action.args as [Record<string, unknown>];
+    expect(args[0].input).not.toHaveProperty("callHandlers");
+    expect(args[0].input).toHaveProperty("kind", "text");
+    expect(args[0].input).toHaveProperty("text", "tick");
+    await sched[Symbol.asyncDispose]();
+  });
+
   test("describe error is swallowed — task stays pending", async () => {
     const client: TemporalClientLike = {
       workflow: {
