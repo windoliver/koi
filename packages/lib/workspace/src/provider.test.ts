@@ -1,6 +1,4 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import type {
   Agent,
   AgentId,
@@ -13,16 +11,6 @@ import type {
 } from "@koi/core";
 import { agentId, isAttachResult, WORKSPACE, workspaceId } from "@koi/core";
 import { createWorkspaceProvider } from "./provider.js";
-
-// Helper that simulates a prior process having written the setup-ok marker
-async function writeSetupOkMarker(ws: WorkspaceInfo): Promise<void> {
-  const markerPath = join(dirname(ws.path), `${ws.id}.setup-ok`);
-  await writeFile(markerPath, "", "utf8");
-}
-async function removeSetupOkMarker(ws: WorkspaceInfo): Promise<void> {
-  const markerPath = join(dirname(ws.path), `${ws.id}.setup-ok`);
-  await rm(markerPath, { force: true });
-}
 
 function makeAgent(id = agentId("agent-1")): Agent {
   return {
