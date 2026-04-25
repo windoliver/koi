@@ -92,19 +92,49 @@ To close that gap, this package MUST run under a supervisor that provides
 ```ts
 interface Supervisor {
   /**
+   * Non-destructive liveness probe. Returns the worker's current state
+   * without affecting it. Implementations:
+   *  - @koi/daemon: kill -0 on the PID; check process table.
+   *  - kubectl: read pod.status.phase.
+   *  - launchd/systemd: query unit ActiveState.
+   *
+   * "alive"  — worker is running.
+   * "dead"   — worker is confirmed exited / not in process table.
+   * "unknown" — supervisor cannot determine state right now (transient
+   *             query failure). Caller must NOT treat as dead.
+   */
+  readonly probeAlive: (sessionId: string) =>
+    Promise<Result<"alive" | "dead" | "unknown", KoiError>>;
+
+  /**
    * Forcibly terminate the worker that owns the given session and return
    * only after termination is confirmed. Implementations:
    *  - @koi/daemon: SIGKILL the worker PID, await its exit code.
    *  - kubectl: delete the pod, await pod phase === "Failed".
    *  - launchd/systemd: stop the unit, await inactive.
    *
-   * Must be idempotent: calling on an already-dead worker returns Ok.
+   * Idempotent: on an already-dead worker returns Ok.
    * Returns Err(KILL_FAILED) only if the supervisor itself is unhealthy.
    */
   readonly killAndConfirm: (sessionId: string) =>
     Promise<Result<void, KoiError>>;
 }
 ```
+
+**Reclaim probe-then-kill protocol.** Before any reclaim path issues a
+destructive `killAndConfirm`, it MUST first call `probeAlive`:
+- `probeAlive === "alive"` → return `Err(RECLAIM_LIVE_OWNER, retryable: true)`
+  WITHOUT killing. The owner is healthy; this is a read-path fault on
+  `loadSession`, not a dead owner.
+- `probeAlive === "dead"` → proceed to `killAndConfirm` (idempotent
+  no-op) then CAS-advance.
+- `probeAlive === "unknown"` AND heartbeat-stale signal also present
+  AND sustained (re-probe after `heartbeatIntervalMs * 2` still
+  "unknown") → escalate to `killAndConfirm`. This pairs the
+  destructive action with multiple independent dead-owner signals.
+- `probeAlive` returns `Err(IO_ERROR)` → return
+  `Err(SUPERVISOR_UNHEALTHY, retryable: true)`. Never kill on a
+  failed probe.
 
 `LongRunningConfig` accepts `supervisor?: Supervisor`. The reclaim path is
 gated on its presence:
@@ -736,14 +766,20 @@ The harness runs an independent heartbeat loop from `start()`/`resume()` until
   `lastPersistedHeartbeatAt` (the timestamp of the last *successful* write).
   Before every tick, it computes `remaining = leaseTtlMs - (now - lastPersistedHeartbeatAt)`.
   - If `remaining < heartbeatIntervalMs * 2` (approaching staleness) AND the
-    most recent write failed: **invoke `abortActive("HEARTBEAT_STALE")`
-    immediately**. This forces engine quiescence before TTL expires and
-    another process can legitimately reclaim.
+    most recent write failed: **invoke `_abortActiveAndRecover(lease,
+    HEARTBEAT_STALE)` immediately** — the same recovery path the
+    checkpoint middleware uses on store I/O failure. This revokes the
+    lease, quiesces the engine, then attempts the recovery CAS to
+    `suspended` (with snapshot-store retry → fall back to TTL/
+    supervisor in default mode, or background-retry in
+    `trustedSingleProcess` mode). The heartbeat-stale path no longer
+    uses the public `abortActive`, which lacks a fencing CAS.
   - `onDurabilityLost` is invoked on the first failed write, not after
     contiguous failures.
 - Lease validation (before every mutating store write) refreshes the
-  heartbeat before the CAS. If that heartbeat write fails, the mutation is
-  rejected with `CHECKPOINT_WRITE_FAILED` and `abortActive` is invoked.
+  heartbeat before the CAS. If that heartbeat write fails, the mutation
+  is rejected with `CHECKPOINT_WRITE_FAILED` and
+  `_abortActiveAndRecover` is invoked through the same recovery path.
 - A long turn (minutes or hours, no checkpoint, no tool return) continues to
   heartbeat on the timer and is never falsely reclaimed while writes succeed.
   If writes fail, the run proactively stops itself before the reclamation
@@ -993,11 +1029,29 @@ Therefore the default path is:
      abandoned records) but does NOT short-circuit reclaim rules. A
      peer still needs TTL-stale heartbeat or sustained NOT_FOUND AND
      supervisor kill.
-5. After step 4, stop the heartbeat loop. If the CAS succeeded, a peer
-   `resume()` finds `phase === "suspended"` and proceeds with no TTL
-   wait. If the CAS failed, recovery falls back to TTL-staleness of the
-   now-stopped heartbeat + supervisor kill — bounded by `leaseTtlMs +
-   2 * heartbeatIntervalMs` worst case.
+5. After step 4, behavior depends on mode:
+   - **Supervisor mode (default):** if the CAS succeeded, stop the
+     heartbeat loop; a peer `resume()` finds `phase === "suspended"`
+     and proceeds with no TTL wait. If the CAS failed after retry,
+     stop heartbeats anyway — recovery falls back to TTL-staleness
+     + supervisor probe-then-kill, bounded by `leaseTtlMs + 2 *
+     heartbeatIntervalMs` worst case.
+   - **`trustedSingleProcess=true` mode:** there is no supervisor and
+     no TTL reclaim path, so the harness MUST eventually publish
+     `suspended` itself. On CAS retry exhaust:
+     - Do NOT stop heartbeats (no peer can reclaim, but a stopped
+       heartbeat under this mode would prevent any recovery and
+       leave the snapshot in `active` forever).
+     - Schedule a background CAS retry loop (15s / cap 5min, same
+       as terminal-write retry) that continues until success.
+       `_abortActiveAndRecover` returns
+       `Err(CHECKPOINT_WRITE_FAILED)` to the middleware caller, but
+       the background loop owns the eventual transition.
+     - On background CAS success: stop heartbeats; harness is
+       `suspended`. Operator can `resume()` normally.
+     - This mirrors the dispose-in-trusted-mode behavior so the
+       harness is never wedged in `active` permanently in the
+       configuration that disables supervisor reclaim.
 6. If `abortActive` times out (engine refuses to stop): keep heartbeating,
    keep session `"running"`, flip `durability` to `"unhealthy"`, return
    `Err(ABORT_TIMEOUT)` from the middleware path, loud escalation via
@@ -1339,6 +1393,7 @@ All errors are `KoiError` from L0. Codes used:
 | `ORPHAN_RECOVERED` | session record consistently `NOT_FOUND` across TTL window AND supervisor confirmed kill; harness CAS-advanced to `suspended` (recoverable, not terminal) | true |
 | `KILL_FAILED` | `supervisor.killAndConfirm` could not terminate the owner worker | true |
 | `RECLAIM_LIVE_OWNER` | supervisor reports owner is still alive despite TTL-stale heartbeat or NOT_FOUND; caller investigates | true |
+| `SUPERVISOR_UNHEALTHY` | `supervisor.probeAlive` returned IO_ERROR; reclaim aborted to avoid killing on a failed probe | true |
 | `RESUME_CORRUPT` | snapshot fails `isHarnessSnapshot` | false |
 
 ## References
