@@ -34,13 +34,27 @@ file writes outside the harness store) can be replayed across reclaim because:
   signal continue emitting until SIGKILL.
 
 **Callers requiring exactly-once external effects MUST use one of:**
-1. **Idempotent tool invocations** keyed by `(harnessId, generation, toolCallId)`.
+1. **Idempotent tool invocations** keyed by
+   `(harnessId, taskId, opId)` — a STABLE logical operation
+   identifier that survives reclaim and resume. `taskId` comes
+   from the `TaskBoardSnapshot` (immutable per task across
+   sessions); `opId` is a deterministic per-operation identifier
+   the tool author chooses (e.g., a hash of the request body, or
+   an explicit operation index within the task). DO NOT include
+   `generation` or `sessionId` in the key — both change on reclaim,
+   which would defeat deduplication for replayed calls.
+   `generation` and `sessionId` are useful only for stale-epoch
+   REJECTION (rejecting writes from a superseded session), NOT
+   for deduplication of retried writes.
 2. **Transactional outbox pattern** where side effects are queued into the
    harness state first, then published by a separate idempotent worker.
 3. **Tool-layer epoch check:** long-running tools accept the current
    `lease.generation` and reject calls whose generation is no longer the
    current snapshot's. See the Exclusivity Model section — this is a
-   downstream convention, not a package contract.
+   downstream convention, not a package contract. The epoch check
+   COMPOSES with the stable idempotency key from (1): epoch fences
+   stale callers; idempotency key dedupes retries from the current
+   epoch.
 
 The package contract is scoped accordingly: **exactly-once durable harness
 transitions; at-least-once external side effects unless caller adopts one of
@@ -101,21 +115,35 @@ type WorkerHandle = string; // opaque, supervisor-defined; MUST embed
                             // "unit:koi-worker@invocation=def-456").
 ```
 
-**One-session-per-worker isolation (mandatory).** A given
-`WorkerHandle` MUST identify a worker that runs at most ONE
-long-running harness session at a time. The supervisor's
+**One-session-per-worker isolation (mandatory and runtime-enforced).**
+A given `WorkerHandle` MUST identify a worker that runs at most
+ONE long-running harness session at a time. The supervisor's
 `killAndConfirm(handle)` is necessarily process- (or pod-, or
 unit-) scoped; if multiple long-running sessions shared a worker,
 reclaiming one stale session would terminate every other active
-session in that worker, causing cross-session data loss. Hosts
-deploying this package MUST run each long-running harness in a
-dedicated worker (a dedicated `@koi/daemon` worker process, a
-dedicated pod, a dedicated systemd unit). Multi-session-per-worker
-deployments are explicitly out of scope; if they are needed
-later, the supervisor contract will need a session-scoped kill
-primitive (out of scope for this PR's 500-LOC budget). Reviewers
-SHOULD reject configurations that violate the one-session
-invariant.
+session in that worker, causing cross-session data loss.
+
+Enforcement is runtime, not just policy:
+- `SessionPersistence` adds a uniqueness constraint on
+  `workerHandle` across active session records. The activation
+  step that writes `saveSession` with a fresh `workerHandle`
+  fails with `Err(CONFLICT, "WORKER_HANDLE_IN_USE", retryable: false)`
+  if another active (status ∈ {`starting`, `running`}) session
+  already references the same handle. This is added to the L0
+  prereq for `SessionPersistence` (see prereq #3a — the
+  uniqueness constraint is part of the same migration that adds
+  `workerHandle`).
+- The supervisor SHOULD additionally guarantee one-session-per-worker
+  at the deployment layer (one `@koi/daemon` worker process per
+  harness, one pod per harness, one systemd unit per harness),
+  but the harness no longer trusts deployment discipline alone:
+  the durable uniqueness check rejects misconfigurations at
+  activation time, BEFORE any destructive recovery can run.
+
+Multi-session-per-worker deployments are explicitly out of scope;
+if they are needed later, the supervisor contract will need a
+session-scoped kill primitive (out of scope for this PR's 500-LOC
+budget).
 
 **Non-reusability requirement.** `WorkerHandle` MUST include a
 non-reusable identity component so that probe/kill cannot target a
@@ -392,10 +420,13 @@ interface ForceReclaimInput {
         readonly supervisor: Supervisor;
         // Required ONLY for the no-binding cases (session record
         // missing the workerHandle, or session record itself absent).
-        // When set, the durable handle-equality check is skipped and
-        // fencing falls back to (harnessId, sessionId, phase==="active").
-        // The override is logged in audit trail.
+        // When set, the durable handle-equality check is skipped.
+        // hostConfirmedDead MUST also be true when override is true.
         readonly override?: boolean;
+        // Operator attestation that the prior worker process is
+        // dead. Mandatory when override=true; ignored otherwise.
+        // Writes a durable host-confirmed-dead marker.
+        readonly hostConfirmedDead?: boolean;
       }
     | { readonly kind: "hostConfirmedDead" };
 }
@@ -432,27 +463,46 @@ Behavior:
      input.evidence.handle`. Mismatch → `Err(STALE_SESSION)`. The
      operator cannot supply an unrelated handle.
    - **Session record exists but workerHandle is undefined**
-     (legacy data, activation crash before persistence): the
-     operator-supplied handle is the only available authority. The
-     evidence MUST set `override: true` (see below) to acknowledge
-     the binding cannot be cryptographically verified; without
-     `override` the call returns `Err(WORKER_HANDLE_MISSING)`.
-   - **Session record itself is missing** (sustained NOT_FOUND
-     orphan): same as the no-workerHandle case — `override: true`
-     is required. The harness verifies fencing via
-     `(harnessId, prev.lastSessionId, prev.phase === "active")`
-     instead of the durable handle binding. The operator's
-     attestation is the recovery authority.
+     (legacy data, activation crash before persistence) OR
+     **session record itself is missing** (sustained NOT_FOUND
+     orphan): the operator-supplied handle is not durably bound
+     to the session. Probe-then-kill of the supplied handle alone
+     is NOT sufficient — the operator could supply an unrelated
+     dead worker that passes the dead-owner check while the real
+     owner is still running, recreating split-brain on the
+     recovery API.
+
+     The override path therefore requires BOTH:
+     1. `evidence.override: true` flag (acknowledges no durable
+        binding; logged in audit trail).
+     2. `evidence.hostConfirmedDead: true` flag (operator
+        attestation that the prior worker process is dead, just
+        like the trustedSingleProcess path). This writes the
+        durable host-confirmed-dead marker BEFORE any CAS.
+     With both flags set, forceReclaim ALSO runs probe-then-kill
+     against the supplied handle (the supplied handle MUST come
+     back as `"dead"` — `"alive"` returns `RECLAIM_LIVE_OWNER`),
+     and only then proceeds to outcome replay or CAS-advance. The
+     defense-in-depth is: operator attests the host is dead AND
+     the supervisor independently confirms the supplied handle is
+     dead. Mismatch on either signal blocks recovery.
 
    `ForceReclaimInput.evidence` for `manualHandle` therefore is:
-   `{ kind: "manualHandle"; handle: WorkerHandle; supervisor: Supervisor; override?: boolean }`.
-   `override: true` is required ONLY for the no-binding cases; the
-   admin API logs the override prominently so it appears in audit
-   trails. With `override`, forceReclaim still runs probe-then-kill
-   against the supplied handle (so an operator who supplies a
-   visibly-live worker still gets `RECLAIM_LIVE_OWNER`); the
-   override only relaxes the durable-binding requirement, not the
-   live-fence safety check.
+   ```ts
+   {
+     kind: "manualHandle";
+     handle: WorkerHandle;
+     supervisor: Supervisor;
+     override?: boolean;            // skip durable handle binding
+     hostConfirmedDead?: boolean;   // required when override=true
+   }
+   ```
+   `override: true` is required ONLY for the no-binding cases. With
+   `override` set, `hostConfirmedDead: true` is mandatory; without
+   it the call returns `Err(WORKER_HANDLE_MISSING)`. With
+   `override` and a strict-binding case present (workerHandle
+   exists), the override is ignored (the strict equality check
+   still applies).
 1b. **Mode fencing.** `hostConfirmedDead` evidence is ONLY accepted
    for harnesses configured with `trustedSingleProcess === true`.
    `manualHandle` evidence is ONLY accepted for harnesses with a
