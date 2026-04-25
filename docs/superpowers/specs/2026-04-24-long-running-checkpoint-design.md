@@ -321,11 +321,23 @@ as `dispose`:
 3. Keep the heartbeat loop running.
 4. Signal the engine adapter and `await quiesce(abortTimeoutMs)`.
 5. Branch on quiesce outcome:
-   - **Quiescent:** stop the heartbeat loop, then
-     CAS-advance to the target phase (`suspended` / `failed` /
-     `completed`). Best-effort write; on failure, fall back to
-     `"abandoned"` tombstone + heartbeat-TTL reclaim, same as
-     durability-loss.
+   - **Quiescent:** stop the heartbeat loop, then CAS-advance to the
+     target phase. For **non-terminal** transitions (`pause →
+     suspended`), CAS failure falls back to retry (up to 4 tries with
+     exponential backoff 100/500/2500/12500 ms), then returns
+     `Err(CHECKPOINT_WRITE_FAILED)` — no tombstone fallback. For
+     **terminal** transitions (`completed` / `failed`), CAS failure
+     MUST retry until either success or a hard retry budget exhausts
+     (4 tries, same backoff). Terminal transitions cannot fall back to
+     tombstones or TTL reclaim because that would leave the harness
+     resumable from a pre-completion snapshot — an exactly-once
+     violation: a peer reclaiming later would replay already-emitted
+     side effects. If all retries fail, return
+     `Err(TERMINAL_WRITE_FAILED)`, flip `durability = "unhealthy"`,
+     and keep heartbeats running (the harness is stuck in an unhealthy
+     `active` state until the store recovers and the caller retries
+     the terminal transition — never resumable from a stale
+     pre-terminal snapshot by a peer).
    - **Abort timeout:** do NOT publish the target phase. Keep
      heartbeats alive, flip `durability = "unhealthy"`, invoke
      `onDurabilityLost(ABORT_TIMEOUT)`, return `Err(ABORT_TIMEOUT)`.
@@ -470,16 +482,26 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
      ```
 
      If the loop exits with NOT_FOUND sustained across the entire
-     `orphanWindow`, a healthy heartbeat loop would have re-written the
-     record multiple times during that window. Treat as **orphan
-     record** and proceed to recovery:
-     - CAS-advance the snapshot to `failed` with
-       `failureReason = "ORPHAN_SESSION_RECORD"`, generation+1. The
-       harness is now terminal (`failed`) and future `resume()` calls
-       correctly return `TERMINAL`. Operators can audit/start a fresh
-       harness after investigating the missing record.
-     - Bounded recovery time: ≤ `leaseTtlMs + heartbeatIntervalMs`
-       (default ≤ 120s from the first `resume()` attempt).
+     `orphanWindow`, treat as **orphan-suspected**, but do NOT
+     automatically terminalize — a read-path fault could mimic this
+     signature even when the owner is healthy. Instead:
+     - Invoke `supervisor.killAndConfirm(lastSessionId)`. If it returns
+       `Ok`, the supervisor has authoritatively proven the worker is
+       dead. Only then CAS-advance the snapshot to `suspended`
+       (NOT `failed`) with `failureReason = "ORPHAN_RECOVERED"`,
+       generation+1. `suspended` is recoverable: a later `resume()`
+       can start a fresh session from the last durable snapshot. We
+       never publish `failed` from NOT_FOUND evidence alone.
+     - If `killAndConfirm` returns `Err(RECLAIM_LIVE_OWNER)` (the
+       supervisor reports the worker is still alive), the harness
+       returns `Err(RECLAIM_LIVE_OWNER, retryable: true)` without
+       mutating state. The owner is live, just invisible to session
+       reads — this is a store fault, not a harness fault.
+     - If `killAndConfirm` returns `Err(KILL_FAILED)` (supervisor
+       unhealthy), return `Err(KILL_FAILED, retryable: true)` without
+       mutating state.
+     - Bounded recovery time: ≤ `leaseTtlMs + heartbeatIntervalMs` +
+       supervisor kill latency.
 
    Read I/O errors (not NOT_FOUND) remain `RECLAIM_READ_FAILED`
    (retryable) — we do NOT treat a transient read error as a missing
@@ -491,10 +513,15 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
      reads of an old status).
    - `record.status === "idle"` → same: advisory, require TTL-stale
      heartbeat.
-   - `record.status === "abandoned"` → immediately reclaimable, no TTL
-     wait required. The tombstone is only written by the lease holder
-     after confirmed engine quiescence, so it proves the run has stopped
-     even when the snapshot store is not yet consistent.
+   - `record.status === "abandoned"` → **advisory signal only** that
+     the prior lease holder believed the run was ended. Because
+     `setSessionStatus` is not fenced by generation/lease in L0, the
+     tombstone cannot be treated as authoritative on its own (a buggy
+     or stale actor could have written it). Reclaim still requires
+     supervisor `killAndConfirm` AND one of (a) TTL-stale heartbeat
+     with double-confirmation or (b) sustained orphan-window NOT_FOUND.
+     The tombstone accelerates recognition of completed runs but does
+     not bypass the standard fencing; it is a hint, not proof.
    - `record.status ∈ { "starting", "running" }` — apply TTL rule with
      **double-confirmation**:
      - `now - record.lastHeartbeatAt > leaseTtlMs` → first dead signal.
@@ -509,16 +536,15 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
    dead owner stays dead; a live owner that was briefly misread by a
    lagging replica is correctly identified by the second read.
 
-Unified rule: **reclaim requires an observable positive signal from
-session persistence — either (a) a loadable session record whose
-heartbeat is stale beyond `leaseTtlMs`, or (b) an `"abandoned"`
-tombstone written by the prior lease holder.** Snapshot age is NEVER a
-dead-owner signal on its own: a healthy long turn can outlive any
-snapshot-age threshold and relies solely on heartbeat writes for
-liveness. Status flags (`"done"` / `"idle"`) accelerate recognition of
-dead owners only when paired with stale heartbeats, not as standalone
-proofs, because cross-store reads can show stale snapshots of the
-status field.
+Unified rule: **reclaim requires (1) a positive dead-owner signal from
+session persistence — a loadable session record whose heartbeat is
+stale beyond `leaseTtlMs` with double-confirmation, OR sustained
+NOT_FOUND across `orphanWindow` — AND (2) supervisor-confirmed kill
+of the prior worker.** Snapshot age is NEVER a dead-owner signal on its
+own. Status flags (`"done"` / `"idle"` / `"abandoned"`) accelerate
+recognition but never substitute for heartbeat-TTL evidence;
+`setSessionStatus` is not lease-fenced in L0, so status reads can
+reflect stale or incorrect tombstone writes.
 
 `"starting"` is informational only. A live owner mid-activation heartbeats
 (loop started in activation step 2) and holds the lease; a crashed
@@ -892,13 +918,19 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   checkpoint → middleware aborts engine → after quiescence, snapshot-store
   retry with backoff succeeds → `suspended` snapshot published →
   immediate `resume()` proceeds without TTL wait.
-- **Durability loss mid-run with persistent fault:** snapshot-store retries
-  all fail → `setSessionStatus("abandoned")` succeeds (different store) →
-  immediate `resume()` reclaims via abandoned-status path, no TTL wait.
-- **Durability loss mid-run, both stores unhealthy:** both snapshot-store
-  retry AND abandoned tombstone fail → heartbeat loop stopped → reclaim
-  via TTL staleness after `leaseTtlMs`. (Regression: spec never makes
-  recovery worse than TTL wait.)
+- **Durability loss mid-run with persistent fault:** snapshot-store
+  retries all fail → `setSessionStatus("abandoned")` written as an
+  advisory hint but NOT treated as authoritative → heartbeat loop
+  stopped → reclaim via TTL staleness + supervisor kill. Tombstone is
+  informational only.
+- **Terminal-write failure preserves exactly-once:** `completeTask`
+  quiesces engine, CAS to `completed` fails repeatedly (simulated
+  store outage). Harness returns `Err(TERMINAL_WRITE_FAILED)`, stays
+  `active + unhealthy`, heartbeats continue. Peer `resume()` returns
+  `ALREADY_ACTIVE`. Work already emitted by the completed task cannot
+  be re-executed because no peer can reclaim until the original caller
+  retries the terminal CAS. (Regression against duplicate terminal
+  work.)
 - **Long-turn heartbeat:** a single turn that exceeds `leaseTtlMs` without
   reaching a checkpoint boundary continues to heartbeat via the timer loop;
   a concurrent `resume()` attempt returns `ALREADY_ACTIVE`, not a successful
@@ -949,12 +981,18 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   `RECLAIM_READ_FAILED` (retryable). Does NOT attempt reclaim, does NOT
   wedge the harness — the existing state is untouched and a later
   `resume()` call can proceed once the store recovers.
-- **Orphan session record (deleted/corrupt):** `loadSession` returns
-  `NOT_FOUND` for the full `orphanWindow = leaseTtlMs +
-  heartbeatIntervalMs`. Harness CAS-advances snapshot to `failed` with
-  `ORPHAN_SESSION_RECORD`. Subsequent `resume()` returns `TERMINAL`.
-  Bounded within ~120s of the first resume attempt. (Regression
-  against permanent `active` wedge.)
+- **Orphan session record + supervisor kill-ok:** `loadSession` returns
+  `NOT_FOUND` for the full orphan window. Supervisor returns `Ok` from
+  `killAndConfirm`. Harness CAS-advances to `suspended` with
+  `ORPHAN_RECOVERED`; next `resume()` starts a fresh session. Never
+  publishes `failed`.
+- **Orphan session record + supervisor reports live owner:** supervisor
+  returns `Err(RECLAIM_LIVE_OWNER)`. Harness state unchanged; caller
+  receives retryable error. Regression against killing a healthy worker
+  based on a read-path fault.
+- **Orphan session record + supervisor unhealthy:** supervisor returns
+  `Err(KILL_FAILED)`. Harness state unchanged; caller receives
+  retryable error.
 - **Transient NOT_FOUND (read replica lag):** first read returns
   `NOT_FOUND`, subsequent polls within `orphanWindow` see the actual
   record → orphan loop exits, reclamation re-runs with the visible
@@ -1039,6 +1077,7 @@ All errors are `KoiError` from L0. Codes used:
 | `TERMINAL` | action on completed/failed harness | false |
 | `INVALID_STATE` | phase transition not allowed | false |
 | `TIMEOUT` | session exceeded `timeoutMs` | false |
+| `TERMINAL_WRITE_FAILED` | terminal CAS (`completed` / `failed`) failed after retries; harness stuck `active + unhealthy`; exactly-once preserved | true |
 | `ALREADY_ACTIVE` | `resume()` while another session holds an active lease | true |
 | `CONCURRENT_RESUME` | CAS failed: peer claimed the lease first | true |
 | `STALE_SESSION` | mutating call presented a revoked/superseded/tampered lease | false |
@@ -1048,7 +1087,7 @@ All errors are `KoiError` from L0. Codes used:
 | `INVALID_CONFIG` | `abortTimeoutMs >= leaseTtlMs - 2*heartbeatIntervalMs` | false |
 | `ACTIVATION_STATUS_WRITE_FAILED` | step-5 `setSessionStatus("running")` write failed; returned via `StartResult.activationWarning`, NOT via `Err`; lease is still valid | true |
 | `RECLAIM_READ_FAILED` | `sessionPersistence.loadSession` I/O error during reclaim after 3 retries; caller must retry after backoff | true |
-| `ORPHAN_SESSION_RECORD` | session record consistently `NOT_FOUND` across TTL window AND supervisor confirmed kill; harness CAS-advanced to `failed` for audit/restart | false |
+| `ORPHAN_RECOVERED` | session record consistently `NOT_FOUND` across TTL window AND supervisor confirmed kill; harness CAS-advanced to `suspended` (recoverable, not terminal) | true |
 | `KILL_FAILED` | `supervisor.killAndConfirm` could not terminate the owner worker | true |
 | `RECLAIM_LIVE_OWNER` | supervisor reports owner is still alive despite TTL-stale heartbeat or NOT_FOUND; caller investigates | true |
 | `RESUME_CORRUPT` | snapshot fails `isHarnessSnapshot` | false |
