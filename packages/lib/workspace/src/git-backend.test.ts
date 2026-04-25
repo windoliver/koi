@@ -163,4 +163,50 @@ describe("createGitWorktreeBackend", () => {
     const found = await backend.findByAgentId?.(agentId("unknown-agent"));
     expect(found).toBeUndefined();
   });
+
+  it("findByAgentId ignores worktrees outside this backend's base path", async () => {
+    const basePath1 = join(repoPath, "..", `wt-base1-${Date.now()}`);
+    const basePath2 = join(repoPath, "..", `wt-base2-${Date.now()}`);
+    const backend1 = createGitWorktreeBackend({ repoPath, worktreeBasePath: basePath1 });
+    const backend2 = createGitWorktreeBackend({ repoPath, worktreeBasePath: basePath2 });
+
+    const aid2 = agentId("agent-two");
+    const r1 = await backend1.create(aid, defaultConfig);
+    const r2 = await backend2.create(aid2, defaultConfig);
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    if (!r1.ok || !r2.ok) return;
+
+    // backend1 should not see backend2's worktree for a different agent
+    const found = await backend1.findByAgentId?.(aid2);
+    expect(found).toBeUndefined();
+
+    await backend1.dispose(r1.value.id);
+    await backend2.dispose(r2.value.id);
+  });
+
+  it("attestSetupComplete creates a git ref and verifySetupComplete confirms it", async () => {
+    const backend = createGitWorktreeBackend({ repoPath });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const ws = result.value;
+    expect(await backend.verifySetupComplete?.(ws.id)).toBe(false);
+
+    await backend.attestSetupComplete?.(ws.id);
+    expect(await backend.verifySetupComplete?.(ws.id)).toBe(true);
+
+    await backend.dispose(ws.id);
+    // Ref should be cleaned up by dispose
+    expect(await backend.verifySetupComplete?.(ws.id)).toBe(false);
+  });
+
+  it("attestSetupComplete throws for an unknown workspace", async () => {
+    const backend = createGitWorktreeBackend({ repoPath });
+    const { workspaceId } = await import("@koi/core");
+    await expect(backend.attestSetupComplete?.(workspaceId("ws-nonexistent"))).rejects.toThrow(
+      "Cannot attest setup for unknown workspace",
+    );
+  });
 });

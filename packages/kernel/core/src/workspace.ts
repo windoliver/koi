@@ -77,6 +77,17 @@ export interface WorkspaceBackend {
    * without needing a separate round-trip to reconstruct path/metadata.
    */
   readonly findByAgentId?: (agentId: AgentId) => Promise<WorkspaceInfo | undefined>;
+  /**
+   * Optional: durably record that setup (postCreate) completed for this workspace.
+   * Backends should use storage that workspace-process code cannot spoof (e.g. git refs).
+   * If absent, callers fall back to a filesystem marker which may be writable by the agent process.
+   */
+  readonly attestSetupComplete?: (wsId: WorkspaceId) => Promise<void>;
+  /**
+   * Optional: verify that setup attestation exists for this workspace.
+   * Pair with attestSetupComplete — if one is absent, both are absent.
+   */
+  readonly verifySetupComplete?: (wsId: WorkspaceId) => Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------

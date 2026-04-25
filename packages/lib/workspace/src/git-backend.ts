@@ -154,6 +154,8 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
 
       // Branch deletion is best-effort — failure doesn't fail dispose
       await runGit(["branch", "-D", entry.branchName], config.repoPath);
+      // Setup-attestation ref cleanup is best-effort — failure doesn't fail dispose
+      await runGit(["update-ref", "-d", `refs/koi-setup-ok/${wsId}`], config.repoPath);
 
       registry.delete(wsId);
       return { ok: true, value: undefined };
@@ -196,6 +198,10 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         const pathLine = lines.find((l) => l.startsWith("worktree "));
         if (!pathLine) continue;
         const path = pathLine.slice("worktree ".length).trim();
+        // Reject worktrees outside this backend's configured base path.
+        // Without this check, two providers sharing a repo but different base paths
+        // can claim each other's worktrees, leading to cross-instance deletion.
+        if (!path.startsWith(resolvedBase + sep)) continue;
         const branchRef =
           lines
             .find((l) => l.startsWith("branch "))
@@ -231,6 +237,30 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       // Multiple survivors: return the one with the highest timestamp embedded in the wsId
       // (git-owned, not agent-writable). Caller is responsible for disposing older survivors.
       return matches.reduce((best, cur) => (cur.createdAt > best.createdAt ? cur : best));
+    },
+
+    // Use a git ref as the setup-complete attestation so the workspace process
+    // cannot spoof completion by writing a sibling file (the backend is not sandboxed).
+    async attestSetupComplete(wsId: WorkspaceId): Promise<void> {
+      const entry = registry.get(wsId);
+      if (!entry) throw new Error(`Cannot attest setup for unknown workspace ${wsId}`);
+      const result = await runGit(
+        ["update-ref", `refs/koi-setup-ok/${wsId}`, `refs/heads/${entry.branchName}`],
+        config.repoPath,
+      );
+      if (!result.ok) {
+        throw new Error(`Failed to write setup-attestation ref for workspace ${wsId}`, {
+          cause: result.error,
+        });
+      }
+    },
+
+    async verifySetupComplete(wsId: WorkspaceId): Promise<boolean> {
+      const result = await runGit(
+        ["rev-parse", "--verify", `refs/koi-setup-ok/${wsId}`],
+        config.repoPath,
+      );
+      return result.ok;
     },
   };
 }

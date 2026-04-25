@@ -56,17 +56,25 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
     return { components, skipped: [] };
   }
 
-  // Write a setup-complete marker OUTSIDE the worktree (sibling in the same base directory)
-  // so it cannot be tampered by agent code running inside the worktree.
+  // Prefer backend-level attestation (e.g. git ref) which the workspace process cannot spoof.
+  // Fall back to a filesystem sibling marker only when the backend does not implement attestation
+  // (acceptable for sandboxed backends where filesystem isolation is enforced at the OS level).
   function setupCompletePath(ws: WorkspaceInfo): string {
     return join(dirname(ws.path), `${ws.id}.setup-ok`);
   }
 
   async function markSetupComplete(ws: WorkspaceInfo): Promise<void> {
-    await writeFile(setupCompletePath(ws), "", "utf8");
+    if (config.backend.attestSetupComplete) {
+      await config.backend.attestSetupComplete(ws.id);
+    } else {
+      await writeFile(setupCompletePath(ws), "", "utf8");
+    }
   }
 
   async function isSetupComplete(ws: WorkspaceInfo): Promise<boolean> {
+    if (config.backend.verifySetupComplete) {
+      return config.backend.verifySetupComplete(ws.id);
+    }
     try {
       await access(setupCompletePath(ws));
       return true;
@@ -189,8 +197,11 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       if (disposed) {
         attached.delete(agentId);
         setupFailed.delete(wsInfo.id);
-        // Best-effort cleanup of the setup-complete marker — failure is not fatal
-        await rm(setupCompletePath(wsInfo), { force: true });
+        // Filesystem marker cleanup — only needed when the backend uses the filesystem fallback.
+        // Backends with verifySetupComplete clean up their own attestation in dispose().
+        if (!config.backend.verifySetupComplete) {
+          await rm(setupCompletePath(wsInfo), { force: true });
+        }
       }
     },
   };
