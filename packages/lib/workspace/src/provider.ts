@@ -128,12 +128,25 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
     const wsId = candidate.id;
     // If the backend verifies setup but cannot invalidate it, we cannot safely clear the
     // old attestation before rerunning postCreate. Reuse is unsafe — dispose and recreate.
+    // Block attach if disposal is unconfirmed: the old workspace may still be alive.
     if (attestationInvalidationUnavailable()) {
-      await tryDispose(wsId);
+      const disposed = await tryDispose(wsId);
+      if (!disposed) {
+        setupFailed.add(wsId);
+        throw new Error(
+          `Cannot create workspace for agent ${agentId}: crash-survivor ${wsId} could not be disposed (attestation invalidation unavailable)`,
+        );
+      }
       return false;
     }
     if (setupFailed.has(wsId)) {
-      await tryDispose(wsId);
+      const disposed = await tryDispose(wsId);
+      if (!disposed) {
+        throw new Error(
+          `Cannot create workspace for agent ${agentId}: previously-failed workspace ${wsId} could not be disposed`,
+        );
+      }
+      setupFailed.delete(wsId);
       return false;
     }
     const [healthy, setupComplete] = await Promise.all([
