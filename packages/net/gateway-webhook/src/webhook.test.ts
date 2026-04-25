@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { GatewayFrame, Session } from "@koi/gateway-types";
+import { createIdempotencyStore } from "./idempotency.js";
 import type { WebhookAuthenticator, WebhookServer } from "./webhook.js";
 import { createWebhookServer } from "./webhook.js";
 
@@ -79,13 +80,35 @@ describe("WebhookServer — auth guard", () => {
     ).not.toThrow();
   });
 
-  test("slack and stripe providers do not trigger the replay guard", () => {
+  test("stripe provider does not trigger the replay guard (has built-in event.id dedup)", () => {
     expect(() =>
       createWebhookServer(
         { port: 0, pathPrefix: "/webhook", providerRouting: true },
         () => {},
         undefined,
-        { slack: "secret", stripe: "secret2" },
+        { stripe: "secret" },
+      ),
+    ).not.toThrow();
+  });
+
+  test("slack provider triggers the replay guard — requires keyExtractor or allowReplayableProviders", () => {
+    expect(() =>
+      createWebhookServer(
+        { port: 0, pathPrefix: "/webhook", providerRouting: true },
+        () => {},
+        undefined,
+        { slack: "secret" },
+      ),
+    ).toThrow("replay protection");
+  });
+
+  test("slack provider with allowReplayableProviders does not throw", () => {
+    expect(() =>
+      createWebhookServer(
+        { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
+        () => {},
+        undefined,
+        { slack: "secret" },
       ),
     ).not.toThrow();
   });
@@ -456,17 +479,17 @@ describe("WebhookServer — core dispatch", () => {
     expect(dispatched).toHaveLength(0);
   });
 
-  test("authenticator that explicitly binds routing.account accepts account-scoped URL", async () => {
+  test("authenticator with accountVerified: true accepts shared-secret account-scoped URL", async () => {
+    // Authenticator independently verifies the tenant (e.g. JWT lookup) and
+    // sets accountVerified: true to signal independent proof of account ownership.
     const secret = "test-secret";
     const body = JSON.stringify({ action: "push" });
     const sig = await computeGitHubSig(secret, body);
-    const bindingAuthenticator: WebhookAuthenticator = async (req) => {
-      const urlAccount = new URL(req.url).pathname.split("/")[3]; // extract from path
-      return {
-        ok: true,
-        value: { agentId: "webhook", routing: { account: urlAccount } },
-      };
-    };
+    const bindingAuthenticator: WebhookAuthenticator = async () => ({
+      ok: true,
+      // accountVerified: true signals independent proof (e.g. JWT, token lookup)
+      value: { agentId: "webhook", routing: { account: "my-org" }, accountVerified: true },
+    });
     server = createWebhookServer(
       { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
       dispatcher,
@@ -481,6 +504,31 @@ describe("WebhookServer — core dispatch", () => {
     });
     expect(res.status).toBe(200);
     expect(dispatched[0]?.session.routing?.account).toBe("my-org");
+  });
+
+  test("authenticator without accountVerified is rejected on shared-secret account routes", async () => {
+    const secret = "test-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+    const echoAuthenticator: WebhookAuthenticator = async (req) => {
+      // Echoes the URL account — missing accountVerified: true
+      const urlAccount = new URL(req.url).pathname.split("/")[3];
+      return { ok: true, value: { agentId: "webhook", routing: { account: urlAccount } } };
+    };
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
+      dispatcher,
+      echoAuthenticator,
+      { github: secret },
+    );
+    await server.start();
+    const res = await fetch(`http://localhost:${server.port()}/webhook/github/my-org`, {
+      method: "POST",
+      headers: { "X-Hub-Signature-256": sig, "Content-Type": "application/json" },
+      body,
+    });
+    expect(res.status).toBe(401);
+    expect(dispatched).toHaveLength(0);
   });
 
   test("dedup keys are scoped by provider+account — same Slack event_id from two tenants dispatches both", async () => {
@@ -501,7 +549,7 @@ describe("WebhookServer — core dispatch", () => {
     const { sig: sigB, ts: tsB } = await slackSig(secretB, body);
 
     server = createWebhookServer(
-      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
       dispatcher,
       undefined,
       { slack: { "tenant-a": secretA, "tenant-b": secretB } },
@@ -536,7 +584,7 @@ describe("WebhookServer — core dispatch", () => {
 
   test("X-Webhook-Peer is ignored on provider-routed requests", async () => {
     const secret = "test-secret";
-    const body = JSON.stringify({ id: "Ev1", type: "event_callback" });
+    const body = JSON.stringify({ event_id: "Ev1", type: "event_callback" });
     const ts = Math.floor(Date.now() / 1000).toString();
     const sigPayload = `v0:${ts}:${body}`;
     const enc = new TextEncoder();
@@ -554,7 +602,7 @@ describe("WebhookServer — core dispatch", () => {
     const sig = `v0=${hex}`;
 
     server = createWebhookServer(
-      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
       dispatcher,
       undefined,
       { slack: secret },
@@ -838,6 +886,7 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
         port: 0,
         pathPrefix: "/webhook",
         providerRouting: true,
+        allowReplayableProviders: true,
         idempotencyStore: inFlightStore,
         leaseRenewalMs: 150_000,
       },
@@ -959,7 +1008,7 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     const slackSig = `v0=${await computeHmacHex(secret, `v0:${ts}:${slackBody}`)}`;
 
     server = createWebhookServer(
-      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
       dispatcher,
       undefined,
       { slack: secret },
@@ -1208,7 +1257,9 @@ describe("WebhookServer — keyExtractor", () => {
     expect(dispatched).toHaveLength(1); // not re-dispatched
   });
 
-  test("keyExtractor returning undefined skips dedup — delivery is always accepted", async () => {
+  test("keyExtractor returning undefined is rejected (fail-closed) — no silent replay bypass", async () => {
+    // A keyExtractor that returns undefined for a request means we have no
+    // verifiable identity for this delivery. Fail-closed: return 400.
     const secret = "gh-secret";
     const body = JSON.stringify({ action: "push" });
     const sig = await computeGitHubSig(secret, body);
@@ -1218,7 +1269,7 @@ describe("WebhookServer — keyExtractor", () => {
         port: 0,
         pathPrefix: "/webhook",
         providerRouting: true,
-        keyExtractor: () => undefined, // no key — no dedup
+        keyExtractor: () => undefined, // returns no key
       },
       dispatcher,
       undefined,
@@ -1226,11 +1277,36 @@ describe("WebhookServer — keyExtractor", () => {
     );
     await server.start();
 
-    const headers = {
-      "X-Hub-Signature-256": sig,
-      "Content-Type": "application/json",
-    };
+    const res = await fetch(`http://localhost:${server.port()}/webhook/github`, {
+      method: "POST",
+      headers: { "X-Hub-Signature-256": sig, "Content-Type": "application/json" },
+      body,
+    });
+    expect(res.status).toBe(400);
+    expect(dispatched).toHaveLength(0);
+  });
 
+  test("allowReplayableProviders: true with keyExtractor returning undefined — delivery accepted without dedup", async () => {
+    // When caller opts in to replayable behavior, a missing key does not block.
+    const secret = "gh-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+
+    server = createWebhookServer(
+      {
+        port: 0,
+        pathPrefix: "/webhook",
+        providerRouting: true,
+        allowReplayableProviders: true,
+        keyExtractor: () => undefined,
+      },
+      dispatcher,
+      undefined,
+      { github: secret },
+    );
+    await server.start();
+
+    const headers = { "X-Hub-Signature-256": sig, "Content-Type": "application/json" };
     const res1 = await fetch(`http://localhost:${server.port()}/webhook/github`, {
       method: "POST",
       headers,
@@ -1243,7 +1319,7 @@ describe("WebhookServer — keyExtractor", () => {
       body,
     });
     expect(res2.status).toBe(200);
-    expect(dispatched).toHaveLength(2); // both dispatched — no dedup
+    expect(dispatched).toHaveLength(2); // both dispatched — opted into replayable
   });
 });
 
@@ -1401,6 +1477,97 @@ describe("WebhookServer — maxDispatchMs", () => {
     const b = (await res.json()) as { ok: boolean; frameId: string };
     expect(b.ok).toBe(true);
     srv.stop();
+  });
+
+  test("hung dispatcher releases dedup key after maxDispatchMs + processingTtlMs", async () => {
+    // maxDispatchMs stops renewal; the processing TTL then counts down to zero.
+    // A second delivery of the same event must be accepted (ok) after that window.
+    const secret = "test-secret";
+    const webhookId = "wh_hung_test";
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const body = JSON.stringify({ action: "hung" });
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const rawSig = await crypto.subtle.sign(
+      "HMAC",
+      key,
+      enc.encode(`${webhookId}.${timestamp}.${body}`),
+    );
+    const sig = `v1,${Buffer.from(rawSig).toString("base64")}`;
+
+    // First request — dispatcher hangs indefinitely
+    const hangPromise = new Promise<void>(() => {
+      // never resolves
+    });
+
+    const store = createIdempotencyStore({ processingTtlMs: 30 });
+    const srv = createWebhookServer(
+      {
+        port: 0,
+        pathPrefix: "/webhook",
+        providerRouting: true,
+        maxDispatchMs: 10,
+        idempotencyStore: store,
+        leaseRenewalMs: 5,
+      },
+      async () => hangPromise,
+      undefined,
+      { generic: secret },
+    );
+    await srv.start();
+
+    const makeRequest = (): Promise<Response> =>
+      fetch(`http://localhost:${srv.port()}/webhook/generic`, {
+        method: "POST",
+        headers: {
+          "X-Webhook-Signature": sig,
+          "X-Webhook-ID": webhookId,
+          "X-Webhook-Timestamp": timestamp,
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+
+    // Fire the hung request (don't await — it will never settle).
+    // Suppress the expected rejection when srv.stop() closes the connection.
+    void makeRequest().catch(() => {});
+
+    // Wait for maxDispatchMs to fire, then processingTtlMs to expire
+    await new Promise<void>((res) => setTimeout(res, 100));
+
+    // Second delivery must be accepted now that the lease expired
+    const srv2 = createWebhookServer(
+      {
+        port: 0,
+        pathPrefix: "/webhook",
+        providerRouting: true,
+        idempotencyStore: store,
+        leaseRenewalMs: 5,
+      },
+      async () => {},
+      undefined,
+      { generic: secret },
+    );
+    await srv2.start();
+    const res2 = await fetch(`http://localhost:${srv2.port()}/webhook/generic`, {
+      method: "POST",
+      headers: {
+        "X-Webhook-Signature": sig,
+        "X-Webhook-ID": webhookId,
+        "X-Webhook-Timestamp": timestamp,
+        "Content-Type": "application/json",
+      },
+      body,
+    });
+    expect(res2.status).toBe(200);
+    srv.stop();
+    srv2.stop();
   });
 });
 

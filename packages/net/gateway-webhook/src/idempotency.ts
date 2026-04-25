@@ -113,6 +113,10 @@ export function createIdempotencyStore(options: IdempotencyStoreOptions = {}): I
   const maxSize = options.maxSize ?? DEFAULT_MAX_SIZE;
 
   const store = new Map<string, IdempotencyEntry>();
+  // Amortize full-store pruning: run at most once per pruneIntervalMs to keep
+  // the tryBegin hot path near O(1) instead of O(store size) per request.
+  const pruneIntervalMs = Math.min(ttlMs, processingTtlMs) / 4;
+  let lastPruneAt = 0;
 
   function prune(): void {
     const now = Date.now();
@@ -123,10 +127,15 @@ export function createIdempotencyStore(options: IdempotencyStoreOptions = {}): I
         store.delete(key);
       }
     }
+    lastPruneAt = Date.now();
+  }
+
+  function maybePrune(): void {
+    if (Date.now() - lastPruneAt >= pruneIntervalMs) prune();
   }
 
   function tryBegin(key: string): TryBeginResult {
-    prune();
+    maybePrune();
     const existing = store.get(key);
     if (existing !== undefined) {
       if (existing.state === "processing") return { state: "in-flight" };

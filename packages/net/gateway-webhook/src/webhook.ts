@@ -46,7 +46,7 @@ export interface WebhookConfig {
    * or a WebhookAuthenticator instead.
    */
   readonly allowUnauthenticated?: boolean | undefined;
-  /** Idempotency store options. Omit to use defaults (24h TTL, 5min processing TTL, 10k entries).
+  /** Idempotency store options. Omit to use defaults (2h committed TTL, 5min processing TTL, 100k entries).
    *  Ignored when `idempotencyStore` is provided. */
   readonly idempotency?: {
     readonly ttlMs?: number | undefined;
@@ -118,6 +118,18 @@ export interface WebhookServer {
 
 export type WebhookDispatcher = (session: Session, frame: GatewayFrame) => Promise<void> | void;
 
+/**
+ * Authenticates an inbound webhook request after signature verification.
+ *
+ * **Security contract for multi-tenant routing:** if your deployment uses a
+ * shared provider secret and routes by URL account (e.g. `/webhook/github/acme`),
+ * `routing.account` in the result MUST be derived from independently authenticated
+ * material — a verified JWT, session token, or per-account lookup — NOT simply
+ * copied from the request URL. Echoing the URL account passes the account-binding
+ * check but grants any valid provider-signed request access to any tenant's route,
+ * defeating isolation. Use per-account secrets (`ProviderSecrets` with a Record
+ * value) whenever possible, as they bind the URL account at the signature level.
+ */
 export type WebhookAuthenticator = (
   request: Request,
   rawBody: string,
@@ -127,6 +139,17 @@ export interface WebhookAuthResult {
   readonly agentId: string;
   readonly routing?: RoutingContext | undefined;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * Set to `true` only when `routing.account` was derived from independently
+   * authenticated material — a JWT claim, a session token lookup, a signed
+   * provider identifier, or similar — NOT copied from the request URL.
+   *
+   * Required for shared-secret + account-URL routes. Without this flag, the
+   * server cannot distinguish an authenticated tenant claim from an authenticator
+   * that merely echoes the unsigned URL segment, which would let any caller with
+   * a valid shared secret route to any tenant's path.
+   */
+  readonly accountVerified?: boolean | undefined;
 }
 
 /**
@@ -187,6 +210,28 @@ export function createWebhookServer(
     );
   }
 
+  // Guard: Slack slash-commands and interactive payloads have no stable event ID
+  // in the signed payload (only Events API deliveries include event_id). Callers
+  // that route Slack must either supply a keyExtractor that covers all Slack shapes
+  // they expect, or set allowReplayableProviders: true to acknowledge replay risk
+  // for non-Events-API requests.
+  const hasSlackProvider =
+    config.providerRouting === true &&
+    providerSecrets !== undefined &&
+    providerSecrets.slack !== undefined;
+  if (
+    hasSlackProvider &&
+    config.keyExtractor === undefined &&
+    config.allowReplayableProviders !== true
+  ) {
+    throw new Error(
+      "createWebhookServer: Slack provider requires explicit replay protection configuration. " +
+        "Slack slash-commands and interactive payloads do not include a stable event_id, " +
+        "so they produce no dedup key. Provide a keyExtractor to handle those shapes, or " +
+        "set allowReplayableProviders: true if your dispatcher is fully idempotent.",
+    );
+  }
+
   let server: ReturnType<typeof Bun.serve> | undefined;
   let resolvedPort: number = config.port;
   let frameCounter = 0;
@@ -198,6 +243,26 @@ export function createWebhookServer(
         "Set leaseRenewalMs to less than half your store's processing TTL so the renewal " +
         "interval fires before the lease expires.",
     );
+  }
+  if (config.leaseRenewalMs !== undefined && config.leaseRenewalMs <= 0) {
+    throw new Error(
+      "createWebhookServer: leaseRenewalMs must be a positive integer. " +
+        "Set it to less than half your store's processing TTL.",
+    );
+  }
+  // When using the built-in store, enforce that leaseRenewalMs is shorter than
+  // processingTtlMs. If leaseRenewalMs >= processingTtlMs, the renewal fires only
+  // after the reservation has already expired, creating a duplicate-dispatch window.
+  if (config.idempotencyStore === undefined && config.leaseRenewalMs !== undefined) {
+    const processingTtlMs = config.idempotency?.processingTtlMs ?? 5 * 60 * 1000; // default matches idempotency.ts
+    if (config.leaseRenewalMs >= processingTtlMs) {
+      throw new Error(
+        `createWebhookServer: leaseRenewalMs (${config.leaseRenewalMs}ms) must be less than ` +
+          `the built-in store's processingTtlMs (${processingTtlMs}ms). ` +
+          "A renewal interval equal to or longer than the processing TTL means the first " +
+          "renewal fires after the lease has already expired.",
+      );
+    }
   }
 
   const idempotencyStore: IdempotencyStore =
@@ -308,6 +373,20 @@ export function createWebhookServer(
       if (dedupKey === undefined && config.keyExtractor !== undefined) {
         dedupKey = await config.keyExtractor(provider.kind, request, rawBody);
       }
+      // Fail-closed: if the provider verified the request but cannot produce a
+      // replay-safe key — including when keyExtractor is configured but returns
+      // undefined for a specific request (e.g. missing X-GitHub-Delivery) — reject
+      // unless the caller has opted in. A configured keyExtractor that returns
+      // undefined is not a pass; it means this delivery has no provable identity.
+      if (dedupKey === undefined && !config.allowReplayableProviders) {
+        return jsonResponse(400, {
+          ok: false,
+          error:
+            `Provider '${provider.kind}' verified the request but produced no replay-safe key. ` +
+            "Set allowReplayableProviders: true if your dispatcher is fully idempotent, " +
+            "or provide a keyExtractor to derive a stable key for this request shape.",
+        });
+      }
       // Scope all dedup keys with provider + URL account — both provider-native IDs
       // and keyExtractor-supplied keys. Always include the URL account (even when
       // not signature-verified) to prevent cross-tenant collisions for deployments
@@ -412,23 +491,29 @@ export function createWebhookServer(
       metadata = authResult.value.metadata ?? metadata;
 
       // Account binding enforcement: if the URL has an account path that was NOT
-      // authenticated by the provider secret, require the authenticator to have
-      // explicitly bound the same account in routing. Without this check, an
-      // authenticator that omits routing.account silently accepts any account URL.
+      // authenticated by the provider secret (shared secret), require the
+      // authenticator to have (a) set routing.account === URL account AND (b)
+      // set accountVerified: true, proving the account came from independently
+      // authenticated material rather than being copied from the unsigned URL.
+      // Without (b), any caller with a valid shared secret could route to any
+      // tenant by echoing the URL account in their authenticator.
       if (
         provider !== undefined &&
         account !== undefined &&
         !accountAuthenticated &&
-        config.allowUnauthenticated !== true &&
-        routing.account !== account
+        config.allowUnauthenticated !== true
       ) {
-        if (pendingDedupKey !== undefined && pendingToken !== undefined) {
-          idempotencyStore.abort(pendingDedupKey, pendingToken);
+        const accountMismatch = routing.account !== account;
+        const accountUnverified = authResult.value.accountVerified !== true;
+        if (accountMismatch || accountUnverified) {
+          if (pendingDedupKey !== undefined && pendingToken !== undefined) {
+            idempotencyStore.abort(pendingDedupKey, pendingToken);
+          }
+          const reason = accountMismatch
+            ? "Authenticator did not bind the URL account"
+            : "Authenticator must set accountVerified: true for shared-secret account routes";
+          return jsonResponse(401, { ok: false, error: `${reason} — route rejected` });
         }
-        return jsonResponse(401, {
-          ok: false,
-          error: "Authenticator did not bind the URL account — route rejected",
-        });
       }
     }
 
@@ -455,21 +540,35 @@ export function createWebhookServer(
 
     // Renew the processing lease periodically while dispatch is active so a
     // slow-but-healthy dispatcher does not lose its reservation to a provider retry.
-    // Renewal runs until dispatch settles (success or error) — stopping early would
-    // let the processing TTL expire while the handler is still running, opening a
-    // concurrent-duplicate window if the provider retries before the handler finishes.
+    // For hung dispatchers that never settle, maxDispatchMs stops renewal so the
+    // processing TTL expires and providers can retry. This accepts a concurrent-
+    // duplicate window in exchange for recovery from truly hung handlers. Slow-
+    // but-healthy dispatchers that succeed after maxDispatchMs still commit.
+    // Default maxDispatchMs to 2× the processing TTL so hung dispatchers always
+    // release their lease within a bounded window even without explicit config.
+    const maxDispatchMs =
+      config.maxDispatchMs ?? 2 * (config.idempotency?.processingTtlMs ?? 5 * 60 * 1000);
     let renewalTimer: ReturnType<typeof setInterval> | undefined;
+    let maxDispatchTimer: ReturnType<typeof setTimeout> | undefined;
     if (pendingDedupKey !== undefined && pendingToken !== undefined) {
       const key = pendingDedupKey;
       const token = pendingToken;
       renewalTimer = setInterval(() => {
         idempotencyStore.renew(key, token);
       }, leaseRenewalMs);
+      maxDispatchTimer = setTimeout(() => {
+        // Stop renewing so the processing TTL counts down. A hung handler's
+        // reservation expires after processingTtlMs, unblocking provider retries.
+        // We do NOT abort: explicit abort would immediately allow a concurrent
+        // duplicate; TTL expiry gives a bounded delay instead.
+        clearInterval(renewalTimer);
+      }, maxDispatchMs);
     }
 
     try {
       await Promise.resolve(dispatcher(session, frame));
     } catch (err: unknown) {
+      clearTimeout(maxDispatchTimer);
       clearInterval(renewalTimer);
       // Abort dedup reservation so provider can retry and be accepted.
       if (pendingDedupKey !== undefined && pendingToken !== undefined) {
@@ -478,6 +577,7 @@ export function createWebhookServer(
       const message = err instanceof Error ? err.message : String(err);
       return jsonResponse(500, { ok: false, error: `Dispatch failed: ${message}`, frameId });
     }
+    clearTimeout(maxDispatchTimer);
     clearInterval(renewalTimer);
 
     // Commit dedup key only after full successful acceptance (auth + dispatch).
