@@ -63,6 +63,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
 
 export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/artifacts-s3",
+  "@koi/gateway",
   "@koi/audit-sink-ndjson",
   "@koi/audit-sink-sqlite",
   "@koi/browser-ext",

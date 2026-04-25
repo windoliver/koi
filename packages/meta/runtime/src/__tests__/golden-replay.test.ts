@@ -45,6 +45,7 @@ import type {
 import { createSingleToolProvider, runId, sessionId } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
+import { createGateway, createInMemorySessionStore, DEFAULT_GATEWAY_CONFIG } from "@koi/gateway";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
@@ -8115,10 +8116,11 @@ describe("Golden: @koi/mcp-server", () => {
 
     // Verify tools/list returns platform tools
     const tools = await client.listTools();
-    expect(tools.tools.length).toBe(2); // koi_send_message + koi_list_messages
+    expect(tools.tools.length).toBe(3); // koi_send_message + koi_list_messages + koi_list_mailbox
     const names = tools.tools.map((t) => t.name);
     expect(names).toContain("koi_send_message");
     expect(names).toContain("koi_list_messages");
+    expect(names).toContain("koi_list_mailbox");
 
     // Verify tool schemas have required fields
     const sendTool = tools.tools.find((t) => t.name === "koi_send_message");
@@ -12957,5 +12959,164 @@ describe("Golden: @koi/scheduler-provider", () => {
 
     await scheduler[Symbol.asyncDispose]();
     db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/gateway — transport infrastructure, standalone API tests
+// (No cassette/LLM needed: gateway lives below the agent-loop tool surface)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/gateway", () => {
+  test("DEFAULT_GATEWAY_CONFIG has safe production defaults", () => {
+    expect(DEFAULT_GATEWAY_CONFIG.minProtocolVersion).toBe(1);
+    expect(DEFAULT_GATEWAY_CONFIG.maxProtocolVersion).toBe(1);
+    expect(DEFAULT_GATEWAY_CONFIG.maxConnections).toBe(10_000);
+    expect(DEFAULT_GATEWAY_CONFIG.authTimeoutMs).toBe(5_000);
+    expect(DEFAULT_GATEWAY_CONFIG.backpressureCriticalTimeoutMs).toBe(30_000);
+    expect(DEFAULT_GATEWAY_CONFIG.disconnectedSessionTtlMs).toBe(300_000);
+    expect(DEFAULT_GATEWAY_CONFIG.capabilities.compression).toBe(false);
+    expect(DEFAULT_GATEWAY_CONFIG.capabilities.maxFrameBytes).toBe(1_048_576);
+  });
+
+  test("createInMemorySessionStore satisfies SessionStore contract", async () => {
+    const store = createInMemorySessionStore();
+    const session = {
+      id: "s1",
+      agentId: "a1",
+      connectedAt: Date.now(),
+      lastHeartbeat: Date.now(),
+      seq: 0,
+      remoteSeq: 0,
+      metadata: {},
+    } as const;
+
+    const before = await Promise.resolve(store.has("s1"));
+    expect(before).toEqual({ ok: true, value: false });
+
+    await Promise.resolve(store.set(session));
+
+    const r = await Promise.resolve(store.get("s1"));
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.id).toBe("s1");
+      expect(r.value.agentId).toBe("a1");
+      expect(r.value.seq).toBe(0);
+    }
+
+    await Promise.resolve(store.delete("s1"));
+    const after = await Promise.resolve(store.has("s1"));
+    expect(after).toEqual({ ok: true, value: false });
+  });
+
+  test("createGateway returns a Gateway with the required interface", () => {
+    const store = createInMemorySessionStore();
+    const gateway = createGateway(
+      {},
+      {
+        transport: {
+          listen: async () => {},
+          close: () => {},
+          connections: () => 0,
+        },
+        auth: {
+          authenticate: async () => ({
+            ok: false as const,
+            code: "INVALID_TOKEN" as const,
+            message: "test-only stub",
+          }),
+        },
+        store,
+      },
+    );
+
+    expect(typeof gateway.start).toBe("function");
+    expect(typeof gateway.stop).toBe("function");
+    expect(typeof gateway.send).toBe("function");
+    expect(typeof gateway.onFrame).toBe("function");
+    expect(typeof gateway.dispatch).toBe("function");
+    expect(typeof gateway.destroySession).toBe("function");
+    expect(typeof gateway.onSessionEvent).toBe("function");
+    expect(gateway.sessions()).toBe(store);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/ipc-local (2 queries: mailbox + router)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/ipc-local", () => {
+  test("createLocalMailbox — send, list, and onMessage round-trip", async () => {
+    const { createLocalMailbox } = await import("@koi/ipc-local");
+    const { agentId } = await import("@koi/core");
+
+    const mailbox = createLocalMailbox({ agentId: agentId("owner") });
+    const received: string[] = [];
+    mailbox.onMessage((msg) => {
+      received.push(msg.type);
+    });
+
+    const result = await mailbox.send({
+      from: agentId("sender"),
+      to: agentId("owner"),
+      kind: "event",
+      type: "ping",
+      payload: { ts: 1 },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.id).toBeString();
+      expect(result.value.from).toBe(agentId("sender"));
+      expect(result.value.type).toBe("ping");
+    }
+
+    const msgs = await mailbox.list();
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]?.type).toBe("ping");
+
+    await Bun.sleep(10);
+    expect(received).toEqual(["ping"]);
+
+    mailbox.close();
+    expect(await mailbox.list()).toHaveLength(0);
+  });
+
+  test("createLocalMailboxRouter — register and route messages between agents", async () => {
+    const { createLocalMailbox, createLocalMailboxRouter } = await import("@koi/ipc-local");
+    const { agentId } = await import("@koi/core");
+
+    const router = createLocalMailboxRouter();
+    // Mailboxes must be created with the router they will be registered in —
+    // this binds their inbound-auth guard to the router's trust domain.
+    const mailboxA = createLocalMailbox({ agentId: agentId("agent-a"), router });
+    const mailboxB = createLocalMailbox({ agentId: agentId("agent-b"), router });
+
+    router.register(agentId("agent-a"), mailboxA);
+    router.register(agentId("agent-b"), mailboxB);
+
+    // Send via mailboxA's outbound path — the authenticated cross-agent route.
+    // router.getView() is a read-only lookup; message delivery goes through the mailbox.
+    const result = await mailboxA.send({
+      from: agentId("agent-a"),
+      to: agentId("agent-b"),
+      kind: "request",
+      type: "task",
+      payload: { action: "run" },
+    });
+    expect(result.ok).toBe(true);
+
+    const bMsgs = await mailboxB.list();
+    expect(bMsgs).toHaveLength(1);
+    expect(bMsgs[0]?.kind).toBe("request");
+    expect(bMsgs[0]?.from).toBe(agentId("agent-a"));
+
+    // Unregister removes from routing table
+    router.unregister(agentId("agent-a"));
+    expect(router.getView(agentId("agent-a"))).toBeUndefined();
+    expect(router.getView(agentId("agent-b"))).toBeDefined();
+
+    mailboxA.close();
+    mailboxB.close();
   });
 });
