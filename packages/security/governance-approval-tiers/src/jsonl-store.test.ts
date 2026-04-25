@@ -137,4 +137,38 @@ describe("createJsonlApprovalStore", () => {
     const loaded = await store.load();
     expect(loaded.length).toBe(1);
   });
+
+  // Regression: cross-process concurrent appends lost ~30% of writes under
+  // read-modify-write. O_APPEND on sub-PIPE_BUF payloads is POSIX-atomic,
+  // so two processes cannot interleave mid-line or overwrite each other.
+  it("preserves every write when two processes append concurrently", async () => {
+    const runner = join(dir, "runner.ts");
+    await writeFile(
+      runner,
+      `
+import { createJsonlApprovalStore } from "${join(import.meta.dir, "jsonl-store.ts")}";
+const store = createJsonlApprovalStore({ path: process.argv[2] });
+const label = process.argv[3];
+const count = Number(process.argv[4]);
+await Promise.all(
+  Array.from({ length: count }, (_, i) =>
+    store.append({
+      kind: "tool_call",
+      payload: { tool: "bash", n: i, w: label },
+      grantKey: label + "-" + i,
+      grantedAt: i,
+    }),
+  ),
+);
+`,
+    );
+    const procA = Bun.spawn(["bun", "run", runner, path, "A", "50"], { stdout: "pipe" });
+    const procB = Bun.spawn(["bun", "run", runner, path, "B", "50"], { stdout: "pipe" });
+    await Promise.all([procA.exited, procB.exited]);
+    const store = createJsonlApprovalStore({ path });
+    const loaded = await store.load();
+    expect(loaded.length).toBe(100);
+    const keys = new Set(loaded.map((r) => r.grantKey));
+    expect(keys.size).toBe(100);
+  });
 });

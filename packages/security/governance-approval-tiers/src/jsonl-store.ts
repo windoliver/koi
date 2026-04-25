@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { computeGrantKey } from "@koi/hash";
 import { applyAliases } from "./aliases.js";
@@ -45,11 +45,14 @@ export function createJsonlApprovalStore(config: JsonlApprovalStoreConfig): Appr
   }
 
   async function writeLine(line: string): Promise<void> {
+    // O_APPEND + a single write() of a sub-PIPE_BUF-sized payload is atomic
+    // on POSIX: the kernel seeks-to-end and writes in one step. A row is a
+    // few hundred bytes, well under the 4 KiB PIPE_BUF threshold, so two
+    // processes appending concurrently cannot interleave mid-line or lose
+    // each other's writes. Earlier read-modify-write lost ~30% of writes
+    // under 2-process race; O_APPEND is the fix.
     await mkdir(dirname(config.path), { recursive: true });
-    const existing = (await Bun.file(config.path).exists())
-      ? await Bun.file(config.path).text()
-      : "";
-    await Bun.write(config.path, `${existing}${line}\n`);
+    await appendFile(config.path, `${line}\n`);
   }
 
   return {
