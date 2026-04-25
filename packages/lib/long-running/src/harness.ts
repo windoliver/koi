@@ -40,7 +40,6 @@ import {
   DEFAULT_LONG_RUNNING_CONFIG,
   type LongRunningConfig,
   type LongRunningHarness,
-  type ResumeResult,
   type SessionLease,
   type StartResult,
 } from "./types.js";
@@ -59,6 +58,7 @@ interface MutableState {
   lastSessionId: string | undefined;
   turnCount: number;
   inTurn: boolean;
+  terminating: boolean;
   timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   lease: SessionLease | undefined;
   abortController: AbortController | undefined;
@@ -104,6 +104,16 @@ export function createLongRunningHarness(
   const activeLeases = new WeakSet<SessionLease>();
   let epochCounter = 0;
 
+  // Lifecycle mutex — every mutating call serializes through this chain so
+  // concurrent pause/completeTask/start/etc. observe a consistent view of
+  // state.taskBoard, state.summaries, state.metrics, and lease identity.
+  let mutationChain: Promise<unknown> = Promise.resolve();
+  const withLock = <T>(fn: () => Promise<T>): Promise<T> => {
+    const next = mutationChain.then(fn, fn);
+    mutationChain = next.catch(() => undefined);
+    return next;
+  };
+
   const state: MutableState = {
     phase: "idle",
     sessionSeq: 0,
@@ -118,21 +128,33 @@ export function createLongRunningHarness(
     lastSessionId: undefined,
     turnCount: 0,
     inTurn: false,
+    terminating: false,
     timeoutHandle: undefined,
     lease: undefined,
     abortController: undefined,
   };
 
-  const buildSnapshot = (phase: HarnessPhase, failureReason?: string): HarnessSnapshot =>
+  interface StateDelta {
+    readonly taskBoard?: HarnessSnapshot["taskBoard"];
+    readonly summaries?: readonly ContextSummary[];
+    readonly keyArtifacts?: readonly KeyArtifact[];
+    readonly metrics?: HarnessSnapshot["metrics"];
+  }
+
+  const buildSnapshot = (
+    phase: HarnessPhase,
+    failureReason?: string,
+    delta: StateDelta = {},
+  ): HarnessSnapshot =>
     buildHarnessSnapshot({
       harnessId: cfg.harnessId,
       agentId: cfg.agentId,
       phase,
       sessionSeq: state.sessionSeq,
-      taskBoard: state.taskBoard,
-      summaries: state.summaries,
-      keyArtifacts: state.keyArtifacts,
-      metrics: state.metrics,
+      taskBoard: delta.taskBoard ?? state.taskBoard,
+      summaries: delta.summaries ?? state.summaries,
+      keyArtifacts: delta.keyArtifacts ?? state.keyArtifacts,
+      metrics: delta.metrics ?? state.metrics,
       startedAt: state.startedAt,
       checkpointedAt: now(),
       lastSessionId: state.lastSessionId,
@@ -259,12 +281,23 @@ export function createLongRunningHarness(
     if (expect === "start" || state.startedAt === 0) state.startedAt = now();
     state.sessionSeq += 1;
     state.failureReason = undefined;
+    // Clear any leftover terminating flag from a prior session — soft
+    // checkpoints in this new session must be allowed to fire.
+    state.terminating = false;
+
+    // Engine state is an OPTIMIZATION; transcript replay is the documented
+    // fallback. If the session row is missing or unreadable, degrade
+    // gracefully — do not strand a resumable harness on a stale row error.
+    let carriedState: EngineState | undefined;
+    if (expect === "resume" && head?.data.lastSessionId) {
+      const priorRes = await cfg.sessionPersistence.loadSession(head.data.lastSessionId);
+      if (priorRes.ok) carriedState = priorRes.value.lastEngineState;
+    }
 
     const sid: SessionId = toSessionId(crypto.randomUUID());
     state.lastSessionId = sid;
     const lease = mintLease(sid);
 
-    const carriedState = head?.data && expect === "resume" ? undefined : undefined;
     const sessionRec: SessionRecord = {
       sessionId: sid,
       agentId: cfg.agentId,
@@ -277,6 +310,7 @@ export function createLongRunningHarness(
       remoteSeq: 0,
       connectedAt: now(),
       lastPersistedAt: now(),
+      ...(carriedState !== undefined && { lastEngineState: carriedState }),
       status: "running",
       metadata: {},
     };
@@ -298,7 +332,9 @@ export function createLongRunningHarness(
 
     if (cfg.timeoutMs !== undefined) {
       state.timeoutHandle = setTimeout(() => {
-        void publishTerminal("failed", "TIMEOUT");
+        // Route through the lifecycle mutex so timeout cannot race a
+        // concurrent pause/fail/completeTask transition.
+        void withLock(() => publishTerminal("failed", "TIMEOUT"));
       }, cfg.timeoutMs);
     }
 
@@ -312,31 +348,107 @@ export function createLongRunningHarness(
     };
   };
 
+  // Sentinel-typed capture: "skip" means saveState is not configured or the
+  // capture threw, so we must NOT touch the session record. A defined or
+  // explicit-undefined `state` value means we should overwrite the session's
+  // `lastEngineState` with that value (`undefined` clears stale state).
+  type CapturedEngineState =
+    | { readonly skip: true }
+    | { readonly skip: false; readonly value: EngineState | undefined };
+
+  const captureEngineState = async (): Promise<CapturedEngineState> => {
+    if (!cfg.saveState) return { skip: true };
+    try {
+      const value = (await cfg.saveState()) as EngineState | undefined;
+      return { skip: false, value };
+    } catch {
+      return { skip: true };
+    }
+  };
+
+  const writeCapturedEngineState = async (
+    captured: CapturedEngineState,
+    targetSessionId: string,
+  ): Promise<void> => {
+    // Bind the write to the session id captured at transition entry.
+    // If a concurrent activate() has already advanced state.lastSessionId
+    // to a fresh session, do NOT cross-contaminate by writing this
+    // captured state into the new session row.
+    if (captured.skip || state.lastSessionId !== targetSessionId) return;
+    try {
+      const sid = toSessionId(targetSessionId);
+      const loadRes = await cfg.sessionPersistence.loadSession(sid);
+      if (loadRes.ok) {
+        await cfg.sessionPersistence.saveSession({
+          ...loadRes.value,
+          lastEngineState: captured.value,
+          lastPersistedAt: now(),
+        });
+      }
+    } catch {
+      // best-effort
+    }
+  };
+
+  const commitDelta = (delta: StateDelta): void => {
+    if (delta.taskBoard !== undefined) state.taskBoard = delta.taskBoard;
+    if (delta.summaries !== undefined) state.summaries = delta.summaries;
+    if (delta.keyArtifacts !== undefined) state.keyArtifacts = delta.keyArtifacts;
+    if (delta.metrics !== undefined) state.metrics = delta.metrics;
+  };
+
   const publishTerminal = async (
     target: "suspended" | "completed" | "failed",
     failureReason?: string,
+    buildDelta: () => StateDelta = () => ({}),
   ): Promise<Result<void, KoiError>> => {
     if (state.phase !== "active") return { ok: true, value: undefined };
+    state.terminating = true;
     clearTimer();
-    revokeLease();
+    const sidAtEntry = state.lastSessionId;
+    // For "suspended", capture resumable engine state BEFORE firing abort
+    // — a cooperative engine may clear state on abort, and we need to be
+    // able to resume from the live execution point.
+    const captured: CapturedEngineState =
+      target === "suspended" ? await captureEngineState() : { skip: true };
+    // Fire abort so the engine stops emitting side effects. DO NOT revoke
+    // the lease (and do NOT commit the speculative delta) until the
+    // terminal snapshot is durably published. On quiesce timeout or store
+    // failure, the caller can retry the same transition with the same
+    // lease and the same delta — applying it twice is impossible because
+    // state mutation is gated on success.
+    state.abortController?.abort();
     const quiet = await quiesce(abortTimeoutMs);
     if (!quiet) {
+      state.terminating = false;
       return {
         ok: false,
-        error: err("TIMEOUT", "engine did not quiesce within abortTimeoutMs", false, {
+        error: err("TIMEOUT", "engine did not quiesce within abortTimeoutMs", true, {
           abortTimeoutMs,
         }),
       };
     }
-    const snapshot = buildSnapshot(target, failureReason);
+    // Build the delta AFTER quiesce so any metrics/summaries advanced by a
+    // late onTurnEnd are merged in, not silently overwritten.
+    const delta = buildDelta();
+    const snapshot = buildSnapshot(target, failureReason, delta);
     const putRes = await putSnapshot(snapshot);
     if (!putRes.ok) {
-      // retry once with fresh head
       const headRes = await loadHead();
       if (headRes.ok && headRes.value) state.lastNodeId = headRes.value.nodeId;
-      const retry = await putSnapshot(buildSnapshot(target, failureReason));
-      if (!retry.ok) return { ok: false, error: retry.error };
+      const retry = await putSnapshot(buildSnapshot(target, failureReason, delta));
+      if (!retry.ok) {
+        state.terminating = false;
+        return { ok: false, error: retry.error };
+      }
     }
+    // Snapshot is durable — now write the captured engine state. Atomicity:
+    // if this write fails, the snapshot still reflects the published phase
+    // and a subsequent resume will simply lack the optimization of fast
+    // restart, falling back to transcript replay.
+    if (sidAtEntry !== undefined) await writeCapturedEngineState(captured, sidAtEntry);
+    commitDelta(delta);
+    revokeLease();
     state.phase = target;
     state.failureReason = failureReason;
     if (state.lastSessionId) {
@@ -351,40 +463,108 @@ export function createLongRunningHarness(
     return { ok: true, value: undefined };
   };
 
-  const softCheckpoint = async (): Promise<Result<void, KoiError>> => {
+  const softCheckpoint = async (delta: StateDelta = {}): Promise<Result<void, KoiError>> => {
     if (state.phase !== "active") return { ok: true, value: undefined };
-    if (cfg.saveState && state.lastSessionId) {
-      try {
-        const engineState = (await cfg.saveState()) as EngineState | undefined;
-        const sid = toSessionId(state.lastSessionId);
-        const loadRes = await cfg.sessionPersistence.loadSession(sid);
-        if (loadRes.ok) {
-          const updated: SessionRecord = {
-            ...loadRes.value,
-            lastEngineState: engineState ?? loadRes.value.lastEngineState,
-            lastPersistedAt: now(),
-          };
-          await cfg.sessionPersistence.saveSession(updated);
-        }
-      } catch {
-        // best-effort: caller's saveState failure should not abort the turn
-      }
-    }
-    const snapshot = buildSnapshot("active");
+    if (state.terminating) return { ok: true, value: undefined };
+    const sidAtEntry = state.lastSessionId;
+    // Capture before put so the engine state matches the snapshot we're
+    // about to publish; only persist the captured state after the
+    // snapshot is durable.
+    const captured = await captureEngineState();
+    const snapshot = buildSnapshot("active", undefined, delta);
     const putRes = await putSnapshot(snapshot);
     if (!putRes.ok) return { ok: false, error: putRes.error };
+    if (sidAtEntry !== undefined) await writeCapturedEngineState(captured, sidAtEntry);
+    commitDelta(delta);
     return { ok: true, value: undefined };
+  };
+
+  const buildSessionResultDelta = (sessionResult: {
+    readonly summary: HarnessSnapshot["summaries"][number];
+    readonly newKeyArtifacts: HarnessSnapshot["keyArtifacts"];
+    readonly metricsDelta: Partial<HarnessSnapshot["metrics"]>;
+  }): StateDelta => {
+    const summaries = [...state.summaries, sessionResult.summary];
+    const cap = cfg.maxKeyArtifacts ?? DEFAULT_LONG_RUNNING_CONFIG.maxKeyArtifacts;
+    const merged = [...state.keyArtifacts, ...sessionResult.newKeyArtifacts];
+    const keyArtifacts = merged.length > cap ? merged.slice(merged.length - cap) : merged;
+    const metrics = { ...state.metrics, ...sessionResult.metricsDelta };
+    return { summaries, keyArtifacts, metrics };
+  };
+
+  const buildTaskUpdateDelta = (
+    taskId: string,
+    nextStatus: "completed" | "failed",
+    result: unknown,
+    error?: KoiError,
+  ): {
+    readonly delta: StateDelta;
+    readonly found: boolean;
+    readonly remaining: number;
+  } => {
+    let found = false;
+    let foundStartedAt: number | undefined;
+    const tNow = now();
+    const items = state.taskBoard.items.map((t: Task) => {
+      if (t.id === taskId && (t.status === "pending" || t.status === "in_progress")) {
+        found = true;
+        foundStartedAt = t.startedAt;
+        // Mirror the L0 task-board terminal-transition rules: clear
+        // transient `activeForm`, bump `version`, set `updatedAt`.
+        const next: Task = {
+          ...t,
+          status: nextStatus,
+          activeForm: undefined,
+          version: t.version + 1,
+          updatedAt: tNow,
+          ...(error !== undefined && { error }),
+        };
+        return next;
+      }
+      return t;
+    });
+    const safeStringify = (v: unknown): string => {
+      if (typeof v === "string") return v;
+      if (v === undefined || v === null) return "null";
+      try {
+        return JSON.stringify(v) ?? "null";
+      } catch {
+        return "[unserializable]";
+      }
+    };
+    const results =
+      found && nextStatus === "completed"
+        ? [
+            ...state.taskBoard.results,
+            {
+              taskId: taskId as Task["id"],
+              output: safeStringify(result),
+              durationMs: foundStartedAt !== undefined ? Math.max(0, tNow - foundStartedAt) : 0,
+            },
+          ]
+        : state.taskBoard.results;
+    const taskBoard = { items, results };
+    const remaining = items.filter(
+      (t: Task) => t.status === "pending" || t.status === "in_progress",
+    ).length;
+    return { delta: { taskBoard }, found, remaining };
   };
 
   const onTurnStart = (): void => {
     state.inTurn = true;
   };
   const onTurnEnd = async (): Promise<void> => {
-    state.inTurn = false;
     state.turnCount += 1;
     state.metrics = { ...state.metrics, totalTurns: state.metrics.totalTurns + 1 };
-    if (shouldSoftCheckpoint(state.turnCount, interval)) {
-      await softCheckpoint();
+    try {
+      if (shouldSoftCheckpoint(state.turnCount, interval)) {
+        await softCheckpoint();
+      }
+    } finally {
+      // Always clear inTurn — even on checkpoint error/throw — so quiesce
+      // can drain. Otherwise a transient store fault would wedge every
+      // subsequent terminal transition.
+      state.inTurn = false;
     }
   };
 
@@ -400,50 +580,62 @@ export function createLongRunningHarness(
   });
 
   const harness: LongRunningHarness = {
-    start: () => activate("start"),
-    resume: async (): Promise<Result<ResumeResult, KoiError>> => activate("resume"),
-    pause: async (lease, _result): Promise<Result<void, KoiError>> => {
-      const e = verifyLease(lease);
-      if (e) return { ok: false, error: e };
-      return publishTerminal("suspended");
-    },
-    fail: async (lease, error): Promise<Result<void, KoiError>> => {
-      const e = verifyLease(lease);
-      if (e) return { ok: false, error: e };
-      return publishTerminal("failed", error.message);
-    },
-    completeTask: async (lease, _taskId, _result): Promise<Result<void, KoiError>> => {
-      const e = verifyLease(lease);
-      if (e) return { ok: false, error: e };
-      // In the scope-reduced design, the caller owns the task board; the
-      // harness only observes session-ending semantics. Treat empty-board
-      // as the trigger via taskBoard.items inspection.
-      const remaining = state.taskBoard.items.filter(
-        (t: Task) => t.status === "pending" || t.status === "in_progress",
-      );
-      if (remaining.length === 0) return publishTerminal("completed");
-      return softCheckpoint();
-    },
-    failTask: async (lease, _taskId, taskError): Promise<Result<void, KoiError>> => {
-      const e = verifyLease(lease);
-      if (e) return { ok: false, error: e };
-      if (taskError.retryable) return softCheckpoint();
-      return publishTerminal("failed", taskError.message);
-    },
-    dispose: async (lease): Promise<Result<void, KoiError>> => {
-      clearTimer();
-      if (state.phase !== "active") return { ok: true, value: undefined };
-      if (lease) {
+    start: () => withLock(() => activate("start")),
+    resume: () => withLock(() => activate("resume")),
+    pause: (lease, sessionResult) =>
+      withLock(async (): Promise<Result<void, KoiError>> => {
         const e = verifyLease(lease);
         if (e) return { ok: false, error: e };
-      } else if (state.lease) {
-        return {
-          ok: false,
-          error: err("STALE_REF", "active lease present; pass it to dispose", false),
-        };
-      }
-      return publishTerminal("suspended", "disposed");
-    },
+        return publishTerminal("suspended", undefined, () =>
+          buildSessionResultDelta(sessionResult),
+        );
+      }),
+    fail: (lease, error) =>
+      withLock(async (): Promise<Result<void, KoiError>> => {
+        const e = verifyLease(lease);
+        if (e) return { ok: false, error: e };
+        return publishTerminal("failed", error.message);
+      }),
+    completeTask: (lease, taskId, result) =>
+      withLock(async (): Promise<Result<void, KoiError>> => {
+        const e = verifyLease(lease);
+        if (e) return { ok: false, error: e };
+        if (state.taskBoard.items.length === 0) {
+          return publishTerminal("completed");
+        }
+        const { delta, found, remaining } = buildTaskUpdateDelta(taskId, "completed", result);
+        if (!found) {
+          return {
+            ok: false,
+            error: err("NOT_FOUND", `task ${taskId} not in board`, false, { taskId }),
+          };
+        }
+        if (remaining === 0) return publishTerminal("completed", undefined, () => delta);
+        return softCheckpoint(delta);
+      }),
+    failTask: (lease, taskId, taskError) =>
+      withLock(async (): Promise<Result<void, KoiError>> => {
+        const e = verifyLease(lease);
+        if (e) return { ok: false, error: e };
+        if (taskError.retryable) return softCheckpoint();
+        const { delta } = buildTaskUpdateDelta(taskId, "failed", null, taskError);
+        return publishTerminal("failed", taskError.message, () => delta);
+      }),
+    dispose: (lease) =>
+      withLock(async (): Promise<Result<void, KoiError>> => {
+        clearTimer();
+        if (state.phase !== "active") return { ok: true, value: undefined };
+        if (lease) {
+          const e = verifyLease(lease);
+          if (e) return { ok: false, error: e };
+        } else if (state.lease) {
+          return {
+            ok: false,
+            error: err("STALE_REF", "active lease present; pass it to dispose", false),
+          };
+        }
+        return publishTerminal("suspended", "disposed");
+      }),
     status: getStatus,
     createMiddleware: (mwCfg?: CheckpointMiddlewareConfig): KoiMiddleware =>
       createCheckpointMiddleware({
