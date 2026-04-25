@@ -683,20 +683,22 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
      `orphanWindow`, treat as **orphan-suspected**, but do NOT
      automatically terminalize — a read-path fault could mimic this
      signature even when the owner is healthy. Instead:
-     - Invoke `supervisor.killAndConfirm(lastSessionId)`. If it returns
-       `Ok`, the supervisor has authoritatively proven the worker is
-       dead. Only then CAS-advance the snapshot to `suspended`
-       (NOT `failed`) with `failureReason = "ORPHAN_RECOVERED"`,
-       generation+1. `suspended` is recoverable: a later `resume()`
-       can start a fresh session from the last durable snapshot. We
-       never publish `failed` from NOT_FOUND evidence alone.
-     - If `killAndConfirm` returns `Err(RECLAIM_LIVE_OWNER)` (the
-       supervisor reports the worker is still alive), the harness
-       returns `Err(RECLAIM_LIVE_OWNER, retryable: true)` without
-       mutating state. The owner is live, just invisible to session
-       reads — this is a store fault, not a harness fault.
-     - If `killAndConfirm` returns `Err(KILL_FAILED)` (supervisor
-       unhealthy), return `Err(KILL_FAILED, retryable: true)` without
+     - Run the supervisor probe-then-kill protocol. If `probeAlive`
+       returns `"alive"` → return `Err(RECLAIM_LIVE_OWNER)`; do not
+       kill. If `probeAlive` returns `"dead"` (or sustained
+       `"unknown"` paired with the orphan-window NOT_FOUND signal),
+       call `killAndConfirm(lastSessionId)` (idempotent on a dead
+       worker). On `killAndConfirm` success: apply any TerminalOutcome
+       records first (see Reclaimer-side replay below), then if no
+       terminal outcomes exist, CAS-advance the snapshot to
+       `suspended` (NOT `failed`) with `failureReason =
+       "ORPHAN_RECOVERED"`, generation+1. `suspended` is recoverable:
+       a later `resume()` starts a fresh session. We never publish
+       `failed` from NOT_FOUND evidence alone.
+     - On `probeAlive === "unknown"` without corroborating signals or
+       on `Err(IO_ERROR)`: return `Err(SUPERVISOR_UNHEALTHY)`.
+     - On `killAndConfirm` returning `Err(KILL_FAILED)` (supervisor
+       unhealthy): return `Err(KILL_FAILED, retryable: true)` without
        mutating state.
      - Bounded recovery time: ≤ `leaseTtlMs + heartbeatIntervalMs` +
        supervisor kill latency.
@@ -748,11 +750,30 @@ reflect stale or incorrect tombstone writes.
 (loop started in activation step 2) and holds the lease; a crashed
 mid-activation owner goes stale within TTL. This closes both the
 activation-latency race and the cross-store-lag race.
-3. To reclaim: CAS-advance `prev` → `next` with
-   `phase = "suspended"`, `generation = prev.generation + 1`,
-   `failureReason = "RECLAIMED_FROM_DEAD_OWNER"`. This fences the dead owner's
-   lease. Then re-enter the resume flow from step 1 with the now-suspended
-   snapshot.
+3. To reclaim — outcome-driven, never bypass durable terminal state:
+   - First, `listTerminalOutcomes(prev.lastSessionId)`.
+   - If outcomes exist: replay them in `seq` order via
+     `compareAndPut(prev.head, outcome.snapshotDelta)`. The final
+     advanced snapshot may be `completed` / `failed` / a
+     post-task-board `active` (depending on outcome kinds). If the
+     last outcome is harness-terminal (`harness-completed`,
+     `harness-failed`, `task-failed-terminal`-with-no-more-tasks),
+     reclamation ENDS — the harness is now durable terminal. Future
+     `resume()` returns `TERMINAL`. We never bypass a durable
+     terminal outcome.
+   - If outcomes only advanced through task-level events with the
+     last snapshot still `active`, follow with one more CAS to
+     `suspended` (`failureReason = "RECLAIMED_FROM_DEAD_OWNER"`,
+     generation+1) so the chain ends in a non-active state. Then
+     re-enter the resume flow.
+   - If no outcomes exist: CAS-advance `prev` → `next` with
+     `phase = "suspended"`, `generation = prev.generation + 1`,
+     `failureReason = "RECLAIMED_FROM_DEAD_OWNER"`. Re-enter resume
+     flow.
+
+   Outcome replay is gated by the same `probeAlive`/`killAndConfirm`
+   protocol — never replay outcomes for a session whose worker the
+   supervisor reports as alive.
 
 **Heartbeat loop (mandatory, timer-driven).**
 
@@ -1502,11 +1523,20 @@ Additive changes required (part of the coordinated migration):
    death. See TerminalOutcome in phase machine.
 
 **`@koi/core` — `HarnessStatus` (harness.ts):**
-7. `durability: "ok" | "unhealthy"` — observable degraded-state signal.
-   Hosts key automation (pager, SIGKILL escalation) off this field.
-   Default `"ok"`; flips to `"unhealthy"` on `ABORT_TIMEOUT` or sustained
-   heartbeat-write failure. Transitions back to `"ok"` only on a clean
-   `start()`/`resume()` with a fresh session.
+7. `durability: "ok" | "unhealthy"` — in-memory observable degraded-
+   state signal. Default `"ok"`; flips to `"unhealthy"` on
+   `ABORT_TIMEOUT` or sustained heartbeat-write failure. In-memory
+   only; lost on process exit. Use #8 for cross-restart visibility.
+
+**`@koi/core` — `HarnessSnapshot` (harness.ts):**
+8. `cleanupHealth: "ok" | "unhealthy"` — DURABLE degraded-state
+   marker, persisted in the snapshot. Set to `"unhealthy"` whenever
+   the harness flips in-memory durability AND the next CAS write
+   succeeds (a breadcrumb that the run was wedged). Cleared to
+   `"ok"` on the next successful `resume()` that completes
+   reclamation cleanly. Hosts SHOULD page on
+   `cleanupHealth === "unhealthy"` regardless of process state — this
+   is the cross-restart escalation signal that survives crashes.
 
 These land across the migration PRs listed above, not a single "prereq PR".
 Implementation of `@koi/long-running` is blocked on ALL of the above.
