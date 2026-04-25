@@ -376,7 +376,16 @@ function acquireDbLock(dbPath: string): void {
       // Lock file vanished between the open and the read — retry the atomic create.
       continue;
     }
-    if (existing !== undefined && isLockOwnerAlive(existing.pid, existing.sessionToken)) {
+    if (existing === undefined) {
+      // Fail closed: lock file exists but content is empty or unparseable — this is the
+      // create/write window where the owner just ran openSync() but hasn't finished writeSync().
+      // Treat as live to avoid unlinking a file we cannot verify as stale.
+      throw new Error(
+        `[temporal-scheduler] dbPath "${dbPath}" lock file exists but cannot be parsed. ` +
+          "Another process may be starting concurrently. Try again momentarily.",
+      );
+    }
+    if (isLockOwnerAlive(existing.pid, existing.sessionToken)) {
       throw new Error(
         `[temporal-scheduler] dbPath "${dbPath}" is already held by PID ${existing.pid}. ` +
           "Only one scheduler instance may write to a given dbPath at a time. " +
@@ -1165,7 +1174,54 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           return id;
         }
 
-        // Non-idempotent spawn or dispatch failure: mark as failed and throw.
+        // Dispatch: ambiguous signal failure — the signal may have been delivered but the
+        // client lost the ACK (timeout, connection reset, transport failure). If we mark
+        // as failed and rethrow, the caller will retry with a NEW task ID, producing a
+        // duplicate signal into the live workflow. Duplicate dispatch causes irreversible
+        // side effects (duplicate tool calls, duplicate messages). Instead, treat delivery
+        // as optimistically successful and return the task ID without throwing — the caller
+        // gets no exception and will not generate a retry. Only throw for definitive
+        // rejections where the signal was provably not enqueued (workflow not found).
+        const isDefiniteSignalReject =
+          mode === "dispatch" &&
+          err instanceof Error &&
+          /not.?found|does.?not.?exist|no.*workflow|workflow.*not.*exist/i.test(err.message);
+        const isAmbiguousSignal = mode === "dispatch" && !isDefiniteSignalReject;
+        if (isAmbiguousSignal) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          const completedAt = Date.now();
+          const completedTask: ScheduledTask = {
+            ...task,
+            status: "completed",
+            startedAt: now,
+            completedAt,
+          };
+          tasks.set(id, completedTask);
+          taskWorkflowIds.set(id, targetWorkflowId);
+          emit({ kind: "task:submitted", task: Object.freeze({ ...completedTask }) });
+          history.push({
+            taskId: id,
+            agentId,
+            status: "completed",
+            startedAt: now,
+            completedAt,
+            durationMs: completedAt - now,
+            retryAttempt: 0,
+          });
+          emit({ kind: "task:completed", taskId: id, result: undefined });
+          console.warn(
+            `[temporal-scheduler] dispatch signal for agent ${agentId} threw "${errorMsg}" — ` +
+              "treating as possibly delivered to prevent duplicate dispatch on retry.",
+          );
+          try {
+            persist();
+          } catch {
+            // Persist failure trips durabilityFailed — outcome is still tracked in memory.
+          }
+          return id;
+        }
+
+        // Non-idempotent spawn or definite dispatch failure: mark as failed and throw.
         const errorMsg = err instanceof Error ? err.message : String(err);
         const koiError: KoiError = {
           code: "EXTERNAL",

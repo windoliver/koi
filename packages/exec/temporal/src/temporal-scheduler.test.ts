@@ -292,21 +292,40 @@ describe("rollback safety", () => {
     expect(client.workflow.cancel).toHaveBeenCalled();
   });
 
-  test("dispatch signal failure: rejects and records failed task (no workflow to cancel)", async () => {
-    // Spawn: messages in start args — only workflow.start can fail.
-    // Dispatch: single atomic "messages" signal — failure leaves no partial state.
+  test("dispatch signal failure — ambiguous transport error marks completed and does not throw", async () => {
+    // When workflow.signal() throws an ambiguous error (timeout, connection reset), we cannot
+    // tell if the signal was delivered. Rethrowing would let callers retry with a NEW task ID,
+    // producing a duplicate signal into the live workflow (irreversible side effects). Instead:
+    // treat delivery as optimistically successful, return the task ID, record completed.
     const client = makeMockClient({
       signal: mock(async () => {
-        throw new Error("signal failed");
+        throw new Error("signal failed — transport error");
+      }),
+    });
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
+    expect(typeof id).toBe("string");
+    const tasks = await scheduler.query({});
+    // Treated as completed (optimistic delivery) — not failed
+    expect(tasks[0]?.status).toBe("completed");
+    // dispatch has no new workflow to cancel
+    expect(client.workflow.cancel).not.toHaveBeenCalled();
+  });
+
+  test("dispatch signal failure — definite rejection (workflow not found) marks failed and throws", async () => {
+    // When signal throws "not found", the signal was provably not enqueued — safe to fail+throw
+    // without risk of duplicate delivery (the workflow does not exist).
+    const client = makeMockClient({
+      signal: mock(async () => {
+        throw new Error("workflow not found");
       }),
     });
     const scheduler = createTemporalScheduler(makeConfig(client));
     await expect(scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch")).rejects.toThrow(
-      "signal failed",
+      "workflow not found",
     );
     const tasks = await scheduler.query({});
     expect(tasks[0]?.status).toBe("failed");
-    // dispatch has no new workflow to cancel
     expect(client.workflow.cancel).not.toHaveBeenCalled();
   });
 
@@ -840,6 +859,18 @@ describe("state persistence (dbPath)", () => {
     // Should not throw — stale lock is overwritten.
     const s = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
     await s[Symbol.asyncDispose]();
+  });
+
+  test("unparseable lock file (create/write window race) is treated as live — fail closed", async () => {
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const { writeFileSync } = await import("node:fs");
+    // Write an empty lock file — simulates the window between openSync() and writeSync()
+    // where a competing reader sees the file before the owner has written the pid:token.
+    writeFileSync(`${dbPath}.lock`, "");
+    // Should throw because we cannot parse the lock file (fail closed).
+    expect(() => createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath })).toThrow(
+      /lock file exists but cannot be parsed/,
+    );
   });
 
   test("lock file with live PID but different session token is treated as stale (PID reuse)", async () => {
@@ -1483,14 +1514,14 @@ describe("idempotent spawn — retry after cancel does not attach to cancelling 
   test("already-running error on retry-after-cancel throws instead of attaching to cancelled run", async () => {
     // Simulate: workflow is still shutting down from cancel when retry calls workflow.start().
     // The "already running" rejection must NOT be treated as an ambiguous success.
-    let getResultCalled = 0;
+    let _getResultCalled = 0;
     const client = makeMockClient({
       start: mock(async () => {
         throw new Error("Workflow execution already started");
       }),
       cancel: mock(async () => undefined),
       getResult: mock(async () => {
-        getResultCalled++;
+        _getResultCalled++;
         return Promise.resolve("result");
       }),
     });
@@ -1581,7 +1612,10 @@ describe("idempotencyKey — delimiter validation prevents ID aliasing", () => {
 });
 
 describe("idempotencyKey — failed submissions allow retry", () => {
-  test("retrying a failed dispatch with same key sends a new signal", async () => {
+  test("ambiguous dispatch signal failure — does not throw, marks completed, idempotency guards retry", async () => {
+    // Ambiguous signal failures (transport-level — could be delivered) are treated as optimistically
+    // delivered to prevent duplicate dispatch on caller retry. The caller receives the task ID and
+    // does NOT retry. A second call with the same idempotencyKey is a no-op (task already completed).
     let callCount = 0;
     const client = makeMockClient({
       signal: mock(async () => {
@@ -1590,16 +1624,19 @@ describe("idempotencyKey — failed submissions allow retry", () => {
       }),
     });
     const scheduler = createTemporalScheduler(makeConfig(client));
-    // First attempt fails
-    await expect(
-      scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "retry-key" }),
-    ).rejects.toThrow("transient");
-    // Retry with same key — must NOT be short-circuited by the failed prior attempt
+    // First attempt: signal throws "transient" — treated as possibly delivered, does NOT throw
     const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", {
       idempotencyKey: "retry-key",
     });
     expect(id).toBe(`${AGENT_ID}:dispatch:retry-key`);
-    expect(client.workflow.signal).toHaveBeenCalledTimes(2);
+    const tasks = await scheduler.query({});
+    expect(tasks[0]?.status).toBe("completed"); // optimistic delivery
+    // Second call with same key — idempotency guard short-circuits (already completed), no second signal
+    const id2 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", {
+      idempotencyKey: "retry-key",
+    });
+    expect(id2).toBe(id);
+    expect(client.workflow.signal).toHaveBeenCalledTimes(1); // no duplicate signal
     await scheduler[Symbol.asyncDispose]();
   });
 
