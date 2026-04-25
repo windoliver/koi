@@ -60,6 +60,10 @@ interface MutableState {
   turnCount: number;
   inTurn: boolean;
   terminating: boolean;
+  // Effective task-retry budget for this harness instance. Persisted in
+  // snapshot node metadata so resumed sessions cannot silently change
+  // retry semantics across deploys/restarts.
+  effectiveTaskMaxRetries: number;
   timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   lease: SessionLease | undefined;
   abortController: AbortController | undefined;
@@ -82,6 +86,14 @@ function validateConfig(cfg: LongRunningConfig): KoiError | undefined {
   }
   if (cfg.timeoutMs !== undefined && cfg.timeoutMs <= 0) {
     return err("VALIDATION", "timeoutMs must be > 0", false);
+  }
+  if (cfg.taskMaxRetries !== undefined) {
+    const v = cfg.taskMaxRetries;
+    if (!Number.isInteger(v) || v < 0) {
+      return err("VALIDATION", "taskMaxRetries must be a non-negative integer", false, {
+        taskMaxRetries: v,
+      });
+    }
   }
   return undefined;
 }
@@ -130,6 +142,7 @@ export function createLongRunningHarness(
     turnCount: 0,
     inTurn: false,
     terminating: false,
+    effectiveTaskMaxRetries: cfg.taskMaxRetries ?? 3,
     timeoutHandle: undefined,
     lease: undefined,
     abortController: undefined,
@@ -168,6 +181,7 @@ export function createLongRunningHarness(
     const parents: readonly NodeId[] = state.lastNodeId ? [state.lastNodeId] : [];
     const result = await cfg.harnessStore.put(chain, snapshot, parents, {
       reason: snapshot.phase,
+      taskMaxRetries: state.effectiveTaskMaxRetries,
     });
     if (!result.ok) return { ok: false, error: result.error };
     if (!result.value) {
@@ -197,6 +211,13 @@ export function createLongRunningHarness(
     state.taskBoard = data.taskBoard;
     state.lastSessionId = data.lastSessionId;
     state.lastNodeId = node.nodeId;
+    // Restore the persisted retry budget so a resumed harness keeps the
+    // semantics it had at the time of suspend, regardless of the local
+    // cfg.taskMaxRetries the host happens to pass at resume time.
+    const persisted = node.metadata.taskMaxRetries;
+    if (typeof persisted === "number" && Number.isInteger(persisted) && persisted >= 0) {
+      state.effectiveTaskMaxRetries = persisted;
+    }
   };
 
   const mintLease = (sid: SessionId): SessionLease => {
@@ -244,11 +265,21 @@ export function createLongRunningHarness(
     sid: SessionId,
     status: SessionRecord["status"],
   ): Promise<void> => {
-    try {
-      await cfg.sessionPersistence.setSessionStatus(sid, status);
-    } catch {
-      // best-effort
+    // Best-effort with one retry on Err/exception. The snapshot chain is
+    // the durable source of truth — callers reconciling crash candidates
+    // should treat the snapshot phase as authoritative when it disagrees
+    // with SessionRecord.status. Persistent failure is annotated on
+    // state.failureReason so getStatus() surfaces the divergence.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const r = await cfg.sessionPersistence.setSessionStatus(sid, status);
+        if (r.ok) return;
+      } catch {
+        // fall through to retry
+      }
     }
+    const note = `session status update to "${status}" failed after retry`;
+    state.failureReason = state.failureReason ? `${state.failureReason}; ${note}` : note;
   };
 
   const buildEngineInput = (signal: AbortSignal, st?: EngineState | undefined): EngineInput =>
@@ -285,6 +316,12 @@ export function createLongRunningHarness(
     // Clear any leftover terminating flag from a prior session — soft
     // checkpoints in this new session must be allowed to fire.
     state.terminating = false;
+    // Fresh start re-initializes the retry budget from current config so
+    // operators can tighten/relax policy across runs. Resume preserves
+    // the persisted value adopted from the head snapshot.
+    if (expect === "start") {
+      state.effectiveTaskMaxRetries = cfg.taskMaxRetries ?? 3;
+    }
 
     // Engine state is an OPTIMIZATION; transcript replay is the documented
     // fallback. If the session row is missing or unreadable, degrade
@@ -454,7 +491,16 @@ export function createLongRunningHarness(
     state.failureReason = failureReason;
     if (state.lastSessionId) {
       const sid = toSessionId(state.lastSessionId);
+      const failureBefore = state.failureReason;
       await persistSessionStatus(sid, target === "suspended" ? "idle" : "done");
+      // If persistSessionStatus exhausted retries it appended a note to
+      // state.failureReason. Persist that durably with a follow-up
+      // snapshot so the divergence survives a process restart and is
+      // visible to operators / recovery logic via adoptHead().
+      if (state.failureReason !== failureBefore) {
+        const annotated = buildSnapshot(target, state.failureReason, delta);
+        await putSnapshot(annotated);
+      }
     }
     await cfg.harnessStore.prune(chain, pruning);
     if (target === "completed" && cfg.onCompleted) await cfg.onCompleted(getStatus());
@@ -606,6 +652,38 @@ export function createLongRunningHarness(
     return { delta: { taskBoard }, found, remaining };
   };
 
+  // Terminal fail transition with full task-board cleanup: clears
+  // assignedTo and backfills lastAssignedTo from assignedTo when the
+  // legacy field is missing. Used for retry-exhaustion and non-retryable
+  // failure paths so the persisted snapshot stays consistent with
+  // task-board ACL/orphan invariants.
+  const buildTerminalFailDelta = (
+    taskId: string,
+    error: KoiError,
+  ): { readonly delta: StateDelta; readonly found: boolean } => {
+    let found = false;
+    const tNow = now();
+    const items = state.taskBoard.items.map((t: Task) => {
+      if (t.id === taskId && t.status === "in_progress") {
+        found = true;
+        const lastAssigned = t.lastAssignedTo !== undefined ? t.lastAssignedTo : t.assignedTo;
+        const next: Task = {
+          ...t,
+          status: "failed",
+          activeForm: undefined,
+          assignedTo: undefined,
+          ...(lastAssigned !== undefined && { lastAssignedTo: lastAssigned }),
+          version: t.version + 1,
+          updatedAt: tNow,
+          error,
+        };
+        return next;
+      }
+      return t;
+    });
+    return { delta: { taskBoard: { items, results: state.taskBoard.results } }, found };
+  };
+
   const onTurnStart = (): void => {
     state.inTurn = true;
   };
@@ -656,6 +734,10 @@ export function createLongRunningHarness(
       withLock(async (): Promise<Result<void, KoiError>> => {
         const e = verifyLease(lease);
         if (e) return { ok: false, error: e };
+        // BC: harnesses that don't track tasks on the board call
+        // `completeTask` as the session-end signal. Preserve that path.
+        // For task-board harnesses the explicit `complete()` API and
+        // the per-task transition path below are preferred.
         if (state.taskBoard.items.length === 0) {
           return publishTerminal("completed");
         }
@@ -663,18 +745,128 @@ export function createLongRunningHarness(
         if (!found) {
           return {
             ok: false,
-            error: err("NOT_FOUND", `task ${taskId} not in board`, false, { taskId }),
+            error: err("NOT_FOUND", `task ${taskId} not in_progress on board`, false, {
+              taskId,
+            }),
           };
         }
-        if (remaining === 0) return publishTerminal("completed", undefined, () => delta);
+        if (remaining === 0) {
+          // Mirror complete()'s invariant: only publish phase=completed
+          // when ALL items are in `completed` state. If any failed/
+          // killed tasks remain, do NOT auto-complete — the caller must
+          // call fail() / dispose() so the durable phase stays
+          // consistent with the board's terminal mix.
+          const allCompleted =
+            delta.taskBoard?.items.every((t: Task) => t.status === "completed") ?? true;
+          if (allCompleted) {
+            return publishTerminal("completed", undefined, () => delta);
+          }
+        }
         return softCheckpoint(delta);
+      }),
+    complete: (lease) =>
+      withLock(async (): Promise<Result<void, KoiError>> => {
+        const e = verifyLease(lease);
+        if (e) return { ok: false, error: e };
+        // Reject if any non-completed tracked work exists. Publishing
+        // `completed` over pending/in_progress strands work; publishing
+        // it over `failed`/`killed` items creates a durable contradiction
+        // where the harness phase advertises success while the board
+        // still records non-success outcomes. Callers must use fail()
+        // or task-level transitions instead.
+        const nonComplete = state.taskBoard.items.filter((t: Task) => t.status !== "completed");
+        if (nonComplete.length > 0) {
+          return {
+            ok: false,
+            error: err(
+              "CONFLICT",
+              `cannot complete: ${nonComplete.length} task(s) not in "completed" state`,
+              false,
+              { nonCompleteCount: nonComplete.length },
+            ),
+          };
+        }
+        return publishTerminal("completed");
       }),
     failTask: (lease, taskId, taskError) =>
       withLock(async (): Promise<Result<void, KoiError>> => {
         const e = verifyLease(lease);
         if (e) return { ok: false, error: e };
-        if (taskError.retryable) return softCheckpoint();
-        const { delta, found } = buildTaskUpdateDelta(taskId, "failed", null, taskError);
+        // Honor TaskBoardConfig.maxRetries semantics: if the task has
+        // already exhausted its retry budget, escalate to a terminal
+        // failure instead of looping indefinitely.
+        if (taskError.retryable) {
+          // Use only the validated, persisted harness budget. Per-task
+          // metadata is an untyped record and must not influence retry
+          // policy — that would let stale snapshots or generic metadata
+          // updates silently change termination semantics.
+          const maxRetries = state.effectiveTaskMaxRetries;
+          const current = state.taskBoard.items.find((t: Task) => t.id === taskId);
+          // Only escalate to terminal if the task is *still* in_progress
+          // for this callback. A stale duplicate from a prior attempt
+          // (task already reset to pending or completed elsewhere) must
+          // not durably fail the whole harness.
+          if (current && current.status === "in_progress" && current.retries >= maxRetries) {
+            const { delta } = buildTerminalFailDelta(taskId, taskError);
+            return publishTerminal("failed", taskError.message, () => delta);
+          }
+        }
+        if (taskError.retryable) {
+          // Real retry transition: reset the matching in_progress task
+          // back to pending, increment retries, bump version, clear
+          // activeForm, attach the error. Persisted via softCheckpoint
+          // so the scheduler can re-pick the task on the next turn.
+          const tNow = now();
+          let foundRetry = false;
+          const items = state.taskBoard.items.map((t: Task) => {
+            if (t.id === taskId && t.status === "in_progress") {
+              foundRetry = true;
+              // Mirror the canonical task-board retry transition: clear
+              // `assignedTo` so a scheduler can re-claim, preserve
+              // `lastAssignedTo` (it is set-once and never cleared), and
+              // strip transient delegation metadata so a stale handoff
+              // does not block re-assignment.
+              const cleanedMeta =
+                t.metadata && "delegatedTo" in t.metadata
+                  ? Object.fromEntries(
+                      Object.entries(t.metadata).filter(([k]) => k !== "delegatedTo"),
+                    )
+                  : t.metadata;
+              // Version-skew backfill: pre-`lastAssignedTo` snapshots
+              // may have `assignedTo` set without `lastAssignedTo`.
+              // Preserve the worker identity before clearing `assignedTo`
+              // so re-claim / orphan handling can still attribute work.
+              const lastAssigned = t.lastAssignedTo !== undefined ? t.lastAssignedTo : t.assignedTo;
+              const next: Task = {
+                ...t,
+                status: "pending",
+                activeForm: undefined,
+                assignedTo: undefined,
+                ...(lastAssigned !== undefined && { lastAssignedTo: lastAssigned }),
+                retries: t.retries + 1,
+                version: t.version + 1,
+                updatedAt: tNow,
+                error: taskError,
+                ...(cleanedMeta !== undefined && { metadata: cleanedMeta }),
+              };
+              return next;
+            }
+            return t;
+          });
+          if (!foundRetry && state.taskBoard.items.length > 0) {
+            return {
+              ok: false,
+              error: err("NOT_FOUND", `task ${taskId} not in_progress on board`, false, {
+                taskId,
+              }),
+            };
+          }
+          const retryDelta: StateDelta = foundRetry
+            ? { taskBoard: { items, results: state.taskBoard.results } }
+            : {};
+          return softCheckpoint(retryDelta);
+        }
+        const { delta, found } = buildTerminalFailDelta(taskId, taskError);
         // Reject stale/out-of-order callbacks for a non-empty board: the
         // L0 contract only allows in_progress -> failed, and we must not
         // publish a `failed` harness while leaving a pending task with

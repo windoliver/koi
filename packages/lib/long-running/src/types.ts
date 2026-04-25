@@ -53,6 +53,11 @@ export interface LongRunningConfig {
   readonly maxKeyArtifacts?: number;
   /** Pruning policy for the snapshot chain. Default { retainCount: 10 }. */
   readonly pruningPolicy?: PruningPolicy;
+  /**
+   * Maximum retries per task before a retryable `failTask` becomes
+   * terminal. Mirrors `TaskBoardConfig.maxRetries`. Default 3.
+   */
+  readonly taskMaxRetries?: number;
   /** Wall-clock deadline per session. Optional. */
   readonly timeoutMs?: number;
   /** Max wait for engine to quiesce on phase transitions. Default 10_000. */
@@ -80,6 +85,14 @@ export interface LongRunningHarness {
     sessionResult: SessionResult,
   ) => Promise<Result<void, KoiError>>;
   readonly fail: (lease: SessionLease, error: KoiError) => Promise<Result<void, KoiError>>;
+  /**
+   * Publish phase=completed without requiring a tracked task. Use this
+   * when the harness does not maintain a task board and the caller has
+   * an externally-determined success signal. For task-board-tracked
+   * runs, prefer `completeTask` so the last task transition triggers
+   * the terminal flow automatically.
+   */
+  readonly complete: (lease: SessionLease) => Promise<Result<void, KoiError>>;
   readonly completeTask: (
     lease: SessionLease,
     taskId: string,
