@@ -999,10 +999,6 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           await config.client.workflow.signal(targetWorkflowId, "messages", messages);
         }
       } catch (err: unknown) {
-        // For idempotent spawn (idempotencyKey present), skip the cancel rollback entirely.
-        // The failure may be an ACK-lost transient — Temporal may have created the workflow.
-        // Cancelling would kill a live execution. Instead, mark as failed (retryable) so the
-        // caller can retry; the retry will hit "already running" and take the idempotent attach path.
         const skipCancel = mode === "spawn" && options?.idempotencyKey !== undefined;
         let rollbackOk = true;
         if (mode === "spawn" && !skipCancel) {
@@ -1012,6 +1008,87 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             rollbackOk = false;
           }
         }
+
+        if (skipCancel) {
+          // Idempotent spawn: workflow.start() threw but the workflow MAY already exist
+          // (ACK-lost scenario where Temporal accepted the start but the response was lost).
+          // Cancelling would kill a live execution. Instead, attach a getResult watcher using
+          // the requested workflowId so that if the workflow does exist it is tracked to
+          // completion; if it does not exist the watcher rejects and the task is marked failed.
+          // Do NOT throw: return the stable task ID so callers track lifecycle via events.
+          const startedAt = now;
+          const runningTask: ScheduledTask = { ...task, status: "running", startedAt };
+          tasks.set(id, runningTask);
+          taskWorkflowIds.set(id, targetWorkflowId);
+          emit({ kind: "task:submitted", task: Object.freeze({ ...runningTask }) });
+          void config.client.workflow.getResult(targetWorkflowId).then(
+            (result: unknown) => {
+              if (disposed || cancelledTaskIds.has(id)) return;
+              const completedAt = Date.now();
+              const safeResult = sanitizeResult(result);
+              tasks.set(id, { ...runningTask, status: "completed", completedAt });
+              history.push({
+                taskId: id,
+                agentId,
+                status: "completed",
+                startedAt,
+                completedAt,
+                durationMs: completedAt - startedAt,
+                result: safeResult,
+                retryAttempt: 0,
+              });
+              emit({ kind: "task:completed", taskId: id, result: safeResult });
+              try {
+                persist();
+              } catch (e) {
+                durabilityFailed = true;
+                console.error(
+                  "[temporal-scheduler] background persist failed — scheduler is now fail-closed:",
+                  e,
+                );
+              }
+            },
+            (error: unknown) => {
+              if (disposed || cancelledTaskIds.has(id)) return;
+              const completedAt = Date.now();
+              tasks.set(id, { ...runningTask, status: "failed", completedAt });
+              const koiError: KoiError = {
+                code: "EXTERNAL",
+                message: error instanceof Error ? error.message : String(error),
+                retryable: false,
+                context: { taskId: id, agentId },
+              };
+              history.push({
+                taskId: id,
+                agentId,
+                status: "failed",
+                startedAt,
+                completedAt,
+                durationMs: completedAt - startedAt,
+                error: koiError.message,
+                retryAttempt: 0,
+              });
+              emit({ kind: "task:failed", taskId: id, error: koiError });
+              try {
+                persist();
+              } catch (e) {
+                durabilityFailed = true;
+                console.error(
+                  "[temporal-scheduler] background persist failed — scheduler is now fail-closed:",
+                  e,
+                );
+              }
+            },
+          );
+          try {
+            persist();
+          } catch {
+            // Persist failure trips durabilityFailed — running state is still tracked in memory.
+          }
+          return id;
+        }
+
+        // Non-idempotent spawn or dispatch failure: mark as failed and throw.
         const errorMsg = err instanceof Error ? err.message : String(err);
         const koiError: KoiError = {
           code: "EXTERNAL",

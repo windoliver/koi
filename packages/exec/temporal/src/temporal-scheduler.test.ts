@@ -854,19 +854,42 @@ describe("state persistence (dbPath)", () => {
     expect(existsSync(`${dbPath}.lock`)).toBe(false);
   });
 
-  test("idempotent spawn failure — cancel is skipped to avoid killing an in-flight workflow", async () => {
+  test("idempotent spawn failure — attaches getResult watcher instead of throwing or cancelling", async () => {
+    // Simulate ACK-lost scenario: workflow.start() throws but the workflow may exist.
+    // getResult is held pending so we can verify the task is in "running" state.
+    let resolveGetResult!: (v: unknown) => void;
+    const getResultPromise = new Promise<unknown>((res) => {
+      resolveGetResult = res;
+    });
     const client = makeMockClient({
       start: mock(async () => {
         throw new Error("Workflow execution already started");
       }),
+      getResult: mock(async () => getResultPromise),
     });
+    const events: string[] = [];
     const scheduler = createTemporalScheduler(makeConfig(client));
-    // Throws because the start failed — but cancel must NOT be called.
-    await expect(
-      scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", { idempotencyKey: "idm-spawn" }),
-    ).rejects.toThrow("Workflow execution already started");
+    scheduler.watch((e) => events.push(e.kind));
+
+    // submit() must NOT throw — returns the stable task ID for lifecycle tracking.
+    const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", {
+      idempotencyKey: "idm-spawn",
+    });
+    expect(typeof id).toBe("string");
+
     // cancel must NOT be called — could kill a live workflow with the same stable ID.
     expect(client.workflow.cancel).not.toHaveBeenCalled();
+
+    // Task must be "running" (watcher attached), not "failed".
+    const [task] = scheduler.query({});
+    expect(task?.status).toBe("running");
+    expect(events).toContain("task:submitted");
+
+    // When the workflow resolves, the task should complete.
+    resolveGetResult({ output: 42 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(events).toContain("task:completed");
+
     await scheduler[Symbol.asyncDispose]();
   });
 });
