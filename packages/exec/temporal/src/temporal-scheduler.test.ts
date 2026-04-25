@@ -838,3 +838,78 @@ describe("persist durability — mutation APIs propagate write failures", () => 
     await scheduler[Symbol.asyncDispose]();
   });
 });
+
+describe("unschedule / pause / resume — durability failures propagate", () => {
+  const VALID_INITIAL_STATE = JSON.stringify({
+    tasks: [],
+    taskWorkflowIds: [],
+    cancelledTaskIds: [],
+    schedules: [],
+    history: [],
+  });
+
+  async function makeReadOnlyDir(): Promise<{ dir: string; dbPath: string; cleanup: () => void }> {
+    const { mkdirSync, writeFileSync, chmodSync, rmdirSync } = await import("node:fs");
+    const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
+    mkdirSync(dir);
+    const dbPath = `${dir}/state.json`;
+    writeFileSync(dbPath, VALID_INITIAL_STATE);
+    chmodSync(dir, 0o555);
+    return {
+      dir,
+      dbPath,
+      cleanup: () => {
+        chmodSync(dir, 0o755);
+        rmdirSync(dir, { recursive: true });
+      },
+    };
+  }
+
+  test("unschedule throws (not returns false) when remote delete succeeds but persist fails", async () => {
+    const { dbPath, cleanup } = await makeReadOnlyDir();
+    const client = makeMockClient();
+    const _scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+
+    // Directly inject a schedule entry without using schedule() (which would also hit persist)
+    // by temporarily re-enabling writes, creating the schedule, then locking again.
+    cleanup(); // restore write access
+    const { mkdirSync, writeFileSync, chmodSync } = await import("node:fs");
+    const dir2 = `/tmp/temporal-test-${crypto.randomUUID()}`;
+    mkdirSync(dir2);
+    const dbPath2 = `${dir2}/state.json`;
+    writeFileSync(dbPath2, VALID_INITIAL_STATE);
+    const scheduler2 = createTemporalScheduler({ ...makeConfig(client), dbPath: dbPath2 });
+    const scheduleId = await scheduler2.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "dispatch");
+    await scheduler2[Symbol.asyncDispose]();
+    chmodSync(dir2, 0o555); // now block writes
+
+    const scheduler3 = createTemporalScheduler({ ...makeConfig(client), dbPath: dbPath2 });
+    await expect(scheduler3.unschedule(scheduleId)).rejects.toThrow(/durability write failed/);
+    chmodSync(dir2, 0o755);
+    await scheduler3[Symbol.asyncDispose]();
+  });
+
+  test("cyclic workflow result does not poison future persists", async () => {
+    let resolveResult!: (value: unknown) => void;
+    const resultPromise = new Promise<unknown>((resolve) => {
+      resolveResult = resolve;
+    });
+    const client = makeMockClient({ getResult: mock(async () => resultPromise) });
+
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+
+    // Resolve with a cyclic object — should not break future persists
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    resolveResult(cyclic);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Submit a second task — if cyclic result poisoned persist, this would throw
+    const id2 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    expect(typeof id2).toBe("string");
+
+    await scheduler[Symbol.asyncDispose]();
+  });
+});

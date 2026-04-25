@@ -88,6 +88,17 @@ function persistenceReplacer(_key: string, value: unknown): unknown {
   }
 }
 
+// Sanitize a workflow result before storing it in history so a single cyclic
+// or unserializable result cannot poison all future persistence writes.
+// Returns a clean JSON-round-tripped clone, or a sentinel string on failure.
+function sanitizeResult(result: unknown): unknown {
+  try {
+    return JSON.parse(JSON.stringify(result, persistenceReplacer)) as unknown;
+  } catch {
+    return "[temporal-scheduler: result was not JSON-serializable and has been omitted]";
+  }
+}
+
 // Atomic write: write to a temp file then rename, so a crash mid-write cannot
 // corrupt or erase the last good snapshot.
 function saveStateSync(dbPath: string, state: PersistedState): void {
@@ -411,6 +422,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       (result: unknown) => {
         if (disposed || cancelledTaskIds.has(taskId)) return;
         const completedAt = Date.now();
+        const safeResult = sanitizeResult(result);
         tasks.set(taskId, { ...task, status: "completed" });
         history.push({
           taskId: taskId as TaskId,
@@ -419,10 +431,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           startedAt,
           completedAt,
           durationMs: completedAt - startedAt,
-          result,
+          result: safeResult,
           retryAttempt: 0,
         });
-        emit({ kind: "task:completed", taskId: taskId as TaskId, result });
+        emit({ kind: "task:completed", taskId: taskId as TaskId, result: safeResult });
         try {
           persist();
         } catch (e) {
@@ -592,6 +604,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           (result: unknown) => {
             if (disposed || cancelledTaskIds.has(id)) return;
             const completedAt = Date.now();
+            const safeResult = sanitizeResult(result);
             tasks.set(id, { ...runningTask, status: "completed" });
             history.push({
               taskId: id,
@@ -600,10 +613,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
               startedAt,
               completedAt,
               durationMs: completedAt - startedAt,
-              result,
+              result: safeResult,
               retryAttempt: 0,
             });
-            emit({ kind: "task:completed", taskId: id, result });
+            emit({ kind: "task:completed", taskId: id, result: safeResult });
             try {
               persist();
             } catch (e) {
@@ -795,13 +808,16 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       if (!schedules.has(id)) return false;
       try {
         await config.client.schedule.delete(id);
-        schedules.delete(id);
-        emit({ kind: "schedule:removed", scheduleId: id });
-        persist();
-        return true;
       } catch {
         return false;
       }
+      // Remote delete succeeded — update local state and persist.
+      // Propagate persist errors rather than collapsing them into `false`:
+      // after a successful remote delete, returning false would misrepresent the outcome.
+      schedules.delete(id);
+      emit({ kind: "schedule:removed", scheduleId: id });
+      persist();
+      return true;
     },
 
     async pause(id: ScheduleId): Promise<boolean> {
@@ -809,13 +825,13 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       if (schedule === undefined) return false;
       try {
         await config.client.schedule.pause(id);
-        schedules.set(id, { ...schedule, paused: true });
-        emit({ kind: "schedule:paused", scheduleId: id });
-        persist();
-        return true;
       } catch {
         return false;
       }
+      schedules.set(id, { ...schedule, paused: true });
+      emit({ kind: "schedule:paused", scheduleId: id });
+      persist();
+      return true;
     },
 
     async resume(id: ScheduleId): Promise<boolean> {
@@ -823,13 +839,13 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       if (schedule === undefined) return false;
       try {
         await config.client.schedule.unpause(id);
-        schedules.set(id, { ...schedule, paused: false });
-        emit({ kind: "schedule:resumed", scheduleId: id });
-        persist();
-        return true;
       } catch {
         return false;
       }
+      schedules.set(id, { ...schedule, paused: false });
+      emit({ kind: "schedule:resumed", scheduleId: id });
+      persist();
+      return true;
     },
 
     query(filter: TaskFilter): readonly ScheduledTask[] {
