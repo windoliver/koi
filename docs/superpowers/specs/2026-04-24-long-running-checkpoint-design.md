@@ -396,37 +396,50 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
    On `IO_ERROR` (any return other than a record or explicit NOT_FOUND):
    retry up to 3 times with exponential backoff (100/500/2500 ms). If all
    retries fail, return `KoiError { code: "RECLAIM_READ_FAILED", retryable: true }`
-   to the caller — do NOT reclaim. This is a safe default: the caller
-   gets a retryable error, the harness remains whatever it was, and no
-   exclusivity invariant is broken. If both snapshot and session stores
-   are persistently unreachable the system is already degraded; the
-   correct recovery is operator intervention on the store, not a
-   forced reclaim based on an unreadable liveness signal.
+   to the caller — do NOT reclaim. Any reclaim decision below REQUIRES a
+   **double-confirmation** protocol to defend against stale replica reads:
+   after the first dead-owner signal, wait `heartbeatIntervalMs * 2`, then
+   re-read. Reclaim proceeds only if the second read also shows dead-owner
+   semantics. This prevents a single stale read from fencing a live
+   heartbeating owner — the second read is expected to see the fresh
+   heartbeat if the original owner is alive.
 2. Decide the owner's liveness. **TTL staleness is the ONLY primary
    dead-owner signal** — status flags are advisory. This avoids relying on
    cross-store read-after-write consistency between `harnessStore` and
    `sessionPersistence`, which L0 does not guarantee:
-   - `NOT_FOUND` → **not a short-term dead-owner signal.** A long turn
-     may exceed `leaseTtlMs` and rely entirely on the heartbeat loop
-     for liveness; if session-record reads lag or return a stale
-     `NOT_FOUND`, reclaiming immediately would fence a live owner.
-     Instead: retry the read 3 times with backoff. If all reads confirm
-     `NOT_FOUND` AND the repeated-read window covers at least
-     `leaseTtlMs` (so any healthy heartbeat loop would have re-written
-     the record in the interim), treat as **orphan record** and proceed
-     to recovery:
+   - `NOT_FOUND` → **not a short-term dead-owner signal.** Enter the
+     **orphan-detection loop**:
+
+     ```
+     orphanWindow = leaseTtlMs + heartbeatIntervalMs    // default 120s
+     pollInterval = heartbeatIntervalMs / 2             // default 15s
+     deadline = Date.now() + orphanWindow
+     while (Date.now() < deadline):
+         sleep(pollInterval)
+         reread = loadSession(sid)
+         if reread is a record → exit loop, re-run reclamation check
+                                  with the now-visible record.
+         if reread is IO_ERROR → exit loop, return RECLAIM_READ_FAILED.
+         // still NOT_FOUND → continue polling.
+     ```
+
+     If the loop exits with NOT_FOUND sustained across the entire
+     `orphanWindow`, a healthy heartbeat loop would have re-written the
+     record multiple times during that window. Treat as **orphan
+     record** and proceed to recovery:
      - CAS-advance the snapshot to `failed` with
        `failureReason = "ORPHAN_SESSION_RECORD"`, generation+1. The
        harness is now terminal (`failed`) and future `resume()` calls
        correctly return `TERMINAL`. Operators can audit/start a fresh
        harness after investigating the missing record.
-     - This path recovers bounded-time (≤ `leaseTtlMs + 3 *
-       backoff_total ≈ 2 * leaseTtlMs`) from deleted/corrupt session
-       records without requiring manual tombstone writes.
+     - Bounded recovery time: ≤ `leaseTtlMs + heartbeatIntervalMs`
+       (default ≤ 120s from the first `resume()` attempt).
 
    Read I/O errors (not NOT_FOUND) remain `RECLAIM_READ_FAILED`
    (retryable) — we do NOT treat a transient read error as a missing
-   record.
+   record. The initial 3-retry backoff (100/500/2500ms) applies ONLY to
+   I/O errors, not to NOT_FOUND. NOT_FOUND enters the orphan-detection
+   loop directly.
    - `record.status === "done"` → advisory signal of clean exit, but still
      require TTL-stale heartbeat before reclaim (protects against lagged
      reads of an old status).
@@ -436,9 +449,19 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
      wait required. The tombstone is only written by the lease holder
      after confirmed engine quiescence, so it proves the run has stopped
      even when the snapshot store is not yet consistent.
-   - `record.status ∈ { "starting", "running" }` — apply TTL rule:
-     - `now - record.lastHeartbeatAt > leaseTtlMs` → **dead**. Reclaim.
+   - `record.status ∈ { "starting", "running" }` — apply TTL rule with
+     **double-confirmation**:
+     - `now - record.lastHeartbeatAt > leaseTtlMs` → first dead signal.
+       Wait `heartbeatIntervalMs * 2`, re-read. If second read is also
+       stale (no newer `lastHeartbeatAt`) → **dead**, reclaim. If second
+       read shows a fresher heartbeat → **live** (stale read on first
+       attempt) → `ALREADY_ACTIVE`.
      - Heartbeat fresh → **live**. `ALREADY_ACTIVE`.
+
+   Double-confirmation adds at most `2 * heartbeatIntervalMs` (default
+   60s) to reclaim latency in exchange for read-lag tolerance. A genuine
+   dead owner stays dead; a live owner that was briefly misread by a
+   lagging replica is correctly identified by the second read.
 
 Unified rule: **reclaim requires an observable positive signal from
 session persistence — either (a) a loadable session record whose
@@ -881,11 +904,20 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   wedge the harness — the existing state is untouched and a later
   `resume()` call can proceed once the store recovers.
 - **Orphan session record (deleted/corrupt):** `loadSession` returns
-  consistent `NOT_FOUND` across a window ≥ `leaseTtlMs`. Harness
-  CAS-advances snapshot to `failed` with `ORPHAN_SESSION_RECORD`.
-  Subsequent `resume()` returns `TERMINAL`. Operator can audit and
-  start a fresh harness. (Regression against permanent `active`
-  wedge.)
+  `NOT_FOUND` for the full `orphanWindow = leaseTtlMs +
+  heartbeatIntervalMs`. Harness CAS-advances snapshot to `failed` with
+  `ORPHAN_SESSION_RECORD`. Subsequent `resume()` returns `TERMINAL`.
+  Bounded within ~120s of the first resume attempt. (Regression
+  against permanent `active` wedge.)
+- **Transient NOT_FOUND (read replica lag):** first read returns
+  `NOT_FOUND`, subsequent polls within `orphanWindow` see the actual
+  record → orphan loop exits, reclamation re-runs with the visible
+  record (TTL double-confirmation applies). No false orphan
+  classification.
+- **Stale heartbeat double-confirmation:** first read shows
+  `lastHeartbeatAt > leaseTtlMs` but a `heartbeatIntervalMs * 2` wait
+  then shows a fresh heartbeat → `ALREADY_ACTIVE`, no reclaim.
+  Regression against stale-replica misclassification of live owners.
 - **`trustedSingleProcess=true`:** `resume()` on any `active` snapshot
   returns `ALREADY_ACTIVE` unconditionally, no reclaim attempted even
   with stale heartbeats. Required for hosts without kill-on-takeover
