@@ -187,7 +187,7 @@ describe("createGitWorktreeBackend", () => {
     expect(survivors).toHaveLength(0);
 
     // Restore so dispose (via registry) can clean up
-    const branchInfo = ws.metadata["branchName"] as string;
+    const branchInfo = ws.metadata.branchName as string;
     execSync(`git -C "${ws.path}" checkout "${branchInfo}"`, { stdio: "ignore" });
     await backend.dispose(ws.id);
   });
