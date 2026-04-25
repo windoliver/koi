@@ -218,8 +218,7 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         // Derive recency from the wsId itself (format: ws-<timestamp>-<random>), which is
         // embedded in the git-owned branch name — not from the writable marker file.
         const tsMatch = wsId.match(/^ws-(\d+)-/);
-        const createdAt =
-          tsMatch !== undefined && tsMatch[1] !== undefined ? Number(tsMatch[1]) : 0;
+        const createdAt = tsMatch !== null && tsMatch[1] !== undefined ? Number(tsMatch[1]) : 0;
         const metadata: Record<string, string> = { branchName, repoPath: config.repoPath };
 
         const id = workspaceId(wsId);
