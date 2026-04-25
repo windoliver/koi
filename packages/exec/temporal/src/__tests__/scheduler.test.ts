@@ -1239,6 +1239,81 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
+  test("bootstrap() skips workflow entry with missing agentId in memo", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+        list: mock(async () => [
+          {
+            workflowId: "wf-legacy-1",
+            status: {
+              status: "RUNNING" as const,
+              startTime: 1000,
+              memo: {
+                workflowType: "agentWorkflow",
+                taskQueue: "test",
+                // agentId intentionally absent — legacy resource
+                mode: "dispatch",
+                inputFingerprint: JSON.stringify({ kind: "text", text: "hello" }),
+              },
+            },
+          },
+        ]),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.bootstrap();
+    expect(sched.stats().running).toBe(0);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("cancel() fails closed when describe throws for bootstrapped ID", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+        list: mock(async () => [
+          {
+            workflowId: "wf-restarted-1",
+            status: {
+              status: "RUNNING" as const,
+              startTime: 1000,
+              memo: {
+                workflowType: "agentWorkflow",
+                taskQueue: "test",
+                agentId: "agent-x",
+                mode: "spawn",
+                inputFingerprint: JSON.stringify({ kind: "text", text: "hi" }),
+                maxRetries: 3,
+              },
+            },
+          },
+        ]),
+        describe: mock(async () => {
+          throw new Error("Temporal unavailable");
+        }),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.bootstrap();
+    const restoredId = taskId("wf-restarted-1");
+    await expect(sched.cancel(restoredId)).rejects.toThrow("Cannot verify ownership");
+    await sched[Symbol.asyncDispose]();
+  });
+
   test("submit() rejects replay when input fingerprint differs (same stable ID, different work)", async () => {
     const alreadyStarted = { name: "WorkflowExecutionAlreadyStartedError", message: "started" };
     const otherFingerprint = JSON.stringify({ kind: "text", text: "different-text" });

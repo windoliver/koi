@@ -473,23 +473,19 @@ export function createTemporalScheduler(
     async cancel(id): Promise<boolean> {
       const describeFn = config.client.workflow.describe;
       if (describeFn !== undefined && (!tasks.has(id) || bootstrappedTaskIds.has(id))) {
-        const isBootstrapped = bootstrappedTaskIds.has(id);
-        let info: WorkflowExecutionStatus | undefined;
+        let info: WorkflowExecutionStatus;
         try {
           info = await describeFn(String(id));
         } catch {
-          if (!isBootstrapped)
-            throw new Error(`Cannot verify ownership: describe failed for "${String(id)}"`);
+          throw new Error(`Cannot verify ownership: describe failed for "${String(id)}"`);
         }
-        if (info !== undefined) {
-          assertMemoOwner(
-            info.memo,
-            String(id),
-            workflowType,
-            config.taskQueue,
-            tasks.get(id)?.agentId,
-          );
-        }
+        assertMemoOwner(
+          info.memo,
+          String(id),
+          workflowType,
+          config.taskQueue,
+          tasks.get(id)?.agentId,
+        );
       }
       try {
         await config.client.workflow.cancel(id);
@@ -593,23 +589,19 @@ export function createTemporalScheduler(
     async unschedule(id): Promise<boolean> {
       const getFn = config.client.schedule.get;
       if (getFn !== undefined && (!schedules.has(id) || bootstrappedScheduleIds.has(id))) {
-        const isBootstrapped = bootstrappedScheduleIds.has(id);
-        let info: ScheduleGetInfo | undefined;
+        let info: ScheduleGetInfo;
         try {
           info = await getFn(String(id));
         } catch {
-          if (!isBootstrapped)
-            throw new Error(`Cannot verify ownership: get failed for "${String(id)}"`);
+          throw new Error(`Cannot verify ownership: get failed for "${String(id)}"`);
         }
-        if (info !== undefined) {
-          assertMemoOwner(
-            info.memo,
-            String(id),
-            workflowType,
-            config.taskQueue,
-            schedules.get(id)?.agentId,
-          );
-        }
+        assertMemoOwner(
+          info.memo,
+          String(id),
+          workflowType,
+          config.taskQueue,
+          schedules.get(id)?.agentId,
+        );
       }
       try {
         await config.client.schedule.delete(id);
@@ -624,23 +616,19 @@ export function createTemporalScheduler(
     async pause(id): Promise<boolean> {
       const getFn = config.client.schedule.get;
       if (getFn !== undefined && (!schedules.has(id) || bootstrappedScheduleIds.has(id))) {
-        const isBootstrapped = bootstrappedScheduleIds.has(id);
-        let info: ScheduleGetInfo | undefined;
+        let info: ScheduleGetInfo;
         try {
           info = await getFn(String(id));
         } catch {
-          if (!isBootstrapped)
-            throw new Error(`Cannot verify ownership: get failed for "${String(id)}"`);
+          throw new Error(`Cannot verify ownership: get failed for "${String(id)}"`);
         }
-        if (info !== undefined) {
-          assertMemoOwner(
-            info.memo,
-            String(id),
-            workflowType,
-            config.taskQueue,
-            schedules.get(id)?.agentId,
-          );
-        }
+        assertMemoOwner(
+          info.memo,
+          String(id),
+          workflowType,
+          config.taskQueue,
+          schedules.get(id)?.agentId,
+        );
       }
       try {
         await config.client.schedule.pause(id);
@@ -658,23 +646,19 @@ export function createTemporalScheduler(
     async resume(id): Promise<boolean> {
       const getFn = config.client.schedule.get;
       if (getFn !== undefined && (!schedules.has(id) || bootstrappedScheduleIds.has(id))) {
-        const isBootstrapped = bootstrappedScheduleIds.has(id);
-        let info: ScheduleGetInfo | undefined;
+        let info: ScheduleGetInfo;
         try {
           info = await getFn(String(id));
         } catch {
-          if (!isBootstrapped)
-            throw new Error(`Cannot verify ownership: get failed for "${String(id)}"`);
+          throw new Error(`Cannot verify ownership: get failed for "${String(id)}"`);
         }
-        if (info !== undefined) {
-          assertMemoOwner(
-            info.memo,
-            String(id),
-            workflowType,
-            config.taskQueue,
-            schedules.get(id)?.agentId,
-          );
-        }
+        assertMemoOwner(
+          info.memo,
+          String(id),
+          workflowType,
+          config.taskQueue,
+          schedules.get(id)?.agentId,
+        );
       }
       try {
         await config.client.schedule.unpause(id);
@@ -764,10 +748,13 @@ export function createTemporalScheduler(
         if (s !== "RUNNING" && s !== "CONTINUED_AS_NEW") continue;
         const id = taskId(entry.workflowId);
         if (tasks.has(id)) continue;
-        const rawAgentId = typeof m.agentId === "string" ? m.agentId : "";
-        const mode = m.mode === "dispatch" ? "dispatch" : "spawn";
-        const fp =
-          typeof m.inputFingerprint === "string" ? m.inputFingerprint : '{"kind":"text","text":""}';
+        // Require full ownership memo — skip entries with missing fields rather than fabricate defaults.
+        if (typeof m.agentId !== "string" || m.agentId === "") continue;
+        if (m.mode !== "dispatch" && m.mode !== "spawn") continue;
+        if (typeof m.inputFingerprint !== "string") continue;
+        const rawAgentId = m.agentId;
+        const mode = m.mode;
+        const fp = m.inputFingerprint;
         bootstrappedTaskIds.add(id);
         tasks.set(id, {
           id,
@@ -788,17 +775,21 @@ export function createTemporalScheduler(
         if (m?.workflowType !== workflowType || m?.taskQueue !== config.taskQueue) continue;
         const id = scheduleId(entry.scheduleId);
         if (schedules.has(id)) continue;
-        const rawAgentId = typeof m.agentId === "string" ? m.agentId : "";
-        const mode = m.mode === "dispatch" ? "dispatch" : "spawn";
-        const fp =
-          typeof m.inputFingerprint === "string" ? m.inputFingerprint : '{"kind":"text","text":""}';
+        // Require full ownership memo — skip entries with missing fields rather than fabricate defaults.
+        if (typeof m.agentId !== "string" || m.agentId === "") continue;
+        if (m.mode !== "dispatch" && m.mode !== "spawn") continue;
+        if (typeof m.inputFingerprint !== "string") continue;
+        if (typeof m.expression !== "string") continue;
+        const rawAgentId = m.agentId;
+        const mode = m.mode;
+        const fp = m.inputFingerprint;
         bootstrappedScheduleIds.add(id);
         schedules.set(id, {
           id,
           agentId: agentId(rawAgentId),
           input: parseStoredEngineInput(fp),
           mode,
-          expression: typeof m.expression === "string" ? m.expression : "",
+          expression: m.expression,
           timezone: typeof m.timezone === "string" ? m.timezone : undefined,
           paused: false,
           taskOptions: undefined,
