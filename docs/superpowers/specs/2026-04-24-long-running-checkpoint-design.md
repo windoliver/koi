@@ -206,15 +206,41 @@ TypeScript type is documentation only.
 
 ### Phase Machine
 
-| From → To | Trigger | Snapshot? |
-|-----------|---------|-----------|
-| `idle → active` | `start(plan)` | yes (initial) |
-| `active → active` | turn completes, policy fires | yes (soft) |
-| `active → suspended` | `pause(sessionResult)` | yes (with summary + artifacts) |
-| `suspended → active` | `resume()` | no (read-only) |
-| `active → completed` | last task done via `completeTask` | yes (final) |
-| `active → failed` | `fail(err)` or timeout | yes (best-effort) |
-| any → any (other) | rejected with `KoiError` code=`INVALID_STATE` |
+| From → To | Trigger | Snapshot? | Quiesce first? |
+|-----------|---------|-----------|----------------|
+| `idle → active` | `start(plan)` | yes (initial) | n/a |
+| `active → active` | turn completes, policy fires | yes (soft) | no |
+| `active → suspended` | `pause(lease, sessionResult)` | yes (final for session) | **yes** |
+| `suspended → active` | `resume()` | yes (CAS advance) | n/a |
+| `active → completed` | last task done via `completeTask` | yes (final) | **yes** |
+| `active → failed` | `fail(lease, err)` or timeout | yes (best-effort) | **yes** |
+| any → any (other) | rejected with `KoiError` code=`INVALID_STATE` | — | — |
+
+**Quiesce-before-publish applies to every transition that advertises a
+non-active or terminal phase.** `pause`, `fail`, `completeTask` (when it
+drives `completed`), and timeout all share the same six-step algorithm
+as `dispose`:
+
+1. Validate lease (identity + WeakSet + revoked-check).
+2. Revoke the lease (remove from `activeLeases`, fire `lease.abort`).
+3. Keep the heartbeat loop running.
+4. Signal the engine adapter and `await quiesce(abortTimeoutMs)`.
+5. Branch on quiesce outcome:
+   - **Quiescent:** stop the heartbeat loop, then
+     CAS-advance to the target phase (`suspended` / `failed` /
+     `completed`). Best-effort write; on failure, fall back to
+     `"abandoned"` tombstone + heartbeat-TTL reclaim, same as
+     durability-loss.
+   - **Abort timeout:** do NOT publish the target phase. Keep
+     heartbeats alive, flip `durability = "unhealthy"`, invoke
+     `onDurabilityLost(ABORT_TIMEOUT)`, return `Err(ABORT_TIMEOUT)`.
+     Host must SIGKILL.
+6. Return the typed `Result<void, KoiError>`.
+
+This means a late in-flight `completeTask(oldLease, …)` invoked by an
+engine adapter that was supposed to be aborted cannot advance the
+harness, because `oldLease` fails identity check post-revocation and
+the target phase is only published after quiescence is confirmed.
 
 ### Atomic Checkpoint Write
 
@@ -265,9 +291,9 @@ session-first, then snapshot. On `start()` / successful `resume()`:
    through every subsequent step.
 3. Mint the `SessionLease` and add it to `activeLeases` WeakSet (but do NOT
    return it to the caller yet — still inside activation).
-4. CAS-advance harness snapshot to `active` with the new generation,
-   `lastSessionId` pointing at the record from step 1, and
-   `activatedAt = Date.now()`. If CAS fails → rollback: remove lease from
+4. CAS-advance harness snapshot to `active` with the new generation and
+   `lastSessionId` pointing at the record from step 1. If CAS fails →
+   rollback: remove lease from
    WeakSet, stop heartbeats, best-effort `removeSession(sid)`, return
    `CONCURRENT_RESUME`. Any durable orphan is cleaned by reconciliation.
 5. Attempt `sessionPersistence.setSessionStatus(sid, "running")`.
@@ -331,14 +357,17 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
    dead-owner signal** — status flags are advisory. This avoids relying on
    cross-store read-after-write consistency between `harnessStore` and
    `sessionPersistence`, which L0 does not guarantee:
-   - `NOT_FOUND` → session-record read lagging behind the snapshot write
-     is indistinguishable from "owner never wrote"; treat as **unknown**
-     until the harness-snapshot's `activatedAt` is older than `leaseTtlMs`.
-     - `now - snapshot.checkpointedAt > leaseTtlMs` → reclaimable (the
-       owner has had ample time to publish a session record; if the store
-       still can't read it after TTL, the owner is not producing
-       observable liveness).
-     - Otherwise → `ALREADY_ACTIVE` (retryable).
+   - `NOT_FOUND` → **never a sufficient dead-owner signal.** A long
+     turn may exceed `leaseTtlMs` and rely entirely on the heartbeat loop
+     for liveness; if session-record reads lag, are deleted, or return a
+     stale `NOT_FOUND`, snapshot-age alone does not prove the engine has
+     stopped. Return `ALREADY_ACTIVE` (retryable). Reclaim requires an
+     independent positive dead-owner signal: either a stale heartbeat on
+     a record that DOES exist (caller must wait for the store to catch
+     up) or an explicit `"abandoned"` tombstone. An operator who believes
+     the session record has been genuinely deleted must write the
+     tombstone via a separate administrative tool; this design does not
+     silently reclaim on missing records.
    - `record.status === "done"` → advisory signal of clean exit, but still
      require TTL-stale heartbeat before reclaim (protects against lagged
      reads of an old status).
@@ -352,11 +381,16 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
      - `now - record.lastHeartbeatAt > leaseTtlMs` → **dead**. Reclaim.
      - Heartbeat fresh → **live**. `ALREADY_ACTIVE`.
 
-Unified rule: **reclaim only when at least one independent timestamp
-(heartbeat OR snapshot `activatedAt`/`checkpointedAt`) proves inactivity
-beyond `leaseTtlMs`.** Status flags accelerate recognition of genuinely
-dead owners but never override TTL for liveness decisions, because status
-reads may cross a lagging durability boundary.
+Unified rule: **reclaim requires an observable positive signal from
+session persistence — either (a) a loadable session record whose
+heartbeat is stale beyond `leaseTtlMs`, or (b) an `"abandoned"`
+tombstone written by the prior lease holder.** Snapshot age is NEVER a
+dead-owner signal on its own: a healthy long turn can outlive any
+snapshot-age threshold and relies solely on heartbeat writes for
+liveness. Status flags (`"done"` / `"idle"`) accelerate recognition of
+dead owners only when paired with stale heartbeats, not as standalone
+proofs, because cross-store reads can show stale snapshots of the
+status field.
 
 `"starting"` is informational only. A live owner mid-activation heartbeats
 (loop started in activation step 2) and holds the lease; a crashed
@@ -644,7 +678,10 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
 - `start()` rejects when phase ≠ `idle`.
 - `resume()` reads latest snapshot, increments `sessionSeq`, emits resume context.
 - `resume()` on terminal phase returns `TERMINAL` error.
-- `pause()` persists `SessionResult` + advances phase to `suspended`.
+- `pause()` follows quiesce-before-publish: revoke lease, abort engine,
+  await quiescence, then CAS to `suspended` with `SessionResult`. On
+  abort timeout, returns `Err(ABORT_TIMEOUT)` without publishing
+  `suspended`.
 - `completeTask()` updates task board, emits `onCompleted` when all tasks done.
 - `failTask()` with retryable error returns task to `pending`.
 - `timeout` fires `fail()` with `TIMEOUT` error and attempts final snapshot.
@@ -694,6 +731,18 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
 - **Late callback after timeout:** timeout fires → harness revokes lease →
   subsequent `completeTask(oldLease, …)` returns `STALE_SESSION` and does not
   mutate the snapshot.
+- **Late callback after pause:** `pause()` in-flight → engine adapter's
+  pending `completeTask(oldLease, …)` callback runs during the quiesce
+  wait → rejected with `STALE_SESSION`. `suspended` snapshot is published
+  only after quiescence is confirmed; no late mutation ever sees a
+  published non-active state.
+- **Late callback after fail:** same as above with `fail(lease, err)` —
+  `failed` snapshot is not published until engine is confirmed stopped.
+- **pause/fail abort timeout:** engine refuses to quiesce → `pause()` or
+  `fail()` return `Err(ABORT_TIMEOUT)`, do NOT publish `suspended`/
+  `failed`, keep heartbeats running, flip `durability = "unhealthy"`.
+  Host must SIGKILL. (Regression: no "ghost" terminal state ever visible
+  to external scheduler while engine still runs.)
 - **Stale writer vs. replacement session:** `start` → `pause` → `resume` mints a
   new lease; an in-flight caller holding the first lease attempts
   `completeTask` → rejected with `STALE_SESSION`; new lease's writes succeed.
@@ -763,8 +812,10 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
 - **Cross-store lag (reclaim safety):** simulated `sessionPersistence` that
   returns `NOT_FOUND` for a freshly-written session record while the
   snapshot store already shows `active`. Reclamation does NOT treat this
-  as dead-owner; it returns `ALREADY_ACTIVE` until `activatedAt` exceeds
-  TTL. (Regression against cross-store split-brain.)
+  as dead-owner; it returns `ALREADY_ACTIVE` regardless of snapshot age.
+  Reclaim requires either a loadable record with stale heartbeat or an
+  `"abandoned"` tombstone. (Regression against cross-store split-brain
+  and against snapshot-age-as-liveness.)
 - **`loadSession` I/O error during reclaim:** simulated read failure
   during reclaim. Harness retries 3x with backoff; if all fail, returns
   `RECLAIM_READ_FAILED` (retryable). Does NOT attempt reclaim, does NOT
@@ -888,10 +939,7 @@ The L2 package's design does not regress if this migration is deferred
 Additive changes required (part of the coordinated migration):
 
 1. `HarnessSnapshot.generation: number` — monotonic per harness, incremented on
-   every session transition. Drives lease fencing. Plus
-   `HarnessSnapshot.activatedAt: number | undefined` — activation wall-clock
-   time used as the fallback liveness signal when session-record reads
-   lag across stores.
+   every session transition. Drives lease fencing.
 2. `SnapshotChainStore.compareAndPut(expectedHead, next)` — CAS-conditioned
    advance. Existing `put` is insufficient for exclusivity guarantees.
 3. `SessionRecord.lastHeartbeatAt: number | undefined` — liveness signal for
