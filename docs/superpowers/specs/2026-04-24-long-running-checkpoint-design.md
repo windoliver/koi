@@ -223,10 +223,18 @@ trigger for kill-on-takeover.
   takeover path the supervisor requirement exists to enable.
 - `probeAlive === "dead"` → proceed to `killAndConfirm` (idempotent
   no-op) then CAS-advance.
-- `probeAlive === "unknown"` AND heartbeat-stale signal also present
-  AND sustained (re-probe after `heartbeatIntervalMs * 2` still
-  "unknown") → escalate to `killAndConfirm`. This pairs the
-  destructive action with multiple independent dead-owner signals.
+- `probeAlive === "unknown"` (any duration) → return
+  `Err(SUPERVISOR_UNHEALTHY, retryable: true)`. We never escalate
+  from `"unknown"` to `killAndConfirm`. `"unknown"` means the
+  supervisor cannot determine liveness; pairing it with a
+  stale-heartbeat read does not make the kill safe — under
+  session-persistence lag or a read partition a healthy worker
+  can look heartbeat-stale while the supervisor is temporarily
+  unable to answer. The retryable error puts the takeover on the
+  caller's clock; if the supervisor recovers, the next retry sees
+  a positive `"alive"` or `"dead"` answer. If the supervisor
+  remains unhealthy, operator action via the `forceReclaim`
+  `manualHandle` path is the documented escalation.
 - `probeAlive` returns `Err(IO_ERROR)` → return
   `Err(SUPERVISOR_UNHEALTHY, retryable: true)`. Never kill on a
   failed probe.
@@ -792,7 +800,7 @@ as `dispose`:
           - **Identity match on predecessor:** else if
             `outcome.expectedHead === H` (object/string equality on
             the opaque token), perform
-            `compareAndPut(H, outcome.snapshotDelta)`; on success,
+            `compareAndPut(harnessId, H, outcome.snapshotDelta)`; on success,
             advance H to the returned new head and update G to
             `outcome.resultGeneration`.
           - **Mismatch:** else (`expectedHead` does not equal H AND
@@ -969,7 +977,7 @@ the target phase is only published after quiescence is confirmed.
 ### Atomic Checkpoint Write
 
 Issue requirement: **no partial writes**. **All state-advancing writes in
-this package use `SnapshotChainStore.compareAndPut(expectedHead, next)`.**
+this package use `SnapshotChainStore.compareAndPut(harnessId, expectedHead, next)`.**
 Plain `put(...)` is NOT permitted for any path that advances harness state
 (activation, pause, fail, soft checkpoint, reclaim, dispose). Non-CAS
 writes cannot fence stale writers and would re-introduce split-brain
@@ -978,7 +986,7 @@ advancement.
 ```
 1. Build next HarnessSnapshot in memory (immutable), including incremented
    generation (when appropriate) and current lease's sessionId.
-2. harnessStore.compareAndPut(expectedHead, next):
+2. harnessStore.compareAndPut(harnessId, expectedHead, next):
      a. Payload written to durable storage first.
      b. Chain pointer advanced iff current head equals expectedHead.
      c. On failure at any step, previous chain head remains authoritative.
@@ -1293,8 +1301,18 @@ Flow:
 2. Revoke the lease (remove from `activeLeases`, fire `lease.abort`).
    Subsequent harness API calls from the aborted run fail identity check.
 3. Wait up to `abortTimeoutMs` for the engine adapter to quiesce.
-4. **On quiescence:** CAS-advance to `failed` with
-   `failureReason = "TIMEOUT"`. Invoke `onFailed` with the final status.
+4. **On quiescence:** apply the canonical terminal flow shared
+   with `pause` / `fail` / `completeTask`-terminal: build the next
+   snapshot (target phase = `failed`,
+   `failureReason = "TIMEOUT"`), persist a `harness-failed`
+   `RecoveryOutcome` BEFORE the snapshot CAS, then
+   `compareAndPut(harnessId, prev.head, next)`. On CAS failure,
+   schedule the same background retry loop used for terminal
+   failures; the durable outcome lets a peer reclaimer complete
+   the transition if this process dies. Invoke `onFailed` only
+   after the CAS lands. Direct CAS-without-outcome is forbidden:
+   timeout is a terminal path and obeys the exactly-once durable
+   terminal-state contract.
 5. **On abort timeout (engine refuses to stop):** apply the canonical
    ABORT_TIMEOUT contract defined in the phase-machine "Abort
    timeout" branch (see "Phase Machine — Abort timeout" above). In
@@ -1464,7 +1482,7 @@ Single hook: `afterTurn`. On each turn boundary:
 1. `shouldSoftCheckpoint(turnCount, policy.interval)` → bool.
 2. If false: return.
 3. Capture `EngineState` via `cfg.saveState?.()`, build snapshot with current
-   `lease.generation`, call `harnessStore.compareAndPut(expectedHead, next)`.
+   `lease.generation`, call `harnessStore.compareAndPut(harnessId, expectedHead, next)`.
 4. **On CAS success:** update in-memory head reference. Return.
 5. **On CAS failure where `expectedHead` mismatches** (another writer raced or
    our lease was revoked): treat as `STALE_SESSION`, fail the turn with that
