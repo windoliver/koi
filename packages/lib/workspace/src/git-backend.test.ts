@@ -165,14 +165,12 @@ describe("createGitWorktreeBackend", () => {
     expect(survivors).toHaveLength(0);
   });
 
-  it("findByAgentId does NOT find workspace when agent switched branches (accepted limitation)", async () => {
+  it("findByAgentId still finds workspace after agent switched branches (via ownership ref)", async () => {
     // An unsandboxed agent can switch branches, breaking git-owned branch-name discovery.
-    // This is a known limitation of isSandboxed=false: the agent can escape tracking by
-    // renaming its branch, turning the workspace into an orphan. We deliberately do NOT
-    // fall back to any file-based discovery (e.g. .koi-workspace marker) because on an
-    // unsandboxed backend, any such file is writable by workspace processes — enabling
-    // cross-agent disposal attacks where a tampered file causes another agent's workspace
-    // to be cleaned up. The orphan scenario is a lesser harm than the trust regression.
+    // The ownership ref (refs/koi-ownership/<hex>/<wsId>) is written at create time in the
+    // main repo and survives branch changes — findByAgentId uses it as a fallback so the
+    // provider can discover and dispose the drifted workspace before creating a new one,
+    // upholding the single-workspace-per-agent invariant.
     const backend = createGitWorktreeBackend({ repoPath });
     const result = await backend.create(aid, defaultConfig);
     expect(result.ok).toBe(true);
@@ -182,14 +180,19 @@ describe("createGitWorktreeBackend", () => {
     const { execSync } = await import("node:child_process");
     execSync(`git -C "${ws.path}" checkout -b "some-other-branch"`, { stdio: "ignore" });
 
-    // Branch-name discovery no longer finds it after the branch switch
+    // Ownership-ref fallback finds the workspace even after branch drift
     const survivors = await backend.findByAgentId?.(aid);
-    expect(survivors).toHaveLength(0);
+    expect(survivors).toHaveLength(1);
+    expect(survivors?.[0]?.id).toBe(ws.id);
 
-    // Restore so dispose (via registry) can clean up
-    const branchInfo = ws.metadata.branchName as string;
-    execSync(`git -C "${ws.path}" checkout "${branchInfo}"`, { stdio: "ignore" });
+    // The recovered entry has the drifted branch — isHealthy returns false (branch mismatch)
+    expect(await backend.isHealthy(ws.id)).toBe(false);
+    // But exists() returns true — the worktree is physically present
+    expect(await backend.exists?.(ws.id)).toBe(true);
+
+    // dispose() can still remove it (uses registry entry populated by findByAgentId)
     await backend.dispose(ws.id);
+    expect(await backend.exists?.(ws.id)).toBe(false);
   });
 
   it("findByAgentId ignores worktrees outside this backend's base path", async () => {

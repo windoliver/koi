@@ -19,7 +19,8 @@ export interface GitWorktreeBackendConfig {
 
 interface RegistryEntry {
   readonly path: string;
-  readonly branchName: string;
+  readonly branchName: string; // current branch (may differ from original after drift)
+  readonly agentHex?: string; // for ownership-ref cleanup; populated when known
 }
 
 export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): WorkspaceBackend {
@@ -107,7 +108,15 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       if (!addResult.ok) return addResult;
 
       // Register before the marker write so we can dispose on failure
-      registry.set(id, { path, branchName });
+      registry.set(id, { path, branchName, agentHex: agentIdHex });
+
+      // Write an ownership ref in the main repo so findByAgentId can locate this workspace
+      // even if the agent later switches branches inside the worktree (branch drift).
+      // Best-effort: failure here is non-fatal since the branch-name scan serves as fallback.
+      await runGit(
+        ["update-ref", `refs/koi-ownership/${agentIdHex}/${id}`, "HEAD"],
+        config.repoPath,
+      );
 
       const marker = JSON.stringify({
         id,
@@ -171,9 +180,21 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       if (!removeResult.ok) return removeResult;
 
       // Branch deletion is best-effort — failure doesn't fail dispose
-      await runGit(["branch", "-D", entry.branchName], config.repoPath);
+      if (entry.branchName) {
+        await runGit(["branch", "-D", entry.branchName], config.repoPath);
+      }
       // Setup-attestation ref cleanup is best-effort — failure doesn't fail dispose
       await runGit(["update-ref", "-d", `refs/koi-setup-ok/${wsId}`], config.repoPath);
+      // Ownership ref cleanup — derive agentHex from registry entry or from branch name
+      const agentHex =
+        entry.agentHex ??
+        (entry.branchName.startsWith("workspace/") ? entry.branchName.split("/")[1] : undefined);
+      if (agentHex) {
+        await runGit(
+          ["update-ref", "-d", `refs/koi-ownership/${agentHex}/${wsId}`],
+          config.repoPath,
+        );
+      }
 
       registry.delete(wsId);
       return { ok: true, value: undefined };
@@ -211,17 +232,14 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       // Ownership is matched on hex encoding only — no raw-agentId fallback, which would create
       // a collision if one agent's literal id equals another agent's hex-encoded id.
       //
-      // ACCEPTED LIMITATION (isSandboxed=false): if the agent switches to a different branch
-      // after setup, that workspace becomes an orphan — not found here, not cleaned up before
-      // creating a new one. An orphaned worktree does NOT violate the single-workspace-per-agent
-      // invariant in terms of active concurrent use; the agent has no live handle to it.
-      // On-disk cleanup of orphans requires manual intervention or a separate sweep job.
-      //
-      // We deliberately avoid any file-content fallback (e.g. reading .koi-workspace or a
-      // sibling ownership directory): on an unsandboxed backend, any such file is writable by
-      // workspace processes, enabling cross-agent disposal attacks where a tampered file causes
-      // another agent's workspace to be deleted. The branch-name encoding is the least writable
-      // ownership signal available in this trust model.
+      // We deliberately avoid file-content fallbacks (e.g. reading .koi-workspace): on an
+      // unsandboxed backend, any such file is writable by workspace processes, enabling cross-agent
+      // disposal attacks where a tampered file causes another agent's workspace to be deleted.
+      // The two ownership signals used here are both stored in the main repo:
+      //   1. Branch name `workspace/<hex>/<wsId>` — the primary signal (most tamper-resistant)
+      //   2. Ownership ref `refs/koi-ownership/<hex>/<wsId>` — fallback for branch-drift recovery
+      // Note: since isSandboxed=false, a workspace process CAN forge git refs, so neither signal
+      // is fully tamper-proof. The risk model accepts this for unsandboxed backends.
       const searchHex = Buffer.from(searchAgentId as string).toString("hex");
 
       const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
@@ -263,8 +281,57 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
 
         const id = workspaceId(wsId);
         // Populate registry so subsequent isHealthy() calls work without rescanning
-        if (!registry.has(id)) registry.set(id, { path, branchName });
+        if (!registry.has(id)) registry.set(id, { path, branchName, agentHex: searchHex });
         matches.push({ id, path, createdAt, metadata });
+      }
+
+      // Second pass: recover branch-drifted workspaces via ownership refs.
+      // If the agent switched branches inside the worktree, the first pass missed it.
+      // refs/koi-ownership/<hex>/<wsId> is written at create time and survives branch changes.
+      const alreadyFound = new Set(matches.map((m) => m.id as string));
+      const ownershipResult = await runGit(
+        ["for-each-ref", "--format=%(refname)", `refs/koi-ownership/${searchHex}/`],
+        config.repoPath,
+      );
+      if (ownershipResult.ok) {
+        for (const refname of ownershipResult.value.split("\n").filter(Boolean)) {
+          const wsId = refname.split("/").pop() ?? "";
+          if (!wsId || alreadyFound.has(wsId)) continue;
+          const expectedPath = join(basePath, wsId);
+          // Find this worktree in the already-fetched list — look up by expected path.
+          let currentBranch = "";
+          for (const block of blocks) {
+            const lines = block.trim().split("\n");
+            const pathLine = lines.find((l) => l.startsWith("worktree "));
+            if (pathLine?.slice("worktree ".length).trim() !== expectedPath) continue;
+            const branchRef =
+              lines
+                .find((l) => l.startsWith("branch "))
+                ?.slice("branch ".length)
+                .trim() ?? "";
+            currentBranch = branchRef.startsWith("refs/heads/")
+              ? branchRef.slice("refs/heads/".length)
+              : branchRef;
+            break;
+          }
+          if (!currentBranch) continue; // worktree not present — already gone
+          const tsMatch = wsId.match(/^ws-(\d+)-/);
+          const createdAt = tsMatch !== null && tsMatch[1] !== undefined ? Number(tsMatch[1]) : 0;
+          const id = workspaceId(wsId);
+          // Record with the drifted branch so dispose() can remove it; mark agentHex for ownership cleanup
+          if (!registry.has(id))
+            registry.set(id, {
+              path: expectedPath,
+              branchName: currentBranch,
+              agentHex: searchHex,
+            });
+          matches.push({
+            id,
+            path: expectedPath,
+            createdAt,
+            metadata: { repoPath: config.repoPath },
+          });
+        }
       }
 
       if (matches.length === 0) return [];
