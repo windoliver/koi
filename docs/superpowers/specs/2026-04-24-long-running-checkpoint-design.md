@@ -461,11 +461,12 @@ as `dispose`:
         record carries both the discriminated-union outcome AND the
         full serialized next snapshot:
         ```
+        // TerminalOutcome is HARNESS-LEVEL ONLY. The snapshotDelta's
+        // task-board carries individual task results; the discriminant
+        // captures only why the harness reached a terminal phase.
         type TerminalOutcomeKind =
-          | { kind: "task-completed"; taskId: TaskItemId; result: TaskResult }
-          | { kind: "task-failed-terminal"; taskId: TaskItemId; error: KoiError }
-          | { kind: "harness-failed"; error: KoiError }   // fail()/timeout
-          | { kind: "harness-completed" };                // all tasks done
+          | { kind: "harness-completed" }              // all tasks done
+          | { kind: "harness-failed"; error: KoiError } // fail()/timeout/non-retryable-failTask-empties-board
 
         interface TerminalOutcome {
           readonly kind: TerminalOutcomeKind;
@@ -531,31 +532,36 @@ as `dispose`:
        state and a fresh session re-runs it. (At-least-once retry,
        which is what retryable failures already imply.)
      - **Non-retryable:** if it empties the task board, run the
-       full session-ending terminal flow above and record
-       `task-failed-terminal` as a `TerminalOutcome`. If pending
-       tasks remain, run the in-session non-terminal path with
-       `task-failed-terminal` reflected in the new `active`
-       snapshot's task board (no `TerminalOutcome` record needed
-       because the harness is still active; the snapshot itself
-       is authoritative).
+       full session-ending terminal flow above and record a
+       `harness-failed` `TerminalOutcome` (the snapshot delta
+       carries the failed task's details in its task board). If
+       pending tasks remain, run the in-session non-terminal path
+       — the failed task is recorded in the new `active`
+       snapshot's task board (no `TerminalOutcome` because the
+       harness is still active; the snapshot is authoritative).
 
      **Reclaimer-side replay.** On reclamation, after
      `killAndConfirm` succeeds, the reclaimer:
-     1. Calls `sessionPersistence.listTerminalOutcomes(sid)` →
-        ordered list of committed outcomes (by `seq`).
-     2. For each outcome in order, CAS-advance the snapshot chain
-        using `outcome.snapshotDelta` as `next`. Order is critical:
-        each delta was built against the previous snapshot, and CAS
-        enforces that chain.
-     3. Retryable task failures leave no outcome record, so the
-        reclaimer correctly returns the task to `pending` only via
-        the pre-crash snapshot's own retry bookkeeping — no
-        permanent-failure resurrection.
-     4. If the last outcome in the list is harness-level
-        (`harness-completed` / `harness-failed`), the snapshot is
-        now terminal. If the last is task-level, the snapshot is
-        `suspended` with updated task board, and `resume()` proceeds
-        normally.
+     1. Calls `sessionPersistence.listTerminalOutcomes(sid)`. Because
+        `TerminalOutcome` is harness-level only, the list contains AT
+        MOST ONE record (a session can transition terminal exactly
+        once).
+     2. If there is one record: CAS-replay it using the algorithm
+        above (subsumption check on `resultGeneration`, identity
+        check on `expectedHead`). The chain ends in `completed` or
+        `failed`. Reclaim is done; future `resume()` returns
+        `TERMINAL`.
+     3. If there are no records: the original session never reached
+        terminalization. Reclaim falls through to the standard
+        "active → suspended" recovery (CAS to `suspended` with
+        `RECLAIMED_FROM_DEAD_OWNER`), and `resume()` can start a
+        fresh session normally. Task-board state from the last
+        durable snapshot is preserved; in-progress tasks remain in
+        whatever state they were last checkpointed at.
+
+     Retryable task failures and in-session updates never appear in
+     `TerminalOutcome` records — they are encoded in regular soft
+     checkpoints on the snapshot chain itself.
 
      This closes the gaps from earlier rounds: the terminal-intent
      API is internal; "started" is never an authoritative signal
@@ -572,7 +578,8 @@ as `dispose`:
      lease argument. Lease validation gates whether the public API
      accepts the call; once accepted, the harness performs CAS via its
      own internal state. If the initial 4-retry burst exhausts, the
-     harness transitions `status().durability = "unhealthy"` and
+     harness transitions `status().durability = "unhealthy"` (and durably
+     calls `markCleanupUnhealthy(sid, "TERMINAL_WRITE_FAILED")`) and
      schedules a background retry loop (exponential backoff starting
      at 15s, capped at 5 min) that continues to attempt the terminal
      CAS for as long as the harness object is alive. Heartbeats
@@ -590,14 +597,32 @@ as `dispose`:
      authority — same durable-state contract, different actor. The
      outcome carries the full result, so no re-execution of the
      terminal branch occurs.
-   - **Abort timeout:** do NOT publish the target phase. Keep
-     heartbeats alive. Start the same background cleanup watcher
-     described in the dispose path: it polls the engine adapter's
-     running state and, on late quiescence, uses the harness's
-     private cleanup authority to CAS the target phase without
-     requiring a lease. Flip `durability = "unhealthy"`, invoke
-     `onDurabilityLost(ABORT_TIMEOUT)`, return `Err(ABORT_TIMEOUT)`.
-     Host may SIGKILL to skip the watcher.
+   - **Abort timeout:** do NOT publish the target phase yet. Flip
+     `durability = "unhealthy"` and call
+     `sessionPersistence.markCleanupUnhealthy(sid, "ABORT_TIMEOUT")`
+     so the durable breadcrumb is set BEFORE any further action.
+     Then:
+     - **Supervisor mode (default):** the harness invokes
+       `supervisor.killAndConfirm(sessionId)` automatically after a
+       fixed grace period (`abortKillGraceMs`, default 30s). On
+       success, the harness uses its private cleanup authority to
+       CAS-advance to the target phase. Recovery is deterministic
+       inside the package contract — no reliance on host SIGKILL.
+       If `killAndConfirm` itself fails (`KILL_FAILED`), the
+       background cleanup watcher polls + retries every
+       `heartbeatIntervalMs` and re-issues `killAndConfirm` with
+       backoff until success or process exit. Heartbeats continue
+       throughout; peers cannot reclaim while the harness is
+       actively trying to kill its own engine.
+     - **`trustedSingleProcess=true` mode:** no supervisor is
+       available. Heartbeats continue, the durable
+       `cleanupHealth = "unhealthy"` breadcrumb is set, and
+       `onDurabilityLost(ABORT_TIMEOUT)` is invoked. The host MUST
+       SIGKILL — there is no automatic recovery path in this mode.
+       This is documented as the explicit availability tradeoff
+       for trusted-mode deployments.
+     Return `Err(ABORT_TIMEOUT)` from the API call so the caller
+     can act if it wants to.
 6. Return the typed `Result<void, KoiError>`.
 
 This means a late in-flight `completeTask(oldLease, …)` invoked by an
@@ -810,21 +835,12 @@ mid-activation owner goes stale within TTL. This closes both the
 activation-latency race and the cross-store-lag race.
 3. To reclaim — outcome-driven, never bypass durable terminal state:
    - First, `listTerminalOutcomes(prev.lastSessionId)`.
-   - If outcomes exist: replay them in `seq` order via
-     `compareAndPut(prev.head, outcome.snapshotDelta)`. The final
-     advanced snapshot may be `completed` / `failed` / a
-     post-task-board `active` (depending on outcome kinds). If the
-     last outcome is harness-terminal (`harness-completed`,
-     `harness-failed`, `task-failed-terminal`-with-no-more-tasks),
-     reclamation ENDS — the harness is now durable terminal. Future
-     `resume()` returns `TERMINAL`. We never bypass a durable
-     terminal outcome.
-   - If outcomes only advanced through task-level events with the
-     last snapshot still `active`, follow with one more CAS to
-     `suspended` (`failureReason = "RECLAIMED_FROM_DEAD_OWNER"`,
-     generation+1) so the chain ends in a non-active state. Then
-     re-enter the resume flow.
-   - If no outcomes exist: CAS-advance `prev` → `next` with
+   - If a record exists (at most one — TerminalOutcome is
+     harness-level only): CAS-replay it via the subsumption +
+     identity-match algorithm above. The chain ends in `completed`
+     or `failed`. Reclamation ENDS — future `resume()` returns
+     `TERMINAL`. We never bypass a durable terminal outcome.
+   - If no record exists: CAS-advance `prev` → `next` with
      `phase = "suspended"`, `generation = prev.generation + 1`,
      `failureReason = "RECLAIMED_FROM_DEAD_OWNER"`. Re-enter resume
      flow.
@@ -1573,13 +1589,12 @@ Additive changes required (part of the coordinated migration):
    cheap-write method so the heartbeat loop does not compete with full
    `saveSession` writes.
 6. `SessionPersistence.recordTerminalOutcome(sid, outcome)` +
-   `listTerminalOutcomes(sid)` — durable records of committed terminal
-   outcomes (`task-completed`, `task-failed`, `harness-failed`,
-   `harness-completed`). Written after engine quiescence but before
-   the snapshot CAS; consulted by reclaimers to apply committed
-   outcomes to the task board and deferred-CAS any missed terminal
-   phase. Enforces exactly-once terminal durable state across process
-   death. See TerminalOutcome in phase machine.
+   `listTerminalOutcomes(sid)` — durable record of the harness-level
+   terminal outcome (`harness-completed` | `harness-failed`). At most
+   one record per session. Written after engine quiescence but before
+   the snapshot CAS; consulted by reclaimers to deferred-CAS the
+   missed terminal phase. Enforces exactly-once terminal durable
+   state across process death. See TerminalOutcome in phase machine.
 
 **`@koi/core` — `HarnessStatus` (harness.ts):**
 7. `durability: "ok" | "unhealthy"` — in-memory observable degraded-
