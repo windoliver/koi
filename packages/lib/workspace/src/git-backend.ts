@@ -179,8 +179,11 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       );
       if (!removeResult.ok) return removeResult;
 
-      // Branch deletion is best-effort — failure doesn't fail dispose
-      if (entry.branchName) {
+      // Branch deletion is best-effort — failure doesn't fail dispose.
+      // Only delete branches owned by this backend (workspace/<hex>/<wsId> naming).
+      // If the workspace switched branches (drift), the current branch belongs to the user
+      // and must not be deleted — the worktree removal above is sufficient cleanup.
+      if (entry.branchName?.startsWith("workspace/")) {
         await runGit(["branch", "-D", entry.branchName], config.repoPath);
       }
       // Setup-attestation ref cleanup is best-effort — failure doesn't fail dispose
@@ -297,40 +300,44 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         for (const refname of ownershipResult.value.split("\n").filter(Boolean)) {
           const wsId = refname.split("/").pop() ?? "";
           if (!wsId || alreadyFound.has(wsId)) continue;
+          // The worktree is expected to be directly under basePath (wsId is its basename).
+          // Note: relocation outside basePath via `git worktree move` is not recovered here;
+          // this fallback is specifically for branch-drift survivors at their original path.
           const expectedPath = join(basePath, wsId);
-          // Find this worktree in the already-fetched list — look up by expected path.
-          let currentBranch = "";
+          // Find this worktree in the already-fetched list — restrict to resolvedBase to prevent
+          // different backend instances sharing the same repo from claiming each other's workspaces.
+          let foundPath = "";
           for (const block of blocks) {
             const lines = block.trim().split("\n");
             const pathLine = lines.find((l) => l.startsWith("worktree "));
-            if (pathLine?.slice("worktree ".length).trim() !== expectedPath) continue;
-            const branchRef =
-              lines
-                .find((l) => l.startsWith("branch "))
-                ?.slice("branch ".length)
-                .trim() ?? "";
-            currentBranch = branchRef.startsWith("refs/heads/")
-              ? branchRef.slice("refs/heads/".length)
-              : branchRef;
-            break;
+            if (!pathLine) continue;
+            const candidate = pathLine.slice("worktree ".length).trim();
+            if (!candidate.startsWith(resolvedBase + sep)) continue;
+            // Match by basename to handle any within-basePath relocation edge cases
+            if (candidate.split(sep).pop() === wsId) {
+              foundPath = candidate;
+              break;
+            }
           }
-          if (!currentBranch) continue; // worktree not present — already gone
+          // Also accept the exact expected path even if no basePath-restricted match
+          if (!foundPath) foundPath = expectedPath;
+          // Verify by checking git worktree list (basePath-scoped)
+          const inList = blocks.some((block) => {
+            const lines = block.trim().split("\n");
+            const pathLine = lines.find((l) => l.startsWith("worktree "));
+            return pathLine?.slice("worktree ".length).trim() === foundPath;
+          });
+          if (!inList) continue; // worktree not present — already gone or relocated outside scope
           const tsMatch = wsId.match(/^ws-(\d+)-/);
           const createdAt = tsMatch !== null && tsMatch[1] !== undefined ? Number(tsMatch[1]) : 0;
           const id = workspaceId(wsId);
-          // Record with the drifted branch so dispose() can remove it; mark agentHex for ownership cleanup
-          if (!registry.has(id))
-            registry.set(id, {
-              path: expectedPath,
-              branchName: currentBranch,
-              agentHex: searchHex,
-            });
-          matches.push({
-            id,
-            path: expectedPath,
-            createdAt,
-            metadata: { repoPath: config.repoPath },
-          });
+          // Store the ORIGINAL managed branch (not the drifted one) so dispose() only removes
+          // the backend-owned ephemeral branch, never a user branch the agent switched to.
+          const originalBranch = `workspace/${searchHex}/${wsId}`;
+          if (!registry.has(id)) {
+            registry.set(id, { path: foundPath, branchName: originalBranch, agentHex: searchHex });
+          }
+          matches.push({ id, path: foundPath, createdAt, metadata: { repoPath: config.repoPath } });
         }
       }
 
