@@ -260,7 +260,7 @@ describe("createScheduler", () => {
     const s1 = make();
     const sid = await s1.schedule("* * * * *", aid, input, "spawn");
     await s1.pause(sid);
-    const beforeDispose = s1.querySchedules(aid);
+    const beforeDispose = await s1.querySchedules(aid);
     expect(beforeDispose.find((s: CronSchedule) => s.id === sid)?.paused).toBe(true);
     await s1[Symbol.asyncDispose]();
 
@@ -268,7 +268,7 @@ describe("createScheduler", () => {
     const s2 = make();
     // Give init() a tick to load from store
     await new Promise<void>((r) => globalThis.setTimeout(r, 20));
-    const afterRestore = s2.querySchedules(aid);
+    const afterRestore = await s2.querySchedules(aid);
     expect(afterRestore.find((s: CronSchedule) => s.id === sid)?.paused).toBe(true);
     await s2[Symbol.asyncDispose]();
   });
