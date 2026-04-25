@@ -194,7 +194,7 @@ function rowToRunRecord(row: RunRow): TaskRunRecord {
 // ---------------------------------------------------------------------------
 
 export function createSqliteTaskStore(db: Database): TaskStore {
-  db.exec(TASK_DDL);
+  db.prepare(TASK_DDL).run();
 
   const saveStmt = db.prepare(`
     INSERT OR REPLACE INTO koi_tasks
@@ -322,7 +322,7 @@ export function createSqliteTaskStore(db: Database): TaskStore {
 // ---------------------------------------------------------------------------
 
 export function createSqliteScheduleStore(db: Database): ScheduleStore {
-  db.exec(SCHEDULE_DDL);
+  db.prepare(SCHEDULE_DDL).run();
 
   const saveStmt = db.prepare(`
     INSERT OR REPLACE INTO koi_schedules
@@ -383,7 +383,7 @@ export interface RunStore extends AsyncDisposable {
 }
 
 export function createSqliteRunStore(db: Database): RunStore {
-  db.exec(RUN_DDL);
+  db.prepare(RUN_DDL).run();
 
   const saveStmt = db.prepare(`
     INSERT OR REPLACE INTO koi_task_runs
