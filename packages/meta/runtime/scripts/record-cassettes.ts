@@ -132,6 +132,7 @@ import { createSkillTool } from "@koi/skill-tool";
 import {
   createProgressiveSkillProvider,
   createSkillInjectorMiddleware,
+  createSkillProvider,
   createSkillsRuntime,
 } from "@koi/skills-runtime";
 import { createSpawnTools } from "@koi/spawn-tools";
