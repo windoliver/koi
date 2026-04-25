@@ -947,11 +947,14 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
 ### Unit: crash recovery (`harness.test.ts`)
 
 - **Crash mid-activation, heartbeat stale:** snapshot=`active` + session
-  record=`"starting"` + `lastHeartbeatAt < now - leaseTtlMs`. Second process
-  calls `resume()` → reclamation detects dead owner via TTL staleness
-  (not `"starting"` alone) → fences + reclaims.
+  record=`"starting"` + `lastHeartbeatAt < now - leaseTtlMs` sustained
+  across double-confirmation window. Supervisor returns `Ok` from
+  `killAndConfirm`. Second process calls `resume()` → CAS-advances to
+  `suspended` → new session resumes. Never publishes `failed`.
 - **Crash mid-run with stale heartbeat:** snapshot=`active` + session record
-  `status="running"`, `lastHeartbeatAt < now - leaseTtlMs`. `resume()` reclaims.
+  `status="running"`, `lastHeartbeatAt < now - leaseTtlMs` sustained across
+  double-confirmation, supervisor kill-ok → CAS to `suspended`, resume
+  proceeds.
 - **Live owner blocks reclaim:** snapshot=`active` + fresh heartbeat →
   `resume()` returns `ALREADY_ACTIVE`.
 - **Orphan session record after partial activation:** session written but CAS
@@ -1013,12 +1016,15 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   cleanly transitions to `suspended`. A concurrent `resume()` sees TTL-fresh
   heartbeat and returns `ALREADY_ACTIVE`, not reclaim.
 - **Cross-store lag (reclaim safety):** simulated `sessionPersistence` that
-  returns `NOT_FOUND` for a freshly-written session record while the
-  snapshot store already shows `active`. Reclamation does NOT treat this
-  as dead-owner; it returns `ALREADY_ACTIVE` regardless of snapshot age.
-  Reclaim requires either a loadable record with stale heartbeat or an
-  `"abandoned"` tombstone. (Regression against cross-store split-brain
-  and against snapshot-age-as-liveness.)
+  returns `NOT_FOUND` briefly for a freshly-written session record while the
+  snapshot store already shows `active`. Reclamation does NOT treat a single
+  `NOT_FOUND` as dead-owner; it enters the orphan-detection loop and when
+  the record becomes visible mid-loop, restarts reclamation with the
+  visible record and returns `ALREADY_ACTIVE`. Reclaim requires either a
+  loadable record with stale heartbeat (double-confirmed) OR sustained
+  `NOT_FOUND` for the full orphan window AND supervisor-confirmed kill.
+  `abandoned` status never bypasses these rules. (Regression against
+  cross-store split-brain.)
 - **`loadSession` I/O error during reclaim:** simulated read failure
   during reclaim. Harness retries 3x with backoff; if all fail, returns
   `RECLAIM_READ_FAILED` (retryable). Does NOT attempt reclaim, does NOT
