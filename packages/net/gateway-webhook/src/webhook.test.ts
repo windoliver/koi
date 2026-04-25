@@ -308,6 +308,28 @@ describe("WebhookServer — core dispatch", () => {
     expect(dispatched[0]?.session.routing?.peer).toBe("internal-service");
   });
 
+  test("X-Webhook-Peer is suppressed when authenticator is configured — prevents header spoofing", async () => {
+    // X-Webhook-Peer is a trivially spoofable header. Even with allowUnauthenticated,
+    // when an authenticator is present it must control peer via routing — not the header.
+    const peerAuthenticator: WebhookAuthenticator = async () => ({
+      ok: true,
+      value: { agentId: "webhook" }, // intentionally does not set routing.peer
+    });
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
+      dispatcher,
+      peerAuthenticator,
+    );
+    await server.start();
+    const res = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
+      method: "POST",
+      headers: { "X-Webhook-Peer": "attacker-controlled" },
+      body: JSON.stringify({ test: true }),
+    });
+    expect(res.status).toBe(200);
+    expect(dispatched[0]?.session.routing?.peer).toBeUndefined();
+  });
+
   test("URL channel is undefined on authenticated non-provider routes — authenticator must bind it", async () => {
     // On authenticated routes, channel from URL is unsigned and untrusted.
     // The authenticator must explicitly set routing.channel.

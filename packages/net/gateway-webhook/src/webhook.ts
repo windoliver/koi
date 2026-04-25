@@ -275,11 +275,15 @@ export function createWebhookServer(
   // to match their store's TTL; otherwise we fall back to the default-store default.
   const leaseRenewalMs =
     config.leaseRenewalMs ?? Math.floor((config.idempotency?.processingTtlMs ?? 5 * 60 * 1000) / 2);
-  // Default maxDispatchMs to processingTtlMs (2× leaseRenewalMs) so hung dispatchers
-  // eventually stop renewing without requiring explicit configuration. Healthy dispatches
-  // that finish before this window are unaffected — the timer is cleared on settlement.
+  // Default maxDispatchMs so hung dispatchers eventually stop renewing. For the
+  // built-in store, use processingTtlMs directly. For a custom store, use leaseRenewalMs
+  // × 2 as a proportional proxy — callers must declare leaseRenewalMs for custom stores,
+  // so it reliably tracks the store's actual TTL without requiring a separate config field.
   const effectiveMaxDispatchMs =
-    config.maxDispatchMs ?? config.idempotency?.processingTtlMs ?? 5 * 60 * 1000;
+    config.maxDispatchMs ??
+    (config.idempotencyStore !== undefined
+      ? leaseRenewalMs * 2
+      : (config.idempotency?.processingTtlMs ?? 5 * 60 * 1000));
 
   const prefix = config.pathPrefix.endsWith("/")
     ? config.pathPrefix.slice(0, -1)
@@ -328,12 +332,13 @@ export function createWebhookServer(
       account = seg1;
     }
 
-    // X-Webhook-Peer is unsigned — trust it only when all routing risks are
-    // explicitly accepted (allowUnauthenticated). On any authenticated path the
-    // header is spoofable by any caller with a valid signed body; authenticators
-    // may set routing.peer explicitly after validating the actual source.
+    // X-Webhook-Peer is a trivially spoofable header — never trust it when an
+    // authenticator is configured. The authenticator has the verified request
+    // context and may set routing.peer after independently validating the source.
+    // Only trust it on fully unauthenticated paths where all routing risks are
+    // explicitly accepted.
     const peer =
-      config.allowUnauthenticated === true
+      config.allowUnauthenticated === true && authenticator === undefined
         ? (request.headers.get("X-Webhook-Peer") ?? undefined)
         : undefined;
 
