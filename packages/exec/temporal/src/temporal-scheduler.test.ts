@@ -302,7 +302,8 @@ describe("rollback safety", () => {
     // When workflow.signal() throws a transport-level error (connection reset, timeout, UNAVAILABLE),
     // the signal MAY have been delivered — the client lost the ACK, not the signal. Rethrowing
     // would let callers retry with a NEW task ID, duplicating the signal in the live workflow.
-    // Instead: treat delivery as optimistically successful, return the task ID, record completed.
+    // Instead: write a durable delivered marker, treat delivery as optimistically successful,
+    // remove the task from the live map (same as confirmed delivery), and record in history.
     const client = makeMockClient({
       signal: mock(async () => {
         throw new Error("ECONNRESET: connection reset by peer");
@@ -311,9 +312,12 @@ describe("rollback safety", () => {
     const scheduler = createTemporalScheduler(makeConfig(client));
     const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
     expect(typeof id).toBe("string");
+    // Task is removed from the live map (same as confirmed success path) — query returns empty.
     const tasks = await scheduler.query({});
-    // Treated as completed (optimistic delivery) — not failed
-    expect(tasks[0]?.status).toBe("completed");
+    expect(tasks).toHaveLength(0);
+    // History records the completion.
+    const hist = await scheduler.history({});
+    expect(hist[0]?.status).toBe("completed");
     // dispatch has no new workflow to cancel
     expect(client.workflow.cancel).not.toHaveBeenCalled();
   });
@@ -1649,8 +1653,9 @@ describe("idempotencyKey — delimiter validation prevents ID aliasing", () => {
 describe("idempotencyKey — failed submissions allow retry", () => {
   test("ambiguous dispatch signal failure — does not throw, marks completed, idempotency guards retry", async () => {
     // Ambiguous signal failures (transport-level — could be delivered) are treated as optimistically
-    // delivered to prevent duplicate dispatch on caller retry. The caller receives the task ID and
-    // does NOT retry. A second call with the same idempotencyKey is a no-op (task already completed).
+    // delivered. The durable delivered marker is written first, then the task is removed from the
+    // live map (same as confirmed delivery). The caller receives the task ID and does NOT retry.
+    // A second call with the same idempotencyKey is a no-op via the history-based idempotency guard.
     let callCount = 0;
     const client = makeMockClient({
       signal: mock(async () => {
@@ -1664,9 +1669,13 @@ describe("idempotencyKey — failed submissions allow retry", () => {
       idempotencyKey: "retry-key",
     });
     expect(String(id)).toBe(`${AGENT_ID}:dispatch:retry-key`);
+    // Task is removed from live map (same as confirmed success path)
     const tasks = await scheduler.query({});
-    expect(tasks[0]?.status).toBe("completed"); // optimistic delivery
-    // Second call with same key — idempotency guard short-circuits (already completed), no second signal
+    expect(tasks).toHaveLength(0);
+    // History records the optimistic completion
+    const hist = await scheduler.history({});
+    expect(hist[0]?.status).toBe("completed");
+    // Second call with same key — history-based idempotency guard short-circuits, no second signal
     const id2 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", {
       idempotencyKey: "retry-key",
     });

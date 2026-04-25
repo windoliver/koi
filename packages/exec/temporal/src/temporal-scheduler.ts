@@ -1276,6 +1276,37 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         const isAmbiguousSignal = mode === "dispatch" && isTransportError(err);
         if (isAmbiguousSignal) {
           const errorMsg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[temporal-scheduler] dispatch signal for agent ${agentId} threw "${errorMsg}" — ` +
+              "treating as possibly delivered to prevent duplicate dispatch on retry.",
+          );
+          // Write a durable delivered marker BEFORE updating in-memory state.
+          // Without this, a subsequent persist() failure would leave a "pending" task on disk with
+          // no deliveredDispatchIds entry — on restart the reconciliation would mark it dead_letter
+          // (retryable with same idempotencyKey), causing a second signal to be sent even though
+          // the first may have already been delivered. This mirrors the confirmed-success path.
+          deliveredDispatchIds.add(id);
+          try {
+            persist();
+          } catch (markerPersistErr: unknown) {
+            const durabilityMsg =
+              `[temporal-scheduler] ambiguous-signal marker persist failed for task "${id}" — ` +
+              "ACK was lost and idempotency cannot be guaranteed across restart. " +
+              "Scheduler is now fail-closed.";
+            console.error(durabilityMsg, markerPersistErr);
+            const koiErr: KoiError = {
+              code: "INTERNAL",
+              message: durabilityMsg,
+              retryable: false,
+              context: { taskId: id, agentId: String(agentId), signalMaybeDelivered: true },
+            };
+            emit({ kind: "task:failed", taskId: id, error: koiErr });
+            // Return early — marker stays in memory; the task remains pending on disk so
+            // restart reconciliation will see it with the in-memory marker (if the process
+            // lived long enough) or treat it as dead_letter if the process crashes.
+            return id;
+          }
+          // Marker persisted — now complete the lifecycle, same as confirmed delivery.
           const completedAt = Date.now();
           const completedTask: ScheduledTask = {
             ...task,
@@ -1296,14 +1327,24 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             retryAttempt: 0,
           });
           emit({ kind: "task:completed", taskId: id, result: undefined });
-          console.warn(
-            `[temporal-scheduler] dispatch signal for agent ${agentId} threw "${errorMsg}" — ` +
-              "treating as possibly delivered to prevent duplicate dispatch on retry.",
-          );
+          tasks.delete(id);
+          taskWorkflowIds.delete(id);
           try {
+            deliveredDispatchIds.delete(id);
             persist();
-          } catch {
-            // Persist failure trips durabilityFailed — outcome is still tracked in memory.
+          } catch (persistErr: unknown) {
+            deliveredDispatchIds.add(id); // restore marker so a future persist can establish safety
+            const durabilityMsg =
+              `[temporal-scheduler] post-ambiguous-dispatch persist failed for task "${id}" — ` +
+              "signal may have been delivered but local history is not durable. Scheduler is fail-closed.";
+            console.error(durabilityMsg, persistErr);
+            const koiErr: KoiError = {
+              code: "INTERNAL",
+              message: durabilityMsg,
+              retryable: false,
+              context: { taskId: id, agentId: String(agentId), signalMaybeDelivered: true },
+            };
+            emit({ kind: "task:failed", taskId: id, error: koiErr });
           }
           return id;
         }
@@ -1426,9 +1467,16 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       } else {
         // Spawn: track actual workflow completion via getResult.
         // Gate on cancelledTaskIds so a raced cancel wins and prevents double terminal events.
-        const startedAt = Date.now();
-        const runningTask: ScheduledTask = { ...task, status: "running", startedAt };
-        tasks.set(id, runningTask);
+        // Delayed spawns (startDelay > 0): the workflow is registered with Temporal but execution
+        // has not begun. Keeping status as "running" immediately would misrepresent the task in
+        // query()/stats() during the entire delay window and make duration accounting inaccurate.
+        // Keep delayed spawns in "pending" until getResult resolves (workflow actually completed).
+        const isDelayedSpawn = options?.delayMs !== undefined;
+        const immediateStartedAt = isDelayedSpawn ? undefined : Date.now();
+        const trackedTask: ScheduledTask = isDelayedSpawn
+          ? { ...task, status: "pending" }
+          : { ...task, status: "running", startedAt: immediateStartedAt };
+        tasks.set(id, trackedTask);
         // Attach the watcher BEFORE persist so we never lose tracking of a live workflow.
         // If persist subsequently fails, we cancel the workflow and re-throw rather than
         // leaving it running without local observability or restart-recovery coverage.
@@ -1436,8 +1484,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           (result: unknown) => {
             if (disposed || cancelledTaskIds.has(id)) return;
             const completedAt = Date.now();
+            // For delayed spawns, use task.scheduledAt (when execution was expected to start)
+            // as the best proxy for startedAt since we have no execution-start signal from Temporal.
+            const startedAt = immediateStartedAt ?? task.scheduledAt ?? completedAt;
             const safeResult = sanitizeResult(result);
-            tasks.set(id, { ...runningTask, status: "completed", completedAt });
+            tasks.set(id, { ...trackedTask, status: "completed", startedAt, completedAt });
             history.push({
               taskId: id,
               agentId,
@@ -1462,7 +1513,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           (error: unknown) => {
             if (disposed || cancelledTaskIds.has(id)) return;
             const completedAt = Date.now();
-            tasks.set(id, { ...runningTask, status: "failed", completedAt });
+            const startedAt = immediateStartedAt ?? task.scheduledAt ?? completedAt;
+            tasks.set(id, { ...trackedTask, status: "failed", startedAt, completedAt });
             const koiError: KoiError = {
               code: "EXTERNAL",
               message: error instanceof Error ? error.message : String(error),
