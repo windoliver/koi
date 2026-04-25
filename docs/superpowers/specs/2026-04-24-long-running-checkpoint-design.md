@@ -49,12 +49,49 @@ To close that gap, this package MUST run under a supervisor that provides
   (kubectl, launchd, systemd, PID-file-based orchestrator) is acceptable
   as long as it enforces kill-on-takeover.
 
-**Hosts that cannot guarantee kill-on-takeover MUST set
-`config.trustedSingleProcess = true`.** In that mode, the harness refuses
-to reclaim any `active` snapshot on `resume()` — it returns
-`ALREADY_ACTIVE` unconditionally for non-terminal phases and requires
-explicit operator action to relinquish. This sacrifices availability for
-correctness in environments without process fencing.
+**The harness makes the supervisor requirement enforceable via an explicit
+`Supervisor` config interface:**
+
+```ts
+interface Supervisor {
+  /**
+   * Forcibly terminate the worker that owns the given session and return
+   * only after termination is confirmed. Implementations:
+   *  - @koi/daemon: SIGKILL the worker PID, await its exit code.
+   *  - kubectl: delete the pod, await pod phase === "Failed".
+   *  - launchd/systemd: stop the unit, await inactive.
+   *
+   * Must be idempotent: calling on an already-dead worker returns Ok.
+   * Returns Err(KILL_FAILED) only if the supervisor itself is unhealthy.
+   */
+  readonly killAndConfirm: (sessionId: string) =>
+    Promise<Result<void, KoiError>>;
+}
+```
+
+`LongRunningConfig` accepts `supervisor?: Supervisor`. The reclaim path is
+gated on its presence:
+
+- If `config.supervisor` is defined: reclaim invokes
+  `supervisor.killAndConfirm(prev.lastSessionId)` BEFORE the CAS advance
+  to `suspended`. A kill failure aborts reclaim with
+  `KoiError { code: "KILL_FAILED", retryable: true }`; the CAS is not
+  attempted.
+- If `config.supervisor` is absent AND `config.trustedSingleProcess !==
+  true`: `createLongRunningHarness` returns
+  `KoiError { code: "INVALID_CONFIG", message: "either supervisor or
+  trustedSingleProcess must be set" }`.
+- If `config.trustedSingleProcess === true`: the harness refuses to
+  reclaim any `active` snapshot on `resume()` — it returns
+  `ALREADY_ACTIVE` unconditionally for non-terminal phases and requires
+  explicit operator action to relinquish. Sacrifices availability for
+  correctness in environments without a supervisor.
+
+The same supervisor contract gates orphan-record recovery: CAS-advancing
+to `failed` with `ORPHAN_SESSION_RECORD` also requires a successful
+`killAndConfirm` first. If the supervisor reports the session's worker
+is alive, we do NOT publish terminal state — the harness returns
+`RECLAIM_LIVE_OWNER` (retryable) and the caller investigates.
 
 **Tool-layer epoch check (optional, recommended for non-idempotent
 tools):** long-running tools that perform external side effects (HTTP
@@ -141,10 +178,13 @@ interface LongRunningConfig {
   // createLongRunningHarness throws INVALID_CONFIG if violated.
 
   /**
+   * Supervisor with killAndConfirm. Required unless trustedSingleProcess
+   * is true. See "Exclusivity Model and Supervisor Requirement".
+   */
+  readonly supervisor?: Supervisor;
+  /**
    * When true, the harness refuses to reclaim any `active` snapshot on
-   * resume(). Required for deployments without a supervisor that
-   * enforces kill-on-takeover. Default: false (assumes @koi/daemon or
-   * equivalent). See "Exclusivity Model and Supervisor Requirement".
+   * resume(). Required iff supervisor is not provided.
    */
   readonly trustedSingleProcess?: boolean;
   readonly saveState?: SaveStateCallback;     // capture engine state on soft checkpoint
@@ -196,12 +236,18 @@ interface LongRunningHarness {
     err: KoiError,
   ) => Promise<Result<void, KoiError>>;
   /**
-   * Abort the active run. Exposed so durability-loss handlers (inside
-   * checkpoint middleware) can force engine quiescence before releasing the
-   * lease. Returns once the engine adapter has stopped emitting events or
-   * abortTimeoutMs has elapsed.
+   * Abort the active run. Requires the current SessionLease — enforces
+   * the same capability boundary as other mutating methods. Exposed so
+   * durability-loss handlers inside checkpoint middleware can force
+   * engine quiescence before releasing the lease. Returns once the
+   * engine adapter has stopped or `abortTimeoutMs` elapses.
+   * Unrelated in-process callers without the lease cannot terminate
+   * other sessions' runs.
    */
-  readonly abortActive: (reason: KoiError) => Promise<Result<void, KoiError>>;
+  readonly abortActive: (
+    lease: SessionLease,
+    reason: KoiError,
+  ) => Promise<Result<void, KoiError>>;
   readonly status: () => HarnessStatus;
   readonly createMiddleware: (lease: SessionLease) => KoiMiddleware;
   readonly dispose: () => Promise<Result<void, KoiError>>;
@@ -922,6 +968,26 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   returns `ALREADY_ACTIVE` unconditionally, no reclaim attempted even
   with stale heartbeats. Required for hosts without kill-on-takeover
   supervisor; verified by test that asserts reclaim is never invoked.
+- **`createLongRunningHarness` rejects missing supervisor:** config
+  without `supervisor` AND without `trustedSingleProcess=true` returns
+  `INVALID_CONFIG` at construction time.
+- **Supervisor kill before reclaim (TTL path):** double-confirmed stale
+  heartbeat → harness calls `supervisor.killAndConfirm(lastSessionId)`
+  BEFORE CAS → kill succeeds → CAS advances. Mock supervisor asserts
+  ordering.
+- **Supervisor kill before orphan terminalize:** orphan-window elapses
+  with NOT_FOUND → harness calls `killAndConfirm` → kill succeeds →
+  CAS to `failed`. If kill returns `RECLAIM_LIVE_OWNER` (worker still
+  alive despite missing record), harness does NOT terminalize and
+  returns the error retryable.
+- **Supervisor kill failure aborts reclaim:** mock supervisor returns
+  `Err(KILL_FAILED)` → reclaim does NOT CAS, harness state unchanged,
+  error propagates to caller. (Regression against split-brain-on-
+  supervisor-failure.)
+- **abortActive requires lease:** invoking `abortActive` with an
+  unrelated lease (mint a session, close it, try its stale lease) or
+  a forged lease returns `STALE_SESSION`. No session termination
+  occurs.
 
 ### Unit: `checkpoint-policy.test.ts`
 
@@ -982,7 +1048,9 @@ All errors are `KoiError` from L0. Codes used:
 | `INVALID_CONFIG` | `abortTimeoutMs >= leaseTtlMs - 2*heartbeatIntervalMs` | false |
 | `ACTIVATION_STATUS_WRITE_FAILED` | step-5 `setSessionStatus("running")` write failed; returned via `StartResult.activationWarning`, NOT via `Err`; lease is still valid | true |
 | `RECLAIM_READ_FAILED` | `sessionPersistence.loadSession` I/O error during reclaim after 3 retries; caller must retry after backoff | true |
-| `ORPHAN_SESSION_RECORD` | session record consistently `NOT_FOUND` across TTL window; harness CAS-advanced to `failed` for audit/restart | false |
+| `ORPHAN_SESSION_RECORD` | session record consistently `NOT_FOUND` across TTL window AND supervisor confirmed kill; harness CAS-advanced to `failed` for audit/restart | false |
+| `KILL_FAILED` | `supervisor.killAndConfirm` could not terminate the owner worker | true |
+| `RECLAIM_LIVE_OWNER` | supervisor reports owner is still alive despite TTL-stale heartbeat or NOT_FOUND; caller investigates | true |
 | `RESUME_CORRUPT` | snapshot fails `isHarnessSnapshot` | false |
 
 ## References
