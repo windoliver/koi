@@ -1,4 +1,13 @@
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname } from "node:path";
 import type {
   AgentId,
   CronSchedule,
@@ -120,13 +129,31 @@ function sanitizeResult(result: unknown): unknown {
   }
 }
 
-// Atomic write: write to a temp file then rename, so a crash mid-write cannot
-// corrupt or erase the last good snapshot.
+// Atomic write: write to a temp file, fsync it, rename, then fsync the parent
+// directory so the rename itself is durable. Without these fsyncs a kernel
+// panic between writeFileSync and rename can leave the old snapshot on disk
+// even though the caller received a "success" return — exactly the durability
+// gap that makes restart recovery unreliable after a host crash.
 function saveStateSync(dbPath: string, state: PersistedState): void {
   const tmp = `${dbPath}.tmp`;
   try {
     writeFileSync(tmp, JSON.stringify(state, persistenceReplacer));
+    // Flush file data to disk before rename so a crash after rename still
+    // returns a consistent new snapshot rather than partially-written data.
+    const fd = openSync(tmp, "r");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(tmp, dbPath);
+    // Flush the directory entry so the rename itself is crash-visible.
+    const dirFd = openSync(dirname(dbPath), "r");
+    try {
+      fsyncSync(dirFd);
+    } finally {
+      closeSync(dirFd);
+    }
   } catch (err: unknown) {
     try {
       unlinkSync(tmp);

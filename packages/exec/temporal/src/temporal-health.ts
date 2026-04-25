@@ -142,7 +142,10 @@ export function createTemporalHealthMonitor(
     const snap = circuit.getSnapshot();
     switch (snap.state) {
       case "CLOSED":
-        return "healthy";
+        // Any consecutive failure means the last probe failed — degrade immediately
+        // rather than waiting for the circuit to open. This makes partial outages
+        // visible to callers before the threshold is reached.
+        return snap.failureCount > 0 ? "degraded" : "healthy";
       case "HALF_OPEN":
         return "degraded";
       case "OPEN":
