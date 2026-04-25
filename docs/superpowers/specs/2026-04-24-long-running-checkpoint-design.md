@@ -25,6 +25,47 @@ issue and will be addressed in follow-up packages when needed:
 - Autonomous provider (scheduler integration — separate sched-* issue)
 - Process-level supervision (`@koi/daemon` already owns this)
 
+## Exclusivity Model and Supervisor Requirement
+
+**This package provides in-process exclusivity. Cross-process exclusivity
+requires a cooperating supervisor.**
+
+Lease identity, CAS fencing, and heartbeat TTL protect against every
+scenario where the old engine cooperates with its `AbortSignal`: clean
+shutdowns, timeouts, durability losses, and crashes. They CANNOT stop a
+stalled-but-alive process (host sleep, VM suspension, long GC pause) from
+waking up and continuing to emit side effects after a peer has
+legitimately reclaimed via TTL staleness.
+
+To close that gap, this package MUST run under a supervisor that provides
+**kill-on-takeover** semantics:
+
+- Before any peer reclaims a harness via TTL staleness, the supervisor
+  MUST terminate the prior worker process with SIGKILL (or equivalent OS
+  primitive). This is the only mechanism that can interrupt already-
+  running tool side effects in a non-cooperative fashion.
+- The supervisor owns process lifecycle; the harness owns durable state.
+- `@koi/daemon` is the intended supervisor in v2; any equivalent
+  (kubectl, launchd, systemd, PID-file-based orchestrator) is acceptable
+  as long as it enforces kill-on-takeover.
+
+**Hosts that cannot guarantee kill-on-takeover MUST set
+`config.trustedSingleProcess = true`.** In that mode, the harness refuses
+to reclaim any `active` snapshot on `resume()` — it returns
+`ALREADY_ACTIVE` unconditionally for non-terminal phases and requires
+explicit operator action to relinquish. This sacrifices availability for
+correctness in environments without process fencing.
+
+**Tool-layer epoch check (optional, recommended for non-idempotent
+tools):** long-running tools that perform external side effects (HTTP
+POST, DB writes, outbound messages) SHOULD accept the current
+`lease.generation` at invocation time and reject calls whose generation
+is no longer the current snapshot's. This is a defense-in-depth
+mechanism; it does not replace the supervisor requirement but reduces
+the blast radius of a stalled-but-waking process that has not yet been
+SIGKILLed. The tool-epoch check is NOT part of this package's 500-LOC
+scope; it is a downstream convention enforced by tool authors.
+
 ## Architecture
 
 ```
@@ -98,6 +139,14 @@ interface LongRunningConfig {
   readonly abortTimeoutMs?: number;           // max wait for engine to quiesce on durability loss; default 10_000
   // INVARIANT: abortTimeoutMs < leaseTtlMs - 2 * heartbeatIntervalMs
   // createLongRunningHarness throws INVALID_CONFIG if violated.
+
+  /**
+   * When true, the harness refuses to reclaim any `active` snapshot on
+   * resume(). Required for deployments without a supervisor that
+   * enforces kill-on-takeover. Default: false (assumes @koi/daemon or
+   * equivalent). See "Exclusivity Model and Supervisor Requirement".
+   */
+  readonly trustedSingleProcess?: boolean;
   readonly saveState?: SaveStateCallback;     // capture engine state on soft checkpoint
   readonly onCompleted?: OnCompletedCallback;
   readonly onFailed?: OnFailedCallback;
@@ -357,17 +406,27 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
    dead-owner signal** — status flags are advisory. This avoids relying on
    cross-store read-after-write consistency between `harnessStore` and
    `sessionPersistence`, which L0 does not guarantee:
-   - `NOT_FOUND` → **never a sufficient dead-owner signal.** A long
-     turn may exceed `leaseTtlMs` and rely entirely on the heartbeat loop
-     for liveness; if session-record reads lag, are deleted, or return a
-     stale `NOT_FOUND`, snapshot-age alone does not prove the engine has
-     stopped. Return `ALREADY_ACTIVE` (retryable). Reclaim requires an
-     independent positive dead-owner signal: either a stale heartbeat on
-     a record that DOES exist (caller must wait for the store to catch
-     up) or an explicit `"abandoned"` tombstone. An operator who believes
-     the session record has been genuinely deleted must write the
-     tombstone via a separate administrative tool; this design does not
-     silently reclaim on missing records.
+   - `NOT_FOUND` → **not a short-term dead-owner signal.** A long turn
+     may exceed `leaseTtlMs` and rely entirely on the heartbeat loop
+     for liveness; if session-record reads lag or return a stale
+     `NOT_FOUND`, reclaiming immediately would fence a live owner.
+     Instead: retry the read 3 times with backoff. If all reads confirm
+     `NOT_FOUND` AND the repeated-read window covers at least
+     `leaseTtlMs` (so any healthy heartbeat loop would have re-written
+     the record in the interim), treat as **orphan record** and proceed
+     to recovery:
+     - CAS-advance the snapshot to `failed` with
+       `failureReason = "ORPHAN_SESSION_RECORD"`, generation+1. The
+       harness is now terminal (`failed`) and future `resume()` calls
+       correctly return `TERMINAL`. Operators can audit/start a fresh
+       harness after investigating the missing record.
+     - This path recovers bounded-time (≤ `leaseTtlMs + 3 *
+       backoff_total ≈ 2 * leaseTtlMs`) from deleted/corrupt session
+       records without requiring manual tombstone writes.
+
+   Read I/O errors (not NOT_FOUND) remain `RECLAIM_READ_FAILED`
+   (retryable) — we do NOT treat a transient read error as a missing
+   record.
    - `record.status === "done"` → advisory signal of clean exit, but still
      require TTL-stale heartbeat before reclaim (protects against lagged
      reads of an old status).
@@ -575,7 +634,7 @@ Single hook: `afterTurn`. On each turn boundary:
    our lease was revoked): treat as `STALE_SESSION`, fail the turn with that
    error, invoke `onDurabilityLost` with the error, revoke our local lease.
 6. **On CAS failure due to store I/O error:** escalate. The harness is marked
-   `unhealthy` (`status().durability = "lost"`). Fail the turn with
+   `unhealthy` (`status().durability = "unhealthy"`). Fail the turn with
    `KoiError { code: "CHECKPOINT_WRITE_FAILED", retryable: true }` and invoke
    `onDurabilityLost`. Proceed with the Degraded-durability recovery path
    below — execution is stopped before the lease is released, so no
@@ -821,6 +880,16 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   `RECLAIM_READ_FAILED` (retryable). Does NOT attempt reclaim, does NOT
   wedge the harness — the existing state is untouched and a later
   `resume()` call can proceed once the store recovers.
+- **Orphan session record (deleted/corrupt):** `loadSession` returns
+  consistent `NOT_FOUND` across a window ≥ `leaseTtlMs`. Harness
+  CAS-advances snapshot to `failed` with `ORPHAN_SESSION_RECORD`.
+  Subsequent `resume()` returns `TERMINAL`. Operator can audit and
+  start a fresh harness. (Regression against permanent `active`
+  wedge.)
+- **`trustedSingleProcess=true`:** `resume()` on any `active` snapshot
+  returns `ALREADY_ACTIVE` unconditionally, no reclaim attempted even
+  with stale heartbeats. Required for hosts without kill-on-takeover
+  supervisor; verified by test that asserts reclaim is never invoked.
 
 ### Unit: `checkpoint-policy.test.ts`
 
@@ -881,6 +950,7 @@ All errors are `KoiError` from L0. Codes used:
 | `INVALID_CONFIG` | `abortTimeoutMs >= leaseTtlMs - 2*heartbeatIntervalMs` | false |
 | `ACTIVATION_STATUS_WRITE_FAILED` | step-5 `setSessionStatus("running")` write failed; returned via `StartResult.activationWarning`, NOT via `Err`; lease is still valid | true |
 | `RECLAIM_READ_FAILED` | `sessionPersistence.loadSession` I/O error during reclaim after 3 retries; caller must retry after backoff | true |
+| `ORPHAN_SESSION_RECORD` | session record consistently `NOT_FOUND` across TTL window; harness CAS-advanced to `failed` for audit/restart | false |
 | `RESUME_CORRUPT` | snapshot fails `isHarnessSnapshot` | false |
 
 ## References
