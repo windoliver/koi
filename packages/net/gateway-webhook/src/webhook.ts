@@ -143,6 +143,9 @@ export function createWebhookServer(
   const maxBodyBytes = config.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const idempotencyStore: IdempotencyStore =
     config.idempotencyStore ?? createIdempotencyStore(config.idempotency ?? {});
+  // Renew processing leases at half the processingTtlMs so a slow-but-healthy
+  // dispatcher never loses its reservation to an impatient retry.
+  const leaseRenewalMs = Math.floor((config.idempotency?.processingTtlMs ?? 5 * 60 * 1000) / 2);
 
   const prefix = config.pathPrefix.endsWith("/")
     ? config.pathPrefix.slice(0, -1)
@@ -300,9 +303,21 @@ export function createWebhookServer(
       payload: bodyResult.parsed,
     };
 
+    // Renew the processing lease periodically while dispatch is active so a
+    // slow-but-healthy dispatcher does not lose its reservation to a provider retry.
+    let renewalTimer: ReturnType<typeof setInterval> | undefined;
+    if (pendingDedupKey !== undefined && pendingToken !== undefined) {
+      const key = pendingDedupKey;
+      const token = pendingToken;
+      renewalTimer = setInterval(() => {
+        idempotencyStore.renew(key, token);
+      }, leaseRenewalMs);
+    }
+
     try {
       await Promise.resolve(dispatcher(session, frame));
     } catch (err: unknown) {
+      clearInterval(renewalTimer);
       // Abort dedup reservation so provider can retry and be accepted.
       if (pendingDedupKey !== undefined && pendingToken !== undefined) {
         idempotencyStore.abort(pendingDedupKey, pendingToken);
@@ -310,6 +325,7 @@ export function createWebhookServer(
       const message = err instanceof Error ? err.message : String(err);
       return jsonResponse(500, { ok: false, error: `Dispatch failed: ${message}`, frameId });
     }
+    clearInterval(renewalTimer);
 
     // Commit dedup key only after full successful acceptance (auth + dispatch).
     // Provider retries after transient failures will not be silently dropped.

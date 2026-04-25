@@ -58,6 +58,43 @@ describe("createIdempotencyStore", () => {
     expect(store.tryBegin("key-1").state).toBe("ok");
   });
 
+  test("renew extends processing TTL — active dispatch keeps its reservation", () => {
+    // processingTtlMs=20ms: without renewal the entry would expire after 20ms.
+    // renew() is called before the 20ms window closes, resetting the clock.
+    const store = createIdempotencyStore({ processingTtlMs: 20 });
+    const r = store.tryBegin("key-1");
+    if (r.state !== "ok") throw new Error("unexpected");
+    // Wait 15ms — close to expiry but not yet expired
+    const halfway = Date.now() + 15;
+    while (Date.now() < halfway) {
+      /* spin */
+    }
+    // Renew resets the TTL to 20ms from now
+    const renewed = store.renew("key-1", r.token);
+    expect(renewed).toBe(true);
+    // Wait another 15ms — without renewal this would have expired, but with it, it's still valid
+    const later = Date.now() + 15;
+    while (Date.now() < later) {
+      /* spin */
+    }
+    // Entry is still in-flight (renewed TTL hasn't elapsed yet)
+    expect(store.tryBegin("key-1").state).toBe("in-flight");
+  });
+
+  test("renew with wrong token is a no-op", () => {
+    const store = createIdempotencyStore();
+    store.tryBegin("key-1");
+    expect(store.renew("key-1", "wrong-token")).toBe(false);
+  });
+
+  test("renew on committed entry is a no-op — returns false", () => {
+    const store = createIdempotencyStore();
+    const r = store.tryBegin("key-1");
+    if (r.state === "ok") store.commit("key-1", r.token);
+    const renewed = r.state === "ok" ? store.renew("key-1", r.token) : false;
+    expect(renewed).toBe(false);
+  });
+
   test("stale commit after TTL expiry is a no-op — newer reservation wins", () => {
     // Simulates the processing TTL race: request A's TTL expires, B takes over,
     // then A's stale commit must not overwrite B's reservation.
@@ -96,46 +133,36 @@ describe("createIdempotencyStore", () => {
     expect(store.tryBegin("key-1").state).toBe("in-flight"); // B's reservation intact
   });
 
-  test("maxSize evicts oldest committed entry to make room for new reservations", () => {
-    // At capacity, tryBegin evicts the oldest committed entry (LRU-ish) so normal
-    // sustained traffic does not degrade into capacity-exceeded errors.
+  test("maxSize returns capacity-exceeded for both committed and in-flight stores", () => {
+    // Committed entries are NOT evicted to make room — silence eviction risks
+    // duplicate side effects when a provider retries an evicted delivery.
     const store = createIdempotencyStore({ maxSize: 2 });
-    // Fill with 2 committed entries
     const r1 = store.tryBegin("key-1");
     if (r1.state === "ok") store.commit("key-1", r1.token);
     const r2 = store.tryBegin("key-2");
     if (r2.state === "ok") store.commit("key-2", r2.token);
-    // {key-1:committed, key-2:committed}
-
-    // key-3 evicts key-1 (oldest committed) to make room
-    const r3 = store.tryBegin("key-3");
-    expect(r3.state).toBe("ok");
-    // {key-2:committed, key-3:processing}
-
-    // key-1 was evicted — it can be reserved again (evicts key-2 to make room)
-    const r1b = store.tryBegin("key-1");
-    expect(r1b.state).toBe("ok");
-    // {key-3:processing, key-1:processing}
-
-    // key-2 was evicted — now abort both processing slots to empty the store
-    if (r3.state === "ok") store.abort("key-3", r3.token);
-    if (r1b.state === "ok") store.abort("key-1", r1b.token);
-    // {} — empty
-
-    // key-2 was evicted earlier and is now available as a fresh delivery
-    expect(store.tryBegin("key-2").state).toBe("ok");
+    // Store is full with 2 committed entries — new reservation is rejected
+    expect(store.tryBegin("key-3").state).toBe("capacity-exceeded");
+    // Existing committed keys are still blocked
+    expect(store.tryBegin("key-1").state).toBe("duplicate");
+    expect(store.tryBegin("key-2").state).toBe("duplicate");
   });
 
   test("tryBegin returns capacity-exceeded when store is full of in-flight entries", () => {
-    // Only processing entries in the store — no committed to evict.
+    // Only processing entries in the store — capacity-exceeded returned
     const store = createIdempotencyStore({ maxSize: 2 });
-    store.tryBegin("key-1"); // processing, not committed
-    store.tryBegin("key-2"); // processing, not committed — store full
+    store.tryBegin("key-1"); // processing
+    store.tryBegin("key-2"); // processing — store full
     expect(store.tryBegin("key-3").state).toBe("capacity-exceeded");
-    // Aborting one in-flight entry frees capacity
-    const r1 = store.tryBegin("key-1");
-    // key-1 is still processing — abort requires token
-    if (r1.state === "ok") store.abort("key-1", r1.token);
+  });
+
+  test("capacity frees up after abort and TTL expiry", () => {
+    const store = createIdempotencyStore({ maxSize: 1 });
+    const r = store.tryBegin("key-1");
+    expect(r.state).toBe("ok");
+    if (r.state === "ok") store.abort("key-1", r.token);
+    // Slot freed — next key can be reserved
+    expect(store.tryBegin("key-2").state).toBe("ok");
   });
 
   test("prune removes expired committed entries", () => {
@@ -151,10 +178,10 @@ describe("createIdempotencyStore", () => {
   });
 
   test("expired processing reservation is pruned — hung request cannot permanently burn a key", () => {
-    // processingTtlMs=1 simulates a lease expiry for a hung/cancelled request.
-    // After the TTL passes, tryBegin should accept the key as a fresh delivery.
+    // processingTtlMs=1 simulates a lease expiry for a dead request (one that
+    // stopped renewing). After the TTL passes, tryBegin should accept the key.
     const store = createIdempotencyStore({ processingTtlMs: 1 });
-    store.tryBegin("key-hung"); // reserve but never commit/abort (simulates a hang)
+    store.tryBegin("key-hung"); // reserve but never renew/commit/abort
     const deadline = Date.now() + 50;
     while (Date.now() < deadline) {
       /* spin */

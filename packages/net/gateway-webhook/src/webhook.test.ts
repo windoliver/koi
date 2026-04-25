@@ -426,6 +426,7 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     // Use a custom store that pretends the key is in-flight.
     const inFlightStore = {
       tryBegin: (_key: string) => ({ state: "in-flight" as const }),
+      renew: (_key: string, _token: string) => false,
       commit: (_key: string, _token: string) => {},
       abort: (_key: string, _token: string) => {},
       prune: () => {},
