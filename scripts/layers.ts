@@ -31,6 +31,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/execution-context",
   "@koi/file-resolution",
   "@koi/fs-scoped",
+  "@koi/gateway-types",
   "@koi/git-utils",
   "@koi/hash",
   "@koi/memory",
@@ -64,6 +65,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
 export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/artifacts-s3",
   "@koi/gateway",
+  "@koi/gateway-webhook",
   "@koi/audit-sink-ndjson",
   "@koi/audit-sink-sqlite",
   "@koi/browser-ext",

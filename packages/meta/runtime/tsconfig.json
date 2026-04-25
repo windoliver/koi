@@ -54,6 +54,7 @@
     { "path": "../../mm/model-openai-compat" },
     { "path": "../../net/daemon" },
     { "path": "../../net/gateway" },
+    { "path": "../../net/gateway-webhook" },
     { "path": "../../net/mcp" },
     { "path": "../../net/mcp-server" },
     { "path": "../../lib/middleware-feedback-loop" },

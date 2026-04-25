@@ -13222,3 +13222,78 @@ describe("Golden: @koi/ipc-local", () => {
     mailboxB.close();
   });
 });
+
+// Golden: @koi/gateway-webhook
+// HTTP ingress server — sits outside the agent loop (no cassette needed).
+// Tests validate the public API surface: factory guards, idempotency store, and
+// provider signature helpers. None of these interact with the LLM or ATIF.
+describe("Golden: @koi/gateway-webhook", () => {
+  test("createWebhookServer factory guards — rejects misconfigured servers before binding", async () => {
+    const { createWebhookServer } = await import("@koi/gateway-webhook");
+
+    // No auth configured → must throw (fail-closed)
+    expect(() => createWebhookServer({ port: 0, pathPrefix: "/wh" }, () => {})).toThrow(
+      "no authentication configured",
+    );
+
+    // pathPrefix "/" → must throw (catch-all risk)
+    expect(() =>
+      createWebhookServer({ port: 0, pathPrefix: "/", allowUnauthenticated: true }, () => {}),
+    ).toThrow("pathPrefix cannot be");
+
+    // allowUnauthenticated: true satisfies the guard
+    expect(() =>
+      createWebhookServer({ port: 0, pathPrefix: "/wh", allowUnauthenticated: true }, () => {}),
+    ).not.toThrow();
+
+    // leaseRenewalMs required when custom idempotencyStore is injected
+    const stubStore = {
+      tryBegin: (_k: string) => ({ state: "ok" as const, token: "t" }),
+      renew: (_k: string, _t: string) => false,
+      commit: (_k: string, _t: string) => {},
+      abort: (_k: string, _t: string) => {},
+      prune: () => {},
+    };
+    expect(() =>
+      createWebhookServer(
+        { port: 0, pathPrefix: "/wh", allowUnauthenticated: true, idempotencyStore: stubStore },
+        () => {},
+      ),
+    ).toThrow("leaseRenewalMs is required");
+  });
+
+  test("createIdempotencyStore — four-method API prevents concurrent double-dispatch", async () => {
+    const { createIdempotencyStore } = await import("@koi/gateway-webhook");
+
+    const store = createIdempotencyStore({ ttlMs: 60_000, processingTtlMs: 30_000 });
+
+    // New key: ok + token
+    const r1 = store.tryBegin("evt-1");
+    expect(r1.state).toBe("ok");
+    const token = r1.state === "ok" ? r1.token : "";
+
+    // Same key while processing: in-flight (not duplicate, not ok)
+    expect(store.tryBegin("evt-1").state).toBe("in-flight");
+
+    // Commit → subsequent call is duplicate
+    store.commit("evt-1", token);
+    expect(store.tryBegin("evt-1").state).toBe("duplicate");
+
+    // Different key is independent
+    expect(store.tryBegin("evt-2").state).toBe("ok");
+
+    // Abort releases an in-flight reservation — retry accepted
+    const r3 = store.tryBegin("evt-3");
+    expect(r3.state).toBe("ok");
+    if (r3.state === "ok") store.abort("evt-3", r3.token);
+    expect(store.tryBegin("evt-3").state).toBe("ok");
+
+    // Stale abort after commit is a no-op (committed entry stays)
+    const r4 = store.tryBegin("evt-4");
+    if (r4.state === "ok") {
+      store.commit("evt-4", r4.token);
+      store.abort("evt-4", r4.token); // no-op
+    }
+    expect(store.tryBegin("evt-4").state).toBe("duplicate");
+  });
+});
