@@ -278,9 +278,15 @@ describe("createWorkspaceProvider", () => {
     // Simulate a workspace that survived a process restart: not in `attached` map
     // but discoverable via backend.findByAgentId (on-disk marker scan).
     const survivorId = workspaceId("ws-survivor");
+    const survivorInfo: WorkspaceInfo = {
+      id: survivorId,
+      path: "/tmp/ws-survivor",
+      createdAt: Date.now(),
+      metadata: {},
+    };
     const backendWithFind = makeBackend({
-      async findByAgentId(_aid: AgentId): Promise<WorkspaceId | undefined> {
-        return survivorId;
+      async findByAgentId(_aid: AgentId): Promise<WorkspaceInfo | undefined> {
+        return survivorInfo;
       },
     });
     const provider = createWorkspaceProvider({ backend: backendWithFind });
@@ -292,6 +298,39 @@ describe("createWorkspaceProvider", () => {
     expect(backendWithFind.disposed).toContain(survivorId);
     // A new workspace was created
     expect(backendWithFind.created.length).toBe(1);
+    await provider.detach?.(agent);
+  });
+
+  it("cleanupPolicy=never reuses crash-surviving workspace found via findByAgentId", async () => {
+    // After restart, `attached` map is empty but findByAgentId finds survivor.
+    // With never policy, it should be reused (health-checked), not disposed.
+    const survivorId = workspaceId("ws-survivor-never");
+    const survivorInfo: WorkspaceInfo = {
+      id: survivorId,
+      path: "/tmp/ws-survivor-never",
+      createdAt: Date.now(),
+      metadata: {},
+    };
+    const backendWithFind = makeBackend({
+      async findByAgentId(_aid: AgentId): Promise<WorkspaceInfo | undefined> {
+        return survivorInfo;
+      },
+      isHealthy(_wsId: WorkspaceId): boolean {
+        return true;
+      },
+    });
+    const provider = createWorkspaceProvider({ backend: backendWithFind, cleanupPolicy: "never" });
+    const agent = makeAgent();
+
+    const result = await provider.attach(agent);
+    // Survivor should be REUSED, not disposed
+    expect(backendWithFind.disposed).not.toContain(survivorId);
+    // No new workspace created — existing one reused
+    expect(backendWithFind.created.length).toBe(0);
+    // Returned workspace is the survivor
+    const attachResult = isAttachResult(result) ? result : { components: result, skipped: [] };
+    const ws = attachResult.components.get(WORKSPACE as string) as WorkspaceInfo;
+    expect(ws.id).toBe(survivorId);
     await provider.detach?.(agent);
   });
 

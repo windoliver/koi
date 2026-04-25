@@ -79,17 +79,28 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
           attached.delete(agentId);
         }
 
-        // For non-"never" policies, also scan via findByAgentId for workspaces that survived
-        // a process restart and are no longer in the in-memory map, then dispose them.
-        let staleWsId = staleInfo?.id;
-        if (staleWsId === undefined && config.backend.findByAgentId) {
-          staleWsId = await config.backend.findByAgentId(agentId);
+        // Scan for workspaces that survived a process restart (not in the in-memory map).
+        let staleInfo2 = staleInfo;
+        if (staleInfo2 === undefined && config.backend.findByAgentId) {
+          staleInfo2 = await config.backend.findByAgentId(agentId);
         }
-        if (staleWsId !== undefined) {
-          const disposed = await tryDispose(staleWsId);
+
+        // Under "never" policy: reuse a crash-surviving workspace rather than discarding it.
+        // Health-check first — the worktree may have been manually pruned since the process died.
+        if (staleInfo2 !== undefined && policy === "never") {
+          const healthy = await config.backend.isHealthy(staleInfo2.id);
+          if (healthy) {
+            attached.set(agentId, staleInfo2);
+            return makeResult(staleInfo2);
+          }
+          // Unhealthy — fall through to dispose + recreate
+        }
+
+        if (staleInfo2 !== undefined) {
+          const disposed = await tryDispose(staleInfo2.id);
           if (!disposed) {
             throw new Error(
-              `Cannot reattach agent ${agentId}: previous workspace ${staleWsId} could not be disposed`,
+              `Cannot reattach agent ${agentId}: previous workspace ${staleInfo2.id} could not be disposed`,
             );
           }
           attached.delete(agentId);

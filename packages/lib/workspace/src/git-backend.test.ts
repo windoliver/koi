@@ -152,7 +152,8 @@ describe("createGitWorktreeBackend", () => {
 
     const ws = result.value;
     const found = await backend.findByAgentId?.(aid);
-    expect(found).toBe(ws.id);
+    expect(found?.id).toBe(ws.id);
+    expect(found?.path).toBe(ws.path);
 
     await backend.dispose(ws.id);
   });

@@ -71,8 +71,12 @@ export interface WorkspaceBackend {
   ) => Promise<Result<WorkspaceInfo, KoiError>>;
   readonly dispose: (workspaceId: WorkspaceId) => Promise<Result<void, KoiError>>;
   readonly isHealthy: (workspaceId: WorkspaceId) => boolean | Promise<boolean>;
-  /** Optional: scan for a workspace previously created for this agent (e.g. after process restart). */
-  readonly findByAgentId?: (agentId: AgentId) => Promise<WorkspaceId | undefined>;
+  /**
+   * Optional: scan for a workspace previously created for this agent (e.g. after process restart).
+   * Returns full WorkspaceInfo so callers can reuse the workspace (e.g. under `cleanupPolicy="never"`)
+   * without needing a separate round-trip to reconstruct path/metadata.
+   */
+  readonly findByAgentId?: (agentId: AgentId) => Promise<WorkspaceInfo | undefined>;
 }
 
 // ---------------------------------------------------------------------------

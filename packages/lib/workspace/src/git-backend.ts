@@ -175,7 +175,7 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       return Bun.file(join(entry.path, ".koi-workspace")).exists();
     },
 
-    async findByAgentId(searchAgentId: AgentId): Promise<WorkspaceId | undefined> {
+    async findByAgentId(searchAgentId: AgentId): Promise<WorkspaceInfo | undefined> {
       // Derive ownership from the git-owned branch name.
       // New format: workspace/<hex(agentId)>/<wsId>  (current, reversible, collision-free)
       // Legacy format: workspace/<agentId>/<wsId>    (prior deployments where agentId was URL-safe)
@@ -188,6 +188,9 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       const blocks = listResult.value.split(/\n\n+/);
       for (const block of blocks) {
         const lines = block.trim().split("\n");
+        const pathLine = lines.find((l) => l.startsWith("worktree "));
+        if (!pathLine) continue;
+        const path = pathLine.slice("worktree ".length).trim();
         const branchRef =
           lines
             .find((l) => l.startsWith("branch "))
@@ -199,16 +202,34 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         const parts = branchName.split("/");
         if (parts.length !== 3 || parts[0] !== "workspace") continue;
         const segment = parts[1] ?? "";
-        // Match new hex format or legacy direct-agentId format (migration window)
+        // Match new hex format or legacy direct-agentId format (migration window).
+        // No hex-only guard — "deadbeef"-style legacy agentIds must also be found.
         const isHexMatch = segment === searchHex;
-        const isLegacyMatch =
-          !isHexMatch &&
-          segment === searchRaw &&
-          // Guard: only treat as legacy if segment is NOT valid hex for a different ID
-          !/^[0-9a-f]+$/.test(segment);
+        const isLegacyMatch = !isHexMatch && segment === searchRaw;
         if (!isHexMatch && !isLegacyMatch) continue;
         const wsId = parts[2];
-        if (wsId) return workspaceId(wsId);
+        if (!wsId) continue;
+
+        // Read marker for createdAt and metadata; fall back to sensible defaults if unreadable
+        let createdAt = 0;
+        let metadata: Record<string, string> = { branchName, repoPath: config.repoPath };
+        try {
+          const markerText = await Bun.file(join(path, ".koi-workspace")).text();
+          const marker = JSON.parse(markerText) as {
+            createdAt?: number;
+            branchName?: string;
+            repoPath?: string;
+          };
+          if (typeof marker.createdAt === "number") createdAt = marker.createdAt;
+          if (marker.branchName) metadata = { ...metadata, branchName: marker.branchName };
+        } catch {
+          // Marker unreadable — use defaults constructed from git output
+        }
+
+        const id = workspaceId(wsId);
+        // Populate registry so subsequent isHealthy() calls work without rescanning
+        if (!registry.has(id)) registry.set(id, { path, branchName });
+        return { id, path, createdAt, metadata };
       }
       return undefined;
     },
