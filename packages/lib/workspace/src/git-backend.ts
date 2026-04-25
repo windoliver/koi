@@ -60,9 +60,12 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         ? branchRef.slice("refs/heads/".length)
         : branchRef;
       if (!branchName) continue;
-      // Derive wsId from git-owned branch suffix — branch format: workspace/<agent>/<wsId>
+      // Enforce exact branch format: workspace/<agent>/<wsId> — reject any worktree whose
+      // branch does not follow the 3-segment convention (isSandboxed=false, so agent code
+      // could create arbitrary branches; don't recover from unrecognized shapes).
       const branchParts = branchName.split("/");
-      const branchWsId = branchParts[branchParts.length - 1];
+      if (branchParts.length !== 3 || branchParts[0] !== "workspace") continue;
+      const branchWsId = branchParts[2];
       // Require path basename to also match so a moved/renamed worktree is not mistakenly claimed
       const pathWsId = path.split(sep).pop();
       if (branchWsId !== wsId || pathWsId !== wsId) continue;
@@ -245,9 +248,20 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       }
 
       if (matches.length === 0) return undefined;
-      // Multiple survivors: return the one with the highest timestamp embedded in the wsId
-      // (git-owned, not agent-writable). Caller is responsible for disposing older survivors.
-      return matches.reduce((best, cur) => (cur.createdAt > best.createdAt ? cur : best));
+      // Multiple survivors: keep the newest; best-effort dispose all older ones now so they
+      // don't accumulate indefinitely. Disposal failures are intentionally swallowed here —
+      // the provider's tryDispose with its own timeout will retry on the next attach.
+      const best = matches.reduce((b, cur) => (cur.createdAt > b.createdAt ? cur : b));
+      for (const older of matches) {
+        if (older.id !== best.id) {
+          await runGit(["worktree", "remove", "--force", older.path], config.repoPath);
+          const olderBranch = older.metadata["branchName"] ?? "";
+          if (olderBranch) await runGit(["branch", "-D", olderBranch], config.repoPath);
+          await runGit(["update-ref", "-d", `refs/koi-setup-ok/${older.id}`], config.repoPath);
+          registry.delete(older.id);
+        }
+      }
+      return best;
     },
 
     // Use a git ref as the setup-complete attestation so the workspace process
