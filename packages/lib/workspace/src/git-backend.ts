@@ -292,13 +292,51 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         matches.push({ id, path, createdAt, metadata });
       }
 
-      // Second pass: recover branch-drifted workspaces via ownership refs.
-      // Only enabled when trustOwnershipRefs=true (sandboxed backends). On unsandboxed
-      // backends, an agent with repo access can forge ownership refs under another agent's
-      // hex, which would cause the victim's next attach() to try disposing an unrelated
-      // live workspace — a cross-agent DoS via forgeable git state.
-      if (!config.trustOwnershipRefs) return matches.sort((a, b) => b.createdAt - a.createdAt);
+      // Second pass: recover branch-drifted workspaces via git branch list.
+      // The branch `workspace/<hex>/<wsId>` was created by the provider at create() time and
+      // stays in the repo even when the agent switches the worktree to a different branch.
+      // By scanning branches rather than current worktree heads, we find drifted survivors
+      // that the first pass missed. This uses the same branch-naming signal as pass 1, so
+      // it is no more forgeable than the primary discovery mechanism.
       const alreadyFound = new Set(matches.map((m) => m.id as string));
+      const branchListResult = await runGit(
+        ["branch", "--list", `workspace/${searchHex}/*`, "--format=%(refname:short)"],
+        config.repoPath,
+      );
+      if (branchListResult.ok) {
+        for (const branchName of branchListResult.value.split("\n").filter(Boolean)) {
+          const parts = branchName.split("/");
+          if (parts.length !== 3) continue;
+          const wsId = parts[2] ?? "";
+          if (!wsId || alreadyFound.has(wsId)) continue;
+          // Only recover worktrees that still exist under this backend's base path.
+          const expectedPath = join(resolvedBase, wsId);
+          const inList = blocks.some((block) => {
+            const lines = block.trim().split("\n");
+            const pathLine = lines.find((l) => l.startsWith("worktree "));
+            return pathLine?.slice("worktree ".length).trim() === expectedPath;
+          });
+          if (!inList) continue; // branch exists but worktree was already removed — skip
+          const id = workspaceId(wsId);
+          if (!registry.has(id)) {
+            registry.set(id, { path: expectedPath, branchName, agentHex: searchHex });
+          }
+          const tsMatch = wsId.match(/^ws-(\d+)-/);
+          const createdAt = tsMatch?.[1] !== undefined ? Number(tsMatch[1]) : 0;
+          matches.push({
+            id,
+            path: expectedPath,
+            createdAt,
+            metadata: { repoPath: config.repoPath },
+          });
+          alreadyFound.add(wsId);
+        }
+      }
+
+      // Third pass (optional, sandboxed only): recover drifted workspaces via ownership refs.
+      // Only enabled when trustOwnershipRefs=true. On unsandboxed backends, an agent with repo
+      // access can forge ownership refs under another agent's hex, causing a cross-agent DoS.
+      if (!config.trustOwnershipRefs) return matches.sort((a, b) => b.createdAt - a.createdAt);
       const ownershipResult = await runGit(
         ["for-each-ref", "--format=%(refname)", `refs/koi-ownership/${searchHex}/`],
         config.repoPath,

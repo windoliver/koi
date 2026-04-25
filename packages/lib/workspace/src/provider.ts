@@ -299,15 +299,17 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
                 return makeResult(staleInfo);
               }
             }
-            // Unhealthy, in setupFailed, or postCreate failed — dispose and recreate
-            setupFailed.delete(wsId);
-            attached.delete(agentId);
+            // Unhealthy, in setupFailed, or postCreate failed — dispose and recreate.
+            // Keep attached/setupFailed entries until disposal is confirmed; clearing them
+            // before disposal would orphan the workspace from provider tracking on failure.
             const disposed = await tryDispose(wsId);
             if (!disposed) {
               throw new Error(
                 `Cannot reattach agent ${agentId}: workspace ${wsId} could not be disposed`,
               );
             }
+            setupFailed.delete(wsId);
+            attached.delete(agentId);
           }
 
           // Crash-survivor reuse: try candidates newest-first.

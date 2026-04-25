@@ -839,6 +839,55 @@ describe("createWorkspaceProvider", () => {
     await provider.detach?.(agent);
   });
 
+  it("cleanupPolicy=never reattach keeps workspace tracked when dispose fails (atomicity)", async () => {
+    // Regression: attached.delete was called before tryDispose, leaving the workspace
+    // orphaned from provider tracking when disposal timed out. A subsequent attach would
+    // see no stale workspace in `attached` and create a duplicate. With the fix, the
+    // workspace stays tracked so a later attach can reuse or retry cleanup.
+    let healthy = true;
+    let disposeFails = false;
+    const backend = makeBackend({
+      isHealthy(_wsId: WorkspaceId): boolean {
+        return healthy;
+      },
+      async dispose(): Promise<Result<void, KoiError>> {
+        if (disposeFails) {
+          return {
+            ok: false,
+            error: { code: "EXTERNAL", message: "dispose timed out", retryable: false },
+          };
+        }
+        return { ok: true, value: undefined };
+      },
+    });
+    const provider = createWorkspaceProvider({ backend, cleanupPolicy: "never" });
+    const agent = makeAgent();
+
+    // First attach + detach (workspace preserved by never policy)
+    await provider.attach(agent);
+    await provider.detach?.(agent);
+    expect(backend.created.length).toBe(1);
+    expect(backend.disposed.length).toBe(0);
+
+    // Make the workspace unhealthy so reattach tries to dispose it, but disposal fails
+    healthy = false;
+    disposeFails = true;
+
+    // Reattach: dispose fails — provider must throw and keep the workspace tracked
+    await expect(provider.attach(agent)).rejects.toThrow("could not be disposed");
+
+    // Workspace is still tracked — a subsequent reattach sees the same stale workspace.
+    // The stale workspace is now healthy again (transient check or workspace recovered),
+    // so the provider REUSES it rather than creating a second one. Without the atomicity
+    // fix, attached.delete would have cleared tracking and forced a new (duplicate) creation.
+    healthy = true;
+    disposeFails = false;
+
+    await provider.attach(agent);
+    expect(backend.created.length).toBe(1); // reused — no second workspace created
+    await provider.detach?.(agent);
+  });
+
   it("attestation failure in cleanupPolicy=never disposes workspace and rethrows", async () => {
     const attestError = new Error("git update-ref failed");
     const attestingBackend = makeBackend({

@@ -165,13 +165,12 @@ describe("createGitWorktreeBackend", () => {
     expect(survivors).toHaveLength(0);
   });
 
-  it("findByAgentId still finds workspace after agent switched branches (via ownership ref)", async () => {
+  it("findByAgentId still finds workspace after agent switched branches (via git branch list)", async () => {
     // An unsandboxed agent can switch branches, breaking git-owned branch-name discovery.
-    // The ownership ref (refs/koi-ownership/<hex>/<wsId>) is written at create time in the
-    // main repo and survives branch changes. When trustOwnershipRefs=true (safe for sandboxed
-    // backends), findByAgentId uses it as a fallback so the provider can discover and dispose
-    // the drifted workspace before creating a new one.
-    const backend = createGitWorktreeBackend({ repoPath, trustOwnershipRefs: true });
+    // The provider branch `workspace/<hex>/<wsId>` stays in the repo even after drift.
+    // The second pass scans git branch list and finds the workspace by matching the original
+    // branch name against the live worktree directory — no trustOwnershipRefs needed.
+    const backend = createGitWorktreeBackend({ repoPath }); // default: trustOwnershipRefs=false
     const result = await backend.create(aid, defaultConfig);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -180,17 +179,38 @@ describe("createGitWorktreeBackend", () => {
     const { execSync } = await import("node:child_process");
     execSync(`git -C "${ws.path}" checkout -b "some-other-branch"`, { stdio: "ignore" });
 
-    // Ownership-ref fallback finds the workspace even after branch drift
+    // Git branch list fallback finds the workspace even after branch drift
     const survivors = await backend.findByAgentId?.(aid);
     expect(survivors).toHaveLength(1);
     expect(survivors?.[0]?.id).toBe(ws.id);
 
-    // The recovered entry has the drifted branch — isHealthy returns false (branch mismatch)
+    // The recovered entry has the original managed branch; isHealthy returns false (branch mismatch)
     expect(await backend.isHealthy(ws.id)).toBe(false);
     // But exists() returns true — the worktree is physically present
     expect(await backend.exists?.(ws.id)).toBe(true);
 
     // dispose() can still remove it (uses registry entry populated by findByAgentId)
+    await backend.dispose(ws.id);
+    expect(await backend.exists?.(ws.id)).toBe(false);
+  });
+
+  it("findByAgentId still finds workspace via ownership ref (trustOwnershipRefs=true)", async () => {
+    // Additional coverage: ownership-ref third pass works for sandboxed backends where
+    // the git branch list second pass may not apply but trustOwnershipRefs is safe.
+    const backend = createGitWorktreeBackend({ repoPath, trustOwnershipRefs: true });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const ws = result.value;
+    const { execSync } = await import("node:child_process");
+    execSync(`git -C "${ws.path}" checkout -b "some-sandboxed-drift"`, { stdio: "ignore" });
+
+    // Both the branch-list pass and ownership-ref pass find it — deduplication should return 1
+    const survivors = await backend.findByAgentId?.(aid);
+    expect(survivors).toHaveLength(1);
+    expect(survivors?.[0]?.id).toBe(ws.id);
+
     await backend.dispose(ws.id);
     expect(await backend.exists?.(ws.id)).toBe(false);
   });
