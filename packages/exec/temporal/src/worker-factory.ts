@@ -134,7 +134,10 @@ export async function createTemporalWorker(
     });
   });
   if (startupError !== undefined) {
-    await connection.close();
+    // Release native resources before throwing — without cleanup, repeated failed startups
+    // (bad config, outage) accumulate leaked connections and exhaust file descriptors.
+    worker.shutdown();
+    await connection.close().catch(() => {});
     throw new Error("[temporal-worker] worker failed during startup", { cause: startupError });
   }
 

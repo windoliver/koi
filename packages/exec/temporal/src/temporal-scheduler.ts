@@ -1048,12 +1048,19 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       // Idempotency guard: short-circuit only for in-flight or successfully completed tasks.
       // Failed tasks are allowed to be retried with the same key — the prior attempt did not
       // produce durable remote work so the caller's retry is legitimate, not a duplicate.
+      // dead_letter dispatch tasks are also retryable: they represent unknown delivery after a
+      // crash, and once an operator confirms non-delivery they should be replayable via the
+      // same idempotencyKey. Treating dead_letter as a no-op would silently swallow messages.
       // Track retry-after-cancel so the spawn path knows NOT to attach getResult to a
       // workflow that is still shutting down from the prior cancel().
       let isRetryAfterCancel = false;
       if (options?.idempotencyKey !== undefined) {
         const existing = tasks.get(id);
-        if (existing !== undefined && existing.status !== "failed") {
+        if (
+          existing !== undefined &&
+          existing.status !== "failed" &&
+          existing.status !== "dead_letter"
+        ) {
           return id; // in-flight (pending/running) or completed — no-op
         }
         const priorSuccess = history.some((r) => r.taskId === id && r.status === "completed");
