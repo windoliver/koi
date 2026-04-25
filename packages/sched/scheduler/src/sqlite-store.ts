@@ -395,7 +395,7 @@ export function createSqliteRunStore(db: Database): RunStore {
   db.prepare(RUN_DDL).run();
 
   const saveStmt = db.prepare(`
-    INSERT INTO koi_task_runs
+    INSERT OR REPLACE INTO koi_task_runs
       (id, task_id, agent_id, status, started_at, completed_at, duration_ms,
        retry_attempt, error, result)
     VALUES ($id, $task_id, $agent_id, $status, $started_at, $completed_at,
