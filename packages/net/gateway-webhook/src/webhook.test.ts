@@ -244,7 +244,7 @@ describe("WebhookServer — core dispatch", () => {
     expect(dispatched).toHaveLength(1);
   });
 
-  test("default peer is 'webhook' when header not set", async () => {
+  test("peer is undefined when X-Webhook-Peer header not set", async () => {
     server = createWebhookServer(
       { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
       dispatcher,
@@ -255,7 +255,22 @@ describe("WebhookServer — core dispatch", () => {
       body: JSON.stringify({ test: true }),
     });
     expect(res.status).toBe(200);
-    expect(dispatched[0]?.session.routing?.peer).toBe("webhook");
+    expect(dispatched[0]?.session.routing?.peer).toBeUndefined();
+  });
+
+  test("X-Webhook-Peer is trusted on allowUnauthenticated paths", async () => {
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
+      dispatcher,
+    );
+    await server.start();
+    const res = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
+      method: "POST",
+      headers: { "X-Webhook-Peer": "internal-service" },
+      body: JSON.stringify({ test: true }),
+    });
+    expect(res.status).toBe(200);
+    expect(dispatched[0]?.session.routing?.peer).toBe("internal-service");
   });
 
   test("path prefix with trailing slash works", async () => {
@@ -298,6 +313,91 @@ describe("WebhookServer — core dispatch", () => {
     });
     expect(res.status).toBe(200);
     expect(dispatched[0]?.frame.payload).toBeNull();
+  });
+
+  test("provider route with account segment + shared secret rejects 401 without authenticator", async () => {
+    // Shared provider secret cannot bind account segment — reject to prevent
+    // silent cross-tenant misrouting in multi-tenant deployments.
+    const secret = "test-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
+      dispatcher,
+      undefined,
+      { github: secret },
+    );
+    await server.start();
+    const res = await fetch(`http://localhost:${server.port()}/webhook/github/my-tenant`, {
+      method: "POST",
+      headers: { "X-Hub-Signature-256": sig, "Content-Type": "application/json" },
+      body,
+    });
+    expect(res.status).toBe(401);
+    const b = (await res.json()) as { ok: boolean; error: string };
+    expect(b.error).toContain("per-account secret");
+    expect(dispatched).toHaveLength(0);
+  });
+
+  test("provider route with account segment + per-account secret map accepts and binds account", async () => {
+    const secret = "tenant-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
+      dispatcher,
+      undefined,
+      { github: { "my-tenant": secret } },
+    );
+    await server.start();
+    const res = await fetch(`http://localhost:${server.port()}/webhook/github/my-tenant`, {
+      method: "POST",
+      headers: { "X-Hub-Signature-256": sig, "Content-Type": "application/json" },
+      body,
+    });
+    expect(res.status).toBe(200);
+    expect(dispatched[0]?.session.routing?.account).toBe("my-tenant");
+  });
+
+  test("X-Webhook-Peer is ignored on provider-routed requests", async () => {
+    const secret = "test-secret";
+    const body = JSON.stringify({ id: "Ev1", type: "event_callback" });
+    const ts = Math.floor(Date.now() / 1000).toString();
+    const sigPayload = `v0:${ts}:${body}`;
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const rawSig = await crypto.subtle.sign("HMAC", key, enc.encode(sigPayload));
+    const hex = Array.from(new Uint8Array(rawSig))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    const sig = `v0=${hex}`;
+
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      dispatcher,
+      undefined,
+      { slack: secret },
+    );
+    await server.start();
+    const res = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
+      method: "POST",
+      headers: {
+        "X-Slack-Signature": sig,
+        "X-Slack-Request-Timestamp": ts,
+        "Content-Type": "application/json",
+        "X-Webhook-Peer": "spoofed-peer",
+      },
+      body,
+    });
+    expect(res.status).toBe(200);
+    // Peer must be ignored on provider-routed requests — not trusted from header
+    expect(dispatched[0]?.session.routing?.peer).toBeUndefined();
   });
 });
 

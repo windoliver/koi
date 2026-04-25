@@ -245,7 +245,14 @@ export function createWebhookServer(
       account = seg1;
     }
 
-    const peer = request.headers.get("X-Webhook-Peer") ?? "webhook";
+    // X-Webhook-Peer is unsigned — trust it only for internal/unauthenticated paths.
+    // On provider-routed requests the header is spoofable by any party that holds a
+    // valid signed payload. Authenticators may set routing.peer explicitly after
+    // validating the actual source.
+    const peer =
+      config.allowUnauthenticated === true || provider === undefined
+        ? (request.headers.get("X-Webhook-Peer") ?? undefined)
+        : undefined;
 
     const bodyResult = await parseJsonBody(request, maxBodyBytes);
     if (!bodyResult.ok) {
@@ -312,6 +319,26 @@ export function createWebhookServer(
       }
     }
 
+    // Account-scope rejection: a shared provider secret proves body integrity but
+    // not which tenant the URL account segment belongs to. Without a per-account
+    // secret map (accountAuthenticated) or an authenticator that can bind the account,
+    // accepting the request would silently misroute events in multi-tenant deployments.
+    if (
+      provider !== undefined &&
+      account !== undefined &&
+      !accountAuthenticated &&
+      authenticator === undefined &&
+      config.allowUnauthenticated !== true
+    ) {
+      if (pendingDedupKey !== undefined && pendingToken !== undefined) {
+        idempotencyStore.abort(pendingDedupKey, pendingToken);
+      }
+      return jsonResponse(401, {
+        ok: false,
+        error: "Account path requires per-account secret map or authenticator",
+      });
+    }
+
     let agentId = "webhook";
     let routing: RoutingContext = {
       ...(channel !== undefined ? { channel } : {}),
@@ -322,7 +349,7 @@ export function createWebhookServer(
       ...(account !== undefined && (accountAuthenticated || config.allowUnauthenticated === true)
         ? { account }
         : {}),
-      peer,
+      ...(peer !== undefined ? { peer } : {}),
     };
     let metadata: Readonly<Record<string, unknown>> = {};
 
