@@ -554,7 +554,36 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
-  test("schedule() accepts stable-sched replay when get confirms same configuration", async () => {
+  test("schedule() accepts stable-sched replay when get confirms full fingerprint match", async () => {
+    const alreadyExists = { name: "AlreadyExistsError", message: "schedule already exists" };
+    const inputFingerprint = JSON.stringify({ kind: "text", text: "tick" });
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+      },
+      schedule: {
+        create: mock(async () => {
+          throw alreadyExists;
+        }),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+        get: mock(async () => ({
+          memo: { agentId: A1, mode: "dispatch", expression: "0 * * * *", inputFingerprint },
+        })),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const id = await sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch", {
+      metadata: { scheduleId: "my-stable-sched" },
+    });
+    expect(String(id)).toBe("my-stable-sched");
+    expect(sched.stats().activeSchedules).toBe(1);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("schedule() rejects replay when memo is absent (fail closed)", async () => {
     const alreadyExists = { name: "AlreadyExistsError", message: "schedule already exists" };
     const client: TemporalClientLike = {
       workflow: {
@@ -569,16 +598,17 @@ describe("createTemporalScheduler", () => {
         pause: mock(async () => {}),
         unpause: mock(async () => {}),
         get: mock(async () => ({
-          memo: { agentId: A1, mode: "dispatch", expression: "0 * * * *" },
+          /* no memo */
         })),
       },
     };
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
-    const id = await sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch", {
-      metadata: { scheduleId: "my-stable-sched" },
-    });
-    expect(String(id)).toBe("my-stable-sched");
-    expect(sched.stats().activeSchedules).toBe(1);
+    await expect(
+      sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch", {
+        metadata: { scheduleId: "my-stable-sched" },
+      }),
+    ).rejects.toThrow("collision");
+    expect(sched.stats().activeSchedules).toBe(0);
     await sched[Symbol.asyncDispose]();
   });
 
@@ -661,7 +691,7 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
-  test("submit() stores agentId and mode in workflow memo for collision detection", async () => {
+  test("submit() stores full fingerprint in workflow memo for collision detection", async () => {
     const client = makeClient();
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
     await sched.submit(A1, { kind: "text", text: "hi" }, "dispatch");
@@ -669,8 +699,12 @@ describe("createTemporalScheduler", () => {
       string,
       Record<string, unknown>,
     ];
-    expect((startOpts.memo as Record<string, unknown>).agentId).toBe(A1);
-    expect((startOpts.memo as Record<string, unknown>).mode).toBe("dispatch");
+    const memo = startOpts.memo as Record<string, unknown>;
+    expect(memo.agentId).toBe(A1);
+    expect(memo.mode).toBe("dispatch");
+    expect(typeof memo.inputFingerprint).toBe("string");
+    // inputFingerprint must be the serialized engine input
+    expect(memo.inputFingerprint).toBe(JSON.stringify({ kind: "text", text: "hi" }));
     await sched[Symbol.asyncDispose]();
   });
 
@@ -735,8 +769,10 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
-  test("submit() accepts stable-ID replay when describe confirms same agentId and mode", async () => {
+  test("submit() accepts stable-ID replay when describe confirms full fingerprint match", async () => {
     const alreadyStarted = { name: "WorkflowExecutionAlreadyStartedError", message: "started" };
+    const engineInput = { kind: "text" as const, text: "hi" };
+    const inputFingerprint = JSON.stringify({ kind: "text", text: "hi" });
     const client: TemporalClientLike = {
       workflow: {
         start: mock(async () => {
@@ -746,7 +782,7 @@ describe("createTemporalScheduler", () => {
         describe: mock(
           async (): Promise<WorkflowExecutionStatus> => ({
             status: "RUNNING",
-            memo: { agentId: A1, mode: "dispatch" },
+            memo: { agentId: A1, mode: "dispatch", inputFingerprint },
           }),
         ),
       },
@@ -758,11 +794,76 @@ describe("createTemporalScheduler", () => {
       },
     };
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
-    const id = await sched.submit(A1, { kind: "text", text: "hi" }, "dispatch", {
+    const id = await sched.submit(A1, engineInput, "dispatch", {
       metadata: { workflowId: "stable-id" },
     });
     expect(String(id)).toBe("stable-id");
     expect(sched.stats().pending).toBe(1);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("submit() rejects replay when memo is absent (fail closed — no memo means cannot verify)", async () => {
+    const alreadyStarted = { name: "WorkflowExecutionAlreadyStartedError", message: "started" };
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => {
+          throw alreadyStarted;
+        }),
+        cancel: mock(async () => {}),
+        describe: mock(
+          async (): Promise<WorkflowExecutionStatus> => ({
+            status: "RUNNING",
+            // no memo — legacy or manually created workflow
+          }),
+        ),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await expect(
+      sched.submit(A1, { kind: "text", text: "hi" }, "dispatch", {
+        metadata: { workflowId: "stable-id" },
+      }),
+    ).rejects.toThrow("collision");
+    expect(sched.stats().pending).toBe(0);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("submit() rejects replay when input fingerprint differs (same stable ID, different work)", async () => {
+    const alreadyStarted = { name: "WorkflowExecutionAlreadyStartedError", message: "started" };
+    const otherFingerprint = JSON.stringify({ kind: "text", text: "different-text" });
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => {
+          throw alreadyStarted;
+        }),
+        cancel: mock(async () => {}),
+        describe: mock(
+          async (): Promise<WorkflowExecutionStatus> => ({
+            status: "RUNNING",
+            memo: { agentId: A1, mode: "dispatch", inputFingerprint: otherFingerprint },
+          }),
+        ),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await expect(
+      sched.submit(A1, { kind: "text", text: "hi" }, "dispatch", {
+        metadata: { workflowId: "stable-id" },
+      }),
+    ).rejects.toThrow("collision");
+    expect(sched.stats().pending).toBe(0);
     await sched[Symbol.asyncDispose]();
   });
 

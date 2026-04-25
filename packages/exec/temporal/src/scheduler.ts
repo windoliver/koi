@@ -170,15 +170,19 @@ function serializeEngineInput(input: EngineInput): Record<string, unknown> {
 }
 
 /**
- * Verifies that an existing workflow belongs to the same agent + mode.
- * Throws if describe() fails or memo shows a different owner.
- * Always called on the stable-ID idempotent path — fail closed is intentional.
+ * Verifies that an existing workflow's memo matches the full request fingerprint.
+ * Absent memo or any mismatched field is treated as a collision — fail closed.
  */
 async function verifyWorkflowOwnership(
   describeFn: (id: string) => Promise<WorkflowExecutionStatus>,
   workflowId: string,
-  expectedAgentId: AgentId,
-  expectedMode: "spawn" | "dispatch",
+  claim: {
+    readonly agentId: AgentId;
+    readonly mode: "spawn" | "dispatch";
+    readonly inputFingerprint: string;
+    readonly timeoutMs: number | undefined;
+    readonly maxRetries: number | undefined;
+  },
 ): Promise<void> {
   let info: WorkflowExecutionStatus;
   try {
@@ -188,25 +192,34 @@ async function verifyWorkflowOwnership(
   }
   const m = info.memo;
   if (
-    (m?.agentId !== undefined && m.agentId !== expectedAgentId) ||
-    (m?.mode !== undefined && m.mode !== expectedMode)
+    m === undefined ||
+    m.agentId !== claim.agentId ||
+    m.mode !== claim.mode ||
+    m.inputFingerprint !== claim.inputFingerprint ||
+    m.timeoutMs !== claim.timeoutMs ||
+    m.maxRetries !== claim.maxRetries
   ) {
     throw new Error(
-      `Workflow ID collision: "${workflowId}" already exists with different agent or mode`,
+      `Workflow ID collision: "${workflowId}" already exists with different configuration`,
     );
   }
 }
 
 /**
- * Verifies that an existing schedule belongs to the same agent, mode, and cron expression.
- * Throws if get() fails or memo shows a different owner.
+ * Verifies that an existing schedule's memo matches the full request fingerprint.
+ * Absent memo or any mismatched field is treated as a collision — fail closed.
  */
 async function verifyScheduleOwnership(
   getFn: (id: string) => Promise<ScheduleGetInfo>,
   rawId: string,
-  expectedAgentId: AgentId,
-  expectedMode: "spawn" | "dispatch",
-  expectedExpression: string,
+  claim: {
+    readonly agentId: AgentId;
+    readonly mode: "spawn" | "dispatch";
+    readonly expression: string;
+    readonly inputFingerprint: string;
+    readonly timeoutMs: number | undefined;
+    readonly maxRetries: number | undefined;
+  },
 ): Promise<void> {
   let info: ScheduleGetInfo;
   try {
@@ -216,9 +229,13 @@ async function verifyScheduleOwnership(
   }
   const m = info.memo;
   if (
-    (m?.agentId !== undefined && m.agentId !== expectedAgentId) ||
-    (m?.mode !== undefined && m.mode !== expectedMode) ||
-    (m?.expression !== undefined && m.expression !== expectedExpression)
+    m === undefined ||
+    m.agentId !== claim.agentId ||
+    m.mode !== claim.mode ||
+    m.expression !== claim.expression ||
+    m.inputFingerprint !== claim.inputFingerprint ||
+    m.timeoutMs !== claim.timeoutMs ||
+    m.maxRetries !== claim.maxRetries
   ) {
     throw new Error(
       `Schedule ID collision: "${rawId}" already exists with different configuration`,
@@ -390,13 +407,21 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       const task = buildTask(id, agentId, input, mode, options);
 
       const messages = mapEngineInputToMessages(input, rawId);
+      // Fingerprint the full request so idempotent replay can detect partial collisions
+      // (same stable ID but different input/timeout/retries).
+      const inputFingerprint = JSON.stringify(serializeEngineInput(input));
       try {
         await config.client.workflow.start(workflowType, {
           taskQueue: config.taskQueue,
           workflowId: rawId,
-          // memo is persisted with the workflow and used to detect ID collisions
-          // when a stable idempotencyKey is reused with a different agentId.
-          memo: { agentId, mode },
+          // Full request fingerprint in memo — used to reject collisions on replay.
+          memo: {
+            agentId,
+            mode,
+            inputFingerprint,
+            ...(options?.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
+            ...(options?.maxRetries !== undefined && { maxRetries: options.maxRetries }),
+          },
           args: [{ agentId, sessionId: rawId, messages, mode }],
           ...(options?.delayMs !== undefined && { startDelay: options.delayMs }),
           ...(options?.timeoutMs !== undefined && { workflowExecutionTimeout: options.timeoutMs }),
@@ -415,7 +440,13 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             `Stable workflow "${rawId}" already exists but describe() is not configured — cannot verify ownership`,
           );
         }
-        await verifyWorkflowOwnership(describeFn, rawId, agentId, mode);
+        await verifyWorkflowOwnership(describeFn, rawId, {
+          agentId,
+          mode,
+          inputFingerprint,
+          timeoutMs: options?.timeoutMs,
+          maxRetries: options?.maxRetries,
+        });
       }
 
       // Guard against double-registration from concurrent or replayed submits.
@@ -460,6 +491,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         idempotencyKey ?? `sched-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const id = scheduleId(rawId);
 
+      // Fingerprint the full request so idempotent replay can detect partial collisions.
+      const inputFingerprint = JSON.stringify(serializeEngineInput(input));
       try {
         await config.client.schedule.create(rawId, {
           spec: { cronExpressions: [expression], timezone: options?.timezone },
@@ -483,8 +516,15 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
               retryPolicy: { maximumAttempts: options.maxRetries },
             }),
           },
-          // expression stored in memo enables collision detection on idempotent replay.
-          memo: { agentId, mode, expression, metadata: options?.metadata },
+          // Full request fingerprint in memo — used to reject collisions on replay.
+          memo: {
+            agentId,
+            mode,
+            expression,
+            inputFingerprint,
+            ...(options?.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
+            ...(options?.maxRetries !== undefined && { maxRetries: options.maxRetries }),
+          },
         });
       } catch (e: unknown) {
         // Stable ID provided and Temporal already has that schedule →
@@ -497,7 +537,14 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             `Stable schedule "${rawId}" already exists but schedule.get() is not configured — cannot verify ownership`,
           );
         }
-        await verifyScheduleOwnership(getFn, rawId, agentId, mode, expression);
+        await verifyScheduleOwnership(getFn, rawId, {
+          agentId,
+          mode,
+          expression,
+          inputFingerprint,
+          timeoutMs: options?.timeoutMs,
+          maxRetries: options?.maxRetries,
+        });
       }
 
       const cronSchedule: CronSchedule = {
