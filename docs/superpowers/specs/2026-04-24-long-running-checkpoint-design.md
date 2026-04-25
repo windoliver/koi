@@ -123,10 +123,11 @@ gated on its presence:
   correctness in environments without a supervisor.
 
 The same supervisor contract gates orphan-record recovery: CAS-advancing
-to `failed` with `ORPHAN_SESSION_RECORD` also requires a successful
-`killAndConfirm` first. If the supervisor reports the session's worker
-is alive, we do NOT publish terminal state — the harness returns
-`RECLAIM_LIVE_OWNER` (retryable) and the caller investigates.
+to `suspended` (NOT terminal) with `ORPHAN_RECOVERED` also requires a
+successful `killAndConfirm` first. If the supervisor reports the
+session's worker is alive, the harness returns `RECLAIM_LIVE_OWNER`
+(retryable) and the caller investigates. See Reclamation check for the
+full protocol.
 
 **Tool-layer epoch check (optional, recommended for non-idempotent
 tools):** long-running tools that perform external side effects (HTTP
@@ -780,9 +781,16 @@ Therefore the default path is:
 
 1. Fail the current turn with `CHECKPOINT_WRITE_FAILED`.
 2. Invoke `onDurabilityLost` for host escalation.
-3. **Stop engine execution before giving up the lease.** The middleware calls
-   `harness.abortActive(...)`, which revokes the lease, fires the abort
-   signal, and waits up to `abortTimeoutMs` for the engine to quiesce.
+3. **Stop engine execution before giving up the lease.** The middleware
+   calls a distinct internal entry point,
+   `harness._abortActiveAndRecover(lease, reason)`, that (a) fires the
+   lease's AbortSignal, (b) waits up to `abortTimeoutMs` for engine
+   quiescence, but **defers lease revocation until AFTER the recovery
+   CAS**. This privileged internal path is NOT exposed on the public
+   surface; only the middleware bundled with this package can call it.
+   `abortActive(lease, reason)` remains the public, lease-revoking
+   variant — it is used for callers that only need to stop execution
+   and don't need the recovery CAS window.
 4. Once quiesced, **attempt immediate fencing so recovery does not wait for
    TTL**. This is critical: merely stopping heartbeats and marking the
    session `idle` leaves the authoritative snapshot as `active`, and
@@ -1189,8 +1197,10 @@ Additive changes required (part of the coordinated migration):
 3. `SessionRecord.lastHeartbeatAt: number | undefined` — liveness signal for
    crash reclamation.
 4. `SessionStatus` gains `"starting"` between `idle` and `running` plus
-   `"abandoned"` as a terminal tombstone that makes the harness
-   immediately reclaimable without waiting for heartbeat TTL.
+   `"abandoned"` as an advisory tombstone (monitoring/diagnostics
+   signal, not a reclaim fast-path — `setSessionStatus` is not
+   lease-fenced in L0, so reclaim still requires TTL-stale heartbeat
+   or sustained NOT_FOUND AND supervisor kill; see Reclaim).
 5. `SessionPersistence.setHeartbeat(sessionId, timestampMs)` — dedicated
    cheap-write method so the heartbeat loop does not compete with full
    `saveSession` writes.
