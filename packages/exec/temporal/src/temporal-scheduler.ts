@@ -1063,17 +1063,34 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         // `task:completed` event and do not hold the task in `tasks` map — that would
         // misrepresent outcome to query()/stats(). The history record preserves the audit trail.
 
-        // Write a durable "signal delivered" marker BEFORE updating history. Even if the full
-        // post-signal persist fails, this intermediate write ensures that on restart the task
-        // is treated as "completed" (not retried), preventing duplicate signal delivery.
+        // Write a durable "signal delivered" marker — this persist is mandatory. If it fails
+        // we cannot guarantee restart-safe idempotency, so we surface a durability error and
+        // abort without proceeding to history cleanup. The marker stays in memory so any
+        // future successful persist (e.g. once disk is healthy again) can establish safety.
+        // We do NOT throw here because throwing causes the caller to retry with a new task ID,
+        // which would produce a duplicate signal. Instead, emit task:failed and return.
         deliveredDispatchIds.add(id);
         try {
           persist();
-        } catch {
-          // Delivery marker failed to persist — fall through; the next persist attempt
-          // (post-history update) or the task:failed event will still inform observers.
+        } catch (markerPersistErr: unknown) {
+          const durabilityMsg =
+            `[temporal-scheduler] dispatch marker persist failed for task "${id}" — signal was ` +
+            "accepted by Temporal but idempotency cannot be guaranteed across restart. " +
+            "Scheduler is now fail-closed.";
+          console.error(durabilityMsg, markerPersistErr);
+          const koiErr: KoiError = {
+            code: "INTERNAL",
+            message: durabilityMsg,
+            retryable: false,
+            context: { taskId: id, agentId: String(agentId), signalDelivered: true },
+          };
+          emit({ kind: "task:failed", taskId: id, error: koiErr });
+          // Return early — marker stays in memory; history/cleanup skipped to preserve
+          // task in the persisted state (pending) so restart reconciliation can reason about it.
+          return id;
         }
 
+        // Marker persisted — safe to proceed with history update and cleanup.
         const completedAt = Date.now();
         history.push({
           taskId: id,
@@ -1086,15 +1103,17 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         });
         tasks.delete(id);
         taskWorkflowIds.delete(id);
-        deliveredDispatchIds.delete(id); // history now records completion; marker no longer needed
-        // Do NOT rethrow on persist failure here: the signal was already accepted by Temporal.
-        // Rethrowing would cause the caller to retry with a new task ID, producing a duplicate
-        // signal which is strictly worse than a missing audit record. durabilityFailed is still
-        // set by persist() so the next mutation will fail-closed.
-        // Instead, emit task:failed via watch() so observers can alert without retrying.
+        // Only delete the marker after it has been superseded by a history record in the
+        // final persist. If that persist fails, we re-add the marker so the in-memory set
+        // still reflects delivered state for any future persist that succeeds.
+        // Do NOT rethrow on persist failure: the signal was already accepted by Temporal.
+        // Rethrowing causes the caller to retry with a new ID, producing a duplicate signal.
         try {
+          deliveredDispatchIds.delete(id);
           persist();
         } catch (persistErr: unknown) {
+          // Final persist failed — restore marker so a future persist can establish safety.
+          deliveredDispatchIds.add(id);
           const durabilityMsg =
             `[temporal-scheduler] post-dispatch persist failed — signal for task "${id}" was ` +
             "accepted by Temporal but local history is not durable. Scheduler is now fail-closed.";
@@ -1507,10 +1526,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       if (filter.limit !== undefined) {
         result = result.slice(0, filter.limit);
       }
-      // Return frozen copies so callers cannot mutate internal scheduler state.
-      // Without this, external code could change task.status in place and corrupt a
-      // later persist() or stats() computation.
-      return result.map((t) => Object.freeze({ ...t }));
+      // Return deep-frozen copies so callers cannot mutate internal scheduler state
+      // through nested references (input, metadata). structuredClone produces a fully
+      // independent value; Object.freeze makes the top-level object immutable.
+      return result.map((t) => Object.freeze(structuredClone(t)));
     },
 
     stats: computeStats,
@@ -1529,7 +1548,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       if (filter.limit !== undefined) {
         result = result.slice(0, filter.limit);
       }
-      return result.map((r) => Object.freeze({ ...r }));
+      return result.map((r) => Object.freeze(structuredClone(r)));
     },
 
     watch(listener: (event: SchedulerEvent) => void): () => void {
