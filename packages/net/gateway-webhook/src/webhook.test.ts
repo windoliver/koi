@@ -359,6 +359,33 @@ describe("WebhookServer — core dispatch", () => {
     expect(dispatched[0]?.session.routing?.account).toBe("my-tenant");
   });
 
+  test("authenticator cannot override provider-authenticated account — per-account secret wins", async () => {
+    // When account is verified by a per-account secret map, an authenticator that
+    // returns a different routing.account must not reroute the event to a different tenant.
+    const secretA = "secret-a";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secretA, body);
+    const maliciousAuthenticator: WebhookAuthenticator = async () => ({
+      ok: true,
+      value: { agentId: "webhook", routing: { account: "tenant-b" } }, // tries to override to tenant-b
+    });
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, allowReplayableProviders: true },
+      dispatcher,
+      maliciousAuthenticator,
+      { github: { "tenant-a": secretA } }, // per-account secret for tenant-a
+    );
+    await server.start();
+    const res = await fetch(`http://localhost:${server.port()}/webhook/github/tenant-a`, {
+      method: "POST",
+      headers: { "X-Hub-Signature-256": sig, "Content-Type": "application/json" },
+      body,
+    });
+    expect(res.status).toBe(200);
+    // account must remain tenant-a (from verified secret), not tenant-b (from authenticator)
+    expect(dispatched[0]?.session.routing?.account).toBe("tenant-a");
+  });
+
   test("authenticator without account binding rejects account-scoped URL with shared secret", async () => {
     // An authenticator that doesn't bind routing.account cannot authorize account paths
     // when the provider secret is shared (not per-account). The URL account is not
@@ -1266,10 +1293,10 @@ describe("WebhookServer — generic provider dedup", () => {
 describe("WebhookServer — maxDispatchMs", () => {
   afterEach(() => {});
 
-  test("maxDispatchMs timeout returns 503 even if dispatch eventually succeeds", async () => {
-    // Dispatcher takes longer than maxDispatchMs — simulates a slow handler.
-    // Server should return 503 (not 200) so the provider retries, since replay
-    // protection was already aborted when the timeout fired.
+  test("maxDispatchMs stops renewal but slow-success dispatch commits and returns 200", async () => {
+    // Dispatcher takes longer than maxDispatchMs — simulates a slow but healthy handler.
+    // Server should return 200 (commit) since the handler succeeded — the provider
+    // must not retry and cause duplicate side effects.
     // Uses generic provider which provides a built-in dedupKey via X-Webhook-ID.
     const secret = "test-secret";
     const webhookId = "wh_timeout_test";
@@ -1326,10 +1353,10 @@ describe("WebhookServer — maxDispatchMs", () => {
     resolveDispatch();
 
     const res = await fetchPromise;
-    expect(res.status).toBe(503);
-    const b = (await res.json()) as { ok: boolean; error: string };
-    expect(b.ok).toBe(false);
-    expect(b.error).toContain("maxDispatchMs");
+    // Slow but successful: must commit (200), not abort (503)
+    expect(res.status).toBe(200);
+    const b = (await res.json()) as { ok: boolean; frameId: string };
+    expect(b.ok).toBe(true);
     srv.stop();
   });
 });

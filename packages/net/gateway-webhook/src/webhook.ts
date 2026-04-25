@@ -383,10 +383,19 @@ export function createWebhookServer(
         return jsonResponse(status, { ok: false, error: authResult.error.message });
       }
       agentId = authResult.value.agentId;
-      // Merge authenticator routing into the verified baseline — do not replace
-      // wholesale. An authenticator that only wants to set peer or agentId must
-      // not accidentally clear the already-verified channel or authenticated account.
-      routing = { ...routing, ...(authResult.value.routing ?? {}) };
+      // Merge authenticator routing into the verified baseline. Provider-authenticated
+      // channel and account are immutable after signature verification — if an
+      // authenticator supplies a different account, treat it as a mismatch (see
+      // account-binding check below) rather than silently rerouting to the wrong tenant.
+      const authRouting = authResult.value.routing ?? {};
+      routing = {
+        ...routing,
+        ...authRouting,
+        // Re-apply provider-authenticated account — signature-verified, immutable.
+        // An authenticator supplying a different account would silently reroute
+        // to the wrong tenant; this keeps the verified identity authoritative.
+        ...(accountAuthenticated && account !== undefined ? { account } : {}),
+      };
       metadata = authResult.value.metadata ?? metadata;
 
       // Account binding enforcement: if the URL has an account path that was NOT
@@ -433,13 +442,12 @@ export function createWebhookServer(
 
     // Renew the processing lease periodically while dispatch is active so a
     // slow-but-healthy dispatcher does not lose its reservation to a provider retry.
-    // maxDispatchMs caps total renewal time: after that, the reservation is aborted
-    // so stuck handlers cannot permanently block their delivery key. If the
-    // dispatcher eventually completes after the timeout, we return 503 so the
-    // provider retries — replay protection was already voided when the abort fired.
+    // maxDispatchMs stops renewal after the configured window — for truly hung
+    // dispatchers the processing TTL then expires on its own, releasing the key
+    // for provider retries. Actual cancellation requires cooperative AbortSignal
+    // support from the dispatcher; without it, only TTL-based expiry is available.
     let renewalTimer: ReturnType<typeof setInterval> | undefined;
     let maxDispatchTimer: ReturnType<typeof setTimeout> | undefined;
-    let dispatchTimedOut = false;
     if (pendingDedupKey !== undefined && pendingToken !== undefined) {
       const key = pendingDedupKey;
       const token = pendingToken;
@@ -448,12 +456,10 @@ export function createWebhookServer(
       }, leaseRenewalMs);
       if (config.maxDispatchMs !== undefined) {
         maxDispatchTimer = setTimeout(() => {
-          // Mark timed out but keep renewal running — the lease must stay live
-          // until the handler actually finishes. Stopping renewal here would let
-          // the lease expire while the handler is still in flight, opening a window
-          // where a provider retry and the original handler run concurrently and
-          // both commit side effects.
-          dispatchTimedOut = true;
+          // Stop renewing — the processing TTL now counts down. When it expires,
+          // provider retries will be accepted. Do NOT abort here: the handler is
+          // still running and aborting would create a concurrent-duplicate window.
+          clearInterval(renewalTimer);
         }, config.maxDispatchMs);
       }
     }
@@ -473,23 +479,10 @@ export function createWebhookServer(
     clearTimeout(maxDispatchTimer);
     clearInterval(renewalTimer);
 
-    // Timeout fired: dispatch took too long. Abort now that work has actually
-    // finished (no concurrent retry can start from this abort) and return 503
-    // so the provider retries. Replay protection held throughout dispatch —
-    // no duplicate side-effect window was opened.
-    if (dispatchTimedOut) {
-      if (pendingDedupKey !== undefined && pendingToken !== undefined) {
-        idempotencyStore.abort(pendingDedupKey, pendingToken);
-      }
-      return jsonResponse(503, {
-        ok: false,
-        error: "Dispatch exceeded maxDispatchMs — timed out, retry",
-        frameId,
-      });
-    }
-
     // Commit dedup key only after full successful acceptance (auth + dispatch).
     // Provider retries after transient failures will not be silently dropped.
+    // Successful dispatch always commits — slow-but-healthy handlers that ran
+    // past maxDispatchMs still commit to prevent duplicate side effects on retry.
     if (pendingDedupKey !== undefined && pendingToken !== undefined) {
       idempotencyStore.commit(pendingDedupKey, pendingToken);
     }
