@@ -359,6 +359,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         history,
       });
     } catch (err: unknown) {
+      // Trip the fail-closed guard regardless of whether this is a foreground or background
+      // call — any persist failure after a remote mutation leaves durable state stale.
+      durabilityFailed = true;
       // Re-throw so the mutating API call (submit/schedule/cancel/…) surfaces the error to
       // the caller. The remote Temporal operation may already have succeeded at this point, so
       // the error message states that explicitly to help operators distinguish the failure mode.
@@ -556,12 +559,14 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           await config.client.workflow.signal(targetWorkflowId, "message", msg);
         }
       } catch (err: unknown) {
-        // Compensate: if spawn started but signal failed, cancel the orphaned workflow
+        // Compensate: if spawn started but signal failed, cancel the orphaned workflow.
+        let rollbackOk = true;
         if (mode === "spawn") {
           try {
             await config.client.workflow.cancel(targetWorkflowId);
           } catch {
-            // Best-effort — workflow may not have started yet
+            // Rollback cancel failed — the workflow may still be running.
+            rollbackOk = false;
           }
         }
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -585,7 +590,20 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           retryAttempt: 0,
         });
         emit({ kind: "task:failed", taskId: id, error: koiError });
-        persist();
+        try {
+          persist();
+        } catch {
+          // Persist failure already trips durabilityFailed — swallow here so the
+          // original submit error is what surfaces to the caller.
+        }
+        if (!rollbackOk) {
+          throw new Error(
+            `submit() failed AND rollback cancel failed — workflowId "${targetWorkflowId}" ` +
+              `may still be running for agent ${agentId}. Manually cancel it before retrying. ` +
+              `Cause: ${errorMsg}`,
+            { cause: err },
+          );
+        }
         throw new Error(`submit() could not reach Temporal for agent ${agentId}: ${errorMsg}`, {
           cause: err,
         });
