@@ -343,5 +343,24 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       );
       return ancestorResult.ok;
     },
+
+    // Distinct from isHealthy: answers "does the worktree exist on disk?" regardless of branch
+    // state. Used as a post-disposal liveness oracle — isHealthy returns false for branch-drifted
+    // workspaces even when the worktree directory is still registered with git, which would cause
+    // the provider to incorrectly conclude the workspace is gone after a failed disposal.
+    async exists(wsId: WorkspaceId): Promise<boolean> {
+      // Derive the expected path from wsId — wsId is always the basename of the worktree directory.
+      const expectedPath = join(basePath, wsId as string);
+      const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
+      // Fail closed: if we cannot query git, assume the worktree still exists.
+      if (!listResult.ok) return true;
+      for (const block of listResult.value.split(/\n\n+/)) {
+        const lines = block.trim().split("\n");
+        const pathLine = lines.find((l) => l.startsWith("worktree "));
+        if (!pathLine) continue;
+        if (pathLine.slice("worktree ".length).trim() === expectedPath) return true;
+      }
+      return false;
+    },
   };
 }

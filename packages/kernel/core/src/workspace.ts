@@ -96,6 +96,16 @@ export interface WorkspaceBackend {
    * leaves the workspace unattested (preventing stale "setup complete" resurrection).
    */
   readonly invalidateSetupComplete?: (wsId: WorkspaceId) => Promise<void>;
+  /**
+   * Optional: check whether a workspace resource still exists as a physical entity, independent
+   * of whether it is healthy or in the expected state. Distinct from isHealthy — a workspace
+   * can exist (worktree on disk, container present) while being unhealthy (branch drifted,
+   * process crashed). Used as a post-disposal liveness oracle: if disposal fails, a backend
+   * with exists() can confirm the resource is truly gone before the caller proceeds to create
+   * a fresh workspace. When absent, callers fall back to isHealthy() which may produce false
+   * negatives for unhealthy-but-present resources on unsandboxed backends.
+   */
+  readonly exists?: (wsId: WorkspaceId) => boolean | Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------

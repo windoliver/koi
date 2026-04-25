@@ -89,6 +89,19 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
     return !!config.backend.verifySetupComplete && !config.backend.invalidateSetupComplete;
   }
 
+  // Post-disposal liveness oracle: returns true when a workspace is confirmed gone after a
+  // failed tryDispose. Prefers exists() over isHealthy() because isHealthy() can return false
+  // for branch-drifted workspaces that still exist on disk, causing a false "gone" conclusion.
+  // Sandboxed backends always return false (not gone) — OS isolation makes failed disposal
+  // authoritative; we cannot proceed.
+  async function isGone(wsId: WorkspaceId): Promise<boolean> {
+    if (config.backend.isSandboxed) return false;
+    if (config.backend.exists !== undefined) {
+      return !(await config.backend.exists(wsId));
+    }
+    return !(await config.backend.isHealthy(wsId));
+  }
+
   // Removes the setup attestation so a mid-repair crash leaves the workspace unattested.
   // Only meaningful for sandboxed backends where attestation is checked on recovery.
   async function clearSetupComplete(ws: WorkspaceInfo): Promise<void> {
@@ -326,14 +339,10 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
             // confirmed still alive, not on every transient cleanup failure.
             for (const survivor of crashSurvivors) {
               const disposed = await tryDispose(survivor.id);
-              if (!disposed) {
-                const stillAlive =
-                  config.backend.isSandboxed || (await config.backend.isHealthy(survivor.id));
-                if (stillAlive) {
-                  throw new Error(
-                    `Cannot create workspace for agent ${agentId}: crash-survivor ${survivor.id} could not be disposed`,
-                  );
-                }
+              if (!disposed && !(await isGone(survivor.id))) {
+                throw new Error(
+                  `Cannot create workspace for agent ${agentId}: crash-survivor ${survivor.id} could not be disposed`,
+                );
               }
             }
           }
@@ -344,32 +353,24 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
           // is confirmed still alive, not on every transient timeout.
           if (staleInfo !== undefined) {
             const disposed = await tryDispose(staleInfo.id);
-            if (!disposed) {
-              const stillAlive =
-                config.backend.isSandboxed || (await config.backend.isHealthy(staleInfo.id));
-              if (stillAlive) {
-                throw new Error(
-                  `Cannot reattach agent ${agentId}: previous workspace ${staleInfo.id} could not be disposed`,
-                );
-              }
+            if (!disposed && !(await isGone(staleInfo.id))) {
+              throw new Error(
+                `Cannot reattach agent ${agentId}: previous workspace ${staleInfo.id} could not be disposed`,
+              );
             }
             attached.delete(agentId);
           }
           // Crash survivors under non-"never" policy are not reused — dispose each to uphold the
           // single-workspace-per-agent invariant. When disposal is unconfirmed, check liveness:
           // sandboxed backends block unconditionally (OS isolation makes the check authoritative);
-          // unsandboxed backends block only if isHealthy confirms the workspace is still alive,
+          // unsandboxed backends block only if exists() confirms the workspace is gone,
           // distinguishing a transient cleanup race on a dead workspace from a live one.
           for (const survivor of crashSurvivors) {
             const disposed = await tryDispose(survivor.id);
-            if (!disposed) {
-              const stillAlive =
-                config.backend.isSandboxed || (await config.backend.isHealthy(survivor.id));
-              if (stillAlive) {
-                throw new Error(
-                  `Cannot create workspace for agent ${agentId}: crash-survivor ${survivor.id} could not be disposed`,
-                );
-              }
+            if (!disposed && !(await isGone(survivor.id))) {
+              throw new Error(
+                `Cannot create workspace for agent ${agentId}: crash-survivor ${survivor.id} could not be disposed`,
+              );
             }
           }
         }

@@ -502,6 +502,56 @@ describe("createLocalScratchpad", () => {
       sp2.close();
     });
 
+    it("active store with reuseToken rejects a caller that asserts a different non-null token", () => {
+      // Regression: reuseToken guard only fired for dormant stores. An active store (handles
+      // still open) was joined without checking the token — a recycled groupId with a mismatched
+      // token would silently inherit state from the wrong lifecycle.
+      const fencedGid = agentGroupId(`group-fenced-${++gidCounter}`);
+      const sp1 = createLocalScratchpad({
+        groupId: fencedGid,
+        authorId: aid,
+        dormantTtlMs: 60_000,
+        reuseToken: "lifecycle-A",
+      });
+      sp1.write({ path: scratchpadPath("secret"), content: "lifecycle-A-data" });
+
+      // sp1 is still open (active store). A caller from a different lifecycle asserting
+      // a different token must be rejected.
+      expect(() =>
+        createLocalScratchpad({
+          groupId: fencedGid,
+          authorId: agentId("agent-2"),
+          reuseToken: "lifecycle-B",
+        }),
+      ).toThrow("already open with a different reuseToken");
+
+      sp1.close();
+    });
+
+    it("active store with reuseToken allows a caller with no token (multi-agent sharing)", () => {
+      // A handle with no reuseToken can still join an active store — this is the intended
+      // multi-agent sharing pattern where not all participants know the lifecycle token.
+      const sharedGid = agentGroupId(`group-shared-${++gidCounter}`);
+      const sp1 = createLocalScratchpad({
+        groupId: sharedGid,
+        authorId: aid,
+        reuseToken: "lifecycle-A",
+      });
+      sp1.write({ path: scratchpadPath("shared"), content: "data" });
+
+      // No reuseToken → allowed to join active store
+      const sp2 = createLocalScratchpad({
+        groupId: sharedGid,
+        authorId: agentId("agent-2"),
+      });
+      const r = sp2.read(scratchpadPath("shared"));
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.content).toBe("data");
+
+      sp1.close();
+      sp2.close();
+    });
+
     it("closed handle stops receiving events while another handle remains open", () => {
       const sp2 = createLocalScratchpad({ groupId: currentGid, authorId: agentId("agent-2") });
       let sp1Events = 0;

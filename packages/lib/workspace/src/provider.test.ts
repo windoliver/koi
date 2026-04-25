@@ -755,6 +755,90 @@ describe("createWorkspaceProvider", () => {
     expect(ws.id).toBe(olderGoodId);
   });
 
+  it("attach throws when crash-survivor disposal fails and exists() confirms workspace is present (branch-drift scenario)", async () => {
+    // Regression: isHealthy() returns false for branch-drifted workspaces even when the
+    // worktree physically exists. The provider must use exists() when available to avoid
+    // concluding the workspace is "gone" based on a false-negative health check.
+    const survivorId = workspaceId("ws-branch-drifted");
+    const survivorInfo: WorkspaceInfo = {
+      id: survivorId,
+      path: "/tmp/ws-drifted",
+      createdAt: Date.now(),
+      metadata: {},
+    };
+    const backendDrifted = makeBackend({
+      isSandboxed: false,
+      async findByAgentId(_aid: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
+        return [survivorInfo];
+      },
+      async dispose(_wsId: WorkspaceId): Promise<Result<void, KoiError>> {
+        return {
+          ok: false,
+          error: { code: "EXTERNAL", message: "removal failed", retryable: false },
+        };
+      },
+      isHealthy(_wsId: WorkspaceId): boolean {
+        return false; // unhealthy due to branch drift
+      },
+      exists(_wsId: WorkspaceId): boolean {
+        return true; // worktree is physically present despite branch drift
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: backendDrifted,
+      cleanupPolicy: "always",
+      cleanupTimeoutMs: 1,
+    });
+    const agent = makeAgent();
+
+    // Must throw: workspace exists, cannot create a second one
+    await expect(provider.attach(agent)).rejects.toThrow(
+      "crash-survivor ws-branch-drifted could not be disposed",
+    );
+    expect(backendDrifted.created.length).toBe(0);
+  });
+
+  it("attach proceeds when crash-survivor disposal fails and exists() confirms workspace is gone", async () => {
+    // exists() returns false → workspace is truly gone → safe to create a fresh one
+    const survivorId = workspaceId("ws-truly-gone");
+    const survivorInfo: WorkspaceInfo = {
+      id: survivorId,
+      path: "/tmp/ws-truly-gone",
+      createdAt: Date.now(),
+      metadata: {},
+    };
+    const backendGone = makeBackend({
+      isSandboxed: false,
+      async findByAgentId(_aid: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
+        return [survivorInfo];
+      },
+      async dispose(_wsId: WorkspaceId): Promise<Result<void, KoiError>> {
+        return {
+          ok: false,
+          error: { code: "EXTERNAL", message: "already gone", retryable: false },
+        };
+      },
+      isHealthy(_wsId: WorkspaceId): boolean {
+        return true; // would incorrectly block if used as oracle
+      },
+      exists(_wsId: WorkspaceId): boolean {
+        return false; // workspace is gone — exists() is authoritative
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: backendGone,
+      cleanupPolicy: "always",
+      cleanupTimeoutMs: 1,
+    });
+    const agent = makeAgent();
+
+    // Must NOT throw — exists() confirmed the workspace is gone
+    const result = await provider.attach(agent);
+    expect(result.components.size).toBe(1);
+    expect(backendGone.created.length).toBe(1);
+    await provider.detach?.(agent);
+  });
+
   it("attestation failure in cleanupPolicy=never disposes workspace and rethrows", async () => {
     const attestError = new Error("git update-ref failed");
     const attestingBackend = makeBackend({

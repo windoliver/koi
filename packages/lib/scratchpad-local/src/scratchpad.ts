@@ -165,16 +165,28 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
 
   let sharedStore = groupRegistry.get(groupId as string);
 
-  // If a dormant store exists, only reuse it when the caller proves continuity via
-  // a matching reuseToken. Without a match, evict the dormant store so a recycled
-  // groupId does not inherit prior-lifecycle entries or generation counters.
-  if (sharedStore !== undefined && sharedStore.dormantTimer !== null) {
+  if (sharedStore !== undefined) {
     const callerToken = config.reuseToken ?? null;
-    if (callerToken === null || callerToken !== sharedStore.reuseToken) {
-      clearTimeout(sharedStore.dormantTimer);
-      if (sharedStore.timer !== null) clearInterval(sharedStore.timer);
-      groupRegistry.delete(groupId as string);
-      sharedStore = undefined;
+
+    if (sharedStore.dormantTimer !== null) {
+      // Dormant store: only reuse when the caller presents the exact token it was created with.
+      // Without a match, evict so a recycled groupId does not inherit prior-lifecycle state.
+      if (callerToken === null || callerToken !== sharedStore.reuseToken) {
+        clearTimeout(sharedStore.dormantTimer);
+        if (sharedStore.timer !== null) clearInterval(sharedStore.timer);
+        groupRegistry.delete(groupId as string);
+        sharedStore = undefined;
+      }
+    } else if (
+      sharedStore.reuseToken !== null &&
+      callerToken !== null &&
+      callerToken !== sharedStore.reuseToken
+    ) {
+      // Active store with a reuseToken fence: a caller that asserts a different non-null token
+      // is claiming a different lifecycle identity — reject to prevent cross-lifecycle joining.
+      // (Callers with no token may still join an active store; that is intentional for
+      // multi-agent sharing where not all handles know the lifecycle token.)
+      throw new Error(`Scratchpad group "${groupId}" is already open with a different reuseToken`);
     }
   }
 

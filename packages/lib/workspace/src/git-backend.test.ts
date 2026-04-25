@@ -306,6 +306,51 @@ describe("createGitWorktreeBackend", () => {
     await backend.dispose(ws.id);
   });
 
+  it("exists returns true for a live worktree and false after disposal", async () => {
+    const backend = createGitWorktreeBackend({ repoPath });
+    const r = await backend.create(aid, defaultConfig);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    expect(await backend.exists?.(r.value.id)).toBe(true);
+
+    await backend.dispose(r.value.id);
+    expect(await backend.exists?.(r.value.id)).toBe(false);
+  });
+
+  it("exists returns true for a branch-drifted worktree (unlike isHealthy)", async () => {
+    // This is the key difference: a worktree where the agent switched branches is
+    // physically present but isHealthy() returns false due to branch mismatch.
+    // exists() must return true so the provider correctly blocks a fresh workspace creation.
+    const backend = createGitWorktreeBackend({ repoPath });
+    const r = await backend.create(aid, defaultConfig);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    // Switch to a new branch in the worktree (simulating agent-driven branch drift)
+    const driftBranch = `drifted-${Date.now()}`;
+    await Bun.spawn(["git", "checkout", "-b", driftBranch], {
+      cwd: r.value.path,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_EMAIL: "t@t",
+        GIT_AUTHOR_NAME: "T",
+        GIT_COMMITTER_EMAIL: "t@t",
+        GIT_COMMITTER_NAME: "T",
+      },
+    }).exited;
+
+    // isHealthy should be false (branch drifted)
+    expect(await backend.isHealthy(r.value.id)).toBe(false);
+
+    // exists should still be true (worktree physically present)
+    expect(await backend.exists?.(r.value.id)).toBe(true);
+
+    // Cleanup: switch back then dispose
+    await Bun.spawn(["git", "checkout", "-"], { cwd: r.value.path }).exited;
+    await backend.dispose(r.value.id);
+  });
+
   it("recoverEntry is scoped to this backend's base path", async () => {
     const basePath1 = join(repoPath, "..", `wt-recover1-${Date.now()}`);
     const basePath2 = join(repoPath, "..", `wt-recover2-${Date.now()}`);
