@@ -20,17 +20,25 @@ export interface CapabilityVerifierOptions {
    */
   readonly hmac?: { readonly secret: Uint8Array; readonly rootIssuer?: AgentId };
   /**
-   * Ed25519 verifier configuration. `issuerKeys` is REQUIRED — it binds
-   * each public-key fingerprint to the AgentId authorized to sign tokens
-   * for, at any chain depth. Without this binding, any configured key
-   * could sign a token claiming any `issuerId` matching some parent's
-   * delegateeId in the chain, defeating attenuation. Every Ed25519 token
-   * whose `proof.publicKey` is not in `issuerKeys`, or whose `issuerId`
-   * disagrees with the bound AgentId, is rejected.
+   * Ed25519 verifier configuration. Separates per-agent delegation
+   * authority from root-issuance authority — they are distinct trust
+   * decisions and conflating them creates a privilege-escalation path.
+   *
+   * - `publicKeys` — fingerprint → key map (every key valid for some
+   *   chain position).
+   * - `issuerKeys` — REQUIRED fingerprint → AgentId binding applied at
+   *   every chain depth. Prevents cross-issuer forgery where one
+   *   configured key signs a token claiming another issuer's AgentId.
+   * - `rootKeys` — REQUIRED set of fingerprints authorized to sign
+   *   `chainDepth === 0` tokens. Without this, a configured downstream
+   *   delegatee key (intended only to forward grants) could self-sign a
+   *   parentless wildcard root token. Pass an empty set to reject all
+   *   Ed25519 root tokens (HMAC-only roots).
    */
   readonly ed25519?: {
     readonly publicKeys: ReadonlyMap<string, Uint8Array>;
     readonly issuerKeys: ReadonlyMap<string, AgentId>;
+    readonly rootKeys: ReadonlySet<string>;
   };
   readonly scopeChecker: ScopeChecker;
   readonly revocations?: CapabilityRevocationRegistry;
@@ -93,10 +101,20 @@ function verifyRootAuthority(
   token: CapabilityToken,
   opts: CapabilityVerifierOptions,
 ): CapabilityVerifyResult | undefined {
-  // HMAC root binding only — Ed25519 binding is per-token (in verifySignature).
   if (token.proof.kind === "hmac-sha256") {
     const expected = opts.hmac?.rootIssuer;
     if (expected !== undefined && token.issuerId !== expected) {
+      return deny({ ok: false, reason: "invalid_signature" });
+    }
+    return undefined;
+  }
+  if (token.proof.kind === "ed25519") {
+    // Per-agent delegation authority (issuerKeys) is necessary but not
+    // sufficient for root issuance — without an explicit `rootKeys`
+    // allowlist, any configured delegatee key could mint chainDepth=0
+    // wildcard grants. Fail closed when ed25519 config is absent.
+    const rootKeys = opts.ed25519?.rootKeys;
+    if (rootKeys === undefined || !rootKeys.has(token.proof.publicKey)) {
       return deny({ ok: false, reason: "invalid_signature" });
     }
   }
@@ -138,6 +156,14 @@ async function verifyStructural(
   }
   if (opts.revocations && (await opts.revocations.isRevoked(token.id))) {
     return deny({ ok: false, reason: "revoked" });
+  }
+  // Fail closed on Proof-of-Possession requirements. The token's issuer
+  // has explicitly opted into PoP (`requiresPoP: true`) — accepting it
+  // as a plain bearer token would silently downgrade the security
+  // contract. PoP challenge flow is deferred (see L2 doc), so any token
+  // requesting it is rejected here rather than allowed unverified.
+  if (token.requiresPoP === true) {
+    return deny({ ok: false, reason: "proof_type_unsupported" });
   }
   // Root binding only applies to chainDepth=0; non-root tokens carry their
   // authority via the parent chain (verified separately).

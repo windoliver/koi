@@ -19,14 +19,20 @@ L2 library that implements the L0 capability + delegation contracts in
   - `hmac?: { secret, rootIssuer? }` — HMAC-SHA256 key plus an optional
     AgentId binding. When `rootIssuer` is set, chainDepth=0 tokens whose
     `issuerId` does not match are rejected as `invalid_signature`.
-  - `ed25519?: { publicKeys, issuerKeys }` — fingerprint→key map plus a
-    REQUIRED fingerprint→AgentId binding applied at every chain depth.
-    EVERY Ed25519 token is rejected unless
-    `issuerKeys.get(proof.publicKey) === token.issuerId`. This prevents
-    cross-issuer forgery where a configured key for issuer A signs a
-    token claiming issuerId=B (matching some parent's delegateeId). The
-    binding is required (not optional) because a fail-open default would
-    leave any deployment that omits it vulnerable to the forgery class.
+  - `ed25519?: { publicKeys, issuerKeys, rootKeys }` — three required
+    fields separating per-agent delegation authority from root-issuance
+    authority:
+    - `publicKeys` — fingerprint→key map (every key valid for some
+      chain position).
+    - `issuerKeys` — fingerprint→AgentId binding applied at EVERY chain
+      depth. Prevents cross-issuer forgery where one configured key
+      signs a token claiming another issuer's AgentId.
+    - `rootKeys` — set of fingerprints authorized to sign
+      `chainDepth === 0` tokens. Without this allowlist, any configured
+      downstream delegatee key (intended only for chain delegation)
+      could self-sign a parentless wildcard root, bypassing the
+      delegation chain entirely. Pass an empty set when the deployment
+      uses HMAC-only roots.
   - `scopeChecker` (required) — see `createGlobScopeChecker()`.
   - `revocations?: CapabilityRevocationRegistry` — when provided,
     every token id is checked against the registry.
@@ -43,7 +49,10 @@ L2 library that implements the L0 capability + delegation contracts in
   - tokens whose `permissions.ask` matches the requested toolId — the
     default checker has no human-in-the-loop mechanism; production
     deployments that issue ask-bearing tokens MUST inject an interactive
-    scope checker capable of returning true after explicit approval.
+    scope checker capable of returning true after explicit approval
+  - any allow/deny/ask list contains a `group:*` pattern — group
+    expansion requires a manifest's groups config, unavailable here;
+    deployments using groups MUST inject a group-aware checker.
 - `issueRootCapability(opts)` — produces a signed root `CapabilityToken`.
 - `delegateCapability(opts)` — produces a signed child `CapabilityToken`
   after verifying attenuation, chain depth, parent expiry, session match,
@@ -113,18 +122,24 @@ For the leaf token only:
 - Nexus proof verification (`proof.kind === "nexus"` returns
   `proof_type_unsupported`).
 - Verifier cache (L0 defines `VerifierCache`; consumers wrap externally).
-- Proof-of-Possession (`requiresPoP` field copied through but not
-  enforced).
+- Proof-of-Possession challenge flow. The `requiresPoP` field is
+  fail-closed: any token with `requiresPoP === true` is rejected as
+  `proof_type_unsupported` until the challenge mechanism lands.
+  Accepting such tokens as plain bearer would silently downgrade the
+  contract the issuer opted into.
 
 ## Trust model
 
 - **HMAC**: any holder of the secret is a trusted issuer. Configure
   `rootIssuer` to bind chainDepth=0 tokens to a specific AgentId.
-- **Ed25519**: each public-key fingerprint binds to one AgentId via
-  `issuerKeys`, applied at every chain depth. Without that binding
-  configured, signatures are merely "from some configured key" — a
-  malicious holder of any configured private key could mint tokens
-  claiming any `issuerId`. Always configure `issuerKeys` in production.
+- **Ed25519**: trust is split into two distinct authorities. `issuerKeys`
+  binds each fingerprint to an AgentId, applied at every chain depth — a
+  configured key may sign tokens only for its bound AgentId. `rootKeys`
+  is a separate allowlist of fingerprints authorized to mint
+  `chainDepth === 0` tokens. Conflating them would let any downstream
+  delegatee key self-sign wildcard roots and bypass the chain. Always
+  configure both maps in production; pass an empty `rootKeys` for
+  HMAC-only-root deployments.
 - **Chain validation**: chainDepth>0 tokens MUST be verified through a
   `tokenStore` that returns the parent. Without it, leaf signature
   alone does not prove valid attenuation; the verifier fails closed

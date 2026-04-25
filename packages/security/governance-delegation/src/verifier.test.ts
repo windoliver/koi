@@ -137,7 +137,7 @@ describe("createCapabilityVerifier", () => {
     const { token } = await newHmacRoot();
     const verifier = createCapabilityVerifier({
       // No hmac key configured.
-      ed25519: { publicKeys: new Map(), issuerKeys: new Map() },
+      ed25519: { publicKeys: new Map(), issuerKeys: new Map(), rootKeys: new Set() },
       scopeChecker: createGlobScopeChecker(),
     });
     const result = await verifier.verify(token, ctx());
@@ -184,6 +184,7 @@ describe("createCapabilityVerifier", () => {
       ed25519: {
         publicKeys: new Map([[fp, pubDer]]),
         issuerKeys: new Map([[fp, agentId("engine")]]),
+        rootKeys: new Set([fp]),
       },
       scopeChecker: createGlobScopeChecker(),
     });
@@ -224,6 +225,7 @@ describe("authority binding (codex round-1: critical)", () => {
       ed25519: {
         publicKeys: new Map([[fp, pubDer]]),
         issuerKeys: new Map([[fp, agentId("engine")]]),
+        rootKeys: new Set([fp]),
       },
       scopeChecker: createGlobScopeChecker(),
     });
@@ -251,6 +253,7 @@ describe("authority binding (codex round-1: critical)", () => {
       ed25519: {
         publicKeys: new Map([[fp, pubDer]]),
         issuerKeys: new Map(), // empty — fingerprint not authorized
+        rootKeys: new Set([fp]),
       },
       scopeChecker: createGlobScopeChecker(),
     });
@@ -409,6 +412,7 @@ describe("round-2 hardening", () => {
           [fpA, agentId("agent-a")],
           [fpB, agentId("agent-b")],
         ]),
+        rootKeys: new Set([fpA, fpB]),
       },
       scopeChecker: createGlobScopeChecker(),
     });
@@ -484,6 +488,7 @@ describe("round-2 hardening", () => {
       ed25519: {
         publicKeys: new Map([[fp, pubDer]]),
         issuerKeys: new Map(), // empty — fingerprint not bound
+        rootKeys: new Set([fp]),
       },
       scopeChecker: createGlobScopeChecker(),
     });
@@ -518,6 +523,106 @@ describe("round-2 hardening", () => {
       scopeChecker: createGlobScopeChecker(),
     });
     const result = await verifier.verify(forged, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid_signature");
+  });
+
+  test("Ed25519 delegatee key cannot mint root (codex round-5: critical)", async () => {
+    // Setup: two Ed25519 keys configured. Engine's key (fpEngine) is the
+    // sanctioned root authority. Delegatee's key (fpDelegatee) is in
+    // issuerKeys — legitimate for chain delegation — but NOT in rootKeys.
+    // The delegatee must not be able to self-sign a parentless wildcard
+    // root; verifyRootAuthority must reject it.
+    const kpEngine = generateKeyPairSync("ed25519");
+    const kpDelegatee = generateKeyPairSync("ed25519");
+    const pubEngine = kpEngine.publicKey.export({ format: "der", type: "spki" });
+    const pubDelegatee = kpDelegatee.publicKey.export({ format: "der", type: "spki" });
+    const privDelegatee = kpDelegatee.privateKey.export({ format: "der", type: "pkcs8" });
+    const fpEngine = Buffer.from(pubEngine).toString("base64");
+    const fpDelegatee = Buffer.from(pubDelegatee).toString("base64");
+
+    // Delegatee self-signs a chainDepth=0 wildcard token. Issuer-key
+    // binding holds (fpDelegatee → agent("delegatee") matches issuerId).
+    const tok = await issueRootCapability({
+      signer: { kind: "ed25519", privateKey: privDelegatee, publicKeyFingerprint: fpDelegatee },
+      issuerId: agentId("delegatee"),
+      delegateeId: agentId("eve"),
+      scope: { permissions: { allow: ["*"] }, sessionId: sessionId("sess-1") },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+    const verifier = createCapabilityVerifier({
+      ed25519: {
+        publicKeys: new Map([
+          [fpEngine, pubEngine],
+          [fpDelegatee, pubDelegatee],
+        ]),
+        issuerKeys: new Map([
+          [fpEngine, agentId("engine")],
+          [fpDelegatee, agentId("delegatee")],
+        ]),
+        rootKeys: new Set([fpEngine]), // delegatee NOT authorized to root-sign
+      },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const result = await verifier.verify(tok, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid_signature");
+  });
+
+  test("requiresPoP token rejected as proof_type_unsupported (codex round-5+6: high)", async () => {
+    // PoP challenge flow is deferred. A signed token whose issuer
+    // explicitly opted into PoP (`requiresPoP: true`) MUST be rejected
+    // — accepting it as plain bearer silently downgrades the contract.
+    const { signer, token } = await newHmacRoot();
+    if (signer.kind !== "hmac-sha256") throw new Error();
+    const popToken: CapabilityToken = { ...token, requiresPoP: true };
+    // Re-sign so the token is internally valid except for PoP.
+    const { signHmac } = await import("./hmac.js");
+    const digest = signHmac(popToken, signer.secret);
+    const finalToken: CapabilityToken = {
+      ...popToken,
+      proof: { kind: "hmac-sha256", digest },
+    };
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const result = await verifier.verify(finalToken, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("proof_type_unsupported");
+  });
+
+  test("Ed25519 root rejected when rootKeys is empty set (codex round-5: critical)", async () => {
+    // HMAC-only deployment: explicit empty rootKeys means no Ed25519
+    // chainDepth=0 token can verify, even if its key is otherwise valid
+    // for chain delegation.
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const pubDer = publicKey.export({ format: "der", type: "spki" });
+    const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+    const fp = Buffer.from(pubDer).toString("base64");
+    const tok = await issueRootCapability({
+      signer: { kind: "ed25519", privateKey: privDer, publicKeyFingerprint: fp },
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sessionId("sess-1") },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+    const verifier = createCapabilityVerifier({
+      ed25519: {
+        publicKeys: new Map([[fp, pubDer]]),
+        issuerKeys: new Map([[fp, agentId("engine")]]),
+        rootKeys: new Set(), // explicit: no Ed25519 root tokens accepted
+      },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const result = await verifier.verify(tok, ctx());
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("invalid_signature");

@@ -83,4 +83,28 @@ describe("createGlobScopeChecker", () => {
     };
     expect(await check.isAllowed("read_file", scope)).toBe(false);
   });
+
+  test("group:* patterns in any list fail closed (codex round-5+6: high)", async () => {
+    // The default checker has no manifest groups config to expand
+    // `group:runtime` against — treating it as a literal would silently
+    // turn an `ask:["group:runtime"]` rule into a no-op while the
+    // capability allows everything via `allow:["*"]`. Reject up front.
+    const groupAsk: DelegationScope = {
+      permissions: { allow: ["*"], ask: ["group:runtime"] },
+      sessionId: sessionId("sess-1"),
+    };
+    expect(await check.isAllowed("bash", groupAsk)).toBe(false);
+
+    const groupDeny: DelegationScope = {
+      permissions: { allow: ["*"], deny: ["group:runtime"] },
+      sessionId: sessionId("sess-1"),
+    };
+    expect(await check.isAllowed("bash", groupDeny)).toBe(false);
+
+    const groupAllow: DelegationScope = {
+      permissions: { allow: ["group:runtime"] },
+      sessionId: sessionId("sess-1"),
+    };
+    expect(await check.isAllowed("bash", groupAllow)).toBe(false);
+  });
 });

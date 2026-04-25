@@ -20,6 +20,20 @@ function matchesAny(toolId: string, patterns: readonly string[]): boolean {
 }
 
 /**
+ * Group-pattern detection. The middleware-permissions layer expands
+ * `group:<name>` patterns via a manifest-supplied groups config. The
+ * default scope checker has no access to that config, so treating a raw
+ * `group:runtime` string as a literal silently turns ask/deny rules into
+ * no-ops. Fail closed: a capability scope containing any `group:*`
+ * pattern in any list (allow/deny/ask) is rejected — production
+ * deployments using groups must inject a group-aware scope checker.
+ */
+function hasGroupPattern(patterns: readonly string[] | undefined): boolean {
+  if (!patterns) return false;
+  return patterns.some((p) => p.startsWith("group:"));
+}
+
+/**
  * Default scope checker — applies deny-first glob matching against
  * `permissions.allow` / `permissions.deny` with `*` and `prefix*` support.
  *
@@ -40,6 +54,17 @@ export function createGlobScopeChecker(): ScopeChecker {
     isAllowed(toolId: string, scope: DelegationScope): boolean {
       // Fail closed: resource-scoped tokens require a resource-aware checker.
       if (scope.resources && scope.resources.length > 0) return false;
+
+      // Fail closed on group:* patterns — the default checker cannot
+      // expand them and treating them as literals would silently turn
+      // group-based ask/deny rules into no-ops.
+      if (
+        hasGroupPattern(scope.permissions.allow) ||
+        hasGroupPattern(scope.permissions.deny) ||
+        hasGroupPattern(scope.permissions.ask)
+      ) {
+        return false;
+      }
 
       // Deny first — wildcard or prefix denies override allow.
       const deny = scope.permissions.deny ?? [];
