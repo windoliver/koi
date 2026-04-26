@@ -209,8 +209,11 @@ export function createNdjsonAuditSink(
         }
         rotationSeq = max;
       })
-      .catch(() => {
-        /* archive dir absent — rotationSeq stays 0 */
+      .catch((e: unknown) => {
+        if (e instanceof Error && "code" in e && (e as NodeJS.ErrnoException).code === "ENOENT") {
+          return; // Archive dir not yet created
+        }
+        throw e; // Real filesystem error — fail closed
       }),
   ]).then(() => {});
 

@@ -84,7 +84,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
     grantKey: string,
     next: ToolHandler,
     decision: PermissionDecision & { readonly effect: "ask" },
-    dispatchApprovalOutcome?: (d: PermissionDecision) => void,
+    dispatchApprovalOutcome?: (d: PermissionDecision) => void | Promise<void>,
   ) => Promise<ToolResponse>;
 } {
   const {
@@ -113,7 +113,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
     grantKey: string,
     next: ToolHandler,
     decision: PermissionDecision & { readonly effect: "ask" },
-    dispatchApprovalOutcome?: (d: PermissionDecision) => void,
+    dispatchApprovalOutcome?: (d: PermissionDecision) => void | Promise<void>,
   ): Promise<ToolResponse> {
     const approvalHandler = ctx.requestApproval;
 
@@ -199,8 +199,8 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
               /* remembered */ true,
             );
           }
-          // Dispatch before next() so the permission outcome is recorded even if the tool throws
-          dispatchApprovalOutcome?.({ effect: "allow" });
+          // Await dispatch before next() so the approval record is durable before tool execution
+          await dispatchApprovalOutcome?.({ effect: "allow" });
           return next(request);
         }
       } catch {
@@ -233,8 +233,8 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
         request.input,
         alwaysAllowStartMs,
       );
-      // Dispatch before next() so the permission outcome is recorded even if the tool throws
-      dispatchApprovalOutcome?.({ effect: "allow" });
+      // Await dispatch before next() so the approval record is durable before tool execution
+      await dispatchApprovalOutcome?.({ effect: "allow" });
       return next(request);
     }
 
@@ -258,8 +258,8 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
 
       if (cacheKey !== undefined && approvalCache.has(cacheKey)) {
         emitApprovalStep(ctx, request.toolId, { kind: "allow" }, request.input, clock());
-        // Dispatch before next() so the permission outcome is recorded even if the tool throws
-        dispatchApprovalOutcome?.({ effect: "allow" });
+        // Await dispatch before next() so the approval record is durable before tool execution
+        await dispatchApprovalOutcome?.({ effect: "allow" });
         return next(request);
       }
     }
@@ -352,8 +352,8 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
             retryable: false,
           });
         }
-        // Dispatch allow before next() so outcome is recorded even if the tool throws
-        dispatchApprovalOutcome?.({ effect: "allow" });
+        // Await dispatch before next() so the approval record is durable before tool execution
+        await dispatchApprovalOutcome?.({ effect: "allow" });
         if (result.kind === "modify") {
           return next({ ...request, input: result.updatedInput });
         }
@@ -557,8 +557,8 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
           source: "approval",
         });
 
-        // Dispatch before next() so the permission outcome is recorded even if the tool throws
-        dispatchApprovalOutcome?.({ effect: "allow" });
+        // Await dispatch before next() so the approval record is durable before tool execution
+        await dispatchApprovalOutcome?.({ effect: "allow" });
         return next(request);
       }
 
@@ -566,8 +566,8 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
       // Never cache modify results: the input rewrite is the safety mechanism,
       // and caching would replay the original unsafe input on subsequent calls
       if (approvalResult.kind === "modify") {
-        // Dispatch before next() so the permission outcome is recorded even if the tool throws
-        dispatchApprovalOutcome?.({ effect: "allow" });
+        // Await dispatch before next() so the approval record is durable before tool execution
+        await dispatchApprovalOutcome?.({ effect: "allow" });
         return next({ ...request, input: approvalResult.updatedInput });
       }
 
@@ -590,8 +590,8 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
         if (cacheKey !== undefined) approvalCache.set(cacheKey);
       }
 
-      // "allow" — dispatch before next() so outcome is recorded even if the tool throws
-      dispatchApprovalOutcome?.({ effect: "allow" });
+      // "allow" — await dispatch before next() so approval record is durable before tool execution
+      await dispatchApprovalOutcome?.({ effect: "allow" });
       return next(request);
     } catch (e: unknown) {
       // Emit a failure trajectory step for timeout/handler errors so they
