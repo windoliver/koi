@@ -93,12 +93,87 @@ const NETWORK_EXFIL: readonly DangerousPattern[] = [
     message: "wget-pipe-shell executes remotely fetched code",
   },
   {
+    // Remote-script exec via process substitution:
+    // `bash <(curl https://x)` / `sh <(wget -O- https://x)`.
+    id: "curl-process-substitution-shell",
+    regex:
+      /(?:(?:\/[^\s<(|&;]*\/)?(?:env|sudo|command|exec|nohup)\s+)?(?:\/[^\s<(|&;]*\/)?(?:ba|z|da|a)?sh\b[^#\n]*<\(\s*curl\b/,
+    category: "network-exfil",
+    severity: "high",
+    message: "Executing curl output via process substitution runs remotely fetched code",
+  },
+  {
+    id: "wget-process-substitution-shell",
+    regex:
+      /(?:(?:\/[^\s<(|&;]*\/)?(?:env|sudo|command|exec|nohup)\s+)?(?:\/[^\s<(|&;]*\/)?(?:ba|z|da|a)?sh\b[^#\n]*<\(\s*wget\b/,
+    category: "network-exfil",
+    severity: "high",
+    message: "Executing wget output via process substitution runs remotely fetched code",
+  },
+  {
     id: "netcat-listen-exec",
     regex: /\b(?:ncat|nc)\b[^#\n]*-[a-zA-Z]*[le]/,
     category: "network-exfil",
     severity: "high",
     message: "netcat with listen or exec flags is a reverse-shell vector",
     commandPrefixes: ["nc", "ncat"],
+  },
+  {
+    id: "scp",
+    regex: /\bscp\b/,
+    category: "network-exfil",
+    severity: "high",
+    message: "scp copies files to or from a remote system",
+    commandPrefixes: ["scp"],
+  },
+  {
+    id: "sftp",
+    regex: /\bsftp\b/,
+    category: "network-exfil",
+    severity: "high",
+    message: "sftp transfers files to or from a remote system",
+    commandPrefixes: ["sftp"],
+  },
+  {
+    id: "ftp",
+    regex: /\bftp\b/,
+    category: "network-exfil",
+    severity: "high",
+    message: "ftp transfers files to a remote system",
+    commandPrefixes: ["ftp"],
+  },
+  {
+    id: "ssh",
+    regex: /\bssh\b/,
+    category: "network-exfil",
+    severity: "medium",
+    message: "ssh can execute remote commands or tunnel data out-of-band",
+    commandPrefixes: ["ssh"],
+  },
+  {
+    id: "curl-upload",
+    regex: /\bcurl\b[^#\n]*(?:-T\b|--upload-file\b)/,
+    category: "network-exfil",
+    severity: "high",
+    message: "curl --upload-file/-T transmits local file contents to a remote server",
+    commandPrefixes: ["curl"],
+  },
+  {
+    id: "curl-post-data",
+    regex:
+      /\bcurl\b[^#\n]*(?:-d\b|--data\b|--data-binary\b|--data-raw\b|--data-urlencode\b|-F\b|--form\b|--form-string\b)/,
+    category: "network-exfil",
+    severity: "high",
+    message: "curl with data or form flags can POST local content to a remote server",
+    commandPrefixes: ["curl"],
+  },
+  {
+    id: "wget-post",
+    regex: /\bwget\b[^#\n]*(?:--post-data\b|--post-file\b|--method(?:=|\s+)POST\b)/i,
+    category: "network-exfil",
+    severity: "high",
+    message: "wget with POST flags can send local data to a remote server",
+    commandPrefixes: ["wget"],
   },
 ];
 
@@ -112,6 +187,22 @@ const CODE_EXEC: readonly DangerousPattern[] = [
     category: "code-exec",
     severity: "high",
     message: "Piping curl output to a shell interpreter executes downloaded code",
+  },
+  {
+    id: "curl-process-substitution-shell-exec",
+    regex:
+      /(?:(?:\/[^\s<(|&;]*\/)?(?:env|sudo|command|exec|nohup)\s+)?(?:\/[^\s<(|&;]*\/)?(?:ba|z|da|a)?sh\b[^#\n]*<\(\s*curl\b/,
+    category: "code-exec",
+    severity: "high",
+    message: "Process substitution from curl executes downloaded code in a shell",
+  },
+  {
+    id: "wget-process-substitution-shell-exec",
+    regex:
+      /(?:(?:\/[^\s<(|&;]*\/)?(?:env|sudo|command|exec|nohup)\s+)?(?:\/[^\s<(|&;]*\/)?(?:ba|z|da|a)?sh\b[^#\n]*<\(\s*wget\b/,
+    category: "code-exec",
+    severity: "high",
+    message: "Process substitution from wget executes downloaded code in a shell",
   },
   {
     id: "eval",
@@ -251,6 +342,25 @@ const PRIVILEGE_ESCALATION: readonly DangerousPattern[] = [
   },
 ];
 
+const PERSISTENCE: readonly DangerousPattern[] = [
+  {
+    id: "crontab-edit",
+    regex: /\bcrontab\b[^#\n]*\s-(?:e|i)\b/,
+    category: "persistence",
+    severity: "high",
+    message: "crontab edit/install writes scheduled tasks that persist across sessions",
+    commandPrefixes: ["crontab"],
+  },
+  {
+    id: "systemctl-enable",
+    regex: /\bsystemctl\b[^#\n]*\benable\b/,
+    category: "persistence",
+    severity: "high",
+    message: "systemctl enable installs a service that persists across reboots",
+    commandPrefixes: ["systemctl"],
+  },
+];
+
 /** All structural danger patterns. Ordered by severity (critical first). */
 export const DANGEROUS_PATTERNS: readonly DangerousPattern[] = Object.freeze([
   ...PROCESS_SPAWN,
@@ -259,4 +369,5 @@ export const DANGEROUS_PATTERNS: readonly DangerousPattern[] = Object.freeze([
   ...CODE_EXEC,
   ...MODULE_LOAD,
   ...PRIVILEGE_ESCALATION,
+  ...PERSISTENCE,
 ]);
