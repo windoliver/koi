@@ -92,6 +92,10 @@ export function createNdjsonAuditSink(
   let bytesWritten = 0;
   let currentDay = config._clockForTesting?.todayUtc() ?? defaultTodayUtc();
 
+  // Single-writer queue: all log()/flush()/close() calls are chained so rotation
+  // is never re-entered concurrently and writes never race across a rotate boundary.
+  let writeChain: Promise<void> = Promise.resolve();
+
   const timer = setInterval(() => {
     void writer.flush();
   }, flushIntervalMs);
@@ -130,20 +134,27 @@ export function createNdjsonAuditSink(
     }
   }
 
+  function enqueue(task: () => Promise<void>): Promise<void> {
+    writeChain = writeChain.then(task, task); // swallow upstream rejection so chain never stalls
+    return writeChain;
+  }
+
   return {
-    async log(entry: AuditEntry): Promise<void> {
-      await rotateIfNeeded();
-      const line = `${JSON.stringify(entry)}\n`;
-      writer.write(line);
-      bytesWritten += line.length;
+    log(entry: AuditEntry): Promise<void> {
+      return enqueue(async () => {
+        await rotateIfNeeded();
+        const line = `${JSON.stringify(entry)}\n`;
+        writer.write(line);
+        bytesWritten += line.length;
+      });
     },
 
-    async flush(): Promise<void> {
-      await writer.flush();
+    flush(): Promise<void> {
+      return enqueue(() => writer.flush());
     },
 
     async getEntries(): Promise<readonly AuditEntry[]> {
-      await writer.flush();
+      await this.flush();
       const archived = await readArchiveEntries(archiveDir);
       const current = await readEntriesFromFile(config.filePath);
       return [...archived, ...current];
@@ -154,10 +165,12 @@ export function createNdjsonAuditSink(
       return all.filter((e) => e.sessionId === sessionId);
     },
 
-    async close(): Promise<void> {
-      clearInterval(timer);
-      await writer.flush();
-      await writer.end();
+    close(): Promise<void> {
+      return enqueue(async () => {
+        clearInterval(timer);
+        await writer.flush();
+        await writer.end();
+      });
     },
   };
 }

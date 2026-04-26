@@ -210,10 +210,6 @@ export function createSqliteViolationStore(
     (timer as { unref: () => void }).unref();
   }
 
-  // Note: SqliteViolationRetentionConfig exists in the config type but is intentionally
-  // not implemented here. The violation store is append-only by design — operators who
-  // need to manage disk space should rotate the DB file externally.
-
   function buildQuery(filter: ViolationFilter): {
     readonly sql: string;
     readonly params: Record<string, string | number>;

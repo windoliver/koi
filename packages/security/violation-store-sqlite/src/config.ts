@@ -3,13 +3,6 @@
 import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 
-export interface SqliteViolationRetentionConfig {
-  /** Delete violations older than this many days. */
-  readonly maxAgeDays: number;
-  /** How often to run the pruning pass in ms. Default: 3600000 (1 hour). */
-  readonly pruneIntervalMs?: number;
-}
-
 export interface SqliteViolationStoreConfig {
   /** Path to the SQLite database file. Use ":memory:" for in-memory (tests). */
   readonly dbPath: string;
@@ -17,8 +10,6 @@ export interface SqliteViolationStoreConfig {
   readonly flushIntervalMs?: number;
   /** Maximum buffer size before an automatic flush. Default: 100. */
   readonly maxBufferSize?: number;
-  /** Retention / pruning policy. Omit to retain all violations indefinitely. */
-  readonly retention?: SqliteViolationRetentionConfig;
 }
 
 function fail(message: string): Result<never, KoiError> {
@@ -50,21 +41,6 @@ export function validateSqliteViolationStoreConfig(
   if (c.maxBufferSize !== undefined) {
     if (typeof c.maxBufferSize !== "number" || c.maxBufferSize <= 0) {
       return fail("config.maxBufferSize must be a positive number");
-    }
-  }
-
-  if (c.retention !== undefined) {
-    if (typeof c.retention !== "object" || c.retention === null) {
-      return fail("config.retention must be an object");
-    }
-    const r = c.retention as Record<string, unknown>;
-    if (typeof r.maxAgeDays !== "number" || r.maxAgeDays <= 0) {
-      return fail("config.retention.maxAgeDays must be a positive number");
-    }
-    if (r.pruneIntervalMs !== undefined) {
-      if (typeof r.pruneIntervalMs !== "number" || r.pruneIntervalMs <= 0) {
-        return fail("config.retention.pruneIntervalMs must be a positive number");
-      }
     }
   }
 

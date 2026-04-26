@@ -151,12 +151,13 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
   }
 
   // Pruning setup — run immediately on creation, then on interval
+  let pruneTimer: ReturnType<typeof setInterval> | undefined;
   if (config.retention) {
     pruneOldEntries();
     const pruneIntervalMs = config.retention.pruneIntervalMs ?? DEFAULT_PRUNE_INTERVAL_MS;
-    const pruneTimer = setInterval(pruneOldEntries, pruneIntervalMs);
+    pruneTimer = setInterval(pruneOldEntries, pruneIntervalMs);
     if (typeof pruneTimer === "object" && pruneTimer !== null && "unref" in pruneTimer) {
-      (pruneTimer as { unref: () => void }).unref();
+      (pruneTimer as unknown as { unref: () => void }).unref();
     }
   }
 
@@ -193,6 +194,7 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
 
     close(): void {
       clearInterval(timer);
+      clearInterval(pruneTimer);
       flushBuffer();
       db.close();
     },
