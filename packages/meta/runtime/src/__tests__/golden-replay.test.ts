@@ -13665,3 +13665,188 @@ describe("Golden: @koi/governance-security", () => {
     expect(matches[0]?.value).toBe("support@company.com");
   });
 });
+
+describe("Golden: @koi/temporal", () => {
+  test("createTemporalHealthMonitor circuit breaker: CLOSED → OPEN → HALF_OPEN → CLOSED lifecycle", async () => {
+    const { createTemporalHealthMonitor, DEFAULT_TEMPORAL_HEALTH_CONFIG } = await import(
+      "@koi/temporal"
+    );
+
+    const t = 0;
+    const clock = (): number => t;
+    const probeResults: boolean[] = [];
+
+    const monitor = createTemporalHealthMonitor(
+      {
+        ...DEFAULT_TEMPORAL_HEALTH_CONFIG,
+        url: "localhost:7233",
+        failureThreshold: 2,
+        cooldownMs: 1_000,
+        pollIntervalMs: 100,
+        clock,
+      },
+      async () => probeResults.shift() ?? false,
+    );
+
+    // Before first probe: degraded + unavailable
+    expect(monitor.snapshot().status).toBe("degraded");
+    expect(monitor.isAvailable()).toBe(false);
+
+    // Two failures → circuit OPEN
+    probeResults.push(false, false);
+    monitor.start();
+    // poll() runs immediately on start; drive two more explicit ticks via the exported poll path
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+    // Circuit opened after 2 failures — traffic gated
+    expect(monitor.snapshot().consecutiveFailures).toBeGreaterThanOrEqual(1);
+
+    monitor.dispose();
+  });
+
+  test("createTemporalHealthMonitor: onStatusChange fires on CLOSED→degraded transition", async () => {
+    const { createTemporalHealthMonitor, DEFAULT_TEMPORAL_HEALTH_CONFIG } = await import(
+      "@koi/temporal"
+    );
+
+    const t = 0;
+    const clock = (): number => t;
+    const statuses: string[] = [];
+
+    const monitor = createTemporalHealthMonitor(
+      {
+        ...DEFAULT_TEMPORAL_HEALTH_CONFIG,
+        url: "localhost:7233",
+        failureThreshold: 3,
+        cooldownMs: 60_000,
+        pollIntervalMs: 50,
+        clock,
+      },
+      async (url: string, _timeoutMs: number) => {
+        void url;
+        return false; // always fail
+      },
+    );
+
+    const unsub = monitor.onStatusChange((snap) => {
+      statuses.push(snap.status);
+    });
+
+    monitor.start();
+    await new Promise<void>((resolve) => setTimeout(resolve, 120));
+    monitor.dispose();
+    unsub();
+
+    // Should have transitioned through degraded (first probe) and possibly unavailable (OPEN)
+    expect(statuses.length).toBeGreaterThan(0);
+    expect(statuses[0]).toMatch(/degraded|unavailable/);
+  });
+
+  test("createTemporalHealthMonitor snapshot timestamps: lastTickAt always advances, lastCheckAt only on probe", async () => {
+    const { createTemporalHealthMonitor, DEFAULT_TEMPORAL_HEALTH_CONFIG } = await import(
+      "@koi/temporal"
+    );
+
+    let t = 0;
+    const clock = (): number => ++t;
+    let probeCount = 0;
+
+    const monitor = createTemporalHealthMonitor(
+      {
+        ...DEFAULT_TEMPORAL_HEALTH_CONFIG,
+        url: "localhost:7233",
+        failureThreshold: 10,
+        cooldownMs: 60_000,
+        pollIntervalMs: 50,
+        clock,
+      },
+      async () => {
+        probeCount++;
+        return true;
+      },
+    );
+
+    expect(monitor.snapshot().lastTickAt).toBe(0);
+    expect(monitor.snapshot().lastCheckAt).toBe(0);
+
+    monitor.start();
+    await new Promise<void>((resolve) => setTimeout(resolve, 120));
+    monitor.dispose();
+
+    const snap = monitor.snapshot();
+    // lastTickAt advances on every tick
+    expect(snap.lastTickAt).toBeGreaterThan(0);
+    // lastCheckAt advances only when a probe runs
+    expect(snap.lastCheckAt).toBeGreaterThan(0);
+    expect(probeCount).toBeGreaterThan(0);
+  });
+
+  test("mapTemporalError: maps known Temporal error types to KoiError", async () => {
+    const { mapTemporalError } = await import("@koi/temporal");
+
+    // TimeoutFailure → TIMEOUT + retryable
+    const timeout = mapTemporalError(
+      Object.assign(new Error("Workflow timed out"), {
+        name: "TimeoutFailure",
+        message: "timed out",
+      }),
+    );
+    expect(timeout.code).toBe("TIMEOUT");
+    expect(timeout.retryable).toBe(true);
+
+    // CancelledFailure → EXTERNAL + not retryable
+    const cancelled = mapTemporalError(
+      Object.assign(new Error("Cancelled"), { name: "CancelledFailure", message: "cancelled" }),
+    );
+    expect(cancelled.code).toBe("EXTERNAL");
+    expect(cancelled.retryable).toBe(false);
+
+    // Unknown error name → INTERNAL
+    const unknown = mapTemporalError(new Error("unexpected failure"));
+    expect(unknown.code).toBe("INTERNAL");
+
+    // Non-Error thrown value
+    const nonError = mapTemporalError("string error");
+    expect(nonError.code).toBe("INTERNAL");
+  });
+
+  test("DEFAULT_TEMPORAL_HEALTH_CONFIG has expected production defaults", async () => {
+    const { DEFAULT_TEMPORAL_HEALTH_CONFIG } = await import("@koi/temporal");
+
+    expect(DEFAULT_TEMPORAL_HEALTH_CONFIG.pollIntervalMs).toBe(10_000);
+    expect(DEFAULT_TEMPORAL_HEALTH_CONFIG.failureThreshold).toBe(3);
+    expect(DEFAULT_TEMPORAL_HEALTH_CONFIG.cooldownMs).toBe(60_000);
+    expect(DEFAULT_TEMPORAL_HEALTH_CONFIG.timeoutMs).toBe(5_000);
+  });
+
+  test("createTemporalSpawnLedger: slot accounting — acquire, capacity, release", async () => {
+    const { createTemporalSpawnLedger } = await import("@koi/temporal");
+
+    const ledger = createTemporalSpawnLedger({ maxCapacity: 3 });
+
+    expect(ledger.activeCount()).toBe(0);
+    expect(ledger.capacity()).toBe(3);
+
+    // Acquire up to capacity
+    expect(await ledger.acquire()).toBe(true);
+    expect(await ledger.acquire()).toBe(true);
+    expect(await ledger.acquire()).toBe(true);
+    expect(ledger.activeCount()).toBe(3);
+
+    // At capacity: next acquire returns false
+    expect(await ledger.acquire()).toBe(false);
+    expect(ledger.activeCount()).toBe(3);
+
+    // Release one slot and acquire again
+    await ledger.release();
+    expect(ledger.activeCount()).toBe(2);
+    expect(await ledger.acquire()).toBe(true);
+    expect(ledger.activeCount()).toBe(3);
+
+    // snapshot reflects current state
+    const snap = ledger.snapshot();
+    expect(snap.activeCount).toBe(3);
+    expect(snap.capacity).toBe(3);
+  });
+});

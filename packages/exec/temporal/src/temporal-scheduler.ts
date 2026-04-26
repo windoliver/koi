@@ -1,14 +1,17 @@
 import {
   closeSync,
   fsyncSync,
+  linkSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import type {
   AgentId,
   CronSchedule,
@@ -356,66 +359,191 @@ function parseLockFile(content: string): { pid: number; sessionToken: string } |
   return { pid, sessionToken };
 }
 
+// 1-hour grace makes the age-based check safe under any realistic condition: no live process
+// should be between writeTmpFile() and linkSync() for more than an hour (debugger, IO stall, etc.).
+// We use file mtime rather than PID liveness to avoid false-positives in cross-PID-namespace
+// container deployments where process.kill(foreignPid, 0) always returns "dead".
+const ORPHAN_TEMP_GRACE_MS = 3_600_000;
+function cleanupOrphanedTempLocks(lockPath: string): void {
+  const dir = dirname(lockPath);
+  const base = basename(lockPath);
+  const prefix = `${base}.new.`;
+  const now = Date.now();
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix)) continue;
+    let mtimeMs: number;
+    try {
+      mtimeMs = statSync(`${dir}/${entry}`).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (now - mtimeMs < ORPHAN_TEMP_GRACE_MS) continue;
+    try {
+      unlinkSync(`${dir}/${entry}`);
+    } catch {
+      /* race — ignore */
+    }
+  }
+}
+
 function acquireDbLock(dbPath: string): void {
   const lockPath = `${dbPath}.lock`;
   const lockContent = `${process.pid}:${PROCESS_SESSION_TOKEN}`;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let fd: number | undefined;
+  // Clean up any orphaned temp files from prior crashed startups (older than 1 hour).
+  cleanupOrphanedTempLocks(lockPath);
+  // Write content to a per-pid temp file first so the lock file is never empty when published.
+  // linkSync(tmp, lock) is atomic + exclusive on POSIX: fails EEXIST if lock exists, ensuring
+  // any reader sees valid content — eliminating the create/write crash window entirely.
+  // fsyncSync the temp file before linking so content is durable under power loss.
+  // Random suffix prevents PID-reuse from hard-linking the same inode as a live lock's temp file
+  // if the same PID happens to be reused before the orphan is cleaned up (cleanup is best-effort).
+  const tmpPath = `${lockPath}.new.${process.pid}.${crypto.randomUUID().slice(0, 8)}`;
+  function writeTmpFile(): void {
+    const fd = openSync(tmpPath, "wx");
+    let ok = false;
     try {
-      // 'wx' = O_WRONLY | O_CREAT | O_EXCL — atomic on POSIX; fails EEXIST if another holder created the file.
-      fd = openSync(lockPath, "wx");
-      // Write pid:sessionToken through the same fd before closing so the file is never empty.
-      // An empty lock file would be misread as stale by competing processes.
       writeSync(fd, lockContent);
       fsyncSync(fd);
+      ok = true;
+    } finally {
       closeSync(fd);
-      fd = undefined;
-      return;
-    } catch (err: unknown) {
-      if (fd !== undefined) {
+      // If write/fsync failed, remove the partial temp file so the outer finally doesn't
+      // leave a leaked artifact and so the stale-lock recovery retry can reuse tmpPath.
+      if (!ok) {
         try {
-          closeSync(fd);
+          unlinkSync(tmpPath);
         } catch {
-          /* ignore */
+          /* best-effort — ignore if already gone */
         }
       }
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    }
-    // EEXIST: lock file exists — check whether the holder is alive.
-    let existing: { pid: number; sessionToken: string } | undefined;
-    try {
-      existing = parseLockFile(readFileSync(lockPath, "utf8"));
-    } catch {
-      // Lock file vanished between the open and the read — retry the atomic create.
-      continue;
-    }
-    if (existing === undefined) {
-      // Fail closed: lock file exists but content is empty or unparseable — this is the
-      // create/write window where the owner just ran openSync() but hasn't finished writeSync().
-      // Treat as live to avoid unlinking a file we cannot verify as stale.
-      throw new Error(
-        `[temporal-scheduler] dbPath "${dbPath}" lock file exists but cannot be parsed. ` +
-          "Another process may be starting concurrently. Try again momentarily.",
-      );
-    }
-    if (isLockOwnerAlive(existing.pid, existing.sessionToken)) {
-      throw new Error(
-        `[temporal-scheduler] dbPath "${dbPath}" is already held by PID ${existing.pid}. ` +
-          "Only one scheduler instance may write to a given dbPath at a time. " +
-          "Stop the other process or remove the stale lock file to continue.",
-      );
-    }
-    // Stale lock (dead PID or mismatched session token) — unlink and retry the atomic O_EXCL create.
-    try {
-      unlinkSync(lockPath);
-    } catch {
-      /* ignore — another process may have won the race */
     }
   }
-  throw new Error(
-    `[temporal-scheduler] Failed to acquire lock for "${dbPath}" after 2 attempts. ` +
-      "Another process may be starting concurrently. Try again.",
-  );
+  // If temp-file creation fails (ENOSPC, inode exhaustion), attempt to reclaim a stale lock
+  // before giving up. A dead owner's inode is freed by unlinking the stale lock file, which
+  // may be exactly the resource needed. Only retry once; if reclamation fails or the lock
+  // is live, rethrow. The atomic linkSync below still enforces the single-writer invariant.
+  try {
+    writeTmpFile();
+  } catch (tmpErr: unknown) {
+    let recovered = false;
+    try {
+      const existing = parseLockFile(readFileSync(lockPath, "utf8"));
+      if (existing !== undefined && !isLockOwnerAlive(existing.pid, existing.sessionToken)) {
+        unlinkSync(lockPath);
+        writeTmpFile();
+        recovered = true;
+      }
+    } catch {
+      /* lock absent, unreadable, or second writeTmpFile also failed — fall through */
+    }
+    if (!recovered) throw tmpErr;
+  }
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let acquired = false;
+      try {
+        linkSync(tmpPath, lockPath);
+        acquired = true; // linkSync success = lock owned; temp cleanup is best-effort below
+      } catch (linkErr: unknown) {
+        const linkErrCode = (linkErr as NodeJS.ErrnoException).code;
+        if (linkErrCode === "EEXIST") {
+          // Lock exists — fall through to holder liveness check below.
+        } else if (
+          linkErrCode === "EPERM" ||
+          linkErrCode === "ENOTSUP" ||
+          linkErrCode === "EOPNOTSUPP" ||
+          linkErrCode === "EXDEV" ||
+          linkErrCode === "ENOSYS" ||
+          linkErrCode === "EINVAL"
+        ) {
+          // Filesystem does not support hard links (network mount, FAT, CIFS/SMB, some Docker volumes).
+          // EINVAL covers CIFS and Btrfs subvolume cross-boundary links on some Linux kernels.
+          // Fall back to the original openSync("wx") approach. The crash-window atomicity
+          // guarantee does not apply here, but neither does the PID-reuse hard-link hazard.
+          // Do NOT unlink tmpPath here — the finally block handles cleanup, and tmpPath must
+          // still exist so subsequent retry iterations can attempt linkSync again (in case the
+          // stale-lock removal above clears the way before we know hard links are unsupported).
+          let fd: number | undefined;
+          try {
+            fd = openSync(lockPath, "wx");
+            writeSync(fd, lockContent);
+            fsyncSync(fd);
+            closeSync(fd);
+            acquired = true;
+          } catch (fallbackErr: unknown) {
+            if (fd !== undefined) {
+              try {
+                closeSync(fd);
+              } catch {
+                /* ignore */
+              }
+            }
+            if ((fallbackErr as NodeJS.ErrnoException).code !== "EEXIST") throw fallbackErr;
+            // EEXIST in fallback path — fall through to holder liveness check.
+          }
+        } else {
+          throw linkErr;
+        }
+      }
+      if (acquired) {
+        // Lock published — clean up temp file as best-effort; failure must not affect ownership.
+        try {
+          unlinkSync(tmpPath);
+        } catch {
+          /* tmp may already be gone or on a filesystem that removed it on close */
+        }
+        return;
+      }
+      // EEXIST: lock held — check whether the holder is alive.
+      let existing: { pid: number; sessionToken: string } | undefined;
+      try {
+        existing = parseLockFile(readFileSync(lockPath, "utf8"));
+      } catch {
+        // Lock file vanished between link and read — retry the atomic create.
+        continue;
+      }
+      if (existing === undefined) {
+        // Fail closed: lock file exists but content is unreadable. On the hard-link path
+        // this is extremely rare (content is written before publish). On the openSync fallback
+        // path it can be a crash artifact (process died between open and write) but we cannot
+        // safely distinguish that from a live concurrent writer without risking breaking the
+        // single-writer invariant. Tell the caller to retry momentarily.
+        throw new Error(
+          `[temporal-scheduler] dbPath "${dbPath}" lock file exists but cannot be parsed. ` +
+            "Another process may be starting concurrently. Try again momentarily.",
+        );
+      }
+      if (isLockOwnerAlive(existing.pid, existing.sessionToken)) {
+        throw new Error(
+          `[temporal-scheduler] dbPath "${dbPath}" is already held by PID ${existing.pid}. ` +
+            "Only one scheduler instance may write to a given dbPath at a time. " +
+            "Stop the other process or remove the stale lock file to continue.",
+        );
+      }
+      // Stale lock (dead PID or mismatched session token) — unlink and retry.
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        /* ignore — another process may have won the race */
+      }
+    }
+    throw new Error(
+      `[temporal-scheduler] Failed to acquire lock for "${dbPath}" after 2 attempts. ` +
+        "Another process may be starting concurrently. Try again.",
+    );
+  } finally {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      /* already unlinked on success or never reached link on early throw */
+    }
+  }
 }
 
 function releaseDbLock(dbPath: string): void {

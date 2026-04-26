@@ -867,6 +867,7 @@
         "@koi/spawn-tools": "workspace:*",
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
+        "@koi/temporal": "workspace:*",
         "@koi/tool-browser": "workspace:*",
         "@koi/tool-exec": "workspace:*",
         "@koi/tool-notebook": "workspace:*",

@@ -85,6 +85,11 @@ export type TemporalHealthStatus = "healthy" | "degraded" | "unavailable";
 export interface TemporalHealthSnapshot {
   readonly status: TemporalHealthStatus;
   readonly circuitState: CircuitState;
+  /** Timestamp of the last timer tick. Advances every poll interval even if the probe is skipped or in-flight. Use to detect a disposed/stopped monitor. */
+  readonly lastTickAt: number;
+  /** Timestamp of the last time the poll loop entered its exclusive probe section (i.e. was not blocked by a prior in-flight probe). Zero until the first probe cycle starts. */
+  readonly lastPollAt: number;
+  /** Timestamp of the last actual HTTP probe attempt. Zero until the first probe runs. */
   readonly lastCheckAt: number;
   readonly consecutiveFailures: number;
   readonly url: string;
@@ -137,6 +142,8 @@ export function createTemporalHealthMonitor(
   const circuit = createCircuitBreaker(config.failureThreshold, config.cooldownMs, clock);
 
   let consecutiveFailures = 0;
+  let lastTickAt = 0;
+  let lastPollAt = 0;
   let lastCheckAt = 0;
   // Fail closed: isAvailable() returns false until the first probe completes,
   // preventing traffic to Temporal before connectivity is confirmed.
@@ -166,6 +173,8 @@ export function createTemporalHealthMonitor(
     return {
       status: computeStatus(),
       circuitState: circuit.getSnapshot().state,
+      lastTickAt,
+      lastPollAt,
       lastCheckAt,
       consecutiveFailures,
       url: config.url,
@@ -184,18 +193,29 @@ export function createTemporalHealthMonitor(
   }
 
   async function poll(): Promise<void> {
+    lastTickAt = clock(); // always advance — use to detect a stopped/disposed monitor
     // Single-flight guard: if the previous check is still in flight (e.g. slow or timing out),
     // skip this interval rather than running concurrent mutations on circuit-breaker state.
     if (pollInFlight) return;
     pollInFlight = true;
+    lastPollAt = clock(); // only advances when the poll loop acquires the exclusive probe slot
     try {
-      lastCheckAt = clock();
       circuit.allowProbe(); // OPEN → HALF_OPEN if cooldown elapsed (before, not after, the probe)
+      // Always probe regardless of circuit state so recovery is detectable without waiting for
+      // the full cooldown. While OPEN, probe results update consecutiveFailures and lastCheckAt
+      // but do not drive circuit transitions (only HALF_OPEN→CLOSED and CLOSED→OPEN transitions
+      // are allowed by recordSuccess/recordFailure). Traffic remains gated until CLOSED.
+      lastCheckAt = clock();
+      const circuitStateBeforeProbe = circuit.getSnapshot().state;
       try {
         const ok = await checkHealth(config.healthUrl ?? config.url, config.timeoutMs);
         if (ok) {
           consecutiveFailures = 0;
-          circuit.recordSuccess();
+          // Drive circuit transitions only from non-OPEN states; OPEN→CLOSED requires the
+          // HALF_OPEN intermediate step to prevent premature traffic resumption.
+          if (circuitStateBeforeProbe !== "OPEN") {
+            circuit.recordSuccess();
+          }
         } else {
           consecutiveFailures++;
           circuit.recordFailure();
