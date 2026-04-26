@@ -416,8 +416,9 @@ export interface RuntimeConfig {
               readonly dbPath: string;
               /**
                * Scope all reads and retention pruning to this agent ID.
-               * Defaults to a unique per-process ID when omitted — prevents cross-instance
-               * row contamination when multiple processes share the same DB.
+               * When omitted, query() and pruning are unscoped (whole-DB) — safe for
+               * single-agent deployments. Required for shared databases to prevent
+               * cross-instance row contamination.
                */
               readonly agentId?: string | undefined;
               readonly flushIntervalMs?: number | undefined;

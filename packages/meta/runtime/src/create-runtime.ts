@@ -1005,8 +1005,26 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
     },
   });
 
+  // Wrap the audit middleware with a poison guard that blocks new turns synchronously.
+  // Without this, poisonError is only observed inside the async drain loop, leaving a
+  // window where the engine accepts new auditable work after the first write failure.
+  const guardedMw: KoiMiddleware = {
+    ...mw,
+    onBeforeTurn: async (ctx: TurnContext) => {
+      if (poisonError !== undefined) {
+        throw new Error(
+          "audit sink poisoned — refusing new turn to preserve audit trail integrity",
+          {
+            cause: poisonError,
+          },
+        );
+      }
+      return mw.onBeforeTurn?.(ctx);
+    },
+  };
+
   return {
-    middleware: mw,
+    middleware: guardedMw,
     close: async () => {
       // Best-effort: drain queued entries first, but ALWAYS release the
       // runtime-owned sink resources (file/db handle, timer) — even if
