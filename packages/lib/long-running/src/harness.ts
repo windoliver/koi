@@ -95,6 +95,17 @@ function validateConfig(cfg: LongRunningConfig): KoiError | undefined {
       });
     }
   }
+  // Fail-fast on the saveState contract: pause() requires durable
+  // engine-state capture, and the harness has no transcript replay
+  // path. Reject at construction so consumers cannot build a harness
+  // that will silently fail on the first suspend attempt.
+  if (typeof cfg.saveState !== "function") {
+    return err(
+      "VALIDATION",
+      "saveState is required: pause() needs durable engine-state capture and the harness has no transcript-replay fallback",
+      false,
+    );
+  }
   return undefined;
 }
 
@@ -234,7 +245,10 @@ export function createLongRunningHarness(
   };
 
   const revokeLease = (): void => {
-    if (state.lease) activeLeases.delete(state.lease);
+    if (state.lease) {
+      activeLeases.delete(state.lease);
+      captureCache.delete(state.lease);
+    }
     state.abortController?.abort();
     state.lease = undefined;
     state.abortController = undefined;
@@ -301,10 +315,18 @@ export function createLongRunningHarness(
       if (!head) {
         return { ok: false, error: err("NOT_FOUND", "no harness snapshot to resume", false) };
       }
-      if (head.data.phase !== "suspended" && head.data.phase !== "active") {
+      // Only suspended heads are resumable. `active` heads have no
+      // resumability invariant: start() does not persist engine state
+      // before the first soft checkpoint, so resuming a crashed-active
+      // head would silently lose progress. Reject it explicitly.
+      if (head.data.phase !== "suspended") {
         return {
           ok: false,
-          error: err("CONFLICT", `cannot resume: head phase is ${head.data.phase}`, false),
+          error: err(
+            "CONFLICT",
+            `cannot resume: head phase is "${head.data.phase}" (only "suspended" heads are resumable)`,
+            false,
+          ),
         };
       }
     }
@@ -323,13 +345,65 @@ export function createLongRunningHarness(
       state.effectiveTaskMaxRetries = cfg.taskMaxRetries ?? 3;
     }
 
-    // Engine state is an OPTIMIZATION; transcript replay is the documented
-    // fallback. If the session row is missing or unreadable, degrade
-    // gracefully — do not strand a resumable harness on a stale row error.
+    // Resume requires durable engine state on the prior session row.
+    // Persistence read errors propagate verbatim (transient faults
+    // keep `retryable=true`; missing rows surface as NOT_FOUND). A
+    // suspended head whose prior session row is missing
+    // `lastEngineState` (e.g. legacy snapshots written before
+    // saveState was required) is rejected as NOT_FOUND — the harness
+    // has no transcript-replay path and silently restarting from an
+    // empty prompt would risk duplicate side effects and lost progress.
     let carriedState: EngineState | undefined;
-    if (expect === "resume" && head?.data.lastSessionId) {
-      const priorRes = await cfg.sessionPersistence.loadSession(head.data.lastSessionId);
-      if (priorRes.ok) carriedState = priorRes.value.lastEngineState;
+    let priorSessionId: string | undefined;
+    if (expect === "resume") {
+      if (!head?.data.lastSessionId) {
+        return {
+          ok: false,
+          error: err("NOT_FOUND", "cannot resume: head snapshot has no prior session id", false),
+        };
+      }
+      priorSessionId = head.data.lastSessionId;
+      const priorRes = await cfg.sessionPersistence.loadSession(priorSessionId);
+      if (!priorRes.ok) return { ok: false, error: priorRes.error };
+      carriedState = priorRes.value.lastEngineState;
+      if (carriedState === undefined) {
+        // Compatibility hook for legacy suspended heads that pre-date
+        // the saveState requirement. Distinguish three cases:
+        //   - hook absent → permanent NOT_FOUND (no fallback wired)
+        //   - hook threw → retryable EXTERNAL (don't strand resumable
+        //     runs on transient replay-dependency faults)
+        //   - hook returned undefined → permanent NOT_FOUND (no replay
+        //     state exists for this session)
+        if (cfg.legacyResumeFallback) {
+          try {
+            const fallback = (await cfg.legacyResumeFallback(priorSessionId)) as
+              | EngineState
+              | undefined;
+            if (fallback !== undefined) carriedState = fallback;
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            return {
+              ok: false,
+              error: err("EXTERNAL", `legacyResumeFallback threw: ${msg}`, true, {
+                priorSessionId,
+              }),
+            };
+          }
+        }
+        if (carriedState === undefined) {
+          return {
+            ok: false,
+            error: err(
+              "NOT_FOUND",
+              cfg.legacyResumeFallback
+                ? "cannot resume: legacyResumeFallback returned no state for prior session"
+                : "cannot resume: prior session has no lastEngineState and no legacyResumeFallback was supplied",
+              false,
+              { priorSessionId },
+            ),
+          };
+        }
+      }
     }
 
     const sid: SessionId = toSessionId(crypto.randomUUID());
@@ -365,6 +439,15 @@ export function createLongRunningHarness(
       await cfg.sessionPersistence.removeSession(sid);
       return { ok: false, error: putRes.error };
     }
+    // Only after the new active snapshot is durable do we tombstone the
+    // superseded prior session. Reordering this AFTER putSnapshot ensures
+    // that if snapshot publication fails we don't leave the snapshot
+    // store pointing at the prior suspended head while the session store
+    // says that session is permanently `done`. Best-effort: failure here
+    // is non-fatal (annotated into failureReason via persistSessionStatus).
+    if (priorSessionId !== undefined) {
+      await persistSessionStatus(toSessionId(priorSessionId), "done");
+    }
     state.phase = "active";
     state.turnCount = 0;
 
@@ -386,45 +469,64 @@ export function createLongRunningHarness(
     };
   };
 
-  // Sentinel-typed capture: "skip" means saveState is not configured or the
-  // capture threw, so we must NOT touch the session record. A defined or
-  // explicit-undefined `state` value means we should overwrite the session's
-  // `lastEngineState` with that value (`undefined` clears stale state).
+  // Capture variants:
+  //  - skip: saveState not configured (best-effort path; never an error)
+  //  - error: saveState threw or persistence failed; suspend MUST treat
+  //    this as fatal to avoid publishing an unresumable suspended head.
+  //    Soft-checkpoint and other terminal targets may still proceed.
+  //  - value: captured payload to write into the session row
   type CapturedEngineState =
-    | { readonly skip: true }
-    | { readonly skip: false; readonly value: EngineState | undefined };
+    | { readonly kind: "skip" }
+    | { readonly kind: "error"; readonly error: KoiError }
+    | { readonly kind: "value"; readonly value: EngineState | undefined };
+
+  // Cache of pre-abort engine-state captures keyed by lease. If a
+  // pause() attempt fails after capture+abort and the caller retries,
+  // the second attempt reuses the original capture instead of asking a
+  // post-abort engine for fresh state (which may be cleared/invalidated
+  // and would overwrite the only good lastEngineState on the session
+  // row). Cleared by revokeLease() on every terminal transition.
+  const captureCache = new WeakMap<SessionLease, CapturedEngineState>();
 
   const captureEngineState = async (): Promise<CapturedEngineState> => {
-    if (!cfg.saveState) return { skip: true };
+    if (!cfg.saveState) return { kind: "skip" };
     try {
       const value = (await cfg.saveState()) as EngineState | undefined;
-      return { skip: false, value };
-    } catch {
-      return { skip: true };
+      return { kind: "value", value };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        kind: "error",
+        error: err("EXTERNAL", `saveState threw: ${msg}`, true),
+      };
     }
   };
 
   const writeCapturedEngineState = async (
     captured: CapturedEngineState,
     targetSessionId: string,
-  ): Promise<void> => {
+  ): Promise<Result<void, KoiError>> => {
     // Bind the write to the session id captured at transition entry.
     // If a concurrent activate() has already advanced state.lastSessionId
     // to a fresh session, do NOT cross-contaminate by writing this
     // captured state into the new session row.
-    if (captured.skip || state.lastSessionId !== targetSessionId) return;
+    if (captured.kind !== "value" || state.lastSessionId !== targetSessionId) {
+      return { ok: true, value: undefined };
+    }
     try {
       const sid = toSessionId(targetSessionId);
       const loadRes = await cfg.sessionPersistence.loadSession(sid);
-      if (loadRes.ok) {
-        await cfg.sessionPersistence.saveSession({
-          ...loadRes.value,
-          lastEngineState: captured.value,
-          lastPersistedAt: now(),
-        });
-      }
-    } catch {
-      // best-effort
+      if (!loadRes.ok) return { ok: false, error: loadRes.error };
+      const saveRes = await cfg.sessionPersistence.saveSession({
+        ...loadRes.value,
+        lastEngineState: captured.value,
+        lastPersistedAt: now(),
+      });
+      if (!saveRes.ok) return { ok: false, error: saveRes.error };
+      return { ok: true, value: undefined };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ok: false, error: err("EXTERNAL", `engine state write threw: ${msg}`, true) };
     }
   };
 
@@ -446,9 +548,33 @@ export function createLongRunningHarness(
     const sidAtEntry = state.lastSessionId;
     // For "suspended", capture resumable engine state BEFORE firing abort
     // — a cooperative engine may clear state on abort, and we need to be
-    // able to resume from the live execution point.
+    // able to resume from the live execution point. On retry of a
+    // failed pause, reuse the cached capture from the first attempt so
+    // we don't ask a post-abort engine for stale/empty state.
+    const cachedCapture =
+      target === "suspended" && state.lease ? captureCache.get(state.lease) : undefined;
     const captured: CapturedEngineState =
-      target === "suspended" ? await captureEngineState() : { skip: true };
+      target === "suspended" ? (cachedCapture ?? (await captureEngineState())) : { kind: "skip" };
+    // Only memoize successful captures. A transient saveState() throw
+    // returns kind=error; caching that would make every later pause
+    // retry on this lease return the same error without re-attempting
+    // capture, turning a blip into a permanent inability to suspend.
+    if (
+      target === "suspended" &&
+      state.lease &&
+      !cachedCapture &&
+      (captured.kind === "value" || captured.kind === "skip")
+    ) {
+      captureCache.set(state.lease, captured);
+    }
+    // Suspend MUST treat capture failure as fatal — publishing a
+    // suspended snapshot whose prior session has no resumable state
+    // produces a silently-broken resume. Bail before abort so the
+    // active lease stays usable for retry / fail / dispose.
+    if (target === "suspended" && captured.kind === "error") {
+      state.terminating = false;
+      return { ok: false, error: captured.error };
+    }
     // Fire abort so the engine stops emitting side effects. DO NOT revoke
     // the lease (and do NOT commit the speculative delta) until the
     // terminal snapshot is durably published. On quiesce timeout or store
@@ -469,43 +595,110 @@ export function createLongRunningHarness(
     // Build the delta AFTER quiesce so any metrics/summaries advanced by a
     // late onTurnEnd are merged in, not silently overwritten.
     const delta = buildDelta();
-    const snapshot = buildSnapshot(target, failureReason, delta);
+    let effectiveReason = failureReason;
+    // For SUSPENDED targets: write engine state to the session row BEFORE
+    // publishing the suspended snapshot. This ordering ensures that a
+    // durable suspended head ALWAYS has a corresponding lastEngineState
+    // — there is no window in which the snapshot store advertises a
+    // resumable suspend with no engine state behind it. If the write
+    // fails we never publish suspended; the caller retains the lease
+    // and can retry / fail / dispose.
+    if (target === "suspended" && sidAtEntry !== undefined) {
+      const writeRes = await writeCapturedEngineState(captured, sidAtEntry);
+      if (!writeRes.ok) {
+        state.terminating = false;
+        return { ok: false, error: writeRes.error };
+      }
+    }
+    const snapshot = buildSnapshot(target, effectiveReason, delta);
     const putRes = await putSnapshot(snapshot);
     if (!putRes.ok) {
       const headRes = await loadHead();
       if (headRes.ok && headRes.value) state.lastNodeId = headRes.value.nodeId;
-      const retry = await putSnapshot(buildSnapshot(target, failureReason, delta));
+      const retry = await putSnapshot(buildSnapshot(target, effectiveReason, delta));
       if (!retry.ok) {
         state.terminating = false;
         return { ok: false, error: retry.error };
       }
     }
-    // Snapshot is durable — now write the captured engine state. Atomicity:
-    // if this write fails, the snapshot still reflects the published phase
-    // and a subsequent resume will simply lack the optimization of fast
-    // restart, falling back to transcript replay.
-    if (sidAtEntry !== undefined) await writeCapturedEngineState(captured, sidAtEntry);
+    // For non-suspended terminals the engine-state write is best-effort:
+    // a failure annotates failureReason for observability but the
+    // already-published terminal snapshot stands.
+    const effectiveTarget: typeof target = target;
+    if (target !== "suspended" && sidAtEntry !== undefined) {
+      const writeRes = await writeCapturedEngineState(captured, sidAtEntry);
+      if (!writeRes.ok) {
+        const note = `engine-state-write: ${writeRes.error.message}`;
+        effectiveReason = effectiveReason ? `${effectiveReason}; ${note}` : note;
+      }
+    }
     commitDelta(delta);
     revokeLease();
-    state.phase = target;
-    state.failureReason = failureReason;
+    state.phase = effectiveTarget;
+    state.failureReason = effectiveReason;
     if (state.lastSessionId) {
       const sid = toSessionId(state.lastSessionId);
       const failureBefore = state.failureReason;
-      await persistSessionStatus(sid, target === "suspended" ? "idle" : "done");
+      await persistSessionStatus(sid, effectiveTarget === "suspended" ? "idle" : "done");
       // If persistSessionStatus exhausted retries it appended a note to
       // state.failureReason. Persist that durably with a follow-up
       // snapshot so the divergence survives a process restart and is
       // visible to operators / recovery logic via adoptHead().
       if (state.failureReason !== failureBefore) {
-        const annotated = buildSnapshot(target, state.failureReason, delta);
+        const annotated = buildSnapshot(effectiveTarget, state.failureReason, delta);
         await putSnapshot(annotated);
       }
     }
-    await cfg.harnessStore.prune(chain, pruning);
-    if (target === "completed" && cfg.onCompleted) await cfg.onCompleted(getStatus());
-    if (target === "failed" && cfg.onFailed) {
-      await cfg.onFailed(getStatus(), err("INTERNAL", failureReason ?? "harness failed", false));
+    // Post-commit work is best-effort: the terminal snapshot is already
+    // durable and the lease is revoked. A throw/reject here MUST NOT
+    // signal failure to the caller — that would encourage retries against
+    // already-committed state. Capture failures into failureReason so
+    // they remain observable via getStatus().
+    const postCommitBefore = state.failureReason;
+    const noteFailure = (label: string, e: unknown): void => {
+      const msg = e instanceof Error ? e.message : String(e);
+      const note = `${label}: ${msg}`;
+      state.failureReason = state.failureReason ? `${state.failureReason}; ${note}` : note;
+    };
+    try {
+      const pruneRes = await cfg.harnessStore.prune(chain, pruning);
+      if (!pruneRes.ok) noteFailure("prune", pruneRes.error.message);
+    } catch (e: unknown) {
+      noteFailure("prune", e);
+    }
+    if (effectiveTarget === "completed" && cfg.onCompleted) {
+      try {
+        await cfg.onCompleted(getStatus());
+      } catch (e: unknown) {
+        noteFailure("onCompleted", e);
+      }
+    }
+    if (effectiveTarget === "failed" && cfg.onFailed) {
+      try {
+        await cfg.onFailed(
+          getStatus(),
+          err("INTERNAL", effectiveReason ?? "harness failed", false),
+        );
+      } catch (e: unknown) {
+        noteFailure("onFailed", e);
+      }
+    }
+    // Persist post-commit failure annotations durably so they survive a
+    // process restart and are visible to operators via adoptHead(). Best-
+    // effort: a snapshot-write failure here is itself appended to the
+    // failure reason but not surfaced to the caller (the original
+    // terminal transition already committed successfully).
+    if (state.failureReason !== postCommitBefore) {
+      try {
+        const annotated = buildSnapshot(effectiveTarget, state.failureReason, delta);
+        const annRes = await putSnapshot(annotated);
+        if (!annRes.ok) {
+          state.failureReason = `${state.failureReason}; annotate: ${annRes.error.message}`;
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        state.failureReason = `${state.failureReason}; annotate: ${msg}`;
+      }
     }
     return { ok: true, value: undefined };
   };
@@ -515,13 +708,22 @@ export function createLongRunningHarness(
     if (state.terminating) return { ok: true, value: undefined };
     const sidAtEntry = state.lastSessionId;
     // Capture before put so the engine state matches the snapshot we're
-    // about to publish; only persist the captured state after the
-    // snapshot is durable.
+    // about to publish. A capture error MUST fail the checkpoint:
+    // advancing the snapshot head past unrecoverable state would let
+    // a later resume() find a head whose engine state is older than
+    // the snapshot chain implies.
     const captured = await captureEngineState();
+    if (captured.kind === "error") return { ok: false, error: captured.error };
+    // Persist engine state BEFORE publishing the snapshot so the
+    // session row's lastEngineState always matches (or post-dates) the
+    // active head.
+    if (sidAtEntry !== undefined) {
+      const writeRes = await writeCapturedEngineState(captured, sidAtEntry);
+      if (!writeRes.ok) return { ok: false, error: writeRes.error };
+    }
     const snapshot = buildSnapshot("active", undefined, delta);
     const putRes = await putSnapshot(snapshot);
     if (!putRes.ok) return { ok: false, error: putRes.error };
-    if (sidAtEntry !== undefined) await writeCapturedEngineState(captured, sidAtEntry);
     commitDelta(delta);
     return { ok: true, value: undefined };
   };
@@ -692,8 +894,24 @@ export function createLongRunningHarness(
     state.metrics = { ...state.metrics, totalTurns: state.metrics.totalTurns + 1 };
     try {
       if (shouldSoftCheckpoint(state.turnCount, interval)) {
-        await softCheckpoint();
+        const res = await softCheckpoint();
+        if (!res.ok) {
+          // Checkpoint persistence failed. Surface the failure into
+          // failureReason and abort the active lease so the engine
+          // stops emitting side effects. Operators see the divergence
+          // via getStatus(); the next mutation API call will observe
+          // phase=active but the lease is already aborted, so the
+          // caller can transition to fail()/dispose() cleanly.
+          const note = `softCheckpoint: ${res.error.message}`;
+          state.failureReason = state.failureReason ? `${state.failureReason}; ${note}` : note;
+          state.abortController?.abort();
+        }
       }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const note = `softCheckpoint: ${msg}`;
+      state.failureReason = state.failureReason ? `${state.failureReason}; ${note}` : note;
+      state.abortController?.abort();
     } finally {
       // Always clear inTurn — even on checkpoint error/throw — so quiesce
       // can drain. Otherwise a transient store fault would wedge every

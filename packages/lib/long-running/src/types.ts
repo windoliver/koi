@@ -71,15 +71,44 @@ export interface LongRunningConfig {
    * integers; invalid values fall back to `taskMaxRetries`.
    */
   readonly getTaskMaxRetries?: (taskId: string) => number | undefined;
+  /**
+   * Optional compatibility hook for resuming legacy suspended heads
+   * whose prior session row has no `lastEngineState`. When set and the
+   * resumed prior session is missing engine state, the harness invokes
+   * this callback with the prior session id and uses the returned
+   * value (e.g. a transcript-replay state) as the carried engine state.
+   * Return `undefined` to keep the default behavior (resume rejects
+   * with NOT_FOUND).
+   */
+  readonly legacyResumeFallback?: (
+    priorSessionId: string,
+  ) => Promise<unknown | undefined> | unknown | undefined;
   /** Wall-clock deadline per session. Optional. */
   readonly timeoutMs?: number;
   /** Max wait for engine to quiesce on phase transitions. Default 10_000. */
   readonly abortTimeoutMs?: number;
-  /** Save engine state on soft checkpoint. */
-  readonly saveState?: SaveStateCallback;
-  /** Called when the harness completes (all tasks done). */
+  /**
+   * Save engine state on soft checkpoint and at pause(). Required at
+   * construction — `createLongRunningHarness` rejects with VALIDATION
+   * when missing, because pause() needs durable engine-state capture
+   * and the harness has no transcript-replay fallback.
+   */
+  readonly saveState: SaveStateCallback;
+  /**
+   * Best-effort observability hook fired AFTER the terminal `completed`
+   * snapshot is durable. Errors thrown here are captured into
+   * `failureReason` (and a follow-up annotated snapshot) but do NOT
+   * convert the already-committed transition into a failure. Do NOT
+   * place required side effects here — use a separate workflow keyed
+   * off the durable snapshot phase.
+   */
   readonly onCompleted?: OnCompletedCallback;
-  /** Called when the harness fails. */
+  /**
+   * Best-effort observability hook fired AFTER the terminal `failed`
+   * snapshot is durable. Same contract as `onCompleted`: thrown errors
+   * are captured into `failureReason` and do not roll back the
+   * transition.
+   */
   readonly onFailed?: OnFailedCallback;
   /** Optional clock injection for tests. Defaults to Date.now. */
   readonly now?: () => number;

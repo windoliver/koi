@@ -13962,6 +13962,9 @@ describe("Golden: @koi/long-running — harness lifecycle", () => {
       harnessStore: harnessStore as any,
       // biome-ignore lint/suspicious/noExplicitAny: see above
       sessionPersistence: persistence as any,
+      // pause() requires saveState so the suspended snapshot can be
+      // resumed; provide a no-op for the golden-replay path.
+      saveState: async () => ({ kind: "g-state" }),
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;

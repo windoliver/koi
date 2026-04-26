@@ -101,6 +101,9 @@ const baseConfig = () => ({
   agentId: agentId("a-1"),
   harnessStore: makeStore(),
   sessionPersistence: makePersistence(),
+  // pause() now requires saveState so the suspended snapshot can be
+  // resumed; provide a no-op for tests that don't exercise replay.
+  saveState: async (): Promise<unknown> => ({ kind: "test-state" }),
 });
 
 describe("shouldSoftCheckpoint", () => {
@@ -126,6 +129,7 @@ describe("createLongRunningHarness", () => {
       agentId: agentId("a"),
       harnessStore: makeStore(),
       sessionPersistence: makePersistence(),
+      saveState: async () => undefined,
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("VALIDATION");
