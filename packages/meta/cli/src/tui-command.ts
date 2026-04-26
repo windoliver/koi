@@ -112,6 +112,7 @@ import { resolveManifestPath } from "./resolve-manifest-path.js";
 import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
+import { createSecurityBridge, type SecurityBridge } from "./security-bridge.js";
 import { readSessionMeta, resumeSessionFromJsonl, writeSessionMeta } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
@@ -1901,6 +1902,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // createCostBridge` below, before the original `let` at line 2055 is reached.
   let governanceBridge: GovernanceBridge | undefined;
 
+  // Security bridge — always-on observe-phase middleware that feeds injection/PII
+  // findings into the TUI store. Created unconditionally (unlike governance which
+  // gates on --max-spend / GOVERNANCE component presence) because the analyzers are
+  // stateless and cheap.
+  const securityBridge: SecurityBridge = createSecurityBridge({
+    store,
+    sessionId: tuiSessionId as string,
+  });
+
   // Re-validate manifest-derived audit paths immediately before use to close
   // the TOCTOU window between manifest load and sink creation. Without this
   // a symlink swap after parseManifestAudit() could redirect writes outside
@@ -2167,6 +2177,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Activates model-response validation + tool-health tracking with an
     // empty config (observe-only, no validators, no quarantine thresholds).
     ...(process.env.KOI_FEEDBACK_LOOP_ENABLED === "true" ? { feedbackLoop: {} } : {}),
+    extraMiddleware: [securityBridge.middleware],
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
@@ -3342,6 +3353,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // calling it here keeps the pattern symmetric with future bridges that
     // may hold timers or open file handles.
     governanceBridge?.dispose();
+    securityBridge.dispose();
     try {
       await appHandle?.stop();
       // Print the resume hint here — after the TUI renderer has
@@ -4044,6 +4056,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // `/governance` + the status chip must not show stale values
         // exactly when an operator needs them.
         governanceBridge?.pollSnapshot();
+        securityBridge.nextTurn();
 
         // Refresh trajectory + decision ledger data after each turn.
         // Delay 500ms to let fire-and-forget trace-wrapper appends settle —
@@ -4740,6 +4753,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             viewedSessionId = newSid;
             costBridge.setSession(newSid as string, currentModelBox.current, provider);
             governanceBridge?.setSession(newSid as string);
+            securityBridge.setSession(newSid as string);
             store.dispatch({
               kind: "set_session_info",
               modelName: currentModelBox.current,
@@ -5305,6 +5319,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           lastResetFailed = false;
           costBridge.setSession(targetSid as string, currentModelBox.current, provider);
           governanceBridge?.setSession(targetSid as string);
+          securityBridge.setSession(targetSid as string);
           store.dispatch({
             kind: "set_session_info",
             modelName: currentModelBox.current,

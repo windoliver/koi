@@ -13493,3 +13493,27 @@ describe("Golden: @koi/governance-delegation — revocation invalidates downstre
     }
   });
 });
+
+// L2 golden queries: @koi/governance-security (2 queries)
+// Standalone — no LLM or network calls required.
+describe("Golden: @koi/governance-security", () => {
+  test("createRulesAnalyzer detects SQL injection as critical", async () => {
+    const { createRulesAnalyzer } = await import("@koi/governance-security");
+    const analyzer = createRulesAnalyzer();
+    const result = await Promise.resolve(
+      analyzer.analyze("query_db", { sql: "'; DROP TABLE users; --" }),
+    );
+    expect(result.riskLevel).toBe("critical");
+    expect(result.findings.length).toBeGreaterThan(0);
+    expect(result.findings[0]?.riskLevel).toBe("critical");
+  });
+
+  test("createPiiDetector detects email address", async () => {
+    const { createPiiDetector } = await import("@koi/governance-security");
+    const detector = createPiiDetector(["email"]);
+    const matches = detector.detect("Please contact support@company.com for help.");
+    expect(matches).toHaveLength(1);
+    expect(matches[0]?.kind).toBe("email");
+    expect(matches[0]?.value).toBe("support@company.com");
+  });
+});

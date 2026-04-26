@@ -690,9 +690,10 @@ exposes:
    ("⚠ 80% of cost budget — $1.60 / $2.00"). Auto-dismisses after 8s. Multiple
    alerts queue (max 3 visible). Fold-merge by `(variable, threshold)` key —
    re-firing the same key replaces rather than stacks.
-3. **`/governance` view** — full-screen, four sections:
+3. **`/governance` view** — full-screen, five sections:
    - **Sensors** — table of `(variable, current, limit, utilization%)`. Health is derived per-row from `utilization` against the configured alert thresholds, not a field on `SensorReading`.
    - **Recent alerts** — view shows the 10 most recent alerts; the JSONL file is tail-evicted to 200 lines on bridge startup.
+   - **Security findings** — tool calls flagged by `@koi/governance-security` (injection patterns, PII, anomalies). Each row shows `[riskLevel] toolName — description [score]`, color-coded: critical=red, high=amber, medium=cyan, low=green. Capped at 10 visible / 100 in memory. Populated by the always-on `security-bridge` observe-phase middleware wired in `@koi-agent/cli`.
    - **Active rules** — from `backend.describeRules?()`; section omitted if backend doesn't expose them.
    - **Middleware capabilities** — `mw.describeCapabilities(ctx)` output for governance MW.
 4. **`/governance reset`** — clears the per-session alert dedup state in the
