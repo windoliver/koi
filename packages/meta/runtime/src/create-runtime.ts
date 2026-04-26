@@ -1010,12 +1010,32 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       if (poisonError !== undefined) {
         throw new Error(
           "audit sink poisoned — refusing new turn to preserve audit trail integrity",
-          {
-            cause: poisonError,
-          },
+          { cause: poisonError },
         );
       }
       return mw.onBeforeTurn?.(ctx);
+    },
+    wrapModelCall: async (ctx, request, next) => {
+      // Check after the call so a drain failure that occurred concurrently during
+      // the model call surfaces on the same turn rather than silently completing.
+      const result = await (mw.wrapModelCall
+        ? mw.wrapModelCall(ctx, request, next)
+        : next(request));
+      if (poisonError !== undefined) {
+        throw new Error("audit sink write failed mid-turn — turn aborted", {
+          cause: poisonError,
+        });
+      }
+      return result;
+    },
+    wrapToolCall: async (ctx, request, next) => {
+      const result = await (mw.wrapToolCall ? mw.wrapToolCall(ctx, request, next) : next(request));
+      if (poisonError !== undefined) {
+        throw new Error("audit sink write failed mid-turn — turn aborted", {
+          cause: poisonError,
+        });
+      }
+      return result;
     },
   };
 

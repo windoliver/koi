@@ -415,10 +415,12 @@ export interface RuntimeConfig {
               readonly kind: "sqlite";
               readonly dbPath: string;
               /**
-               * Scope all reads and retention pruning to this agent ID.
-               * When omitted, query() and pruning are unscoped (whole-DB) — safe for
-               * single-agent deployments. Required for shared databases to prevent
-               * cross-instance row contamination.
+               * Restrict retention pruning to rows owned by this agent ID.
+               * When set, the DELETE subquery is filtered to (agent_id = agentId) so
+               * one sink instance cannot prune another agent's rows in a shared DB.
+               * Does not affect reads — query() and getEntries() are session-scoped only.
+               * Omit for single-agent deployments; set to a stable host-scoped ID for
+               * shared databases where multiple agents write to the same DB.
                */
               readonly agentId?: string | undefined;
               readonly flushIntervalMs?: number | undefined;
