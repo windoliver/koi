@@ -198,7 +198,10 @@ export function createNdjsonAuditSink(
 
   function nextArchiveName(): string {
     rotationSeq += 1;
-    // UUID suffix prevents collision if two processes share the same archive dir.
+    // UUID suffix prevents filename collision across process restarts (two runs
+    // both starting from the same max seq would produce the same name without it).
+    // Note: does NOT guarantee ordering when two concurrent writers share the archive
+    // directory — use separate directories per writer (see getEntries() comment).
     const uuid = crypto.randomUUID().slice(0, 8);
     return `${String(rotationSeq).padStart(8, "0")}-${uuid}.ndjson`;
   }
@@ -270,30 +273,30 @@ export function createNdjsonAuditSink(
     },
 
     getEntries(): Promise<readonly AuditEntry[]> {
-      // Serialized through the write queue so a concurrent rotation in THIS sink instance
-      // cannot interleave with the snapshot. For external concurrent readers (e.g. a second
-      // process reading the same directory), the archive list is snapshotted before the active
-      // file is read — if the active file has just been rotated away by another process, we
-      // re-scan the archive to pick up the newly archived segment rather than silently returning
-      // an incomplete history.
+      // Serialized through the write queue so rotation within this sink instance
+      // cannot interleave with the snapshot.
+      //
+      // Single-writer contract: the archive directory must only have one active sink
+      // writing into it at a time. Sequence numbers are per-process and initialized
+      // from the on-disk max, so two concurrent writers will both claim the same next
+      // sequence number producing nondeterministic archive ordering. Use separate
+      // directories if multiple processes need independent sink instances.
+      //
+      // Active-file ENOENT handling: pass required=true so a missing active file
+      // propagates to the catch block, allowing the archive to be re-scanned. This
+      // handles a restart where the active file was rotated away and never recreated,
+      // or a manual deletion of the active file between the archive snapshot and this read.
       let result: readonly AuditEntry[] = [];
       return enqueue(async () => {
         await Promise.resolve(writer.flush());
         const archived = await readArchiveEntries(archiveDir);
         try {
-          // required=false: ENOENT on the active file is handled below
-          const current = await readEntriesFromFile(config.filePath);
+          const current = await readEntriesFromFile(config.filePath, true);
           result = [...archived, ...current];
         } catch (e: unknown) {
-          if (
-            e instanceof Error &&
-            "code" in e &&
-            (e as NodeJS.ErrnoException).code === "ENOENT" &&
-            config.rotation !== undefined
-          ) {
-            // Active file disappeared while rotation is configured — a concurrent rotation
-            // moved it to the archive after our archive snapshot. Re-scan to include the
-            // newly archived segment. If re-scan also fails, propagate the error.
+          if (e instanceof Error && "code" in e && (e as NodeJS.ErrnoException).code === "ENOENT") {
+            // Active file is missing — re-scan the archive directory to pick up any
+            // segment that may have been rotated in after our initial snapshot.
             result = await readArchiveEntries(archiveDir);
           } else {
             throw e;
