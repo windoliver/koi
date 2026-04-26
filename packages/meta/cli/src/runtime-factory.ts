@@ -2481,9 +2481,28 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       complianceRecorders.push(
         createAuditSinkComplianceRecorder(poisonedNdjsonSink, {
           sessionId: getLiveSessionId,
+          onError: (error: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = error;
+              console.error("[koi/cli] compliance sink write failed — sink poisoned:", error);
+              process.exitCode = 1;
+            }
+          },
         }),
       );
-      auditPresetExtras.push(auditMw);
+      const guardedAuditMw: KoiMiddleware = {
+        ...auditMw,
+        onBeforeTurn: async (ctx) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink poisoned — refusing new turn to preserve audit trail integrity",
+              { cause: ndjsonPoisonError },
+            );
+          }
+          return auditMw.onBeforeTurn?.(ctx);
+        },
+      };
+      auditPresetExtras.push(guardedAuditMw);
       // Deliberately NOT captured into `ledgerAuditSink`. The ledger is
       // refreshed after every settled turn; NDJSON `.query(sessionId)`
       // re-parses the entire file on each call, so long sessions would
@@ -2601,9 +2620,28 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       complianceRecorders.push(
         createAuditSinkComplianceRecorder(poisonedSqliteSink, {
           sessionId: getLiveSessionId,
+          onError: (error: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = error;
+              console.error("[koi/cli] compliance sink write failed — sink poisoned:", error);
+              process.exitCode = 1;
+            }
+          },
         }),
       );
-      auditPresetExtras.push(sqliteAuditMw);
+      const guardedSqliteAuditMw: KoiMiddleware = {
+        ...sqliteAuditMw,
+        onBeforeTurn: async (ctx) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink poisoned — refusing new turn to preserve audit trail integrity",
+              { cause: sqlitePoisonError },
+            );
+          }
+          return sqliteAuditMw.onBeforeTurn?.(ctx);
+        },
+      };
+      auditPresetExtras.push(guardedSqliteAuditMw);
       ledgerAuditSink = sqliteSink;
       auditSqliteMwForShutdown = {
         flush: () => sqliteAuditMw.flush(),
