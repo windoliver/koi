@@ -109,9 +109,18 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
     if (!config.retention) return;
     // Flush first so no buffered expired row survives pruning or re-inserts after DELETE.
     flushBuffer();
-    const cutoff = Date.now() - config.retention.maxAgeDays * 86_400_000;
-    db.prepare("DELETE FROM audit_log WHERE timestamp < ?").run(cutoff);
-    db.prepare("VACUUM").run();
+    try {
+      const cutoff = Date.now() - config.retention.maxAgeDays * 86_400_000;
+      db.prepare("DELETE FROM audit_log WHERE timestamp < ?").run(cutoff);
+    } catch (e: unknown) {
+      throw new Error("audit_log: failed to prune old entries", { cause: e });
+    }
+    // VACUUM is best-effort: SQLITE_BUSY from concurrent readers is expected and harmless.
+    try {
+      db.prepare("VACUUM").run();
+    } catch {
+      // Space reclamation deferred to next prune cycle — not a correctness failure.
+    }
   }
 
   function serializeField(value: unknown): string | null {
