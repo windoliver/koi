@@ -1144,8 +1144,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             signal: runSignal,
             approvalHandler: options.approvalHandler,
             sendStatus: options.sendStatus,
-            dispatchPermissionDecision: (query, decision) =>
-              runPermissionDecisionHooks(allMiddleware, getTurnContext(), query, decision),
+            dispatchPermissionDecision: (query, decision) => {
+              void runPermissionDecisionHooks(
+                allMiddleware,
+                getTurnContext(),
+                query,
+                decision,
+              ).catch((e: unknown) => {
+                console.warn("[koi] onPermissionDecision observer error (non-fatal):", e);
+              });
+            },
           });
           return cachedTurnCtx;
         };

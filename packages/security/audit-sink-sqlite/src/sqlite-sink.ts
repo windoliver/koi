@@ -168,6 +168,11 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
       //   unverifiable (surviving rows would have prev_hash pointing at deleted rows).
       //   SQLite does not allow outer aggregate references inside correlated HAVING
       //   subqueries, so we do the chain-safety check in two SQL steps.
+      // Require that the row with MAX(id) is the session_end marker — i.e., the last
+      // event for this (agent_id, session_id) group is a close. This guards against
+      // session ID reuse: if the same ID was used for a later crashed session (no
+      // session_end), MAX(id) belongs to that crashed run and will NOT equal
+      // MAX(id WHERE kind='session_end'), so the group is correctly excluded from pruning.
       const candidateStmt =
         config.agentId !== undefined
           ? db.prepare(
@@ -175,13 +180,13 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
                WHERE agent_id = ?
                GROUP BY agent_id, session_id
                HAVING MAX(timestamp) < ?
-                 AND SUM(CASE WHEN kind = 'session_end' THEN 1 ELSE 0 END) > 0`,
+                 AND MAX(CASE WHEN kind = 'session_end' THEN id ELSE 0 END) = MAX(id)`,
             )
           : db.prepare(
               `SELECT agent_id, session_id, MAX(id) AS max_id FROM audit_log
                GROUP BY agent_id, session_id
                HAVING MAX(timestamp) < ?
-                 AND SUM(CASE WHEN kind = 'session_end' THEN 1 ELSE 0 END) > 0`,
+                 AND MAX(CASE WHEN kind = 'session_end' THEN id ELSE 0 END) = MAX(id)`,
             );
 
       const candidates = (
