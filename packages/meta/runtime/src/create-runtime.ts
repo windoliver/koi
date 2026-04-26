@@ -1199,6 +1199,14 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       }
       if (flushErr !== undefined) throw flushErr;
       if (closeErr !== undefined) throw closeErr;
+      // Surface any stored poison state after releasing all resources.
+      // A successful close after a known write failure is not trustworthy.
+      if (poisonError !== undefined) {
+        throw new Error(
+          "Audit sink closed but audit trail is incomplete: a prior write or flush failure was recorded",
+          { cause: poisonError },
+        );
+      }
     },
   };
 }

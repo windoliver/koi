@@ -342,7 +342,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
         }
 
         if (result === undefined || result.kind === "deny") {
-          dispatchApprovalOutcome?.({
+          await dispatchApprovalOutcome?.({
             effect: "deny",
             reason: `Tool "${request.toolId}" denied (coalesced approval)`,
           });
@@ -472,7 +472,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
           approvalStartMs,
         );
         stepEmitted = true;
-        dispatchApprovalOutcome?.({ effect: "deny", reason: "malformed_response" });
+        await dispatchApprovalOutcome?.({ effect: "deny", reason: "malformed_response" });
         throw new KoiRuntimeError({
           code: "PERMISSION",
           message: `Malformed approval response for "${request.toolId}" — failing closed`,
@@ -505,7 +505,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
           source: "approval",
         });
 
-        dispatchApprovalOutcome?.({ effect: "deny", reason: approvalResult.reason });
+        await dispatchApprovalOutcome?.({ effect: "deny", reason: approvalResult.reason });
         throw new KoiRuntimeError({
           code: "PERMISSION",
           message: `Tool "${request.toolId}" denied by approval handler: ${approvalResult.reason}`,
