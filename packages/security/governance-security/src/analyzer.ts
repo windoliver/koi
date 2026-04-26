@@ -13,16 +13,17 @@ export interface RulesAnalyzerConfig {
 
 function extractTextDefault(_toolId: string, input: JsonObject): string {
   const values: string[] = [];
-  function walk(obj: unknown): void {
+  function walk(obj: unknown, depth: number): void {
+    if (depth > 50) return;
     if (typeof obj === "string") {
       values.push(obj);
     } else if (Array.isArray(obj)) {
-      for (const item of obj) walk(item);
+      for (const item of obj) walk(item, depth + 1);
     } else if (obj !== null && typeof obj === "object") {
-      for (const val of Object.values(obj as Record<string, unknown>)) walk(val);
+      for (const val of Object.values(obj as Record<string, unknown>)) walk(val, depth + 1);
     }
   }
-  walk(input);
+  walk(input, 0);
   return values.join(" ");
 }
 

@@ -61,6 +61,7 @@ export function createAnomalyMonitor(config: AnomalyMonitorConfig): AnomalyMonit
   const deniedCallThreshold = config.deniedCallThreshold ?? DEFAULT_DENIED_CALL_THRESHOLD;
 
   // Per-session state
+  // mutable: reset by nextTurn() and reset()
   let turnIndex = 0;
 
   // Per-turn counters

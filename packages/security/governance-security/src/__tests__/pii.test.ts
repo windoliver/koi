@@ -76,6 +76,11 @@ describe("createSsnDetector", () => {
     const matches = detector.detect("No sensitive data here.");
     expect(matches).toHaveLength(0);
   });
+
+  test("detects multiple SSNs in one string", () => {
+    const matches = detector.detect("First SSN: 123-45-6789. Second SSN: 234-56-7890.");
+    expect(matches).toHaveLength(2);
+  });
 });
 
 describe("createApiKeyDetector", () => {
@@ -120,6 +125,15 @@ describe("createApiKeyDetector", () => {
   test("does not false-positive on UUIDs", () => {
     const matches = detector.detect("id=550e8400-e29b-41d4-a716-446655440000");
     expect(matches).toHaveLength(0);
+  });
+
+  test("detects multiple different vendor keys in one string", () => {
+    const multiKeyText =
+      "openai=sk-aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789abcd aws=AKIAIOSFODNN7EXAMPLE";
+    const matches = detector.detect(multiKeyText);
+    expect(matches).toHaveLength(2);
+    expect(matches.some((m) => m.value.startsWith("sk-"))).toBe(true);
+    expect(matches.some((m) => m.value.startsWith("AKIA"))).toBe(true);
   });
 });
 
