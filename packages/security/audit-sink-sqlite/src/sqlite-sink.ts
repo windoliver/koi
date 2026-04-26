@@ -113,18 +113,18 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
       // Hash-chain compatibility check: session-granular pruning is fundamentally
       // incompatible with a continuous cross-session hash chain. Every non-tail session
       // has later rows with prev_hash IS NOT NULL (the chain continues), so no expired
-      // session would ever be prunable. Detect this and skip rather than silently
-      // growing the DB indefinitely while pretending to enforce retention.
+      // session would ever be prunable and retention is effectively a no-op.
+      // Throw (via the outer try/catch → safePrune) so operators see a clear error
+      // instead of silently growing the DB while believing retention is enforced.
       const hasChain = db
         .prepare("SELECT 1 FROM audit_log WHERE prev_hash IS NOT NULL LIMIT 1")
         .get();
       if (hasChain !== null) {
-        console.warn(
-          "[audit-sink-sqlite] retention pruning skipped: hash-chained audit rows detected. " +
-            "Session-granular retention is incompatible with a continuous hash chain — " +
-            "disable signing or use NDJSON sink for retention with hash-chain integrity.",
+        throw new Error(
+          "audit_log: retention is incompatible with hash-chained (signed) audit logs. " +
+            "Disable signing in the audit middleware, or remove the retention configuration. " +
+            "Session-granular pruning cannot preserve chain validity across session boundaries.",
         );
-        return;
       }
 
       const cutoff = Date.now() - config.retention.maxAgeDays * 86_400_000;

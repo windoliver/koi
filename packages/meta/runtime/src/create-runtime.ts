@@ -1075,8 +1075,12 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
         toolThrew = true;
       }
       // Force-flush: drain the tool_call audit entry so the poison check below is not racy.
-      await mw.flush().catch(() => {
-        // flush() rejects when poisonError is set — fall through to check below.
+      await mw.flush().catch((flushErr: unknown) => {
+        // Propagate flush failures into the same poison channel as log failures so
+        // the check below surfaces any durability problem, not just log-path errors.
+        if (poisonError === undefined) {
+          poisonError = flushErr;
+        }
       });
       // Surface audit failure before returning; the tool has already executed.
       // Callers MUST NOT retry this tool call on seeing this error.

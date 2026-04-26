@@ -2554,7 +2554,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             toolError = e;
             toolThrew = true;
           }
-          await auditMw.flush().catch(() => {});
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
           if (ndjsonPoisonError !== undefined) {
             throw new Error(
               "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
@@ -2776,7 +2780,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             toolError = e;
             toolThrew = true;
           }
-          await sqliteAuditMw.flush().catch(() => {});
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
           if (sqlitePoisonError !== undefined) {
             throw new Error(
               "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
