@@ -751,16 +751,24 @@ export function createLongRunningHarness(
           };
         }
         if (remaining === 0) {
-          // Mirror complete()'s invariant: only publish phase=completed
-          // when ALL items are in `completed` state. If any failed/
-          // killed tasks remain, do NOT auto-complete — the caller must
-          // call fail() / dispose() so the durable phase stays
-          // consistent with the board's terminal mix.
+          // No live work remains. Pick the terminal phase that matches the
+          // board's terminal mix:
+          //  - all completed → publish "completed"
+          //  - any failed/killed → publish "failed" so the durable phase
+          //    reflects that not every tracked task succeeded
+          // Either way we MUST publish a terminal — falling through to
+          // softCheckpoint would write phase=active with no live work,
+          // creating a zombie state on resume.
           const allCompleted =
             delta.taskBoard?.items.every((t: Task) => t.status === "completed") ?? true;
           if (allCompleted) {
             return publishTerminal("completed", undefined, () => delta);
           }
+          return publishTerminal(
+            "failed",
+            "task board reached terminal state with non-completed items",
+            () => delta,
+          );
         }
         return softCheckpoint(delta);
       }),
@@ -796,11 +804,24 @@ export function createLongRunningHarness(
         // already exhausted its retry budget, escalate to a terminal
         // failure instead of looping indefinitely.
         if (taskError.retryable) {
-          // Use only the validated, persisted harness budget. Per-task
-          // metadata is an untyped record and must not influence retry
-          // policy — that would let stale snapshots or generic metadata
-          // updates silently change termination semantics.
-          const maxRetries = state.effectiveTaskMaxRetries;
+          // Prefer the live task-board's authoritative budget when the
+          // host wires `getTaskMaxRetries` — that prevents drift between
+          // the harness-config retry budget and the board-config budget.
+          // Fall back to the validated, persisted harness budget. Untyped
+          // task metadata is intentionally NOT consulted: only the
+          // explicit, typed callback or the harness config can change
+          // termination semantics.
+          let maxRetries = state.effectiveTaskMaxRetries;
+          if (cfg.getTaskMaxRetries) {
+            try {
+              const live = cfg.getTaskMaxRetries(taskId);
+              if (typeof live === "number" && Number.isInteger(live) && live >= 0) {
+                maxRetries = live;
+              }
+            } catch {
+              // bridge threw — fall back to harness budget
+            }
+          }
           const current = state.taskBoard.items.find((t: Task) => t.id === taskId);
           // Only escalate to terminal if the task is *still* in_progress
           // for this callback. A stale duplicate from a prior attempt

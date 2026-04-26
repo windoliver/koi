@@ -56,8 +56,21 @@ export interface LongRunningConfig {
   /**
    * Maximum retries per task before a retryable `failTask` becomes
    * terminal. Mirrors `TaskBoardConfig.maxRetries`. Default 3.
+   *
+   * Note: when the harness wraps a live task-board, `taskMaxRetries`
+   * here can drift from the board's own `TaskBoardConfig.maxRetries`.
+   * Pass `getTaskMaxRetries` below to bridge to the authoritative
+   * board-side budget per call.
    */
   readonly taskMaxRetries?: number;
+  /**
+   * Optional bridge to the live task-board's retry budget. When set,
+   * the harness uses this value (per-task) instead of `taskMaxRetries`
+   * for `failTask` retry-exhaustion gating. Return `undefined` to fall
+   * back to `taskMaxRetries`. Values are validated as non-negative
+   * integers; invalid values fall back to `taskMaxRetries`.
+   */
+  readonly getTaskMaxRetries?: (taskId: string) => number | undefined;
   /** Wall-clock deadline per session. Optional. */
   readonly timeoutMs?: number;
   /** Max wait for engine to quiesce on phase transitions. Default 10_000. */
