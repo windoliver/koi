@@ -232,6 +232,95 @@ describe("createToolSelectorMiddleware — fail-open", () => {
   });
 });
 
+describe("createToolSelectorMiddleware — execution-time enforcement", () => {
+  test("rejects a tool call whose name was filtered out for the turn (default enforce)", async () => {
+    const tools = [tool("safe"), tool("dangerous")];
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => ["safe"],
+      minTools: 0,
+    });
+
+    // Run the model-call hook so the per-turn allowlist is populated.
+    const ctx = turnCtx();
+    const wrapModel = getWrap(mw);
+    const next = mock<ModelHandler>(async () => modelResponse());
+    await wrapModel(ctx, { messages: [userMsg("go")], tools }, next);
+
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "ok" }),
+    );
+
+    await expect(
+      wrapTool(ctx, { toolId: "dangerous", input: {} }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
+    expect(toolNext).toHaveBeenCalledTimes(0);
+    // Filtered-in tool still passes through.
+    await expect(wrapTool(ctx, { toolId: "safe", input: {} }, toolNext as never)).resolves.toEqual({
+      output: "ok",
+    });
+  });
+
+  test("does not enforce when enforceFiltering is false", async () => {
+    const tools = [tool("safe"), tool("dangerous")];
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => ["safe"],
+      minTools: 0,
+      enforceFiltering: false,
+    });
+    const ctx = turnCtx();
+    await getWrap(mw)(ctx, { messages: [userMsg("go")], tools }, async () => modelResponse());
+
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "passed-through" }),
+    );
+    await expect(
+      wrapTool(ctx, { toolId: "dangerous", input: {} }, toolNext as never),
+    ).resolves.toEqual({ output: "passed-through" });
+  });
+
+  test("does not block tool calls on turns where no filtering happened", async () => {
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => [],
+      minTools: 100, // skip path — never populates allowlist
+    });
+    const ctx = turnCtx();
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "passed-through" }),
+    );
+    await expect(
+      wrapTool(ctx, { toolId: "anything", input: {} }, toolNext as never),
+    ).resolves.toEqual({ output: "passed-through" });
+  });
+
+  test("onAfterTurn cleans up the per-turn allowlist", async () => {
+    const tools = [tool("safe")];
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => ["safe"],
+      minTools: 0,
+    });
+    const ctx = turnCtx();
+    await getWrap(mw)(ctx, { messages: [userMsg("go")], tools }, async () => modelResponse());
+    await mw.onAfterTurn?.(ctx);
+
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "passed-through" }),
+    );
+    // After cleanup, no allowlist exists for this turn → the guard becomes
+    // a no-op and the tool call passes through.
+    await expect(
+      wrapTool(ctx, { toolId: "anything", input: {} }, toolNext as never),
+    ).resolves.toEqual({ output: "passed-through" });
+  });
+});
+
 describe("createToolSelectorMiddleware — streaming hook", () => {
   test("wrapModelStream filters request before yielding chunks", async () => {
     const tools = [tool("a"), tool("b"), tool("c")];

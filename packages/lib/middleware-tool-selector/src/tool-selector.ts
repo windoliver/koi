@@ -5,12 +5,17 @@
  * Priority: 200 — runs after permissions/budget guards but well before the
  * terminal model adapter, so inner middleware sees the reduced tool set.
  *
- * Fail-open: if the strategy throws or `selectTools` rejects, the unfiltered
- * request passes through unchanged. The error is reported via `onError` (if
- * provided) and otherwise swallowed via `@koi/errors`.
+ * Fail-open on selection: if the strategy throws or `selectTools` rejects,
+ * the unfiltered request passes through unchanged. The error is reported via
+ * `onError` (if provided) and otherwise swallowed via `@koi/errors`.
+ *
+ * Fail-closed on execution (default): when `enforceFiltering` is `true`
+ * (default), `wrapToolCall` rejects any tool whose name was filtered out for
+ * the current turn — defending against model hallucinations / prompt
+ * injection that emit a tool name the model was not actually shown.
  */
 
-import type { JsonObject } from "@koi/core";
+import type { JsonObject, TurnId } from "@koi/core";
 import type {
   CapabilityFragment,
   KoiMiddleware,
@@ -19,6 +24,9 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  ToolHandler,
+  ToolRequest,
+  ToolResponse,
   TurnContext,
 } from "@koi/core/middleware";
 import { KoiRuntimeError, swallowError } from "@koi/errors";
@@ -46,7 +54,13 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     minTools = DEFAULT_MIN_TOOLS,
     extractQuery = extractLastUserText,
     onError,
+    enforceFiltering = true,
   } = validated.value;
+
+  // Per-turn allowlist captured by the model-call hook and consulted by
+  // wrapToolCall. Cleared by onAfterTurn to avoid unbounded growth across
+  // long-lived sessions.
+  const turnAllowlists = new Map<TurnId, ReadonlySet<string>>();
 
   function reportError(e: unknown): void {
     if (onError !== undefined) {
@@ -56,7 +70,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     swallowError(e, { package: "middleware-tool-selector", operation: "selectTools" });
   }
 
-  async function filterRequest(request: ModelRequest): Promise<ModelRequest> {
+  async function filterRequest(ctx: TurnContext, request: ModelRequest): Promise<ModelRequest> {
     const tools = request.tools;
     if (tools === undefined || tools.length <= minTools) {
       return request;
@@ -79,6 +93,13 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     const nameSet = new Set<string>([...selectedNames.slice(0, maxTools), ...alwaysInclude]);
     const filteredTools = tools.filter((t) => nameSet.has(t.name));
 
+    if (enforceFiltering) {
+      // Snapshot the allowed set keyed by turnId so wrapToolCall can fail
+      // closed for any tool the model emits that wasn't in this turn's
+      // advertised set.
+      turnAllowlists.set(ctx.turnId, new Set<string>(filteredTools.map((t) => t.name)));
+    }
+
     const metadata: JsonObject = {
       ...request.metadata,
       toolsBeforeFilter: tools.length,
@@ -90,7 +111,8 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
 
   const description =
     `Tool filtering: keeps up to ${String(maxTools)} per call (skips at <= ${String(minTools)})` +
-    (alwaysInclude.length > 0 ? `, always: ${alwaysInclude.join(", ")}` : "");
+    (alwaysInclude.length > 0 ? `, always: ${alwaysInclude.join(", ")}` : "") +
+    (enforceFiltering ? "; enforces at execution" : "; advisory only");
 
   const capabilityFragment: CapabilityFragment = {
     label: "tool-selector",
@@ -103,18 +125,35 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     phase: "intercept",
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      return next(await filterRequest(request));
+      return next(await filterRequest(ctx, request));
     },
     async *wrapModelStream(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      yield* next(await filterRequest(request));
+      yield* next(await filterRequest(ctx, request));
+    },
+    async wrapToolCall(
+      ctx: TurnContext,
+      request: ToolRequest,
+      next: ToolHandler,
+    ): Promise<ToolResponse> {
+      if (!enforceFiltering) return next(request);
+      const allowed = turnAllowlists.get(ctx.turnId);
+      if (allowed === undefined) return next(request);
+      if (allowed.has(request.toolId)) return next(request);
+      throw KoiRuntimeError.from(
+        "PERMISSION",
+        `Tool "${request.toolId}" was filtered out for this turn by koi:tool-selector and cannot be invoked. Set enforceFiltering: false to disable execution-time enforcement.`,
+      );
+    },
+    async onAfterTurn(ctx: TurnContext): Promise<void> {
+      turnAllowlists.delete(ctx.turnId);
     },
   };
 }

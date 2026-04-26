@@ -86,9 +86,10 @@ describe("createToolRecoveryMiddleware — defaults & metadata", () => {
     expect(cap?.description).not.toContain("json-fence");
   });
 
-  test("does not expose a wrapModelCall hook (streaming-only)", () => {
+  test("exposes both wrapModelCall and wrapModelStream", () => {
     const mw = createToolRecoveryMiddleware();
-    expect(mw.wrapModelCall).toBeUndefined();
+    expect(mw.wrapModelCall).toBeDefined();
+    expect(mw.wrapModelStream).toBeDefined();
   });
 
   test("throws KoiRuntimeError when config is invalid", () => {
@@ -241,6 +242,53 @@ describe("createToolRecoveryMiddleware — recovery behavior", () => {
     expect(starts.length).toBe(1);
     expect((starts[0] as Extract<ModelChunk, { kind: "tool_call_start" }>).toolName).toBe("good");
     expect(events.some((e) => e.kind === "rejected" && e.toolName === "bad")).toBe(true);
+  });
+});
+
+describe("createToolRecoveryMiddleware — non-streaming wrapModelCall", () => {
+  function getCall(mw: KoiMiddleware): NonNullable<KoiMiddleware["wrapModelCall"]> {
+    const w = mw.wrapModelCall;
+    if (!w) throw new Error("wrapModelCall missing");
+    return w;
+  }
+
+  test("rewrites response.metadata.toolCalls and strips markup from content", async () => {
+    const mw = createToolRecoveryMiddleware();
+    const tools = [tool("foo")];
+    const text = 'thinking. <tool_call>{"name":"foo","arguments":{"k":1}}</tool_call> done.';
+    const out = await getCall(mw)(turnCtx(), { messages: [], tools }, async () =>
+      modelResponse(text),
+    );
+    expect(out.content).not.toContain("<tool_call>");
+    const calls = out.metadata?.toolCalls as ReadonlyArray<{
+      readonly toolName: string;
+      readonly callId: string;
+      readonly input: { readonly k: number };
+    }>;
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.toolName).toBe("foo");
+    expect(calls[0]?.input.k).toBe(1);
+    expect(calls[0]?.callId).toMatch(/^recovery-/);
+  });
+
+  test("passes through when adapter already set metadata.toolCalls", async () => {
+    const mw = createToolRecoveryMiddleware();
+    const tools = [tool("foo")];
+    const native = [{ toolName: "foo", callId: "native-1", input: {} }];
+    const out = await getCall(mw)(turnCtx(), { messages: [], tools }, async () =>
+      modelResponse('<tool_call>{"name":"foo","arguments":{}}</tool_call>', {
+        metadata: { toolCalls: native },
+      }),
+    );
+    expect(out.metadata?.toolCalls).toBe(native);
+  });
+
+  test("passes through when no tools are advertised", async () => {
+    const mw = createToolRecoveryMiddleware();
+    const text = '<tool_call>{"name":"foo","arguments":{}}</tool_call>';
+    const out = await getCall(mw)(turnCtx(), { messages: [] }, async () => modelResponse(text));
+    expect(out.content).toBe(text);
+    expect(out.metadata?.toolCalls).toBeUndefined();
   });
 });
 

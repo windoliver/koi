@@ -26,6 +26,18 @@ export interface ToolSelectorConfig {
   readonly extractQuery?: (messages: readonly InboundMessage[]) => string;
   /** Optional error sink invoked when `selectTools` throws (fail-open path). */
   readonly onError?: (error: unknown) => void;
+  /**
+   * When `true` (default), `wrapToolCall` rejects any tool whose name was
+   * filtered out for the current turn. This makes the selector a real
+   * trust boundary — useful for tag-based profiles that exclude dangerous
+   * tools, or when defending against prompt injection / model
+   * hallucinations of unseen tool names.
+   *
+   * Set `false` if the selector is purely a token-saving prompt filter and
+   * you want the model to still be able to invoke tools that were hidden
+   * from the prompt.
+   */
+  readonly enforceFiltering?: boolean;
 }
 
 /** Default cap on `selectTools` results — prevents runaway tool counts on large agents. */
@@ -84,6 +96,9 @@ export function validateToolSelectorConfig(config: unknown): Result<ToolSelector
   }
   if (c.onError !== undefined && typeof c.onError !== "function") {
     return validationError("'onError' must be a function");
+  }
+  if (c.enforceFiltering !== undefined && typeof c.enforceFiltering !== "boolean") {
+    return validationError("'enforceFiltering' must be a boolean");
   }
 
   return { ok: true, value: c as unknown as ToolSelectorConfig };

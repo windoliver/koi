@@ -1113,6 +1113,25 @@ async function* synthesizeStream(
   if (response.content) {
     yield { kind: "text_delta", delta: response.content };
   }
+  // Promote `response.metadata.toolCalls` into structured tool_call_* chunks
+  // so middleware that operates only on the non-streaming `wrapModelCall`
+  // path (e.g. tool-recovery on adapters without modelStream) can still
+  // surface executable tool calls. Contract:
+  //   { toolName: string; callId: string; input: JsonObject }[]
+  const recoveredCalls = response.metadata?.toolCalls;
+  if (Array.isArray(recoveredCalls)) {
+    for (const call of recoveredCalls) {
+      if (typeof call !== "object" || call === null) continue;
+      const toolName = (call as { readonly toolName?: unknown }).toolName;
+      const rawCallId = (call as { readonly callId?: unknown }).callId;
+      const input = (call as { readonly input?: unknown }).input;
+      if (typeof toolName !== "string" || typeof rawCallId !== "string") continue;
+      const callId = rawCallId as ToolCallId;
+      yield { kind: "tool_call_start", toolName, callId };
+      yield { kind: "tool_call_delta", callId, delta: JSON.stringify(input ?? {}) };
+      yield { kind: "tool_call_end", callId };
+    }
+  }
   yield {
     kind: "done",
     response,

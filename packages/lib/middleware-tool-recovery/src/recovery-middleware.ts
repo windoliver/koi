@@ -24,6 +24,7 @@ import type {
   CapabilityFragment,
   KoiMiddleware,
   ModelChunk,
+  ModelHandler,
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
@@ -191,11 +192,44 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     }
   }
 
+  async function wrapModelCallImpl(
+    ctx: TurnContext,
+    request: ModelRequest,
+    next: ModelHandler,
+  ): Promise<ModelResponse> {
+    const tools = request.tools;
+    if (tools === undefined || tools.length === 0) return next(request);
+
+    const response = await next(request);
+    // Skip recovery if the adapter already supplied native tool calls.
+    if (response.metadata?.toolCalls !== undefined) return response;
+
+    const recovered = runRecovery(ctx, response.content, tools, patterns, maxCalls, onEvent);
+    if (recovered === undefined) return response;
+
+    return {
+      ...response,
+      content: recovered.cleanedText,
+      // Engine's synthesizeStream fallback (turn-runner) reads this shape and
+      // emits structured tool_call_* chunks so non-streaming adapters get
+      // executable tool calls.
+      metadata: {
+        ...response.metadata,
+        toolCalls: recovered.calls.map((c) => ({
+          toolName: c.toolName,
+          callId: c.callId,
+          input: c.input,
+        })),
+      },
+    };
+  }
+
   return {
     name: "koi:tool-recovery",
     priority: TOOL_RECOVERY_PRIORITY,
     phase: "resolve",
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
+    wrapModelCall: wrapModelCallImpl,
     wrapModelStream: wrapModelStreamImpl,
   };
 }
