@@ -77,23 +77,47 @@ function toImmutableRecord(record: MutableToolRecord): ToolUsageRecord {
   };
 }
 
-function hydrateFromSnapshot(
+/**
+ * Merge a persisted snapshot INTO existing in-memory state. Used after a
+ * delayed-success hydration so usage data captured during a `store.load()`
+ * outage isn't dropped when disk eventually becomes reachable.
+ *
+ * Counters are summed (callCount, sessionsAvailable, etc.). Latency
+ * extremes take min/max. `lastUsedAt` takes the larger timestamp.
+ */
+function mergeSnapshotIntoMemory(
   tools: Map<string, MutableToolRecord>,
   snapshot: ToolAuditSnapshot,
 ): void {
-  for (const [name, record] of Object.entries(snapshot.tools)) {
-    tools.set(name, {
-      toolName: record.toolName,
-      callCount: record.callCount,
-      successCount: record.successCount,
-      failureCount: record.failureCount,
-      lastUsedAt: record.lastUsedAt,
-      totalLatencyMs: record.totalLatencyMs,
-      minLatencyMs: record.minLatencyMs === 0 ? Number.POSITIVE_INFINITY : record.minLatencyMs,
-      maxLatencyMs: record.maxLatencyMs,
-      sessionsAvailable: record.sessionsAvailable,
-      sessionsUsed: record.sessionsUsed,
-    });
+  for (const [name, fromDisk] of Object.entries(snapshot.tools)) {
+    const inMem = tools.get(name);
+    if (inMem === undefined) {
+      tools.set(name, {
+        toolName: fromDisk.toolName,
+        callCount: fromDisk.callCount,
+        successCount: fromDisk.successCount,
+        failureCount: fromDisk.failureCount,
+        lastUsedAt: fromDisk.lastUsedAt,
+        totalLatencyMs: fromDisk.totalLatencyMs,
+        minLatencyMs:
+          fromDisk.minLatencyMs === 0 ? Number.POSITIVE_INFINITY : fromDisk.minLatencyMs,
+        maxLatencyMs: fromDisk.maxLatencyMs,
+        sessionsAvailable: fromDisk.sessionsAvailable,
+        sessionsUsed: fromDisk.sessionsUsed,
+      });
+      continue;
+    }
+    inMem.callCount += fromDisk.callCount;
+    inMem.successCount += fromDisk.successCount;
+    inMem.failureCount += fromDisk.failureCount;
+    inMem.totalLatencyMs += fromDisk.totalLatencyMs;
+    inMem.sessionsAvailable += fromDisk.sessionsAvailable;
+    inMem.sessionsUsed += fromDisk.sessionsUsed;
+    inMem.lastUsedAt = Math.max(inMem.lastUsedAt, fromDisk.lastUsedAt);
+    if (fromDisk.minLatencyMs > 0) {
+      inMem.minLatencyMs = Math.min(inMem.minLatencyMs, fromDisk.minLatencyMs);
+    }
+    inMem.maxLatencyMs = Math.max(inMem.maxLatencyMs, fromDisk.maxLatencyMs);
   }
 }
 
@@ -180,8 +204,13 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
         loadPromise ??= Promise.resolve(store.load());
         const snapshot = await loadPromise;
         if (!hydrated) {
-          hydrateFromSnapshot(tools, snapshot);
-          totalSessions = snapshot.totalSessions;
+          // Merge (rather than replace) the on-disk snapshot into memory.
+          // This preserves any counters / sessions captured while the store
+          // was unreachable, instead of silently overwriting them when the
+          // store recovers. For the cold-start case (no in-memory state),
+          // merge degenerates to a copy of the disk snapshot.
+          mergeSnapshotIntoMemory(tools, snapshot);
+          totalSessions += snapshot.totalSessions;
           hydrated = true;
         }
       } catch (e: unknown) {
@@ -293,9 +322,12 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       if (signals.length > 0) onAuditResult(signals);
     }
 
-    // Don't persist before hydration succeeded — would overwrite the
-    // existing on-disk history with a partial in-memory snapshot if
-    // store.load() failed at startup.
+    // Defer persistence until hydration succeeds so we don't overwrite
+    // disk history with a memory-only partial snapshot. The deltas
+    // recorded during the outage are NOT lost: they live in `tools` /
+    // `totalSessions` and will be merged with the disk snapshot on the
+    // next successful load (see mergeSnapshotIntoMemory in
+    // recordOnSessionStart).
     if (!hydrated) return;
 
     // Serialize saves: each call awaits the prior save's settlement before

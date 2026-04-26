@@ -267,8 +267,9 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     if (tools === undefined || tools.length === 0) return next(request);
 
     const response = await next(request);
-    // Skip recovery if the adapter already supplied native tool calls.
-    if (response.metadata?.toolCalls !== undefined) return response;
+    // Skip recovery if a prior middleware already populated the trusted
+    // recovery channel (idempotent re-entry).
+    if (response.metadata?.__koi_recovered_tool_calls !== undefined) return response;
 
     const recovered = runRecovery(ctx, response.content, tools, patterns, maxCalls, onEvent);
     if (recovered === undefined) return response;
@@ -276,16 +277,21 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     return {
       ...response,
       content: recovered.cleanedText,
-      // Engine's synthesizeStream fallback (turn-runner) reads this shape and
-      // emits structured tool_call_* chunks so non-streaming adapters get
-      // executable tool calls.
+      // Trusted-recovery channel for the engine's synthesizeStream fallback:
+      // namespaced key + sentinel signature so generic `metadata.toolCalls`
+      // (used by adapters/middleware for diagnostics) cannot be misread as
+      // an execution directive. The engine validates `__koi: "recovered-
+      // tool-calls"` before promoting `calls` into tool_call_* chunks.
       metadata: {
         ...response.metadata,
-        toolCalls: recovered.calls.map((c) => ({
-          toolName: c.toolName,
-          callId: c.callId,
-          input: c.input,
-        })),
+        __koi_recovered_tool_calls: {
+          __koi: "recovered-tool-calls",
+          calls: recovered.calls.map((c) => ({
+            toolName: c.toolName,
+            callId: c.callId,
+            input: c.input,
+          })),
+        },
       },
     };
   }

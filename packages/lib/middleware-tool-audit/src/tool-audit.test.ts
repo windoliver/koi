@@ -485,13 +485,73 @@ describe("createToolAuditMiddleware", () => {
 
       expect(callIndex).toBe(2);
       expect(errorCallback).toHaveBeenCalledTimes(1);
-      // Session 1: load throws → totalSessions: 0 → 1 (post-increment).
-      // Session 2: load succeeds → hydrate replaces in-memory totalSessions
-      // with snapshot value 7, then increments → 8. The pre-hydration
-      // increment from session 1 is intentionally discarded because we do
-      // not know whether disk state was newer or staler than memory; we
-      // trust disk once it's reachable.
-      expect(mw.getSnapshot().totalSessions).toBe(8);
+      // Session 1: load throws → totalSessions: 0 → 1.
+      // Session 2: load succeeds → mergeSnapshotIntoMemory ADDS the disk
+      // total (7) to the in-memory pre-hydration total (1) → 8, then
+      // increments for the new session → 9. The merge prevents the
+      // outage's session 1 from being lost when the store recovers.
+      expect(mw.getSnapshot().totalSessions).toBe(9);
+    });
+
+    test("preserves activity recorded during a transient store.load outage", async () => {
+      // let: callIndex differentiates the failing first load from the succeeding second load.
+      let callIndex = 0;
+      const diskSnapshot: ToolAuditSnapshot = {
+        tools: {
+          search: {
+            toolName: "search",
+            callCount: 5,
+            successCount: 5,
+            failureCount: 0,
+            lastUsedAt: 100,
+            avgLatencyMs: 10,
+            minLatencyMs: 5,
+            maxLatencyMs: 20,
+            totalLatencyMs: 50,
+            sessionsAvailable: 2,
+            sessionsUsed: 2,
+          },
+        },
+        totalSessions: 2,
+        lastUpdatedAt: 100,
+      };
+      const savedSnapshots: ToolAuditSnapshot[] = [];
+      const store: ToolAuditStore = {
+        load: () => {
+          callIndex += 1;
+          if (callIndex === 1) throw new Error("transient");
+          return diskSnapshot;
+        },
+        save: (s) => {
+          savedSnapshots.push(s);
+        },
+      };
+      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+      const wrap = getWrapToolCall(mw);
+
+      // Outage: session 1's load throws but the session still records activity.
+      await mw.onSessionStart?.(sessionCtx({ sessionId: "outage-1" }));
+      await wrap(turnCtx(sessionCtx({ sessionId: "outage-1" })), toolReq("search"), async () => ({
+        output: "ok",
+      }));
+      await mw.onSessionEnd?.(sessionCtx({ sessionId: "outage-1" }));
+      // Save should have been deferred because hydrated=false.
+      expect(savedSnapshots.length).toBe(0);
+
+      // Recovery: session 2's load succeeds and merges disk into memory.
+      await mw.onSessionStart?.(sessionCtx({ sessionId: "outage-2" }));
+      await wrap(turnCtx(sessionCtx({ sessionId: "outage-2" })), toolReq("search"), async () => ({
+        output: "ok",
+      }));
+      await mw.onSessionEnd?.(sessionCtx({ sessionId: "outage-2" }));
+
+      expect(savedSnapshots.length).toBe(1);
+      const persisted = savedSnapshots[0];
+      // Disk had 5 calls + 2 sessions; outage session added 1 call + 1 session;
+      // recovery session added 1 call + 1 session. Merged = 7 calls / 4 sessions.
+      expect(persisted?.tools.search?.callCount).toBe(7);
+      expect(persisted?.totalSessions).toBe(4);
+      expect(persisted?.tools.search?.sessionsUsed).toBe(4);
     });
 
     test("does not persist a fresh snapshot before initial hydration succeeds", async () => {
