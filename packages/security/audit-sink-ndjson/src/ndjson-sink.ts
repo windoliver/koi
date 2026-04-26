@@ -94,18 +94,24 @@ export function createNdjsonAuditSink(
 
   // Single-writer queue: all log()/flush()/close() calls are chained so rotation
   // is never re-entered concurrently and writes never race across a rotate boundary.
-  // Seed bytesWritten from the on-disk file size as the first item in the queue so
-  // rotation fires correctly after a process restart against a pre-existing file.
+  // Seed bytesWritten and, for daily rotation, currentDay from the active file's
+  // on-disk stat so a restarted process handles pre-existing files correctly.
   let writeChain: Promise<void> = stat(config.filePath)
     .then((s) => {
       bytesWritten = s.size;
+      if (config.rotation?.daily === true && s.size > 0) {
+        // Initialize currentDay from the file's mtime so a restart against a
+        // previous-day file triggers rotation on the first new-day write.
+        currentDay = new Date(s.mtimeMs).toISOString().slice(0, 10);
+      }
     })
     .catch(() => {
-      /* ENOENT or unreadable — start counter at 0 */
+      /* ENOENT or unreadable — keep counter at 0 and currentDay as today */
     });
 
   const timer = setInterval(() => {
-    void writer.flush();
+    // Route through the write chain so the timer flush doesn't race rotation or close.
+    writeChain = writeChain.then(() => writer.flush()).catch(() => {});
   }, flushIntervalMs);
 
   if (typeof timer === "object" && timer !== null && "unref" in timer) {
@@ -135,7 +141,8 @@ export function createNdjsonAuditSink(
       config.rotation.maxSizeBytes !== undefined &&
       bytesWritten > 0 &&
       bytesWritten >= config.rotation.maxSizeBytes;
-    const byDay = config.rotation.daily === true && today !== currentDay;
+    // Guard bytesWritten > 0: no file to rename if this sink has never written anything
+    const byDay = config.rotation.daily === true && today !== currentDay && bytesWritten > 0;
 
     if (bySize || byDay) {
       await rotate();
