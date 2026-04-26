@@ -28,7 +28,7 @@ describe("BUILTIN_RULES", () => {
     for (const rule of BUILTIN_RULES) {
       expect(rule.pattern).toBeInstanceOf(RegExp);
       expect(typeof rule.description).toBe("string");
-      expect(["low", "medium", "high", "critical", "unknown"]).toContain(rule.riskLevel);
+      expect(["high", "critical"]).toContain(rule.riskLevel);
     }
   });
 });
