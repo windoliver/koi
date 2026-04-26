@@ -43,6 +43,31 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
     );
   }
 
+  // Scan the live worktree list for a worktree under this backend's base path that is
+  // currently on the given managed branch. Used by dispose() to locate a moved worktree
+  // when the registered path is stale — the managed branch is stable across git worktree move.
+  async function findLivePathByBranch(branchName: string): Promise<string | null> {
+    const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
+    if (!listResult.ok) return null;
+    for (const block of listResult.value.split(/\n\n+/)) {
+      const lines = block.trim().split("\n");
+      const pathLine = lines.find((l) => l.startsWith("worktree "));
+      if (!pathLine) continue;
+      const path = pathLine.slice("worktree ".length).trim();
+      if (!path.startsWith(resolvedBase + sep)) continue;
+      const branchRef =
+        lines
+          .find((l) => l.startsWith("branch "))
+          ?.slice("branch ".length)
+          .trim() ?? "";
+      const bn = branchRef.startsWith("refs/heads/")
+        ? branchRef.slice("refs/heads/".length)
+        : branchRef;
+      if (bn === branchName) return path;
+    }
+    return null;
+  }
+
   // Scan git worktree list to recover an entry that survived a process restart.
   // When isSandboxed=false (the default): identity requires BOTH the branch suffix AND
   // the path basename to match wsId — moved/renamed worktrees are unrecoverable, which
@@ -184,10 +209,22 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         entry = recovered;
       }
 
-      const removeResult = await runGit(
+      let removeResult = await runGit(
         ["worktree", "remove", "--force", entry.path],
         config.repoPath,
       );
+      if (!removeResult.ok && entry.branchName.startsWith("workspace/")) {
+        // Path may be stale after git worktree move. Rescan by managed branch and retry.
+        // The managed branch is stable across moves (it stays in the repo until explicitly
+        // deleted), so it serves as a path-independent worktree identity for disposal.
+        const livePath = await findLivePathByBranch(entry.branchName);
+        if (livePath !== null && livePath !== entry.path) {
+          removeResult = await runGit(["worktree", "remove", "--force", livePath], config.repoPath);
+          if (removeResult.ok) {
+            entry = { ...entry, path: livePath };
+          }
+        }
+      }
       if (!removeResult.ok) return removeResult;
 
       // Branch deletion is best-effort — failure doesn't fail dispose.

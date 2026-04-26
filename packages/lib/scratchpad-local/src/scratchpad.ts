@@ -82,6 +82,14 @@ interface GroupStore {
 
 const groupRegistry = new Map<string, GroupStore>();
 
+// Process-wide memory limits — prevent a runaway caller from OOMing the host by
+// fanning out across many group IDs. Per-group limits (MAX_FILES_PER_GROUP,
+// MAX_FILE_SIZE_BYTES) are enforced per write; these caps cover the global surface.
+const MAX_TOTAL_BYTES = 512 * 1024 * 1024; // 512 MiB across all groups
+const MAX_TOTAL_GROUPS = 500;
+// let: mutated by write/delete/sweep/eviction — must remain consistent across all paths
+let totalBytesUsed = 0;
+
 // Deep-clone via JSON round-trip: constrains metadata to JSON-safe primitives
 // and breaks all shared references so stored state cannot be mutated out-of-band.
 function cloneMetadata(m: Record<string, unknown>): Record<string, unknown> {
@@ -194,6 +202,11 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   }
 
   if (sharedStore === undefined) {
+    if (groupRegistry.size >= MAX_TOTAL_GROUPS) {
+      throw new Error(
+        `Process-wide scratchpad group limit of ${MAX_TOTAL_GROUPS} reached; cannot open group "${groupId}"`,
+      );
+    }
     sharedStore = {
       entries: new Map(),
       subscribers: new Map(),
@@ -247,7 +260,10 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
 
   function sweep(): void {
     for (const [path, entry] of store.entries) {
-      if (isExpired(entry)) store.entries.delete(path);
+      if (isExpired(entry)) {
+        totalBytesUsed -= entry.sizeBytes;
+        store.entries.delete(path);
+      }
     }
   }
 
@@ -333,6 +349,19 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
       }
     }
 
+    // Check process-wide byte budget before committing.
+    const byteDelta = sizeBytes - (liveExisting?.sizeBytes ?? 0);
+    if (byteDelta > 0 && totalBytesUsed + byteDelta > MAX_TOTAL_BYTES) {
+      return {
+        ok: false,
+        error: {
+          code: "RESOURCE_EXHAUSTED",
+          message: `Process-wide scratchpad byte budget of ${MAX_TOTAL_BYTES} bytes exceeded`,
+          retryable: RETRYABLE_DEFAULTS.RESOURCE_EXHAUSTED,
+        },
+      };
+    }
+
     const now = new Date().toISOString();
     const generation = (liveExisting?.generation ?? 0) + 1;
 
@@ -369,6 +398,7 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
     };
 
     store.entries.set(input.path, entry);
+    totalBytesUsed += byteDelta;
 
     notify({ kind: "written", path: input.path, generation, authorId, groupId, timestamp: now });
 
@@ -379,7 +409,10 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
     if (closed) return { ok: false, error: CLOSED_ERROR };
     const entry = store.entries.get(path);
     if (!entry || isExpired(entry)) {
-      if (entry) store.entries.delete(path);
+      if (entry) {
+        totalBytesUsed -= entry.sizeBytes;
+        store.entries.delete(path);
+      }
       return {
         ok: false,
         error: { code: "NOT_FOUND", message: `Path '${path}' not found`, retryable: false },
@@ -395,6 +428,7 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
 
     for (const [path, entry] of store.entries) {
       if (entry.expiresAt !== undefined && now >= entry.expiresAt) {
+        totalBytesUsed -= entry.sizeBytes;
         store.entries.delete(path);
         continue;
       }
@@ -421,6 +455,7 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
       };
     }
     const { generation } = entry;
+    totalBytesUsed -= entry.sizeBytes;
     store.entries.delete(path);
     const now = new Date().toISOString();
     notify({
@@ -465,6 +500,9 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
       // Schedule bounded eviction so dormant groups don't leak indefinitely.
       // Any new handle opening for the same groupId cancels this timer.
       const evict = (): void => {
+        for (const e of store.entries.values()) {
+          totalBytesUsed -= e.sizeBytes;
+        }
         store.entries.clear();
         groupRegistry.delete(groupId as string);
       };
