@@ -13376,3 +13376,120 @@ describe("Golden: @koi/gateway-webhook", () => {
     expect(store.tryBegin("evt-4").state).toBe("duplicate");
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/governance-delegation — capability-token primitives
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/governance-delegation — issue + verify roundtrip", () => {
+  test("HMAC root capability verifies; tampering breaks signature", async () => {
+    const { randomBytes } = await import("node:crypto");
+    const { agentId, sessionId } = await import("@koi/core");
+    const { issueRootCapability, createCapabilityVerifier, createGlobScopeChecker } = await import(
+      "@koi/governance-delegation"
+    );
+
+    const secret = randomBytes(32);
+    const sess = sessionId("golden-sess");
+    const tok = await issueRootCapability({
+      signer: { kind: "hmac-sha256", secret },
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: {
+        permissions: { allow: ["read_file"] },
+        sessionId: sess,
+      },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+
+    const verifier = createCapabilityVerifier({
+      hmac: { secret },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const ok = await verifier.verify(tok, {
+      toolId: "read_file",
+      now: 1500,
+      activeSessionIds: new Set([sess]),
+    });
+    expect(ok.ok).toBe(true);
+
+    const tampered = { ...tok, expiresAt: 9_999_999 };
+    const bad = await verifier.verify(tampered, {
+      toolId: "read_file",
+      now: 1500,
+      activeSessionIds: new Set([sess]),
+    });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.reason).toBe("invalid_signature");
+  });
+});
+
+describe("Golden: @koi/governance-delegation — revocation invalidates downstream", () => {
+  test("cascade revoke of root invalidates child + grandchild", async () => {
+    const { randomBytes } = await import("node:crypto");
+    const { agentId, sessionId } = await import("@koi/core");
+    const {
+      issueRootCapability,
+      delegateCapability,
+      createCapabilityVerifier,
+      createGlobScopeChecker,
+      createMemoryCapabilityRevocationRegistry,
+    } = await import("@koi/governance-delegation");
+
+    const secret = randomBytes(32);
+    const sess = sessionId("golden-sess");
+    const registry = createMemoryCapabilityRevocationRegistry();
+    const signer = { kind: "hmac-sha256" as const, secret };
+
+    const A = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sess },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      registry,
+      now: () => 1000,
+    });
+    const bResult = await delegateCapability({
+      signer,
+      parent: A,
+      delegateeId: agentId("bob"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sess },
+      ttlMs: 30_000,
+      registry,
+      now: () => 1000,
+    });
+    if (!bResult.ok) throw new Error("B issuance failed");
+    const cResult = await delegateCapability({
+      signer,
+      parent: bResult.value,
+      delegateeId: agentId("carol"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sess },
+      ttlMs: 10_000,
+      registry,
+      now: () => 1000,
+    });
+    if (!cResult.ok) throw new Error("C issuance failed");
+
+    await registry.revoke(A.id, true);
+
+    const verifier = createCapabilityVerifier({
+      hmac: { secret },
+      scopeChecker: createGlobScopeChecker(),
+      revocations: registry,
+    });
+    const ctx = {
+      toolId: "read_file",
+      now: 1500,
+      activeSessionIds: new Set([sess]),
+    };
+    for (const tok of [A, bResult.value, cResult.value]) {
+      const r = await verifier.verify(tok, ctx);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toBe("revoked");
+    }
+  });
+});

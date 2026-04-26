@@ -856,6 +856,7 @@
         "@koi/governance-approval-tiers": "workspace:*",
         "@koi/governance-core": "workspace:*",
         "@koi/governance-defaults": "workspace:*",
+        "@koi/governance-delegation": "workspace:*",
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
@@ -1147,6 +1148,13 @@
       },
       "devDependencies": {
         "@koi/governance-core": "workspace:*",
+      },
+    },
+    "packages/security/governance-delegation": {
+      "name": "@koi/governance-delegation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/security/middleware-audit": {
@@ -1686,6 +1694,8 @@
     "@koi/governance-core": ["@koi/governance-core@workspace:packages/security/governance-core"],
 
     "@koi/governance-defaults": ["@koi/governance-defaults@workspace:packages/security/governance-defaults"],
+
+    "@koi/governance-delegation": ["@koi/governance-delegation@workspace:packages/security/governance-delegation"],
 
     "@koi/harness": ["@koi/harness@workspace:packages/lib/harness"],
 
