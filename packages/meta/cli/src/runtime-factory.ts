@@ -2473,6 +2473,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             );
             process.exitCode = 1;
           }
+          throw new Error("audit sink write failed — aborting to preserve audit trail integrity", {
+            cause: error,
+          });
         },
       });
       complianceRecorders.push(
@@ -2590,6 +2593,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             );
             process.exitCode = 1;
           }
+          throw new Error("audit sink write failed — aborting to preserve audit trail integrity", {
+            cause: error,
+          });
         },
       });
       complianceRecorders.push(

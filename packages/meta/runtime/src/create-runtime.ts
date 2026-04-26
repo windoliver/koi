@@ -937,6 +937,9 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
   } else if (sinkInput.kind === "sqlite") {
     const sqliteConfig = {
       dbPath: sinkInput.dbPath,
+      // Unique per-process ID prevents cross-instance row contamination when multiple
+      // runtime instances share the same SQLite DB (e.g. concurrent agent processes).
+      agentId: sinkInput.agentId ?? `runtime-${crypto.randomUUID().slice(0, 8)}`,
       ...(sinkInput.flushIntervalMs !== undefined
         ? { flushIntervalMs: sinkInput.flushIntervalMs }
         : {}),
@@ -995,6 +998,12 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
         );
         process.exitCode = 1;
       }
+      // Throw so the drain loop propagates an unhandled rejection, terminating the process.
+      // Audit integrity requires fail-closed: a process with a broken audit trail must not
+      // continue accepting work.
+      throw new Error("audit sink write failed — aborting to preserve audit trail integrity", {
+        cause: error,
+      });
     },
   });
 

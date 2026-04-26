@@ -414,6 +414,12 @@ export interface RuntimeConfig {
           | {
               readonly kind: "sqlite";
               readonly dbPath: string;
+              /**
+               * Scope all reads and retention pruning to this agent ID.
+               * Defaults to a unique per-process ID when omitted — prevents cross-instance
+               * row contamination when multiple processes share the same DB.
+               */
+              readonly agentId?: string | undefined;
               readonly flushIntervalMs?: number | undefined;
               readonly maxBufferSize?: number | undefined;
               readonly retention?: SqliteRetentionConfig | undefined;

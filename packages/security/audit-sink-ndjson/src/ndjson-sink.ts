@@ -150,6 +150,9 @@ export function createNdjsonAuditSink(
   // Initialized from the max existing archive counter so it is strictly increasing
   // across process restarts within the same archive directory.
   let rotationSeq = 0;
+  // Set on the first timer flush failure. Causes log() to reject immediately so the
+  // audit middleware queue routes the error through onError (which poisons the sink).
+  let timerFlushError: unknown;
 
   // Single-writer queue: all log()/flush()/close() calls are chained so rotation
   // is never re-entered concurrently and writes never race across a rotate boundary.
@@ -189,7 +192,13 @@ export function createNdjsonAuditSink(
     // Route through the write chain so the timer flush doesn't race rotation or close.
     writeChain = writeChain
       .then(() => Promise.resolve(writer.flush()).then(() => {}))
-      .catch(() => {});
+      .catch((err: unknown) => {
+        // Record the first flush failure so subsequent log() calls reject immediately,
+        // routing the error through the audit middleware queue's onError channel.
+        if (timerFlushError === undefined) {
+          timerFlushError = err;
+        }
+      });
   }, flushIntervalMs);
 
   if (typeof timer === "object" && timer !== null && "unref" in timer) {
@@ -254,6 +263,13 @@ export function createNdjsonAuditSink(
 
   return {
     log(entry: AuditEntry): Promise<void> {
+      if (timerFlushError !== undefined) {
+        return Promise.reject(
+          new Error("audit log NDJSON flush failed — sink cannot accept further writes", {
+            cause: timerFlushError,
+          }),
+        );
+      }
       return enqueue(async () => {
         const line = `${JSON.stringify(entry)}\n`;
         // Use actual UTF-8 byte length, not UTF-16 code-unit count, so maxSizeBytes
