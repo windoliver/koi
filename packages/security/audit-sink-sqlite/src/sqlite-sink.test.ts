@@ -340,6 +340,49 @@ describe("createSqliteAuditSink — retention", () => {
     });
   });
 
+  test("prune does not cross-prune sessions sharing an ID but different agent IDs", async () => {
+    // session_id is host-supplied and may collide across agents sharing the same DB.
+    // Pruning must scope to (agent_id, session_id) so one expired agent's session
+    // cannot make another agent's rows eligible for deletion.
+    await withFileDb(async (dbPath) => {
+      const sink1 = createSqliteAuditSink({ dbPath });
+      const twoDaysAgo = Date.now() - 2 * 86_400_000;
+      // agent-A: expired closed session with same session ID
+      await sink1.log(
+        makeEntry({
+          sessionId: "shared-id",
+          agentId: "agent-A",
+          timestamp: twoDaysAgo,
+          kind: "session_start",
+        }),
+      );
+      await sink1.log(
+        makeEntry({
+          sessionId: "shared-id",
+          agentId: "agent-A",
+          timestamp: twoDaysAgo + 1000,
+          kind: "session_end",
+        }),
+      );
+      // agent-B: recent session with the SAME session ID — must NOT be pruned
+      await sink1.log(
+        makeEntry({ sessionId: "shared-id", agentId: "agent-B", kind: "model_call" }),
+      );
+      await sink1.flush();
+      sink1.close();
+
+      const sink2 = createSqliteAuditSink({ dbPath, retention: { maxAgeDays: 1 } });
+      await sink2.flush();
+
+      const entries = sink2.getEntries();
+      // agent-A expired session is pruned; agent-B recent row is retained
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.agentId).toBe("agent-B");
+
+      sink2.close();
+    });
+  });
+
   test("retention config validates maxAgeDays must be positive", () => {
     const { validateSqliteAuditSinkConfig } =
       require("./config.js") as typeof import("./config.js");

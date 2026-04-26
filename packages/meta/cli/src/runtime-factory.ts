@@ -2451,6 +2451,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         signing: true,
         onError: (error: unknown) => {
           console.error("[koi/cli] audit sink write failed:", error);
+          // Signal non-zero exit to the OS so the failure is visible in CI/monitoring.
+          process.exitCode = 1;
         },
       });
       complianceRecorders.push(
@@ -2546,6 +2548,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         signing: true,
         onError: (error: unknown) => {
           console.error("[koi/cli] audit sink write failed:", error);
+          // Signal non-zero exit to the OS so the failure is visible in CI/monitoring.
+          process.exitCode = 1;
         },
       });
       complianceRecorders.push(

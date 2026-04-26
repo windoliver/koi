@@ -270,14 +270,35 @@ export function createNdjsonAuditSink(
     },
 
     getEntries(): Promise<readonly AuditEntry[]> {
-      // Serialized through the write queue so a concurrent rotation cannot move
-      // a file out of the active path after we snapshot the archive directory.
+      // Serialized through the write queue so a concurrent rotation in THIS sink instance
+      // cannot interleave with the snapshot. For external concurrent readers (e.g. a second
+      // process reading the same directory), the archive list is snapshotted before the active
+      // file is read — if the active file has just been rotated away by another process, we
+      // re-scan the archive to pick up the newly archived segment rather than silently returning
+      // an incomplete history.
       let result: readonly AuditEntry[] = [];
       return enqueue(async () => {
-        await writer.flush();
+        await Promise.resolve(writer.flush());
         const archived = await readArchiveEntries(archiveDir);
-        const current = await readEntriesFromFile(config.filePath);
-        result = [...archived, ...current];
+        try {
+          // required=false: ENOENT on the active file is handled below
+          const current = await readEntriesFromFile(config.filePath);
+          result = [...archived, ...current];
+        } catch (e: unknown) {
+          if (
+            e instanceof Error &&
+            "code" in e &&
+            (e as NodeJS.ErrnoException).code === "ENOENT" &&
+            config.rotation !== undefined
+          ) {
+            // Active file disappeared while rotation is configured — a concurrent rotation
+            // moved it to the archive after our archive snapshot. Re-scan to include the
+            // newly archived segment. If re-scan also fails, propagate the error.
+            result = await readArchiveEntries(archiveDir);
+          } else {
+            throw e;
+          }
+        }
       }).then(() => result);
     },
 

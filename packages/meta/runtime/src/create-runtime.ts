@@ -964,6 +964,14 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
     ...(audit.redactRequestBodies !== undefined
       ? { redactRequestBodies: audit.redactRequestBodies }
       : {}),
+    // Surface sink write/rotation failures — without onError the queue swallows them silently,
+    // creating compliance log gaps exactly when fault-tolerance is most important.
+    // Set process.exitCode so the host OS receives a non-zero exit code when the
+    // process eventually shuts down, making the failure visible in CI and monitoring.
+    onError: (error: unknown) => {
+      console.error("[koi/runtime] audit sink write failed:", error);
+      process.exitCode = 1;
+    },
   });
 
   return {

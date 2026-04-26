@@ -130,11 +130,15 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
       // Trade-off: sessions that crash before session_end are never pruned.
       // Operators who need guaranteed cleanup for crashed sessions can restart
       // the agent (which writes session_end) before enabling retention.
+      // Group by (agent_id, session_id) rather than session_id alone: session IDs
+      // are host-supplied and may be reused across agents or tenants sharing the same
+      // audit DB. Scoping to the agent+session pair prevents cross-agent prune collisions
+      // where one agent's expired session could match — and delete — another agent's rows.
       db.prepare(
         `DELETE FROM audit_log
-         WHERE session_id IN (
-           SELECT session_id FROM audit_log
-           GROUP BY session_id
+         WHERE (agent_id, session_id) IN (
+           SELECT agent_id, session_id FROM audit_log
+           GROUP BY agent_id, session_id
            HAVING MAX(timestamp) < ?
              AND SUM(CASE WHEN kind = 'session_end' THEN 1 ELSE 0 END) > 0
          )`,
