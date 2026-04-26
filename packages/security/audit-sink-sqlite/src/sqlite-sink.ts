@@ -184,11 +184,7 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
           $schemaVersion: entry.schema_version,
           $timestamp: entry.timestamp,
           $sessionId: entry.sessionId,
-          // When config.agentId is set, store it as the row owner so that
-          // agentId-scoped reads and pruning cover all rows written by this sink,
-          // including compliance events attributed to child agents. The original
-          // entry.agentId is preserved verbatim in canonical_json.
-          $agentId: config.agentId ?? entry.agentId,
+          $agentId: entry.agentId,
           $turnIndex: entry.turnIndex,
           $kind: entry.kind,
           $request: serializeField(entry.request),
@@ -255,32 +251,21 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
       // becomes necessary, add a proper `queryPage({ sessionId, cursor,
       // limit })` surface and propagate `hasMore` through the ledger.
       //
-      // When agentId is configured, scope to (agent_id, session_id) so a reused
-      // session ID in a shared DB does not return another sink's rows. Child-agent
-      // compliance events are included because writes normalize their agent_id to
-      // config.agentId (see flushBuffer). canonical_json preserves the original.
-      const rows =
-        config.agentId !== undefined
-          ? db
-              .prepare(
-                "SELECT * FROM audit_log WHERE agent_id = ? AND session_id = ? ORDER BY id ASC",
-              )
-              .all(config.agentId, sessionId)
-          : db
-              .prepare("SELECT * FROM audit_log WHERE session_id = ? ORDER BY id ASC")
-              .all(sessionId);
+      // No agentId filter on reads: a sink can legitimately persist rows for
+      // multiple agent IDs (e.g. compliance events attributed to child agents).
+      // session_id alone is sufficient for correctness in typical deployments
+      // (session IDs are UUIDs — collision across agents is negligible).
+      // agentId scoping is intentionally restricted to pruning where cross-agent
+      // deletion is the genuine risk.
+      const rows = db
+        .prepare("SELECT * FROM audit_log WHERE session_id = ? ORDER BY id ASC")
+        .all(sessionId);
       return rows.map(mapRow);
     },
 
     getEntries(): readonly AuditEntry[] {
       flushBuffer();
-      const rows =
-        config.agentId !== undefined
-          ? db
-              .prepare("SELECT * FROM audit_log WHERE agent_id = ? ORDER BY id ASC")
-              .all(config.agentId)
-          : readAllRows(db);
-      return rows.map(mapRow);
+      return readAllRows(db).map(mapRow);
     },
 
     close(): void {

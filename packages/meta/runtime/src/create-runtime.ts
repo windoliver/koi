@@ -986,7 +986,10 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       : {}),
     onError: (error: unknown, entry: AuditEntry) => {
       if (poisonError === undefined) {
-        // First failure: log the root cause. Subsequent calls will log the poison error.
+        // First failure: record it. Subsequent log() calls throw from the poison wrapper.
+        // The guardedMw.onBeforeTurn check will reject all future turns.
+        // CLI entrypoints layer process termination on top; library code does not
+        // mutate global process state here — callers observe failure through turn errors.
         poisonError = error;
         console.error(
           "[koi/runtime] audit sink write failed — sink poisoned, no further audit writes accepted:",
@@ -994,14 +997,7 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
           "entry kind:",
           entry.kind,
         );
-        process.exitCode = 1;
       }
-      // Throw so the drain loop propagates an unhandled rejection, terminating the process.
-      // Audit integrity requires fail-closed: a process with a broken audit trail must not
-      // continue accepting work.
-      throw new Error("audit sink write failed — aborting to preserve audit trail integrity", {
-        cause: error,
-      });
     },
   });
 
