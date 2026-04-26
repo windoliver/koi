@@ -190,15 +190,25 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
           : candidateStmt.all(cutoff)
       ) as Array<{ agent_id: string; session_id: string; max_id: number }>;
 
-      const chainFollowerStmt = db.prepare(
-        `SELECT 1 FROM audit_log WHERE id > ? AND prev_hash IS NOT NULL LIMIT 1`,
-      );
+      // When agentId is set, scope the chain-follower check to this agent's rows.
+      // A signed row from a different agent sharing the DB must not prevent pruning
+      // of this agent's unsigned sessions.
+      const chainFollowerStmt =
+        config.agentId !== undefined
+          ? db.prepare(
+              `SELECT 1 FROM audit_log WHERE id > ? AND agent_id = ? AND prev_hash IS NOT NULL LIMIT 1`,
+            )
+          : db.prepare(`SELECT 1 FROM audit_log WHERE id > ? AND prev_hash IS NOT NULL LIMIT 1`);
 
       db.transaction(() => {
         for (const { agent_id, session_id, max_id } of candidates) {
           // Skip sessions mid-chain: if any later row is hash-chained, deleting
           // this session would corrupt the audit trail of subsequent sessions.
-          if (chainFollowerStmt.get(max_id) !== null) continue;
+          const hasChainFollower =
+            config.agentId !== undefined
+              ? chainFollowerStmt.get(max_id, config.agentId)
+              : chainFollowerStmt.get(max_id);
+          if (hasChainFollower !== null) continue;
           db.prepare("DELETE FROM audit_log WHERE agent_id = ? AND session_id = ?").run(
             agent_id,
             session_id,

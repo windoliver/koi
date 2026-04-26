@@ -176,6 +176,9 @@ export function createNdjsonAuditSink(
   // Set on the first timer flush failure. Causes log() to reject immediately so the
   // audit middleware queue routes the error through onError (which poisons the sink).
   let timerFlushError: unknown;
+  // Set synchronously when close() begins so the interval callback cannot enqueue
+  // new flush work after the close task is already in the chain.
+  let closedFlag = false;
 
   // Single-writer queue: all log()/flush()/close() calls are chained so rotation
   // is never re-entered concurrently and writes never race across a rotate boundary.
@@ -218,6 +221,9 @@ export function createNdjsonAuditSink(
   ]).then(() => {});
 
   const timer = setInterval(() => {
+    // Suppress timer work once close() has started — the close task establishes
+    // a hard shutdown boundary and no further writes should be queued after it.
+    if (closedFlag) return;
     // Route through the write chain so the timer flush doesn't race rotation or close.
     writeChain = writeChain
       .then(() => Promise.resolve(writer.flush()).then(() => {}))
@@ -365,6 +371,9 @@ export function createNdjsonAuditSink(
     },
 
     close(): Promise<void> {
+      // Set the flag synchronously so the interval callback cannot enqueue any new
+      // flush tasks between now and when the close task starts executing.
+      closedFlag = true;
       return enqueue(async () => {
         clearInterval(timer);
         await Promise.resolve(writer.flush());
