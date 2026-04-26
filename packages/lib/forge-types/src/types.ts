@@ -103,9 +103,14 @@ export function isPublishedForgeLifecycleState(
 /**
  * The output of a successful forge pipeline. Wraps the persisted
  * `BrickArtifact` with forge-process metadata (which candidate produced it,
- * the verification digest, lifecycle state at publication time). The
- * `lifecycle` slot is narrowed to `PublishedForgeLifecycleState` so a failed
- * or in-flight pipeline cannot be represented as an artifact.
+ * the verification digest, lifecycle state). The `lifecycle` slot is narrowed
+ * to `PublishedForgeLifecycleState` so a failed or in-flight pipeline cannot
+ * be represented as an artifact.
+ *
+ * `ForgeArtifact` covers both `published` (current) and `retired`
+ * (post-publication) states. Use `CompletedForgeArtifact` (below) for the
+ * specific case of a `forge_completed` event payload, where the lifecycle at
+ * the moment of completion is necessarily `"published"`.
  */
 export interface ForgeArtifact {
   readonly brick: BrickArtifact;
@@ -115,6 +120,17 @@ export interface ForgeArtifact {
   readonly forgedAt: number;
   /** Agent ID that authorized the forge. */
   readonly forgedBy: string;
+}
+
+/**
+ * `ForgeArtifact` view used inside a `forge_completed` event. The lifecycle
+ * is locked to `"published"` because the artifact has just been published —
+ * it cannot already be retired in the same event that announces completion.
+ * Persisted/replayed artifacts that have since been retired remain valid
+ * `ForgeArtifact` values; the distinction lives at the event boundary only.
+ */
+export interface CompletedForgeArtifact extends Omit<ForgeArtifact, "lifecycle"> {
+  readonly lifecycle: "published";
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +260,7 @@ export type ForgeEvent =
   | {
       readonly kind: "forge_completed";
       readonly candidateId: string;
-      readonly artifact: ForgeArtifact;
+      readonly artifact: CompletedForgeArtifact;
     }
   | {
       readonly kind: "forge_failed";
@@ -278,6 +294,14 @@ function isPriority(value: unknown): value is number {
   return isFiniteNumber(value) && value >= 0 && value <= 1;
 }
 
+function isNonNegativeTimestamp(value: unknown): value is number {
+  return isFiniteNumber(value) && value >= 0;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return isFiniteNumber(value) && Number.isInteger(value) && value >= 1;
+}
+
 function isCandidateLike(value: unknown): boolean {
   if (!isObject(value)) return false;
   return (
@@ -295,13 +319,20 @@ function isCandidateLike(value: unknown): boolean {
 
 function isDemandLike(value: unknown): boolean {
   if (!isObject(value)) return false;
-  return (
-    isObject(value.signal) &&
-    isForgeDemandStatus(value.status) &&
-    isFiniteNumber(value.observedAt) &&
-    isFiniteNumber(value.occurrences) &&
-    isOptional(value.resolvedAt, isFiniteNumber)
-  );
+  const { signal, status, observedAt, occurrences, resolvedAt } = value;
+  if (
+    !isObject(signal) ||
+    !isForgeDemandStatus(status) ||
+    !isNonNegativeTimestamp(observedAt) ||
+    !isPositiveInteger(occurrences)
+  ) {
+    return false;
+  }
+  // Timestamp ordering: a demand cannot be resolved before it was observed.
+  if (resolvedAt !== undefined) {
+    if (!isNonNegativeTimestamp(resolvedAt) || resolvedAt < observedAt) return false;
+  }
+  return true;
 }
 
 function isArtifactLike(value: unknown): boolean {

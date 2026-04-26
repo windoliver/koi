@@ -108,6 +108,14 @@ interface ForgeArtifact {
   readonly forgedBy: string;         // agent ID
 }
 
+/** Lifecycle locked to "published" — used inside `forge_completed` events
+ *  where the artifact has just been published and cannot already be retired.
+ *  Persisted/replayed `ForgeArtifact` values that have since been retired
+ *  remain valid; the distinction lives at the event boundary only. */
+interface CompletedForgeArtifact extends Omit<ForgeArtifact, "lifecycle"> {
+  readonly lifecycle: "published";
+}
+
 interface ForgeVerificationSummary {
   readonly passed: boolean;
   readonly stagesPassed: readonly string[];
@@ -192,7 +200,7 @@ type ForgeEvent =
   | {
       readonly kind: "forge_completed";
       readonly candidateId: string;
-      readonly artifact: ForgeArtifact;
+      readonly artifact: CompletedForgeArtifact; // lifecycle locked to "published"
     }
   | {
       readonly kind: "forge_failed";

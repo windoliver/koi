@@ -492,6 +492,61 @@ describe("@koi/forge-types — ForgeEvent", () => {
       }),
     ).toBe(false);
 
+    // demand_detected: occurrences must be a positive integer
+    for (const occurrences of [0, -1, 1.5, Number.NaN]) {
+      expect(
+        isForgeEvent({
+          kind: "demand_detected",
+          demand: { signal: {}, status: "open", observedAt: 0, occurrences },
+        }),
+      ).toBe(false);
+    }
+    // demand_detected: timestamps must be non-negative
+    expect(
+      isForgeEvent({
+        kind: "demand_detected",
+        demand: { signal: {}, status: "open", observedAt: -1, occurrences: 1 },
+      }),
+    ).toBe(false);
+    expect(
+      isForgeEvent({
+        kind: "demand_detected",
+        demand: {
+          signal: {},
+          status: "open",
+          observedAt: 5,
+          occurrences: 1,
+          resolvedAt: -1,
+        },
+      }),
+    ).toBe(false);
+    // demand_detected: resolvedAt must be >= observedAt
+    expect(
+      isForgeEvent({
+        kind: "demand_detected",
+        demand: {
+          signal: {},
+          status: "accepted",
+          observedAt: 100,
+          occurrences: 1,
+          resolvedAt: 50,
+        },
+      }),
+    ).toBe(false);
+    // demand_detected: equal timestamps are allowed (resolved-at-observe).
+    expect(
+      isForgeEvent({
+        kind: "demand_detected",
+        demand: {
+          signal: {},
+          status: "accepted",
+          observedAt: 100,
+          occurrences: 1,
+          resolvedAt: 100,
+        },
+      }),
+    ).toBe(true);
+
     // forge_completed: artifact.lifecycle must be exactly "published" — `retired` is stale state.
     expect(
       isForgeEvent({

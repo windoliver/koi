@@ -6,6 +6,7 @@
  */
 
 export type {
+  CompletedForgeArtifact,
   FailableForgeStage,
   ForgeArtifact,
   ForgeCandidate,
