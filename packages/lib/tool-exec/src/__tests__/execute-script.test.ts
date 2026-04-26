@@ -177,6 +177,31 @@ describe("executeScript — tool call budget", () => {
     expect(result.error).toMatch(/budget/i);
   });
 
+  test("fails the whole script when an over-budget tool call is caught", async () => {
+    const counter = makeTool("tick", () => "ok");
+    const tools = new Map([["tick", counter]]);
+
+    const result = await executeScript(
+      config({
+        tools,
+        maxToolCalls: 1,
+        code: `
+          try {
+            await tools.tick({});
+            await tools.tick({});
+          } catch {
+            return "caught budget error";
+          }
+          return "not caught";
+        `,
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.result).toBeNull();
+    expect(result.error).toMatch(/budget/i);
+  });
+
   test("default budget is DEFAULT_MAX_TOOL_CALLS", () => {
     expect(DEFAULT_MAX_TOOL_CALLS).toBe(50);
   });

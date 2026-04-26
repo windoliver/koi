@@ -25,6 +25,39 @@ import { buildSafeEnv, execSandboxed, spawnBash } from "./exec.js";
  */
 const CWD_SENTINEL_PREFIX = "__KOI_CWD__:";
 const CWD_SENTINEL_SUFFIX = `\nprintf '${CWD_SENTINEL_PREFIX}%s\\n' "$(pwd -P)"`;
+const MIN_TIMEOUT_MS = 1;
+
+type TimeoutResolution =
+  | { readonly ok: true; readonly value: number }
+  | { readonly ok: false; readonly reason: string };
+
+function normalizePolicyTimeout(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < MIN_TIMEOUT_MS) {
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
+function resolveTimeoutMs(
+  raw: unknown,
+  defaultTimeoutMs: number,
+  maxTimeoutMs: number,
+): TimeoutResolution {
+  if (raw === undefined) return { ok: true, value: defaultTimeoutMs };
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < MIN_TIMEOUT_MS) {
+    return {
+      ok: false,
+      reason: "timeoutMs must be a positive finite integer",
+    };
+  }
+  if (!Number.isInteger(raw)) {
+    return {
+      ok: false,
+      reason: "timeoutMs must be a positive finite integer",
+    };
+  }
+  return { ok: true, value: Math.min(raw, maxTimeoutMs) };
+}
 
 /** Parse and strip the sentinel line from stdout. Returns null if not found. */
 function extractCwdSentinel(stdout: string): { cwd: string; stdout: string } | null {
@@ -199,8 +232,15 @@ export function createBashToolWithHooks(config?: BashToolConfig): BashToolHandle
     ...config?.policy,
   };
   const maxOutputBytes = policy.maxOutputBytes ?? DEFAULT_BASH_POLICY.maxOutputBytes ?? 1_048_576;
-  const defaultTimeoutMs =
-    policy.defaultTimeoutMs ?? DEFAULT_BASH_POLICY.defaultTimeoutMs ?? 30_000;
+  const configuredDefaultTimeoutMs = normalizePolicyTimeout(
+    policy.defaultTimeoutMs,
+    DEFAULT_BASH_POLICY.defaultTimeoutMs ?? 30_000,
+  );
+  const maxTimeoutMs = normalizePolicyTimeout(
+    policy.maxTimeoutMs,
+    DEFAULT_BASH_POLICY.maxTimeoutMs ?? 300_000,
+  );
+  const defaultTimeoutMs = Math.min(configuredDefaultTimeoutMs, maxTimeoutMs);
   const sandboxAdapter = config?.sandboxAdapter;
   const sandboxProfile = config?.sandboxProfile;
   const trackCwd = config?.trackCwd ?? false;
@@ -235,7 +275,11 @@ export function createBashToolWithHooks(config?: BashToolConfig): BashToolHandle
           },
           timeoutMs: {
             type: "number",
-            description: `Execution timeout in milliseconds. Defaults to ${defaultTimeoutMs}ms.`,
+            minimum: MIN_TIMEOUT_MS,
+            maximum: maxTimeoutMs,
+            description:
+              `Execution timeout in milliseconds. Defaults to ${defaultTimeoutMs}ms; ` +
+              `values above ${maxTimeoutMs}ms are clamped.`,
           },
         },
         required: ["command"],
@@ -271,7 +315,16 @@ export function createBashToolWithHooks(config?: BashToolConfig): BashToolHandle
       // only — cwd tracking only updates when no explicit cwd was provided.
       const explicitCwd = typeof args.cwd === "string" ? args.cwd : undefined;
       const rawCwd = explicitCwd ?? (trackCwd ? currentCwd : workspaceRoot);
-      const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : defaultTimeoutMs;
+      const timeoutResult = resolveTimeoutMs(args.timeoutMs, defaultTimeoutMs, maxTimeoutMs);
+      if (!timeoutResult.ok) {
+        return {
+          error: "Invalid timeoutMs",
+          category: "validation",
+          reason: timeoutResult.reason,
+          pattern: "timeoutMs",
+        };
+      }
+      const timeoutMs = timeoutResult.value;
 
       // Security classification pipeline:
       //   prefilter → AST analysis → simple/too-complex disposition

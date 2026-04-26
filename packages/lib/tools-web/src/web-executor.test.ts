@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import { MAX_TIMEOUT_MS } from "./constants.js";
 import type { DnsResolverFn, SearchProvider } from "./web-executor.js";
 import { createWebExecutor } from "./web-executor.js";
 
@@ -2003,6 +2004,41 @@ describe("createWebExecutor.search", () => {
     await executor.search("hello world");
     await executor.search("  HELLO WORLD  ");
     expect(callCount).toBe(1);
+  });
+
+  test("clamps search timeout to MAX_TIMEOUT_MS", async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const delays: number[] = [];
+    globalThis.setTimeout = ((
+      handler: Parameters<typeof globalThis.setTimeout>[0],
+      timeout?: Parameters<typeof globalThis.setTimeout>[1],
+    ) => {
+      delays.push(Number(timeout));
+      return originalSetTimeout(handler, 0);
+    }) as typeof globalThis.setTimeout;
+
+    try {
+      const searchProvider: SearchProvider = {
+        name: "mock",
+        search: async () => ({
+          ok: true as const,
+          value: [{ title: "R", url: "https://r.com", snippet: "s" }],
+        }),
+      };
+
+      const executor = createWebExecutor({
+        searchProvider,
+        defaultTimeoutMs: Number.MAX_SAFE_INTEGER,
+        allowHttps: false,
+      });
+
+      const result = await executor.search("query");
+
+      expect(result.ok).toBe(true);
+      expect(delays[0]).toBe(MAX_TIMEOUT_MS);
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
   });
 });
 

@@ -22,6 +22,13 @@ const schema = z.object({
     .describe("Optional structured context passed to the child agent as additional input."),
 });
 
+function descriptionWithContext(description: string, context: JsonObject | undefined): string {
+  if (context === undefined) return description;
+  const serialized = JSON.stringify(context, null, 2);
+  if (serialized === undefined) return description;
+  return `${description}\n\nStructured context:\n${serialized}`;
+}
+
 /**
  * agent_spawn — LLM-callable tool for coordinator agents.
  *
@@ -52,11 +59,16 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
         return { ok: false, error: parsed.error.message };
       }
 
-      const { agent_name, description } = parsed.data;
+      const { agent_name, description, context } = parsed.data;
+      const childDescription = descriptionWithContext(
+        description,
+        context as JsonObject | undefined,
+      );
 
       const result = await config.spawnFn({
         agentName: agent_name,
-        description,
+        description: childDescription,
+        ...(context !== undefined ? { context: context as JsonObject } : {}),
         signal: config.signal,
         agentId: config.agentId,
       });
