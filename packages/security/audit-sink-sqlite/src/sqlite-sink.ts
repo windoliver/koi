@@ -278,7 +278,9 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
 
   let pruneTimer: ReturnType<typeof setInterval> | undefined;
   if (config.retention) {
-    safePrune();
+    // Initial prune at construction: let errors propagate so incompatible configurations
+    // (hash-chained DB, unreadable schema) fail fast rather than silently accumulate rows.
+    pruneOldEntries();
     const pruneIntervalMs = config.retention.pruneIntervalMs ?? DEFAULT_PRUNE_INTERVAL_MS;
     pruneTimer = setInterval(safePrune, pruneIntervalMs);
     if (typeof pruneTimer === "object" && pruneTimer !== null && "unref" in pruneTimer) {

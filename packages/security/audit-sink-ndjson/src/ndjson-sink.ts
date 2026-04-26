@@ -179,6 +179,9 @@ export function createNdjsonAuditSink(
   // Set synchronously when close() begins so the interval callback cannot enqueue
   // new flush work after the close task is already in the chain.
   let closedFlag = false;
+  // Set when startup init rejects (non-ENOENT stat/readdir error). All public methods
+  // reject immediately — no writes accepted after a corrupt or unreadable startup state.
+  let startupError: unknown;
 
   // Single-writer queue: all log()/flush()/close() calls are chained so rotation
   // is never re-entered concurrently and writes never race across a rotate boundary.
@@ -218,12 +221,20 @@ export function createNdjsonAuditSink(
         }
         throw e; // Real filesystem error — fail closed
       }),
-  ]).then(() => {});
+  ])
+    .then(() => {})
+    .catch((e: unknown) => {
+      startupError = e;
+      // Resolve the chain so the timer doesn't cascade rejections across intervals.
+      // startupError gates every public method — no task will execute post-failure.
+    });
 
   const timer = setInterval(() => {
     // Suppress timer work once close() has started — the close task establishes
     // a hard shutdown boundary and no further writes should be queued after it.
     if (closedFlag) return;
+    // Suppress timer flushes after a startup failure — writer state is uninitialized.
+    if (startupError !== undefined) return;
     // Route through the write chain so the timer flush doesn't race rotation or close.
     writeChain = writeChain
       .then(() => Promise.resolve(writer.flush()).then(() => {}))
@@ -298,6 +309,13 @@ export function createNdjsonAuditSink(
 
   return {
     log(entry: AuditEntry): Promise<void> {
+      if (startupError !== undefined) {
+        return Promise.reject(
+          new Error("audit NDJSON sink failed to initialize — cannot accept writes", {
+            cause: startupError,
+          }),
+        );
+      }
       if (timerFlushError !== undefined) {
         return Promise.reject(
           new Error("audit log NDJSON flush failed — sink cannot accept further writes", {
@@ -320,10 +338,24 @@ export function createNdjsonAuditSink(
     },
 
     flush(): Promise<void> {
+      if (startupError !== undefined) {
+        return Promise.reject(
+          new Error("audit NDJSON sink failed to initialize — flush rejected", {
+            cause: startupError,
+          }),
+        );
+      }
       return enqueue(() => Promise.resolve(writer.flush()).then(() => {}));
     },
 
     getEntries(): Promise<readonly AuditEntry[]> {
+      if (startupError !== undefined) {
+        return Promise.reject(
+          new Error("audit NDJSON sink failed to initialize — cannot read entries", {
+            cause: startupError,
+          }),
+        );
+      }
       // Serialized through the write queue so rotation within this sink instance
       // cannot interleave with the snapshot.
       //
@@ -374,6 +406,14 @@ export function createNdjsonAuditSink(
       // Set the flag synchronously so the interval callback cannot enqueue any new
       // flush tasks between now and when the close task starts executing.
       closedFlag = true;
+      if (startupError !== undefined) {
+        clearInterval(timer);
+        return Promise.reject(
+          new Error("audit NDJSON sink failed to initialize — close cannot guarantee flush", {
+            cause: startupError,
+          }),
+        );
+      }
       return enqueue(async () => {
         clearInterval(timer);
         await Promise.resolve(writer.flush());
