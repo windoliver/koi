@@ -30,7 +30,9 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
+import type { NdjsonRotationConfig } from "@koi/audit-sink-ndjson";
 import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
+import type { SqliteRetentionConfig } from "@koi/audit-sink-sqlite";
 import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
@@ -762,6 +764,12 @@ export interface KoiRuntimeConfig {
    */
   readonly auditNdjsonPath?: string | undefined;
   /**
+   * Optional NDJSON rotation policy. When set, the sink archives the active file
+   * to `<auditNdjsonPath>.archive/` when the configured threshold is reached.
+   * Requires `auditNdjsonPath` to be set — ignored otherwise.
+   */
+  readonly auditNdjsonRotation?: NdjsonRotationConfig | undefined;
+  /**
    * Optional absolute path to a SQLite audit database file.
    *
    * The TUI surfaces this via the `KOI_AUDIT_SQLITE` environment variable
@@ -770,6 +778,12 @@ export interface KoiRuntimeConfig {
    * owned by the runtime and closed during shutdown.
    */
   readonly auditSqlitePath?: string | undefined;
+  /**
+   * Optional SQLite audit retention policy. When set, rows older than
+   * `maxAgeDays` are pruned on the configured interval.
+   * Requires `auditSqlitePath` to be set — ignored otherwise.
+   */
+  readonly auditSqliteRetention?: SqliteRetentionConfig | undefined;
   /** Path to the SQLite DB backing the ViolationStore.
    *  - `undefined` (default): auto-wires to `~/.koi/violations.db` when
    *    governance is enabled — mirrors the `~/.koi/governance-alerts.jsonl`
@@ -2421,7 +2435,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             "Set KOI_AUDIT_NDJSON instead.",
         );
       }
-      const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
+      const auditSink = createNdjsonAuditSink({
+        filePath: config.auditNdjsonPath,
+        ...(config.auditNdjsonRotation !== undefined
+          ? { rotation: config.auditNdjsonRotation }
+          : {}),
+      });
       const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
       complianceRecorders.push(
         createAuditSinkComplianceRecorder(auditSink, {
@@ -2500,7 +2519,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             "Set KOI_AUDIT_SQLITE instead.",
         );
       }
-      const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
+      const sqliteSink = createSqliteAuditSink({
+        dbPath: config.auditSqlitePath,
+        ...(config.auditSqliteRetention !== undefined
+          ? { retention: config.auditSqliteRetention }
+          : {}),
+      });
       const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
       complianceRecorders.push(
         createAuditSinkComplianceRecorder(sqliteSink, {

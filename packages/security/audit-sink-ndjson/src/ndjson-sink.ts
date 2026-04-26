@@ -57,6 +57,23 @@ async function readEntriesFromFile(filePath: string): Promise<readonly AuditEntr
   }
 }
 
+/** Read the last non-empty line of a file and return the UTC date of its `timestamp` field. */
+async function readLastEntryDay(filePath: string): Promise<string | undefined> {
+  try {
+    const content = await readFile(filePath, "utf-8");
+    const lines = content.split("\n").filter((l) => l.trim().length > 0);
+    const last = lines[lines.length - 1];
+    if (last === undefined) return undefined;
+    const parsed = JSON.parse(last.trim()) as Record<string, unknown>;
+    if (typeof parsed.timestamp === "number") {
+      return new Date(parsed.timestamp).toISOString().slice(0, 10);
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function readArchiveEntries(archiveDir: string): Promise<readonly AuditEntry[]> {
   let files: string[];
   try {
@@ -94,15 +111,17 @@ export function createNdjsonAuditSink(
 
   // Single-writer queue: all log()/flush()/close() calls are chained so rotation
   // is never re-entered concurrently and writes never race across a rotate boundary.
-  // Seed bytesWritten and, for daily rotation, currentDay from the active file's
-  // on-disk stat so a restarted process handles pre-existing files correctly.
+  // Seed bytesWritten from on-disk stat and, for daily rotation, currentDay from
+  // the last entry's audit timestamp — not from mtime, which is mutable (backup
+  // restores, external touch) and can silently suppress a required rotation.
   let writeChain: Promise<void> = stat(config.filePath)
-    .then((s) => {
+    .then(async (s) => {
       bytesWritten = s.size;
       if (config.rotation?.daily === true && s.size > 0) {
-        // Initialize currentDay from the file's mtime so a restart against a
-        // previous-day file triggers rotation on the first new-day write.
-        currentDay = new Date(s.mtimeMs).toISOString().slice(0, 10);
+        const lastDay = await readLastEntryDay(config.filePath);
+        if (lastDay !== undefined) {
+          currentDay = lastDay;
+        }
       }
     })
     .catch(() => {
@@ -111,7 +130,9 @@ export function createNdjsonAuditSink(
 
   const timer = setInterval(() => {
     // Route through the write chain so the timer flush doesn't race rotation or close.
-    writeChain = writeChain.then(() => writer.flush()).catch(() => {});
+    writeChain = writeChain
+      .then(() => Promise.resolve(writer.flush()).then(() => {}))
+      .catch(() => {});
   }, flushIntervalMs);
 
   if (typeof timer === "object" && timer !== null && "unref" in timer) {
@@ -119,7 +140,7 @@ export function createNdjsonAuditSink(
   }
 
   async function rotate(): Promise<void> {
-    await writer.flush();
+    await Promise.resolve(writer.flush());
 
     await mkdir(archiveDir, { recursive: true });
 
@@ -128,7 +149,7 @@ export function createNdjsonAuditSink(
     // End the writer only after the archive directory is ready. If rename() fails,
     // the writer has already ended but we reopen the original file so subsequent
     // log() calls still persist rather than silently dropping entries.
-    await writer.end();
+    await Promise.resolve(writer.end());
     try {
       await rename(config.filePath, archivePath);
     } catch (e: unknown) {
@@ -179,7 +200,7 @@ export function createNdjsonAuditSink(
     },
 
     flush(): Promise<void> {
-      return enqueue(() => writer.flush());
+      return enqueue(() => Promise.resolve(writer.flush()).then(() => {}));
     },
 
     getEntries(): Promise<readonly AuditEntry[]> {
@@ -202,8 +223,8 @@ export function createNdjsonAuditSink(
     close(): Promise<void> {
       return enqueue(async () => {
         clearInterval(timer);
-        await writer.flush();
-        await writer.end();
+        await Promise.resolve(writer.flush());
+        await Promise.resolve(writer.end());
       });
     },
   };
