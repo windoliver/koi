@@ -7,6 +7,11 @@
  *
  * Rotation (optional): when maxSizeBytes or daily is configured, the active file
  * is archived to <filePath>.archive/ and a fresh file is opened.
+ *
+ * Archive naming: `${seq8}-${uuid8}.ndjson` where seq is a per-sink monotonic
+ * counter initialized from the max existing archive counter on startup. This makes
+ * ordering independent of wall-clock timestamps, which can reorder under NTP
+ * correction or VM clock rollback across process restarts.
  */
 
 import { mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
@@ -25,16 +30,11 @@ function defaultTodayUtc(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-let rotationCounter = 0;
-
-function rotationTimestamp(): string {
-  // UUID suffix guarantees global uniqueness across process restarts and clock skew,
-  // preventing overwrite of an existing archive when the clock repeats a prior millisecond.
-  // The counter provides additional tiebreaking for lexicographic sort within a single run.
-  const ts = new Date().toISOString().replace(/:/g, "-").replace(/\./g, "-");
-  rotationCounter += 1;
-  const uuid = crypto.randomUUID().slice(0, 8);
-  return `${ts}-${String(rotationCounter).padStart(4, "0")}-${uuid}`;
+/** Parse the monotonic sequence prefix from an archive filename, or 0 if absent. */
+function parseArchiveSeq(filename: string): number {
+  const m = /^(\d{8})-/.exec(filename);
+  if (m === null || m[1] === undefined) return 0;
+  return parseInt(m[1], 10);
 }
 
 async function readEntriesFromFile(filePath: string): Promise<readonly AuditEntry[]> {
@@ -85,18 +85,6 @@ async function readLastEntryMeta(
   }
 }
 
-async function readFirstEntryTimestamp(filePath: string): Promise<number> {
-  try {
-    const content = await readFile(filePath, "utf-8");
-    const firstLine = content.split("\n").find((l) => l.trim().length > 0);
-    if (firstLine === undefined) return 0;
-    const parsed = JSON.parse(firstLine.trim()) as Record<string, unknown>;
-    return typeof parsed.timestamp === "number" ? parsed.timestamp : 0;
-  } catch {
-    return 0;
-  }
-}
-
 async function readArchiveEntries(archiveDir: string): Promise<readonly AuditEntry[]> {
   let files: string[];
   try {
@@ -110,31 +98,20 @@ async function readArchiveEntries(archiveDir: string): Promise<readonly AuditEnt
 
   // Only ingest .ndjson files — stray .DS_Store, editor temps, or partial copies
   // must not cause a corruption error that takes the entire audit trail offline.
-  // Sort by first-entry audit timestamp (stable data inside the file) rather than
-  // by rotation-time wall-clock filename: filename timestamps reflect when rotation
-  // ran, not when entries were written, so NTP correction or VM clock rollback across
-  // restarts can reorder archives. Entry timestamps were captured at write time and
-  // are monotonically increasing within each archive, making them a more reliable
-  // ordering proxy. Filename is the tiebreaker for empty archives (timestamp == 0).
+  // Sort by monotonic sequence prefix (clock-independent rotation order), with
+  // filename as tiebreaker for archives that share the same sequence (should never
+  // happen in practice, but defensively handled). Audit entry timestamps are not
+  // used for ordering: entries are stamped with call start time, so a long-running
+  // call can produce a timestamp older than entries already in a prior archive.
   const ndjsonFiles = files.filter((f) => f.endsWith(".ndjson"));
-  const withTimestamps = await Promise.all(
-    ndjsonFiles.map(async (f) => ({
-      file: f,
-      firstTimestamp: await readFirstEntryTimestamp(join(archiveDir, f)),
-    })),
-  );
-  withTimestamps.sort((a, b) =>
-    a.firstTimestamp !== b.firstTimestamp
-      ? a.firstTimestamp - b.firstTimestamp
-      : a.file < b.file
-        ? -1
-        : a.file > b.file
-          ? 1
-          : 0,
-  );
+  ndjsonFiles.sort((a, b) => {
+    const seqA = parseArchiveSeq(a);
+    const seqB = parseArchiveSeq(b);
+    return seqA !== seqB ? seqA - seqB : a < b ? -1 : a > b ? 1 : 0;
+  });
 
   const results: AuditEntry[] = [];
-  for (const { file } of withTimestamps) {
+  for (const file of ndjsonFiles) {
     const entries = await readEntriesFromFile(join(archiveDir, file));
     results.push(...entries);
   }
@@ -151,29 +128,48 @@ export function createNdjsonAuditSink(
   const flushIntervalMs = config.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
   const archiveDir = `${config.filePath}.archive`;
 
-  // let — writer and size tracking are replaced on each rotation
+  // let — writer, size tracking, and rotation counter are replaced/updated on each rotation.
   let writer = Bun.file(config.filePath).writer();
   let bytesWritten = 0;
   let currentDay = config._clockForTesting?.todayUtc() ?? defaultTodayUtc();
+  // Per-sink monotonic counter for archive filenames — immune to wall-clock skew.
+  // Initialized from the max existing archive counter so it is strictly increasing
+  // across process restarts within the same archive directory.
+  let rotationSeq = 0;
 
   // Single-writer queue: all log()/flush()/close() calls are chained so rotation
   // is never re-entered concurrently and writes never race across a rotate boundary.
   // Seed bytesWritten from on-disk stat and, for daily rotation, currentDay from
   // the last entry's audit timestamp — not from mtime, which is mutable (backup
   // restores, external touch) and can silently suppress a required rotation.
-  let writeChain: Promise<void> = stat(config.filePath)
-    .then(async (s) => {
-      bytesWritten = s.size;
-      if (config.rotation?.daily === true && s.size > 0) {
-        const meta = await readLastEntryMeta(config.filePath);
-        if (meta !== undefined) {
-          currentDay = meta.day;
+  // Also read the archive dir to initialize rotationSeq above the max existing archive.
+  let writeChain: Promise<void> = Promise.all([
+    stat(config.filePath)
+      .then(async (s) => {
+        bytesWritten = s.size;
+        if (config.rotation?.daily === true && s.size > 0) {
+          const meta = await readLastEntryMeta(config.filePath);
+          if (meta !== undefined) {
+            currentDay = meta.day;
+          }
         }
-      }
-    })
-    .catch(() => {
-      /* ENOENT or unreadable — keep counter at 0 and currentDay as today */
-    });
+      })
+      .catch(() => {
+        /* ENOENT or unreadable — keep counter at 0 and currentDay as today */
+      }),
+    readdir(archiveDir)
+      .then((files) => {
+        let max = 0;
+        for (const f of files) {
+          const n = parseArchiveSeq(f);
+          if (n > max) max = n;
+        }
+        rotationSeq = max;
+      })
+      .catch(() => {
+        /* archive dir absent — rotationSeq stays 0 */
+      }),
+  ]).then(() => {});
 
   const timer = setInterval(() => {
     // Route through the write chain so the timer flush doesn't race rotation or close.
@@ -186,13 +182,19 @@ export function createNdjsonAuditSink(
     (timer as { unref: () => void }).unref();
   }
 
+  function nextArchiveName(): string {
+    rotationSeq += 1;
+    // UUID suffix prevents collision if two processes share the same archive dir.
+    const uuid = crypto.randomUUID().slice(0, 8);
+    return `${String(rotationSeq).padStart(8, "0")}-${uuid}.ndjson`;
+  }
+
   async function rotate(): Promise<void> {
     await Promise.resolve(writer.flush());
 
     await mkdir(archiveDir, { recursive: true });
 
-    const ts = rotationTimestamp();
-    const archivePath = join(archiveDir, `${ts}.ndjson`);
+    const archivePath = join(archiveDir, nextArchiveName());
     // End the writer only after the archive directory is ready. If rename() fails,
     // the writer has already ended but we reopen the original file so subsequent
     // log() calls still persist rather than silently dropping entries.
