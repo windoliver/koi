@@ -1141,6 +1141,14 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           const handle = await config.client.workflow.start(config.workflowType, {
             taskQueue: config.taskQueue,
             workflowId: id,
+            // Idempotent spawns reuse a stable workflowId derived from idempotencyKey.
+            // Without ALLOW_DUPLICATE, Temporal rejects a retry after the prior execution
+            // completed/failed — exactly the retry path the idempotencyKey is meant to support.
+            // Non-idempotent spawns use the default policy (REJECT_DUPLICATE) so concurrent
+            // submissions with distinct IDs don't collide.
+            ...(options?.idempotencyKey !== undefined
+              ? { workflowIdReusePolicy: "ALLOW_DUPLICATE" }
+              : {}),
             args: [
               {
                 agentId,

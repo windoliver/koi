@@ -172,6 +172,15 @@ export async function createTemporalWorker(
     throw new Error("[temporal-worker] worker failed during startup", { cause: startupError });
   }
 
+  // Attach a permanent rejection handler to suppress unhandled-rejection noise for
+  // post-startup worker crashes. Callers that want to observe runtime failures should
+  // await or .catch() runPromise directly — this handler only prevents Node from treating
+  // an uncaught rejection as a fatal event when no caller has attached their own handler.
+  runPromise.catch((err: unknown) => {
+    if (err instanceof Error && err.message.toLowerCase().includes("shutdown")) return;
+    console.error("[temporal-worker] run loop crashed after startup:", err);
+  });
+
   return {
     worker: wrappedWorker,
     connection,
