@@ -193,7 +193,13 @@ export function createNdjsonAuditSink(
         // Use actual UTF-8 byte length, not UTF-16 code-unit count, so maxSizeBytes
         // matches the real on-disk size for entries containing multibyte characters.
         const lineBytes = Buffer.byteLength(line, "utf8");
-        await rotateIfNeeded(lineBytes);
+        try {
+          await rotateIfNeeded(lineBytes);
+        } catch (e: unknown) {
+          // Rotation failed, but rotate()'s recovery path already reopened the writer.
+          // Write this entry to the current active file so no audit record is dropped.
+          console.error("[audit-sink-ndjson] rotation failed, continuing to active file:", e);
+        }
         writer.write(line);
         bytesWritten += lineBytes;
       });

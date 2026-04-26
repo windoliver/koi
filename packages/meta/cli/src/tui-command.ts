@@ -2142,6 +2142,37 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       : manifestAudit?.violations !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
         ? { violationSqlitePath: manifestAudit.violations }
         : {}),
+    // KOI_AUDIT_NDJSON_MAX_BYTES=<n> enables size-based NDJSON log rotation.
+    // KOI_AUDIT_NDJSON_DAILY=1 enables daily UTC rotation.
+    ...(() => {
+      const maxBytes =
+        process.env.KOI_AUDIT_NDJSON_MAX_BYTES !== undefined
+          ? Number(process.env.KOI_AUDIT_NDJSON_MAX_BYTES)
+          : undefined;
+      const daily = process.env.KOI_AUDIT_NDJSON_DAILY === "1";
+      if ((maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes > 0) || daily) {
+        return {
+          auditNdjsonRotation: {
+            ...(maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes > 0
+              ? { maxSizeBytes: maxBytes }
+              : {}),
+            ...(daily ? { daily: true as const } : {}),
+          },
+        };
+      }
+      return {};
+    })(),
+    // KOI_AUDIT_SQLITE_RETENTION_DAYS=<n> enables age-based SQLite audit pruning.
+    ...(() => {
+      const days =
+        process.env.KOI_AUDIT_SQLITE_RETENTION_DAYS !== undefined
+          ? Number(process.env.KOI_AUDIT_SQLITE_RETENTION_DAYS)
+          : undefined;
+      if (days !== undefined && Number.isFinite(days) && days > 0) {
+        return { auditSqliteRetention: { maxAgeDays: days } };
+      }
+      return {};
+    })(),
     // Per-sink manifest provenance: only pass the source path for sinks that
     // actually came from the manifest (not from operator env vars). This lets
     // createKoiRuntime run a final containment check immediately before each
