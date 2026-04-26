@@ -161,12 +161,21 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
     (timer as { unref: () => void }).unref();
   }
 
-  // Pruning setup — run immediately on creation, then on interval
+  // Pruning setup — run immediately on creation, then on interval.
+  // safePrune catches all errors so the interval callback cannot crash the host process.
+  function safePrune(): void {
+    try {
+      pruneOldEntries();
+    } catch {
+      // Prune failures are non-fatal: missing or corrupt rows will be caught on the next cycle.
+    }
+  }
+
   let pruneTimer: ReturnType<typeof setInterval> | undefined;
   if (config.retention) {
-    pruneOldEntries();
+    safePrune();
     const pruneIntervalMs = config.retention.pruneIntervalMs ?? DEFAULT_PRUNE_INTERVAL_MS;
-    pruneTimer = setInterval(pruneOldEntries, pruneIntervalMs);
+    pruneTimer = setInterval(safePrune, pruneIntervalMs);
     if (typeof pruneTimer === "object" && pruneTimer !== null && "unref" in pruneTimer) {
       (pruneTimer as unknown as { unref: () => void }).unref();
     }

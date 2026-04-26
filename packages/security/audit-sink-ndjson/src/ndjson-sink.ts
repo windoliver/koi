@@ -120,13 +120,22 @@ export function createNdjsonAuditSink(
 
   async function rotate(): Promise<void> {
     await writer.flush();
-    await writer.end();
 
     await mkdir(archiveDir, { recursive: true });
 
     const ts = rotationTimestamp();
     const archivePath = join(archiveDir, `${ts}.ndjson`);
-    await rename(config.filePath, archivePath);
+    // End the writer only after the archive directory is ready. If rename() fails,
+    // the writer has already ended but we reopen the original file so subsequent
+    // log() calls still persist rather than silently dropping entries.
+    await writer.end();
+    try {
+      await rename(config.filePath, archivePath);
+    } catch (e: unknown) {
+      // Archive move failed — reopen original file so the sink stays functional.
+      writer = Bun.file(config.filePath).writer();
+      throw new Error("audit log rotation failed: archive move unsuccessful", { cause: e });
+    }
 
     writer = Bun.file(config.filePath).writer();
     bytesWritten = 0;
@@ -170,11 +179,16 @@ export function createNdjsonAuditSink(
       return enqueue(() => writer.flush());
     },
 
-    async getEntries(): Promise<readonly AuditEntry[]> {
-      await this.flush();
-      const archived = await readArchiveEntries(archiveDir);
-      const current = await readEntriesFromFile(config.filePath);
-      return [...archived, ...current];
+    getEntries(): Promise<readonly AuditEntry[]> {
+      // Serialized through the write queue so a concurrent rotation cannot move
+      // a file out of the active path after we snapshot the archive directory.
+      let result: readonly AuditEntry[] = [];
+      return enqueue(async () => {
+        await writer.flush();
+        const archived = await readArchiveEntries(archiveDir);
+        const current = await readEntriesFromFile(config.filePath);
+        result = [...archived, ...current];
+      }).then(() => result);
     },
 
     async query(sessionId: string): Promise<readonly AuditEntry[]> {
