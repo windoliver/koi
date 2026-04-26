@@ -2167,17 +2167,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
       return {};
     })(),
-    // KOI_AUDIT_SQLITE_RETENTION_DAYS=<n> enables age-based SQLite audit pruning.
+    // KOI_AUDIT_SQLITE_RETENTION_DAYS is not supported in the CLI audit path because
+    // the CLI always writes signed (hash-chained) audit entries, which are incompatible
+    // with session-granular pruning. Warn and ignore instead of aborting at boot.
     ...(() => {
       const rawDays = process.env.KOI_AUDIT_SQLITE_RETENTION_DAYS;
-      const days = rawDays !== undefined ? Number(rawDays) : undefined;
-      if (rawDays !== undefined && (days === undefined || !Number.isFinite(days) || days <= 0)) {
+      if (rawDays !== undefined) {
         console.warn(
-          `[koi] KOI_AUDIT_SQLITE_RETENTION_DAYS="${rawDays}" is not a positive number — SQLite retention disabled`,
+          "[koi] KOI_AUDIT_SQLITE_RETENTION_DAYS is not supported in the CLI audit path " +
+            "(signed/hash-chained logs cannot be pruned). The setting is ignored.",
         );
-      }
-      if (days !== undefined && Number.isFinite(days) && days > 0) {
-        return { auditSqliteRetention: { maxAgeDays: days } };
       }
       return {};
     })(),

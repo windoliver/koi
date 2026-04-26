@@ -146,7 +146,9 @@ export function createFilterTools(deps: FilterToolsDeps): {
         if (auditSink !== undefined) {
           auditFilterDecision(ctx, tool.name, finalDecision, auditSink, clock);
         }
-        await ctx.dispatchPermissionDecision?.(query, finalDecision);
+        void Promise.resolve(ctx.dispatchPermissionDecision?.(query, finalDecision)).catch(
+          () => {},
+        );
       };
 
       if (decision.effect === "deny") {

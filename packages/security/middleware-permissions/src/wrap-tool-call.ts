@@ -282,8 +282,9 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
       if (auditSink !== undefined) {
         auditDecision(ctx, resource, decision, durationMs, auditSink);
       }
-      // Await dispatch so the approval record is durable before next() runs.
-      await ctx.dispatchPermissionDecision?.(query, decision);
+      // Fire-and-forget: observer errors are non-fatal; durability is guaranteed by
+      // the audit middleware's force-flush in wrapToolCall.
+      void Promise.resolve(ctx.dispatchPermissionDecision?.(query, decision)).catch(() => {});
       ctx.reportDecision?.({
         phase: "execute",
         toolId: request.toolId,
@@ -320,7 +321,9 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
         if (auditSink !== undefined) {
           auditDecision(ctx, resource, finalDecision, durationMs, auditSink);
         }
-        await ctx.dispatchPermissionDecision?.(query, finalDecision);
+        void Promise.resolve(ctx.dispatchPermissionDecision?.(query, finalDecision)).catch(
+          () => {},
+        );
         ctx.reportDecision?.({
           phase: "execute",
           toolId: request.toolId,
@@ -436,8 +439,8 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
     if (decision.effect === "ask") {
       // Pass a dispatch callback so each approval path fires the outcome
       // BEFORE calling next(request) — ensures recording even if the tool throws.
-      return handleAskDecision(ctx, request, resource, grantKey, next, decision, async (d) => {
-        await ctx.dispatchPermissionDecision?.(query, d);
+      return handleAskDecision(ctx, request, resource, grantKey, next, decision, (d) => {
+        void Promise.resolve(ctx.dispatchPermissionDecision?.(query, d)).catch(() => {});
       });
     }
 
