@@ -31,6 +31,7 @@ export type {
   PermissionPromptData,
   PermissionRiskLevel,
   PlanTask,
+  SecurityFinding,
   SessionInfo,
   SessionSummary,
   SpawnProgress,
