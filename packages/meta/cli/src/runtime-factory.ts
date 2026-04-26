@@ -2487,6 +2487,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               console.error("[koi/cli] compliance sink write failed — sink poisoned:", error);
               process.exitCode = 1;
             }
+            throw new Error(
+              "compliance write failed — aborting to preserve audit trail integrity",
+              { cause: error },
+            );
           },
         }),
       );
@@ -2626,6 +2630,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               console.error("[koi/cli] compliance sink write failed — sink poisoned:", error);
               process.exitCode = 1;
             }
+            throw new Error(
+              "compliance write failed — aborting to preserve audit trail integrity",
+              { cause: error },
+            );
           },
         }),
       );
