@@ -44,6 +44,7 @@ import { memoryStack } from "./preset-stacks/memory.js";
 import { notebookStack } from "./preset-stacks/notebook.js";
 import { observabilityStack } from "./preset-stacks/observability.js";
 import { rulesStack } from "./preset-stacks/rules.js";
+import { schedulerStack } from "./preset-stacks/scheduler.js";
 import { skillsStack } from "./preset-stacks/skills.js";
 import { spawnStack } from "./preset-stacks/spawn.js";
 
@@ -272,6 +273,7 @@ export const DEFAULT_STACKS: readonly PresetStack[] = [
   notebookStack,
   codeExecStack,
   rulesStack,
+  schedulerStack,
   skillsStack,
   // Late-phase: spawn needs already-composed middleware for child
   // inheritance. The factory runs two `activateStacks` passes —

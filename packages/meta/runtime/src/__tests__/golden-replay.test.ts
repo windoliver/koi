@@ -45,6 +45,7 @@ import type {
 import { createSingleToolProvider, runId, sessionId } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
+import { createGateway, createInMemorySessionStore, DEFAULT_GATEWAY_CONFIG } from "@koi/gateway";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
@@ -61,6 +62,7 @@ import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { loadCassette } from "@koi/replay";
 import {
+  createProgressiveSkillProvider,
   createSkillInjectorMiddleware,
   createSkillProvider,
   createSkillsRuntime,
@@ -8114,10 +8116,11 @@ describe("Golden: @koi/mcp-server", () => {
 
     // Verify tools/list returns platform tools
     const tools = await client.listTools();
-    expect(tools.tools.length).toBe(2); // koi_send_message + koi_list_messages
+    expect(tools.tools.length).toBe(3); // koi_send_message + koi_list_messages + koi_list_mailbox
     const names = tools.tools.map((t) => t.name);
     expect(names).toContain("koi_send_message");
     expect(names).toContain("koi_list_messages");
+    expect(names).toContain("koi_list_mailbox");
 
     // Verify tool schemas have required fields
     const sendTool = tools.tools.find((t) => t.name === "koi_send_message");
@@ -8339,6 +8342,109 @@ describe("Golden: @koi/skills-runtime (standalone progressive loading)", () => {
     expect(afterInvalidate.ok).toBe(true);
     if (!afterInvalidate.ok) return;
     expect(afterInvalidate.value).toHaveLength(2); // metadata still available
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/skills-runtime — progressive provider + middleware (issue #1986)
+// No LLM needed. Validates runtimeBacked marker, XML injection, MCP exclusion,
+// and fallback behavior when provider/middleware progressive flags are mismatched.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/skills-runtime (progressive mode — issue #1986)", () => {
+  test("createProgressiveSkillProvider attaches runtimeBacked components with empty content", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { isAttachResult, skillToken } = await import("@koi/core");
+
+    const skillsDir = mkdtempSync(join(tmpdir(), "koi-golden-prog-"));
+    trajDirs.push(skillsDir);
+    mkdirSync(join(skillsDir, "commit"), { recursive: true });
+    writeFileSync(
+      join(skillsDir, "commit", "SKILL.md"),
+      "---\nname: commit\ndescription: Generate a commit message.\n---\n\nFull body text.",
+    );
+
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot: skillsDir });
+    const { provider } = createProgressiveSkillProvider(base);
+
+    const result = await provider.attach({} as never);
+    expect(isAttachResult(result)).toBe(true);
+    if (!isAttachResult(result)) return;
+
+    const component = result.components.get(skillToken("commit")) as
+      | { content: string; runtimeBacked: boolean; description: string }
+      | undefined;
+
+    // Progressive component: empty content, runtimeBacked marker set, description preserved
+    expect(component).toBeDefined();
+    expect(component?.content).toBe("");
+    expect(component?.runtimeBacked).toBe(true);
+    expect(component?.description).toBe("Generate a commit message.");
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  test("createSkillInjectorMiddleware progressive:true injects <available_skills> XML — not bodies", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { sessionId, skillToken } = await import("@koi/core");
+    const { createSkillInjectorMiddleware } = await import("@koi/skills-runtime");
+    type Agent = import("@koi/core").Agent;
+    type SkillComponent = import("@koi/core").SkillComponent;
+    type SubsystemToken = import("@koi/core").SubsystemToken<SkillComponent>;
+
+    const skillsDir = mkdtempSync(join(tmpdir(), "koi-golden-mw-"));
+    trajDirs.push(skillsDir);
+    mkdirSync(join(skillsDir, "review"), { recursive: true });
+    writeFileSync(
+      join(skillsDir, "review", "SKILL.md"),
+      "---\nname: review\ndescription: Review pull requests.\n---\n\nDetailed review instructions.",
+    );
+
+    // Build a mock agent with a progressive skill component (content: "", runtimeBacked: true)
+    const token = skillToken("review") as SubsystemToken;
+    const skills = new Map<SubsystemToken, SkillComponent>([
+      [
+        token,
+        { name: "review", description: "Review pull requests.", content: "", runtimeBacked: true },
+      ],
+    ]);
+    const agent = {
+      query: <T>(prefix: string) =>
+        prefix === "skill:"
+          ? (skills as unknown as ReadonlyMap<import("@koi/core").SubsystemToken<T>, T>)
+          : new Map(),
+    } as Agent;
+
+    const mw = createSkillInjectorMiddleware({ agent, progressive: true });
+
+    const received: import("@koi/core").ModelRequest[] = [];
+    const wrapModelCall = mw.wrapModelCall;
+    if (wrapModelCall === undefined) throw new Error("wrapModelCall not defined");
+    await wrapModelCall(
+      {
+        session: { agentId: "t", sessionId: sessionId("t"), runId: "r" as never, metadata: {} },
+        turnIndex: 0,
+        turnId: "t0" as never,
+        messages: [],
+        metadata: {},
+      },
+      { messages: [] },
+      async (req) => {
+        received.push(req);
+        return { content: "ok", model: "test" };
+      },
+    );
+
+    const prompt = received[0]?.systemPrompt ?? "";
+    // Progressive mode: XML block, no full body
+    expect(prompt).toContain("<available_skills>");
+    expect(prompt).toContain('name="review"');
+    expect(prompt).toContain('description="Review pull requests."');
+    expect(prompt).not.toContain("Detailed review instructions");
+    expect(prompt).toContain("</available_skills>");
   });
 });
 
@@ -12852,5 +12958,710 @@ describe("Golden: @koi/workspace", () => {
       rmSync(tmp, { recursive: true, force: true });
       rmSync(worktreeBase, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Golden: @koi/governance-approval-tiers", () => {
+  test("short-circuits ask to allow on persisted match", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createJsonlApprovalStore, wrapBackendWithPersistedAllowlist } = await import(
+      "@koi/governance-approval-tiers"
+    );
+    const { askId } = await import("@koi/core/governance-backend");
+    const { agentId } = await import("@koi/core");
+    const { computeGrantKey } = await import("@koi/hash");
+
+    const dir = await mkdtemp(join(tmpdir(), "golden-appt-"));
+    try {
+      const path = join(dir, "approvals.json");
+      const payload = { tool: "bash" };
+      const store = createJsonlApprovalStore({ path });
+      await store.append({
+        kind: "tool_call",
+        agentId: agentId("a"),
+        payload,
+        grantKey: computeGrantKey("tool_call", payload),
+        grantedAt: 1,
+      });
+      const wrapped = wrapBackendWithPersistedAllowlist(
+        {
+          evaluator: {
+            evaluate: () => ({ ok: "ask", prompt: "?", askId: askId("g1") }),
+          },
+        },
+        store,
+      );
+      const v = await wrapped.evaluator.evaluate({
+        kind: "tool_call",
+        agentId: agentId("a"),
+        payload,
+        timestamp: 0,
+      });
+      expect(v.ok).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("leaves ask unchanged with no persisted match", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createJsonlApprovalStore, wrapBackendWithPersistedAllowlist } = await import(
+      "@koi/governance-approval-tiers"
+    );
+    const { askId } = await import("@koi/core/governance-backend");
+    const { agentId } = await import("@koi/core");
+
+    const dir = await mkdtemp(join(tmpdir(), "golden-appt-"));
+    try {
+      const path = join(dir, "approvals.json");
+      const store = createJsonlApprovalStore({ path });
+      const wrapped = wrapBackendWithPersistedAllowlist(
+        {
+          evaluator: {
+            evaluate: () => ({ ok: "ask", prompt: "?", askId: askId("g2") }),
+          },
+        },
+        store,
+      );
+      const v = await wrapped.evaluator.evaluate({
+        kind: "tool_call",
+        agentId: agentId("a"),
+        payload: { tool: "bash" },
+        timestamp: 0,
+      });
+      expect(v.ok).toBe("ask");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/temporal
+// Infrastructure L2 — Temporal-backed scheduler + spawn-ledger + worker factory.
+// No LLM required: tests exercise the contract shape via mocked Temporal clients.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/temporal", () => {
+  test("createTemporalSpawnLedger — acquire/release/capacity contract", async () => {
+    const { createTemporalSpawnLedger, DEFAULT_SPAWN_LEDGER_CONFIG } = await import(
+      "@koi/temporal"
+    );
+
+    const ledger = createTemporalSpawnLedger({ maxCapacity: 3 });
+
+    expect(ledger.capacity()).toBe(3);
+    expect(ledger.activeCount()).toBe(0);
+
+    expect(ledger.acquire()).toBe(true);
+    expect(ledger.acquire()).toBe(true);
+    expect(ledger.acquire()).toBe(true);
+    // At capacity — next acquire must fail
+    expect(ledger.acquire()).toBe(false);
+    expect(ledger.activeCount()).toBe(3);
+
+    ledger.release();
+    expect(ledger.activeCount()).toBe(2);
+    // After release a slot is free
+    expect(ledger.acquire()).toBe(true);
+
+    // Default config constant is correctly shaped
+    expect(DEFAULT_SPAWN_LEDGER_CONFIG.maxCapacity).toBeGreaterThan(0);
+  });
+
+  test("createTemporalScheduler — submit + cancel + query + stats via mocked client", async () => {
+    const { createTemporalScheduler } = await import("@koi/temporal");
+    const { mock } = await import("bun:test");
+    const { agentId } = await import("@koi/core");
+
+    // Minimal mock Temporal client — only workflow.start/describe/cancel/list
+    const workflowId = "wf-golden-1";
+    const agent = agentId("golden-agent");
+
+    const describeMock = mock(async (_id: string) => ({
+      status: "RUNNING" as const,
+      memo: {
+        agentId: agent,
+        workflowType: "temporal-task",
+        taskQueue: "golden-queue",
+        mode: "dispatch",
+        inputFingerprint: JSON.stringify({ kind: "text", text: "test" }),
+      },
+    }));
+    const cancelMock = mock(async () => {});
+    const client = {
+      workflow: {
+        start: mock(async () => ({ workflowId })),
+        describe: describeMock,
+        cancel: cancelMock,
+        list: mock(async () => []),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+        delete: mock(async () => {}),
+      },
+    };
+
+    const scheduler = createTemporalScheduler({
+      client,
+      taskQueue: "golden-queue",
+      workflowType: "temporal-task",
+    });
+
+    // submit a task
+    const id = await scheduler.submit(agent, { kind: "text", text: "test" }, "dispatch");
+    expect(typeof id).toBe("string");
+    expect(client.workflow.start).toHaveBeenCalledTimes(1);
+
+    // stats reflects submitted task
+    const s = scheduler.stats();
+    expect(s.pending + s.running).toBeGreaterThanOrEqual(1);
+
+    // query returns all tasks matching the filter
+    const tasks = await scheduler.query({});
+    expect(Array.isArray(tasks)).toBe(true);
+    const task = tasks.find((t) => t.id === id);
+    expect(task).toBeDefined();
+    if (task !== undefined) {
+      expect(["pending", "running", "completed", "failed", "dead_letter"]).toContain(task.status);
+    }
+
+    // cancel — should call describe then cancel
+    const cancelled = await scheduler.cancel(id);
+    expect(cancelled).toBe(true);
+    expect(cancelMock).toHaveBeenCalledTimes(1);
+
+    // asyncDispose does not throw
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/scheduler
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/scheduler", () => {
+  test("submit returns a branded TaskId and task appears in query results", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore } = await import("@koi/scheduler");
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const store = createSqliteTaskStore(db);
+    const scheduler = createScheduler(DEFAULT_SCHEDULER_CONFIG, store, async () => {});
+
+    const aid = agentId("golden-agent" as import("@koi/core").AgentId);
+    const input: import("@koi/core").EngineInput = { kind: "text", text: "hello" };
+
+    // submit with large delay so it stays pending and never dispatches
+    const id = await scheduler.submit(aid, input, "spawn", { delayMs: 3_600_000 });
+    expect(typeof id).toBe("string");
+    expect(id.length).toBeGreaterThan(0);
+
+    const tasks = await scheduler.query({ agentId: aid });
+    expect(tasks.length).toBe(1);
+    expect(tasks[0]?.id).toBe(id);
+    expect(tasks[0]?.status).toBe("pending");
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("cancel removes the task and returns true; re-cancel returns false", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore } = await import("@koi/scheduler");
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+
+    const aid = agentId("golden-agent" as import("@koi/core").AgentId);
+    const id = await scheduler.submit(aid, { kind: "text", text: "x" }, "spawn", {
+      delayMs: 3_600_000,
+    });
+
+    expect(await scheduler.cancel(id)).toBe(true);
+    // After cancel the task row is removed — re-cancel returns false (not in heap)
+    expect(await scheduler.cancel(id)).toBe(false);
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/scheduler-provider
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/scheduler-provider", () => {
+  test("createSchedulerProvider returns 9 tools with correct descriptor names", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createSchedulerProvider } = await import("@koi/scheduler-provider");
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const component = createSchedulerComponent(
+      scheduler,
+      agentId("golden-agent" as import("@koi/core").AgentId),
+    );
+    const tools = createSchedulerProvider(component);
+
+    expect(tools.length).toBe(9);
+    const names = tools.map((t) => t.descriptor.name);
+    expect(names).toContain("scheduler_submit");
+    expect(names).toContain("scheduler_cancel");
+    expect(names).toContain("scheduler_query");
+    expect(names).toContain("scheduler_stats");
+    expect(names).toContain("scheduler_schedule");
+    expect(names).toContain("scheduler_unschedule");
+    expect(names).toContain("scheduler_pause");
+    expect(names).toContain("scheduler_resume");
+    expect(names).toContain("scheduler_history");
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("scheduler_submit + scheduler_query tools exercise the full component path", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createSubmitTool, createQueryTool, createStatsTool } = await import(
+      "@koi/scheduler-provider"
+    );
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const component = createSchedulerComponent(
+      scheduler,
+      agentId("golden-agent" as import("@koi/core").AgentId),
+    );
+
+    const submitTool = createSubmitTool(component);
+    const queryTool = createQueryTool(component);
+    const statsTool = createStatsTool(component);
+
+    const submitResult = (await submitTool.execute({
+      input: "run background analysis",
+      mode: "spawn",
+      delayMs: 3_600_000,
+    } as import("@koi/core").JsonObject)) as { taskId: string };
+    expect(typeof submitResult.taskId).toBe("string");
+
+    const queryResult = (await queryTool.execute({} as import("@koi/core").JsonObject)) as {
+      tasks: unknown[];
+      count: number;
+    };
+    expect(queryResult.count).toBe(1);
+    expect(Array.isArray(queryResult.tasks)).toBe(true);
+
+    const statsResult = (await statsTool.execute({} as import("@koi/core").JsonObject)) as {
+      pending: number;
+      running: number;
+    };
+    expect(statsResult.pending).toBe(1);
+    expect(statsResult.running).toBe(0);
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/gateway — transport infrastructure, standalone API tests
+// (No cassette/LLM needed: gateway lives below the agent-loop tool surface)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/gateway", () => {
+  test("DEFAULT_GATEWAY_CONFIG has safe production defaults", () => {
+    expect(DEFAULT_GATEWAY_CONFIG.minProtocolVersion).toBe(1);
+    expect(DEFAULT_GATEWAY_CONFIG.maxProtocolVersion).toBe(1);
+    expect(DEFAULT_GATEWAY_CONFIG.maxConnections).toBe(10_000);
+    expect(DEFAULT_GATEWAY_CONFIG.authTimeoutMs).toBe(5_000);
+    expect(DEFAULT_GATEWAY_CONFIG.backpressureCriticalTimeoutMs).toBe(30_000);
+    expect(DEFAULT_GATEWAY_CONFIG.disconnectedSessionTtlMs).toBe(300_000);
+    expect(DEFAULT_GATEWAY_CONFIG.capabilities.compression).toBe(false);
+    expect(DEFAULT_GATEWAY_CONFIG.capabilities.maxFrameBytes).toBe(1_048_576);
+  });
+
+  test("createInMemorySessionStore satisfies SessionStore contract", async () => {
+    const store = createInMemorySessionStore();
+    const session = {
+      id: "s1",
+      agentId: "a1",
+      connectedAt: Date.now(),
+      lastHeartbeat: Date.now(),
+      seq: 0,
+      remoteSeq: 0,
+      metadata: {},
+    } as const;
+
+    const before = await Promise.resolve(store.has("s1"));
+    expect(before).toEqual({ ok: true, value: false });
+
+    await Promise.resolve(store.set(session));
+
+    const r = await Promise.resolve(store.get("s1"));
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.id).toBe("s1");
+      expect(r.value.agentId).toBe("a1");
+      expect(r.value.seq).toBe(0);
+    }
+
+    await Promise.resolve(store.delete("s1"));
+    const after = await Promise.resolve(store.has("s1"));
+    expect(after).toEqual({ ok: true, value: false });
+  });
+
+  test("createGateway returns a Gateway with the required interface", () => {
+    const store = createInMemorySessionStore();
+    const gateway = createGateway(
+      {},
+      {
+        transport: {
+          listen: async () => {},
+          close: () => {},
+          connections: () => 0,
+        },
+        auth: {
+          authenticate: async () => ({
+            ok: false as const,
+            code: "INVALID_TOKEN" as const,
+            message: "test-only stub",
+          }),
+        },
+        store,
+      },
+    );
+
+    expect(typeof gateway.start).toBe("function");
+    expect(typeof gateway.stop).toBe("function");
+    expect(typeof gateway.send).toBe("function");
+    expect(typeof gateway.onFrame).toBe("function");
+    expect(typeof gateway.dispatch).toBe("function");
+    expect(typeof gateway.destroySession).toBe("function");
+    expect(typeof gateway.onSessionEvent).toBe("function");
+    expect(gateway.sessions()).toBe(store);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/ipc-local (2 queries: mailbox + router)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/ipc-local", () => {
+  test("createLocalMailbox — send, list, and onMessage round-trip", async () => {
+    const { createLocalMailbox } = await import("@koi/ipc-local");
+    const { agentId } = await import("@koi/core");
+
+    const mailbox = createLocalMailbox({ agentId: agentId("owner") });
+    const received: string[] = [];
+    mailbox.onMessage((msg) => {
+      received.push(msg.type);
+    });
+
+    const result = await mailbox.send({
+      from: agentId("sender"),
+      to: agentId("owner"),
+      kind: "event",
+      type: "ping",
+      payload: { ts: 1 },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.id).toBeString();
+      expect(result.value.from).toBe(agentId("sender"));
+      expect(result.value.type).toBe("ping");
+    }
+
+    const msgs = await mailbox.list();
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]?.type).toBe("ping");
+
+    await Bun.sleep(10);
+    expect(received).toEqual(["ping"]);
+
+    mailbox.close();
+    expect(await mailbox.list()).toHaveLength(0);
+  });
+
+  test("createLocalMailboxRouter — register and route messages between agents", async () => {
+    const { createLocalMailbox, createLocalMailboxRouter } = await import("@koi/ipc-local");
+    const { agentId } = await import("@koi/core");
+
+    const router = createLocalMailboxRouter();
+    // Mailboxes must be created with the router they will be registered in —
+    // this binds their inbound-auth guard to the router's trust domain.
+    const mailboxA = createLocalMailbox({ agentId: agentId("agent-a"), router });
+    const mailboxB = createLocalMailbox({ agentId: agentId("agent-b"), router });
+
+    router.register(agentId("agent-a"), mailboxA);
+    router.register(agentId("agent-b"), mailboxB);
+
+    // Send via mailboxA's outbound path — the authenticated cross-agent route.
+    // router.getView() is a read-only lookup; message delivery goes through the mailbox.
+    const result = await mailboxA.send({
+      from: agentId("agent-a"),
+      to: agentId("agent-b"),
+      kind: "request",
+      type: "task",
+      payload: { action: "run" },
+    });
+    expect(result.ok).toBe(true);
+
+    const bMsgs = await mailboxB.list();
+    expect(bMsgs).toHaveLength(1);
+    expect(bMsgs[0]?.kind).toBe("request");
+    expect(bMsgs[0]?.from).toBe(agentId("agent-a"));
+
+    // Unregister removes from routing table
+    router.unregister(agentId("agent-a"));
+    expect(router.getView(agentId("agent-a"))).toBeUndefined();
+    expect(router.getView(agentId("agent-b"))).toBeDefined();
+
+    mailboxA.close();
+    mailboxB.close();
+  });
+});
+
+// Golden: @koi/gateway-webhook
+// HTTP ingress server — sits outside the agent loop (no cassette needed).
+// Tests validate the public API surface: factory guards, idempotency store, and
+// provider signature helpers. None of these interact with the LLM or ATIF.
+describe("Golden: @koi/gateway-webhook", () => {
+  test("createWebhookServer factory guards — rejects misconfigured servers before binding", async () => {
+    const { createWebhookServer } = await import("@koi/gateway-webhook");
+
+    // No auth configured → must throw (fail-closed)
+    expect(() => createWebhookServer({ port: 0, pathPrefix: "/wh" }, () => {})).toThrow(
+      "no authentication configured",
+    );
+
+    // pathPrefix "/" → must throw (catch-all risk)
+    expect(() =>
+      createWebhookServer({ port: 0, pathPrefix: "/", allowUnauthenticated: true }, () => {}),
+    ).toThrow("pathPrefix cannot be");
+
+    // allowUnauthenticated: true satisfies the guard
+    expect(() =>
+      createWebhookServer({ port: 0, pathPrefix: "/wh", allowUnauthenticated: true }, () => {}),
+    ).not.toThrow();
+
+    // leaseRenewalMs required when custom idempotencyStore is injected
+    const stubStore = {
+      tryBegin: (_k: string) => ({ state: "ok" as const, token: "t" }),
+      renew: (_k: string, _t: string) => false,
+      commit: (_k: string, _t: string) => {},
+      abort: (_k: string, _t: string) => {},
+      prune: () => {},
+    };
+    expect(() =>
+      createWebhookServer(
+        { port: 0, pathPrefix: "/wh", allowUnauthenticated: true, idempotencyStore: stubStore },
+        () => {},
+      ),
+    ).toThrow("leaseRenewalMs is required");
+  });
+
+  test("createIdempotencyStore — four-method API prevents concurrent double-dispatch", async () => {
+    const { createIdempotencyStore } = await import("@koi/gateway-webhook");
+
+    const store = createIdempotencyStore({ ttlMs: 60_000, processingTtlMs: 30_000 });
+
+    // New key: ok + token
+    const r1 = store.tryBegin("evt-1");
+    expect(r1.state).toBe("ok");
+    const token = r1.state === "ok" ? r1.token : "";
+
+    // Same key while processing: in-flight (not duplicate, not ok)
+    expect(store.tryBegin("evt-1").state).toBe("in-flight");
+
+    // Commit → subsequent call is duplicate
+    store.commit("evt-1", token);
+    expect(store.tryBegin("evt-1").state).toBe("duplicate");
+
+    // Different key is independent
+    expect(store.tryBegin("evt-2").state).toBe("ok");
+
+    // Abort releases an in-flight reservation — retry accepted
+    const r3 = store.tryBegin("evt-3");
+    expect(r3.state).toBe("ok");
+    if (r3.state === "ok") store.abort("evt-3", r3.token);
+    expect(store.tryBegin("evt-3").state).toBe("ok");
+
+    // Stale abort after commit is a no-op (committed entry stays)
+    const r4 = store.tryBegin("evt-4");
+    if (r4.state === "ok") {
+      store.commit("evt-4", r4.token);
+      store.abort("evt-4", r4.token); // no-op
+    }
+    expect(store.tryBegin("evt-4").state).toBe("duplicate");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/governance-delegation — capability-token primitives
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/governance-delegation — issue + verify roundtrip", () => {
+  test("HMAC root capability verifies; tampering breaks signature", async () => {
+    const { randomBytes } = await import("node:crypto");
+    const { agentId, sessionId } = await import("@koi/core");
+    const { issueRootCapability, createCapabilityVerifier, createGlobScopeChecker } = await import(
+      "@koi/governance-delegation"
+    );
+
+    const secret = randomBytes(32);
+    const sess = sessionId("golden-sess");
+    const tok = await issueRootCapability({
+      signer: { kind: "hmac-sha256", secret },
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: {
+        permissions: { allow: ["read_file"] },
+        sessionId: sess,
+      },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+
+    const verifier = createCapabilityVerifier({
+      hmac: { secret },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const ok = await verifier.verify(tok, {
+      toolId: "read_file",
+      now: 1500,
+      activeSessionIds: new Set([sess]),
+    });
+    expect(ok.ok).toBe(true);
+
+    const tampered = { ...tok, expiresAt: 9_999_999 };
+    const bad = await verifier.verify(tampered, {
+      toolId: "read_file",
+      now: 1500,
+      activeSessionIds: new Set([sess]),
+    });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.reason).toBe("invalid_signature");
+  });
+});
+
+describe("Golden: @koi/governance-delegation — revocation invalidates downstream", () => {
+  test("cascade revoke of root invalidates child + grandchild", async () => {
+    const { randomBytes } = await import("node:crypto");
+    const { agentId, sessionId } = await import("@koi/core");
+    const {
+      issueRootCapability,
+      delegateCapability,
+      createCapabilityVerifier,
+      createGlobScopeChecker,
+      createMemoryCapabilityRevocationRegistry,
+    } = await import("@koi/governance-delegation");
+
+    const secret = randomBytes(32);
+    const sess = sessionId("golden-sess");
+    const registry = createMemoryCapabilityRevocationRegistry();
+    const signer = { kind: "hmac-sha256" as const, secret };
+
+    const A = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sess },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      registry,
+      now: () => 1000,
+    });
+    const bResult = await delegateCapability({
+      signer,
+      parent: A,
+      delegateeId: agentId("bob"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sess },
+      ttlMs: 30_000,
+      registry,
+      now: () => 1000,
+    });
+    if (!bResult.ok) throw new Error("B issuance failed");
+    const cResult = await delegateCapability({
+      signer,
+      parent: bResult.value,
+      delegateeId: agentId("carol"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sess },
+      ttlMs: 10_000,
+      registry,
+      now: () => 1000,
+    });
+    if (!cResult.ok) throw new Error("C issuance failed");
+
+    await registry.revoke(A.id, true);
+
+    const verifier = createCapabilityVerifier({
+      hmac: { secret },
+      scopeChecker: createGlobScopeChecker(),
+      revocations: registry,
+    });
+    const ctx = {
+      toolId: "read_file",
+      now: 1500,
+      activeSessionIds: new Set([sess]),
+    };
+    for (const tok of [A, bResult.value, cResult.value]) {
+      const r = await verifier.verify(tok, ctx);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toBe("revoked");
+    }
+  });
+});
+
+// L2 golden queries: @koi/governance-security (2 queries)
+// Standalone — no LLM or network calls required.
+describe("Golden: @koi/governance-security", () => {
+  test("createRulesAnalyzer detects SQL injection as critical", async () => {
+    const { createRulesAnalyzer } = await import("@koi/governance-security");
+    const analyzer = createRulesAnalyzer();
+    const result = await Promise.resolve(
+      analyzer.analyze("query_db", { sql: "'; DROP TABLE users; --" }),
+    );
+    expect(result.riskLevel).toBe("critical");
+    expect(result.findings.length).toBeGreaterThan(0);
+    expect(result.findings[0]?.riskLevel).toBe("critical");
+  });
+
+  test("createPiiDetector detects email address", async () => {
+    const { createPiiDetector } = await import("@koi/governance-security");
+    const detector = createPiiDetector(["email"]);
+    const matches = detector.detect("Please contact support@company.com for help.");
+    expect(matches).toHaveLength(1);
+    expect(matches[0]?.kind).toBe("email");
+    expect(matches[0]?.value).toBe("support@company.com");
   });
 });

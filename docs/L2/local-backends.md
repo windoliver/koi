@@ -208,45 +208,46 @@ pad.close();
 In-memory mailbox with microtask-deferred dispatch and a router for multi-agent setups.
 
 ```typescript
+import { agentId } from "@koi/core";
 import { createLocalMailbox, createLocalMailboxRouter } from "@koi/ipc-local";
 
-// Single agent
-const mailbox = createLocalMailbox({ agentId: "agent-1" });
-
-await mailbox.send({
-  from: "agent-1",
-  to: "agent-2",
-  kind: "request",
-  type: "code-review",
-  payload: { file: "app.ts" },
-});
-
-const unsub = mailbox.onMessage((msg) => console.log(msg));
-const messages = await mailbox.list({ kind: "request", limit: 5 });
-
-// Multi-agent routing
+// Multi-agent routing: create the router first, then bind mailboxes to it at construction.
+// Each mailbox must be created with the router it will be registered in — this is enforced
+// at runtime so the inbound sender-authentication guard is meaningful for every send.
+// Self-sends work without registration; cross-agent sends require router.register().
 const router = createLocalMailboxRouter();
-const mailboxA = createLocalMailbox({ agentId: "agent-a" });
-const mailboxB = createLocalMailbox({ agentId: "agent-b" });
-router.register("agent-a", mailboxA);
-router.register("agent-b", mailboxB);
+const mailboxA = createLocalMailbox({ agentId: agentId("agent-a"), router });
+const mailboxB = createLocalMailbox({ agentId: agentId("agent-b"), router });
+router.register(agentId("agent-a"), mailboxA);
+router.register(agentId("agent-b"), mailboxB);
 
-// Send from A, delivered to B's mailbox
-await router.route({
-  from: "agent-a",
-  to: "agent-b",
+// Send from A — routes through the internal delivery function, delivered to B's mailbox.
+await mailboxA.send({
+  from: agentId("agent-a"),
+  to: agentId("agent-b"),
   kind: "event",
   type: "ping",
   payload: {},
 });
 
-mailbox.close();
+// Read B's inbox — router.getView() returns a MailboxView (list() only, no send/drain/close).
+const view = router.get(agentId("agent-b"));
+const messages = await view?.list({ kind: "event", limit: 5 });
+
+// Subscribe via the mailbox directly (not via the router view).
+const unsub = mailboxA.onMessage((msg) => console.log(msg));
+unsub(); // unsubscribe
+
+mailboxA.close();
+mailboxB.close();
 ```
 
 **Key design:**
+- Mailboxes must be created with the router they will be registered in — enforces the sender-authentication boundary. Routerless mailboxes (`createLocalMailbox({ agentId })`) are for isolated single-agent use and cannot be registered in a router.
 - Subscribers notified via `queueMicrotask()` — non-blocking dispatch
-- FIFO eviction when at capacity (default 10,000 messages)
-- Router maps `AgentId -> MailboxComponent` for in-process delivery
+- Backpressure at capacity (default 10,000 messages) — explicit `RESOURCE_EXHAUSTED` error, no silent eviction
+- `router.getView()` returns a `MailboxView` with only `list()` — `send()`, `onMessage()`, `drain()`, and `close()` are absent. Cross-agent delivery always goes through the sender's own `mailbox.send()`.
+- All inbound messages, including self-sends, pass through the module-private delivery function so the routing-token proof is required uniformly
 
 ---
 

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "cassette-v1",
+  "name": "loop-until-pass",
+  "model": "google/gemini-2.0-flash-001",
+  "recordedAt": 1776924009343,
+  "chunks": [
+    {
+      "kind": "text_delta",
+      "delta": "DONE"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "\n"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 7,
+      "outputTokens": 2
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "DONE\n",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "stop",
+        "responseId": "gen-1776924008-AAQhnqIjciluZI67jsHq",
+        "richContent": [
+          {
+            "kind": "text",
+            "text": "DONE\n"
+          }
+        ],
+        "usage": {
+          "inputTokens": 7,
+          "outputTokens": 2
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+        }
+      }
+    }
+  ]
+}

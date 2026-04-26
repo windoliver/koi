@@ -42,7 +42,7 @@ function getRedactor(): ReturnType<typeof createRedactor> {
  * - Cannot distinguish personal from shared service aliases on `reference`;
  *   both are blocked on that type as a conservative choice.
  */
-const PERSONAL_EMAIL_PATTERN = /\b[a-zA-Z][a-zA-Z0-9._%+\-]*@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b(?!:)/;
+const PERSONAL_EMAIL_PATTERN = /\b[a-zA-Z][a-zA-Z0-9._%+-]*@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b(?!:)/;
 
 function referenceContainsEmail(memory: MemoryRecord): boolean {
   return (

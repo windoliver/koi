@@ -145,4 +145,44 @@ describe("loadPolicyFile", () => {
     );
     await expect(loadPolicyFile(path)).rejects.toThrow(/unknown key.*severty/);
   });
+
+  test("accepts decision: ask with a prompt", async () => {
+    const path = await write(
+      "ask.yaml",
+      `${[
+        "- match:",
+        "    toolId: Bash",
+        "  decision: ask",
+        "  prompt: Run shell command?",
+        "  rule: shell-ask",
+      ].join("\n")}\n`,
+    );
+    const rules = await loadPolicyFile(path);
+    expect(rules).toEqual([
+      {
+        match: { toolId: "Bash" },
+        decision: "ask",
+        prompt: "Run shell command?",
+        rule: "shell-ask",
+      },
+    ]);
+  });
+
+  test("accepts decision: ask without a prompt (pattern-backend synthesises default)", async () => {
+    const path = await write(
+      "ask-no-prompt.yaml",
+      `${["- match:", "    toolId: Bash", "  decision: ask"].join("\n")}\n`,
+    );
+    const rules = await loadPolicyFile(path);
+    expect(rules[0]?.decision).toBe("ask");
+    expect(rules[0]?.prompt).toBeUndefined();
+  });
+
+  test("rejects an unknown decision value", async () => {
+    const path = await write(
+      "bad-decision.yaml",
+      `${["- match:", "    toolId: Bash", "  decision: maybe"].join("\n")}\n`,
+    );
+    await expect(loadPolicyFile(path)).rejects.toThrow(/allow.*deny.*ask/);
+  });
 });

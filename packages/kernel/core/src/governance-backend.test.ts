@@ -1,5 +1,6 @@
 import { describe, expect, it, test } from "bun:test";
-import { agentId } from "./ecs.js";
+import type { JsonObject } from "./common.js";
+import { agentId, sessionId } from "./ecs.js";
 import type {
   AskId,
   ComplianceRecord,
@@ -8,6 +9,8 @@ import type {
   ConstraintQuery,
   GovernanceBackend,
   GovernanceVerdict,
+  PersistentGrant,
+  PersistentGrantCallback,
   PolicyEvaluator,
   PolicyRequest,
   PolicyRequestKind,
@@ -424,5 +427,33 @@ describe("GovernanceVerdict ask variant", () => {
     if (isAskVerdict(v)) {
       expect(v.metadata).toEqual({ rule: "x.y", resource: "/tmp/foo" });
     }
+  });
+});
+
+describe("PersistentGrant (L0)", () => {
+  it("accepts a structurally valid grant", () => {
+    const g: PersistentGrant = {
+      kind: "tool_call",
+      agentId: agentId("a1"),
+      sessionId: sessionId("s1"),
+      payload: { tool: "bash" } satisfies JsonObject,
+      grantKey: "deadbeef",
+      grantedAt: 1_713_974_400_000,
+    };
+    expect(g.kind).toBe("tool_call");
+  });
+
+  it("PersistentGrantCallback is a (grant) => void function type", () => {
+    const cb: PersistentGrantCallback = (grant) => {
+      expect(typeof grant.grantKey).toBe("string");
+    };
+    cb({
+      kind: "tool_call",
+      agentId: agentId("a1"),
+      sessionId: sessionId("s1"),
+      payload: {} satisfies JsonObject,
+      grantKey: "x",
+      grantedAt: 0,
+    });
   });
 });

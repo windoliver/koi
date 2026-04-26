@@ -270,3 +270,6 @@ All MCP tools have `origin: "operator"` — they are operator-configured, not bu
 > **Maintenance note (PR #1506):** Fixed Biome lint warnings in test files (`noTemplateCurlyInString` in env-var expansion tests, `noNonNullAssertion` in e2e test). No functional changes.
 
 <!-- biome lint suppression pass: noNonNullAssertion / noTemplateCurlyInString (pre-existing patterns; no behavioral change) -->
+
+
+> **Maintenance note (PR #2046):** Replaced `conn.triggerAuth!()` with explicit `if (conn.triggerAuth === undefined) throw` + direct call pattern in `connection.test.ts` tests for `triggerAuth` and singleflight coalescing. No functional change. Biome's unsafe auto-fix (`?.()`) was reverted because it widened the return type to `undefined | Result`, causing TS18048 errors.

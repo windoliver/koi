@@ -1,0 +1,16 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`API surface: @koi/governance-security exports expected identifiers 1`] = `
+[
+  "BUILTIN_RULES",
+  "createAnomalyMonitor",
+  "createApiKeyDetector",
+  "createCompositeAnalyzer",
+  "createEmailDetector",
+  "createPiiDetector",
+  "createRulesAnalyzer",
+  "createSecurityScorer",
+  "createSsnDetector",
+  "maxRiskLevel",
+]
+`;

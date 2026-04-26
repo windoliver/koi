@@ -11,5 +11,6 @@ export {
 } from "./brick-id.js";
 export { computeContentHash, computeStringHash } from "./content-hash.js";
 export { fnv1a } from "./fnv1a.js";
+export { computeGrantKey } from "./grant-key.js";
 export { createHmacSigner } from "./hmac-signing.js";
 export { generateUlid } from "./ulid.js";

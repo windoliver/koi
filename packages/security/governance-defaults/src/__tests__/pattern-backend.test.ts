@@ -368,4 +368,91 @@ describe("createPatternBackend", () => {
       expect(descriptors[0]?.id).not.toBe("default-deny");
     });
   });
+
+  describe("ask decision (gov-11 bridge)", () => {
+    test("emits ok:'ask' with prompt and a fresh askId", async () => {
+      const backend = createPatternBackend({
+        rules: [
+          {
+            match: { toolId: "Bash" },
+            decision: "ask",
+            prompt: "Run shell command?",
+            rule: "shell-ask",
+          },
+        ],
+      });
+      const v = await backend.evaluator.evaluate(
+        req({ kind: "tool_call", payload: { toolId: "Bash" } }),
+      );
+      expect(v.ok).toBe("ask");
+      if (v.ok === "ask") {
+        expect(v.prompt).toBe("Run shell command?");
+        expect(typeof v.askId).toBe("string");
+        expect(v.askId.length).toBeGreaterThan(0);
+      }
+    });
+
+    test("askId is unique per evaluation (fresh UUID each call)", async () => {
+      const backend = createPatternBackend({
+        rules: [{ match: { toolId: "Bash" }, decision: "ask" }],
+      });
+      const payload = { toolId: "Bash" };
+      const a = await backend.evaluator.evaluate(req({ kind: "tool_call", payload }));
+      const b = await backend.evaluator.evaluate(req({ kind: "tool_call", payload }));
+      if (a.ok === "ask" && b.ok === "ask") {
+        expect(a.askId).not.toBe(b.askId);
+      } else {
+        throw new Error("expected both verdicts to be ask");
+      }
+    });
+
+    test("falls back to message when prompt is omitted", async () => {
+      const backend = createPatternBackend({
+        rules: [
+          {
+            match: { toolId: "Bash" },
+            decision: "ask",
+            message: "Needs approval to run shell",
+          },
+        ],
+      });
+      const v = await backend.evaluator.evaluate(
+        req({ kind: "tool_call", payload: { toolId: "Bash" } }),
+      );
+      if (v.ok === "ask") {
+        expect(v.prompt).toBe("Needs approval to run shell");
+      } else {
+        throw new Error("expected ok:ask");
+      }
+    });
+
+    test("synthesises a default prompt when neither prompt nor message is set", async () => {
+      const backend = createPatternBackend({
+        rules: [{ match: { toolId: "Bash" }, decision: "ask" }],
+      });
+      const v = await backend.evaluator.evaluate(
+        req({ kind: "tool_call", payload: { toolId: "Bash" } }),
+      );
+      if (v.ok === "ask") {
+        expect(v.prompt).toBe("Approve tool_call?");
+      } else {
+        throw new Error("expected ok:ask");
+      }
+    });
+
+    test("describeRules maps ask to 'advise' effect", async () => {
+      const backend = createPatternBackend({
+        rules: [
+          {
+            match: { toolId: "Bash" },
+            decision: "ask",
+            rule: "shell-ask",
+            prompt: "?",
+          },
+        ],
+      });
+      const descriptors = (await backend.describeRules?.()) ?? [];
+      expect(descriptors[0]?.effect).toBe("advise");
+    });
+  });
 });

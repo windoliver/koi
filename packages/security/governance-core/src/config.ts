@@ -1,15 +1,16 @@
-import type { AgentId, JsonObject, KoiError, Result, SessionId } from "@koi/core";
+import type { KoiError, PersistentGrantCallback, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { GovernanceController } from "@koi/core/governance";
 import type {
   GovernanceBackend,
   GovernanceVerdict,
   PolicyRequest,
-  PolicyRequestKind,
 } from "@koi/core/governance-backend";
 import type { AlertCallback } from "./alert-tracker.js";
 import type { CostCalculator } from "./cost-calculator.js";
 import type { NormalizedUsage } from "./normalize-usage.js";
+
+export type { PersistentGrant, PersistentGrantCallback } from "@koi/core";
 
 export const DEFAULT_ALERT_THRESHOLDS: readonly number[] = Object.freeze([0.8, 0.95]);
 
@@ -19,17 +20,6 @@ export type UsageCallback = (event: {
   readonly usage: NormalizedUsage;
   readonly costUsd: number;
 }) => void;
-
-export interface PersistentGrant {
-  readonly kind: PolicyRequestKind;
-  readonly agentId: AgentId;
-  readonly sessionId: SessionId;
-  readonly payload: JsonObject;
-  readonly grantKey: string;
-  readonly grantedAt: number;
-}
-
-export type PersistentGrantCallback = (grant: PersistentGrant) => void;
 
 export const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000 as const;
 
