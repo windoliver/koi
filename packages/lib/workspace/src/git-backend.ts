@@ -368,17 +368,33 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
           // breaks after `git worktree move` changes the directory name.
           // Note: if the worktree was both moved (renamed) AND drifted, the basename will
           // no longer match wsId and recovery is not possible without ownership refs.
+          // Guard: reject any candidate whose current HEAD branch is a DIFFERENT managed
+          // workspace branch for this agent. That means pass 1 already claimed it (or will)
+          // under the correct wsId — stealing it here would map the wrong workspace.
           let foundPath = "";
+          const managedPrefix = `workspace/${searchHex}/`;
           for (const block of blocks) {
             const lines = block.trim().split("\n");
             const pathLine = lines.find((l) => l.startsWith("worktree "));
             if (!pathLine) continue;
             const candidate = pathLine.slice("worktree ".length).trim();
             if (!candidate.startsWith(resolvedBase + sep)) continue;
-            if (candidate.split(sep).pop() === wsId) {
-              foundPath = candidate;
+            if (candidate.split(sep).pop() !== wsId) continue;
+            // Check whether this worktree is currently on a different managed branch.
+            const rawRef =
+              lines
+                .find((l) => l.startsWith("branch "))
+                ?.slice("branch ".length)
+                .trim() ?? "";
+            const candidateBranch = rawRef.startsWith("refs/heads/")
+              ? rawRef.slice("refs/heads/".length)
+              : rawRef;
+            if (candidateBranch.startsWith(managedPrefix) && candidateBranch !== branchName) {
+              // Worktree belongs to a different managed workspace — leave it for pass 1.
               break;
             }
+            foundPath = candidate;
+            break;
           }
           if (!foundPath) continue; // not found under resolvedBase
           const id = workspaceId(wsId);
