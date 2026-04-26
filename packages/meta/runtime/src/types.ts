@@ -415,12 +415,14 @@ export interface RuntimeConfig {
               readonly kind: "sqlite";
               readonly dbPath: string;
               /**
-               * Restrict retention pruning to rows owned by this agent ID.
-               * When set, the DELETE subquery is filtered to (agent_id = agentId) so
-               * one sink instance cannot prune another agent's rows in a shared DB.
-               * Does not affect reads — query() and getEntries() are session-scoped only.
-               * Omit for single-agent deployments; set to a stable host-scoped ID for
-               * shared databases where multiple agents write to the same DB.
+               * Scope all sink operations (reads and pruning) to this agent ID.
+               * When set, query() filters by (session_id AND agent_id), and the
+               * retention DELETE subquery is further restricted to that agent's rows.
+               * Use in shared databases to prevent cross-agent audit reads and
+               * cross-agent prune collisions. Callers that need to read audit rows
+               * across multiple agents (e.g. multi-agent compliance review) should
+               * omit this field and filter programmatically.
+               * Omit for single-agent deployments.
                */
               readonly agentId?: string | undefined;
               readonly flushIntervalMs?: number | undefined;

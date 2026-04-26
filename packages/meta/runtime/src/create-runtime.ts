@@ -1016,8 +1016,13 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       return mw.onBeforeTurn?.(ctx);
     },
     wrapModelCall: async (ctx, request, next) => {
-      // Check after the call so a drain failure that occurred concurrently during
-      // the model call surfaces on the same turn rather than silently completing.
+      // Pre-call: reject before side effects if already poisoned.
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — refusing model call", { cause: poisonError });
+      }
+      // Post-call: catch concurrent drain failures that arrived during execution.
+      // If poison is set here the turn already completed; throw to signal the caller
+      // that the audit record may be missing rather than silently succeeding.
       const result = await (mw.wrapModelCall
         ? mw.wrapModelCall(ctx, request, next)
         : next(request));
@@ -1029,6 +1034,9 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       return result;
     },
     wrapToolCall: async (ctx, request, next) => {
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — refusing tool call", { cause: poisonError });
+      }
       const result = await (mw.wrapToolCall ? mw.wrapToolCall(ctx, request, next) : next(request));
       if (poisonError !== undefined) {
         throw new Error("audit sink write failed mid-turn — turn aborted", {

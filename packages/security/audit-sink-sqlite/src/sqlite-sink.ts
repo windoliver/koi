@@ -251,15 +251,20 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
       // becomes necessary, add a proper `queryPage({ sessionId, cursor,
       // limit })` surface and propagate `hasMore` through the ledger.
       //
-      // No agentId filter on reads: a sink can legitimately persist rows for
-      // multiple agent IDs (e.g. compliance events attributed to child agents).
-      // session_id alone is sufficient for correctness in typical deployments
-      // (session IDs are UUIDs — collision across agents is negligible).
-      // agentId scoping is intentionally restricted to pruning where cross-agent
-      // deletion is the genuine risk.
-      const rows = db
-        .prepare("SELECT * FROM audit_log WHERE session_id = ? ORDER BY id ASC")
-        .all(sessionId);
+      // When config.agentId is set (shared-DB mode), scope reads to that
+      // agent's rows so one sink cannot observe another agent's audit history
+      // via a colliding or reused session ID. Callers needing cross-agent reads
+      // (e.g. multi-agent compliance review) should omit agentId from config.
+      const rows =
+        config.agentId !== undefined
+          ? db
+              .prepare(
+                "SELECT * FROM audit_log WHERE session_id = ? AND agent_id = ? ORDER BY id ASC",
+              )
+              .all(sessionId, config.agentId)
+          : db
+              .prepare("SELECT * FROM audit_log WHERE session_id = ? ORDER BY id ASC")
+              .all(sessionId);
       return rows.map(mapRow);
     },
 

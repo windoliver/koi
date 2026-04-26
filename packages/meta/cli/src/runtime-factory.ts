@@ -2501,6 +2501,38 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
           return auditMw.onBeforeTurn?.(ctx);
         },
+        wrapModelCall: async (ctx, request, next) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing model call", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          const result = await (auditMw.wrapModelCall
+            ? auditMw.wrapModelCall(ctx, request, next)
+            : next(request));
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink write failed mid-turn — turn aborted", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          return result;
+        },
+        wrapToolCall: async (ctx, request, next) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing tool call", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          const result = await (auditMw.wrapToolCall
+            ? auditMw.wrapToolCall(ctx, request, next)
+            : next(request));
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink write failed mid-turn — turn aborted", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          return result;
+        },
       };
       auditPresetExtras.push(guardedAuditMw);
       // Deliberately NOT captured into `ledgerAuditSink`. The ledger is
@@ -2636,6 +2668,38 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             );
           }
           return sqliteAuditMw.onBeforeTurn?.(ctx);
+        },
+        wrapModelCall: async (ctx, request, next) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing model call", {
+              cause: sqlitePoisonError,
+            });
+          }
+          const result = await (sqliteAuditMw.wrapModelCall
+            ? sqliteAuditMw.wrapModelCall(ctx, request, next)
+            : next(request));
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink write failed mid-turn — turn aborted", {
+              cause: sqlitePoisonError,
+            });
+          }
+          return result;
+        },
+        wrapToolCall: async (ctx, request, next) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing tool call", {
+              cause: sqlitePoisonError,
+            });
+          }
+          const result = await (sqliteAuditMw.wrapToolCall
+            ? sqliteAuditMw.wrapToolCall(ctx, request, next)
+            : next(request));
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink write failed mid-turn — turn aborted", {
+              cause: sqlitePoisonError,
+            });
+          }
+          return result;
         },
       };
       auditPresetExtras.push(guardedSqliteAuditMw);
