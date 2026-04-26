@@ -2479,7 +2479,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         },
       });
       complianceRecorders.push(
-        createAuditSinkComplianceRecorder(auditSink, {
+        createAuditSinkComplianceRecorder(poisonedNdjsonSink, {
           sessionId: getLiveSessionId,
         }),
       );
@@ -2599,7 +2599,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         },
       });
       complianceRecorders.push(
-        createAuditSinkComplianceRecorder(sqliteSink, {
+        createAuditSinkComplianceRecorder(poisonedSqliteSink, {
           sessionId: getLiveSessionId,
         }),
       );

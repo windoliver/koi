@@ -937,9 +937,7 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
   } else if (sinkInput.kind === "sqlite") {
     const sqliteConfig = {
       dbPath: sinkInput.dbPath,
-      // Unique per-process ID prevents cross-instance row contamination when multiple
-      // runtime instances share the same SQLite DB (e.g. concurrent agent processes).
-      agentId: sinkInput.agentId ?? `runtime-${crypto.randomUUID().slice(0, 8)}`,
+      ...(sinkInput.agentId !== undefined ? { agentId: sinkInput.agentId } : {}),
       ...(sinkInput.flushIntervalMs !== undefined
         ? { flushIntervalMs: sinkInput.flushIntervalMs }
         : {}),
