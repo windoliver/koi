@@ -105,6 +105,8 @@
     "@koi/tools-web": "workspace:*",
     "@koi/url-safety": "workspace:*",
     "@koi/validation": "workspace:*",
+    "@koi/scratchpad-local": "workspace:*",
+    "@koi/workspace": "workspace:*",
     "zod": "4.3.6"
   },
   "devDependencies": {

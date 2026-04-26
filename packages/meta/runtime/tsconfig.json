@@ -92,6 +92,8 @@
     { "path": "../../security/audit-sink-sqlite" },
     { "path": "../../security/audit-sink-ndjson" },
     { "path": "../../security/violation-store-sqlite" },
-    { "path": "../../lib/validation" }
+    { "path": "../../lib/validation" },
+    { "path": "../../lib/scratchpad-local" },
+    { "path": "../../lib/workspace" }
   ]
 }

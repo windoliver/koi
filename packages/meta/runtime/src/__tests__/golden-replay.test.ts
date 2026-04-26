@@ -12813,6 +12813,154 @@ describe("Golden: @koi/toolsets", () => {
   });
 });
 
+describe("Golden: @koi/scratchpad-local", () => {
+  test("createLocalScratchpad write/read/list/delete round-trip", async () => {
+    const { createLocalScratchpad } = await import("@koi/scratchpad-local");
+    const { agentGroupId, agentId, scratchpadPath } = await import("@koi/core");
+
+    const pad = createLocalScratchpad({
+      groupId: agentGroupId("golden-group"),
+      authorId: agentId("golden-author"),
+    });
+
+    const path = scratchpadPath("notes/test");
+
+    // write
+    const writeResult = pad.write({ path, content: "hello scratchpad" });
+    expect(writeResult.ok).toBe(true);
+
+    // read
+    const readResult = pad.read(path);
+    expect(readResult.ok).toBe(true);
+    if (readResult.ok) {
+      expect(readResult.value.content).toBe("hello scratchpad");
+      expect(readResult.value.path).toBe(path);
+    }
+
+    // list
+    const entries = pad.list();
+    expect(entries.length).toBeGreaterThanOrEqual(1);
+    expect(entries.some((e) => e.path === path)).toBe(true);
+
+    // delete
+    const deleteResult = pad.delete(path);
+    expect(deleteResult.ok).toBe(true);
+    expect(pad.list()).toHaveLength(0);
+
+    pad.close();
+  });
+
+  test("createLocalScratchpad enforces CAS conflict detection on concurrent writes", async () => {
+    const { createLocalScratchpad } = await import("@koi/scratchpad-local");
+    const { agentGroupId, agentId, scratchpadPath } = await import("@koi/core");
+
+    const pad = createLocalScratchpad({
+      groupId: agentGroupId("golden-cas-group"),
+      authorId: agentId("golden-cas-author"),
+    });
+
+    const path = scratchpadPath("cas/test");
+
+    // First write succeeds
+    const first = pad.write({ path, content: "version 1" });
+    expect(first.ok).toBe(true);
+
+    const entry = pad.read(path);
+    expect(entry.ok).toBe(true);
+    if (!entry.ok) return;
+    const gen = entry.value.generation;
+
+    // Second write with correct generation succeeds
+    const second = pad.write({ path, content: "version 2", expectedGeneration: gen });
+    expect(second.ok).toBe(true);
+
+    // Write with stale generation fails with CONFLICT
+    const stale = pad.write({ path, content: "stale", expectedGeneration: gen });
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.error.code).toBe("CONFLICT");
+
+    pad.close();
+  });
+});
+
+describe("Golden: @koi/workspace", () => {
+  test("createGitWorktreeBackend returns WorkspaceBackend with required API shape", async () => {
+    const { mkdtempSync, rmSync, realpathSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { execSync } = await import("node:child_process");
+    const { createGitWorktreeBackend } = await import("@koi/workspace");
+
+    // Use realpathSync to resolve macOS /var -> /private/var symlink so paths
+    // match what git worktree list returns (git resolves symlinks to real paths).
+    const tmp = realpathSync(mkdtempSync(join(tmpdir(), "koi-golden-workspace-")));
+    try {
+      execSync("git init --initial-branch=main", { cwd: tmp, stdio: "ignore" });
+      execSync('git config user.email "test@koi.dev"', { cwd: tmp, stdio: "ignore" });
+      execSync('git config user.name "Koi Test"', { cwd: tmp, stdio: "ignore" });
+      execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
+
+      const worktreeBase = realpathSync(
+        mkdtempSync(join(tmpdir(), `koi-golden-wt-${Date.now()}-`)),
+      );
+      try {
+        const backend = createGitWorktreeBackend({ repoPath: tmp, worktreeBasePath: worktreeBase });
+
+        expect(backend.name).toBe("git-worktree");
+        expect(typeof backend.create).toBe("function");
+        expect(typeof backend.dispose).toBe("function");
+        expect(typeof backend.isHealthy).toBe("function");
+        expect(typeof backend.exists).toBe("function");
+        expect(typeof backend.findByAgentId).toBe("function");
+        expect(backend.isSandboxed).toBe(false);
+      } finally {
+        rmSync(worktreeBase, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("createGitWorktreeBackend create/dispose round-trip for a workspace", async () => {
+    const { mkdtempSync, rmSync, realpathSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { execSync } = await import("node:child_process");
+    const { createGitWorktreeBackend } = await import("@koi/workspace");
+    const { agentId } = await import("@koi/core");
+
+    const tmp = realpathSync(mkdtempSync(`${tmpdir()}/koi-golden-ws-rw-`));
+    const worktreeBase = realpathSync(mkdtempSync(`${tmpdir()}/koi-golden-wt-rw-`));
+    try {
+      execSync("git init --initial-branch=main", { cwd: tmp, stdio: "ignore" });
+      execSync('git config user.email "test@koi.dev"', { cwd: tmp, stdio: "ignore" });
+      execSync('git config user.name "Koi Test"', { cwd: tmp, stdio: "ignore" });
+      execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
+
+      const backend = createGitWorktreeBackend({ repoPath: tmp, worktreeBasePath: worktreeBase });
+      const aid = agentId("golden-agent");
+
+      const createResult = await backend.create(aid, {
+        cleanupPolicy: "always",
+        cleanupTimeoutMs: 5000,
+      });
+      expect(createResult.ok).toBe(true);
+      if (!createResult.ok) return;
+
+      const ws = createResult.value;
+      expect(ws.id).toBeDefined();
+      expect(ws.path).toContain(worktreeBase);
+      expect(await backend.isHealthy(ws.id)).toBe(true);
+
+      const disposeResult = await backend.dispose(ws.id);
+      expect(disposeResult.ok).toBe(true);
+      expect(await backend.exists?.(ws.id)).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+      rmSync(worktreeBase, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("Golden: @koi/governance-approval-tiers", () => {
   test("short-circuits ask to allow on persisted match", async () => {
     const { mkdtemp, rm } = await import("node:fs/promises");
@@ -13389,7 +13537,7 @@ describe("Golden: @koi/governance-delegation — issue + verify roundtrip", () =
       "@koi/governance-delegation"
     );
 
-    const secret = randomBytes(32);
+    const secret = new Uint8Array(randomBytes(32));
     const sess = sessionId("golden-sess");
     const tok = await issueRootCapability({
       signer: { kind: "hmac-sha256", secret },
@@ -13438,7 +13586,7 @@ describe("Golden: @koi/governance-delegation — revocation invalidates downstre
       createMemoryCapabilityRevocationRegistry,
     } = await import("@koi/governance-delegation");
 
-    const secret = randomBytes(32);
+    const secret = new Uint8Array(randomBytes(32));
     const sess = sessionId("golden-sess");
     const registry = createMemoryCapabilityRevocationRegistry();
     const signer = { kind: "hmac-sha256" as const, secret };
