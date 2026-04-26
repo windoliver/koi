@@ -295,9 +295,18 @@ export function createNdjsonAuditSink(
           result = [...archived, ...current];
         } catch (e: unknown) {
           if (e instanceof Error && "code" in e && (e as NodeJS.ErrnoException).code === "ENOENT") {
-            // Active file is missing — re-scan the archive directory to pick up any
-            // segment that may have been rotated in after our initial snapshot.
-            result = await readArchiveEntries(archiveDir);
+            if (bytesWritten > 0) {
+              // This sink has written to the active file, but it is now missing.
+              // This is data loss (external deletion or filesystem error) — fail
+              // closed so callers see an error instead of a silently truncated trail.
+              throw new Error(
+                `audit log active file missing after ${bytesWritten} bytes were written — possible data loss`,
+                { cause: e },
+              );
+            }
+            // bytesWritten === 0: the active file was never written in this session.
+            // Archives contain the full history from prior sink instances.
+            result = archived;
           } else {
             throw e;
           }

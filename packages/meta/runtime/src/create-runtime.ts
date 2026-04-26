@@ -4,6 +4,7 @@ import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit
 import { type Checkpoint, createCheckpoint } from "@koi/checkpoint";
 import type {
   ApprovalHandler,
+  AuditEntry,
   AuditSink,
   ChannelAdapter,
   ComponentProvider,
@@ -957,20 +958,43 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
     );
   }
 
+  // Poison the sink after the first write/rotation failure: subsequent log() calls
+  // throw immediately so the middleware queue never silently drops further audit records.
+  // onError logs once and sets process.exitCode so the failure is visible at shutdown.
+  let poisonError: unknown;
+  const originalLog = sink.log.bind(sink);
+  const poisonedSink: typeof sink = {
+    ...sink,
+    log: async (entry: AuditEntry): Promise<void> => {
+      if (poisonError !== undefined) {
+        throw new Error(
+          "audit sink poisoned — previous write failure prevents further audit writes",
+          { cause: poisonError },
+        );
+      }
+      return originalLog(entry);
+    },
+  };
+
   const mw = createAuditMiddleware({
-    sink,
+    sink: poisonedSink,
     ...(audit.maxQueueDepth !== undefined ? { maxQueueDepth: audit.maxQueueDepth } : {}),
     ...(audit.signing !== undefined ? { signing: audit.signing } : {}),
     ...(audit.redactRequestBodies !== undefined
       ? { redactRequestBodies: audit.redactRequestBodies }
       : {}),
-    // Surface sink write/rotation failures — without onError the queue swallows them silently,
-    // creating compliance log gaps exactly when fault-tolerance is most important.
-    // Set process.exitCode so the host OS receives a non-zero exit code when the
-    // process eventually shuts down, making the failure visible in CI and monitoring.
-    onError: (error: unknown) => {
-      console.error("[koi/runtime] audit sink write failed:", error);
-      process.exitCode = 1;
+    onError: (error: unknown, entry: AuditEntry) => {
+      if (poisonError === undefined) {
+        // First failure: log the root cause. Subsequent calls will log the poison error.
+        poisonError = error;
+        console.error(
+          "[koi/runtime] audit sink write failed — sink poisoned, no further audit writes accepted:",
+          error,
+          "entry kind:",
+          entry.kind,
+        );
+        process.exitCode = 1;
+      }
     },
   });
 

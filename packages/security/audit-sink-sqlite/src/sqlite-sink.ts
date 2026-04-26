@@ -234,9 +234,19 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
       // from the decision-ledger and /trajectory audit lane. When that
       // becomes necessary, add a proper `queryPage({ sessionId, cursor,
       // limit })` surface and propagate `hasMore` through the ledger.
-      const rows = db
-        .prepare("SELECT * FROM audit_log WHERE session_id = ? ORDER BY id ASC")
-        .all(sessionId);
+      //
+      // When agentId is configured, scope to (agent_id, session_id) so a reused
+      // session ID in a shared DB does not return another agent's rows.
+      const rows =
+        config.agentId !== undefined
+          ? db
+              .prepare(
+                "SELECT * FROM audit_log WHERE agent_id = ? AND session_id = ? ORDER BY id ASC",
+              )
+              .all(config.agentId, sessionId)
+          : db
+              .prepare("SELECT * FROM audit_log WHERE session_id = ? ORDER BY id ASC")
+              .all(sessionId);
       return rows.map(mapRow);
     },
 

@@ -21,6 +21,12 @@ export interface SqliteAuditSinkConfig {
   readonly maxBufferSize?: number;
   /** Retention / pruning policy. Omit to retain all entries indefinitely. */
   readonly retention?: SqliteRetentionConfig;
+  /**
+   * When provided, scope all reads (query, getEntries) to this agent ID.
+   * Recommended when the DB is owned by a single agent — prevents a reused
+   * session ID from returning another agent's audit rows in a shared database.
+   */
+  readonly agentId?: string;
 }
 
 function fail(message: string): Result<never, KoiError> {
