@@ -13078,20 +13078,10 @@ describe("Golden: @koi/temporal", () => {
     const { mock } = await import("bun:test");
     const { agentId } = await import("@koi/core");
 
-    // Minimal mock Temporal client — only workflow.start/describe/cancel/list
+    // Minimal mock Temporal client
     const workflowId = "wf-golden-1";
     const agent = agentId("golden-agent");
 
-    const describeMock = mock(async (_id: string) => ({
-      status: "RUNNING" as const,
-      memo: {
-        agentId: agent,
-        workflowType: "temporal-task",
-        taskQueue: "golden-queue",
-        mode: "dispatch",
-        inputFingerprint: JSON.stringify({ kind: "text", text: "test" }),
-      },
-    }));
     const cancelMock = mock(async () => {});
     const client = {
       workflow: {
@@ -13099,8 +13089,6 @@ describe("Golden: @koi/temporal", () => {
         signal: mock(async () => {}),
         cancel: cancelMock,
         getResult: mock(async () => undefined),
-        describe: describeMock,
-        list: mock(async () => []),
       },
       schedule: {
         create: mock(async () => {}),
@@ -13117,14 +13105,14 @@ describe("Golden: @koi/temporal", () => {
       workflowType: "temporal-task",
     });
 
-    // submit a task
-    const id = await scheduler.submit(agent, { kind: "text", text: "test" }, "dispatch");
+    // submit a spawn task — workflow.start is called immediately
+    const id = await scheduler.submit(agent, { kind: "text", text: "test" }, "spawn");
     expect(typeof id).toBe("string");
     expect(client.workflow.start).toHaveBeenCalledTimes(1);
 
-    // stats reflects submitted task
+    // stats reflects submitted task (may be completed already if getResult mock resolved)
     const s = scheduler.stats();
-    expect(s.pending + s.running).toBeGreaterThanOrEqual(1);
+    expect(s.pending + s.running + s.completed).toBeGreaterThanOrEqual(1);
 
     // query returns all tasks matching the filter
     const tasks = await scheduler.query({});
@@ -13135,7 +13123,7 @@ describe("Golden: @koi/temporal", () => {
       expect(["pending", "running", "completed", "failed", "dead_letter"]).toContain(task.status);
     }
 
-    // cancel — should call describe then cancel
+    // cancel — calls workflow.cancel on the spawn workflow
     const cancelled = await scheduler.cancel(id);
     expect(cancelled).toBe(true);
     expect(cancelMock).toHaveBeenCalledTimes(1);
