@@ -18,6 +18,7 @@ import type {
   ModelChunk,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   RetrySignalReader,
   RichTrajectoryStep,
   ToolDescriptor,
@@ -1044,6 +1045,29 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
         });
       }
       return result;
+    },
+    async *wrapModelStream(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — refusing model stream", { cause: poisonError });
+      }
+      const inner = mw.wrapModelStream ? mw.wrapModelStream(ctx, request, next) : next(request);
+      for await (const chunk of inner) {
+        if (poisonError !== undefined) {
+          throw new Error("audit sink write failed mid-stream — stream aborted", {
+            cause: poisonError,
+          });
+        }
+        yield chunk;
+      }
+      if (poisonError !== undefined) {
+        throw new Error("audit sink write failed after stream — turn aborted", {
+          cause: poisonError,
+        });
+      }
     },
   };
 

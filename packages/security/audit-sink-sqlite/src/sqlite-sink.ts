@@ -270,6 +270,13 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
 
     getEntries(): readonly AuditEntry[] {
       flushBuffer();
+      if (config.agentId !== undefined) {
+        return (
+          db
+            .prepare("SELECT * FROM audit_log WHERE agent_id = ? ORDER BY id ASC")
+            .all(config.agentId) as unknown[]
+        ).map(mapRow);
+      }
       return readAllRows(db).map(mapRow);
     },
 

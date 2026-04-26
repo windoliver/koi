@@ -55,6 +55,9 @@ import type {
   InboundMessage,
   KoiMiddleware,
   ModelAdapter,
+  ModelChunk,
+  ModelRequest,
+  ModelStreamHandler,
   PermissionBackend,
   PermissionDecision,
   PermissionQuery,
@@ -63,6 +66,7 @@ import type {
   RuleDescriptor,
   SessionId,
   SessionTranscript,
+  TurnContext,
   Violation,
   ViolationStore,
 } from "@koi/core";
@@ -2533,6 +2537,33 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
           return result;
         },
+        async *wrapModelStream(
+          ctx: TurnContext,
+          request: ModelRequest,
+          next: ModelStreamHandler,
+        ): AsyncIterable<ModelChunk> {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing model stream", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          const inner = auditMw.wrapModelStream
+            ? auditMw.wrapModelStream(ctx, request, next)
+            : next(request);
+          for await (const chunk of inner) {
+            if (ndjsonPoisonError !== undefined) {
+              throw new Error("audit sink write failed mid-stream — stream aborted", {
+                cause: ndjsonPoisonError,
+              });
+            }
+            yield chunk;
+          }
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink write failed after stream — turn aborted", {
+              cause: ndjsonPoisonError,
+            });
+          }
+        },
       };
       auditPresetExtras.push(guardedAuditMw);
       // Deliberately NOT captured into `ledgerAuditSink`. The ledger is
@@ -2700,6 +2731,33 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             });
           }
           return result;
+        },
+        async *wrapModelStream(
+          ctx: TurnContext,
+          request: ModelRequest,
+          next: ModelStreamHandler,
+        ): AsyncIterable<ModelChunk> {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing model stream", {
+              cause: sqlitePoisonError,
+            });
+          }
+          const inner = sqliteAuditMw.wrapModelStream
+            ? sqliteAuditMw.wrapModelStream(ctx, request, next)
+            : next(request);
+          for await (const chunk of inner) {
+            if (sqlitePoisonError !== undefined) {
+              throw new Error("audit sink write failed mid-stream — stream aborted", {
+                cause: sqlitePoisonError,
+              });
+            }
+            yield chunk;
+          }
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink write failed after stream — turn aborted", {
+              cause: sqlitePoisonError,
+            });
+          }
         },
       };
       auditPresetExtras.push(guardedSqliteAuditMw);
