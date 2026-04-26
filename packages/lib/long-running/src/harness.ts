@@ -315,16 +315,19 @@ export function createLongRunningHarness(
       if (!head) {
         return { ok: false, error: err("NOT_FOUND", "no harness snapshot to resume", false) };
       }
-      // Only suspended heads are resumable. `active` heads have no
-      // resumability invariant: start() does not persist engine state
-      // before the first soft checkpoint, so resuming a crashed-active
-      // head would silently lose progress. Reject it explicitly.
-      if (head.data.phase !== "suspended") {
+      // Resumable heads: `suspended` always, `active` only when the
+      // prior session row carries durable lastEngineState (i.e. a soft
+      // checkpoint succeeded before the crash). Other phases are
+      // non-resumable. The lastEngineState presence check below gates
+      // active recovery — a crashed-active head with no checkpoint
+      // surfaces as NOT_FOUND there, while one with a checkpoint
+      // resumes from the persisted state.
+      if (head.data.phase !== "suspended" && head.data.phase !== "active") {
         return {
           ok: false,
           error: err(
             "CONFLICT",
-            `cannot resume: head phase is "${head.data.phase}" (only "suspended" heads are resumable)`,
+            `cannot resume: head phase is "${head.data.phase}" (only "suspended" or "active" heads are resumable)`,
             false,
           ),
         };
@@ -555,18 +558,6 @@ export function createLongRunningHarness(
       target === "suspended" && state.lease ? captureCache.get(state.lease) : undefined;
     const captured: CapturedEngineState =
       target === "suspended" ? (cachedCapture ?? (await captureEngineState())) : { kind: "skip" };
-    // Only memoize successful captures. A transient saveState() throw
-    // returns kind=error; caching that would make every later pause
-    // retry on this lease return the same error without re-attempting
-    // capture, turning a blip into a permanent inability to suspend.
-    if (
-      target === "suspended" &&
-      state.lease &&
-      !cachedCapture &&
-      (captured.kind === "value" || captured.kind === "skip")
-    ) {
-      captureCache.set(state.lease, captured);
-    }
     // Suspend MUST treat capture failure as fatal — publishing a
     // suspended snapshot whose prior session has no resumable state
     // produces a silently-broken resume. Bail before abort so the
@@ -585,12 +576,30 @@ export function createLongRunningHarness(
     const quiet = await quiesce(abortTimeoutMs);
     if (!quiet) {
       state.terminating = false;
+      // Do NOT memoize the capture: if quiesce timed out, the engine
+      // is still executing and may advance further before the caller
+      // retries. A retry must recapture from the actual stopped state
+      // so the persisted lastEngineState matches the durable snapshot.
       return {
         ok: false,
         error: err("TIMEOUT", "engine did not quiesce within abortTimeoutMs", true, {
           abortTimeoutMs,
         }),
       };
+    }
+    // Engine has quiesced — only NOW is the captured state guaranteed
+    // to correspond to a stopped engine. Memoize so a snapshot-publish
+    // retry on the same lease reuses it instead of asking a
+    // post-abort engine for fresh (possibly cleared) state. Only
+    // memoize successful captures: a transient saveState() throw
+    // (kind=error) must allow the next pause to recapture.
+    if (
+      target === "suspended" &&
+      state.lease &&
+      !cachedCapture &&
+      (captured.kind === "value" || captured.kind === "skip")
+    ) {
+      captureCache.set(state.lease, captured);
     }
     // Build the delta AFTER quiesce so any metrics/summaries advanced by a
     // late onTurnEnd are merged in, not silently overwritten.
