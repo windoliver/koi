@@ -2482,15 +2482,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         createAuditSinkComplianceRecorder(poisonedNdjsonSink, {
           sessionId: getLiveSessionId,
           onError: (error: unknown) => {
-            if (ndjsonPoisonError === undefined) {
-              ndjsonPoisonError = error;
-              console.error("[koi/cli] compliance sink write failed — sink poisoned:", error);
-              process.exitCode = 1;
-            }
-            throw new Error(
-              "compliance write failed — aborting to preserve audit trail integrity",
-              { cause: error },
-            );
+            // Compliance writes are fire-and-forget by design; the only way to
+            // guarantee no further work runs after a compliance write failure is
+            // synchronous termination. process.exit(1) is correct here.
+            console.error("[koi/cli] compliance sink write failed — terminating:", error);
+            process.exit(1);
           },
         }),
       );
@@ -2625,15 +2621,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         createAuditSinkComplianceRecorder(poisonedSqliteSink, {
           sessionId: getLiveSessionId,
           onError: (error: unknown) => {
-            if (sqlitePoisonError === undefined) {
-              sqlitePoisonError = error;
-              console.error("[koi/cli] compliance sink write failed — sink poisoned:", error);
-              process.exitCode = 1;
-            }
-            throw new Error(
-              "compliance write failed — aborting to preserve audit trail integrity",
-              { cause: error },
-            );
+            console.error("[koi/cli] compliance sink write failed — terminating:", error);
+            process.exit(1);
           },
         }),
       );
