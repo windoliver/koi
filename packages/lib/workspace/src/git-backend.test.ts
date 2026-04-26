@@ -383,7 +383,7 @@ describe("createGitWorktreeBackend", () => {
     if (!result.ok) return;
 
     const ws = result.value;
-    const newPath = ws.path + "-moved";
+    const newPath = `${ws.path}-moved`;
     // Move the worktree — basename changes from wsId to wsId+"-moved"
     await Bun.spawn(["git", "worktree", "move", ws.path, newPath], { cwd: repoPath }).exited;
 
