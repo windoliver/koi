@@ -31,6 +31,7 @@ function parseHermesBody(raw: string): ParsedToolCall | undefined {
 
 export const hermesPattern: ToolCallPattern = {
   name: "hermes",
+  marker: "<tool_call>",
   detect(text: string): RecoveryResult | undefined {
     const matches = [...text.matchAll(HERMES_REGEX)];
     if (matches.length === 0) return undefined;

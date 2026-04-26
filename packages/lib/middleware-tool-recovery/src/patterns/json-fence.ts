@@ -35,6 +35,7 @@ function parseJsonFenceBody(raw: string): ParsedToolCall | undefined {
 
 export const jsonFencePattern: ToolCallPattern = {
   name: "json-fence",
+  marker: "```",
   detect(text: string): RecoveryResult | undefined {
     const matches = [...text.matchAll(JSON_FENCE_REGEX)];
     if (matches.length === 0) return undefined;

@@ -22,10 +22,20 @@ export interface RecoveryResult {
  * `detect` is synchronous and pure: given text, return either undefined
  * (no match for this pattern) or a `RecoveryResult` with extracted calls
  * and the original text minus the matched regions.
+ *
+ * `marker`, when present, is a fixed substring that always appears at the
+ * start of any tool call this pattern can match (e.g. `"<tool_call>"` for
+ * Hermes). The streaming wrapper uses markers to preserve incremental
+ * output: while no marker substring has been seen in the assistant text
+ * stream, text/thinking/usage chunks are forwarded immediately. Once a
+ * marker is detected the wrapper switches to buffering until `done` so
+ * structured tool-call chunks can be synthesized. Patterns without a
+ * marker force full buffering for the entire stream.
  */
 export interface ToolCallPattern {
   readonly name: string;
   readonly detect: (text: string) => RecoveryResult | undefined;
+  readonly marker?: string;
 }
 
 /** Events emitted during tool call recovery for observability. */

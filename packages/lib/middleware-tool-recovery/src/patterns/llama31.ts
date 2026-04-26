@@ -28,6 +28,7 @@ function parseLlama31Body(raw: string): Record<string, unknown> | undefined {
 
 export const llama31Pattern: ToolCallPattern = {
   name: "llama31",
+  marker: "<function=",
   detect(text: string): RecoveryResult | undefined {
     const matches = [...text.matchAll(LLAMA31_REGEX)];
     if (matches.length === 0) return undefined;

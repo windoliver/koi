@@ -105,6 +105,24 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     description: `Text tool-call recovery: ${patternNames}`,
   };
 
+  // Markers known up front let the streaming wrapper decide per-chunk
+  // whether to flush eagerly (no marker yet → preserve incremental UX) or
+  // start buffering for end-of-stream parsing (marker seen → swallow until
+  // done so we can emit synthesized tool_call chunks). Patterns without a
+  // marker force buffering for any tool-enabled turn.
+  const markers: readonly string[] = patterns
+    .map((p) => p.marker)
+    .filter((m): m is string => typeof m === "string" && m.length > 0);
+  const allPatternsHaveMarkers = markers.length === patterns.length;
+  const longestMarkerLen = markers.reduce((max, m) => Math.max(max, m.length), 0);
+
+  function bufferedTextContainsAnyMarker(text: string): boolean {
+    for (const m of markers) {
+      if (text.includes(m)) return true;
+    }
+    return false;
+  }
+
   async function* wrapModelStreamImpl(
     ctx: TurnContext,
     request: ModelRequest,
@@ -117,16 +135,23 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
       return;
     }
 
-    // let: buffer of every chunk seen before `done`. Held back so recovered
-    // markup never reaches transcripts/UI.
+    // let: chunks held back once we've decided this stream may contain
+    // tool-call markup. Empty in passthrough mode.
     let pending: ModelChunk[] = [];
-    // let: text accumulator used by the recovery parser at flush time.
+    // let: full assistant text seen so far. Used at done to parse, AND to
+    // detect markers that may straddle delta boundaries.
     let bufferedText = "";
+    // let: byte index in bufferedText up to which text has already been
+    // forwarded as text_delta chunks. Anything past this is unflushed.
+    let flushedTextIndex = 0;
+    // let: switches to "buffer" mode the first time any pattern marker is
+    // detected. Once active, all subsequent chunks are held until `done`.
+    let mode: "passthrough" | "buffer" = allPatternsHaveMarkers ? "passthrough" : "buffer";
     // let: flips true if the adapter emits a native tool call — recovery is
-    // disabled and the buffered chunks are flushed unmodified.
+    // disabled and remaining chunks pass through unmodified.
     let bypass = false;
     // let: tracks whether the upstream stream completed normally or threw
-    // before emitting `done`. Used by the finally block to flush buffered
+    // before emitting `done`. Used by the finally block to flush pending
     // chunks on partial-failure paths so degraded output isn't lost.
     let completed = false;
 
@@ -145,15 +170,60 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
           continue;
         }
 
-        if (chunk.kind !== "done") {
-          if (chunk.kind === "text_delta") bufferedText += chunk.delta;
+        if (chunk.kind === "done") {
+          // Process below.
+        } else if (chunk.kind === "text_delta") {
+          bufferedText += chunk.delta;
+          if (mode === "passthrough") {
+            // Switch to buffer mode if a complete marker has appeared anywhere
+            // in the assistant text so far.
+            if (bufferedTextContainsAnyMarker(bufferedText)) {
+              mode = "buffer";
+              // Stash the unflushed text portion as a synthetic text_delta in
+              // pending so the buffer flush replay sees full content even if
+              // we change our mind later (currently we don't).
+              const unflushed = bufferedText.slice(flushedTextIndex);
+              if (unflushed.length > 0) {
+                pending.push({ kind: "text_delta", delta: unflushed });
+              }
+              continue;
+            }
+            // No marker yet. Flush all but the trailing window that could
+            // still be the prefix of a marker straddling the next chunk.
+            const safeEnd = Math.max(0, bufferedText.length - longestMarkerLen);
+            if (safeEnd > flushedTextIndex) {
+              const safeText = bufferedText.slice(flushedTextIndex, safeEnd);
+              flushedTextIndex = safeEnd;
+              if (safeText.length > 0) yield { kind: "text_delta", delta: safeText };
+            }
+            continue;
+          }
+          // mode === "buffer"
           pending.push(chunk);
+          continue;
+        } else {
+          // thinking_delta / usage / error / tool_call_delta / tool_call_end
+          if (mode === "passthrough") {
+            yield chunk;
+          } else {
+            pending.push(chunk);
+          }
           continue;
         }
 
-        // Done chunk: try recovery on the buffered text.
-        const recovered = runRecovery(ctx, bufferedText, tools, patterns, maxCalls, onEvent);
+        // Done chunk: in passthrough mode, the upstream content is plain
+        // text. Flush any remaining tail and pass done through. In buffer
+        // mode, attempt recovery on the accumulated text.
         completed = true;
+
+        if (mode === "passthrough") {
+          const tail = bufferedText.slice(flushedTextIndex);
+          if (tail.length > 0) yield { kind: "text_delta", delta: tail };
+          yield chunk;
+          return;
+        }
+
+        const recovered = runRecovery(ctx, bufferedText, tools, patterns, maxCalls, onEvent);
 
         if (recovered === undefined) {
           for (const buf of pending) yield buf;
@@ -165,16 +235,10 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
         for (const buf of pending) {
           if (buf.kind !== "text_delta") yield buf;
         }
-        // Emit the cleaned remainder as a single text_delta so transcripts
-        // capture the visible assistant content without the recovered markup.
         if (recovered.cleanedText.length > 0) {
           yield { kind: "text_delta", delta: recovered.cleanedText };
         }
-        // Synthesize structured tool-call chunks the engine can execute.
         yield* synthesizeToolCallChunks(recovered.calls);
-
-        // Rewrite the embedded ModelResponse so observers that DO read it see
-        // the cleaned content (transcript fallbacks, debug logs).
         const rewrittenResponse: ModelResponse = {
           ...chunk.response,
           content: recovered.cleanedText,
@@ -183,11 +247,13 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
         return;
       }
     } finally {
-      // Stream ended (or threw) before `done`. Flush buffered chunks so
-      // partial assistant text + thinking + usage signal is preserved
-      // instead of being silently dropped.
-      if (!completed && pending.length > 0) {
-        for (const buf of pending) yield buf;
+      if (!completed) {
+        if (mode === "passthrough") {
+          const tail = bufferedText.slice(flushedTextIndex);
+          if (tail.length > 0) yield { kind: "text_delta", delta: tail };
+        } else if (pending.length > 0) {
+          for (const buf of pending) yield buf;
+        }
       }
     }
   }

@@ -87,6 +87,16 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       selectedNames = await selectTools(query, tools);
     } catch (e: unknown) {
       reportError(e);
+      if (enforceFiltering) {
+        // Fail closed: install an allowlist containing only `alwaysInclude`
+        // so wrapToolCall still rejects every other tool for this turn.
+        // Returning the original (unfiltered) request without an allowlist
+        // would let the model both see and call every tool — defeating the
+        // very trust boundary enforceFiltering exists to provide.
+        turnAllowlists.set(ctx.turnId, new Set<string>(alwaysInclude));
+        const fallbackTools = tools.filter((t) => alwaysInclude.includes(t.name));
+        return { ...request, tools: fallbackTools };
+      }
       return request;
     }
 

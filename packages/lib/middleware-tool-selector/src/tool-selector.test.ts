@@ -193,25 +193,56 @@ describe("createToolSelectorMiddleware — filtering behavior", () => {
   });
 });
 
-describe("createToolSelectorMiddleware — fail-open", () => {
-  test("passes original tools through when selectTools throws and reports onError", async () => {
+describe("createToolSelectorMiddleware — selector-error handling", () => {
+  test("fails closed by default: only alwaysInclude tools survive a selector throw", async () => {
     const tools = [tool("a"), tool("b"), tool("c")];
     const onError = mock(() => undefined);
     const mw = createToolSelectorMiddleware({
       selectTools: async () => {
         throw new Error("selector boom");
       },
+      alwaysInclude: ["a"],
       onError,
       minTools: 0,
     });
     const next = mock<ModelHandler>(async (req) => {
+      expect(req.tools?.map((t) => t.name)).toEqual(["a"]);
+      return modelResponse();
+    });
+    const ctx = turnCtx();
+    await getWrap(mw)(ctx, { messages: [userMsg("go")], tools }, next);
+    expect(onError).toHaveBeenCalledTimes(1);
+
+    // wrapToolCall MUST also reject the dropped tools — selector failure
+    // cannot be a backdoor around enforceFiltering.
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "ok" }),
+    );
+    await expect(
+      wrapTool(ctx, { toolId: "b", input: {} }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
+    await expect(wrapTool(ctx, { toolId: "a", input: {} }, toolNext as never)).resolves.toEqual({
+      output: "ok",
+    });
+  });
+
+  test("with enforceFiltering=false, selector throw passes original tools through", async () => {
+    const tools = [tool("a"), tool("b"), tool("c")];
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => {
+        throw new Error("boom");
+      },
+      enforceFiltering: false,
+      minTools: 0,
+    });
+    const next = mock<ModelHandler>(async (req) => {
       expect(req.tools).toBe(tools);
-      // Metadata is NOT decorated when filtering is skipped via fail-open.
-      expect(req.metadata).toBeUndefined();
       return modelResponse();
     });
     await getWrap(mw)(turnCtx(), { messages: [userMsg("go")], tools }, next);
-    expect(onError).toHaveBeenCalledTimes(1);
+    expect(next).toHaveBeenCalledTimes(1);
   });
 
   test("falls back to swallowError when no onError callback is provided", async () => {
@@ -220,6 +251,7 @@ describe("createToolSelectorMiddleware — fail-open", () => {
       selectTools: async () => {
         throw new Error("boom");
       },
+      enforceFiltering: false,
       minTools: 0,
     });
     const next = mock<ModelHandler>(async (req) => {

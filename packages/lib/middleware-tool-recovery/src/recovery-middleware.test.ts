@@ -305,6 +305,71 @@ describe("createToolRecoveryMiddleware — non-streaming wrapModelCall", () => {
   });
 });
 
+describe("createToolRecoveryMiddleware — incremental streaming passthrough", () => {
+  test("forwards text_delta chunks immediately when no marker has appeared", async () => {
+    const mw = createToolRecoveryMiddleware();
+    const tools = [tool("foo")];
+    const yielded: ModelChunk[] = [];
+
+    async function* next(): AsyncIterable<ModelChunk> {
+      yield { kind: "text_delta", delta: "Step 1: investigating. " };
+      // Pull this chunk out immediately so we can assert it is forwarded
+      // without buffering — emulate a long pause before the next chunk.
+      await new Promise((r) => setTimeout(r, 0));
+      yield { kind: "text_delta", delta: "Step 2: thinking. " };
+      yield { kind: "done", response: modelResponse("Step 1: investigating. Step 2: thinking. ") };
+    }
+
+    const it = getStream(mw)(turnCtx(), { messages: [], tools }, next);
+    const reader = it[Symbol.asyncIterator]();
+    // Consume one chunk and check it is the start of "Step 1" — not the
+    // entire buffered response.
+    const first = await reader.next();
+    yielded.push(first.value as ModelChunk);
+    while (true) {
+      const r = await reader.next();
+      if (r.done) break;
+      yielded.push(r.value);
+    }
+
+    // Verify at least one text_delta was emitted before the done chunk
+    // (i.e. streaming was preserved).
+    const textBeforeDone: string[] = [];
+    for (const c of yielded) {
+      if (c.kind === "done") break;
+      if (c.kind === "text_delta") textBeforeDone.push(c.delta);
+    }
+    expect(textBeforeDone.length).toBeGreaterThan(0);
+    expect(textBeforeDone.join("")).toContain("Step 1: investigating");
+  });
+
+  test("switches to buffer mode the first time a pattern marker appears", async () => {
+    const mw = createToolRecoveryMiddleware();
+    const tools = [tool("foo")];
+    const yielded: ModelChunk[] = [];
+
+    async function* next(): AsyncIterable<ModelChunk> {
+      yield { kind: "text_delta", delta: "thinking " };
+      yield { kind: "text_delta", delta: '<tool_call>{"name":"foo","arguments":{}}</tool_call>' };
+      yield { kind: "text_delta", delta: " done." };
+      yield { kind: "done", response: modelResponse("thinking <tool_call>...</tool_call> done.") };
+    }
+
+    for await (const c of getStream(mw)(turnCtx(), { messages: [], tools }, next)) {
+      yielded.push(c);
+    }
+
+    // Recovery happened — synthesized tool_call_* chunks present.
+    expect(getToolCallChunks(yielded).length).toBe(3);
+    // No text chunk leaks raw markup.
+    for (const c of yielded) {
+      if (c.kind === "text_delta") {
+        expect(c.delta).not.toContain("<tool_call>");
+      }
+    }
+  });
+});
+
 describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
   test("does not leak raw markup as text_delta — original raw text never reaches consumers", async () => {
     const mw = createToolRecoveryMiddleware();
