@@ -528,6 +528,77 @@ describe("round-2 hardening", () => {
     expect(result.reason).toBe("invalid_signature");
   });
 
+  test("malformed parent permissions cannot widen child authority (codex round-8: high)", async () => {
+    // Codex round-7 added a shape guard for the leaf token, but the
+    // ancestors loaded via tokenStore bypassed that boundary. A signed
+    // malformed parent with `allow: "*"` (string instead of array) would
+    // be treated as a wildcard inside L0's `new Set(parent.allow ?? [])`
+    // — a well-formed child claiming `allow: ["bash"]` could then verify
+    // for bash even though the malformed parent itself would not. Fix:
+    // run shape validation on every ancestor.
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const { signHmac } = await import("./hmac.js");
+    const { capabilityId } = await import("@koi/core");
+    const malformedParentId = capabilityId("malformed-parent");
+    const malformedUnsigned = {
+      id: malformedParentId,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      // permissions.allow is a STRING — bypasses Array.isArray, but
+      // L0's helper would build new Set("*") and treat it as wildcard.
+      scope: { permissions: { allow: "*" }, sessionId: sessionId("sess-1") },
+      chainDepth: 0,
+      maxChainDepth: 3,
+      createdAt: 1000,
+      expiresAt: 60_000,
+      proof: { kind: "hmac-sha256" as const, digest: "" },
+    };
+    const malformedDigest = signHmac(
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately malformed
+      malformedUnsigned as any,
+      signer.secret,
+    );
+    const malformedParent = {
+      ...malformedUnsigned,
+      proof: { kind: "hmac-sha256" as const, digest: malformedDigest },
+    };
+    // Custom store: returns the malformed parent for any lookup of its id.
+    const store = {
+      get: async (id: typeof malformedParentId) =>
+        // biome-ignore lint/suspicious/noExplicitAny: malformed by design
+        id === malformedParentId ? (malformedParent as any) : undefined,
+    };
+
+    // Well-formed child claims allow:["bash"] and parent=malformed.
+    const childUnsigned = {
+      id: capabilityId("forged-child-malformed-parent"),
+      issuerId: agentId("alice"),
+      delegateeId: agentId("eve"),
+      scope: { permissions: { allow: ["bash"] }, sessionId: sessionId("sess-1") },
+      parentId: malformedParentId,
+      chainDepth: 1,
+      maxChainDepth: 3,
+      createdAt: 1000,
+      expiresAt: 30_000,
+      proof: { kind: "hmac-sha256" as const, digest: "" },
+    };
+    const childDigest = signHmac(childUnsigned, signer.secret);
+    const child = {
+      ...childUnsigned,
+      proof: { kind: "hmac-sha256" as const, digest: childDigest },
+    };
+
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret },
+      scopeChecker: createGlobScopeChecker(),
+      tokenStore: store,
+    });
+    const result = await verifier.verify(child, ctx({ toolId: "bash" }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid_signature");
+  });
+
   test("malformed input fails closed instead of throwing (codex round-7: high)", async () => {
     // Tokens deserialized from network/disk bypass the TypeScript type
     // system. Without explicit shape validation, dereferencing a missing

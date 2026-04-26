@@ -63,6 +63,12 @@ function deny(reason: CapabilityVerifyResult & { readonly ok: false }): Capabili
  * branch here returns a deny result so the verifier always fails closed
  * on malformed input.
  */
+function isStringArrayOrAbsent(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  return value.every((entry) => typeof entry === "string");
+}
+
 function validateTokenShape(token: unknown): CapabilityVerifyResult | undefined {
   if (token === null || typeof token !== "object") {
     return deny({ ok: false, reason: "invalid_signature" });
@@ -78,6 +84,22 @@ function validateTokenShape(token: unknown): CapabilityVerifyResult | undefined 
   }
   const scope = t.scope as Record<string, unknown>;
   if (scope.permissions === null || typeof scope.permissions !== "object") {
+    return deny({ ok: false, reason: "invalid_signature" });
+  }
+  // Permission lists must be string[] or absent. A malformed
+  // `allow: "*"` (string instead of array) would pass `new Set(...)`
+  // construction in the L0 attenuation helper as a wildcard, letting
+  // a well-formed child re-verify against a malformed-but-signed
+  // ancestor and inherit unbounded authority.
+  const perms = scope.permissions as Record<string, unknown>;
+  if (
+    !isStringArrayOrAbsent(perms.allow) ||
+    !isStringArrayOrAbsent(perms.deny) ||
+    !isStringArrayOrAbsent(perms.ask)
+  ) {
+    return deny({ ok: false, reason: "invalid_signature" });
+  }
+  if (!isStringArrayOrAbsent(scope.resources)) {
     return deny({ ok: false, reason: "invalid_signature" });
   }
   if (typeof scope.sessionId !== "string") {
@@ -173,6 +195,13 @@ async function verifyStructural(
   ctx: VerifyContext,
   opts: CapabilityVerifierOptions,
 ): Promise<CapabilityVerifyResult | undefined> {
+  // Shape validation is also run at the public verify boundary, but
+  // re-running it here covers ancestors loaded via tokenStore — those
+  // bypass the public boundary, and a signed-but-malformed ancestor
+  // (e.g. allow: "*" instead of allow: ["*"]) could otherwise be
+  // misinterpreted as a wildcard during attenuation.
+  const shape = validateTokenShape(token);
+  if (shape) return shape;
   // Reject non-finite numeric fields up front — NaN/Infinity break every
   // ordered comparison below (NaN < x and NaN >= x both yield false), so
   // a token with NaN expiresAt would otherwise verify indefinitely.
