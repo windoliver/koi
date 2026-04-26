@@ -9,7 +9,7 @@
  * is archived to <filePath>.archive/ and a fresh file is opened.
  */
 
-import { mkdir, readdir, readFile, rename } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { AuditEntry, AuditSink } from "@koi/core";
 import type { NdjsonAuditSinkConfig } from "./config.js";
@@ -94,7 +94,15 @@ export function createNdjsonAuditSink(
 
   // Single-writer queue: all log()/flush()/close() calls are chained so rotation
   // is never re-entered concurrently and writes never race across a rotate boundary.
-  let writeChain: Promise<void> = Promise.resolve();
+  // Seed bytesWritten from the on-disk file size as the first item in the queue so
+  // rotation fires correctly after a process restart against a pre-existing file.
+  let writeChain: Promise<void> = stat(config.filePath)
+    .then((s) => {
+      bytesWritten = s.size;
+    })
+    .catch(() => {
+      /* ENOENT or unreadable — start counter at 0 */
+    });
 
   const timer = setInterval(() => {
     void writer.flush();
@@ -145,7 +153,9 @@ export function createNdjsonAuditSink(
         await rotateIfNeeded();
         const line = `${JSON.stringify(entry)}\n`;
         writer.write(line);
-        bytesWritten += line.length;
+        // Use actual UTF-8 byte length, not UTF-16 code-unit count, so maxSizeBytes
+        // matches the real on-disk size for entries containing multibyte characters.
+        bytesWritten += Buffer.byteLength(line, "utf8");
       });
     },
 
