@@ -299,7 +299,14 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       const searchHex = Buffer.from(searchAgentId as string).toString("hex");
 
       const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
-      if (!listResult.ok) return [];
+      if (!listResult.ok) {
+        // Fail closed: returning [] would let the provider treat discovery failure as
+        // "no survivors" and create a fresh workspace while an existing one may still be live.
+        throw new Error(
+          `Workspace survivor discovery failed for agent ${searchAgentId}: git worktree list error — ${listResult.error.message}`,
+          { cause: listResult.error },
+        );
+      }
 
       // Collect all matching survivors — multiple can exist when a prior dispose timed out.
       const matches: WorkspaceInfo[] = [];

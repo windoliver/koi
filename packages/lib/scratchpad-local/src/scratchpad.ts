@@ -202,6 +202,13 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
       // the token must not inherit the live store's state — the reuseToken IS the credential
       // for joining a tokenized group.
       throw new Error(`Scratchpad group "${groupId}" is already open with a different reuseToken`);
+    } else if (callerToken !== null && sharedStore.reuseToken === null) {
+      // Caller expects token isolation but the active store was opened without a token.
+      // Admitting a token-bearing caller to a tokenless store silently degrades isolation:
+      // any earlier tokenless opener shares the same live state. Reject instead of downgrading.
+      throw new Error(
+        `Scratchpad group "${groupId}" is already open without a reuseToken; a token-bearing caller cannot join it`,
+      );
     }
   }
 
