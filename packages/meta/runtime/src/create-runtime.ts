@@ -976,6 +976,16 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       }
       return originalLog(entry);
     },
+    flush: async (): Promise<void> => {
+      // Surface any recorded drain failure synchronously so callers (onSessionEnd,
+      // shutdown, close) cannot report clean completion with a truncated audit trail.
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — flush rejected; audit trail may be incomplete", {
+          cause: poisonError,
+        });
+      }
+      return sink.flush();
+    },
   };
 
   const mw = createAuditMiddleware({
@@ -1054,9 +1064,16 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
         throw new Error("audit sink poisoned — refusing tool call", { cause: poisonError });
       }
       const result = await (mw.wrapToolCall ? mw.wrapToolCall(ctx, request, next) : next(request));
-      // Post-call: if the sink failed while auditing this tool call, surface the error
-      // so the caller cannot treat the side effects as successfully audited. The tool
-      // has already executed — callers MUST NOT retry this tool call on seeing this error.
+      // Force-flush the audit queue so the tool_call entry is durably written (or the
+      // failure is recorded in poisonError) before we return to the caller. Without this
+      // flush, the poison check below is racy: the queue drains asynchronously, so a
+      // sink failure on the tool_call entry could arrive after the post-call check.
+      await mw.flush().catch(() => {
+        // flush() rejects when poisonError is set (via poisonedSink.flush). The rejection
+        // is captured — poisonError is already set — so we fall through to the check below.
+      });
+      // Post-call: surface sink failure so callers cannot treat the side effects as
+      // successfully audited. The tool has already executed — callers MUST NOT retry.
       if (poisonError !== undefined) {
         throw new Error(
           "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",

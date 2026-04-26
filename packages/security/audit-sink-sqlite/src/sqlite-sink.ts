@@ -110,6 +110,23 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
     // Flush first so no buffered expired row survives pruning or re-inserts after DELETE.
     flushBuffer();
     try {
+      // Hash-chain compatibility check: session-granular pruning is fundamentally
+      // incompatible with a continuous cross-session hash chain. Every non-tail session
+      // has later rows with prev_hash IS NOT NULL (the chain continues), so no expired
+      // session would ever be prunable. Detect this and skip rather than silently
+      // growing the DB indefinitely while pretending to enforce retention.
+      const hasChain = db
+        .prepare("SELECT 1 FROM audit_log WHERE prev_hash IS NOT NULL LIMIT 1")
+        .get();
+      if (hasChain !== null) {
+        console.warn(
+          "[audit-sink-sqlite] retention pruning skipped: hash-chained audit rows detected. " +
+            "Session-granular retention is incompatible with a continuous hash chain — " +
+            "disable signing or use NDJSON sink for retention with hash-chain integrity.",
+        );
+        return;
+      }
+
       const cutoff = Date.now() - config.retention.maxAgeDays * 86_400_000;
 
       // Prune sessions that are both fully expired AND explicitly closed.
