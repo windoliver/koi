@@ -524,6 +524,13 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/scratchpad-local": {
+      "name": "@koi/scratchpad-local",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/secure-storage": {
       "name": "@koi/secure-storage",
       "version": "0.0.0",
@@ -708,6 +715,14 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "re2-wasm": "1.0.2",
+      },
+    },
+    "packages/lib/workspace": {
+      "name": "@koi/workspace",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/git-utils": "workspace:*",
       },
     },
     "packages/meta/cli": {
@@ -898,6 +913,7 @@
         "@koi/sandbox-os": "workspace:*",
         "@koi/scheduler": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",
+        "@koi/scratchpad-local": "workspace:*",
         "@koi/session": "workspace:*",
         "@koi/settings": "workspace:*",
         "@koi/skill-scanner": "workspace:*",
@@ -920,6 +936,7 @@
         "@koi/validation": "workspace:*",
         "@koi/violation-store-sqlite": "workspace:*",
         "@koi/watch-patterns": "workspace:*",
+        "@koi/workspace": "workspace:*",
         "zod": "4.3.6",
       },
       "devDependencies": {
@@ -1794,6 +1811,8 @@
 
     "@koi/scheduler-provider": ["@koi/scheduler-provider@workspace:packages/sched/scheduler-provider"],
 
+    "@koi/scratchpad-local": ["@koi/scratchpad-local@workspace:packages/lib/scratchpad-local"],
+
     "@koi/secure-storage": ["@koi/secure-storage@workspace:packages/lib/secure-storage"],
 
     "@koi/session": ["@koi/session@workspace:packages/lib/session"],
@@ -1851,6 +1870,8 @@
     "@koi/violation-store-sqlite": ["@koi/violation-store-sqlite@workspace:packages/security/violation-store-sqlite"],
 
     "@koi/watch-patterns": ["@koi/watch-patterns@workspace:packages/lib/watch-patterns"],
+
+    "@koi/workspace": ["@koi/workspace@workspace:packages/lib/workspace"],
 
     "@manypkg/find-root": ["@manypkg/find-root@1.1.0", "", { "dependencies": { "@babel/runtime": "^7.5.5", "@types/node": "^12.7.1", "find-up": "^4.1.0", "fs-extra": "^8.1.0" } }, "sha512-mki5uBvhHzO8kYYix/WRy2WX8S3B5wdVSc9D6KcU5lQNglP2yt58/VfLuAK49glRXChosY8ap2oJ1qgma3GUVA=="],
 
