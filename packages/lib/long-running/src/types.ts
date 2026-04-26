@@ -72,6 +72,48 @@ export interface LongRunningConfig {
    */
   readonly getTaskMaxRetries?: (taskId: string) => number | undefined;
   /**
+   * Opt-in to recovering crashed `active` heads via `resume()`. When
+   * false (default), only `suspended` heads are resumable; `active`
+   * heads return CONFLICT to prevent split-brain (a still-running or
+   * partitioned prior worker would emit duplicate side effects).
+   * Set to `true` ONLY when the host enforces durable ownership
+   * fencing (heartbeat, CAS, lease lock) outside this package and can
+   * prove the prior worker is dead before invoking resume(). Active
+   * resume still requires durable lastEngineState on the prior session
+   * row (set by a prior soft checkpoint).
+   */
+  readonly allowActiveResume?: boolean;
+  /**
+   * Optional engine drain callback. The harness awaits this callback
+   * (bounded by `abortTimeoutMs`) for an explicit acknowledgement that
+   * the engine has drained.
+   *
+   * The callback is invoked with `{ sessionId, lease }` identifying the
+   * specific execution being revoked. Implementations MUST scope drain
+   * verification to that exact session so a global or shared callback
+   * cannot resolve based on unrelated work and let the harness publish
+   * a terminal snapshot while side effects from the revoked lease are
+   * still running.
+   *
+   * The contract: when this callback resolves, BOTH must be true for
+   * the identified session:
+   *  1. The current turn has finished mutating in-memory state (no
+   *     more onBeforeTurn / wrapModelCall / wrapToolCall in flight).
+   *  2. All async background work tied to the revoked lease (tool
+   *     execution, MCP requests, streaming side effects) has stopped.
+   *
+   * The harness uses this callback as the authoritative drain signal
+   * AND as a wedge-override when middleware bookkeeping (`inTurn`) is
+   * stuck true (e.g. the turn errored after onBeforeTurn). If the
+   * callback rejects or times out, the terminal transition fails and
+   * the caller can retry. Recommended for any adapter that does
+   * background work (tool execution, MCP, streaming).
+   */
+  readonly quiesceEngine?: (ctx: {
+    readonly sessionId: SessionId;
+    readonly lease: SessionLease;
+  }) => Promise<void>;
+  /**
    * Optional compatibility hook for resuming legacy suspended heads
    * whose prior session row has no `lastEngineState`. When set and the
    * resumed prior session is missing engine state, the harness invokes

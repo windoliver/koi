@@ -262,10 +262,66 @@ export function createLongRunningHarness(
 
   const quiesce = async (deadlineMs: number): Promise<boolean> => {
     const start = now();
-    while (state.inTurn && now() - start < deadlineMs) {
+    // Single absolute deadline across both stages so total wall-clock
+    // wait never exceeds `abortTimeoutMs`. When `quiesceEngine` is
+    // wired, cap the inTurn polling at half the budget so the
+    // callback always gets a real chance to acknowledge drain.
+    const pollBudget = cfg.quiesceEngine ? Math.floor(deadlineMs / 2) : deadlineMs;
+    while (state.inTurn && now() - start < pollBudget) {
       await sleep(10);
     }
-    return !state.inTurn;
+    const turnCleared = !state.inTurn;
+    // Stuck-middleware detection: poll budget fully exhausted with
+    // inTurn still true. Distinguishes a wedged turn (engine errored
+    // after onBeforeTurn) from a turn that's about to clear.
+    const stuckMiddleware = !turnCleared && now() - start >= pollBudget;
+    // Two-stage drain:
+    //  1. Turn flag must clear naturally (onAfterTurn fired) — proof
+    //     the current turn finished mutating in-memory state.
+    //  2. If a host `quiesceEngine` is wired, it must also resolve —
+    //     proof that async tool/MCP/stream work has drained.
+    // If the turn flag never cleared, fall back to `quiesceEngine` as
+    // a wedge-override (for the stale-inTurn case where the turn
+    // errored after onBeforeTurn). The host contract documented in
+    // types.ts requires the callback to confirm turn completion in
+    // that mode — without quiesceEngine wired we just fail.
+    if (cfg.quiesceEngine) {
+      const remaining = Math.max(0, deadlineMs - (now() - start));
+      // Lease-bound drain: pass the current session/lease so the host
+      // callback can scope verification to this exact execution. If
+      // the lease has already been revoked (no current owner), there
+      // is nothing to drain — accept turnCleared as the answer.
+      const lease = state.lease;
+      const sessionId = state.lastSessionId ? toSessionId(state.lastSessionId) : undefined;
+      if (!lease || !sessionId) return turnCleared;
+      let callbackOk = false;
+      try {
+        await Promise.race([
+          cfg.quiesceEngine({ sessionId, lease }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("quiesceEngine deadline")), remaining),
+          ),
+        ]);
+        callbackOk = true;
+      } catch {
+        return false;
+      }
+      // Normal path: require BOTH the middleware turn flag to have
+      // cleared (proof onAfterTurn ran turn-end bookkeeping like
+      // soft-checkpoint and counter increments) AND the host callback
+      // to confirm drain. The callback alone is NOT sufficient when
+      // inTurn is still true unless we've explicitly detected the
+      // stuck-middleware case (poll budget fully exhausted) — that
+      // prevents a fast-resolving callback from racing onAfterTurn.
+      if (turnCleared) return callbackOk;
+      if (stuckMiddleware) return callbackOk;
+      return false;
+    }
+    // No host drain callback wired: rely solely on the middleware
+    // turn flag. If it never cleared, return false — the caller can
+    // retry, and a future onAfterTurn or onTurnStart will eventually
+    // unblock the transition. Do NOT force-clear inTurn here.
+    return turnCleared;
   };
 
   const clearTimer = (): void => {
@@ -315,19 +371,20 @@ export function createLongRunningHarness(
       if (!head) {
         return { ok: false, error: err("NOT_FOUND", "no harness snapshot to resume", false) };
       }
-      // Resumable heads: `suspended` always, `active` only when the
-      // prior session row carries durable lastEngineState (i.e. a soft
-      // checkpoint succeeded before the crash). Other phases are
-      // non-resumable. The lastEngineState presence check below gates
-      // active recovery — a crashed-active head with no checkpoint
-      // surfaces as NOT_FOUND there, while one with a checkpoint
-      // resumes from the persisted state.
-      if (head.data.phase !== "suspended" && head.data.phase !== "active") {
+      // `suspended` is always resumable. `active` is resumable only
+      // when the host opts in via `allowActiveResume` (which signals
+      // they enforce durable ownership fencing externally) — without
+      // fencing, active resume risks split-brain with a slow or
+      // partitioned prior worker.
+      const isResumablePhase =
+        head.data.phase === "suspended" ||
+        (head.data.phase === "active" && cfg.allowActiveResume === true);
+      if (!isResumablePhase) {
         return {
           ok: false,
           error: err(
             "CONFLICT",
-            `cannot resume: head phase is "${head.data.phase}" (only "suspended" or "active" heads are resumable)`,
+            `cannot resume: head phase is "${head.data.phase}" (suspended is always resumable; active requires allowActiveResume + external ownership fencing)`,
             false,
           ),
         };
@@ -896,6 +953,12 @@ export function createLongRunningHarness(
   };
 
   const onTurnStart = (): void => {
+    // Self-heal: a new turn starting is proof the engine drained the
+    // previous one and is making progress. If a prior turn errored
+    // after onBeforeTurn but before onAfterTurn, inTurn would still
+    // be true here — re-asserting it (rather than the terminal path
+    // force-clearing) means quiesce stays correct: we only return
+    // success when an actual onAfterTurn (or quiesceEngine) confirms.
     state.inTurn = true;
   };
   const onTurnEnd = async (): Promise<void> => {
