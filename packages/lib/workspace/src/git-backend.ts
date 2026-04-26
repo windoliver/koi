@@ -31,6 +31,12 @@ interface RegistryEntry {
   readonly agentHex?: string; // for ownership-ref cleanup; populated when known
 }
 
+// SECURITY NOTE — isSandboxed=false (the default):
+// Crash-survivor discovery uses git branch names and worktree basenames as ownership signals.
+// Both are mutable by any agent with git access in the shared repo. A motivated agent can
+// spoof these signals to cause another agent's workspace to be misidentified and disposed
+// (cross-agent DoS). This is an accepted limitation of unsandboxed deployments.
+// Use isSandboxed=true (with OS-level process isolation) for strong multi-agent isolation.
 export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): WorkspaceBackend {
   const registry = new Map<WorkspaceId, RegistryEntry>();
   const basePath = resolveWorktreeBasePath(config.repoPath, config.worktreeBasePath);
@@ -403,7 +409,7 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
             foundPath = candidate;
             break;
           }
-          if (!foundPath) continue; // not found under resolvedBase
+          if (!foundPath) continue; // not found under resolvedBase — worktree may have been deleted or moved
           const id = workspaceId(wsId);
           if (!registry.has(id)) {
             registry.set(id, { path: foundPath, branchName, agentHex: searchHex });
