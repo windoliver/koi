@@ -13537,7 +13537,7 @@ describe("Golden: @koi/governance-delegation — issue + verify roundtrip", () =
       "@koi/governance-delegation"
     );
 
-    const secret = randomBytes(32);
+    const secret: Uint8Array = randomBytes(32);
     const sess = sessionId("golden-sess");
     const tok = await issueRootCapability({
       signer: { kind: "hmac-sha256", secret },
@@ -13586,7 +13586,7 @@ describe("Golden: @koi/governance-delegation — revocation invalidates downstre
       createMemoryCapabilityRevocationRegistry,
     } = await import("@koi/governance-delegation");
 
-    const secret = randomBytes(32);
+    const secret: Uint8Array = randomBytes(32);
     const sess = sessionId("golden-sess");
     const registry = createMemoryCapabilityRevocationRegistry();
     const signer = { kind: "hmac-sha256" as const, secret };
