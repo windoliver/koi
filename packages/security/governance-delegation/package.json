@@ -1,6 +1,6 @@
 {
   "name": "@koi/governance-delegation",
-  "description": "Capability-token verifier + delegation primitives — L2 implementation of @koi/core's CapabilityVerifier and CapabilityRevocationRegistry contracts",
+  "description": "Capability tokens + delegation chains. L2 verifier, signer, and in-memory revocation registry over @koi/core.",
   "version": "0.0.0",
   "private": true,
   "type": "module",

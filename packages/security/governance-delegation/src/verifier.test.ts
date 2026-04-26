@@ -562,6 +562,42 @@ describe("round-2 hardening", () => {
     expect(result.reason).toBe("scope_exceeded");
   });
 
+  test("global Object.prototype pollution cannot grant unsigned permissions (codex round-10: critical)", async () => {
+    // structuredClone produces plain objects whose prototype is still
+    // Object.prototype. If an attacker pollutes
+    // `Object.prototype.allow = ["read_file"]` globally, every cloned
+    // permissions object inherits that array — the canonical signer
+    // covers only own keys (so `permissions:{}` is signed) but a naive
+    // verifier reading `perms.allow` via the prototype chain authorizes
+    // the polluted entry. Defense: rebuild permission containers as
+    // null-prototype objects and read fields only via Object.hasOwn.
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const token = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: {}, sessionId: sessionId("sess-1") },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately pollute prototype
+    (Object.prototype as any).allow = ["read_file"];
+    try {
+      const result = await verifier.verify(token, ctx({ toolId: "read_file" }));
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reason).toBe("scope_exceeded");
+    } finally {
+      // biome-ignore lint/suspicious/noExplicitAny: restore prototype
+      delete (Object.prototype as any).allow;
+    }
+  });
+
   test("inherited (prototype-chain) allow array cannot bypass signing (codex round-9: high)", async () => {
     // Canonical signer iterates own-enumerable keys only — if a
     // permissions object inherits `allow` from its prototype, the

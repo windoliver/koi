@@ -55,16 +55,51 @@ function deny(reason: CapabilityVerifyResult & { readonly ok: false }): Capabili
 }
 
 /**
- * Deep-clone the input into a plain own-property snapshot, immune to
- * caller mutation across `await` boundaries and to prototype-pollution
- * tricks where an inherited `allow`/`deny`/`ask` array bypasses both the
- * canonical signer (own-keys only) and any code that reads via the
- * prototype chain. structuredClone discards prototype chains and shares
- * no references with the original, so subsequent mutation by the caller
- * cannot affect signature, chain, or scope decisions.
+ * Deep-clone the input into a snapshot immune to caller mutation across
+ * `await` boundaries. structuredClone shares no references with the
+ * original, so subsequent caller mutation cannot affect signature,
+ * chain, or scope decisions.
+ *
+ * Note: structuredClone returns plain objects, but those still inherit
+ * from `Object.prototype`. Globally polluting `Object.prototype.allow`
+ * would propagate into every cloned permission object — see
+ * `normalizePermissionContainers` for the second-stage defense that
+ * strips prototype reads entirely.
  */
 function snapshot<T>(value: T): T {
   return structuredClone(value);
+}
+
+/**
+ * Rebuild the permission/resource containers as null-prototype objects
+ * with only own-property string-array fields. Defends against global
+ * `Object.prototype` pollution where an attacker sets
+ * `Object.prototype.allow = ["read_file"]`; the canonical signer
+ * iterates own keys only (so the signed payload has no allow list), but
+ * an unguarded reader (`perms.allow`) would still see the inherited
+ * array via the prototype chain. Reading exclusively through
+ * `Object.hasOwn` and writing into a `Object.create(null)` container
+ * removes both halves of that bypass.
+ */
+function normalizePermissionContainers(token: CapabilityToken): CapabilityToken {
+  const perms = token.scope.permissions as Record<string, unknown>;
+  const cleanPerms: Record<string, readonly string[]> = Object.create(null);
+  if (Object.hasOwn(perms, "allow") && Array.isArray(perms.allow)) {
+    cleanPerms.allow = [...(perms.allow as readonly string[])];
+  }
+  if (Object.hasOwn(perms, "deny") && Array.isArray(perms.deny)) {
+    cleanPerms.deny = [...(perms.deny as readonly string[])];
+  }
+  if (Object.hasOwn(perms, "ask") && Array.isArray(perms.ask)) {
+    cleanPerms.ask = [...(perms.ask as readonly string[])];
+  }
+  const cleanScope: Record<string, unknown> = Object.create(null);
+  cleanScope.permissions = cleanPerms;
+  cleanScope.sessionId = token.scope.sessionId;
+  if (Object.hasOwn(token.scope, "resources") && Array.isArray(token.scope.resources)) {
+    cleanScope.resources = [...token.scope.resources];
+  }
+  return { ...token, scope: cleanScope as unknown as CapabilityToken["scope"] };
 }
 
 /**
@@ -300,7 +335,10 @@ async function verifyChain(
   // change the attenuation calculation.
   let parent: CapabilityToken;
   try {
-    parent = snapshot(fetched);
+    const cloned = snapshot(fetched);
+    const parentShape = validateTokenShape(cloned);
+    if (parentShape) return parentShape;
+    parent = normalizePermissionContainers(cloned);
   } catch {
     return deny({ ok: false, reason: "invalid_signature" });
   }
@@ -374,8 +412,9 @@ export function createCapabilityVerifier(opts: CapabilityVerifierOptions): Capab
       }
       const shape = validateTokenShape(snapshotToken);
       if (shape) return shape;
+      const normalized = normalizePermissionContainers(snapshotToken);
       try {
-        return await runVerify(snapshotToken, ctx, opts);
+        return await runVerify(normalized, ctx, opts);
       } catch {
         return deny({ ok: false, reason: "invalid_signature" });
       }
