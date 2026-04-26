@@ -231,7 +231,10 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
     const dormantStore = sharedStore;
     const t = setInterval(() => {
       for (const [path, entry] of dormantStore.entries) {
-        if (isExpired(entry)) dormantStore.entries.delete(path);
+        if (isExpired(entry)) {
+          totalBytesUsed -= entry.sizeBytes;
+          dormantStore.entries.delete(path);
+        }
       }
     }, sweepIntervalMs);
     if (t && typeof t === "object" && "unref" in t) {
@@ -448,7 +451,10 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
     if (closed) return { ok: false, error: CLOSED_ERROR };
     const entry = store.entries.get(path);
     if (!entry || isExpired(entry)) {
-      if (entry) store.entries.delete(path);
+      if (entry) {
+        totalBytesUsed -= entry.sizeBytes;
+        store.entries.delete(path);
+      }
       return {
         ok: false,
         error: { code: "NOT_FOUND", message: `Path '${path}' not found`, retryable: false },

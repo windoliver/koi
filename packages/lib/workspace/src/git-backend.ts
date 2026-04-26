@@ -277,6 +277,12 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
     },
 
     async findByAgentId(searchAgentId: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
+      // Crash-survivor discovery requires trusting git state (branch names, directory basenames)
+      // as ownership signals. On unsandboxed backends, workspace processes can forge that state
+      // to impersonate another agent's survivor after a restart. Fail closed: only allow survivor
+      // discovery when the backend can guarantee agents cannot mutate the git namespace.
+      if (!config.isSandboxed) return [];
+
       // Derive ownership exclusively from the git-owned branch name — tamper-resistant for
       // the naming scheme (agents cannot claim another agent's branch without knowing their hex).
       // Branch format: workspace/<hex(agentId)>/<wsId>
@@ -286,11 +292,9 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       // We deliberately avoid file-content fallbacks (e.g. reading .koi-workspace): on an
       // unsandboxed backend, any such file is writable by workspace processes, enabling cross-agent
       // disposal attacks where a tampered file causes another agent's workspace to be deleted.
-      // The two ownership signals used here are both stored in the main repo:
+      // The ownership signals used here are stored in the main repo:
       //   1. Branch name `workspace/<hex>/<wsId>` — the primary signal (most tamper-resistant)
       //   2. Ownership ref `refs/koi-ownership/<hex>/<wsId>` — fallback for branch-drift recovery
-      // Note: since isSandboxed=false, a workspace process CAN forge git refs, so neither signal
-      // is fully tamper-proof. The risk model accepts this for unsandboxed backends.
       const searchHex = Buffer.from(searchAgentId as string).toString("hex");
 
       const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
