@@ -1050,13 +1050,20 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       return result;
     },
     wrapToolCall: async (ctx, request, next) => {
-      // Pre-call only: once a tool has executed its side effects are done.
-      // A post-call throw would surface as a retryable error, causing non-idempotent
-      // tools to execute twice. The next onBeforeTurn will block future turns.
       if (poisonError !== undefined) {
         throw new Error("audit sink poisoned — refusing tool call", { cause: poisonError });
       }
-      return mw.wrapToolCall ? mw.wrapToolCall(ctx, request, next) : next(request);
+      const result = await (mw.wrapToolCall ? mw.wrapToolCall(ctx, request, next) : next(request));
+      // Post-call: if the sink failed while auditing this tool call, surface the error
+      // so the caller cannot treat the side effects as successfully audited. The tool
+      // has already executed — callers MUST NOT retry this tool call on seeing this error.
+      if (poisonError !== undefined) {
+        throw new Error(
+          "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
+          { cause: poisonError },
+        );
+      }
+      return result;
     },
     async *wrapModelStream(
       ctx: TurnContext,

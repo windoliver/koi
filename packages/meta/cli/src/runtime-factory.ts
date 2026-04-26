@@ -2543,7 +2543,16 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: ndjsonPoisonError,
             });
           }
-          return auditMw.wrapToolCall ? auditMw.wrapToolCall(ctx, request, next) : next(request);
+          const result = await (auditMw.wrapToolCall
+            ? auditMw.wrapToolCall(ctx, request, next)
+            : next(request));
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
+              { cause: ndjsonPoisonError },
+            );
+          }
+          return result;
         },
         async *wrapModelStream(
           ctx: TurnContext,
@@ -2746,9 +2755,16 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: sqlitePoisonError,
             });
           }
-          return sqliteAuditMw.wrapToolCall
+          const result = await (sqliteAuditMw.wrapToolCall
             ? sqliteAuditMw.wrapToolCall(ctx, request, next)
-            : next(request);
+            : next(request));
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
+              { cause: sqlitePoisonError },
+            );
+          }
+          return result;
         },
         async *wrapModelStream(
           ctx: TurnContext,

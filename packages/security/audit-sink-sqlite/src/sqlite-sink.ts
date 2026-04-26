@@ -137,28 +137,50 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
       //
       // When config.agentId is set, further restrict the subquery to that agent so one
       // sink instance cannot prune sessions belonging to other agents in a shared DB.
-      if (config.agentId !== undefined) {
-        db.prepare(
-          `DELETE FROM audit_log
-           WHERE (agent_id, session_id) IN (
-             SELECT agent_id, session_id FROM audit_log
-             WHERE agent_id = ?
-             GROUP BY agent_id, session_id
-             HAVING MAX(timestamp) < ?
-               AND SUM(CASE WHEN kind = 'session_end' THEN 1 ELSE 0 END) > 0
-           )`,
-        ).run(config.agentId, cutoff);
-      } else {
-        db.prepare(
-          `DELETE FROM audit_log
-           WHERE (agent_id, session_id) IN (
-             SELECT agent_id, session_id FROM audit_log
-             GROUP BY agent_id, session_id
-             HAVING MAX(timestamp) < ?
-               AND SUM(CASE WHEN kind = 'session_end' THEN 1 ELSE 0 END) > 0
-           )`,
-        ).run(cutoff);
-      }
+      // Step 1: Find candidate sessions (expired + session_end).
+      // Step 2: Filter out sessions that are part of an active hash chain —
+      //   if any row with id > max(session's ids) has prev_hash IS NOT NULL,
+      //   this session is mid-chain and pruning it would make the remaining chain
+      //   unverifiable (surviving rows would have prev_hash pointing at deleted rows).
+      //   SQLite does not allow outer aggregate references inside correlated HAVING
+      //   subqueries, so we do the chain-safety check in two SQL steps.
+      const candidateStmt =
+        config.agentId !== undefined
+          ? db.prepare(
+              `SELECT agent_id, session_id, MAX(id) AS max_id FROM audit_log
+               WHERE agent_id = ?
+               GROUP BY agent_id, session_id
+               HAVING MAX(timestamp) < ?
+                 AND SUM(CASE WHEN kind = 'session_end' THEN 1 ELSE 0 END) > 0`,
+            )
+          : db.prepare(
+              `SELECT agent_id, session_id, MAX(id) AS max_id FROM audit_log
+               GROUP BY agent_id, session_id
+               HAVING MAX(timestamp) < ?
+                 AND SUM(CASE WHEN kind = 'session_end' THEN 1 ELSE 0 END) > 0`,
+            );
+
+      const candidates = (
+        config.agentId !== undefined
+          ? candidateStmt.all(config.agentId, cutoff)
+          : candidateStmt.all(cutoff)
+      ) as Array<{ agent_id: string; session_id: string; max_id: number }>;
+
+      const chainFollowerStmt = db.prepare(
+        `SELECT 1 FROM audit_log WHERE id > ? AND prev_hash IS NOT NULL LIMIT 1`,
+      );
+
+      db.transaction(() => {
+        for (const { agent_id, session_id, max_id } of candidates) {
+          // Skip sessions mid-chain: if any later row is hash-chained, deleting
+          // this session would corrupt the audit trail of subsequent sessions.
+          if (chainFollowerStmt.get(max_id) !== null) continue;
+          db.prepare("DELETE FROM audit_log WHERE agent_id = ? AND session_id = ?").run(
+            agent_id,
+            session_id,
+          );
+        }
+      })();
     } catch (e: unknown) {
       throw new Error("audit_log: failed to prune old entries", { cause: e });
     }
