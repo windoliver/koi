@@ -96,10 +96,13 @@ adds forge-specific metadata (which candidate produced it, lifecycle state,
 verification summary).
 
 ```ts
+type PublishedForgeLifecycleState = "published" | "retired";
+
 interface ForgeArtifact {
   readonly brick: BrickArtifact;     // from @koi/core
   readonly candidateId: string;
-  readonly lifecycle: ForgeLifecycleState;
+  /** Narrowed: an artifact only exists once the pipeline has published. */
+  readonly lifecycle: PublishedForgeLifecycleState;
   readonly verification: ForgeVerificationSummary;
   readonly forgedAt: number;
   readonly forgedBy: string;         // agent ID
@@ -194,7 +197,7 @@ type ForgeEvent =
   | {
       readonly kind: "forge_failed";
       readonly candidateId: string;
-      readonly stage: ForgeLifecycleState;
+      readonly stage: FailableForgeStage; // pre-publication stages only
       readonly reason: string;
     }
   | {
@@ -210,7 +213,15 @@ Pure runtime helpers used by every L2 forge package:
 
 - `isForgeLifecycleState(value: string): value is ForgeLifecycleState`
 - `isTerminalForgeLifecycle(state: ForgeLifecycleState): boolean` — `published | failed | retired`
-- `isForgeEvent(value: unknown): value is ForgeEvent` — exhaustive kind check
+- `isForgeEvent(value: unknown): value is ForgeEvent` — validates the event
+  envelope: discriminant, variant-specific top-level fields, enum-backed
+  fields owned by this package (`ForgeDemandStatus`, `ForgeScope`,
+  `BrickKind`, `PublishedForgeLifecycleState`, `ForgeLifecycleState`,
+  `ForgePolicyVerdict.decision`), and the cross-field invariant that
+  `forge_completed.artifact.candidateId === forge_completed.candidateId`.
+  **Not** a deep schema validator for nested `BrickArtifact` /
+  `ForgeVerificationSummary` — that lives with the package that produces or
+  persists them.
 
 ---
 

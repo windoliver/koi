@@ -6,6 +6,7 @@
  */
 
 export type {
+  FailableForgeStage,
   ForgeArtifact,
   ForgeCandidate,
   ForgeDemand,
@@ -17,6 +18,13 @@ export type {
   ForgePolicyVerdict,
   ForgeToolInput,
   ForgeToolResult,
+  PublishedForgeLifecycleState,
 } from "./types.js";
 
-export { isForgeEvent, isForgeLifecycleState, isTerminalForgeLifecycle } from "./types.js";
+export {
+  isFailableForgeStage,
+  isForgeEvent,
+  isForgeLifecycleState,
+  isPublishedForgeLifecycleState,
+  isTerminalForgeLifecycle,
+} from "./types.js";

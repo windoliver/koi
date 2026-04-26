@@ -18,7 +18,13 @@ import type {
   ForgeToolInput,
   ForgeToolResult,
 } from "./types.js";
-import { isForgeEvent, isForgeLifecycleState, isTerminalForgeLifecycle } from "./types.js";
+import {
+  isFailableForgeStage,
+  isForgeEvent,
+  isForgeLifecycleState,
+  isPublishedForgeLifecycleState,
+  isTerminalForgeLifecycle,
+} from "./types.js";
 
 const sampleSignal: ForgeDemandSignal = {
   id: "sig-1",
@@ -205,6 +211,36 @@ describe("@koi/forge-types — ForgeLifecycleState guards", () => {
     expect(isForgeLifecycleState("PUBLISHED")).toBe(false);
   });
 
+  test("isFailableForgeStage accepts only pre-publication stages", () => {
+    expect(isFailableForgeStage("detected")).toBe(true);
+    expect(isFailableForgeStage("proposed")).toBe(true);
+    expect(isFailableForgeStage("synthesizing")).toBe(true);
+    expect(isFailableForgeStage("verifying")).toBe(true);
+    expect(isFailableForgeStage("published")).toBe(false);
+    expect(isFailableForgeStage("retired")).toBe(false);
+    expect(isFailableForgeStage("failed")).toBe(false);
+    expect(isFailableForgeStage("toString")).toBe(false);
+    expect(isFailableForgeStage(42)).toBe(false);
+  });
+
+  test("enum guards reject prototype-chain keys (toString, constructor, __proto__)", () => {
+    for (const key of ["toString", "constructor", "__proto__", "hasOwnProperty"]) {
+      expect(isForgeLifecycleState(key)).toBe(false);
+      expect(isPublishedForgeLifecycleState(key)).toBe(false);
+      // forge_failed.stage uses isForgeLifecycleState, so this also covers that path.
+    }
+  });
+
+  test("isPublishedForgeLifecycleState accepts only published/retired", () => {
+    expect(isPublishedForgeLifecycleState("published")).toBe(true);
+    expect(isPublishedForgeLifecycleState("retired")).toBe(true);
+    expect(isPublishedForgeLifecycleState("failed")).toBe(false);
+    expect(isPublishedForgeLifecycleState("verifying")).toBe(false);
+    expect(isPublishedForgeLifecycleState("")).toBe(false);
+    expect(isPublishedForgeLifecycleState(42)).toBe(false);
+    expect(isPublishedForgeLifecycleState(null)).toBe(false);
+  });
+
   test("isTerminalForgeLifecycle is true for published/failed/retired only", () => {
     expect(isTerminalForgeLifecycle("published")).toBe(true);
     expect(isTerminalForgeLifecycle("failed")).toBe(true);
@@ -278,6 +314,269 @@ describe("@koi/forge-types — ForgeEvent", () => {
     expect(isForgeEvent({})).toBe(false);
     expect(isForgeEvent({ kind: "unknown" })).toBe(false);
     expect(isForgeEvent({ kind: 42 })).toBe(false);
+  });
+
+  test("isForgeEvent rejects per-variant payload shape errors", () => {
+    // demand_detected: missing or malformed demand
+    expect(isForgeEvent({ kind: "demand_detected" })).toBe(false);
+    expect(isForgeEvent({ kind: "demand_detected", demand: { status: "open" } })).toBe(false);
+
+    // candidate_proposed: missing required candidate fields
+    expect(isForgeEvent({ kind: "candidate_proposed" })).toBe(false);
+    expect(
+      isForgeEvent({
+        kind: "candidate_proposed",
+        candidate: { id: "c", kind: "tool", name: "n", description: "d" },
+      }),
+    ).toBe(false);
+
+    // synthesize_started / verify_started: candidateId must be a string
+    expect(isForgeEvent({ kind: "synthesize_started" })).toBe(false);
+    expect(isForgeEvent({ kind: "synthesize_started", candidateId: 7 })).toBe(false);
+    expect(isForgeEvent({ kind: "verify_started", candidateId: null })).toBe(false);
+
+    // forge_completed: missing artifact, or wrong-typed candidateId
+    expect(isForgeEvent({ kind: "forge_completed", candidateId: "c" })).toBe(false);
+    expect(isForgeEvent({ kind: "forge_completed", candidateId: 7, artifact: {} })).toBe(false);
+    expect(
+      isForgeEvent({
+        kind: "forge_completed",
+        candidateId: "c",
+        artifact: { brick: {}, candidateId: 1 },
+      }),
+    ).toBe(false);
+
+    // forge_failed: stage must be a pre-publication FailableForgeStage
+    expect(
+      isForgeEvent({ kind: "forge_failed", candidateId: "c", stage: "active", reason: "x" }),
+    ).toBe(false);
+    expect(isForgeEvent({ kind: "forge_failed", candidateId: "c", stage: "verifying" })).toBe(
+      false,
+    );
+    expect(
+      isForgeEvent({ kind: "forge_failed", candidateId: "c", stage: "verifying", reason: 1 }),
+    ).toBe(false);
+    // Reject success stages — failure cannot occur from published/retired/failed.
+    for (const stage of ["published", "retired", "failed"]) {
+      expect(isForgeEvent({ kind: "forge_failed", candidateId: "c", stage, reason: "x" })).toBe(
+        false,
+      );
+    }
+
+    // Optional fields, when present, must be valid types.
+    expect(
+      isForgeEvent({
+        kind: "candidate_proposed",
+        candidate: {
+          id: "c",
+          kind: "tool",
+          name: "n",
+          description: "d",
+          demandId: 7, // wrong type
+          priority: 0,
+          proposedScope: "agent",
+          createdAt: 0,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isForgeEvent({
+        kind: "demand_detected",
+        demand: {
+          signal: {},
+          status: "open",
+          observedAt: 0,
+          occurrences: 1,
+          resolvedAt: "yesterday", // wrong type
+        },
+      }),
+    ).toBe(false);
+
+    // Arrays are not valid object payloads (typeof [] === "object" but they are not records).
+    expect(isForgeEvent({ kind: "demand_detected", demand: [] })).toBe(false);
+    expect(
+      isForgeEvent({
+        kind: "forge_completed",
+        candidateId: "c",
+        artifact: {
+          brick: [], // array, not a record
+          candidateId: "c",
+          lifecycle: "published",
+          verification: {},
+          forgedAt: 0,
+          forgedBy: "a",
+        },
+      }),
+    ).toBe(false);
+
+    // priority must be in [0, 1].
+    for (const priority of [-0.1, 1.5, 5, -100]) {
+      expect(
+        isForgeEvent({
+          kind: "candidate_proposed",
+          candidate: {
+            id: "c",
+            kind: "tool",
+            name: "n",
+            description: "d",
+            priority,
+            proposedScope: "agent",
+            createdAt: 0,
+          },
+        }),
+      ).toBe(false);
+    }
+
+    // Numeric fields must be finite — NaN/Infinity rejected.
+    expect(
+      isForgeEvent({
+        kind: "candidate_proposed",
+        candidate: {
+          id: "c",
+          kind: "tool",
+          name: "n",
+          description: "d",
+          priority: Number.NaN,
+          proposedScope: "agent",
+          createdAt: 0,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isForgeEvent({
+        kind: "demand_detected",
+        demand: {
+          signal: {},
+          status: "open",
+          observedAt: Number.POSITIVE_INFINITY,
+          occurrences: 1,
+        },
+      }),
+    ).toBe(false);
+
+    // candidate_proposed: invalid enum-backed fields rejected
+    expect(
+      isForgeEvent({
+        kind: "candidate_proposed",
+        candidate: {
+          id: "c",
+          kind: "not-a-real-kind",
+          name: "n",
+          description: "d",
+          priority: 0,
+          proposedScope: "agent",
+          createdAt: 0,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isForgeEvent({
+        kind: "candidate_proposed",
+        candidate: {
+          id: "c",
+          kind: "tool",
+          name: "n",
+          description: "d",
+          priority: 0,
+          proposedScope: "GLOBAL",
+          createdAt: 0,
+        },
+      }),
+    ).toBe(false);
+
+    // demand_detected: status must be a known ForgeDemandStatus
+    expect(
+      isForgeEvent({
+        kind: "demand_detected",
+        demand: { signal: {}, status: "weird", observedAt: 0, occurrences: 1 },
+      }),
+    ).toBe(false);
+
+    // forge_completed: artifact.lifecycle must be exactly "published" — `retired` is stale state.
+    expect(
+      isForgeEvent({
+        kind: "forge_completed",
+        candidateId: "c",
+        artifact: {
+          brick: {},
+          candidateId: "c",
+          lifecycle: "retired",
+          verification: {},
+          forgedAt: 0,
+          forgedBy: "a",
+        },
+      }),
+    ).toBe(false);
+
+    // forge_completed: top-level candidateId must match artifact.candidateId
+    expect(
+      isForgeEvent({
+        kind: "forge_completed",
+        candidateId: "A",
+        artifact: {
+          brick: {},
+          candidateId: "B",
+          lifecycle: "published",
+          verification: {},
+          forgedAt: 0,
+          forgedBy: "a",
+        },
+      }),
+    ).toBe(false);
+
+    // forge_completed: artifact lifecycle must be a published-only state
+    expect(
+      isForgeEvent({
+        kind: "forge_completed",
+        candidateId: "c",
+        artifact: {
+          brick: {},
+          candidateId: "c",
+          lifecycle: "failed",
+          verification: {},
+          forgedAt: 0,
+          forgedBy: "a",
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isForgeEvent({
+        kind: "forge_completed",
+        candidateId: "c",
+        artifact: {
+          brick: {},
+          candidateId: "c",
+          lifecycle: "verifying",
+          verification: {},
+          forgedAt: 0,
+          forgedBy: "a",
+        },
+      }),
+    ).toBe(false);
+
+    // policy_decision: verdict must be a valid discriminated-union value
+    expect(isForgeEvent({ kind: "policy_decision", candidateId: "c" })).toBe(false);
+    expect(
+      isForgeEvent({
+        kind: "policy_decision",
+        candidateId: "c",
+        verdict: { decision: "deny" },
+      }),
+    ).toBe(false);
+    expect(
+      isForgeEvent({
+        kind: "policy_decision",
+        candidateId: "c",
+        verdict: { decision: "weird" },
+      }),
+    ).toBe(false);
+    expect(
+      isForgeEvent({
+        kind: "policy_decision",
+        candidateId: 7,
+        verdict: { decision: "allow" },
+      }),
+    ).toBe(false);
   });
 });
 
