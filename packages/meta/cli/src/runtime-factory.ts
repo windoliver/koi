@@ -2538,9 +2538,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: ndjsonPoisonError,
             });
           }
-          const result = await (auditMw.wrapModelCall
-            ? auditMw.wrapModelCall(ctx, request, next)
-            : next(request));
+          let modelError: unknown;
+          let modelThrew = false;
+          let modelResult: Awaited<ReturnType<typeof next>> | undefined;
+          try {
+            modelResult = await (auditMw.wrapModelCall
+              ? auditMw.wrapModelCall(ctx, request, next)
+              : next(request));
+          } catch (e: unknown) {
+            modelError = e;
+            modelThrew = true;
+          }
           await auditMw.flush().catch((flushErr: unknown) => {
             if (ndjsonPoisonError === undefined) {
               ndjsonPoisonError = flushErr;
@@ -2551,7 +2559,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: ndjsonPoisonError,
             });
           }
-          return result;
+          if (modelThrew) throw modelError;
+          return modelResult as Awaited<ReturnType<typeof next>>;
         },
         wrapToolCall: async (ctx, request, next) => {
           if (ndjsonPoisonError !== undefined) {
@@ -2597,13 +2606,20 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           const inner = auditMw.wrapModelStream
             ? auditMw.wrapModelStream(ctx, request, next)
             : next(request);
-          for await (const chunk of inner) {
-            if (ndjsonPoisonError !== undefined) {
-              throw new Error("audit sink write failed mid-stream — stream aborted", {
-                cause: ndjsonPoisonError,
-              });
+          let streamError: unknown;
+          let streamThrew = false;
+          try {
+            for await (const chunk of inner) {
+              if (ndjsonPoisonError !== undefined) {
+                throw new Error("audit sink write failed mid-stream — stream aborted", {
+                  cause: ndjsonPoisonError,
+                });
+              }
+              yield chunk;
             }
-            yield chunk;
+          } catch (e: unknown) {
+            streamError = e;
+            streamThrew = true;
           }
           await auditMw.flush().catch((flushErr: unknown) => {
             if (ndjsonPoisonError === undefined) {
@@ -2615,6 +2631,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: ndjsonPoisonError,
             });
           }
+          if (streamThrew) throw streamError;
         },
       };
       auditPresetExtras.push(guardedAuditMw);
@@ -2792,9 +2809,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: sqlitePoisonError,
             });
           }
-          const result = await (sqliteAuditMw.wrapModelCall
-            ? sqliteAuditMw.wrapModelCall(ctx, request, next)
-            : next(request));
+          let modelError: unknown;
+          let modelThrew = false;
+          let modelResult: Awaited<ReturnType<typeof next>> | undefined;
+          try {
+            modelResult = await (sqliteAuditMw.wrapModelCall
+              ? sqliteAuditMw.wrapModelCall(ctx, request, next)
+              : next(request));
+          } catch (e: unknown) {
+            modelError = e;
+            modelThrew = true;
+          }
           await sqliteAuditMw.flush().catch((flushErr: unknown) => {
             if (sqlitePoisonError === undefined) {
               sqlitePoisonError = flushErr;
@@ -2805,7 +2830,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: sqlitePoisonError,
             });
           }
-          return result;
+          if (modelThrew) throw modelError;
+          return modelResult as Awaited<ReturnType<typeof next>>;
         },
         wrapToolCall: async (ctx, request, next) => {
           if (sqlitePoisonError !== undefined) {
@@ -2851,13 +2877,20 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           const inner = sqliteAuditMw.wrapModelStream
             ? sqliteAuditMw.wrapModelStream(ctx, request, next)
             : next(request);
-          for await (const chunk of inner) {
-            if (sqlitePoisonError !== undefined) {
-              throw new Error("audit sink write failed mid-stream — stream aborted", {
-                cause: sqlitePoisonError,
-              });
+          let streamError: unknown;
+          let streamThrew = false;
+          try {
+            for await (const chunk of inner) {
+              if (sqlitePoisonError !== undefined) {
+                throw new Error("audit sink write failed mid-stream — stream aborted", {
+                  cause: sqlitePoisonError,
+                });
+              }
+              yield chunk;
             }
-            yield chunk;
+          } catch (e: unknown) {
+            streamError = e;
+            streamThrew = true;
           }
           await sqliteAuditMw.flush().catch((flushErr: unknown) => {
             if (sqlitePoisonError === undefined) {
@@ -2869,6 +2902,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: sqlitePoisonError,
             });
           }
+          if (streamThrew) throw streamError;
         },
       };
       auditPresetExtras.push(guardedSqliteAuditMw);

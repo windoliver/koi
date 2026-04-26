@@ -116,9 +116,16 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
       // session would ever be prunable and retention is effectively a no-op.
       // Throw (via the outer try/catch → safePrune) so operators see a clear error
       // instead of silently growing the DB while believing retention is enforced.
-      const hasChain = db
-        .prepare("SELECT 1 FROM audit_log WHERE prev_hash IS NOT NULL LIMIT 1")
-        .get();
+      // Scope the probe to this agent's rows when agentId is configured — a different
+      // agent's signed rows must not block retention for an unsigned agent sharing the DB.
+      const hasChain =
+        config.agentId !== undefined
+          ? db
+              .prepare(
+                "SELECT 1 FROM audit_log WHERE agent_id = ? AND prev_hash IS NOT NULL LIMIT 1",
+              )
+              .get(config.agentId)
+          : db.prepare("SELECT 1 FROM audit_log WHERE prev_hash IS NOT NULL LIMIT 1").get();
       if (hasChain !== null) {
         throw new Error(
           "audit_log: retention is incompatible with hash-chained (signed) audit logs. " +

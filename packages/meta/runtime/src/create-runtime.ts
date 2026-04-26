@@ -1066,15 +1066,23 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       }
     },
     wrapModelCall: async (ctx, request, next) => {
-      // Pre-call: reject before entering the model if already poisoned.
       if (poisonError !== undefined) {
         throw new Error("audit sink poisoned — refusing model call", { cause: poisonError });
       }
-      const result = await (mw.wrapModelCall
-        ? mw.wrapModelCall(ctx, request, next)
-        : next(request));
-      // Force-flush so any audit entries buffered during the model call are durable
-      // before the result is returned. Model calls are idempotent (token cost only).
+      // Capture result/error so flush always runs — mirrors wrapToolCall pattern.
+      // Audit records a model_call entry even on failure, so it must be flushed
+      // before surfacing the model error.
+      let modelError: unknown;
+      let modelThrew = false;
+      let modelResult: Awaited<ReturnType<typeof next>> | undefined;
+      try {
+        modelResult = await (mw.wrapModelCall
+          ? mw.wrapModelCall(ctx, request, next)
+          : next(request));
+      } catch (e: unknown) {
+        modelError = e;
+        modelThrew = true;
+      }
       await mw.flush().catch((flushErr: unknown) => {
         if (poisonError === undefined) {
           poisonError = flushErr;
@@ -1085,7 +1093,8 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
           cause: poisonError,
         });
       }
-      return result;
+      if (modelThrew) throw modelError;
+      return modelResult as Awaited<ReturnType<typeof next>>;
     },
     wrapToolCall: async (ctx, request, next) => {
       if (poisonError !== undefined) {
@@ -1130,16 +1139,23 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
         throw new Error("audit sink poisoned — refusing model stream", { cause: poisonError });
       }
       const inner = mw.wrapModelStream ? mw.wrapModelStream(ctx, request, next) : next(request);
-      for await (const chunk of inner) {
-        if (poisonError !== undefined) {
-          throw new Error("audit sink write failed mid-stream — stream aborted", {
-            cause: poisonError,
-          });
+      // Capture stream error so flush always runs on both success and failure paths.
+      let streamError: unknown;
+      let streamThrew = false;
+      try {
+        for await (const chunk of inner) {
+          if (poisonError !== undefined) {
+            throw new Error("audit sink write failed mid-stream — stream aborted", {
+              cause: poisonError,
+            });
+          }
+          yield chunk;
         }
-        yield chunk;
+      } catch (e: unknown) {
+        streamError = e;
+        streamThrew = true;
       }
-      // Force-flush at stream end so any buffered audit entries are durable before
-      // the turn is considered complete.
+      // Force-flush on all paths — audit records a model_stream entry even on failure.
       await mw.flush().catch((flushErr: unknown) => {
         if (poisonError === undefined) {
           poisonError = flushErr;
@@ -1150,6 +1166,7 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
           cause: poisonError,
         });
       }
+      if (streamThrew) throw streamError;
     },
   };
 
