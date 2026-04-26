@@ -2446,7 +2446,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         throw new Error(`Invalid NDJSON audit sink config: ${ndjsonValidation.error.message}`);
       }
       const auditSink = createNdjsonAuditSink(ndjsonSinkConfig);
-      const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
+      const auditMw = createAuditMiddleware({
+        sink: auditSink,
+        signing: true,
+        onError: (error: unknown) => {
+          console.error("[koi/cli] audit sink write failed:", error);
+        },
+      });
       complianceRecorders.push(
         createAuditSinkComplianceRecorder(auditSink, {
           sessionId: getLiveSessionId,
@@ -2535,7 +2541,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         throw new Error(`Invalid SQLite audit sink config: ${sqliteValidation.error.message}`);
       }
       const sqliteSink = createSqliteAuditSink(sqliteSinkConfig);
-      const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
+      const sqliteAuditMw = createAuditMiddleware({
+        sink: sqliteSink,
+        signing: true,
+        onError: (error: unknown) => {
+          console.error("[koi/cli] audit sink write failed:", error);
+        },
+      });
       complianceRecorders.push(
         createAuditSinkComplianceRecorder(sqliteSink, {
           sessionId: getLiveSessionId,

@@ -85,6 +85,18 @@ async function readLastEntryMeta(
   }
 }
 
+async function readFirstEntryTimestamp(filePath: string): Promise<number> {
+  try {
+    const content = await readFile(filePath, "utf-8");
+    const firstLine = content.split("\n").find((l) => l.trim().length > 0);
+    if (firstLine === undefined) return 0;
+    const parsed = JSON.parse(firstLine.trim()) as Record<string, unknown>;
+    return typeof parsed.timestamp === "number" ? parsed.timestamp : 0;
+  } catch {
+    return 0;
+  }
+}
+
 async function readArchiveEntries(archiveDir: string): Promise<readonly AuditEntry[]> {
   let files: string[];
   try {
@@ -98,12 +110,31 @@ async function readArchiveEntries(archiveDir: string): Promise<readonly AuditEnt
 
   // Only ingest .ndjson files — stray .DS_Store, editor temps, or partial copies
   // must not cause a corruption error that takes the entire audit trail offline.
-  // Sort by filename: ISO timestamp prefix provides chronological order; UUID suffix
-  // (added since v1992) makes names globally unique across restarts.
-  const sorted = files.filter((f) => f.endsWith(".ndjson")).sort();
+  // Sort by first-entry audit timestamp (stable data inside the file) rather than
+  // by rotation-time wall-clock filename: filename timestamps reflect when rotation
+  // ran, not when entries were written, so NTP correction or VM clock rollback across
+  // restarts can reorder archives. Entry timestamps were captured at write time and
+  // are monotonically increasing within each archive, making them a more reliable
+  // ordering proxy. Filename is the tiebreaker for empty archives (timestamp == 0).
+  const ndjsonFiles = files.filter((f) => f.endsWith(".ndjson"));
+  const withTimestamps = await Promise.all(
+    ndjsonFiles.map(async (f) => ({
+      file: f,
+      firstTimestamp: await readFirstEntryTimestamp(join(archiveDir, f)),
+    })),
+  );
+  withTimestamps.sort((a, b) =>
+    a.firstTimestamp !== b.firstTimestamp
+      ? a.firstTimestamp - b.firstTimestamp
+      : a.file < b.file
+        ? -1
+        : a.file > b.file
+          ? 1
+          : 0,
+  );
 
   const results: AuditEntry[] = [];
-  for (const file of sorted) {
+  for (const { file } of withTimestamps) {
     const entries = await readEntriesFromFile(join(archiveDir, file));
     results.push(...entries);
   }
