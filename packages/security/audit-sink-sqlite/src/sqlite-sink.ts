@@ -166,8 +166,10 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
   function safePrune(): void {
     try {
       pruneOldEntries();
-    } catch {
-      // Prune failures are non-fatal: missing or corrupt rows will be caught on the next cycle.
+    } catch (e: unknown) {
+      // Retention policy is silently non-enforced when pruning fails — surface the error
+      // so operators can detect storage growth before it becomes a capacity incident.
+      console.error("[audit-sink-sqlite] retention prune failed:", e);
     }
   }
 

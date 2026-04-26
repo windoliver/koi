@@ -142,14 +142,16 @@ export function createNdjsonAuditSink(
     currentDay = config._clockForTesting?.todayUtc() ?? defaultTodayUtc();
   }
 
-  async function rotateIfNeeded(): Promise<void> {
+  // pendingBytes: bytes about to be written in this call, so a write that would
+  // push the file past maxSizeBytes triggers rotation before the line is appended.
+  async function rotateIfNeeded(pendingBytes = 0): Promise<void> {
     if (!config.rotation) return;
 
     const today = config._clockForTesting?.todayUtc() ?? defaultTodayUtc();
     const bySize =
       config.rotation.maxSizeBytes !== undefined &&
       bytesWritten > 0 &&
-      bytesWritten >= config.rotation.maxSizeBytes;
+      bytesWritten + pendingBytes > config.rotation.maxSizeBytes;
     // Guard bytesWritten > 0: no file to rename if this sink has never written anything
     const byDay = config.rotation.daily === true && today !== currentDay && bytesWritten > 0;
 
@@ -166,12 +168,13 @@ export function createNdjsonAuditSink(
   return {
     log(entry: AuditEntry): Promise<void> {
       return enqueue(async () => {
-        await rotateIfNeeded();
         const line = `${JSON.stringify(entry)}\n`;
-        writer.write(line);
         // Use actual UTF-8 byte length, not UTF-16 code-unit count, so maxSizeBytes
         // matches the real on-disk size for entries containing multibyte characters.
-        bytesWritten += Buffer.byteLength(line, "utf8");
+        const lineBytes = Buffer.byteLength(line, "utf8");
+        await rotateIfNeeded(lineBytes);
+        writer.write(line);
+        bytesWritten += lineBytes;
       });
     },
 
