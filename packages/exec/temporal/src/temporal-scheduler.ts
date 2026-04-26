@@ -2125,6 +2125,16 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       return result.map((r) => Object.freeze(structuredClone(r)));
     },
 
+    querySchedules(agentId: AgentId): readonly CronSchedule[] {
+      const result: CronSchedule[] = [];
+      for (const s of schedules.values()) {
+        if (s.agentId === agentId) {
+          result.push(Object.freeze(structuredClone(s)));
+        }
+      }
+      return result;
+    },
+
     watch(listener: (event: SchedulerEvent) => void): () => void {
       eventListeners.add(listener);
       return () => {

@@ -18,14 +18,16 @@ export interface WorkerLike {
   readonly shutdown: () => void;
 }
 
-import type { TemporalConfig } from "./types.js";
-
-export interface WorkerFactoryOptions {
-  readonly config: TemporalConfig;
+export interface WorkerConfig {
+  readonly taskQueue: string;
+  readonly url?: string | undefined;
+  readonly namespace?: string | undefined;
+  readonly maxCachedWorkflows?: number | undefined;
 }
 
 export interface WorkerCreateParams {
   readonly serverUrl: string;
+  readonly namespace: string;
   readonly taskQueue: string;
   readonly maxCachedWorkflows: number;
   readonly workflowsPath: string;
@@ -37,12 +39,8 @@ export interface WorkerAndConnection {
   readonly connection: NativeConnectionLike;
   /**
    * Optional explicit readiness promise. If provided, `createTemporalWorker` awaits it
-   * (with a 10-second timeout) before returning the handle, so callers only receive a
-   * handle once the worker has actually connected and entered its polling loop.
-   *
-   * Production factories should resolve this after the first successful task-queue poll
-   * or connection establishment. If absent, a one-macrotask heuristic is used instead,
-   * which only catches synchronous startup failures.
+   * (with a 10-second timeout) before returning the handle. Production factories should
+   * resolve this after the first successful poll or connection establishment.
    */
   readonly readyPromise?: Promise<void> | undefined;
 }
@@ -51,14 +49,16 @@ export interface WorkerHandle {
   readonly worker: WorkerLike;
   readonly connection: NativeConnectionLike;
   /**
-   * Start the worker and track its run promise so dispose() can drain before
-   * closing the connection. Equivalent to worker.run() but drain-aware.
+   * Resolves when the worker run loop completes, rejects on unexpected crashes.
+   * Populated once run() or dispose() is called (whichever comes first).
+   */
+  readonly runPromise: Promise<void>;
+  /**
+   * Start the worker run loop. Idempotent — calling multiple times returns the same promise.
    */
   readonly run: () => Promise<void>;
   /**
-   * Gracefully shut down: signal stop, wait for drain, then close connection.
-   * Safe to call before or after run() — if run() was never called, shutdown
-   * is signalled and connection closed immediately.
+   * Gracefully shut down: signal stop, await drain, then close connection.
    */
   readonly dispose: () => Promise<void>;
 }
@@ -68,13 +68,13 @@ export interface WorkerHandle {
 // ---------------------------------------------------------------------------
 
 async function defaultCreateWorker(params: WorkerCreateParams): Promise<WorkerAndConnection> {
-  // Dynamic import keeps @temporalio/worker out of the module graph for test environments
   const { Worker, NativeConnection } = await import("@temporalio/worker");
 
   const connection = await NativeConnection.connect({ address: params.serverUrl });
   try {
     const worker = await Worker.create({
       connection,
+      namespace: params.namespace,
       taskQueue: params.taskQueue,
       maxCachedWorkflows: params.maxCachedWorkflows,
       workflowsPath: params.workflowsPath,
@@ -82,7 +82,6 @@ async function defaultCreateWorker(params: WorkerCreateParams): Promise<WorkerAn
     });
     return { worker, connection };
   } catch (e: unknown) {
-    // Close the gRPC connection to avoid leaking it on worker creation failure.
     await connection.close();
     throw e;
   }
@@ -92,51 +91,47 @@ async function defaultCreateWorker(params: WorkerCreateParams): Promise<WorkerAn
 // Factory
 // ---------------------------------------------------------------------------
 
-/**
- * Creates a Temporal Worker bound to the given config.
- *
- * Temporal is optional infrastructure — callers must inject `createWorkerFn`
- * to avoid a hard dependency on @temporalio/worker (which has native bindings).
- * In production, pass a factory that wraps NativeConnection + Worker.create.
- * In tests, inject a mock factory.
- */
 export async function createTemporalWorker(
-  options: WorkerFactoryOptions,
-  workflowsPath: string,
+  config: WorkerConfig,
   activities: Record<string, (...args: readonly unknown[]) => unknown>,
+  workflowsPath: string,
   createWorkerFn: (
     params: WorkerCreateParams,
   ) => Promise<WorkerAndConnection> = defaultCreateWorker,
 ): Promise<WorkerHandle> {
   const { worker, connection, readyPromise } = await createWorkerFn({
-    serverUrl: options.config.url ?? "localhost:7233",
-    taskQueue: options.config.taskQueue,
-    maxCachedWorkflows: options.config.maxCachedWorkflows ?? 100,
+    serverUrl: config.url ?? "localhost:7233",
+    namespace: config.namespace ?? "default",
+    taskQueue: config.taskQueue,
+    maxCachedWorkflows: config.maxCachedWorkflows ?? 100,
     workflowsPath,
     activities,
   });
 
-  let runPromise: Promise<void> | undefined;
+  // Deferred run: the actual worker.run() is lazy — started on first call to
+  // handle.run(), handle.worker.run(), or handle.dispose(). runPromise is always
+  // a defined Promise<void> on the handle; it resolves/rejects once the run loop settles.
+  let runStarted = false;
+  let runResolve!: () => void;
+  let runReject!: (err: unknown) => void;
+  const runPromise = new Promise<void>((res, rej) => {
+    runResolve = res;
+    runReject = rej;
+  });
 
-  const wrappedWorker: WorkerLike = {
-    run(): Promise<void> {
-      if (runPromise === undefined) {
-        runPromise = worker.run();
-      }
-      return runPromise;
-    },
-    shutdown(): void {
-      worker.shutdown();
-    },
-  };
+  function startRun(): Promise<void> {
+    if (!runStarted) {
+      runStarted = true;
+      worker.run().then(runResolve, runReject);
+    }
+    return runPromise;
+  }
 
-  // Startup readiness check: prefer an explicit readyPromise from the factory (which can
-  // resolve after the first successful poll or connection establishment) over the heuristic
-  // setTimeout(0) that only catches synchronous failures. Both paths clean up on failure.
-  let startupError: unknown;
+  // If the factory provides an explicit readiness signal, await it with a timeout
+  // so the caller only receives a handle once the worker is actually polling.
   if (readyPromise !== undefined) {
     const STARTUP_TIMEOUT_MS = 10_000;
-    const earlyRun = wrappedWorker.run();
+    let startupError: unknown;
     await Promise.race([
       readyPromise,
       new Promise<never>((_, reject) =>
@@ -145,59 +140,42 @@ export async function createTemporalWorker(
           STARTUP_TIMEOUT_MS,
         ),
       ),
-      earlyRun.then(() => {
+      startRun().then(() => {
         throw new Error("[temporal-worker] run loop exited unexpectedly during startup");
       }),
     ]).catch((err: unknown) => {
       startupError = err;
     });
-  } else {
-    // Heuristic fallback: one macrotask to catch synchronous / near-synchronous startup errors
-    // (bad native bindings, missing config). This does not catch async connection failures.
-    const earlyRun = wrappedWorker.run();
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 0);
-      earlyRun.catch((err: unknown) => {
-        startupError = err;
-        clearTimeout(timer);
-        resolve();
-      });
-    });
-  }
-  if (startupError !== undefined) {
-    // Release native resources before throwing — without cleanup, repeated failed startups
-    // (bad config, outage) accumulate leaked connections and exhaust file descriptors.
-    worker.shutdown();
-    await connection.close().catch(() => {});
-    throw new Error("[temporal-worker] worker failed during startup", { cause: startupError });
+    if (startupError !== undefined) {
+      worker.shutdown();
+      await connection.close().catch(() => {});
+      throw new Error("[temporal-worker] worker failed during startup", { cause: startupError });
+    }
   }
 
-  // Attach a permanent rejection handler to suppress unhandled-rejection noise for
-  // post-startup worker crashes. Callers that want to observe runtime failures should
-  // await or .catch() runPromise directly — this handler only prevents Node from treating
-  // an uncaught rejection as a fatal event when no caller has attached their own handler.
-  runPromise.catch((err: unknown) => {
-    if (err instanceof Error && err.message.toLowerCase().includes("shutdown")) return;
-    console.error("[temporal-worker] run loop crashed after startup:", err);
-  });
+  const wrappedWorker: WorkerLike = {
+    run: startRun,
+    shutdown(): void {
+      worker.shutdown();
+    },
+  };
 
   return {
     worker: wrappedWorker,
     connection,
+    runPromise,
 
     run(): Promise<void> {
-      return wrappedWorker.run();
+      return startRun();
     },
 
     async dispose(): Promise<void> {
-      if (runPromise === undefined) {
-        // Worker holds a ref-count on the connection. Start it so shutdown()
-        // can transition it to STOPPED and release the reference.
-        runPromise = worker.run();
-      }
+      // Ensure the run loop is started so shutdown() can transition the worker
+      // to STOPPED and release the NativeConnection reference.
+      startRun();
       wrappedWorker.shutdown();
       await runPromise.catch(() => {
-        // Swallow — shutting down intentionally; errors surfaced to run() caller.
+        // Swallow — shutting down intentionally; errors surfaced via runPromise.
       });
       await connection.close();
     },

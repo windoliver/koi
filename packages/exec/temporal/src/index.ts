@@ -46,8 +46,8 @@ export {
   createTemporalWorker,
   type NativeConnectionLike,
   type WorkerAndConnection,
+  type WorkerConfig,
   type WorkerCreateParams,
-  type WorkerFactoryOptions,
   type WorkerHandle,
   type WorkerLike,
 } from "./worker-factory.js";
