@@ -74,24 +74,34 @@ async function readEntriesFromFile(
 
 /**
  * Read the last non-empty line of a file and return its audit `timestamp` (ms) and UTC day.
- * Returns undefined if the file is empty, missing, or the last line is not a valid audit entry.
+ * Returns undefined only when the file is empty or the last entry has no numeric timestamp.
+ * Propagates all I/O and parse errors — callers must fail closed on unexpected errors.
  */
 async function readLastEntryMeta(
   filePath: string,
 ): Promise<{ readonly timestampMs: number; readonly day: string } | undefined> {
+  const content = await readFile(filePath, "utf-8");
+  const lines = content.split("\n").filter((l) => l.trim().length > 0);
+  const last = lines[lines.length - 1];
+  if (last === undefined) return undefined;
+  const parsed = JSON.parse(last.trim()) as Record<string, unknown>;
+  if (typeof parsed.timestamp === "number") {
+    return {
+      timestampMs: parsed.timestamp,
+      day: new Date(parsed.timestamp).toISOString().slice(0, 10),
+    };
+  }
+  return undefined;
+}
+
+/** Read the timestamp of the first non-empty line of an archive file, for legacy sort ordering. */
+async function readFirstEntryTimestamp(filePath: string): Promise<number | undefined> {
   try {
     const content = await readFile(filePath, "utf-8");
-    const lines = content.split("\n").filter((l) => l.trim().length > 0);
-    const last = lines[lines.length - 1];
-    if (last === undefined) return undefined;
-    const parsed = JSON.parse(last.trim()) as Record<string, unknown>;
-    if (typeof parsed.timestamp === "number") {
-      return {
-        timestampMs: parsed.timestamp,
-        day: new Date(parsed.timestamp).toISOString().slice(0, 10),
-      };
-    }
-    return undefined;
+    const firstLine = content.split("\n").find((l) => l.trim().length > 0);
+    if (firstLine === undefined) return undefined;
+    const parsed = JSON.parse(firstLine.trim()) as Record<string, unknown>;
+    return typeof parsed.timestamp === "number" ? parsed.timestamp : undefined;
   } catch {
     return undefined;
   }
@@ -110,23 +120,36 @@ async function readArchiveEntries(archiveDir: string): Promise<readonly AuditEnt
 
   // Only ingest .ndjson files — stray .DS_Store, editor temps, or partial copies
   // must not cause a corruption error that takes the entire audit trail offline.
-  // Sort by monotonic sequence prefix (clock-independent rotation order), with
-  // filename as tiebreaker for archives that share the same sequence (should never
-  // happen in practice, but defensively handled). Audit entry timestamps are not
-  // used for ordering: entries are stamped with call start time, so a long-running
-  // call can produce a timestamp older than entries already in a prior archive.
+  // Sequence-prefixed files (8-digit prefix) use that prefix for stable ordering.
+  // Legacy files (timestamp- or UUID-named, no sequence prefix) are sorted by the
+  // timestamp of their first entry — the only stable ordering available for arbitrary
+  // filename schemes — and placed before sequence-numbered files (legacy = older).
   const ndjsonFiles = files.filter((f) => f.endsWith(".ndjson"));
-  ndjsonFiles.sort((a, b) => {
-    const seqA = parseArchiveSeq(a);
-    const seqB = parseArchiveSeq(b);
-    return seqA !== seqB ? seqA - seqB : a < b ? -1 : a > b ? 1 : 0;
+
+  type WithKey = {
+    readonly name: string;
+    readonly seq: number;
+    readonly tiebreak: number;
+  };
+  const withKeys = await Promise.all(
+    ndjsonFiles.map(async (name): Promise<WithKey> => {
+      const seq = parseArchiveSeq(name);
+      if (seq > 0) return { name, seq, tiebreak: 0 };
+      const ts = await readFirstEntryTimestamp(join(archiveDir, name));
+      return { name, seq: 0, tiebreak: ts ?? 0 };
+    }),
+  );
+  withKeys.sort((a, b) => {
+    if (a.seq !== b.seq) return a.seq - b.seq;
+    if (a.tiebreak !== b.tiebreak) return a.tiebreak - b.tiebreak;
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
   });
 
   const results: AuditEntry[] = [];
-  for (const file of ndjsonFiles) {
+  for (const { name } of withKeys) {
     // required=true: an archive was just enumerated by readdir — if it's now missing,
     // that is tampering or a race, not a benign empty-file case.
-    const entries = await readEntriesFromFile(join(archiveDir, file), true);
+    const entries = await readEntriesFromFile(join(archiveDir, name), true);
     results.push(...entries);
   }
   return results;
@@ -171,8 +194,11 @@ export function createNdjsonAuditSink(
           }
         }
       })
-      .catch(() => {
-        /* ENOENT or unreadable — keep counter at 0 and currentDay as today */
+      .catch((e: unknown) => {
+        if (e instanceof Error && "code" in e && (e as NodeJS.ErrnoException).code === "ENOENT") {
+          return; // Active file not yet created — fresh sink
+        }
+        throw e; // Corrupt or unreadable active log — fail closed
       }),
     readdir(archiveDir)
       .then((files) => {
