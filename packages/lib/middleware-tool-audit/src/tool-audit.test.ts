@@ -13,19 +13,19 @@ import type { ToolAuditConfig } from "./config.js";
 import { createToolAuditMiddleware } from "./tool-audit.js";
 import type { ToolAuditMiddleware, ToolAuditSnapshot, ToolAuditStore } from "./types.js";
 
-function sessionCtx(): SessionContext {
+function sessionCtx(opts: { readonly sessionId?: string } = {}): SessionContext {
   return {
     agentId: "test-agent",
-    sessionId: sessionId("sess-1"),
+    sessionId: sessionId(opts.sessionId ?? "sess-1"),
     runId: runId("run-1"),
     metadata: {},
   };
 }
 
-function turnCtx(): TurnContext {
+function turnCtx(session?: SessionContext): TurnContext {
   const rid = runId("run-1");
   return {
-    session: sessionCtx(),
+    session: session ?? sessionCtx(),
     turnIndex: 0,
     turnId: turnId(rid, 0),
     messages: [],
@@ -421,6 +421,80 @@ describe("createToolAuditMiddleware", () => {
 
       await expect(mw.onSessionStart?.(sessionCtx())).resolves.toBeUndefined();
       expect(errorCallback).toHaveBeenCalledTimes(1);
+    });
+
+    test("retries store.load on a later session after a transient failure", async () => {
+      // let: flips to a working snapshot on the second invocation.
+      let callIndex = 0;
+      const goodSnapshot = { tools: {}, totalSessions: 7, lastUpdatedAt: 100 };
+      const store: ToolAuditStore = {
+        load: () => {
+          callIndex += 1;
+          if (callIndex === 1) throw new Error("transient");
+          return goodSnapshot;
+        },
+        save: () => {},
+      };
+      const errorCallback = mock((_e: unknown) => {});
+      const mw = createToolAuditMiddleware(defaultConfig({ store, onError: errorCallback }));
+
+      await mw.onSessionStart?.(sessionCtx());
+      await mw.onSessionStart?.(sessionCtx());
+
+      expect(callIndex).toBe(2);
+      expect(errorCallback).toHaveBeenCalledTimes(1);
+      // Session 1: load throws → totalSessions: 0 → 1 (post-increment).
+      // Session 2: load succeeds → hydrate replaces in-memory totalSessions
+      // with snapshot value 7, then increments → 8. The pre-hydration
+      // increment from session 1 is intentionally discarded because we do
+      // not know whether disk state was newer or staler than memory; we
+      // trust disk once it's reachable.
+      expect(mw.getSnapshot().totalSessions).toBe(8);
+    });
+
+    test("does not persist a fresh snapshot before initial hydration succeeds", async () => {
+      const saveFn = mock((_s: ToolAuditSnapshot) => {});
+      const store: ToolAuditStore = {
+        load: () => {
+          throw new Error("load failed");
+        },
+        save: saveFn,
+      };
+      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+      const wrapTool = getWrapToolCall(mw);
+
+      await mw.onSessionStart?.(sessionCtx());
+      await wrapTool(turnCtx(), toolReq("search"), async () => ({ output: "ok" }));
+      await mw.onSessionEnd?.(sessionCtx());
+
+      expect(saveFn).toHaveBeenCalledTimes(0);
+    });
+
+    test("hydrates exactly once across concurrent first sessions even when snapshot is empty", async () => {
+      // Empty snapshot is the historical pitfall: tools.size === 0 sentinel
+      // would re-hydrate on every concurrent start, double-resetting counters.
+      // let: counts how many times the snapshot was applied to in-memory state.
+      let appliedCount = 0;
+      const store: ToolAuditStore = {
+        load: async () => ({ tools: {}, totalSessions: 4, lastUpdatedAt: 0 }),
+        save: (s) => {
+          // Use the side-effect of save to verify state once both starts settle.
+          appliedCount = s.totalSessions;
+        },
+      };
+      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+      const wrapTool = getWrapToolCall(mw);
+
+      const ctxA = sessionCtx({ sessionId: "s-A" });
+      const ctxB = sessionCtx({ sessionId: "s-B" });
+
+      await Promise.all([mw.onSessionStart?.(ctxA), mw.onSessionStart?.(ctxB)]);
+      await wrapTool(turnCtx(ctxA), toolReq("x"), async () => ({ output: "" }));
+      await mw.onSessionEnd?.(ctxA);
+
+      // 4 (snapshot) + 2 (concurrent starts) = 6. A double-hydration race
+      // would reset to snapshot value before each increment and yield 5.
+      expect(appliedCount).toBe(6);
     });
   });
 

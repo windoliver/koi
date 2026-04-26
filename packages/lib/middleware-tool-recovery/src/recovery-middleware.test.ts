@@ -288,6 +288,32 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
     expect(start.callId).toBe(cid);
   });
 
+  test("flushes buffered chunks and rethrows when upstream stream throws before done", async () => {
+    const mw = createToolRecoveryMiddleware();
+    const tools = [tool("foo")];
+    const next: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "partial assistant text " };
+      yield { kind: "thinking_delta", delta: "considering..." };
+      throw new Error("upstream timed out");
+    };
+
+    const out: ModelChunk[] = [];
+    let caught: unknown;
+    try {
+      for await (const c of getStream(mw)(turnCtx(), { messages: [], tools }, next)) {
+        out.push(c);
+      }
+    } catch (e: unknown) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe("upstream timed out");
+    // Buffered chunks must be flushed so partial output is recoverable.
+    expect(out.some((c) => c.kind === "text_delta")).toBe(true);
+    expect(out.some((c) => c.kind === "thinking_delta")).toBe(true);
+  });
+
   test("thinking_delta and usage chunks are preserved across the buffer", async () => {
     const mw = createToolRecoveryMiddleware();
     const tools = [tool("foo")];

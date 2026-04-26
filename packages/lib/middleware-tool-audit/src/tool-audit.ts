@@ -150,8 +150,15 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
 
   const tools = new Map<string, MutableToolRecord>();
   const sessionStates = new Map<SessionId, ToolAuditSessionState>();
-  // let: lazy init cache for first load — concurrent first sessions share the promise
+  // let: in-flight load promise — concurrent first sessions share it. Cleared
+  // on rejection so a transient failure doesn't permanently disconnect the
+  // store; cleared on success too because `hydrated` then guards re-entry.
   let loadPromise: Promise<ToolAuditSnapshot> | undefined;
+  // let: true after the snapshot has been merged into in-memory state exactly
+  // once. Guards against (a) double-hydration on race, (b) using `tools.size`
+  // as a sentinel — which fails when the snapshot itself is empty, and
+  // (c) persisting a fresh snapshot before initial hydration succeeds.
+  let hydrated = false;
   // let: accumulated session count
   let totalSessions = 0;
 
@@ -164,15 +171,20 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   }
 
   async function recordOnSessionStart(ctx: SessionContext): Promise<void> {
-    try {
-      loadPromise ??= Promise.resolve(store.load());
-      const snapshot = await loadPromise;
-      if (tools.size === 0) {
-        hydrateFromSnapshot(tools, snapshot);
-        totalSessions = snapshot.totalSessions;
+    if (!hydrated) {
+      try {
+        loadPromise ??= Promise.resolve(store.load());
+        const snapshot = await loadPromise;
+        if (!hydrated) {
+          hydrateFromSnapshot(tools, snapshot);
+          totalSessions = snapshot.totalSessions;
+          hydrated = true;
+        }
+      } catch (e: unknown) {
+        // Drop the rejected promise so the next session retries the load.
+        loadPromise = undefined;
+        onError?.(e);
       }
-    } catch (e: unknown) {
-      onError?.(e);
     }
 
     totalSessions += 1;
@@ -276,6 +288,11 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       const signals = computeLifecycleSignals(snapshot, config);
       if (signals.length > 0) onAuditResult(signals);
     }
+
+    // Don't persist before hydration succeeded — would overwrite the
+    // existing on-disk history with a partial in-memory snapshot if
+    // store.load() failed at startup.
+    if (!hydrated) return;
 
     try {
       await store.save(snapshot);

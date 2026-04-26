@@ -124,56 +124,70 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     // let: flips true if the adapter emits a native tool call — recovery is
     // disabled and the buffered chunks are flushed unmodified.
     let bypass = false;
+    // let: tracks whether the upstream stream completed normally or threw
+    // before emitting `done`. Used by the finally block to flush buffered
+    // chunks on partial-failure paths so degraded output isn't lost.
+    let completed = false;
 
-    for await (const chunk of next(request)) {
-      if (bypass) {
-        yield chunk;
-        continue;
-      }
+    try {
+      for await (const chunk of next(request)) {
+        if (bypass) {
+          yield chunk;
+          continue;
+        }
 
-      if (chunk.kind === "tool_call_start") {
-        bypass = true;
-        for (const buf of pending) yield buf;
-        pending = [];
-        yield chunk;
-        continue;
-      }
+        if (chunk.kind === "tool_call_start") {
+          bypass = true;
+          for (const buf of pending) yield buf;
+          pending = [];
+          yield chunk;
+          continue;
+        }
 
-      if (chunk.kind !== "done") {
-        if (chunk.kind === "text_delta") bufferedText += chunk.delta;
-        pending.push(chunk);
-        continue;
-      }
+        if (chunk.kind !== "done") {
+          if (chunk.kind === "text_delta") bufferedText += chunk.delta;
+          pending.push(chunk);
+          continue;
+        }
 
-      // Done chunk: try recovery on the buffered text.
-      const recovered = runRecovery(ctx, bufferedText, tools, patterns, maxCalls, onEvent);
+        // Done chunk: try recovery on the buffered text.
+        const recovered = runRecovery(ctx, bufferedText, tools, patterns, maxCalls, onEvent);
+        completed = true;
 
-      if (recovered === undefined) {
-        for (const buf of pending) yield buf;
-        yield chunk;
+        if (recovered === undefined) {
+          for (const buf of pending) yield buf;
+          yield chunk;
+          return;
+        }
+
+        // Replay non-text chunks first (thinking_delta, usage), drop raw text.
+        for (const buf of pending) {
+          if (buf.kind !== "text_delta") yield buf;
+        }
+        // Emit the cleaned remainder as a single text_delta so transcripts
+        // capture the visible assistant content without the recovered markup.
+        if (recovered.cleanedText.length > 0) {
+          yield { kind: "text_delta", delta: recovered.cleanedText };
+        }
+        // Synthesize structured tool-call chunks the engine can execute.
+        yield* synthesizeToolCallChunks(recovered.calls);
+
+        // Rewrite the embedded ModelResponse so observers that DO read it see
+        // the cleaned content (transcript fallbacks, debug logs).
+        const rewrittenResponse: ModelResponse = {
+          ...chunk.response,
+          content: recovered.cleanedText,
+        };
+        yield { kind: "done", response: rewrittenResponse };
         return;
       }
-
-      // Replay non-text chunks first (thinking_delta, usage), drop raw text.
-      for (const buf of pending) {
-        if (buf.kind !== "text_delta") yield buf;
+    } finally {
+      // Stream ended (or threw) before `done`. Flush buffered chunks so
+      // partial assistant text + thinking + usage signal is preserved
+      // instead of being silently dropped.
+      if (!completed && pending.length > 0) {
+        for (const buf of pending) yield buf;
       }
-      // Emit the cleaned remainder as a single text_delta so transcripts
-      // capture the visible assistant content without the recovered markup.
-      if (recovered.cleanedText.length > 0) {
-        yield { kind: "text_delta", delta: recovered.cleanedText };
-      }
-      // Synthesize structured tool-call chunks the engine can execute.
-      yield* synthesizeToolCallChunks(recovered.calls);
-
-      // Rewrite the embedded ModelResponse so observers that DO read it see
-      // the cleaned content (transcript fallbacks, debug logs).
-      const rewrittenResponse: ModelResponse = {
-        ...chunk.response,
-        content: recovered.cleanedText,
-      };
-      yield { kind: "done", response: rewrittenResponse };
-      return;
     }
   }
 
