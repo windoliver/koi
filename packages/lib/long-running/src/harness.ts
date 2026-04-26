@@ -617,18 +617,18 @@ export function createLongRunningHarness(
     // engine.
     const priorCachedCapture =
       target === "suspended" && state.lease ? captureCache.get(state.lease) : undefined;
-    let preflightCapture: CapturedEngineState | undefined;
     if (target === "suspended" && !priorCachedCapture) {
+      // Pre-flight saveState BEFORE abort so a transient saveState
+      // fault leaves the live engine intact for retry. Feasibility
+      // check ONLY — the value is discarded. The authoritative
+      // capture happens AFTER quiesce so it reflects the fully-drained
+      // engine; resuming from a pre-abort capture would replay any
+      // work that was in flight at abort time.
       const preflight = await captureEngineState();
       if (preflight.kind === "error") {
         state.terminating = false;
         return { ok: false, error: preflight.error };
       }
-      // Retain the successful pre-abort capture as a fallback in case
-      // post-quiesce saveState fails on a stopped engine. Resuming
-      // from this state may replay any work that was in flight at
-      // abort time — the trade-off vs. losing resumability entirely.
-      preflightCapture = preflight;
     }
     // Capture succeeded — fire abort so the engine stops emitting side
     // effects. DO NOT revoke the lease (and do NOT commit the
@@ -655,14 +655,13 @@ export function createLongRunningHarness(
     } else if (priorCachedCapture) {
       captured = priorCachedCapture;
     } else {
-      const post = await captureEngineState();
-      // Prefer post-quiesce; fall back to preflight if post-quiesce
-      // fails so a transient post-abort persistence fault doesn't
-      // destroy resumability.
-      captured = post.kind === "error" && preflightCapture ? preflightCapture : post;
+      // Authoritative post-quiesce capture only. Pre-abort captures
+      // are NOT used as a fallback — they would resume from a state
+      // older than the work the snapshot delta accounts for.
+      captured = await captureEngineState();
     }
     if (target === "suspended" && captured.kind === "error") {
-      // Both pre-abort and post-quiesce captures failed. Engine is
+      // Post-quiesce capture failed. Engine is
       // already aborted/quiesced. Stranded-active is the worst outcome
       // — roll forward to `failed`, preserving the caller's
       // session-result delta. Route through the same conflict-retry
