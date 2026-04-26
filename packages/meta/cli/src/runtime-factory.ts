@@ -2675,6 +2675,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           ? { retention: config.auditSqliteRetention }
           : {}),
       };
+      if (sqliteSinkConfig.retention !== undefined) {
+        throw new Error(
+          "audit sink: SQLite retention cannot be used with the signed audit path. " +
+            "Session-granular pruning would break the signed hash chain. " +
+            "Remove the retention configuration to use signed SQLite auditing.",
+        );
+      }
       const sqliteValidation = validateSqliteAuditSinkConfig(sqliteSinkConfig);
       if (!sqliteValidation.ok) {
         throw new Error(`Invalid SQLite audit sink config: ${sqliteValidation.error.message}`);

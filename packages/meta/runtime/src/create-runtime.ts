@@ -945,6 +945,16 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       ...(sinkInput.maxBufferSize !== undefined ? { maxBufferSize: sinkInput.maxBufferSize } : {}),
       ...(sinkInput.retention !== undefined ? { retention: sinkInput.retention } : {}),
     };
+    // Retention + signing are incompatible: session-granular pruning cannot preserve
+    // hash-chain validity, so enabling both would make retention a silent no-op that
+    // lets the DB grow unboundedly while the operator believes it is being pruned.
+    if (sqliteConfig.retention !== undefined && audit.signing !== undefined) {
+      throw new Error(
+        "audit sink: SQLite retention and signing cannot be enabled simultaneously. " +
+          "Session-granular pruning would break the signed hash chain. " +
+          "Disable signing or remove the retention configuration.",
+      );
+    }
     const sqliteValidation = validateSqliteAuditSinkConfig(sqliteConfig);
     if (!sqliteValidation.ok) {
       throw new Error(`Invalid SQLite audit sink config: ${sqliteValidation.error.message}`);
