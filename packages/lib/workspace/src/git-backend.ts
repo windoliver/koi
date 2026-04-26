@@ -40,9 +40,11 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
   }
 
   // Scan git worktree list to recover an entry that survived a process restart.
-  // Identity is derived exclusively from git-owned state (branch name suffix + path basename),
-  // never from the writable marker file, so agent code cannot tamper recoverEntry into
-  // deleting the wrong worktree.
+  // On untrusted backends (trustOwnershipRefs=false, the default): identity requires BOTH
+  // the branch suffix AND the path basename to match wsId — a moved worktree (renamed
+  // directory) is treated as unrecoverable, which is safer than trusting a mismatched path.
+  // On trustOwnershipRefs=true: agents cannot forge git state, so branch-only match is safe
+  // and moved worktrees are recoverable by branch name alone.
   async function recoverEntry(wsId: WorkspaceId): Promise<RegistryEntry | null> {
     const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
     if (!listResult.ok) return null;
@@ -65,15 +67,16 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         ? branchRef.slice("refs/heads/".length)
         : branchRef;
       if (!branchName) continue;
-      // Enforce exact branch format: workspace/<agent>/<wsId> — reject any worktree whose
-      // branch does not follow the 3-segment convention (isSandboxed=false, so agent code
-      // could create arbitrary branches; don't recover from unrecognized shapes).
+      // Enforce exact branch format: workspace/<agent>/<wsId>
       const branchParts = branchName.split("/");
       if (branchParts.length !== 3 || branchParts[0] !== "workspace") continue;
       const branchWsId = branchParts[2];
-      // Require path basename to also match so a moved/renamed worktree is not mistakenly claimed
+      if (branchWsId !== wsId) continue;
+      // On untrusted backends: also require path basename to match — prevents cross-agent
+      // misidentification if an agent switches its branch to another wsId's managed name.
+      // On trusted backends: branch match alone is sufficient; basename may differ after move.
       const pathWsId = path.split(sep).pop();
-      if (branchWsId !== wsId || pathWsId !== wsId) continue;
+      if (!config.trustOwnershipRefs && pathWsId !== wsId) continue;
       return { path, branchName };
     }
     return null;
@@ -279,10 +282,11 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         if (segment !== searchHex) continue;
         const wsId = parts[2];
         if (!wsId) continue;
-        // Require path basename to match wsId — closes a cross-agent DoS where an agent
-        // switches its worktree branch to workspace/<anotherHex>/<anyWsId> to appear as
-        // that agent's crash survivor (causing the provider to dispose the wrong workspace).
-        if (path.split(sep).pop() !== wsId) continue;
+        // On untrusted backends: require path basename to match wsId — closes a cross-agent
+        // DoS where an agent switches its branch to another agent's hex to appear as their
+        // crash survivor. On trustOwnershipRefs=true backends, agents cannot forge git state
+        // so branch-name matching is safe even after git worktree move changes the basename.
+        if (!config.trustOwnershipRefs && path.split(sep).pop() !== wsId) continue;
 
         // Derive recency from the wsId itself (format: ws-<timestamp>-<random>), which is
         // embedded in the git-owned branch name — not from the writable marker file.
@@ -359,27 +363,47 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         for (const refname of ownershipResult.value.split("\n").filter(Boolean)) {
           const wsId = refname.split("/").pop() ?? "";
           if (!wsId || alreadyFound.has(wsId)) continue;
-          // The worktree is expected to be directly under basePath (wsId is its basename).
-          // Note: relocation outside basePath via `git worktree move` is not recovered here;
-          // this fallback is specifically for branch-drift survivors at their original path.
-          const expectedPath = join(basePath, wsId);
           // Find this worktree in the already-fetched list — restrict to resolvedBase to prevent
           // different backend instances sharing the same repo from claiming each other's workspaces.
+          // Primary: match by basename (wsId === directory name — covers the common case).
+          // Fallback: match by managed branch — covers git worktree move (basename changed).
+          // trustOwnershipRefs=true guarantees agents cannot forge refs, making branch-match safe.
           let foundPath = "";
+          const managedBranch = `workspace/${searchHex}/${wsId}`;
           for (const block of blocks) {
             const lines = block.trim().split("\n");
             const pathLine = lines.find((l) => l.startsWith("worktree "));
             if (!pathLine) continue;
             const candidate = pathLine.slice("worktree ".length).trim();
             if (!candidate.startsWith(resolvedBase + sep)) continue;
-            // Match by basename to handle any within-basePath relocation edge cases
             if (candidate.split(sep).pop() === wsId) {
               foundPath = candidate;
               break;
             }
           }
-          // Also accept the exact expected path even if no basePath-restricted match
-          if (!foundPath) foundPath = expectedPath;
+          if (!foundPath) {
+            // Branch-name fallback: find the worktree currently on the managed branch.
+            // This recovers moved workspaces where git worktree move changed the directory name.
+            for (const block of blocks) {
+              const lines = block.trim().split("\n");
+              const pathLine = lines.find((l) => l.startsWith("worktree "));
+              if (!pathLine) continue;
+              const candidate = pathLine.slice("worktree ".length).trim();
+              if (!candidate.startsWith(resolvedBase + sep)) continue;
+              const branchRef =
+                lines
+                  .find((l) => l.startsWith("branch "))
+                  ?.slice("branch ".length)
+                  .trim() ?? "";
+              const bn = branchRef.startsWith("refs/heads/")
+                ? branchRef.slice("refs/heads/".length)
+                : branchRef;
+              if (bn === managedBranch) {
+                foundPath = candidate;
+                break;
+              }
+            }
+          }
           // Verify by checking git worktree list (basePath-scoped)
           const inList = blocks.some((block) => {
             const lines = block.trim().split("\n");

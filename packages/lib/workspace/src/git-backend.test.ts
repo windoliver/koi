@@ -401,6 +401,60 @@ describe("createGitWorktreeBackend", () => {
     ).exited;
   });
 
+  it("findByAgentId recovers moved workspace after restart when trustOwnershipRefs=true", async () => {
+    // Regression: after git worktree move renames the directory AND the in-memory registry
+    // is cleared (simulating a process restart), findByAgentId must still find the workspace
+    // via its managed branch name (not just by basename). This requires trustOwnershipRefs=true.
+    const backend = createGitWorktreeBackend({ repoPath, trustOwnershipRefs: true });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const ws = result.value;
+    const newPath = `${ws.path}-moved`;
+    await Bun.spawn(["git", "worktree", "move", ws.path, newPath], { cwd: repoPath }).exited;
+
+    // Simulate restart: create a fresh backend instance (empty in-memory registry).
+    // The workspace should be discoverable by branch name despite the moved directory.
+    const freshBackend = createGitWorktreeBackend({ repoPath, trustOwnershipRefs: true });
+    const survivors = await freshBackend.findByAgentId?.(aid);
+    expect(survivors).toHaveLength(1);
+    expect(survivors?.[0]?.id).toBe(ws.id);
+    expect(survivors?.[0]?.path).toBe(newPath);
+
+    // dispose() must also work on the moved workspace (path recovered via registry)
+    const disposeResult = await freshBackend.dispose(ws.id);
+    expect(disposeResult.ok).toBe(true);
+    expect(await freshBackend.exists?.(ws.id)).toBe(false);
+  });
+
+  it("findByAgentId does NOT recover moved workspace after restart when trustOwnershipRefs=false (safe default)", async () => {
+    // On untrusted backends (the default), basename check prevents recovery of moved workspaces
+    // to avoid cross-agent DoS. This is a documented limitation: use trustOwnershipRefs=true
+    // on trusted backends if move recovery is required.
+    const backend = createGitWorktreeBackend({ repoPath });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const ws = result.value;
+    const newPath = `${ws.path}-untrusted-moved`;
+    await Bun.spawn(["git", "worktree", "move", ws.path, newPath], { cwd: repoPath }).exited;
+
+    // Simulate restart: fresh instance with empty registry.
+    const freshBackend = createGitWorktreeBackend({ repoPath });
+    const survivors = await freshBackend.findByAgentId?.(aid);
+    // Moved workspace is not returned — basename no longer matches wsId
+    expect(survivors).toHaveLength(0);
+
+    // Cleanup the orphaned moved worktree manually
+    await Bun.spawn(["git", "worktree", "remove", "--force", newPath], { cwd: repoPath }).exited;
+    const agentHex = Buffer.from(aid as string).toString("hex");
+    await Bun.spawn(["git", "branch", "-D", `workspace/${agentHex}/${ws.id}`], {
+      cwd: repoPath,
+    }).exited;
+  });
+
   it("recoverEntry is scoped to this backend's base path", async () => {
     const basePath1 = join(repoPath, "..", `wt-recover1-${Date.now()}`);
     const basePath2 = join(repoPath, "..", `wt-recover2-${Date.now()}`);
