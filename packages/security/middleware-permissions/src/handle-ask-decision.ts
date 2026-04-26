@@ -136,6 +136,11 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
     const persistentUserId = ctx.session.userId;
     const persistentAid = persistentAgentId ?? ctx.session.agentId;
     if (persistentStore !== undefined && persistentUserId !== undefined) {
+      // Narrow try/catch to store reads only — dispatch and next() must not be
+      // inside the catch so audit failures abort execution rather than falling
+      // through to a second approval prompt.
+      let persistentAutoApprove = false;
+      let persistentStartMs = 0;
       try {
         // Key persistent grants by `grantKey` (exact-command hash) so
         // approving `bash:git status` does not auto-approve the stricter
@@ -171,7 +176,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
           hasLegacy = !isComplexForm && !isDangerous && !isSpecGuardAsk;
         }
         if (hasExact || hasLegacy) {
-          const persistentStartMs = clock();
+          persistentStartMs = clock();
           getTracker(ctx.session.sessionId as string).record({
             toolId: resource,
             reason: `auto-approved (persistent always-allow grant, agent: ${ctx.session.agentId})`,
@@ -199,12 +204,17 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
               /* remembered */ true,
             );
           }
-          // Await dispatch before next() so the approval record is durable before tool execution
-          await dispatchApprovalOutcome?.({ effect: "allow" });
-          return next(request);
+          persistentAutoApprove = true;
         }
       } catch {
-        // Fall through to session/cache/prompt — fail-open.
+        // Fall through to session/cache/prompt — fail-open on store errors only.
+      }
+      if (persistentAutoApprove) {
+        // Outside the try/catch: dispatch and next() must propagate failures so
+        // an audit flush error aborts execution rather than silently falling
+        // through to a second prompt.
+        await dispatchApprovalOutcome?.({ effect: "allow" });
+        return next(request);
       }
     }
 

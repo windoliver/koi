@@ -319,9 +319,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
         if (auditSink !== undefined) {
           auditDecision(ctx, resource, finalDecision, durationMs, auditSink);
         }
-        void Promise.resolve(ctx.dispatchPermissionDecision?.(query, finalDecision)).catch(
-          () => {},
-        );
+        await ctx.dispatchPermissionDecision?.(query, finalDecision);
         ctx.reportDecision?.({
           phase: "execute",
           toolId: request.toolId,
