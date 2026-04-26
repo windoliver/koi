@@ -26,6 +26,7 @@
     { "path": "../../lib/middleware-task-anchor" },
     { "path": "../runtime" },
     { "path": "../../security/governance-approval-tiers" },
+    { "path": "../../security/governance-security" },
     { "path": "../../security/middleware-audit" },
     { "path": "../../security/audit-sink-ndjson" },
     { "path": "../../security/audit-sink-sqlite" },
