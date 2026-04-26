@@ -11,12 +11,40 @@ export interface RulesAnalyzerConfig {
   readonly extraRules?: readonly PatternRule[];
 }
 
+const MAX_WALK_NODES = 10_000;
+const MAX_EXTRACTED_CHARS = 100_000;
+
+function normalizeForMatching(text: string): string {
+  let out = text.normalize("NFKC").replace(/\$\{?IFS\}?/gi, " ");
+  for (let i = 0; i < 2; i++) {
+    try {
+      const decoded = decodeURIComponent(out);
+      if (decoded === out) break;
+      out = decoded;
+    } catch {
+      break;
+    }
+  }
+  return out;
+}
+
 function extractTextDefault(_toolId: string, input: JsonObject): string {
   const values: string[] = [];
+  let nodes = 0;
+  let chars = 0;
+
+  function pushString(s: string): void {
+    const remaining = MAX_EXTRACTED_CHARS - chars;
+    if (remaining <= 0) return;
+    const chunk = s.slice(0, remaining);
+    values.push(chunk);
+    chars += chunk.length;
+  }
+
   function walk(obj: unknown, depth: number): void {
-    if (depth > 50) return;
+    if (depth > 50 || nodes++ >= MAX_WALK_NODES || chars >= MAX_EXTRACTED_CHARS) return;
     if (typeof obj === "string") {
-      values.push(obj);
+      pushString(obj);
     } else if (Array.isArray(obj)) {
       for (const item of obj) walk(item, depth + 1);
     } else if (obj !== null && typeof obj === "object") {
@@ -42,10 +70,11 @@ export function createRulesAnalyzer(config: RulesAnalyzerConfig = {}): SecurityA
   return {
     analyze(toolId, input): RiskAnalysis {
       const text = extract(toolId, input);
+      const normalized = normalizeForMatching(text);
       const findings: RiskFinding[] = [];
 
       for (const rule of rules) {
-        if (rule.pattern.test(text)) {
+        if (rule.pattern.test(text) || rule.pattern.test(normalized)) {
           findings.push({
             pattern: rule.pattern.source,
             description: rule.description,

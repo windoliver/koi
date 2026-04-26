@@ -26,17 +26,17 @@ function findAll(text: string, pattern: RegExp, kind: PiiKind): readonly PiiMatc
   return results;
 }
 
-// email: local@domain.tld — requires at least one dot in domain
-const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+// email: local@domain.tld — RFC 5321 local-part (quoted or unquoted) + domain
+const EMAIL_RE = /(?:[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+|"[^"\r\n]+")@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
 
-// SSN: exactly XXX-XX-XXXX (3-2-4 digits, no more/fewer)
-const SSN_RE = /\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b/;
+// SSN: XXX-XX-XXXX or XXX XX XXXX or XXXXXXXXX (dashes or spaces optional)
+const SSN_RE = /\b(?!000|666|9\d\d)\d{3}[- ]?(?!00)\d{2}[- ]?(?!0000)\d{4}\b/;
 
 // API keys: common vendor prefixes + length-gated patterns
 const API_KEY_PATTERNS: readonly RegExp[] = [
-  /sk-[a-zA-Z0-9]{32,}/, // OpenAI
+  /sk-(?:proj|svcacct)-[a-zA-Z0-9_-]{20,}|sk-[a-zA-Z0-9]{32,}/, // OpenAI
   /AKIA[0-9A-Z]{16}/, // AWS IAM
-  /gh[pso]_[a-zA-Z0-9]{36,}/, // GitHub PAT/app tokens
+  /(?:gh[pousr]_[a-zA-Z0-9]{36,}|github_pat_[a-zA-Z0-9_]{22,})/, // GitHub PAT/app/fine-grained tokens
   /xox[baopr]-[0-9]{8,}-(?:[0-9]{8,}-)?[a-zA-Z0-9]{24,}/, // Slack tokens (3-part or 4-part)
 ];
 

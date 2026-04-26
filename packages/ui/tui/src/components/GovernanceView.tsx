@@ -13,6 +13,7 @@
 import { For, Show, type Component } from "solid-js";
 import type { SensorReading } from "@koi/core/governance";
 import type { RuleDescriptor } from "@koi/core/governance-backend";
+import type { RiskLevel } from "@koi/core/security-analyzer";
 import type { GovernanceSlice, SecurityFinding } from "../state/types.js";
 import { COLORS } from "../theme.js";
 
@@ -150,7 +151,7 @@ function formatNum(n: number): string {
   return n.toFixed(2);
 }
 
-function riskLevelColor(level: string): string {
+function riskLevelColor(level: RiskLevel): string {
   switch (level) {
     case "critical":
       return COLORS.danger;

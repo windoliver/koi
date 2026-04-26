@@ -14,7 +14,7 @@ export const BUILTIN_RULES: readonly PatternRule[] = [
     riskLevel: "critical",
   },
   {
-    pattern: /'\s*(OR|AND)\s+'?\d+'?\s*=\s*'?\d+/i,
+    pattern: /'\s*(?:OR|AND)\s+(?:'[^']*'|\d+|TRUE|FALSE)\s*=\s*(?:'[^']*'|\d+|TRUE|FALSE)/i,
     description: "SQL tautology injection (OR/AND 1=1)",
     riskLevel: "high",
   },
@@ -77,7 +77,8 @@ export const BUILTIN_RULES: readonly PatternRule[] = [
   },
   // Prompt injection
   {
-    pattern: /ignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions?|prompts?|context)/i,
+    pattern:
+      /\b(?:ignore|disregard|forget|override)\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+(?:instructions?|prompts?|context|directions?)\b/i,
     description: "Prompt injection: instruction override attempt",
     riskLevel: "high",
   },

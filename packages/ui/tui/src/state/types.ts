@@ -12,6 +12,7 @@ import type { GovernanceSnapshot } from "@koi/core/governance";
 import type { RuleDescriptor } from "@koi/core/governance-backend";
 import type { ContentBlock, InboundMessage } from "@koi/core/message";
 import type { ApprovalDecision } from "@koi/core/middleware";
+import type { RiskLevel } from "@koi/core/security-analyzer";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -451,8 +452,7 @@ export interface SecurityFinding {
   readonly ts: number;
   readonly sessionId: string;
   readonly toolName: string;
-  /** "low" | "medium" | "high" | "critical" */
-  readonly riskLevel: string;
+  readonly riskLevel: RiskLevel;
   readonly description: string;
   readonly score: number;
 }

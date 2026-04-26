@@ -12,6 +12,7 @@ import type {
   JsonObject,
   KoiMiddleware,
   RiskAnalysis,
+  RiskLevel,
   SessionId,
 } from "@koi/core";
 import {
@@ -49,11 +50,15 @@ export function createSecurityBridge(config: SecurityBridgeConfig): SecurityBrid
   const rulesAnalyzer = createRulesAnalyzer();
   const piiDetector = createPiiDetector(["email", "ssn", "api_key"]);
   const scorer = createSecurityScorer();
-  // Anomaly monitor requires branded types — cast from plain strings.
-  const monitor = createAnomalyMonitor({
-    sessionId: sessionId as SessionId,
-    agentId: "security-bridge" as AgentId,
-  });
+
+  function makeMonitor(sid: string): ReturnType<typeof createAnomalyMonitor> {
+    return createAnomalyMonitor({
+      sessionId: sid as SessionId,
+      agentId: "security-bridge" as AgentId,
+    });
+  }
+  // let: justified — recreated on setSession() to avoid cross-session state bleed
+  let monitor = makeMonitor(sessionId);
 
   function nextId(): string {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -65,7 +70,7 @@ export function createSecurityBridge(config: SecurityBridgeConfig): SecurityBrid
 
   function buildFinding(
     toolName: string,
-    riskLevel: string,
+    riskLevel: RiskLevel,
     description: string,
     score: number,
     signals: readonly AnomalySignal[],
@@ -98,9 +103,10 @@ export function createSecurityBridge(config: SecurityBridgeConfig): SecurityBrid
       const args: JsonObject = request.input;
       const argsText = JSON.stringify(args);
 
-      // 1. Static rules analysis — analyze() may return a Promise
-      const analysis: RiskAnalysis = await Promise.resolve(rulesAnalyzer.analyze(toolName, args));
+      // 1. Record tool call before await to avoid TOCTOU on monitor state
       const anomalySignals = monitor.recordToolCall({ toolId: toolName, denied: false });
+      // Static rules analysis — analyze() may return a Promise
+      const analysis: RiskAnalysis = await Promise.resolve(rulesAnalyzer.analyze(toolName, args));
       const secScore = scorer.score(analysis, anomalySignals);
 
       if (analysis.findings.length > 0) {
@@ -145,6 +151,7 @@ export function createSecurityBridge(config: SecurityBridgeConfig): SecurityBrid
 
     setSession(newSessionId: string): void {
       sessionId = newSessionId;
+      monitor = makeMonitor(newSessionId);
     },
 
     dispose(): void {
