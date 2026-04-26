@@ -2519,7 +2519,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: ndjsonPoisonError,
             });
           }
-          return auditMw.onPermissionDecision?.(ctx, query, decision);
+          await auditMw.onPermissionDecision?.(ctx, query, decision);
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after permission decision — cannot proceed without durable audit record",
+              { cause: ndjsonPoisonError },
+            );
+          }
         },
         wrapModelCall: async (ctx, request, next) => {
           if (ndjsonPoisonError !== undefined) {
@@ -2752,7 +2763,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: sqlitePoisonError,
             });
           }
-          return sqliteAuditMw.onPermissionDecision?.(ctx, query, decision);
+          await sqliteAuditMw.onPermissionDecision?.(ctx, query, decision);
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after permission decision — cannot proceed without durable audit record",
+              { cause: sqlitePoisonError },
+            );
+          }
         },
         wrapModelCall: async (ctx, request, next) => {
           if (sqlitePoisonError !== undefined) {
