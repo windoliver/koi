@@ -112,43 +112,24 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
     try {
       const cutoff = Date.now() - config.retention.maxAgeDays * 86_400_000;
 
-      // Compute the id and prev_hash of the first row that would survive by timestamp.
-      // id ordering (insertion order) is used — not timestamp — because long-running calls
-      // store a start timestamp that can be older than a preceding entry's insertion id,
-      // making timestamp-order chain verification unreliable.
-      const firstSurviving = db
-        .prepare("SELECT id, prev_hash FROM audit_log WHERE timestamp >= ? ORDER BY id ASC LIMIT 1")
-        .get(cutoff) as { readonly id: number; readonly prev_hash: string | null } | null;
-      if (firstSurviving === null) {
-        // Every row in the table pre-dates the cutoff — the entire chain is expired.
-        // Deleting all rows is correct here: any future session starts a new chain root.
-        db.prepare("DELETE FROM audit_log").run();
-        return;
-      }
-
-      if (firstSurviving.prev_hash === null) {
-        // First surviving row is itself a chain root — everything before it can be safely deleted.
-        db.prepare("DELETE FROM audit_log WHERE id < ?").run(firstSurviving.id);
-      } else {
-        // First surviving row links back to a predecessor that would be deleted.
-        // Find the last prior chain root (prev_hash IS NULL) that precedes firstSurviving.
-        // Only rows before that root are safe to delete; the root..firstSurviving chain segment
-        // is internally consistent and must be retained.
-        const priorRoot = db
-          .prepare(
-            "SELECT id FROM audit_log WHERE id < ? AND prev_hash IS NULL ORDER BY id DESC LIMIT 1",
-          )
-          .get(firstSurviving.id) as { readonly id: number } | null;
-        if (priorRoot === null) {
-          console.warn(
-            "[audit-sink-sqlite] retention prune skipped: no prior chain root exists — " +
-              "the full chain must be retained to preserve hash-chain integrity.",
-          );
-          return;
-        }
-        // Delete rows before the prior root (complete chain segments predating it).
-        db.prepare("DELETE FROM audit_log WHERE id < ?").run(priorRoot.id);
-      }
+      // Prune complete sessions where every entry is older than the cutoff.
+      // Hash chains are scoped per session (each session starts a new genesis row with
+      // prev_hash IS NULL). Pruning a complete session removes an entire self-contained
+      // chain, leaving no dangling prev_hash references in surviving rows.
+      //
+      // Pruning individual rows from a session that has surviving entries would break
+      // chain integrity (surviving rows reference the deleted rows via prev_hash), so
+      // sessions spanning the retention cutoff are kept whole. This is the correct
+      // fail-closed behavior: we prefer retaining expired data to silently breaking
+      // the chain, and operators can see growing storage as a signal.
+      db.prepare(
+        `DELETE FROM audit_log
+         WHERE session_id IN (
+           SELECT session_id FROM audit_log
+           GROUP BY session_id
+           HAVING MAX(timestamp) < ?
+         )`,
+      ).run(cutoff);
     } catch (e: unknown) {
       throw new Error("audit_log: failed to prune old entries", { cause: e });
     }

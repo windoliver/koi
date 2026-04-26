@@ -200,63 +200,94 @@ describe("createSqliteAuditSink", () => {
 });
 
 describe("createSqliteAuditSink — retention", () => {
-  test("prune deletes entries older than maxAgeDays on creation", async () => {
-    const sink = createSqliteAuditSink({
-      dbPath: ":memory:",
-      retention: { maxAgeDays: 1 },
-    });
+  // Retention is session-granular: a session is pruned only when ALL of its entries
+  // are older than maxAgeDays. Pruning individual rows within a session that has
+  // surviving entries would break hash-chain integrity (surviving rows reference
+  // deleted rows via prev_hash). Sessions spanning the cutoff are kept whole.
 
-    const twoDaysAgo = Date.now() - 2 * 86_400_000;
-    await sink.log(makeEntry({ timestamp: twoDaysAgo, kind: "session_start" }));
-    await sink.log(makeEntry({ kind: "model_call" })); // recent
-    await sink.flush();
-
-    // Prune runs at creation — but the old entry was logged after creation.
-    // We need to trigger another prune. Call close + reopen is not ideal here.
-    // Instead: expose a manual prune by re-creating with a fresh prune on init.
-    // Since pruneOldEntries() runs at creation, we log old entries THEN create
-    // a second sink to trigger the prune on that DB.
-    sink.close();
-
-    // Re-open — prune fires again on the DB we just wrote to
-    const sink2 = createSqliteAuditSink({
-      dbPath: ":memory:", // different DB — use file-based approach
-      retention: { maxAgeDays: 1 },
-    });
-    sink2.close();
-  });
-
-  test("prune on file DB deletes old entries and retains recent ones", async () => {
-    // Use a real file so sink2 reads the same DB
+  async function withFileDb(fn: (dbPath: string) => Promise<void>): Promise<void> {
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { rm } = await import("node:fs/promises");
     const dbPath = join(tmpdir(), `audit-retention-test-${Date.now()}.db`);
-
     try {
-      // Write old and recent entries via sink with no retention
+      await fn(dbPath);
+    } finally {
+      await rm(dbPath, { force: true });
+    }
+  }
+
+  test("prune deletes entire expired sessions on creation", async () => {
+    await withFileDb(async (dbPath) => {
       const sink1 = createSqliteAuditSink({ dbPath });
       const twoDaysAgo = Date.now() - 2 * 86_400_000;
-      await sink1.log(makeEntry({ timestamp: twoDaysAgo, kind: "session_start" }));
-      await sink1.log(makeEntry({ kind: "model_call" })); // recent
+      await sink1.log(makeEntry({ sessionId: "session-expired", timestamp: twoDaysAgo }));
+      await sink1.flush();
+      sink1.close();
+
+      // Re-open with retention — prune fires at creation
+      const sink2 = createSqliteAuditSink({ dbPath, retention: { maxAgeDays: 1 } });
+      const entries = sink2.getEntries();
+      expect(entries).toHaveLength(0);
+      sink2.close();
+    });
+  });
+
+  test("prune on file DB deletes old sessions and retains recent ones", async () => {
+    await withFileDb(async (dbPath) => {
+      const sink1 = createSqliteAuditSink({ dbPath });
+      const twoDaysAgo = Date.now() - 2 * 86_400_000;
+      // session-expired: all entries older than 1 day — should be pruned
+      await sink1.log(
+        makeEntry({ sessionId: "session-expired", timestamp: twoDaysAgo, kind: "session_start" }),
+      );
+      await sink1.log(
+        makeEntry({
+          sessionId: "session-expired",
+          timestamp: twoDaysAgo + 1000,
+          kind: "model_call",
+        }),
+      );
+      // session-recent: entries with current timestamp — must survive
+      await sink1.log(makeEntry({ sessionId: "session-recent", kind: "model_call" }));
       await sink1.flush();
       sink1.close();
 
       // Re-open with retention = 1 day; prune fires on creation
-      const sink2 = createSqliteAuditSink({
-        dbPath,
-        retention: { maxAgeDays: 1 },
-      });
+      const sink2 = createSqliteAuditSink({ dbPath, retention: { maxAgeDays: 1 } });
       await sink2.flush();
 
       const entries = sink2.getEntries();
       expect(entries).toHaveLength(1);
-      expect(entries[0]?.kind).toBe("model_call");
+      expect(entries[0]?.sessionId).toBe("session-recent");
 
       sink2.close();
-    } finally {
-      await rm(dbPath, { force: true });
-    }
+    });
+  });
+
+  test("prune retains sessions that span the cutoff to preserve chain integrity", async () => {
+    // A long-running session with an old session_start but a recent model_call must
+    // be kept whole: pruning the old rows would leave the recent rows with dangling
+    // prev_hash references, breaking hash-chain verification.
+    await withFileDb(async (dbPath) => {
+      const sink1 = createSqliteAuditSink({ dbPath });
+      const twoDaysAgo = Date.now() - 2 * 86_400_000;
+      await sink1.log(
+        makeEntry({ sessionId: "long-session", timestamp: twoDaysAgo, kind: "session_start" }),
+      );
+      await sink1.log(makeEntry({ sessionId: "long-session", kind: "model_call" })); // recent
+      await sink1.flush();
+      sink1.close();
+
+      const sink2 = createSqliteAuditSink({ dbPath, retention: { maxAgeDays: 1 } });
+      await sink2.flush();
+
+      // Both entries kept — cannot prune partial session without breaking the chain
+      const entries = sink2.getEntries();
+      expect(entries).toHaveLength(2);
+
+      sink2.close();
+    });
   });
 
   test("retention config validates maxAgeDays must be positive", () => {
