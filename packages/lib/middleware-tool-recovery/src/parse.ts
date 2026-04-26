@@ -36,11 +36,26 @@ export function recoverToolCalls(
 
     if (accepted.length === 0) continue;
 
-    const capped = accepted.length > maxCalls ? accepted.slice(0, maxCalls) : accepted;
+    if (accepted.length > maxCalls) {
+      // Fail closed: a model that emits more calls than the configured cap
+      // is in an unexpected state. Reject the entire batch and surface
+      // `rejected` events for every call so the caller can re-prompt or
+      // log; do NOT silently drop the over-cap calls while executing the
+      // first N — that creates partial-failure states that are hard to
+      // recover from idempotently.
+      for (const call of accepted) {
+        onEvent?.({
+          kind: "rejected",
+          toolName: call.toolName,
+          reason: `Recovered ${String(accepted.length)} tool calls exceeds maxToolCallsPerResponse=${String(maxCalls)} — entire batch rejected`,
+        });
+      }
+      return undefined;
+    }
 
-    onEvent?.({ kind: "recovered", pattern: pattern.name, toolCalls: capped });
+    onEvent?.({ kind: "recovered", pattern: pattern.name, toolCalls: accepted });
 
-    return { toolCalls: capped, remainingText: result.remainingText };
+    return { toolCalls: accepted, remainingText: result.remainingText };
   }
 
   return undefined;

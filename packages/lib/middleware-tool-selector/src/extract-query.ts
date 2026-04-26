@@ -9,16 +9,18 @@ import type { InboundMessage } from "@koi/core";
 
 /**
  * Walks the transcript backward and returns the concatenated text of the most
- * recent message authored by the user (`senderId === "user"`). Skips assistant
- * replies, tool results, and system entries so selection is keyed on user
- * intent — not stale assistant/tool text that happens to be at the tail.
- * Returns "" when no user message has any text block (caller treats empty as
- * "skip filtering").
+ * recent message authored by a user. Matches the platform-wide convention
+ * (see message.ts) that user messages have `senderId` of `"user"` or any
+ * `"user-..."` prefix (e.g. `"user-1"` for multi-user transcripts and
+ * imported/resumed sessions). Skips assistant replies, tool results, and
+ * system entries so selection is keyed on user intent — not stale assistant
+ * or tool output that happens to be at the tail. Returns "" when no user
+ * message has any text block (caller treats empty as "skip filtering").
  */
 export function extractLastUserText(messages: readonly InboundMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
-    if (msg === undefined || msg.senderId !== "user") continue;
+    if (msg === undefined || !isUserSender(msg.senderId)) continue;
 
     const text = msg.content
       .filter(
@@ -31,4 +33,8 @@ export function extractLastUserText(messages: readonly InboundMessage[]): string
   }
 
   return "";
+}
+
+function isUserSender(senderId: string): boolean {
+  return senderId === "user" || senderId.startsWith("user-");
 }

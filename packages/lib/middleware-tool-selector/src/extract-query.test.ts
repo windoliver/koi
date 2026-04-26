@@ -66,4 +66,21 @@ describe("extractLastUserText", () => {
     ];
     expect(extractLastUserText(messages)).toBe("");
   });
+
+  test("treats user-* sender ids as user-authored (multi-user / resumed transcripts)", () => {
+    const messages: readonly InboundMessage[] = [
+      asMsg("user-1", [{ kind: "text", text: "deploy the app" }]),
+      asMsg("assistant", [{ kind: "text", text: "ok" }]),
+    ];
+    expect(extractLastUserText(messages)).toBe("deploy the app");
+  });
+
+  test("does not treat user-like prefixes from other senders as user (tool/system)", () => {
+    const messages: readonly InboundMessage[] = [
+      asMsg("usertool", [{ kind: "text", text: "fake user payload" }]),
+      asMsg("system:something", [{ kind: "text", text: "system" }]),
+    ];
+    // Neither matches "user" or "user-..." → no user text found.
+    expect(extractLastUserText(messages)).toBe("");
+  });
 });

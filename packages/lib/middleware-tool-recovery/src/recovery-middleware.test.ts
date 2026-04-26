@@ -185,8 +185,12 @@ describe("createToolRecoveryMiddleware — recovery behavior", () => {
     expect(done.response.content).toBe("<tool_call>not json</tool_call>");
   });
 
-  test("max-attempts limit caps recovered calls", async () => {
-    const mw = createToolRecoveryMiddleware({ maxToolCallsPerResponse: 2 });
+  test("over-cap recovery fails closed: rejects entire batch + preserves raw markup", async () => {
+    const events: RecoveryEvent[] = [];
+    const mw = createToolRecoveryMiddleware({
+      maxToolCallsPerResponse: 2,
+      onRecoveryEvent: (e) => events.push(e),
+    });
     const tools = [tool("a"), tool("b"), tool("c")];
     const text =
       '<tool_call>{"name":"a","arguments":{}}</tool_call>' +
@@ -195,8 +199,17 @@ describe("createToolRecoveryMiddleware — recovery behavior", () => {
     const chunks = await collect(
       getStream(mw)(turnCtx(), { messages: [], tools }, streamFromText(text)),
     );
-    const starts = getToolCallChunks(chunks).filter((c) => c.kind === "tool_call_start");
-    expect(starts.length).toBe(2);
+    // No partial execution — entire batch rejected.
+    expect(getToolCallChunks(chunks).length).toBe(0);
+    // Raw text is preserved so the model can re-issue with fewer calls.
+    const done = chunks[chunks.length - 1] as Extract<ModelChunk, { kind: "done" }>;
+    expect(done.response.content).toContain("<tool_call>");
+    // One rejection event per dropped call.
+    const rejections = events.filter((e) => e.kind === "rejected");
+    expect(rejections.length).toBe(3);
+    expect(rejections[0]?.kind === "rejected" && rejections[0].reason).toContain(
+      "maxToolCallsPerResponse=2",
+    );
   });
 
   test("custom pattern registered via config is honored", async () => {

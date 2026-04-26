@@ -44,13 +44,24 @@ describe("recoverToolCalls", () => {
     expect(recovered).toBeDefined();
   });
 
-  test("caps recovered calls at maxCalls", () => {
+  test("fails closed when recovered count exceeds maxCalls — entire batch rejected", () => {
+    const events: RecoveryEvent[] = [];
     const text = Array.from({ length: 5 })
       .map((_, i) => `<tool_call>{"name":"t${String(i)}","arguments":{}}</tool_call>`)
       .join("");
-    const out = recoverToolCalls(text, [hermesPattern], allOf("t0", "t1", "t2", "t3", "t4"), 2);
-    expect(out?.toolCalls.length).toBe(2);
-    expect(out?.toolCalls.map((c) => c.toolName)).toEqual(["t0", "t1"]);
+    const out = recoverToolCalls(
+      text,
+      [hermesPattern],
+      allOf("t0", "t1", "t2", "t3", "t4"),
+      2,
+      (e) => events.push(e),
+    );
+    expect(out).toBeUndefined();
+    const rejections = events.filter((e) => e.kind === "rejected");
+    expect(rejections.length).toBe(5);
+    for (const r of rejections) {
+      expect(r.kind === "rejected" && r.reason).toContain("maxToolCallsPerResponse=2");
+    }
   });
 
   test("falls through to next pattern when first pattern's calls are all rejected", () => {

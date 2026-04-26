@@ -154,6 +154,10 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   // on rejection so a transient failure doesn't permanently disconnect the
   // store; cleared on success too because `hydrated` then guards re-entry.
   let loadPromise: Promise<ToolAuditSnapshot> | undefined;
+  // let: serialization queue for store.save() so concurrent onSessionEnd
+  // calls cannot race and overwrite a newer snapshot with a stale one.
+  // Each save is chained off the previous one's settlement.
+  let savePromise: Promise<void> = Promise.resolve();
   // let: true after the snapshot has been merged into in-memory state exactly
   // once. Guards against (a) double-hydration on race, (b) using `tools.size`
   // as a sentinel — which fails when the snapshot itself is empty, and
@@ -294,11 +298,19 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     // store.load() failed at startup.
     if (!hydrated) return;
 
-    try {
-      await store.save(snapshot);
-    } catch (e: unknown) {
-      onError?.(e);
-    }
+    // Serialize saves: each call awaits the prior save's settlement before
+    // invoking store.save. Prevents two concurrent session ends from racing
+    // and letting a stale snapshot land after a newer one. The chain
+    // recovers from individual failures (per-call try/catch).
+    const previous = savePromise;
+    savePromise = previous.then(async () => {
+      try {
+        await store.save(snapshot);
+      } catch (e: unknown) {
+        onError?.(e);
+      }
+    });
+    await savePromise;
   }
 
   return {

@@ -358,6 +358,48 @@ describe("createToolAuditMiddleware", () => {
 
       expect(errorCallback).toHaveBeenCalledTimes(1);
     });
+
+    test("serializes concurrent saves so a slow earlier save cannot overwrite a faster later save", async () => {
+      // Two onSessionEnd calls fire concurrently. The first save deliberately
+      // takes longer than the second. Without serialization, the slow save
+      // would settle last and clobber the newer snapshot. With serialization,
+      // the second save MUST observe (and overwrite) the first's state.
+      const saveOrder: number[] = [];
+      const saveSnapshots: ToolAuditSnapshot[] = [];
+      // let: incremented to differentiate first vs subsequent save calls.
+      let saveIndex = 0;
+      const store: ToolAuditStore = {
+        load: () => ({ tools: {}, totalSessions: 0, lastUpdatedAt: 0 }),
+        save: async (s) => {
+          saveIndex += 1;
+          const myIndex = saveIndex;
+          // First save is slow; second is instant.
+          if (myIndex === 1) await new Promise((r) => setTimeout(r, 30));
+          saveOrder.push(myIndex);
+          saveSnapshots.push(s);
+        },
+      };
+      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+      const wrap = getWrapToolCall(mw);
+
+      const ctxA = sessionCtx({ sessionId: "s-A" });
+      const ctxB = sessionCtx({ sessionId: "s-B" });
+
+      await mw.onSessionStart?.(ctxA);
+      await wrap(turnCtx(ctxA), toolReq("search"), async () => ({ output: "ok" }));
+      await mw.onSessionStart?.(ctxB);
+      await wrap(turnCtx(ctxB), toolReq("read"), async () => ({ output: "ok" }));
+
+      await Promise.all([mw.onSessionEnd?.(ctxA), mw.onSessionEnd?.(ctxB)]);
+
+      // Order MUST be deterministic — first then second, regardless of
+      // which save was slower.
+      expect(saveOrder).toEqual([1, 2]);
+      // The final persisted snapshot includes both tools.
+      const last = saveSnapshots[saveSnapshots.length - 1];
+      expect(last?.tools.search).toBeDefined();
+      expect(last?.tools.read).toBeDefined();
+    });
   });
 
   describe("onSessionStart", () => {
