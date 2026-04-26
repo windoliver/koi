@@ -521,12 +521,17 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
       // same exact-command grant key.
       if (approvalResult.kind === "always-allow") {
         const sid = ctx.session.sessionId as string;
+        const sessionGrantKey = `${ctx.session.agentId}\0${grantKey}`;
+
+        // Await audit dispatch BEFORE mutating any grant state so that if the
+        // flush fails, no reusable bypass survives without a durable audit record.
+        await dispatchApprovalOutcome?.({ effect: "allow" });
+
         let allowed = alwaysAllowedBySession.get(sid);
         if (allowed === undefined) {
           allowed = new Set();
           alwaysAllowedBySession.set(sid, allowed);
         }
-        const sessionGrantKey = `${ctx.session.agentId}\0${grantKey}`;
         allowed.add(sessionGrantKey);
 
         // Persist to durable storage if scope is "always", store is configured,
@@ -557,8 +562,6 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
           source: "approval",
         });
 
-        // Await dispatch before next() so the approval record is durable before tool execution
-        await dispatchApprovalOutcome?.({ effect: "allow" });
         return next(request);
       }
 
@@ -570,6 +573,10 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
         await dispatchApprovalOutcome?.({ effect: "allow" });
         return next({ ...request, input: approvalResult.updatedInput });
       }
+
+      // Await audit dispatch BEFORE caching the approval so that if the flush fails,
+      // no reusable cache entry survives without a durable audit record.
+      await dispatchApprovalOutcome?.({ effect: "allow" });
 
       // Cache allow-only approvals (never modify — see above)
       if (approvalCache !== undefined) {
@@ -590,8 +597,6 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
         if (cacheKey !== undefined) approvalCache.set(cacheKey);
       }
 
-      // "allow" — await dispatch before next() so approval record is durable before tool execution
-      await dispatchApprovalOutcome?.({ effect: "allow" });
       return next(request);
     } catch (e: unknown) {
       // Emit a failure trajectory step for timeout/handler errors so they

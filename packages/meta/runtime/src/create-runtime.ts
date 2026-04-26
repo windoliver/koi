@@ -948,7 +948,7 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
     // Retention + signing are incompatible: session-granular pruning cannot preserve
     // hash-chain validity, so enabling both would make retention a silent no-op that
     // lets the DB grow unboundedly while the operator believes it is being pruned.
-    if (sqliteConfig.retention !== undefined && audit.signing !== undefined) {
+    if (sqliteConfig.retention !== undefined && audit.signing === true) {
       throw new Error(
         "audit sink: SQLite retention and signing cannot be enabled simultaneously. " +
           "Session-granular pruning would break the signed hash chain. " +
@@ -1050,18 +1050,36 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
           cause: poisonError,
         });
       }
-      return mw.onPermissionDecision?.(ctx, query, decision);
+      await mw.onPermissionDecision?.(ctx, query, decision);
+      // Force-flush the permission_decision entry so approved tool executions are
+      // never permitted without a durable audit record of the approval that allowed them.
+      await mw.flush().catch((flushErr: unknown) => {
+        if (poisonError === undefined) {
+          poisonError = flushErr;
+        }
+      });
+      if (poisonError !== undefined) {
+        throw new Error(
+          "audit sink flush failed after permission decision — cannot proceed without durable audit record",
+          { cause: poisonError },
+        );
+      }
     },
     wrapModelCall: async (ctx, request, next) => {
       // Pre-call: reject before entering the model if already poisoned.
       if (poisonError !== undefined) {
         throw new Error("audit sink poisoned — refusing model call", { cause: poisonError });
       }
-      // Post-call: catch concurrent drain failures that arrived during execution.
-      // Model calls are idempotent (token cost only), so retrying is safe.
       const result = await (mw.wrapModelCall
         ? mw.wrapModelCall(ctx, request, next)
         : next(request));
+      // Force-flush so any audit entries buffered during the model call are durable
+      // before the result is returned. Model calls are idempotent (token cost only).
+      await mw.flush().catch((flushErr: unknown) => {
+        if (poisonError === undefined) {
+          poisonError = flushErr;
+        }
+      });
       if (poisonError !== undefined) {
         throw new Error("audit sink write failed mid-turn — turn aborted", {
           cause: poisonError,
@@ -1120,6 +1138,13 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
         }
         yield chunk;
       }
+      // Force-flush at stream end so any buffered audit entries are durable before
+      // the turn is considered complete.
+      await mw.flush().catch((flushErr: unknown) => {
+        if (poisonError === undefined) {
+          poisonError = flushErr;
+        }
+      });
       if (poisonError !== undefined) {
         throw new Error("audit sink write failed after stream — turn aborted", {
           cause: poisonError,

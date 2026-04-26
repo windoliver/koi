@@ -2541,6 +2541,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           const result = await (auditMw.wrapModelCall
             ? auditMw.wrapModelCall(ctx, request, next)
             : next(request));
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
           if (ndjsonPoisonError !== undefined) {
             throw new Error("audit sink write failed mid-turn — turn aborted", {
               cause: ndjsonPoisonError,
@@ -2600,6 +2605,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             }
             yield chunk;
           }
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
           if (ndjsonPoisonError !== undefined) {
             throw new Error("audit sink write failed after stream — turn aborted", {
               cause: ndjsonPoisonError,
@@ -2785,6 +2795,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           const result = await (sqliteAuditMw.wrapModelCall
             ? sqliteAuditMw.wrapModelCall(ctx, request, next)
             : next(request));
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
           if (sqlitePoisonError !== undefined) {
             throw new Error("audit sink write failed mid-turn — turn aborted", {
               cause: sqlitePoisonError,
@@ -2844,6 +2859,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             }
             yield chunk;
           }
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
           if (sqlitePoisonError !== undefined) {
             throw new Error("audit sink write failed after stream — turn aborted", {
               cause: sqlitePoisonError,
