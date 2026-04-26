@@ -528,6 +528,81 @@ describe("round-2 hardening", () => {
     expect(result.reason).toBe("invalid_signature");
   });
 
+  test("caller mutating token after verify() call cannot widen scope (codex round-9: critical)", async () => {
+    // Verifier reads scope.permissions during structural verification
+    // and again during the scope check, separated by `await` boundaries.
+    // Without snapshotting, a caller could mutate the token between
+    // those reads — the signature check runs against the original
+    // payload but the scope check runs against the mutated permissions,
+    // authorizing tools that the signature did not cover.
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const token = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: [] }, sessionId: sessionId("sess-1") },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    // Kick off verify, then mutate before awaiting.
+    const promise = verifier.verify(token, ctx({ toolId: "read_file" }));
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately mutating readonly
+    (token.scope.permissions as any).allow = ["read_file"];
+    const result = await promise;
+    // The original signed payload had allow:[] — read_file was NOT
+    // signed for, so the scope check must reject regardless of the
+    // post-call mutation.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("scope_exceeded");
+  });
+
+  test("inherited (prototype-chain) allow array cannot bypass signing (codex round-9: high)", async () => {
+    // Canonical signer iterates own-enumerable keys only — if a
+    // permissions object inherits `allow` from its prototype, the
+    // signature is computed over the empty own-property payload, but a
+    // naive verify() would read the inherited array via property access
+    // and authorize it. Snapshotting via structuredClone strips the
+    // prototype chain, defeating this prototype-pollution path.
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const { signHmac } = await import("./hmac.js");
+    const { capabilityId } = await import("@koi/core");
+    // Build a permissions object whose own properties are empty but
+    // whose prototype provides allow: ["read_file"].
+    const polluted = Object.create({ allow: ["read_file"] });
+    const tokenUnsigned = {
+      id: capabilityId("polluted"),
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: polluted, sessionId: sessionId("sess-1") },
+      chainDepth: 0,
+      maxChainDepth: 3,
+      createdAt: 1000,
+      expiresAt: 60_000,
+      proof: { kind: "hmac-sha256" as const, digest: "" },
+    };
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately polluted
+    const digest = signHmac(tokenUnsigned as any, signer.secret);
+    const token = { ...tokenUnsigned, proof: { kind: "hmac-sha256" as const, digest } };
+
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately polluted
+    const result = await verifier.verify(token as any, ctx({ toolId: "read_file" }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // After snapshot strips the prototype, the own-property allow is
+    // empty, so the scope check rejects read_file.
+    expect(result.reason).toBe("scope_exceeded");
+  });
+
   test("malformed parent permissions cannot widen child authority (codex round-8: high)", async () => {
     // Codex round-7 added a shape guard for the leaf token, but the
     // ancestors loaded via tokenStore bypassed that boundary. A signed

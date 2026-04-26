@@ -55,6 +55,19 @@ function deny(reason: CapabilityVerifyResult & { readonly ok: false }): Capabili
 }
 
 /**
+ * Deep-clone the input into a plain own-property snapshot, immune to
+ * caller mutation across `await` boundaries and to prototype-pollution
+ * tricks where an inherited `allow`/`deny`/`ask` array bypasses both the
+ * canonical signer (own-keys only) and any code that reads via the
+ * prototype chain. structuredClone discards prototype chains and shares
+ * no references with the original, so subsequent mutation by the caller
+ * cannot affect signature, chain, or scope decisions.
+ */
+function snapshot<T>(value: T): T {
+  return structuredClone(value);
+}
+
+/**
  * Cheap runtime shape validation. The L0 `CapabilityToken` type guarantees
  * required fields exist for type-checked callers, but tokens deserialized
  * from network/disk bypass the type system — a missing `proof` would
@@ -277,9 +290,19 @@ async function verifyChain(
     return deny({ ok: false, reason: "invalid_signature" });
   }
 
-  const parent = await opts.tokenStore.get(child.parentId);
-  if (!parent) {
+  const fetched = await opts.tokenStore.get(child.parentId);
+  if (!fetched) {
     return deny({ ok: false, reason: "unknown_grant" });
+  }
+  // Snapshot the ancestor too — same TOCTOU + prototype-pollution
+  // defense as the leaf. The store may return a long-lived shared
+  // reference whose mutation between fetch and use would otherwise
+  // change the attenuation calculation.
+  let parent: CapabilityToken;
+  try {
+    parent = snapshot(fetched);
+  } catch {
+    return deny({ ok: false, reason: "invalid_signature" });
   }
   // Bind the lookup result to the requested id. A stale or buggy
   // tokenStore could return a *different* valid token for an unknown
@@ -337,14 +360,22 @@ async function verifyChain(
 export function createCapabilityVerifier(opts: CapabilityVerifierOptions): CapabilityVerifier {
   return {
     async verify(token: CapabilityToken, ctx: VerifyContext): Promise<CapabilityVerifyResult> {
-      // Defend against malformed input that bypasses the type system —
-      // tokens deserialized from network/disk may be missing required
-      // fields. Wrap downstream work in try/catch so canonicalization
-      // or crypto errors also fail closed instead of throwing.
-      const shape = validateTokenShape(token);
+      // Snapshot first — both protects against caller mutation across
+      // await boundaries (TOCTOU between signature check and scope
+      // check) and strips prototype chains (so inherited `allow`/`deny`/
+      // `ask` arrays cannot bypass the own-keys-only canonical signer).
+      // structuredClone throws on uncloneable values; treat that as
+      // malformed input and fail closed.
+      let snapshotToken: CapabilityToken;
+      try {
+        snapshotToken = snapshot(token);
+      } catch {
+        return deny({ ok: false, reason: "invalid_signature" });
+      }
+      const shape = validateTokenShape(snapshotToken);
       if (shape) return shape;
       try {
-        return await runVerify(token, ctx, opts);
+        return await runVerify(snapshotToken, ctx, opts);
       } catch {
         return deny({ ok: false, reason: "invalid_signature" });
       }
