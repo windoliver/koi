@@ -407,7 +407,7 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
             id,
             path: foundPath,
             createdAt,
-            metadata: { repoPath: config.repoPath },
+            metadata: { branchName, repoPath: config.repoPath },
           });
           alreadyFound.add(wsId);
         }
@@ -482,7 +482,12 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
           if (!registry.has(id)) {
             registry.set(id, { path: foundPath, branchName: originalBranch, agentHex: searchHex });
           }
-          matches.push({ id, path: foundPath, createdAt, metadata: { repoPath: config.repoPath } });
+          matches.push({
+            id,
+            path: foundPath,
+            createdAt,
+            metadata: { branchName: originalBranch, repoPath: config.repoPath },
+          });
         }
       }
 
