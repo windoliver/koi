@@ -266,15 +266,13 @@ export function createLongRunningHarness(
     // wait never exceeds `abortTimeoutMs`. When `quiesceEngine` is
     // wired, cap the inTurn polling at half the budget so the
     // callback always gets a real chance to acknowledge drain.
+    // First-stage poll: cap at half the deadline when quiesceEngine
+    // is wired so the callback gets a real chance to acknowledge drain.
     const pollBudget = cfg.quiesceEngine ? Math.floor(deadlineMs / 2) : deadlineMs;
     while (state.inTurn && now() - start < pollBudget) {
       await sleep(10);
     }
     const turnCleared = !state.inTurn;
-    // Stuck-middleware detection: poll budget fully exhausted with
-    // inTurn still true. Distinguishes a wedged turn (engine errored
-    // after onBeforeTurn) from a turn that's about to clear.
-    const stuckMiddleware = !turnCleared && now() - start >= pollBudget;
     // Two-stage drain:
     //  1. Turn flag must clear naturally (onAfterTurn fired) — proof
     //     the current turn finished mutating in-memory state.
@@ -306,15 +304,19 @@ export function createLongRunningHarness(
       } catch {
         return false;
       }
-      // Normal path: require BOTH the middleware turn flag to have
-      // cleared (proof onAfterTurn ran turn-end bookkeeping like
-      // soft-checkpoint and counter increments) AND the host callback
-      // to confirm drain. The callback alone is NOT sufficient when
-      // inTurn is still true unless we've explicitly detected the
-      // stuck-middleware case (poll budget fully exhausted) — that
-      // prevents a fast-resolving callback from racing onAfterTurn.
+      // Normal path: require BOTH the turn flag cleared AND the host
+      // callback to confirm drain. A callback resolving fast does NOT
+      // license bypassing onAfterTurn bookkeeping (turn counters,
+      // metrics, soft-checkpoint side effects).
       if (turnCleared) return callbackOk;
-      if (stuckMiddleware) return callbackOk;
+      // Stuck-middleware override: only after the FULL deadline has
+      // elapsed with inTurn still true do we accept the callback as
+      // sole proof. A turn legitimately taking >50% of the timeout to
+      // unwind is not stuck — it's slow. We re-check inTurn here in
+      // case onAfterTurn fired during the callback wait.
+      if (!state.inTurn) return callbackOk;
+      const fullyTimedOut = now() - start >= deadlineMs;
+      if (fullyTimedOut && callbackOk) return true;
       return false;
     }
     // No host drain callback wired: rely solely on the middleware
@@ -375,7 +377,12 @@ export function createLongRunningHarness(
       // when the host opts in via `allowActiveResume` (which signals
       // they enforce durable ownership fencing externally) — without
       // fencing, active resume risks split-brain with a slow or
-      // partitioned prior worker.
+      // partitioned prior worker. Migration path for crashed-active
+      // heads created under older versions: the host must either
+      // (a) set `allowActiveResume: true` after confirming the prior
+      // worker is dead via heartbeat/CAS, or (b) write a `failed`
+      // snapshot directly to the store to mark the head non-resumable
+      // and start a fresh run via start().
       const isResumablePhase =
         head.data.phase === "suspended" ||
         (head.data.phase === "active" && cfg.allowActiveResume === true);
@@ -384,8 +391,11 @@ export function createLongRunningHarness(
           ok: false,
           error: err(
             "CONFLICT",
-            `cannot resume: head phase is "${head.data.phase}" (suspended is always resumable; active requires allowActiveResume + external ownership fencing)`,
+            head.data.phase === "active"
+              ? 'cannot resume: head phase is "active" — set allowActiveResume after confirming the prior worker is dead via external ownership fencing, or publish a failed snapshot and call start()'
+              : `cannot resume: head phase is "${head.data.phase}" (only "suspended" and (with allowActiveResume) "active" are resumable)`,
             false,
+            { phase: head.data.phase },
           ),
         };
       }
