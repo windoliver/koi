@@ -44,9 +44,9 @@ export interface AnomalyMonitor {
 // Defaults
 // ---------------------------------------------------------------------------
 
-const DEFAULT_TOOL_RATE_THRESHOLD = 10;
+const DEFAULT_TOOL_RATE_THRESHOLD = 20;
 const DEFAULT_ERROR_SPIKE_THRESHOLD = 5;
-const DEFAULT_TOOL_REPEAT_THRESHOLD = 3;
+const DEFAULT_TOOL_REPEAT_THRESHOLD = 10;
 const DEFAULT_DENIED_CALL_THRESHOLD = 3;
 
 // ---------------------------------------------------------------------------
