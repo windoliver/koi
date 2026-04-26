@@ -112,22 +112,31 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
     try {
       const cutoff = Date.now() - config.retention.maxAgeDays * 86_400_000;
 
-      // Prune complete sessions where every entry is older than the cutoff.
-      // Hash chains are scoped per session (each session starts a new genesis row with
-      // prev_hash IS NULL). Pruning a complete session removes an entire self-contained
-      // chain, leaving no dangling prev_hash references in surviving rows.
+      // Prune sessions that are both fully expired AND explicitly closed.
       //
-      // Pruning individual rows from a session that has surviving entries would break
-      // chain integrity (surviving rows reference the deleted rows via prev_hash), so
-      // sessions spanning the retention cutoff are kept whole. This is the correct
-      // fail-closed behavior: we prefer retaining expired data to silently breaking
-      // the chain, and operators can see growing storage as a signal.
+      // A session is prunable only when:
+      //   1. ALL entries have timestamps older than the cutoff (fully expired), AND
+      //   2. The session contains a 'session_end' entry (explicitly closed).
+      //
+      // Requiring session_end prevents two failure modes:
+      //   - Long-lived or reused session IDs: a session that's been active for months
+      //     would have MAX(timestamp) >= cutoff even though old entries are expired.
+      //     Without this guard, operators enabling retention on long-lived sessions
+      //     would see no pruning and assume the feature is broken.
+      //   - Incomplete sessions (crashed before session_end): without a close marker,
+      //     we cannot know whether more entries will be written. Pruning an open session
+      //     that resumes later would leave dangling prev_hash references.
+      //
+      // Trade-off: sessions that crash before session_end are never pruned.
+      // Operators who need guaranteed cleanup for crashed sessions can restart
+      // the agent (which writes session_end) before enabling retention.
       db.prepare(
         `DELETE FROM audit_log
          WHERE session_id IN (
            SELECT session_id FROM audit_log
            GROUP BY session_id
            HAVING MAX(timestamp) < ?
+             AND SUM(CASE WHEN kind = 'session_end' THEN 1 ELSE 0 END) > 0
          )`,
       ).run(cutoff);
     } catch (e: unknown) {

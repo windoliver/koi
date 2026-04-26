@@ -200,10 +200,14 @@ describe("createSqliteAuditSink", () => {
 });
 
 describe("createSqliteAuditSink — retention", () => {
-  // Retention is session-granular: a session is pruned only when ALL of its entries
-  // are older than maxAgeDays. Pruning individual rows within a session that has
-  // surviving entries would break hash-chain integrity (surviving rows reference
-  // deleted rows via prev_hash). Sessions spanning the cutoff are kept whole.
+  // Retention is session-granular with a closed-session gate:
+  //   A session is pruned ONLY when ALL entries are older than maxAgeDays
+  //   AND the session has an explicit 'session_end' entry.
+  //
+  // Requiring session_end prevents two failure modes:
+  //   - Long-lived reused session IDs: pinning all historical rows forever
+  //   - Crashed sessions: pruning an open session that may resume later
+  //     would break prev_hash references in future entries.
 
   async function withFileDb(fn: (dbPath: string) => Promise<void>): Promise<void> {
     const { tmpdir } = await import("node:os");
@@ -217,11 +221,20 @@ describe("createSqliteAuditSink — retention", () => {
     }
   }
 
-  test("prune deletes entire expired sessions on creation", async () => {
+  test("prune deletes closed expired sessions on creation", async () => {
     await withFileDb(async (dbPath) => {
       const sink1 = createSqliteAuditSink({ dbPath });
       const twoDaysAgo = Date.now() - 2 * 86_400_000;
-      await sink1.log(makeEntry({ sessionId: "session-expired", timestamp: twoDaysAgo }));
+      await sink1.log(
+        makeEntry({ sessionId: "session-expired", timestamp: twoDaysAgo, kind: "session_start" }),
+      );
+      await sink1.log(
+        makeEntry({
+          sessionId: "session-expired",
+          timestamp: twoDaysAgo + 1000,
+          kind: "session_end",
+        }),
+      );
       await sink1.flush();
       sink1.close();
 
@@ -233,11 +246,11 @@ describe("createSqliteAuditSink — retention", () => {
     });
   });
 
-  test("prune on file DB deletes old sessions and retains recent ones", async () => {
+  test("prune on file DB deletes old closed sessions and retains recent ones", async () => {
     await withFileDb(async (dbPath) => {
       const sink1 = createSqliteAuditSink({ dbPath });
       const twoDaysAgo = Date.now() - 2 * 86_400_000;
-      // session-expired: all entries older than 1 day — should be pruned
+      // session-expired: fully expired with session_end — should be pruned
       await sink1.log(
         makeEntry({ sessionId: "session-expired", timestamp: twoDaysAgo, kind: "session_start" }),
       );
@@ -246,6 +259,13 @@ describe("createSqliteAuditSink — retention", () => {
           sessionId: "session-expired",
           timestamp: twoDaysAgo + 1000,
           kind: "model_call",
+        }),
+      );
+      await sink1.log(
+        makeEntry({
+          sessionId: "session-expired",
+          timestamp: twoDaysAgo + 2000,
+          kind: "session_end",
         }),
       );
       // session-recent: entries with current timestamp — must survive
@@ -265,10 +285,9 @@ describe("createSqliteAuditSink — retention", () => {
     });
   });
 
-  test("prune retains sessions that span the cutoff to preserve chain integrity", async () => {
+  test("prune retains sessions spanning the cutoff (recent activity blocks prune)", async () => {
     // A long-running session with an old session_start but a recent model_call must
-    // be kept whole: pruning the old rows would leave the recent rows with dangling
-    // prev_hash references, breaking hash-chain verification.
+    // be kept whole: MAX(timestamp) is recent, so the HAVING clause excludes it.
     await withFileDb(async (dbPath) => {
       const sink1 = createSqliteAuditSink({ dbPath });
       const twoDaysAgo = Date.now() - 2 * 86_400_000;
@@ -282,7 +301,38 @@ describe("createSqliteAuditSink — retention", () => {
       const sink2 = createSqliteAuditSink({ dbPath, retention: { maxAgeDays: 1 } });
       await sink2.flush();
 
-      // Both entries kept — cannot prune partial session without breaking the chain
+      // Both entries kept — session has recent activity, cannot prune
+      const entries = sink2.getEntries();
+      expect(entries).toHaveLength(2);
+
+      sink2.close();
+    });
+  });
+
+  test("prune does not delete sessions without session_end even when fully expired", async () => {
+    // Crashed sessions (no session_end) must not be pruned: they may resume and write
+    // more entries referencing the existing chain via prev_hash.
+    await withFileDb(async (dbPath) => {
+      const sink1 = createSqliteAuditSink({ dbPath });
+      const twoDaysAgo = Date.now() - 2 * 86_400_000;
+      await sink1.log(
+        makeEntry({ sessionId: "crashed-session", timestamp: twoDaysAgo, kind: "session_start" }),
+      );
+      await sink1.log(
+        makeEntry({
+          sessionId: "crashed-session",
+          timestamp: twoDaysAgo + 1000,
+          kind: "model_call",
+        }),
+      );
+      // No session_end — simulates a crash
+      await sink1.flush();
+      sink1.close();
+
+      const sink2 = createSqliteAuditSink({ dbPath, retention: { maxAgeDays: 1 } });
+      await sink2.flush();
+
+      // All entries retained — no session_end means prune is skipped
       const entries = sink2.getEntries();
       expect(entries).toHaveLength(2);
 

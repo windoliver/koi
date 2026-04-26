@@ -37,7 +37,10 @@ function parseArchiveSeq(filename: string): number {
   return parseInt(m[1], 10);
 }
 
-async function readEntriesFromFile(filePath: string): Promise<readonly AuditEntry[]> {
+async function readEntriesFromFile(
+  filePath: string,
+  required = false,
+): Promise<readonly AuditEntry[]> {
   try {
     const content = await readFile(filePath, "utf-8");
     const entries: AuditEntry[] = [];
@@ -53,7 +56,16 @@ async function readEntriesFromFile(filePath: string): Promise<readonly AuditEntr
     }
     return entries;
   } catch (e: unknown) {
-    if (e instanceof Error && "code" in e && (e as NodeJS.ErrnoException).code === "ENOENT") {
+    // ENOENT is benign only for the active file before it has been created.
+    // For archive files (required=true), a missing file after enumeration is a
+    // tamper or data-loss signal — fail closed so callers get an incomplete-read
+    // error rather than silently returning a partial audit trail.
+    if (
+      !required &&
+      e instanceof Error &&
+      "code" in e &&
+      (e as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
       return [];
     }
     throw e;
@@ -112,7 +124,9 @@ async function readArchiveEntries(archiveDir: string): Promise<readonly AuditEnt
 
   const results: AuditEntry[] = [];
   for (const file of ndjsonFiles) {
-    const entries = await readEntriesFromFile(join(archiveDir, file));
+    // required=true: an archive was just enumerated by readdir — if it's now missing,
+    // that is tampering or a race, not a benign empty-file case.
+    const entries = await readEntriesFromFile(join(archiveDir, file), true);
     results.push(...entries);
   }
   return results;
