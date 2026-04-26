@@ -111,7 +111,7 @@ describe("createApiKeyDetector", () => {
 
   test("detects Slack bot token xoxb-", () => {
     const matches = detector.detect(
-      "SLACK_TOKEN=xoxb-12345678901-12345678901-aBcDeFgHiJkLmNoPqRsTuVwXy",
+      "SLACK_TOKEN=xoxb-12345678901-aBcDeFgHiJkLmNoPqRsTuVwXy1234567abc",
     );
     expect(matches).toHaveLength(1);
     expect(matches[0]?.value).toMatch(/^xoxb-/);
