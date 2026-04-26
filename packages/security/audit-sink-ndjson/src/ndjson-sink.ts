@@ -96,12 +96,11 @@ async function readArchiveEntries(archiveDir: string): Promise<readonly AuditEnt
     throw e;
   }
 
-  // Sort by filename. Each archive name is `${isoTimestamp}-${counter}-${uuid}.ndjson`.
-  // The ISO prefix provides chronological ordering within a run; the UUID suffix makes
-  // names globally unique (immune to clock-reset overwrites across restarts).
-  // Entry-timestamp sorting is equally vulnerable to clock skew and adds extra I/O,
-  // so filename lexicographic order is the best available stable proxy.
-  const sorted = [...files].sort();
+  // Only ingest .ndjson files — stray .DS_Store, editor temps, or partial copies
+  // must not cause a corruption error that takes the entire audit trail offline.
+  // Sort by filename: ISO timestamp prefix provides chronological order; UUID suffix
+  // (added since v1992) makes names globally unique across restarts.
+  const sorted = files.filter((f) => f.endsWith(".ndjson")).sort();
 
   const results: AuditEntry[] = [];
   for (const file of sorted) {

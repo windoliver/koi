@@ -31,9 +31,9 @@ import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import type { NdjsonRotationConfig } from "@koi/audit-sink-ndjson";
-import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
+import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit-sink-ndjson";
 import type { SqliteRetentionConfig } from "@koi/audit-sink-sqlite";
-import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
+import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type { BudgetConfig } from "@koi/context-manager";
@@ -2435,12 +2435,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             "Set KOI_AUDIT_NDJSON instead.",
         );
       }
-      const auditSink = createNdjsonAuditSink({
+      const ndjsonSinkConfig = {
         filePath: config.auditNdjsonPath,
         ...(config.auditNdjsonRotation !== undefined
           ? { rotation: config.auditNdjsonRotation }
           : {}),
-      });
+      };
+      const ndjsonValidation = validateNdjsonAuditSinkConfig(ndjsonSinkConfig);
+      if (!ndjsonValidation.ok) {
+        throw new Error(`Invalid NDJSON audit sink config: ${ndjsonValidation.error.message}`);
+      }
+      const auditSink = createNdjsonAuditSink(ndjsonSinkConfig);
       const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
       complianceRecorders.push(
         createAuditSinkComplianceRecorder(auditSink, {
@@ -2519,12 +2524,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             "Set KOI_AUDIT_SQLITE instead.",
         );
       }
-      const sqliteSink = createSqliteAuditSink({
+      const sqliteSinkConfig = {
         dbPath: config.auditSqlitePath,
         ...(config.auditSqliteRetention !== undefined
           ? { retention: config.auditSqliteRetention }
           : {}),
-      });
+      };
+      const sqliteValidation = validateSqliteAuditSinkConfig(sqliteSinkConfig);
+      if (!sqliteValidation.ok) {
+        throw new Error(`Invalid SQLite audit sink config: ${sqliteValidation.error.message}`);
+      }
+      const sqliteSink = createSqliteAuditSink(sqliteSinkConfig);
       const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
       complianceRecorders.push(
         createAuditSinkComplianceRecorder(sqliteSink, {
