@@ -288,13 +288,35 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
       }
     }
 
-    const sizeBytes = new TextEncoder().encode(input.content).byteLength;
+    // Serialize metadata first so its bytes are included in size accounting.
+    // This prevents callers from bypassing the per-file and process-wide limits
+    // by submitting tiny content paired with very large metadata objects.
+    let clonedMetadata: Record<string, unknown> | undefined;
+    let metadataBytes = 0;
+    if (input.metadata !== undefined) {
+      try {
+        clonedMetadata = Object.freeze(cloneMetadata(input.metadata)) as Record<string, unknown>;
+        metadataBytes = new TextEncoder().encode(JSON.stringify(clonedMetadata)).byteLength;
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message:
+              "Metadata must be JSON-serializable (no circular references, BigInt, or functions)",
+            retryable: false,
+          },
+        };
+      }
+    }
+
+    const sizeBytes = new TextEncoder().encode(input.content).byteLength + metadataBytes;
     if (sizeBytes > SCRATCHPAD_DEFAULTS.MAX_FILE_SIZE_BYTES) {
       return {
         ok: false,
         error: {
           code: "RESOURCE_EXHAUSTED",
-          message: `Content size ${sizeBytes} exceeds limit ${SCRATCHPAD_DEFAULTS.MAX_FILE_SIZE_BYTES}`,
+          message: `Entry size ${sizeBytes} exceeds limit ${SCRATCHPAD_DEFAULTS.MAX_FILE_SIZE_BYTES}`,
           retryable: RETRYABLE_DEFAULTS.RESOURCE_EXHAUSTED,
         },
       };
@@ -367,23 +389,6 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
 
     const now = new Date().toISOString();
     const generation = (liveExisting?.generation ?? 0) + 1;
-
-    let clonedMetadata: Record<string, unknown> | undefined;
-    if (input.metadata !== undefined) {
-      try {
-        clonedMetadata = Object.freeze(cloneMetadata(input.metadata)) as Record<string, unknown>;
-      } catch {
-        return {
-          ok: false,
-          error: {
-            code: "VALIDATION",
-            message:
-              "Metadata must be JSON-serializable (no circular references, BigInt, or functions)",
-            retryable: false,
-          },
-        };
-      }
-    }
 
     const entry: MutableEntry = {
       path: input.path,

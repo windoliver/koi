@@ -277,24 +277,25 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
     },
 
     async findByAgentId(searchAgentId: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
-      // Crash-survivor discovery requires trusting git state (branch names, directory basenames)
-      // as ownership signals. On unsandboxed backends, workspace processes can forge that state
-      // to impersonate another agent's survivor after a restart. Fail closed: only allow survivor
-      // discovery when the backend can guarantee agents cannot mutate the git namespace.
-      if (!config.isSandboxed) return [];
-
-      // Derive ownership exclusively from the git-owned branch name — tamper-resistant for
-      // the naming scheme (agents cannot claim another agent's branch without knowing their hex).
+      // Derive ownership from git-owned branch name and worktree path.
       // Branch format: workspace/<hex(agentId)>/<wsId>
       // Ownership is matched on hex encoding only — no raw-agentId fallback, which would create
       // a collision if one agent's literal id equals another agent's hex-encoded id.
       //
+      // On isSandboxed=false: discovered survivors are never reused — the provider's
+      // isSetupComplete() returns false for unsandboxed backends so tryReuseCrashSurvivor
+      // always disposes them. Discovery here is for cleanup-only: without it, a process restart
+      // strands live worktrees and violates the single-workspace-per-agent invariant.
+      // A hostile agent with write access to both resolvedBase and the repo could forge a
+      // basename+branch entry to trigger disposal of another agent's workspace (DoS). That risk
+      // is accepted for unsandboxed deployments; the victim always recreates fresh afterward.
+      //
+      // On isSandboxed=true: survivors can be safely reused — OS isolation prevents git-state
+      // forgery. Ownership refs (pass 3) are also trusted, enabling moved-worktree recovery.
+      //
       // We deliberately avoid file-content fallbacks (e.g. reading .koi-workspace): on an
       // unsandboxed backend, any such file is writable by workspace processes, enabling cross-agent
       // disposal attacks where a tampered file causes another agent's workspace to be deleted.
-      // The ownership signals used here are stored in the main repo:
-      //   1. Branch name `workspace/<hex>/<wsId>` — the primary signal (most tamper-resistant)
-      //   2. Ownership ref `refs/koi-ownership/<hex>/<wsId>` — fallback for branch-drift recovery
       const searchHex = Buffer.from(searchAgentId as string).toString("hex");
 
       const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);

@@ -145,7 +145,7 @@ describe("createGitWorktreeBackend", () => {
   });
 
   it("findByAgentId locates a workspace by branch naming convention", async () => {
-    const backend = createGitWorktreeBackend({ repoPath, isSandboxed: true });
+    const backend = createGitWorktreeBackend({ repoPath });
     const result = await backend.create(aid, defaultConfig);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -166,10 +166,11 @@ describe("createGitWorktreeBackend", () => {
   });
 
   it("findByAgentId still finds workspace after agent switched branches (via git branch list)", async () => {
-    // A sandboxed agent can switch branches; the managed branch workspace/<hex>/<wsId> stays
-    // in the repo even after drift. The second pass scans the git branch list and finds the
-    // workspace by matching the original branch against the live worktree directory.
-    const backend = createGitWorktreeBackend({ repoPath, isSandboxed: true });
+    // An agent can switch branches, breaking git-owned branch-name discovery in pass 1.
+    // The managed branch workspace/<hex>/<wsId> stays in the repo even after drift.
+    // Pass 2 scans git branch list and finds the workspace by matching the original
+    // branch name against the live worktree directory — no isSandboxed needed.
+    const backend = createGitWorktreeBackend({ repoPath }); // default: isSandboxed=false
     const result = await backend.create(aid, defaultConfig);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
