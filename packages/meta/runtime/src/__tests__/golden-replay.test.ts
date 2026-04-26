@@ -13965,6 +13965,8 @@ describe("Golden: @koi/long-running — harness lifecycle", () => {
       // pause() requires saveState so the suspended snapshot can be
       // resumed; provide a no-op for the golden-replay path.
       saveState: async () => ({ kind: "g-state" }),
+      // quiesceEngine is required at construction; trivial ack here.
+      quiesceEngine: async () => undefined,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;

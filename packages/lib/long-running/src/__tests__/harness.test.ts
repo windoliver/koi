@@ -104,6 +104,9 @@ const baseConfig = () => ({
   // pause() now requires saveState so the suspended snapshot can be
   // resumed; provide a no-op for tests that don't exercise replay.
   saveState: async (): Promise<unknown> => ({ kind: "test-state" }),
+  // quiesceEngine is required at construction; tests don't run a
+  // real engine, so a trivial drain-ack is sufficient.
+  quiesceEngine: async (): Promise<void> => undefined,
 });
 
 describe("shouldSoftCheckpoint", () => {
@@ -130,6 +133,7 @@ describe("createLongRunningHarness", () => {
       harnessStore: makeStore(),
       sessionPersistence: makePersistence(),
       saveState: async () => undefined,
+      quiesceEngine: async () => undefined,
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("VALIDATION");

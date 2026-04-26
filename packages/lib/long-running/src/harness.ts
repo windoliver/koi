@@ -262,68 +262,52 @@ export function createLongRunningHarness(
 
   const quiesce = async (deadlineMs: number): Promise<boolean> => {
     const start = now();
-    // Single absolute deadline across both stages so total wall-clock
-    // wait never exceeds `abortTimeoutMs`. When `quiesceEngine` is
-    // wired, cap the inTurn polling at half the budget so the
-    // callback always gets a real chance to acknowledge drain.
-    // First-stage poll: cap at half the deadline when quiesceEngine
-    // is wired so the callback gets a real chance to acknowledge drain.
-    const pollBudget = cfg.quiesceEngine ? Math.floor(deadlineMs / 2) : deadlineMs;
-    while (state.inTurn && now() - start < pollBudget) {
+    const lease = state.lease;
+    const sessionIdStr = state.lastSessionId;
+    if (!lease || !sessionIdStr) {
+      // No current owner — nothing to drain.
+      while (state.inTurn && now() - start < deadlineMs) {
+        await sleep(10);
+      }
+      return !state.inTurn;
+    }
+    const sessionId = toSessionId(sessionIdStr);
+    // Run the host drain callback concurrently with the inTurn poll
+    // and share a single absolute deadline. A slow but healthy turn
+    // that completes anywhere within `deadlineMs` is accepted; only
+    // genuine timeouts fail. The callback is bound to the revoked
+    // lease so a global/stale callback cannot resolve based on
+    // unrelated work. Hosts without background side effects can omit
+    // quiesceEngine — we default to a no-op that resolves immediately,
+    // so the gate reduces to the inTurn poll.
+    const drain = cfg.quiesceEngine ?? (async () => undefined);
+    const callbackPromise: Promise<"ok" | "err"> = drain({ sessionId, lease }).then(
+      () => "ok",
+      () => "err",
+    );
+    const outcomeBox: { value: "pending" | "ok" | "err" } = { value: "pending" };
+    void callbackPromise.then((r) => {
+      outcomeBox.value = r;
+    });
+    while ((state.inTurn || outcomeBox.value === "pending") && now() - start < deadlineMs) {
       await sleep(10);
     }
     const turnCleared = !state.inTurn;
-    // Two-stage drain:
-    //  1. Turn flag must clear naturally (onAfterTurn fired) — proof
-    //     the current turn finished mutating in-memory state.
-    //  2. If a host `quiesceEngine` is wired, it must also resolve —
-    //     proof that async tool/MCP/stream work has drained.
-    // If the turn flag never cleared, fall back to `quiesceEngine` as
-    // a wedge-override (for the stale-inTurn case where the turn
-    // errored after onBeforeTurn). The host contract documented in
-    // types.ts requires the callback to confirm turn completion in
-    // that mode — without quiesceEngine wired we just fail.
-    if (cfg.quiesceEngine) {
-      const remaining = Math.max(0, deadlineMs - (now() - start));
-      // Lease-bound drain: pass the current session/lease so the host
-      // callback can scope verification to this exact execution. If
-      // the lease has already been revoked (no current owner), there
-      // is nothing to drain — accept turnCleared as the answer.
-      const lease = state.lease;
-      const sessionId = state.lastSessionId ? toSessionId(state.lastSessionId) : undefined;
-      if (!lease || !sessionId) return turnCleared;
-      let callbackOk = false;
-      try {
-        await Promise.race([
-          cfg.quiesceEngine({ sessionId, lease }),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("quiesceEngine deadline")), remaining),
-          ),
-        ]);
-        callbackOk = true;
-      } catch {
-        return false;
-      }
-      // Normal path: require BOTH the turn flag cleared AND the host
-      // callback to confirm drain. A callback resolving fast does NOT
-      // license bypassing onAfterTurn bookkeeping (turn counters,
-      // metrics, soft-checkpoint side effects).
-      if (turnCleared) return callbackOk;
-      // Stuck-middleware override: only after the FULL deadline has
-      // elapsed with inTurn still true do we accept the callback as
-      // sole proof. A turn legitimately taking >50% of the timeout to
-      // unwind is not stuck — it's slow. We re-check inTurn here in
-      // case onAfterTurn fired during the callback wait.
-      if (!state.inTurn) return callbackOk;
-      const fullyTimedOut = now() - start >= deadlineMs;
-      if (fullyTimedOut && callbackOk) return true;
-      return false;
+    // If callback is still pending at the deadline, wait one tick for
+    // microtask resolution before deciding.
+    if (outcomeBox.value === "pending") {
+      await Promise.race([
+        callbackPromise.then(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, 0)),
+      ]);
     }
-    // No host drain callback wired: rely solely on the middleware
-    // turn flag. If it never cleared, return false — the caller can
-    // retry, and a future onAfterTurn or onTurnStart will eventually
-    // unblock the transition. Do NOT force-clear inTurn here.
-    return turnCleared;
+    // Normal path: BOTH turn flag cleared AND callback resolved ok.
+    if (turnCleared && outcomeBox.value === "ok") return true;
+    // Stuck-middleware override: full deadline elapsed with inTurn
+    // still true but callback resolved ok — accept as wedge unblock.
+    const fullyTimedOut = now() - start >= deadlineMs;
+    if (fullyTimedOut && !turnCleared && outcomeBox.value === "ok") return true;
+    return false;
   };
 
   const clearTimer = (): void => {
@@ -522,10 +506,16 @@ export function createLongRunningHarness(
     state.turnCount = 0;
 
     if (cfg.timeoutMs !== undefined) {
+      // Capture the lease at schedule time. When the timer fires we
+      // verify the lease is STILL active — without this check, a
+      // timeout queued for session A could fire after A was paused
+      // and B started, publishing a bogus "failed" terminal for B.
+      const scheduledLease = lease;
       state.timeoutHandle = setTimeout(() => {
-        // Route through the lifecycle mutex so timeout cannot race a
-        // concurrent pause/fail/completeTask transition.
-        void withLock(() => publishTerminal("failed", "TIMEOUT"));
+        void withLock(async () => {
+          if (state.lease !== scheduledLease) return { ok: true, value: undefined };
+          return publishTerminal("failed", "TIMEOUT");
+        });
       }, cfg.timeoutMs);
     }
 
@@ -616,37 +606,39 @@ export function createLongRunningHarness(
     state.terminating = true;
     clearTimer();
     const sidAtEntry = state.lastSessionId;
-    // For "suspended", capture resumable engine state BEFORE firing abort
-    // — a cooperative engine may clear state on abort, and we need to be
-    // able to resume from the live execution point. On retry of a
-    // failed pause, reuse the cached capture from the first attempt so
-    // we don't ask a post-abort engine for stale/empty state.
-    const cachedCapture =
+    // If a prior pause attempt already captured post-quiesce engine
+    // state for this lease, skip the pre-flight feasibility check —
+    // the authoritative capture is already in hand and the engine is
+    // already aborted from that prior attempt. Otherwise, for
+    // "suspended", do a pre-flight saveState BEFORE abort so a
+    // transient saveState fault leaves the live engine intact for
+    // retry. This is only a feasibility check — the authoritative
+    // capture happens AFTER quiesce so it matches the fully-stopped
+    // engine.
+    const priorCachedCapture =
       target === "suspended" && state.lease ? captureCache.get(state.lease) : undefined;
-    const captured: CapturedEngineState =
-      target === "suspended" ? (cachedCapture ?? (await captureEngineState())) : { kind: "skip" };
-    // Suspend MUST treat capture failure as fatal — publishing a
-    // suspended snapshot whose prior session has no resumable state
-    // produces a silently-broken resume. Bail before abort so the
-    // active lease stays usable for retry / fail / dispose.
-    if (target === "suspended" && captured.kind === "error") {
-      state.terminating = false;
-      return { ok: false, error: captured.error };
+    let preflightCapture: CapturedEngineState | undefined;
+    if (target === "suspended" && !priorCachedCapture) {
+      const preflight = await captureEngineState();
+      if (preflight.kind === "error") {
+        state.terminating = false;
+        return { ok: false, error: preflight.error };
+      }
+      // Retain the successful pre-abort capture as a fallback in case
+      // post-quiesce saveState fails on a stopped engine. Resuming
+      // from this state may replay any work that was in flight at
+      // abort time — the trade-off vs. losing resumability entirely.
+      preflightCapture = preflight;
     }
-    // Fire abort so the engine stops emitting side effects. DO NOT revoke
-    // the lease (and do NOT commit the speculative delta) until the
-    // terminal snapshot is durably published. On quiesce timeout or store
-    // failure, the caller can retry the same transition with the same
-    // lease and the same delta — applying it twice is impossible because
-    // state mutation is gated on success.
+    // Capture succeeded — fire abort so the engine stops emitting side
+    // effects. DO NOT revoke the lease (and do NOT commit the
+    // speculative delta) until the terminal snapshot is durably
+    // published. On quiesce timeout or store failure, the caller can
+    // retry the same transition with the same lease and same delta.
     state.abortController?.abort();
     const quiet = await quiesce(abortTimeoutMs);
     if (!quiet) {
       state.terminating = false;
-      // Do NOT memoize the capture: if quiesce timed out, the engine
-      // is still executing and may advance further before the caller
-      // retries. A retry must recapture from the actual stopped state
-      // so the persisted lastEngineState matches the durable snapshot.
       return {
         ok: false,
         error: err("TIMEOUT", "engine did not quiesce within abortTimeoutMs", true, {
@@ -654,16 +646,109 @@ export function createLongRunningHarness(
         }),
       };
     }
-    // Engine has quiesced — only NOW is the captured state guaranteed
-    // to correspond to a stopped engine. Memoize so a snapshot-publish
-    // retry on the same lease reuses it instead of asking a
-    // post-abort engine for fresh (possibly cleared) state. Only
-    // memoize successful captures: a transient saveState() throw
-    // (kind=error) must allow the next pause to recapture.
+    // POST-QUIESCE capture: the engine is fully drained, so this
+    // capture is the authoritative resume point. Reuse a cached
+    // post-quiesce capture if a prior retry attempt got this far.
+    let captured: CapturedEngineState;
+    if (target !== "suspended") {
+      captured = { kind: "skip" };
+    } else if (priorCachedCapture) {
+      captured = priorCachedCapture;
+    } else {
+      const post = await captureEngineState();
+      // Prefer post-quiesce; fall back to preflight if post-quiesce
+      // fails so a transient post-abort persistence fault doesn't
+      // destroy resumability.
+      captured = post.kind === "error" && preflightCapture ? preflightCapture : post;
+    }
+    if (target === "suspended" && captured.kind === "error") {
+      // Both pre-abort and post-quiesce captures failed. Engine is
+      // already aborted/quiesced. Stranded-active is the worst outcome
+      // — roll forward to `failed`, preserving the caller's
+      // session-result delta. Route through the same conflict-retry
+      // helper as the normal terminal publish path.
+      const captureErr = captured.error;
+      const rolledDelta = buildDelta();
+      const failReason = `pause aborted but saveState failed: ${captureErr.message}`;
+      const failedSnap = buildSnapshot("failed", failReason, rolledDelta);
+      let putRes = await putSnapshot(failedSnap);
+      if (!putRes.ok) {
+        // Conflict/transient: reload head and retry once, matching the
+        // normal terminal publish path below.
+        const headRes = await loadHead();
+        if (headRes.ok && headRes.value) state.lastNodeId = headRes.value.nodeId;
+        putRes = await putSnapshot(buildSnapshot("failed", failReason, rolledDelta));
+      }
+      if (!putRes.ok) {
+        state.terminating = false;
+        return {
+          ok: false,
+          error: err(
+            "INTERNAL",
+            `pause aborted, saveState failed (${captureErr.message}), and failed-snapshot roll-forward also failed (${putRes.error.message})`,
+            true,
+          ),
+        };
+      }
+      commitDelta(rolledDelta);
+      revokeLease();
+      state.phase = "failed";
+      state.failureReason = failReason;
+      if (state.lastSessionId) {
+        await persistSessionStatus(toSessionId(state.lastSessionId), "done");
+      }
+      // Run the same post-commit finalization as the normal `failed`
+      // terminal: prune, onFailed observability hook, and a follow-up
+      // annotated snapshot if any post-commit step appended notes to
+      // failureReason. Errors here are best-effort.
+      const postCommitBefore = state.failureReason;
+      const noteFailure = (label: string, e: unknown): void => {
+        const msg = e instanceof Error ? e.message : String(e);
+        const note = `${label}: ${msg}`;
+        state.failureReason = state.failureReason ? `${state.failureReason}; ${note}` : note;
+      };
+      try {
+        const pruneRes = await cfg.harnessStore.prune(chain, pruning);
+        if (!pruneRes.ok) noteFailure("prune", pruneRes.error.message);
+      } catch (e: unknown) {
+        noteFailure("prune", e);
+      }
+      if (cfg.onFailed) {
+        try {
+          await cfg.onFailed(getStatus(), err("INTERNAL", failReason, false));
+        } catch (e: unknown) {
+          noteFailure("onFailed", e);
+        }
+      }
+      if (state.failureReason !== postCommitBefore) {
+        try {
+          const annotated = buildSnapshot("failed", state.failureReason, rolledDelta);
+          const annRes = await putSnapshot(annotated);
+          if (!annRes.ok) {
+            state.failureReason = `${state.failureReason}; annotate: ${annRes.error.message}`;
+          }
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          state.failureReason = `${state.failureReason}; annotate: ${msg}`;
+        }
+      }
+      state.terminating = false;
+      // Surface as non-retryable INTERNAL: pause did not produce a
+      // suspended head, but the run is already durably failed —
+      // retrying pause would just return STALE_REF.
+      return {
+        ok: false,
+        error: err("INTERNAL", failReason, false, { cause: captureErr }),
+      };
+    }
+    // Memoize the post-quiesce capture so a snapshot-publish retry on
+    // the same lease reuses it instead of re-asking a stopped engine.
+    // Only successful captures are memoized — errors above already
+    // returned via the roll-forward path.
     if (
       target === "suspended" &&
       state.lease &&
-      !cachedCapture &&
+      !priorCachedCapture &&
       (captured.kind === "value" || captured.kind === "skip")
     ) {
       captureCache.set(state.lease, captured);
