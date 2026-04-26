@@ -304,7 +304,12 @@ export function createLongRunningHarness(
     // Normal path: BOTH turn flag cleared AND callback resolved ok.
     if (turnCleared && outcomeBox.value === "ok") return true;
     // Stuck-middleware override: full deadline elapsed with inTurn
-    // still true but callback resolved ok — accept as wedge unblock.
+    // still true but the drain callback resolved ok — accept as wedge
+    // unblock. Per the documented contract, hosts that omit
+    // `quiesceEngine` declare they have no background side effects to
+    // drain, so the default no-op resolving is sufficient proof. Hosts
+    // with background work MUST provide quiesceEngine; failing to do
+    // so is a host bug we cannot detect.
     const fullyTimedOut = now() - start >= deadlineMs;
     if (fullyTimedOut && !turnCleared && outcomeBox.value === "ok") return true;
     return false;
@@ -386,6 +391,44 @@ export function createLongRunningHarness(
     }
 
     if (head) adoptHead(head);
+    // start() is a fresh-run API: when restarting from a terminal head
+    // (completed/failed), drop per-run accumulators carried by
+    // adoptHead so the new run does not inherit completed/failed task
+    // state, stale summaries/artifacts, or prior metrics. Snapshot
+    // chain linkage (lastNodeId) is preserved so the new active
+    // snapshot still chains to the prior head for history.
+    //
+    // Snapshot the adopted state BEFORE mutating so we can restore it
+    // verbatim if saveSession()/putSnapshot() fail — otherwise an
+    // activation failure would leave status() advertising a fresh-run
+    // shell of empty board/metrics with the prior phase still durable
+    // on disk.
+    const preStartSnapshot =
+      expect === "start"
+        ? {
+            taskBoard: state.taskBoard,
+            summaries: state.summaries,
+            keyArtifacts: state.keyArtifacts,
+            metrics: state.metrics,
+            lastSessionId: state.lastSessionId,
+            startedAt: state.startedAt,
+            sessionSeq: state.sessionSeq,
+            failureReason: state.failureReason,
+            terminating: state.terminating,
+            effectiveTaskMaxRetries: state.effectiveTaskMaxRetries,
+          }
+        : undefined;
+    if (expect === "start") {
+      // Per-run accumulators reset; cumulative HarnessMetrics PRESERVED
+      // across runs per the core contract ("Accumulated metrics across
+      // all sessions"). Operators rely on these counters for
+      // longitudinal monitoring; zeroing them on every restart would
+      // permanently erase telemetry.
+      state.taskBoard = EMPTY_TASK_BOARD;
+      state.summaries = [];
+      state.keyArtifacts = [];
+      state.lastSessionId = undefined;
+    }
     if (expect === "start" || state.startedAt === 0) state.startedAt = now();
     state.sessionSeq += 1;
     state.failureReason = undefined;
@@ -477,21 +520,144 @@ export function createLongRunningHarness(
       connectedAt: now(),
       lastPersistedAt: now(),
       ...(carriedState !== undefined && { lastEngineState: carriedState }),
-      status: "running",
+      // Persist as `idle` until the active snapshot is durable. Rows
+      // with status `running` are crash candidates on recovery; if the
+      // snapshot publish fails, an indeterminate row in `running`
+      // would manufacture phantom recovery work. Flip to `running`
+      // only after the active snapshot commits successfully.
+      status: "idle",
       metadata: {},
     };
-    const saveRes = await cfg.sessionPersistence.saveSession(sessionRec);
-    if (!saveRes.ok) {
+    const restorePreStart = (): void => {
+      if (!preStartSnapshot) return;
+      state.taskBoard = preStartSnapshot.taskBoard;
+      state.summaries = preStartSnapshot.summaries;
+      state.keyArtifacts = preStartSnapshot.keyArtifacts;
+      state.metrics = preStartSnapshot.metrics;
+      state.lastSessionId = preStartSnapshot.lastSessionId;
+      state.startedAt = preStartSnapshot.startedAt;
+      state.sessionSeq = preStartSnapshot.sessionSeq;
+      state.failureReason = preStartSnapshot.failureReason;
+      state.terminating = preStartSnapshot.terminating;
+      state.effectiveTaskMaxRetries = preStartSnapshot.effectiveTaskMaxRetries;
+    };
+    // Pre-snapshot cleanup: no putSnapshot has been attempted yet, so a
+    // committed active head is impossible. Always revoke the lease,
+    // best-effort remove the (possibly committed) session row, and
+    // restore in-memory state from the pre-start snapshot. Used on
+    // both Result-Err and thrown saveSession failures.
+    const preSnapshotCleanup = async (): Promise<void> => {
       revokeLease();
+      try {
+        await cfg.sessionPersistence.removeSession(sid);
+      } catch {
+        /* best-effort cleanup */
+      }
+      restorePreStart();
+    };
+    // Post-snapshot rollback. Order matters: reload the durable head
+    // BEFORE deciding whether to remove the new session row, because
+    // putSnapshot can be ambiguous — it may have committed and then
+    // reported failure (network/transport).
+    //
+    // Three outcomes:
+    //   - "committed": head points at our new sid → snapshot is
+    //     durable; keep the session row and lease, adopt the head.
+    //   - "rolled-back": head readable AND does NOT point at our sid
+    //     → snapshot did not land; revoke lease, remove session row.
+    //   - "indeterminate": head unreadable → cannot prove either way;
+    //     do NOT remove the session row (would orphan a possibly-live
+    //     active head). Caller surfaces a retryable error.
+    const rollbackActivation = async (): Promise<"committed" | "rolled-back" | "indeterminate"> => {
+      let headAfter: SnapshotNode<HarnessSnapshot> | undefined;
+      let headReadable = false;
+      try {
+        const r = await loadHead();
+        if (r.ok) {
+          headReadable = true;
+          headAfter = r.value;
+        }
+      } catch {
+        /* head unreadable */
+      }
+      if (headAfter && headAfter.data.lastSessionId === sid) {
+        adoptHead(headAfter);
+        return "committed";
+      }
+      if (!headReadable) {
+        // Conservative: leave session row and in-memory state intact;
+        // operator/caller retry can re-read head when storage recovers.
+        return "indeterminate";
+      }
+      revokeLease();
+      try {
+        await cfg.sessionPersistence.removeSession(sid);
+      } catch {
+        /* best-effort cleanup */
+      }
+      if (headAfter) {
+        adoptHead(headAfter);
+      } else {
+        restorePreStart();
+      }
+      return "rolled-back";
+    };
+
+    let saveRes: Result<void, KoiError>;
+    try {
+      saveRes = await cfg.sessionPersistence.saveSession(sessionRec);
+    } catch (e: unknown) {
+      await preSnapshotCleanup();
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ok: false, error: err("EXTERNAL", `saveSession threw: ${msg}`, true) };
+    }
+    if (!saveRes.ok) {
+      await preSnapshotCleanup();
       return { ok: false, error: saveRes.error };
     }
 
     const snapshot = buildSnapshot("active");
-    const putRes = await putSnapshot(snapshot);
-    if (!putRes.ok) {
-      revokeLease();
-      await cfg.sessionPersistence.removeSession(sid);
-      return { ok: false, error: putRes.error };
+    let putRes: Result<SnapshotNode<HarnessSnapshot>, KoiError> | undefined;
+    let putThrew: unknown;
+    try {
+      putRes = await putSnapshot(snapshot);
+    } catch (e: unknown) {
+      putThrew = e;
+    }
+    if (putThrew !== undefined || (putRes && !putRes.ok)) {
+      // Ambiguous: the put may have committed before the throw/error
+      // surface. Let rollback consult the durable head:
+      //   committed     → fall through to success path
+      //   rolled-back   → propagate the original error
+      //   indeterminate → return retryable EXTERNAL; do not strand
+      //                   the (possibly durable) active head.
+      const outcome = await rollbackActivation();
+      if (outcome === "indeterminate") {
+        const cause =
+          putThrew !== undefined
+            ? putThrew instanceof Error
+              ? putThrew.message
+              : String(putThrew)
+            : putRes && !putRes.ok
+              ? putRes.error.message
+              : "unknown";
+        return {
+          ok: false,
+          error: err(
+            "EXTERNAL",
+            `putSnapshot indeterminate (${cause}); durable head unreadable, retry to reconcile`,
+            true,
+          ),
+        };
+      }
+      if (outcome === "rolled-back") {
+        if (putThrew !== undefined) {
+          const msg = putThrew instanceof Error ? putThrew.message : String(putThrew);
+          return { ok: false, error: err("EXTERNAL", `putSnapshot threw: ${msg}`, true) };
+        }
+        if (putRes && !putRes.ok) return { ok: false, error: putRes.error };
+      }
+      // outcome === "committed": fall through to success.
     }
     // Only after the new active snapshot is durable do we tombstone the
     // superseded prior session. Reordering this AFTER putSnapshot ensures
@@ -502,6 +668,10 @@ export function createLongRunningHarness(
     if (priorSessionId !== undefined) {
       await persistSessionStatus(toSessionId(priorSessionId), "done");
     }
+    // Snapshot is durable: flip the new session row from `idle` to
+    // `running` so recovery treats it as a live worker. Best-effort:
+    // failure is annotated into failureReason via persistSessionStatus.
+    await persistSessionStatus(sid, "running");
     state.phase = "active";
     state.turnCount = 0;
 
@@ -1055,11 +1225,12 @@ export function createLongRunningHarness(
     // success when an actual onAfterTurn (or quiesceEngine) confirms.
     state.inTurn = true;
   };
-  const onTurnEnd = async (): Promise<void> => {
+  const onTurnEnd = async (intervalOverride?: number): Promise<void> => {
     state.turnCount += 1;
     state.metrics = { ...state.metrics, totalTurns: state.metrics.totalTurns + 1 };
+    const effectiveInterval = intervalOverride ?? interval;
     try {
-      if (shouldSoftCheckpoint(state.turnCount, interval)) {
+      if (shouldSoftCheckpoint(state.turnCount, effectiveInterval)) {
         const res = await softCheckpoint();
         if (!res.ok) {
           // Checkpoint persistence failed. Surface the failure into
@@ -1302,12 +1473,28 @@ export function createLongRunningHarness(
         return publishTerminal("suspended", "disposed");
       }),
     status: getStatus,
-    createMiddleware: (mwCfg?: CheckpointMiddlewareConfig): KoiMiddleware =>
-      createCheckpointMiddleware({
-        intervalTurns: mwCfg?.softCheckpointInterval ?? interval,
+    createMiddleware: (mwCfg?: CheckpointMiddlewareConfig): KoiMiddleware => {
+      // Validate the per-middleware override with the same rules as
+      // the harness-level cfg.softCheckpointInterval (positive
+      // integer). Hard-reject invalid values rather than silently
+      // coercing — silently falling back to the harness default would
+      // mask configuration bugs, and silently honoring 0/negative
+      // would disable durable checkpoints entirely.
+      const override = mwCfg?.softCheckpointInterval;
+      if (override !== undefined) {
+        if (!Number.isInteger(override) || override <= 0) {
+          throw new Error(
+            `createMiddleware: softCheckpointInterval must be a positive integer (got ${String(override)})`,
+          );
+        }
+      }
+      const intervalTurns = override ?? interval;
+      return createCheckpointMiddleware({
+        intervalTurns,
         onTurnStart,
-        onTurnEnd,
-      }),
+        onTurnEnd: () => onTurnEnd(intervalTurns),
+      });
+    },
   };
 
   return { ok: true, value: harness };
