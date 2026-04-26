@@ -111,6 +111,22 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
     flushBuffer();
     try {
       const cutoff = Date.now() - config.retention.maxAgeDays * 86_400_000;
+
+      // Chain-integrity guard: skip pruning if the oldest surviving row has prev_hash set.
+      // Deleting its predecessor would create a dangling reference that verifiers cannot
+      // distinguish from tampering. Log a warning and defer — operator must rotate the chain
+      // root explicitly before pruning can be safely applied.
+      const firstSurviving = db
+        .prepare("SELECT prev_hash FROM audit_log WHERE timestamp >= ? ORDER BY id ASC LIMIT 1")
+        .get(cutoff) as { readonly prev_hash: string | null } | null;
+      if (firstSurviving !== null && firstSurviving.prev_hash !== null) {
+        console.warn(
+          "[audit-sink-sqlite] retention prune skipped: oldest surviving row has prev_hash set. " +
+            "Pruning would break hash-chain integrity. Establish a new chain root first.",
+        );
+        return;
+      }
+
       db.prepare("DELETE FROM audit_log WHERE timestamp < ?").run(cutoff);
     } catch (e: unknown) {
       throw new Error("audit_log: failed to prune old entries", { cause: e });
