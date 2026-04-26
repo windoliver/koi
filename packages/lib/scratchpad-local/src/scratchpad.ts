@@ -325,6 +325,14 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
     const existing = store.entries.get(input.path);
     const liveExisting = existing && !isExpired(existing) ? existing : undefined;
 
+    // Expired entry at this path still occupies bytes in totalBytesUsed — reclaim them now
+    // so the subsequent byteDelta doesn't treat the path as free space while the old bytes
+    // remain counted. The store.entries.set() below will write a fresh entry in its place.
+    if (existing && !liveExisting) {
+      totalBytesUsed -= existing.sizeBytes;
+      store.entries.delete(input.path);
+    }
+
     if (input.expectedGeneration === 0) {
       if (liveExisting) {
         return {
