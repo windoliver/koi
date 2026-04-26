@@ -466,6 +466,22 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/middleware-tool-recovery": {
+      "name": "@koi/middleware-tool-recovery",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-tool-selector": {
+      "name": "@koi/middleware-tool-selector",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/lib/middleware-turn-prelude": {
       "name": "@koi/middleware-turn-prelude",
       "version": "0.0.0",
@@ -1790,6 +1806,10 @@
     "@koi/middleware-task-anchor": ["@koi/middleware-task-anchor@workspace:packages/lib/middleware-task-anchor"],
 
     "@koi/middleware-tool-audit": ["@koi/middleware-tool-audit@workspace:packages/lib/middleware-tool-audit"],
+
+    "@koi/middleware-tool-recovery": ["@koi/middleware-tool-recovery@workspace:packages/lib/middleware-tool-recovery"],
+
+    "@koi/middleware-tool-selector": ["@koi/middleware-tool-selector@workspace:packages/lib/middleware-tool-selector"],
 
     "@koi/middleware-turn-prelude": ["@koi/middleware-turn-prelude@workspace:packages/lib/middleware-turn-prelude"],
 
