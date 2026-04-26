@@ -54,6 +54,48 @@ function deny(reason: CapabilityVerifyResult & { readonly ok: false }): Capabili
   return reason;
 }
 
+/**
+ * Cheap runtime shape validation. The L0 `CapabilityToken` type guarantees
+ * required fields exist for type-checked callers, but tokens deserialized
+ * from network/disk bypass the type system — a missing `proof` would
+ * throw inside `verifySignature`, leaking an exception to the caller and
+ * giving any "deny on throw" upstream policy a way to fail open. Every
+ * branch here returns a deny result so the verifier always fails closed
+ * on malformed input.
+ */
+function validateTokenShape(token: unknown): CapabilityVerifyResult | undefined {
+  if (token === null || typeof token !== "object") {
+    return deny({ ok: false, reason: "invalid_signature" });
+  }
+  const t = token as Record<string, unknown>;
+  if (typeof t.id !== "string") return deny({ ok: false, reason: "invalid_signature" });
+  if (typeof t.issuerId !== "string") return deny({ ok: false, reason: "invalid_signature" });
+  if (typeof t.delegateeId !== "string") {
+    return deny({ ok: false, reason: "invalid_signature" });
+  }
+  if (t.scope === null || typeof t.scope !== "object") {
+    return deny({ ok: false, reason: "invalid_signature" });
+  }
+  const scope = t.scope as Record<string, unknown>;
+  if (scope.permissions === null || typeof scope.permissions !== "object") {
+    return deny({ ok: false, reason: "invalid_signature" });
+  }
+  if (typeof scope.sessionId !== "string") {
+    return deny({ ok: false, reason: "invalid_signature" });
+  }
+  if (t.proof === null || typeof t.proof !== "object") {
+    return deny({ ok: false, reason: "proof_type_unsupported" });
+  }
+  const proof = t.proof as Record<string, unknown>;
+  if (typeof proof.kind !== "string") {
+    return deny({ ok: false, reason: "proof_type_unsupported" });
+  }
+  if (t.parentId !== undefined && typeof t.parentId !== "string") {
+    return deny({ ok: false, reason: "invalid_signature" });
+  }
+  return undefined;
+}
+
 function isResourceSubset(
   child: readonly string[] | undefined,
   parent: readonly string[] | undefined,
@@ -266,21 +308,39 @@ async function verifyChain(
 export function createCapabilityVerifier(opts: CapabilityVerifierOptions): CapabilityVerifier {
   return {
     async verify(token: CapabilityToken, ctx: VerifyContext): Promise<CapabilityVerifyResult> {
-      const structural = await verifyStructural(token, ctx, opts);
-      if (structural) return structural;
-
-      const chain = await verifyChain(token, ctx, opts, new Set<CapabilityId>([token.id]));
-      if (chain) return chain;
-
-      const allowed = await opts.scopeChecker.isAllowed(ctx.toolId, {
-        permissions: token.scope.permissions,
-        ...(token.scope.resources ? { resources: token.scope.resources } : {}),
-        sessionId: token.scope.sessionId,
-      });
-      if (!allowed) {
-        return deny({ ok: false, reason: "scope_exceeded" });
+      // Defend against malformed input that bypasses the type system —
+      // tokens deserialized from network/disk may be missing required
+      // fields. Wrap downstream work in try/catch so canonicalization
+      // or crypto errors also fail closed instead of throwing.
+      const shape = validateTokenShape(token);
+      if (shape) return shape;
+      try {
+        return await runVerify(token, ctx, opts);
+      } catch {
+        return deny({ ok: false, reason: "invalid_signature" });
       }
-      return { ok: true, token };
     },
   };
+}
+
+async function runVerify(
+  token: CapabilityToken,
+  ctx: VerifyContext,
+  opts: CapabilityVerifierOptions,
+): Promise<CapabilityVerifyResult> {
+  const structural = await verifyStructural(token, ctx, opts);
+  if (structural) return structural;
+
+  const chain = await verifyChain(token, ctx, opts, new Set<CapabilityId>([token.id]));
+  if (chain) return chain;
+
+  const allowed = await opts.scopeChecker.isAllowed(ctx.toolId, {
+    permissions: token.scope.permissions,
+    ...(token.scope.resources ? { resources: token.scope.resources } : {}),
+    sessionId: token.scope.sessionId,
+  });
+  if (!allowed) {
+    return deny({ ok: false, reason: "scope_exceeded" });
+  }
+  return { ok: true, token };
 }

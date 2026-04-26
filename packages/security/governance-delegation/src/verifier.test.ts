@@ -528,6 +528,52 @@ describe("round-2 hardening", () => {
     expect(result.reason).toBe("invalid_signature");
   });
 
+  test("malformed input fails closed instead of throwing (codex round-7: high)", async () => {
+    // Tokens deserialized from network/disk bypass the TypeScript type
+    // system. Without explicit shape validation, dereferencing a missing
+    // proof.kind would throw, and any upstream "deny on throw" policy
+    // could fail open. Every malformed shape must yield a deny result.
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: randomBytes(32) },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const cases: Array<unknown> = [
+      null,
+      undefined,
+      "string",
+      42,
+      {}, // empty object
+      { id: "x" }, // missing everything else
+      { id: "x", issuerId: "a", delegateeId: "b", scope: {}, proof: { kind: "hmac-sha256" } }, // missing scope.permissions/sessionId
+      {
+        id: "x",
+        issuerId: "a",
+        delegateeId: "b",
+        scope: { permissions: { allow: ["*"] }, sessionId: "s" },
+        // missing proof entirely
+      },
+      {
+        id: "x",
+        issuerId: "a",
+        delegateeId: "b",
+        scope: { permissions: { allow: ["*"] }, sessionId: "s" },
+        proof: null,
+      },
+      {
+        id: "x",
+        issuerId: "a",
+        delegateeId: "b",
+        scope: { permissions: { allow: ["*"] }, sessionId: "s" },
+        proof: {}, // proof without kind
+      },
+    ];
+    for (const malformed of cases) {
+      // biome-ignore lint/suspicious/noExplicitAny: malformed input by design
+      const result = await verifier.verify(malformed as any, ctx());
+      expect(result.ok).toBe(false);
+    }
+  });
+
   test("tokenStore.get returning a different-id token rejected (codex round-6: high)", async () => {
     // A stale or buggy tokenStore could return a valid but unrelated
     // token for an unknown parentId lookup. Without binding parent.id
