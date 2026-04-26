@@ -1,6 +1,6 @@
 import { createAgentResolver } from "@koi/agent-runtime";
-import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
-import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
+import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit-sink-ndjson";
+import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
 import { type Checkpoint, createCheckpoint } from "@koi/checkpoint";
 import type {
   ApprovalHandler,
@@ -917,26 +917,36 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
   if (isAuditSink(sinkInput)) {
     sink = sinkInput;
   } else if (sinkInput.kind === "ndjson") {
-    const built = createNdjsonAuditSink({
+    const ndjsonConfig = {
       filePath: sinkInput.filePath,
       ...(sinkInput.flushIntervalMs !== undefined
         ? { flushIntervalMs: sinkInput.flushIntervalMs }
         : {}),
       ...(sinkInput.rotation !== undefined ? { rotation: sinkInput.rotation } : {}),
-    });
+    };
+    const ndjsonValidation = validateNdjsonAuditSinkConfig(ndjsonConfig);
+    if (!ndjsonValidation.ok) {
+      throw new Error(`Invalid NDJSON audit sink config: ${ndjsonValidation.error.message}`);
+    }
+    const built = createNdjsonAuditSink(ndjsonConfig);
     sink = built;
     ownedSinkClose = async () => {
       await built.close();
     };
   } else if (sinkInput.kind === "sqlite") {
-    const built = createSqliteAuditSink({
+    const sqliteConfig = {
       dbPath: sinkInput.dbPath,
       ...(sinkInput.flushIntervalMs !== undefined
         ? { flushIntervalMs: sinkInput.flushIntervalMs }
         : {}),
       ...(sinkInput.maxBufferSize !== undefined ? { maxBufferSize: sinkInput.maxBufferSize } : {}),
       ...(sinkInput.retention !== undefined ? { retention: sinkInput.retention } : {}),
-    });
+    };
+    const sqliteValidation = validateSqliteAuditSinkConfig(sqliteConfig);
+    if (!sqliteValidation.ok) {
+      throw new Error(`Invalid SQLite audit sink config: ${sqliteValidation.error.message}`);
+    }
+    const built = createSqliteAuditSink(sqliteConfig);
     sink = built;
     ownedSinkClose = async () => {
       built.close();

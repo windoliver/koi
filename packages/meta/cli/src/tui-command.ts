@@ -2145,17 +2145,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // KOI_AUDIT_NDJSON_MAX_BYTES=<n> enables size-based NDJSON log rotation.
     // KOI_AUDIT_NDJSON_DAILY=1 enables daily UTC rotation.
     ...(() => {
-      const maxBytes =
-        process.env.KOI_AUDIT_NDJSON_MAX_BYTES !== undefined
-          ? Number(process.env.KOI_AUDIT_NDJSON_MAX_BYTES)
-          : undefined;
+      const rawBytes = process.env.KOI_AUDIT_NDJSON_MAX_BYTES;
+      const maxBytes = rawBytes !== undefined ? Number(rawBytes) : undefined;
+      if (
+        rawBytes !== undefined &&
+        (maxBytes === undefined || !Number.isFinite(maxBytes) || maxBytes <= 0)
+      ) {
+        console.warn(
+          `[koi] KOI_AUDIT_NDJSON_MAX_BYTES="${rawBytes}" is not a positive number — NDJSON size rotation disabled`,
+        );
+      }
       const daily = process.env.KOI_AUDIT_NDJSON_DAILY === "1";
-      if ((maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes > 0) || daily) {
+      const validMaxBytes = maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes > 0;
+      if (validMaxBytes || daily) {
         return {
           auditNdjsonRotation: {
-            ...(maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes > 0
-              ? { maxSizeBytes: maxBytes }
-              : {}),
+            ...(validMaxBytes ? { maxSizeBytes: maxBytes } : {}),
             ...(daily ? { daily: true as const } : {}),
           },
         };
@@ -2164,10 +2169,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     })(),
     // KOI_AUDIT_SQLITE_RETENTION_DAYS=<n> enables age-based SQLite audit pruning.
     ...(() => {
-      const days =
-        process.env.KOI_AUDIT_SQLITE_RETENTION_DAYS !== undefined
-          ? Number(process.env.KOI_AUDIT_SQLITE_RETENTION_DAYS)
-          : undefined;
+      const rawDays = process.env.KOI_AUDIT_SQLITE_RETENTION_DAYS;
+      const days = rawDays !== undefined ? Number(rawDays) : undefined;
+      if (rawDays !== undefined && (days === undefined || !Number.isFinite(days) || days <= 0)) {
+        console.warn(
+          `[koi] KOI_AUDIT_SQLITE_RETENTION_DAYS="${rawDays}" is not a positive number — SQLite retention disabled`,
+        );
+      }
       if (days !== undefined && Number.isFinite(days) && days > 0) {
         return { auditSqliteRetention: { maxAgeDays: days } };
       }
