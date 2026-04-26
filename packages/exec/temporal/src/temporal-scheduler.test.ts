@@ -1054,7 +1054,7 @@ describe("persist durability — mutation APIs propagate write failures", () => 
   });
 
   test("submit throws when persistence write fails", async () => {
-    const { mkdirSync, writeFileSync, chmodSync, rmdirSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync, chmodSync, rmSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
@@ -1067,12 +1067,12 @@ describe("persist durability — mutation APIs propagate write failures", () => 
       /durability write failed/,
     );
     chmodSync(dir, 0o755);
-    rmdirSync(dir, { recursive: true });
+    rmSync(dir, { recursive: true });
     await scheduler[Symbol.asyncDispose]();
   });
 
   test("schedule throws when persistence write fails", async () => {
-    const { mkdirSync, writeFileSync, chmodSync, rmdirSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync, chmodSync, rmSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
@@ -1084,7 +1084,7 @@ describe("persist durability — mutation APIs propagate write failures", () => 
       /durability write failed/,
     );
     chmodSync(dir, 0o755);
-    rmdirSync(dir, { recursive: true });
+    rmSync(dir, { recursive: true });
     await scheduler[Symbol.asyncDispose]();
   });
 });
@@ -1095,7 +1095,7 @@ describe("dispatch durability — post-signal persist failure emits task:failed 
     // allows us to trigger post-signal persist failure selectively via a signal mock that
     // removes the dbPath between signal and persist.
     // We simulate the failure by using a dbPath in a directory we delete after lock acquisition.
-    const { mkdirSync, writeFileSync, rmdirSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
@@ -1113,7 +1113,7 @@ describe("dispatch durability — post-signal persist failure emits task:failed 
     const signalMock = mock(async () => {
       // Allow pre-commit persist to have already succeeded; now destroy the dir so the
       // post-signal persist write fails with ENOENT on the .tmp file.
-      rmdirSync(dir, { recursive: true });
+      rmSync(dir, { recursive: true });
     });
     const client = makeMockClient({ signal: signalMock });
     const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
@@ -1147,7 +1147,7 @@ describe("unschedule / pause / resume — durability failures propagate", () => 
   });
 
   test("unschedule throws (not returns false) when remote delete succeeds but persist fails", async () => {
-    const { mkdirSync, writeFileSync, chmodSync, rmdirSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync, chmodSync, rmSync } = await import("node:fs");
     const client = makeMockClient();
     // Set up a writable dir, create a schedule, then make dir read-only before unschedule.
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
@@ -1162,7 +1162,7 @@ describe("unschedule / pause / resume — durability failures propagate", () => 
     chmodSync(dir, 0o555);
     await expect(scheduler2.unschedule(scheduleId)).rejects.toThrow(/durability write failed/);
     chmodSync(dir, 0o755);
-    rmdirSync(dir, { recursive: true });
+    rmSync(dir, { recursive: true });
     await scheduler2[Symbol.asyncDispose]();
   });
 
@@ -1312,7 +1312,7 @@ describe("pause / resume — compensation on persist failure", () => {
     lockDir: () => void;
     cleanup: () => void;
   }> {
-    const { mkdirSync, writeFileSync, chmodSync, rmdirSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync, chmodSync, rmSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
@@ -1325,7 +1325,7 @@ describe("pause / resume — compensation on persist failure", () => {
       lockDir: () => chmodSync(dir, 0o555),
       cleanup: () => {
         chmodSync(dir, 0o755);
-        rmdirSync(dir, { recursive: true });
+        rmSync(dir, { recursive: true });
       },
     };
   }
@@ -1444,7 +1444,7 @@ describe("two-phase pre-commit", () => {
   });
 
   test("spawn pre-commit persist failure aborts before workflow.start", async () => {
-    const { mkdirSync, writeFileSync, chmodSync, rmdirSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync, chmodSync, rmSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
@@ -1472,7 +1472,7 @@ describe("two-phase pre-commit", () => {
       expect(client.workflow.start).not.toHaveBeenCalled();
     } finally {
       chmodSync(dir, 0o755);
-      rmdirSync(dir, { recursive: true });
+      rmSync(dir, { recursive: true });
       await scheduler[Symbol.asyncDispose]();
     }
   });
@@ -1727,7 +1727,7 @@ describe("idempotencyKey — cancel-then-retry spawn records completion", () => 
 
 describe("dispatch deliveredDispatchIds — prevents duplicate signal after restart", () => {
   test("restart with deliveredDispatchIds marks task completed, not failed", async () => {
-    const { mkdirSync, writeFileSync, readFileSync, rmdirSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync, readFileSync, rmSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
@@ -1780,14 +1780,14 @@ describe("dispatch deliveredDispatchIds — prevents duplicate signal after rest
     // Second submit with same key must be a no-op (task is completed — not retried)
     await s2.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "dedup-key" });
     expect(client.workflow.signal).toHaveBeenCalledTimes(1); // only the first one from s1
-    rmdirSync(dir, { recursive: true });
+    rmSync(dir, { recursive: true });
     await s2[Symbol.asyncDispose]();
   });
 });
 
 describe("startup reconciliation — persisted so second restart does not duplicate history", () => {
   test("history is not duplicated when the same pending dispatch snapshot is loaded twice", async () => {
-    const { mkdirSync, writeFileSync, rmdirSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
@@ -1836,7 +1836,7 @@ describe("startup reconciliation — persisted so second restart does not duplic
     expect(hist2).toHaveLength(1);
     expect(hist2[0]?.status).toBe("dead_letter");
     await s2[Symbol.asyncDispose]();
-    rmdirSync(dir, { recursive: true });
+    rmSync(dir, { recursive: true });
   });
 });
 
@@ -1867,7 +1867,7 @@ describe("maxStopRetries — preserved through submit and schedule payloads", ()
 
 describe("schedule() — create error path retains pending marker on failed delete", () => {
   test("pendingScheduleIds NOT cleared when create fails and delete also fails", async () => {
-    const { readFileSync, writeFileSync, mkdirSync, rmdirSync } = await import("node:fs");
+    const { readFileSync, writeFileSync, mkdirSync, rmSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
@@ -1914,12 +1914,12 @@ describe("schedule() — create error path retains pending marker on failed dele
     };
     // Delete also failed → pending schedule (with metadata) must remain for restart reconciliation
     expect(state.pendingSchedules?.length).toBe(1);
-    rmdirSync(dir, { recursive: true });
+    rmSync(dir, { recursive: true });
     await scheduler[Symbol.asyncDispose]();
   });
 
   test("pendingScheduleIds IS cleared when create fails and delete succeeds", async () => {
-    const { readFileSync, writeFileSync, mkdirSync, rmdirSync } = await import("node:fs");
+    const { readFileSync, writeFileSync, mkdirSync, rmSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
@@ -1962,7 +1962,7 @@ describe("schedule() — create error path retains pending marker on failed dele
     const state = JSON.parse(readFileSync(dbPath, "utf-8")) as { pendingSchedules?: unknown[] };
     // Delete succeeded → pending schedule cleared from disk
     expect(state.pendingSchedules?.length).toBe(0);
-    rmdirSync(dir, { recursive: true });
+    rmSync(dir, { recursive: true });
     await scheduler[Symbol.asyncDispose]();
   });
 });
@@ -2152,7 +2152,7 @@ describe("schedule() — idempotent on create failure", () => {
 
 describe("lock — orphaned temp file cleanup", () => {
   test("temp lock files older than 1 hour are removed on next startup", async () => {
-    const { mkdirSync, rmdirSync, writeFileSync, utimesSync, existsSync } = await import("node:fs");
+    const { mkdirSync, rmSync, writeFileSync, utimesSync, existsSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
@@ -2167,11 +2167,11 @@ describe("lock — orphaned temp file cleanup", () => {
     const scheduler = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
     await scheduler[Symbol.asyncDispose]();
     expect(existsSync(orphanPath)).toBe(false);
-    rmdirSync(dir, { recursive: true });
+    rmSync(dir, { recursive: true });
   });
 
   test("temp lock files younger than 1 hour are NOT removed on startup", async () => {
-    const { mkdirSync, rmdirSync, writeFileSync, existsSync } = await import("node:fs");
+    const { mkdirSync, rmSync, writeFileSync, existsSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
@@ -2183,7 +2183,7 @@ describe("lock — orphaned temp file cleanup", () => {
     const scheduler = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
     await scheduler[Symbol.asyncDispose]();
     expect(existsSync(freshPath)).toBe(true);
-    rmdirSync(dir, { recursive: true });
+    rmSync(dir, { recursive: true });
   });
 });
 
@@ -2192,7 +2192,7 @@ describe("lock — hard-link fallback (EEXIST on openSync fallback)", () => {
     // On macOS tmpfs, linkSync succeeds normally. To exercise the openSync("wx") fallback
     // code path indirectly: pre-write a lock file owned by a live PID, then verify the
     // scheduler correctly detects and rejects a live owner rather than clobbering the lock.
-    const { mkdirSync, rmdirSync, writeFileSync } = await import("node:fs");
+    const { mkdirSync, rmSync, writeFileSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
@@ -2202,7 +2202,7 @@ describe("lock — hard-link fallback (EEXIST on openSync fallback)", () => {
     // A foreign session token means stale regardless of PID match — scheduler must succeed.
     const scheduler = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
     await scheduler[Symbol.asyncDispose]();
-    rmdirSync(dir, { recursive: true });
+    rmSync(dir, { recursive: true });
   });
 });
 
@@ -2212,7 +2212,7 @@ describe("lock — ENOSPC reclamation", () => {
     // fails (simulated here by a stale lock with a dead PID), the stale lock is removed and
     // a retry succeeds. This test uses real filesystem ops — no disk-full simulation needed
     // because the stale-lock unlink itself is the recovery mechanism under test.
-    const { mkdirSync, rmdirSync, writeFileSync } = await import("node:fs");
+    const { mkdirSync, rmSync, writeFileSync } = await import("node:fs");
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
@@ -2223,6 +2223,6 @@ describe("lock — ENOSPC reclamation", () => {
     const tasks = await scheduler.query({});
     expect(tasks).toEqual([]);
     await scheduler[Symbol.asyncDispose]();
-    rmdirSync(dir, { recursive: true });
+    rmSync(dir, { recursive: true });
   });
 });
