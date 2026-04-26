@@ -310,6 +310,14 @@ export function createLongRunningHarness(
     // drain, so the default no-op resolving is sufficient proof. Hosts
     // with background work MUST provide quiesceEngine; failing to do
     // so is a host bug we cannot detect.
+    //
+    // Design rationale: this mirrors claude-code's AbortController
+    // hierarchy pattern (StreamingToolExecutor.ts), which propagates
+    // abort to children and trusts the signal alone — there is no
+    // host-supplied drain proof in that model. Tightening this to
+    // "host-callback-or-deadlock" would strand any host without
+    // background work whenever a middleware bookkeeping bug leaves
+    // inTurn=true. See review-loop persistent finding #3.
     const fullyTimedOut = now() - start >= deadlineMs;
     if (fullyTimedOut && !turnCleared && outcomeBox.value === "ok") return true;
     return false;
@@ -668,10 +676,56 @@ export function createLongRunningHarness(
     if (priorSessionId !== undefined) {
       await persistSessionStatus(toSessionId(priorSessionId), "done");
     }
-    // Snapshot is durable: flip the new session row from `idle` to
-    // `running` so recovery treats it as a live worker. Best-effort:
-    // failure is annotated into failureReason via persistSessionStatus.
-    await persistSessionStatus(sid, "running");
+    // Snapshot is durable. Flip the new session row from `idle` to
+    // `running` so recovery treats it as a live worker per the L0
+    // contract (status="running" identifies crash candidates;
+    // session.ts:20-28). This is part of the success contract — NOT
+    // best-effort. If the flip fails after retry, the activation has
+    // produced an active head whose backing session is still `idle`,
+    // which would let recovery skip a real interrupted run on a later
+    // crash. Roll forward to `failed` so the head and session row
+    // agree on a non-live state.
+    //
+    // Note: a SIGKILL/process-crash between putSnapshot(active) and
+    // this status flip leaves an active head with an idle session
+    // row. That window is intrinsic to non-2PC stores and recovery
+    // callers should reconcile by treating active heads as crash
+    // candidates regardless of session status; see session.ts:251.
+    let runningFlipped = false;
+    for (let attempt = 0; attempt < 2 && !runningFlipped; attempt++) {
+      try {
+        const r = await cfg.sessionPersistence.setSessionStatus(sid, "running");
+        if (r.ok) runningFlipped = true;
+      } catch {
+        /* retry once */
+      }
+    }
+    if (!runningFlipped) {
+      // Roll forward: publish a failed snapshot so the durable head is
+      // non-active, mark the session row done, and surface an error.
+      const failReason = "activation failed: session status flip to running did not succeed";
+      const failedSnap = buildSnapshot("failed", failReason);
+      let failedPut = await putSnapshot(failedSnap);
+      if (!failedPut.ok) {
+        // Conflict-retry path matches publishTerminal.
+        const headRes = await loadHead();
+        if (headRes.ok && headRes.value) state.lastNodeId = headRes.value.nodeId;
+        failedPut = await putSnapshot(buildSnapshot("failed", failReason));
+      }
+      revokeLease();
+      try {
+        await cfg.sessionPersistence.setSessionStatus(sid, "done");
+      } catch {
+        /* best-effort */
+      }
+      state.phase = "failed";
+      state.failureReason = failReason;
+      restorePreStart();
+      return {
+        ok: false,
+        error: err("EXTERNAL", failReason, true),
+      };
+    }
     state.phase = "active";
     state.turnCount = 0;
 
@@ -794,6 +848,16 @@ export function createLongRunningHarness(
       // capture happens AFTER quiesce so it reflects the fully-drained
       // engine; resuming from a pre-abort capture would replay any
       // work that was in flight at abort time.
+      //
+      // Design rationale: v1 long-running had no abort/quiesce — pause
+      // was strictly post-turn (archive/v1/packages/sched/long-running
+      // /src/harness.ts:469-484). v2 supports soft checkpoints during
+      // turns and abort-mid-turn pause, which forces this two-phase
+      // capture. We deliberately do NOT fall back to the pre-abort
+      // capture if post-quiesce fails: that would resume from a state
+      // older than the snapshot delta accounts for. On post-quiesce
+      // capture failure we roll forward to `failed` instead. See
+      // review-loop persistent finding #1.
       const preflight = await captureEngineState();
       if (preflight.kind === "error") {
         state.terminating = false;
