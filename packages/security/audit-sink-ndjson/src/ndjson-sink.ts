@@ -28,10 +28,13 @@ function defaultTodayUtc(): string {
 let rotationCounter = 0;
 
 function rotationTimestamp(): string {
-  // Counter suffix guarantees uniqueness when two rotations occur within the same ms
+  // UUID suffix guarantees global uniqueness across process restarts and clock skew,
+  // preventing overwrite of an existing archive when the clock repeats a prior millisecond.
+  // The counter provides additional tiebreaking for lexicographic sort within a single run.
   const ts = new Date().toISOString().replace(/:/g, "-").replace(/\./g, "-");
   rotationCounter += 1;
-  return `${ts}-${String(rotationCounter).padStart(4, "0")}`;
+  const uuid = crypto.randomUUID().slice(0, 8);
+  return `${ts}-${String(rotationCounter).padStart(4, "0")}-${uuid}`;
 }
 
 async function readEntriesFromFile(filePath: string): Promise<readonly AuditEntry[]> {
@@ -93,29 +96,15 @@ async function readArchiveEntries(archiveDir: string): Promise<readonly AuditEnt
     throw e;
   }
 
-  // Sort by the last entry's audit timestamp (ms), not by filename. Filenames are derived from
-  // wall-clock time which can move backward (NTP, restore, skew), producing misleading sort
-  // order. Entry timestamps are set by the audit middleware and reflect actual event order.
-  // Files with no parseable last entry sort to the front (treat as empty / unknown age).
-  const withTimestamps = await Promise.all(
-    files.map(async (file) => {
-      const meta = await readLastEntryMeta(join(archiveDir, file));
-      return { file, timestampMs: meta?.timestampMs ?? 0 };
-    }),
-  );
-  // Primary: last entry timestamp (ms). Tiebreak: filename (includes monotonic counter).
-  withTimestamps.sort((a, b) =>
-    a.timestampMs !== b.timestampMs
-      ? a.timestampMs - b.timestampMs
-      : a.file < b.file
-        ? -1
-        : a.file > b.file
-          ? 1
-          : 0,
-  );
+  // Sort by filename. Each archive name is `${isoTimestamp}-${counter}-${uuid}.ndjson`.
+  // The ISO prefix provides chronological ordering within a run; the UUID suffix makes
+  // names globally unique (immune to clock-reset overwrites across restarts).
+  // Entry-timestamp sorting is equally vulnerable to clock skew and adds extra I/O,
+  // so filename lexicographic order is the best available stable proxy.
+  const sorted = [...files].sort();
 
   const results: AuditEntry[] = [];
-  for (const { file } of withTimestamps) {
+  for (const file of sorted) {
     const entries = await readEntriesFromFile(join(archiveDir, file));
     results.push(...entries);
   }
