@@ -1,11 +1,9 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { ToolDescriptor, TurnContext } from "@koi/core";
 import { runId, sessionId, toolCallId, turnId } from "@koi/core";
 import type {
   KoiMiddleware,
   ModelChunk,
-  ModelHandler,
-  ModelRequest,
   ModelResponse,
   ModelStreamHandler,
 } from "@koi/core/middleware";
@@ -32,12 +30,39 @@ function modelResponse(content: string, extra?: Partial<ModelResponse>): ModelRe
   return { content, model: "test", ...extra };
 }
 
-function getWrap(
-  mw: KoiMiddleware,
-): (ctx: TurnContext, req: ModelRequest, next: ModelHandler) => Promise<ModelResponse> {
-  const wrap = mw.wrapModelCall;
-  if (!wrap) throw new Error("wrapModelCall missing");
-  return wrap;
+function getStream(mw: KoiMiddleware): NonNullable<KoiMiddleware["wrapModelStream"]> {
+  const w = mw.wrapModelStream;
+  if (!w) throw new Error("wrapModelStream missing");
+  return w;
+}
+
+async function collect(it: AsyncIterable<ModelChunk>): Promise<readonly ModelChunk[]> {
+  const out: ModelChunk[] = [];
+  for await (const c of it) out.push(c);
+  return out;
+}
+
+function streamFromText(text: string): ModelStreamHandler {
+  return async function* () {
+    yield { kind: "text_delta", delta: text };
+    yield { kind: "done", response: modelResponse(text) };
+  };
+}
+
+function getToolCallChunks(
+  chunks: readonly ModelChunk[],
+): readonly Extract<
+  ModelChunk,
+  { readonly kind: "tool_call_start" | "tool_call_delta" | "tool_call_end" }
+>[] {
+  return chunks.filter(
+    (
+      c,
+    ): c is Extract<
+      ModelChunk,
+      { readonly kind: "tool_call_start" | "tool_call_delta" | "tool_call_end" }
+    > => c.kind === "tool_call_start" || c.kind === "tool_call_delta" || c.kind === "tool_call_end",
+  );
 }
 
 describe("createToolRecoveryMiddleware — defaults & metadata", () => {
@@ -55,90 +80,108 @@ describe("createToolRecoveryMiddleware — defaults & metadata", () => {
     expect(cap?.description).toContain("hermes");
   });
 
+  test("default patterns omit json-fence to avoid promoting example JSON", () => {
+    const mw = createToolRecoveryMiddleware();
+    const cap = mw.describeCapabilities(turnCtx());
+    expect(cap?.description).not.toContain("json-fence");
+  });
+
+  test("does not expose a wrapModelCall hook (streaming-only)", () => {
+    const mw = createToolRecoveryMiddleware();
+    expect(mw.wrapModelCall).toBeUndefined();
+  });
+
   test("throws KoiRuntimeError when config is invalid", () => {
     expect(() => createToolRecoveryMiddleware({ patterns: ["nope"] })).toThrow(KoiRuntimeError);
   });
 });
 
 describe("createToolRecoveryMiddleware — pass-through paths", () => {
-  test("passes request through when request.tools is undefined", async () => {
+  test("forwards stream untouched when request.tools is undefined", async () => {
     const mw = createToolRecoveryMiddleware();
     const text = '<tool_call>{"name":"foo","arguments":{}}</tool_call>';
-    const next = mock<ModelHandler>(async () => modelResponse(text));
-    const out = await getWrap(mw)(turnCtx(), { messages: [] }, next);
-    expect(out.content).toBe(text);
-    expect(out.metadata?.toolCalls).toBeUndefined();
+    const chunks = await collect(getStream(mw)(turnCtx(), { messages: [] }, streamFromText(text)));
+    expect(chunks.length).toBe(2);
+    expect(chunks[0]).toEqual({ kind: "text_delta", delta: text });
   });
 
-  test("passes through when response already has metadata.toolCalls", async () => {
+  test("forwards stream untouched when no pattern matches", async () => {
     const mw = createToolRecoveryMiddleware();
     const tools = [tool("foo")];
-    const next = mock<ModelHandler>(async () =>
-      modelResponse('<tool_call>{"name":"foo","arguments":{}}</tool_call>', {
-        metadata: { toolCalls: [{ toolName: "foo", callId: "x", input: {} }] },
-      }),
+    const chunks = await collect(
+      getStream(mw)(turnCtx(), { messages: [], tools }, streamFromText("plain text response")),
     );
-    const out = await getWrap(mw)(turnCtx(), { messages: [], tools }, next);
-    // Original toolCalls preserved unchanged.
-    const calls = out.metadata?.toolCalls;
-    expect(Array.isArray(calls) ? calls.length : 0).toBe(1);
-  });
-
-  test("returns response unchanged when no pattern matches", async () => {
-    const mw = createToolRecoveryMiddleware();
-    const tools = [tool("foo")];
-    const next = mock<ModelHandler>(async () => modelResponse("plain text response"));
-    const out = await getWrap(mw)(turnCtx(), { messages: [], tools }, next);
-    expect(out.content).toBe("plain text response");
-    expect(out.metadata?.toolCalls).toBeUndefined();
+    expect(getToolCallChunks(chunks).length).toBe(0);
+    const done = chunks.find((c): c is Extract<ModelChunk, { kind: "done" }> => c.kind === "done");
+    expect(done?.response.content).toBe("plain text response");
   });
 });
 
 describe("createToolRecoveryMiddleware — recovery behavior", () => {
-  test("hermes tag is converted into metadata.toolCalls and stripped from content", async () => {
+  test("hermes tag is converted into synthesized tool_call_* chunks and stripped from text", async () => {
     const mw = createToolRecoveryMiddleware();
     const tools = [tool("get_weather")];
     const text =
       "I'll check the weather. " +
       '<tool_call>{"name":"get_weather","arguments":{"city":"Tokyo"}}</tool_call>';
-    const next = mock<ModelHandler>(async () => modelResponse(text));
-    const out = await getWrap(mw)(turnCtx(), { messages: [], tools }, next);
+    const chunks = await collect(
+      getStream(mw)(turnCtx(), { messages: [], tools }, streamFromText(text)),
+    );
 
-    expect(out.content).toBe("I'll check the weather.");
-    const calls = out.metadata?.toolCalls as ReadonlyArray<{
-      readonly toolName: string;
-      readonly callId: string;
-      readonly input: { readonly city: string };
-    }>;
-    expect(calls.length).toBe(1);
-    expect(calls[0]?.toolName).toBe("get_weather");
-    expect(calls[0]?.input.city).toBe("Tokyo");
-    expect(calls[0]?.callId).toMatch(/^recovery-.+-0$/);
+    const toolChunks = getToolCallChunks(chunks);
+    expect(toolChunks.length).toBe(3);
+    expect(toolChunks[0]?.kind).toBe("tool_call_start");
+    expect(toolChunks[1]?.kind).toBe("tool_call_delta");
+    expect(toolChunks[2]?.kind).toBe("tool_call_end");
+
+    const start = toolChunks[0] as Extract<ModelChunk, { readonly kind: "tool_call_start" }>;
+    expect(start.toolName).toBe("get_weather");
+    expect(start.callId).toMatch(/^recovery-.+-0$/);
+
+    const delta = toolChunks[1] as Extract<ModelChunk, { readonly kind: "tool_call_delta" }>;
+    const args = JSON.parse(delta.delta) as { readonly city: string };
+    expect(args.city).toBe("Tokyo");
+
+    const text_chunks = chunks.filter(
+      (c): c is Extract<ModelChunk, { kind: "text_delta" }> => c.kind === "text_delta",
+    );
+    expect(text_chunks.length).toBe(1);
+    expect(text_chunks[0]?.delta).toBe("I'll check the weather.");
+
+    const done = chunks[chunks.length - 1] as Extract<ModelChunk, { kind: "done" }>;
+    expect(done.response.content).toBe("I'll check the weather.");
   });
 
-  test("multiple tool calls in one response yield deterministic indexed callIds", async () => {
+  test("multiple tool calls produce one start/delta/end triplet each", async () => {
     const mw = createToolRecoveryMiddleware();
     const tools = [tool("a"), tool("b")];
     const text =
       '<tool_call>{"name":"a","arguments":{}}</tool_call>' +
       '<tool_call>{"name":"b","arguments":{}}</tool_call>';
-    const next = mock<ModelHandler>(async () => modelResponse(text));
-    const out = await getWrap(mw)(turnCtx(), { messages: [], tools }, next);
-    const calls = out.metadata?.toolCalls as ReadonlyArray<{ readonly callId: string }>;
-    expect(calls.map((c) => c.callId)).toEqual([
-      expect.stringMatching(/-0$/) as unknown as string,
-      expect.stringMatching(/-1$/) as unknown as string,
-    ]);
+    const chunks = await collect(
+      getStream(mw)(turnCtx(), { messages: [], tools }, streamFromText(text)),
+    );
+    const toolChunks = getToolCallChunks(chunks);
+    expect(toolChunks.length).toBe(6);
+    const starts = toolChunks.filter((c) => c.kind === "tool_call_start");
+    expect(
+      starts.map((s) => (s as Extract<ModelChunk, { kind: "tool_call_start" }>).toolName),
+    ).toEqual(["a", "b"]);
   });
 
-  test("malformed pattern body falls back to next pattern (then to passthrough)", async () => {
+  test("malformed pattern body falls back to passthrough", async () => {
     const mw = createToolRecoveryMiddleware({ patterns: ["hermes"] });
     const tools = [tool("foo")];
-    const next = mock<ModelHandler>(async () => modelResponse("<tool_call>not json</tool_call>"));
-    const out = await getWrap(mw)(turnCtx(), { messages: [], tools }, next);
-    // Hermes returns undefined on malformed body — response passes through.
-    expect(out.metadata?.toolCalls).toBeUndefined();
-    expect(out.content).toBe("<tool_call>not json</tool_call>");
+    const chunks = await collect(
+      getStream(mw)(
+        turnCtx(),
+        { messages: [], tools },
+        streamFromText("<tool_call>not json</tool_call>"),
+      ),
+    );
+    expect(getToolCallChunks(chunks).length).toBe(0);
+    const done = chunks[chunks.length - 1] as Extract<ModelChunk, { kind: "done" }>;
+    expect(done.response.content).toBe("<tool_call>not json</tool_call>");
   });
 
   test("max-attempts limit caps recovered calls", async () => {
@@ -148,11 +191,11 @@ describe("createToolRecoveryMiddleware — recovery behavior", () => {
       '<tool_call>{"name":"a","arguments":{}}</tool_call>' +
       '<tool_call>{"name":"b","arguments":{}}</tool_call>' +
       '<tool_call>{"name":"c","arguments":{}}</tool_call>';
-    const next = mock<ModelHandler>(async () => modelResponse(text));
-    const out = await getWrap(mw)(turnCtx(), { messages: [], tools }, next);
-    const calls = out.metadata?.toolCalls as ReadonlyArray<{ readonly toolName: string }>;
-    expect(calls.length).toBe(2);
-    expect(calls.map((c) => c.toolName)).toEqual(["a", "b"]);
+    const chunks = await collect(
+      getStream(mw)(turnCtx(), { messages: [], tools }, streamFromText(text)),
+    );
+    const starts = getToolCallChunks(chunks).filter((c) => c.kind === "tool_call_start");
+    expect(starts.length).toBe(2);
   });
 
   test("custom pattern registered via config is honored", async () => {
@@ -170,28 +213,18 @@ describe("createToolRecoveryMiddleware — recovery behavior", () => {
     };
     const mw = createToolRecoveryMiddleware({ patterns: [reactPattern] });
     const tools = [tool("search")];
-    const text = 'thinking...\nAction: search\nAction Input: {"q":"koi"}';
-    const next = mock<ModelHandler>(async () => modelResponse(text));
-    const out = await getWrap(mw)(turnCtx(), { messages: [], tools }, next);
-    const calls = out.metadata?.toolCalls as ReadonlyArray<{
-      readonly toolName: string;
-      readonly input: { readonly q: string };
-    }>;
-    expect(calls[0]?.toolName).toBe("search");
-    expect(calls[0]?.input.q).toBe("koi");
-  });
-
-  test("downstream middleware (simulated by next response inspection) sees structured calls", async () => {
-    // Compose two middleware: recovery wraps a downstream that inspects the
-    // request → next call. We assert that the rewritten response is what
-    // any subsequent middleware would observe coming back from `next`.
-    const recovery = createToolRecoveryMiddleware();
-    const tools = [tool("foo")];
-    const text = '<tool_call>{"name":"foo","arguments":{"k":1}}</tool_call>';
-    const next = mock<ModelHandler>(async () => modelResponse(text));
-    const downstreamResponse = await getWrap(recovery)(turnCtx(), { messages: [], tools }, next);
-    const observed = downstreamResponse.metadata?.toolCalls;
-    expect(observed).toBeDefined();
+    const chunks = await collect(
+      getStream(mw)(
+        turnCtx(),
+        { messages: [], tools },
+        streamFromText('thinking...\nAction: search\nAction Input: {"q":"koi"}'),
+      ),
+    );
+    const start = getToolCallChunks(chunks).find((c) => c.kind === "tool_call_start") as Extract<
+      ModelChunk,
+      { kind: "tool_call_start" }
+    >;
+    expect(start.toolName).toBe("search");
   });
 
   test("rejects tool calls whose name is not in the request allowlist", async () => {
@@ -201,77 +234,44 @@ describe("createToolRecoveryMiddleware — recovery behavior", () => {
     const text =
       '<tool_call>{"name":"good","arguments":{}}</tool_call>' +
       '<tool_call>{"name":"bad","arguments":{}}</tool_call>';
-    const next = mock<ModelHandler>(async () => modelResponse(text));
-    const out = await getWrap(mw)(turnCtx(), { messages: [], tools }, next);
-    const calls = out.metadata?.toolCalls as ReadonlyArray<{ readonly toolName: string }>;
-    expect(calls.length).toBe(1);
-    expect(calls[0]?.toolName).toBe("good");
-    expect(events.some((e) => e.kind === "rejected" && e.toolName === "bad")).toBe(true);
-  });
-
-  test("preserves existing response.metadata fields when injecting toolCalls", async () => {
-    const mw = createToolRecoveryMiddleware();
-    const tools = [tool("foo")];
-    const next = mock<ModelHandler>(async () =>
-      modelResponse('<tool_call>{"name":"foo","arguments":{}}</tool_call>', {
-        metadata: { existing: "preserved" },
-      }),
+    const chunks = await collect(
+      getStream(mw)(turnCtx(), { messages: [], tools }, streamFromText(text)),
     );
-    const out = await getWrap(mw)(turnCtx(), { messages: [], tools }, next);
-    expect(out.metadata?.existing).toBe("preserved");
-    expect(out.metadata?.toolCalls).toBeDefined();
+    const starts = getToolCallChunks(chunks).filter((c) => c.kind === "tool_call_start");
+    expect(starts.length).toBe(1);
+    expect((starts[0] as Extract<ModelChunk, { kind: "tool_call_start" }>).toolName).toBe("good");
+    expect(events.some((e) => e.kind === "rejected" && e.toolName === "bad")).toBe(true);
   });
 });
 
-describe("createToolRecoveryMiddleware — streaming (wrapModelStream)", () => {
-  function getStream(mw: KoiMiddleware): NonNullable<KoiMiddleware["wrapModelStream"]> {
-    const w = mw.wrapModelStream;
-    if (!w) throw new Error("wrapModelStream missing");
-    return w;
-  }
-
-  async function collect(it: AsyncIterable<ModelChunk>): Promise<readonly ModelChunk[]> {
-    const out: ModelChunk[] = [];
-    for await (const c of it) out.push(c);
-    return out;
-  }
-
-  test("recovers tool calls from streamed text deltas on the done chunk", async () => {
+describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
+  test("does not leak raw markup as text_delta — original raw text never reaches consumers", async () => {
     const mw = createToolRecoveryMiddleware();
     const tools = [tool("foo")];
-    const text = '<tool_call>{"name":"foo","arguments":{"k":1}}</tool_call>';
-
     const next: ModelStreamHandler = async function* () {
-      yield { kind: "text_delta", delta: text };
-      yield { kind: "done", response: modelResponse(text) };
+      yield { kind: "text_delta", delta: "thinking..." };
+      yield { kind: "text_delta", delta: ' <tool_call>{"name":"foo","arguments":{}}' };
+      yield { kind: "text_delta", delta: "</tool_call> done." };
+      yield {
+        kind: "done",
+        response: modelResponse(
+          'thinking... <tool_call>{"name":"foo","arguments":{}}</tool_call> done.',
+        ),
+      };
     };
-
     const chunks = await collect(getStream(mw)(turnCtx(), { messages: [], tools }, next));
-    const done = chunks.find((c): c is Extract<ModelChunk, { kind: "done" }> => c.kind === "done");
-    expect(done).toBeDefined();
-    const calls = done?.response.metadata?.toolCalls as
-      | ReadonlyArray<{ readonly toolName: string }>
-      | undefined;
-    expect(calls?.length).toBe(1);
-    expect(calls?.[0]?.toolName).toBe("foo");
+    const textChunks = chunks.filter(
+      (c): c is Extract<ModelChunk, { kind: "text_delta" }> => c.kind === "text_delta",
+    );
+    for (const t of textChunks) {
+      expect(t.delta).not.toContain("<tool_call>");
+      expect(t.delta).not.toContain("</tool_call>");
+    }
   });
 
-  test("passes stream through unchanged when no tools are available", async () => {
-    const mw = createToolRecoveryMiddleware();
-    const next: ModelStreamHandler = async function* () {
-      yield { kind: "text_delta", delta: "hello" };
-      yield { kind: "done", response: modelResponse("hello") };
-    };
-    const chunks = await collect(getStream(mw)(turnCtx(), { messages: [] }, next));
-    expect(chunks.length).toBe(2);
-    const done = chunks[1] as Extract<ModelChunk, { kind: "done" }>;
-    expect(done.response.metadata?.toolCalls).toBeUndefined();
-  });
-
-  test("skips recovery when adapter emits a native tool_call_start", async () => {
+  test("native tool_call_start triggers bypass — buffered text + raw markup forwarded as-is", async () => {
     const mw = createToolRecoveryMiddleware();
     const tools = [tool("foo")];
-    // Simulate an adapter that already emits structured tool calls.
     const cid = toolCallId("native-1");
     const next: ModelStreamHandler = async function* () {
       yield { kind: "text_delta", delta: '<tool_call>{"name":"foo","arguments":{}}</tool_call>' };
@@ -280,7 +280,26 @@ describe("createToolRecoveryMiddleware — streaming (wrapModelStream)", () => {
       yield { kind: "done", response: modelResponse("") };
     };
     const chunks = await collect(getStream(mw)(turnCtx(), { messages: [], tools }, next));
-    const done = chunks.find((c): c is Extract<ModelChunk, { kind: "done" }> => c.kind === "done");
-    expect(done?.response.metadata?.toolCalls).toBeUndefined();
+    // Bypass means: buffered text_delta is replayed unchanged, then the
+    // native chunks pass through. No synthesized recovery chunks added.
+    const starts = getToolCallChunks(chunks).filter((c) => c.kind === "tool_call_start");
+    expect(starts.length).toBe(1);
+    const start = starts[0] as Extract<ModelChunk, { kind: "tool_call_start" }>;
+    expect(start.callId).toBe(cid);
+  });
+
+  test("thinking_delta and usage chunks are preserved across the buffer", async () => {
+    const mw = createToolRecoveryMiddleware();
+    const tools = [tool("foo")];
+    const next: ModelStreamHandler = async function* () {
+      yield { kind: "thinking_delta", delta: "let me check..." };
+      yield { kind: "text_delta", delta: '<tool_call>{"name":"foo","arguments":{}}</tool_call>' };
+      yield { kind: "usage", inputTokens: 10, outputTokens: 5 };
+      yield { kind: "done", response: modelResponse("") };
+    };
+    const chunks = await collect(getStream(mw)(turnCtx(), { messages: [], tools }, next));
+    expect(chunks.some((c) => c.kind === "thinking_delta")).toBe(true);
+    expect(chunks.some((c) => c.kind === "usage")).toBe(true);
+    expect(getToolCallChunks(chunks).filter((c) => c.kind === "tool_call_start").length).toBe(1);
   });
 });

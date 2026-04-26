@@ -1,24 +1,29 @@
 /**
  * Tool-recovery middleware factory — recovers structured tool calls from text
- * patterns in model responses (Hermes, Llama 3.1, JSON fence, custom).
+ * patterns in model responses (Hermes, Llama 3.1, optional JSON fence, custom).
  *
- * Phase: `resolve` (the default tier). The middleware does NOT mutate the
- * outgoing request — it inspects the `ModelResponse` returned by `next()` and
- * rewrites `response.content` + `response.metadata.toolCalls` so downstream
- * middleware (sanitize / PII / audit) sees clean structured data.
+ * Phase: `resolve` (the default tier). Priority 180: outer onion layer.
  *
- * Priority 180: low number = outer onion layer. Recovery wraps from outside
- * so its rewrite is visible to every middleware that runs after it (higher
- * priority numbers). Both `wrapModelCall` and `wrapModelStream` are
- * implemented — the engine prefers the streaming path whenever the adapter
- * exposes one, so streaming recovery is required for OSS models to work.
+ * The middleware operates on the streaming path (`wrapModelStream`). The
+ * engine's `consume-stream` reads tool calls from streamed `tool_call_start`
+ * / `_delta` / `_end` chunks (NOT from `done.response.metadata.toolCalls`)
+ * — so recovery synthesizes those structured chunks itself. To prevent raw
+ * `<tool_call>...</tool_call>` markup from leaking into transcripts and UI,
+ * `text_delta` chunks are buffered until the `done` chunk; only the cleaned
+ * remainder is forwarded.
+ *
+ * Non-streaming `wrapModelCall` is intentionally NOT implemented: the engine
+ * only consumes recovered calls from the streaming path. Adapters that lack
+ * `modelStream` should be wrapped by the engine's stream-fallback so this
+ * middleware still runs against the synthesized stream.
  */
 
+import type { ToolCallId } from "@koi/core";
+import { toolCallId } from "@koi/core";
 import type {
   CapabilityFragment,
   KoiMiddleware,
   ModelChunk,
-  ModelHandler,
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
@@ -33,15 +38,48 @@ import {
 } from "./config.js";
 import { recoverToolCalls } from "./parse.js";
 import { resolvePatterns } from "./patterns/registry.js";
-import type { ParsedToolCall, ToolCallPattern } from "./types.js";
+import type { ParsedToolCall, RecoveryEvent, ToolCallPattern } from "./types.js";
 
 /** Priority slot — outer onion layer; runs before sanitize/PII/audit. */
 const TOOL_RECOVERY_PRIORITY = 180;
 
 interface RecoveredCall {
   readonly toolName: string;
-  readonly callId: string;
+  readonly callId: ToolCallId;
   readonly input: ParsedToolCall["arguments"];
+}
+
+interface RecoveryRun {
+  readonly cleanedText: string;
+  readonly calls: readonly RecoveredCall[];
+}
+
+function runRecovery(
+  ctx: TurnContext,
+  bufferedText: string,
+  tools: readonly { readonly name: string }[],
+  patterns: readonly ToolCallPattern[],
+  maxCalls: number,
+  onEvent: ((event: RecoveryEvent) => void) | undefined,
+): RecoveryRun | undefined {
+  const allowed = new Set<string>(tools.map((t) => t.name));
+  const result = recoverToolCalls(bufferedText, patterns, allowed, maxCalls, onEvent);
+  if (result === undefined) return undefined;
+
+  const calls: readonly RecoveredCall[] = result.toolCalls.map((call, index) => ({
+    toolName: call.toolName,
+    callId: toolCallId(`recovery-${ctx.turnId}-${String(index)}`),
+    input: call.arguments,
+  }));
+  return { cleanedText: result.remainingText, calls };
+}
+
+function* synthesizeToolCallChunks(calls: readonly RecoveredCall[]): Iterable<ModelChunk> {
+  for (const call of calls) {
+    yield { kind: "tool_call_start", toolName: call.toolName, callId: call.callId };
+    yield { kind: "tool_call_delta", callId: call.callId, delta: JSON.stringify(call.input) };
+    yield { kind: "tool_call_end", callId: call.callId };
+  }
 }
 
 /**
@@ -66,74 +104,75 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     description: `Text tool-call recovery: ${patternNames}`,
   };
 
-  function rewriteResponse(
-    ctx: TurnContext,
-    request: ModelRequest,
-    response: ModelResponse,
-  ): ModelResponse {
-    // Short-circuit: native tool calls already present.
-    if (response.metadata !== undefined && response.metadata.toolCalls !== undefined) {
-      return response;
-    }
-    const tools = request.tools;
-    if (tools === undefined || tools.length === 0) return response;
-
-    const allowed = new Set<string>(tools.map((t) => t.name));
-    const result = recoverToolCalls(response.content, patterns, allowed, maxCalls, onEvent);
-    if (result === undefined) return response;
-
-    const toolCalls: readonly RecoveredCall[] = result.toolCalls.map((call, index) => ({
-      toolName: call.toolName,
-      callId: `recovery-${ctx.turnId}-${String(index)}`,
-      input: call.arguments,
-    }));
-
-    return {
-      ...response,
-      content: result.remainingText,
-      metadata: { ...response.metadata, toolCalls },
-    };
-  }
-
   async function* wrapModelStreamImpl(
     ctx: TurnContext,
     request: ModelRequest,
     next: ModelStreamHandler,
   ): AsyncIterable<ModelChunk> {
     // Cheap pre-check — skip recovery when there are no tools to recover into.
-    if (request.tools === undefined || request.tools.length === 0) {
+    const tools = request.tools;
+    if (tools === undefined || tools.length === 0) {
       yield* next(request);
       return;
     }
 
-    // let: buffer accumulates streamed text deltas for end-of-stream parsing.
-    let buffered = "";
-    // let: flips true if the adapter emits native tool calls — recovery is
-    // then unnecessary (and harmful — would double-count).
-    let nativeToolSeen = false;
+    // let: buffer of every chunk seen before `done`. Held back so recovered
+    // markup never reaches transcripts/UI.
+    let pending: ModelChunk[] = [];
+    // let: text accumulator used by the recovery parser at flush time.
+    let bufferedText = "";
+    // let: flips true if the adapter emits a native tool call — recovery is
+    // disabled and the buffered chunks are flushed unmodified.
+    let bypass = false;
 
     for await (const chunk of next(request)) {
-      if (chunk.kind === "text_delta") buffered += chunk.delta;
-      else if (chunk.kind === "tool_call_start") nativeToolSeen = true;
-
-      if (chunk.kind !== "done") {
+      if (bypass) {
         yield chunk;
         continue;
       }
 
-      // Final chunk: rewrite the embedded ModelResponse if recovery applies.
-      if (nativeToolSeen) {
+      if (chunk.kind === "tool_call_start") {
+        bypass = true;
+        for (const buf of pending) yield buf;
+        pending = [];
+        yield chunk;
+        continue;
+      }
+
+      if (chunk.kind !== "done") {
+        if (chunk.kind === "text_delta") bufferedText += chunk.delta;
+        pending.push(chunk);
+        continue;
+      }
+
+      // Done chunk: try recovery on the buffered text.
+      const recovered = runRecovery(ctx, bufferedText, tools, patterns, maxCalls, onEvent);
+
+      if (recovered === undefined) {
+        for (const buf of pending) yield buf;
         yield chunk;
         return;
       }
-      const rewritten = rewriteResponse(ctx, request, {
+
+      // Replay non-text chunks first (thinking_delta, usage), drop raw text.
+      for (const buf of pending) {
+        if (buf.kind !== "text_delta") yield buf;
+      }
+      // Emit the cleaned remainder as a single text_delta so transcripts
+      // capture the visible assistant content without the recovered markup.
+      if (recovered.cleanedText.length > 0) {
+        yield { kind: "text_delta", delta: recovered.cleanedText };
+      }
+      // Synthesize structured tool-call chunks the engine can execute.
+      yield* synthesizeToolCallChunks(recovered.calls);
+
+      // Rewrite the embedded ModelResponse so observers that DO read it see
+      // the cleaned content (transcript fallbacks, debug logs).
+      const rewrittenResponse: ModelResponse = {
         ...chunk.response,
-        // Adapters sometimes leave response.content empty for streamed text and
-        // only populate it from richContent on done — fall back to the buffer
-        // when the response itself has no usable text.
-        content: chunk.response.content.length > 0 ? chunk.response.content : buffered,
-      });
-      yield { kind: "done", response: rewritten };
+        content: recovered.cleanedText,
+      };
+      yield { kind: "done", response: rewrittenResponse };
       return;
     }
   }
@@ -143,19 +182,6 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     priority: TOOL_RECOVERY_PRIORITY,
     phase: "resolve",
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
-    async wrapModelCall(
-      ctx: TurnContext,
-      request: ModelRequest,
-      next: ModelHandler,
-    ): Promise<ModelResponse> {
-      // Cheap pre-check: skip the recovery path entirely when no tools are
-      // available — saves an allocation + Set construction on the hot path.
-      if (request.tools === undefined || request.tools.length === 0) {
-        return next(request);
-      }
-      const response = await next(request);
-      return rewriteResponse(ctx, request, response);
-    },
     wrapModelStream: wrapModelStreamImpl,
   };
 }

@@ -9,8 +9,16 @@ import type { RecoveryEvent, ToolCallPattern } from "./types.js";
 /** Default cap on tool calls extracted from a single response. */
 export const DEFAULT_MAX_TOOL_CALLS = 10;
 
-/** Default built-in pattern names (applied when `config.patterns` is omitted). */
-export const DEFAULT_PATTERN_NAMES: readonly string[] = ["hermes", "llama31", "json-fence"];
+/**
+ * Default built-in pattern names (applied when `config.patterns` is omitted).
+ *
+ * `json-fence` is intentionally NOT in the defaults: any model output that
+ * contains a fenced JSON snippet with `name`/`arguments` fields (a code
+ * example, schema fragment, or quoted payload) would otherwise be promoted
+ * to a live tool call. Callers must opt in explicitly when their model is
+ * known to use plain `json` fences as the actual tool-invocation channel.
+ */
+export const DEFAULT_PATTERN_NAMES: readonly string[] = ["hermes", "llama31"];
 
 /** Built-in pattern names accepted as strings in `config.patterns`. */
 const VALID_PATTERN_NAMES: ReadonlySet<string> = new Set<string>([

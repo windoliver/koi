@@ -54,6 +54,8 @@ describe("validateToolRecoveryConfig", () => {
 
   test("default constants line up with the spec", () => {
     expect(DEFAULT_MAX_TOOL_CALLS).toBe(10);
-    expect(DEFAULT_PATTERN_NAMES).toEqual(["hermes", "llama31", "json-fence"]);
+    // json-fence is intentionally excluded from defaults — it can promote
+    // example/quoted JSON into live tool calls. Callers must opt in.
+    expect(DEFAULT_PATTERN_NAMES).toEqual(["hermes", "llama31"]);
   });
 });
