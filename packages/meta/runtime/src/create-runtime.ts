@@ -1016,14 +1016,29 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       }
       return mw.onBeforeTurn?.(ctx);
     },
+    onSessionEnd: async (ctx) => {
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — cannot record session_end event", {
+          cause: poisonError,
+        });
+      }
+      return mw.onSessionEnd?.(ctx);
+    },
+    onPermissionDecision: async (ctx, query, decision) => {
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — cannot record permission_decision event", {
+          cause: poisonError,
+        });
+      }
+      return mw.onPermissionDecision?.(ctx, query, decision);
+    },
     wrapModelCall: async (ctx, request, next) => {
-      // Pre-call: reject before side effects if already poisoned.
+      // Pre-call: reject before entering the model if already poisoned.
       if (poisonError !== undefined) {
         throw new Error("audit sink poisoned — refusing model call", { cause: poisonError });
       }
       // Post-call: catch concurrent drain failures that arrived during execution.
-      // If poison is set here the turn already completed; throw to signal the caller
-      // that the audit record may be missing rather than silently succeeding.
+      // Model calls are idempotent (token cost only), so retrying is safe.
       const result = await (mw.wrapModelCall
         ? mw.wrapModelCall(ctx, request, next)
         : next(request));
@@ -1035,16 +1050,13 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       return result;
     },
     wrapToolCall: async (ctx, request, next) => {
+      // Pre-call only: once a tool has executed its side effects are done.
+      // A post-call throw would surface as a retryable error, causing non-idempotent
+      // tools to execute twice. The next onBeforeTurn will block future turns.
       if (poisonError !== undefined) {
         throw new Error("audit sink poisoned — refusing tool call", { cause: poisonError });
       }
-      const result = await (mw.wrapToolCall ? mw.wrapToolCall(ctx, request, next) : next(request));
-      if (poisonError !== undefined) {
-        throw new Error("audit sink write failed mid-turn — turn aborted", {
-          cause: poisonError,
-        });
-      }
-      return result;
+      return mw.wrapToolCall ? mw.wrapToolCall(ctx, request, next) : next(request);
     },
     async *wrapModelStream(
       ctx: TurnContext,

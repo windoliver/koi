@@ -2505,6 +2505,22 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
           return auditMw.onBeforeTurn?.(ctx);
         },
+        onSessionEnd: async (ctx) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record session_end event", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          return auditMw.onSessionEnd?.(ctx);
+        },
+        onPermissionDecision: async (ctx, query, decision) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record permission_decision event", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          return auditMw.onPermissionDecision?.(ctx, query, decision);
+        },
         wrapModelCall: async (ctx, request, next) => {
           if (ndjsonPoisonError !== undefined) {
             throw new Error("audit sink poisoned — refusing model call", {
@@ -2527,15 +2543,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: ndjsonPoisonError,
             });
           }
-          const result = await (auditMw.wrapToolCall
-            ? auditMw.wrapToolCall(ctx, request, next)
-            : next(request));
-          if (ndjsonPoisonError !== undefined) {
-            throw new Error("audit sink write failed mid-turn — turn aborted", {
-              cause: ndjsonPoisonError,
-            });
-          }
-          return result;
+          return auditMw.wrapToolCall ? auditMw.wrapToolCall(ctx, request, next) : next(request);
         },
         async *wrapModelStream(
           ctx: TurnContext,
@@ -2700,6 +2708,22 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
           return sqliteAuditMw.onBeforeTurn?.(ctx);
         },
+        onSessionEnd: async (ctx) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record session_end event", {
+              cause: sqlitePoisonError,
+            });
+          }
+          return sqliteAuditMw.onSessionEnd?.(ctx);
+        },
+        onPermissionDecision: async (ctx, query, decision) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record permission_decision event", {
+              cause: sqlitePoisonError,
+            });
+          }
+          return sqliteAuditMw.onPermissionDecision?.(ctx, query, decision);
+        },
         wrapModelCall: async (ctx, request, next) => {
           if (sqlitePoisonError !== undefined) {
             throw new Error("audit sink poisoned — refusing model call", {
@@ -2722,15 +2746,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: sqlitePoisonError,
             });
           }
-          const result = await (sqliteAuditMw.wrapToolCall
+          return sqliteAuditMw.wrapToolCall
             ? sqliteAuditMw.wrapToolCall(ctx, request, next)
-            : next(request));
-          if (sqlitePoisonError !== undefined) {
-            throw new Error("audit sink write failed mid-turn — turn aborted", {
-              cause: sqlitePoisonError,
-            });
-          }
-          return result;
+            : next(request);
         },
         async *wrapModelStream(
           ctx: TurnContext,
