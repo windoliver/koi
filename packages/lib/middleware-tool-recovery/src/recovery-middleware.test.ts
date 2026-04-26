@@ -1,11 +1,13 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ToolDescriptor, TurnContext } from "@koi/core";
-import { runId, sessionId, turnId } from "@koi/core";
+import { runId, sessionId, toolCallId, turnId } from "@koi/core";
 import type {
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
 } from "@koi/core/middleware";
 import { KoiRuntimeError } from "@koi/errors";
 import { createToolRecoveryMiddleware } from "./recovery-middleware.js";
@@ -218,5 +220,67 @@ describe("createToolRecoveryMiddleware — recovery behavior", () => {
     const out = await getWrap(mw)(turnCtx(), { messages: [], tools }, next);
     expect(out.metadata?.existing).toBe("preserved");
     expect(out.metadata?.toolCalls).toBeDefined();
+  });
+});
+
+describe("createToolRecoveryMiddleware — streaming (wrapModelStream)", () => {
+  function getStream(mw: KoiMiddleware): NonNullable<KoiMiddleware["wrapModelStream"]> {
+    const w = mw.wrapModelStream;
+    if (!w) throw new Error("wrapModelStream missing");
+    return w;
+  }
+
+  async function collect(it: AsyncIterable<ModelChunk>): Promise<readonly ModelChunk[]> {
+    const out: ModelChunk[] = [];
+    for await (const c of it) out.push(c);
+    return out;
+  }
+
+  test("recovers tool calls from streamed text deltas on the done chunk", async () => {
+    const mw = createToolRecoveryMiddleware();
+    const tools = [tool("foo")];
+    const text = '<tool_call>{"name":"foo","arguments":{"k":1}}</tool_call>';
+
+    const next: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: text };
+      yield { kind: "done", response: modelResponse(text) };
+    };
+
+    const chunks = await collect(getStream(mw)(turnCtx(), { messages: [], tools }, next));
+    const done = chunks.find((c): c is Extract<ModelChunk, { kind: "done" }> => c.kind === "done");
+    expect(done).toBeDefined();
+    const calls = done?.response.metadata?.toolCalls as
+      | ReadonlyArray<{ readonly toolName: string }>
+      | undefined;
+    expect(calls?.length).toBe(1);
+    expect(calls?.[0]?.toolName).toBe("foo");
+  });
+
+  test("passes stream through unchanged when no tools are available", async () => {
+    const mw = createToolRecoveryMiddleware();
+    const next: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "hello" };
+      yield { kind: "done", response: modelResponse("hello") };
+    };
+    const chunks = await collect(getStream(mw)(turnCtx(), { messages: [] }, next));
+    expect(chunks.length).toBe(2);
+    const done = chunks[1] as Extract<ModelChunk, { kind: "done" }>;
+    expect(done.response.metadata?.toolCalls).toBeUndefined();
+  });
+
+  test("skips recovery when adapter emits a native tool_call_start", async () => {
+    const mw = createToolRecoveryMiddleware();
+    const tools = [tool("foo")];
+    // Simulate an adapter that already emits structured tool calls.
+    const cid = toolCallId("native-1");
+    const next: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: '<tool_call>{"name":"foo","arguments":{}}</tool_call>' };
+      yield { kind: "tool_call_start", toolName: "foo", callId: cid };
+      yield { kind: "tool_call_end", callId: cid };
+      yield { kind: "done", response: modelResponse("") };
+    };
+    const chunks = await collect(getStream(mw)(turnCtx(), { messages: [], tools }, next));
+    const done = chunks.find((c): c is Extract<ModelChunk, { kind: "done" }> => c.kind === "done");
+    expect(done?.response.metadata?.toolCalls).toBeUndefined();
   });
 });

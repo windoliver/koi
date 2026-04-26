@@ -6,6 +6,10 @@ function msg(blocks: InboundMessage["content"]): InboundMessage {
   return { content: blocks, senderId: "user", timestamp: 0 };
 }
 
+function asMsg(senderId: string, blocks: InboundMessage["content"]): InboundMessage {
+  return { content: blocks, senderId, timestamp: 0 };
+}
+
 describe("extractLastUserText", () => {
   test("returns empty string when message list is empty", () => {
     expect(extractLastUserText([])).toBe("");
@@ -42,6 +46,23 @@ describe("extractLastUserText", () => {
   test("returns empty string when last message has no text blocks", () => {
     const messages: readonly InboundMessage[] = [
       msg([{ kind: "image", url: "https://example.com/x.png" }]),
+    ];
+    expect(extractLastUserText(messages)).toBe("");
+  });
+
+  test("walks back past assistant and tool messages to last user text", () => {
+    const messages: readonly InboundMessage[] = [
+      asMsg("user", [{ kind: "text", text: "deploy the app" }]),
+      asMsg("assistant", [{ kind: "text", text: "running ls now" }]),
+      asMsg("tool", [{ kind: "text", text: '{"files":["README.md"]}' }]),
+    ];
+    expect(extractLastUserText(messages)).toBe("deploy the app");
+  });
+
+  test("returns empty when no user message has text", () => {
+    const messages: readonly InboundMessage[] = [
+      asMsg("assistant", [{ kind: "text", text: "hello" }]),
+      asMsg("tool", [{ kind: "text", text: "result" }]),
     ];
     expect(extractLastUserText(messages)).toBe("");
   });

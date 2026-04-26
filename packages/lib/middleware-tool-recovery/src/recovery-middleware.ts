@@ -9,17 +9,19 @@
  *
  * Priority 180: low number = outer onion layer. Recovery wraps from outside
  * so its rewrite is visible to every middleware that runs after it (higher
- * priority numbers). Streaming (`wrapModelStream`) is intentionally out of
- * scope for Phase 1 — the doc spec leaves a buffer/flush state machine for
- * Phase 2.
+ * priority numbers). Both `wrapModelCall` and `wrapModelStream` are
+ * implemented — the engine prefers the streaming path whenever the adapter
+ * exposes one, so streaming recovery is required for OSS models to work.
  */
 
 import type {
   CapabilityFragment,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   TurnContext,
 } from "@koi/core/middleware";
 import { KoiRuntimeError } from "@koi/errors";
@@ -93,6 +95,49 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     };
   }
 
+  async function* wrapModelStreamImpl(
+    ctx: TurnContext,
+    request: ModelRequest,
+    next: ModelStreamHandler,
+  ): AsyncIterable<ModelChunk> {
+    // Cheap pre-check — skip recovery when there are no tools to recover into.
+    if (request.tools === undefined || request.tools.length === 0) {
+      yield* next(request);
+      return;
+    }
+
+    // let: buffer accumulates streamed text deltas for end-of-stream parsing.
+    let buffered = "";
+    // let: flips true if the adapter emits native tool calls — recovery is
+    // then unnecessary (and harmful — would double-count).
+    let nativeToolSeen = false;
+
+    for await (const chunk of next(request)) {
+      if (chunk.kind === "text_delta") buffered += chunk.delta;
+      else if (chunk.kind === "tool_call_start") nativeToolSeen = true;
+
+      if (chunk.kind !== "done") {
+        yield chunk;
+        continue;
+      }
+
+      // Final chunk: rewrite the embedded ModelResponse if recovery applies.
+      if (nativeToolSeen) {
+        yield chunk;
+        return;
+      }
+      const rewritten = rewriteResponse(ctx, request, {
+        ...chunk.response,
+        // Adapters sometimes leave response.content empty for streamed text and
+        // only populate it from richContent on done — fall back to the buffer
+        // when the response itself has no usable text.
+        content: chunk.response.content.length > 0 ? chunk.response.content : buffered,
+      });
+      yield { kind: "done", response: rewritten };
+      return;
+    }
+  }
+
   return {
     name: "koi:tool-recovery",
     priority: TOOL_RECOVERY_PRIORITY,
@@ -111,5 +156,6 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
       const response = await next(request);
       return rewriteResponse(ctx, request, response);
     },
+    wrapModelStream: wrapModelStreamImpl,
   };
 }

@@ -241,6 +241,31 @@ describe("createToolAuditMiddleware", () => {
     });
   });
 
+  describe("wrapModelStream", () => {
+    test("tracks tool availability from request.tools on the streaming path", async () => {
+      const mw = createToolAuditMiddleware(defaultConfig());
+      const wrapStream = mw.wrapModelStream;
+      if (!wrapStream) throw new Error("wrapModelStream is not defined");
+
+      await mw.onSessionStart?.(sessionCtx());
+
+      async function* emptyStream(): AsyncIterable<never> {
+        // no chunks — exercise availability tracking only
+      }
+      const it = wrapStream(turnCtx(), modelReqWithTools(["search", "read"]), () => emptyStream());
+      // Drain to honor the lazy-iterator contract.
+      for await (const _ of it) {
+        // intentionally empty
+      }
+
+      await mw.onSessionEnd?.(sessionCtx());
+
+      const snapshot = mw.getSnapshot();
+      expect(snapshot.tools.search?.sessionsAvailable).toBe(1);
+      expect(snapshot.tools.read?.sessionsAvailable).toBe(1);
+    });
+  });
+
   describe("onSessionEnd", () => {
     test("fires onAuditResult callback with signals", async () => {
       const callback = mock((_results: readonly unknown[]) => {});

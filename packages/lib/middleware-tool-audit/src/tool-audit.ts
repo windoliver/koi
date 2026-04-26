@@ -10,9 +10,11 @@
 import type { SessionId } from "@koi/core";
 import type {
   CapabilityFragment,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   SessionContext,
   ToolHandler,
   ToolRequest,
@@ -225,20 +227,31 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     }
   }
 
+  function recordAvailableTools(ctx: TurnContext, request: ModelRequest): void {
+    if (request.tools === undefined) return;
+    const state = sessionStates.get(ctx.session.sessionId);
+    if (!state) return;
+    for (const tool of request.tools) {
+      state.sessionAvailableTools.add(tool.name);
+    }
+    state.dirty = true;
+  }
+
   async function wrapModelCall(
     ctx: TurnContext,
     request: ModelRequest,
     next: ModelHandler,
   ): Promise<ModelResponse> {
-    if (request.tools !== undefined) {
-      const state = sessionStates.get(ctx.session.sessionId);
-      if (state) {
-        for (const tool of request.tools) {
-          state.sessionAvailableTools.add(tool.name);
-        }
-        state.dirty = true;
-      }
-    }
+    recordAvailableTools(ctx, request);
+    return next(request);
+  }
+
+  function wrapModelStream(
+    ctx: TurnContext,
+    request: ModelRequest,
+    next: ModelStreamHandler,
+  ): AsyncIterable<ModelChunk> {
+    recordAvailableTools(ctx, request);
     return next(request);
   }
 
@@ -279,6 +292,7 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     onSessionStart: recordOnSessionStart,
     onSessionEnd: recordOnSessionEnd,
     wrapModelCall,
+    wrapModelStream,
     wrapToolCall,
     generateReport: (): readonly ToolAuditResult[] =>
       computeLifecycleSignals(buildSnapshot(tools, totalSessions, clock), config),
