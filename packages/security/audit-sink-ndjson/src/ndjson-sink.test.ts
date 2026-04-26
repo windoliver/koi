@@ -147,7 +147,7 @@ describe("createNdjsonAuditSink — rotation", () => {
     await sink.log(makeEntry({ kind: "tool_call", sessionId: "s-cross" })); // in new file
     await sink.flush();
 
-    const entries = await sink.query("s-cross");
+    const entries = (await sink.query?.("s-cross")) ?? [];
     expect(entries).toHaveLength(3);
     expect(entries[0]?.kind).toBe("session_start");
     expect(entries[1]?.kind).toBe("model_call");
@@ -236,7 +236,7 @@ describe("createNdjsonAuditSink — rotation", () => {
     });
 
     const hash = "sha256-abc123";
-    await sink.log(makeEntry({ kind: "session_start", prev_hash: undefined }));
+    await sink.log(makeEntry({ kind: "session_start" }));
     await sink.log(makeEntry({ kind: "model_call", prev_hash: hash })); // triggers rotation
     await sink.log(makeEntry({ kind: "tool_call", prev_hash: "sha256-def456" }));
     await sink.flush();
