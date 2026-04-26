@@ -35,6 +35,16 @@ export interface WorkerCreateParams {
 export interface WorkerAndConnection {
   readonly worker: WorkerLike;
   readonly connection: NativeConnectionLike;
+  /**
+   * Optional explicit readiness promise. If provided, `createTemporalWorker` awaits it
+   * (with a 10-second timeout) before returning the handle, so callers only receive a
+   * handle once the worker has actually connected and entered its polling loop.
+   *
+   * Production factories should resolve this after the first successful task-queue poll
+   * or connection establishment. If absent, a one-macrotask heuristic is used instead,
+   * which only catches synchronous startup failures.
+   */
+  readonly readyPromise?: Promise<void> | undefined;
 }
 
 export interface WorkerHandle {
@@ -98,7 +108,7 @@ export async function createTemporalWorker(
     params: WorkerCreateParams,
   ) => Promise<WorkerAndConnection> = defaultCreateWorker,
 ): Promise<WorkerHandle> {
-  const { worker, connection } = await createWorkerFn({
+  const { worker, connection, readyPromise } = await createWorkerFn({
     serverUrl: options.config.url ?? "localhost:7233",
     taskQueue: options.config.taskQueue,
     maxCachedWorkflows: options.config.maxCachedWorkflows ?? 100,
@@ -120,19 +130,40 @@ export async function createTemporalWorker(
     },
   };
 
-  // One-macrotask startup barrier: surfaces immediate failures (bad URL, wrong namespace,
-  // native binding error) so callers receive an error rather than a dead handle.
-  // Failures after this window are runtime crashes — callers should watch run() for those.
+  // Startup readiness check: prefer an explicit readyPromise from the factory (which can
+  // resolve after the first successful poll or connection establishment) over the heuristic
+  // setTimeout(0) that only catches synchronous failures. Both paths clean up on failure.
   let startupError: unknown;
-  const earlyRun = wrappedWorker.run();
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, 0);
-    earlyRun.catch((err: unknown) => {
+  if (readyPromise !== undefined) {
+    const STARTUP_TIMEOUT_MS = 10_000;
+    const earlyRun = wrappedWorker.run();
+    await Promise.race([
+      readyPromise,
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("[temporal-worker] worker readiness timed out after 10s")),
+          STARTUP_TIMEOUT_MS,
+        ),
+      ),
+      earlyRun.then(() => {
+        throw new Error("[temporal-worker] run loop exited unexpectedly during startup");
+      }),
+    ]).catch((err: unknown) => {
       startupError = err;
-      clearTimeout(timer);
-      resolve();
     });
-  });
+  } else {
+    // Heuristic fallback: one macrotask to catch synchronous / near-synchronous startup errors
+    // (bad native bindings, missing config). This does not catch async connection failures.
+    const earlyRun = wrappedWorker.run();
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 0);
+      earlyRun.catch((err: unknown) => {
+        startupError = err;
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
   if (startupError !== undefined) {
     // Release native resources before throwing — without cleanup, repeated failed startups
     // (bad config, outage) accumulate leaked connections and exhaust file descriptors.

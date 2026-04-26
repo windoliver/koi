@@ -1180,11 +1180,20 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         // Also exclude retry-after-cancel: if the previous execution is still shutting down,
         // "already running" reflects the cancelling workflow, not a fresh one. Throwing
         // lets the caller retry after the cancel completes rather than latching onto it.
+        // "already started" strings: workflow exists and is running — safe to reattach.
+        // Transport errors (UNAVAILABLE, timeout, ECONNRESET) on an idempotent spawn: the
+        // workflow.start() RPC may have succeeded server-side but the client lost the ACK.
+        // Both cases are ambiguous for idempotent spawns — attaching getResult lets the watcher
+        // track the workflow to completion. If the workflow was never created (transport error
+        // before acceptance), getResult will fail with "not found" and the watcher records failure.
         const isAmbiguousStart =
           skipCancel &&
           !isRetryAfterCancel &&
           err instanceof Error &&
-          /already.?started|already.?running|already.?exists|workflow.*running/i.test(err.message);
+          (/already.?started|already.?running|already.?exists|workflow.*running/i.test(
+            err.message,
+          ) ||
+            isTransportError(err));
 
         if (isAmbiguousStart) {
           // Idempotent spawn: workflow.start() threw "already started" — the workflow
