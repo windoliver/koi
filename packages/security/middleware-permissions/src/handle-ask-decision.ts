@@ -200,7 +200,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
             );
           }
           // Await dispatch before next() so the approval record is durable before tool execution
-          void Promise.resolve(dispatchApprovalOutcome?.({ effect: "allow" })).catch(() => {});
+          await dispatchApprovalOutcome?.({ effect: "allow" });
           return next(request);
         }
       } catch {
@@ -234,7 +234,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
         alwaysAllowStartMs,
       );
       // Await dispatch before next() so the approval record is durable before tool execution
-      void Promise.resolve(dispatchApprovalOutcome?.({ effect: "allow" })).catch(() => {});
+      await dispatchApprovalOutcome?.({ effect: "allow" });
       return next(request);
     }
 
@@ -259,7 +259,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
       if (cacheKey !== undefined && approvalCache.has(cacheKey)) {
         emitApprovalStep(ctx, request.toolId, { kind: "allow" }, request.input, clock());
         // Await dispatch before next() so the approval record is durable before tool execution
-        void Promise.resolve(dispatchApprovalOutcome?.({ effect: "allow" })).catch(() => {});
+        await dispatchApprovalOutcome?.({ effect: "allow" });
         return next(request);
       }
     }
@@ -342,12 +342,10 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
         }
 
         if (result === undefined || result.kind === "deny") {
-          void Promise.resolve(
-            dispatchApprovalOutcome?.({
-              effect: "deny",
-              reason: `Tool "${request.toolId}" denied (coalesced approval)`,
-            }),
-          ).catch(() => {});
+          await dispatchApprovalOutcome?.({
+            effect: "deny",
+            reason: `Tool "${request.toolId}" denied (coalesced approval)`,
+          });
           throw new KoiRuntimeError({
             code: "PERMISSION",
             message: `Tool "${request.toolId}" denied (coalesced approval)`,
@@ -355,7 +353,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
           });
         }
         // Await dispatch before next() so the approval record is durable before tool execution
-        void Promise.resolve(dispatchApprovalOutcome?.({ effect: "allow" })).catch(() => {});
+        await dispatchApprovalOutcome?.({ effect: "allow" });
         if (result.kind === "modify") {
           return next({ ...request, input: result.updatedInput });
         }
@@ -474,9 +472,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
           approvalStartMs,
         );
         stepEmitted = true;
-        void Promise.resolve(
-          dispatchApprovalOutcome?.({ effect: "deny", reason: "malformed_response" }),
-        ).catch(() => {});
+        await dispatchApprovalOutcome?.({ effect: "deny", reason: "malformed_response" });
         throw new KoiRuntimeError({
           code: "PERMISSION",
           message: `Malformed approval response for "${request.toolId}" — failing closed`,
@@ -509,9 +505,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
           source: "approval",
         });
 
-        void Promise.resolve(
-          dispatchApprovalOutcome?.({ effect: "deny", reason: approvalResult.reason }),
-        ).catch(() => {});
+        await dispatchApprovalOutcome?.({ effect: "deny", reason: approvalResult.reason });
         throw new KoiRuntimeError({
           code: "PERMISSION",
           message: `Tool "${request.toolId}" denied by approval handler: ${approvalResult.reason}`,
@@ -531,7 +525,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
 
         // Await audit dispatch BEFORE mutating any grant state so that if the
         // flush fails, no reusable bypass survives without a durable audit record.
-        void Promise.resolve(dispatchApprovalOutcome?.({ effect: "allow" })).catch(() => {});
+        await dispatchApprovalOutcome?.({ effect: "allow" });
 
         let allowed = alwaysAllowedBySession.get(sid);
         if (allowed === undefined) {
@@ -576,13 +570,13 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
       // and caching would replay the original unsafe input on subsequent calls
       if (approvalResult.kind === "modify") {
         // Await dispatch before next() so the approval record is durable before tool execution
-        void Promise.resolve(dispatchApprovalOutcome?.({ effect: "allow" })).catch(() => {});
+        await dispatchApprovalOutcome?.({ effect: "allow" });
         return next({ ...request, input: approvalResult.updatedInput });
       }
 
       // Await audit dispatch BEFORE caching the approval so that if the flush fails,
       // no reusable cache entry survives without a durable audit record.
-      void Promise.resolve(dispatchApprovalOutcome?.({ effect: "allow" })).catch(() => {});
+      await dispatchApprovalOutcome?.({ effect: "allow" });
 
       // Cache allow-only approvals (never modify — see above)
       if (approvalCache !== undefined) {
