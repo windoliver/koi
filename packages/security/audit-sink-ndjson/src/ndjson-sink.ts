@@ -57,8 +57,13 @@ async function readEntriesFromFile(filePath: string): Promise<readonly AuditEntr
   }
 }
 
-/** Read the last non-empty line of a file and return the UTC date of its `timestamp` field. */
-async function readLastEntryDay(filePath: string): Promise<string | undefined> {
+/**
+ * Read the last non-empty line of a file and return its audit `timestamp` (ms) and UTC day.
+ * Returns undefined if the file is empty, missing, or the last line is not a valid audit entry.
+ */
+async function readLastEntryMeta(
+  filePath: string,
+): Promise<{ readonly timestampMs: number; readonly day: string } | undefined> {
   try {
     const content = await readFile(filePath, "utf-8");
     const lines = content.split("\n").filter((l) => l.trim().length > 0);
@@ -66,7 +71,10 @@ async function readLastEntryDay(filePath: string): Promise<string | undefined> {
     if (last === undefined) return undefined;
     const parsed = JSON.parse(last.trim()) as Record<string, unknown>;
     if (typeof parsed.timestamp === "number") {
-      return new Date(parsed.timestamp).toISOString().slice(0, 10);
+      return {
+        timestampMs: parsed.timestamp,
+        day: new Date(parsed.timestamp).toISOString().slice(0, 10),
+      };
     }
     return undefined;
   } catch {
@@ -85,9 +93,29 @@ async function readArchiveEntries(archiveDir: string): Promise<readonly AuditEnt
     throw e;
   }
 
-  const sorted = [...files].sort(); // ISO timestamps sort lexicographically = chronologically
+  // Sort by the last entry's audit timestamp (ms), not by filename. Filenames are derived from
+  // wall-clock time which can move backward (NTP, restore, skew), producing misleading sort
+  // order. Entry timestamps are set by the audit middleware and reflect actual event order.
+  // Files with no parseable last entry sort to the front (treat as empty / unknown age).
+  const withTimestamps = await Promise.all(
+    files.map(async (file) => {
+      const meta = await readLastEntryMeta(join(archiveDir, file));
+      return { file, timestampMs: meta?.timestampMs ?? 0 };
+    }),
+  );
+  // Primary: last entry timestamp (ms). Tiebreak: filename (includes monotonic counter).
+  withTimestamps.sort((a, b) =>
+    a.timestampMs !== b.timestampMs
+      ? a.timestampMs - b.timestampMs
+      : a.file < b.file
+        ? -1
+        : a.file > b.file
+          ? 1
+          : 0,
+  );
+
   const results: AuditEntry[] = [];
-  for (const file of sorted) {
+  for (const { file } of withTimestamps) {
     const entries = await readEntriesFromFile(join(archiveDir, file));
     results.push(...entries);
   }
@@ -118,9 +146,9 @@ export function createNdjsonAuditSink(
     .then(async (s) => {
       bytesWritten = s.size;
       if (config.rotation?.daily === true && s.size > 0) {
-        const lastDay = await readLastEntryDay(config.filePath);
-        if (lastDay !== undefined) {
-          currentDay = lastDay;
+        const meta = await readLastEntryMeta(config.filePath);
+        if (meta !== undefined) {
+          currentDay = meta.day;
         }
       }
     })

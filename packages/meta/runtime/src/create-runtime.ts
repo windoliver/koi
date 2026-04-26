@@ -922,6 +922,7 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       ...(sinkInput.flushIntervalMs !== undefined
         ? { flushIntervalMs: sinkInput.flushIntervalMs }
         : {}),
+      ...(sinkInput.rotation !== undefined ? { rotation: sinkInput.rotation } : {}),
     });
     sink = built;
     ownedSinkClose = async () => {
@@ -934,6 +935,7 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
         ? { flushIntervalMs: sinkInput.flushIntervalMs }
         : {}),
       ...(sinkInput.maxBufferSize !== undefined ? { maxBufferSize: sinkInput.maxBufferSize } : {}),
+      ...(sinkInput.retention !== undefined ? { retention: sinkInput.retention } : {}),
     });
     sink = built;
     ownedSinkClose = async () => {

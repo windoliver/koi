@@ -4,6 +4,8 @@ import type {
   RegistryConflictWarning,
 } from "@koi/agent-runtime";
 import type { ArtifactStore } from "@koi/artifacts";
+import type { NdjsonRotationConfig } from "@koi/audit-sink-ndjson";
+import type { SqliteRetentionConfig } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
 import type {
   AgentResolver,
@@ -407,12 +409,14 @@ export interface RuntimeConfig {
               readonly kind: "ndjson";
               readonly filePath: string;
               readonly flushIntervalMs?: number | undefined;
+              readonly rotation?: NdjsonRotationConfig | undefined;
             }
           | {
               readonly kind: "sqlite";
               readonly dbPath: string;
               readonly flushIntervalMs?: number | undefined;
               readonly maxBufferSize?: number | undefined;
+              readonly retention?: SqliteRetentionConfig | undefined;
             }
           | AuditSink;
         readonly maxQueueDepth?: number | undefined;
