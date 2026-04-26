@@ -41,6 +41,7 @@ import type {
   Agent,
   AgentId,
   ApprovalHandler,
+  AuditEntry,
   AuditSink,
   ComplianceRecorder,
   ComponentProvider,
@@ -2446,13 +2447,32 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         throw new Error(`Invalid NDJSON audit sink config: ${ndjsonValidation.error.message}`);
       }
       const auditSink = createNdjsonAuditSink(ndjsonSinkConfig);
+      let ndjsonPoisonError: unknown;
+      const ndjsonOriginalLog = auditSink.log.bind(auditSink);
+      const poisonedNdjsonSink: typeof auditSink = {
+        ...auditSink,
+        log: async (entry: AuditEntry): Promise<void> => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink poisoned — previous write failure prevents further audit writes",
+              { cause: ndjsonPoisonError },
+            );
+          }
+          return ndjsonOriginalLog(entry);
+        },
+      };
       const auditMw = createAuditMiddleware({
-        sink: auditSink,
+        sink: poisonedNdjsonSink,
         signing: true,
         onError: (error: unknown) => {
-          console.error("[koi/cli] audit sink write failed:", error);
-          // Signal non-zero exit to the OS so the failure is visible in CI/monitoring.
-          process.exitCode = 1;
+          if (ndjsonPoisonError === undefined) {
+            ndjsonPoisonError = error;
+            console.error(
+              "[koi/cli] audit sink write failed — sink poisoned, no further audit writes accepted:",
+              error,
+            );
+            process.exitCode = 1;
+          }
         },
       });
       complianceRecorders.push(
@@ -2534,6 +2554,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       }
       const sqliteSinkConfig = {
         dbPath: config.auditSqlitePath,
+        agentId: precomputedAgentId,
         ...(config.auditSqliteRetention !== undefined
           ? { retention: config.auditSqliteRetention }
           : {}),
@@ -2543,13 +2564,32 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         throw new Error(`Invalid SQLite audit sink config: ${sqliteValidation.error.message}`);
       }
       const sqliteSink = createSqliteAuditSink(sqliteSinkConfig);
+      let sqlitePoisonError: unknown;
+      const sqliteOriginalLog = sqliteSink.log.bind(sqliteSink);
+      const poisonedSqliteSink: typeof sqliteSink = {
+        ...sqliteSink,
+        log: async (entry: AuditEntry): Promise<void> => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink poisoned — previous write failure prevents further audit writes",
+              { cause: sqlitePoisonError },
+            );
+          }
+          return sqliteOriginalLog(entry);
+        },
+      };
       const sqliteAuditMw = createAuditMiddleware({
-        sink: sqliteSink,
+        sink: poisonedSqliteSink,
         signing: true,
         onError: (error: unknown) => {
-          console.error("[koi/cli] audit sink write failed:", error);
-          // Signal non-zero exit to the OS so the failure is visible in CI/monitoring.
-          process.exitCode = 1;
+          if (sqlitePoisonError === undefined) {
+            sqlitePoisonError = error;
+            console.error(
+              "[koi/cli] audit sink write failed — sink poisoned, no further audit writes accepted:",
+              error,
+            );
+            process.exitCode = 1;
+          }
         },
       });
       complianceRecorders.push(

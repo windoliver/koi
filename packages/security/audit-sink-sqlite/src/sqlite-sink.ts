@@ -134,15 +134,31 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
       // are host-supplied and may be reused across agents or tenants sharing the same
       // audit DB. Scoping to the agent+session pair prevents cross-agent prune collisions
       // where one agent's expired session could match — and delete — another agent's rows.
-      db.prepare(
-        `DELETE FROM audit_log
-         WHERE (agent_id, session_id) IN (
-           SELECT agent_id, session_id FROM audit_log
-           GROUP BY agent_id, session_id
-           HAVING MAX(timestamp) < ?
-             AND SUM(CASE WHEN kind = 'session_end' THEN 1 ELSE 0 END) > 0
-         )`,
-      ).run(cutoff);
+      //
+      // When config.agentId is set, further restrict the subquery to that agent so one
+      // sink instance cannot prune sessions belonging to other agents in a shared DB.
+      if (config.agentId !== undefined) {
+        db.prepare(
+          `DELETE FROM audit_log
+           WHERE (agent_id, session_id) IN (
+             SELECT agent_id, session_id FROM audit_log
+             WHERE agent_id = ?
+             GROUP BY agent_id, session_id
+             HAVING MAX(timestamp) < ?
+               AND SUM(CASE WHEN kind = 'session_end' THEN 1 ELSE 0 END) > 0
+           )`,
+        ).run(config.agentId, cutoff);
+      } else {
+        db.prepare(
+          `DELETE FROM audit_log
+           WHERE (agent_id, session_id) IN (
+             SELECT agent_id, session_id FROM audit_log
+             GROUP BY agent_id, session_id
+             HAVING MAX(timestamp) < ?
+               AND SUM(CASE WHEN kind = 'session_end' THEN 1 ELSE 0 END) > 0
+           )`,
+        ).run(cutoff);
+      }
     } catch (e: unknown) {
       throw new Error("audit_log: failed to prune old entries", { cause: e });
     }
