@@ -53,7 +53,14 @@ export function createInitialState(modelName = ""): TuiState {
     costBreakdown: null,
     tokenRate: null,
     mcpServers: [],
-    governance: { snapshot: null, alerts: [], violations: [], rules: [], capabilities: [] },
+    governance: {
+      snapshot: null,
+      alerts: [],
+      violations: [],
+      rules: [],
+      capabilities: [],
+      securityFindings: [],
+    },
     toasts: [],
   };
 }

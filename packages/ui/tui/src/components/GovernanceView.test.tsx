@@ -25,6 +25,7 @@ const seed: GovernanceSlice = {
   violations: [],
   rules: [{ id: "r1", description: "block rm -rf", effect: "deny" }],
   capabilities: [{ label: "governance", description: "tracks 5 sensors" }],
+  securityFindings: [],
 };
 
 describe("GovernanceView", () => {
@@ -92,7 +93,7 @@ describe("GovernanceView", () => {
     const utils = await testRender(
       () => (
         <GovernanceView
-          slice={{ snapshot: null, alerts: [], violations: [], rules: [], capabilities: [] }}
+          slice={{ snapshot: null, alerts: [], violations: [], rules: [], capabilities: [], securityFindings: [] }}
         />
       ),
       OPTS,

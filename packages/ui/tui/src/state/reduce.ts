@@ -26,6 +26,7 @@ import {
   MAX_ALERTS_IN_MEMORY,
   MAX_FINISHED_SPAWNS,
   MAX_MESSAGES,
+  MAX_SECURITY_FINDINGS_IN_MEMORY,
   MAX_SESSIONS,
   MAX_TOOL_RESULT_BYTES,
   MAX_VIOLATIONS_IN_MEMORY,
@@ -1149,6 +1150,17 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         ...state,
         governance: { ...state.governance, capabilities: action.capabilities },
       };
+
+    case "add_security_finding": {
+      const next = [action.finding, ...state.governance.securityFindings].slice(
+        0,
+        MAX_SECURITY_FINDINGS_IN_MEMORY,
+      );
+      return { ...state, governance: { ...state.governance, securityFindings: next } };
+    }
+
+    case "clear_security_findings":
+      return { ...state, governance: { ...state.governance, securityFindings: [] } };
 
     case "add_toast": {
       const without = state.toasts.filter((t) => t.key !== action.toast.key);

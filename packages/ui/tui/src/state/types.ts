@@ -50,6 +50,12 @@ export const MAX_VISIBLE_TOASTS = 3;
  * the /governance view only renders the last ~10 anyway.
  */
 export const MAX_VIOLATIONS_IN_MEMORY = 50;
+/**
+ * Cap on persisted in-memory security findings. Security events are
+ * higher-frequency than violations so the cap is higher, but still bounded
+ * to avoid unbounded memory growth in long-running sessions.
+ */
+export const MAX_SECURITY_FINDINGS_IN_MEMORY = 100;
 
 // ---------------------------------------------------------------------------
 // View & Modal
@@ -440,12 +446,24 @@ export interface CapabilityFragmentLite {
   readonly description: string;
 }
 
+export interface SecurityFinding {
+  readonly id: string;
+  readonly ts: number;
+  readonly sessionId: string;
+  readonly toolName: string;
+  /** "low" | "medium" | "high" | "critical" */
+  readonly riskLevel: string;
+  readonly description: string;
+  readonly score: number;
+}
+
 export interface GovernanceSlice {
   readonly snapshot: GovernanceSnapshot | null;
   readonly alerts: readonly GovernanceAlert[];
   readonly violations: readonly GovernanceViolation[];
   readonly rules: readonly RuleDescriptor[];
   readonly capabilities: readonly CapabilityFragmentLite[];
+  readonly securityFindings: readonly SecurityFinding[];
 }
 
 export type ToastKind = "info" | "warn" | "error";
@@ -813,6 +831,8 @@ export type TuiAction =
       readonly kind: "set_governance_capabilities";
       readonly capabilities: readonly CapabilityFragmentLite[];
     }
+  | { readonly kind: "add_security_finding"; readonly finding: SecurityFinding }
+  | { readonly kind: "clear_security_findings" }
   | { readonly kind: "add_toast"; readonly toast: Toast }
   | { readonly kind: "dismiss_toast"; readonly id: string }
   | { readonly kind: "model_picker_set_query"; readonly query: string }
