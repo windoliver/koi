@@ -13096,8 +13096,10 @@ describe("Golden: @koi/temporal", () => {
     const client = {
       workflow: {
         start: mock(async () => ({ workflowId })),
-        describe: describeMock,
+        signal: mock(async () => {}),
         cancel: cancelMock,
+        getResult: mock(async () => undefined),
+        describe: describeMock,
         list: mock(async () => []),
       },
       schedule: {
@@ -13105,6 +13107,7 @@ describe("Golden: @koi/temporal", () => {
         pause: mock(async () => {}),
         unpause: mock(async () => {}),
         delete: mock(async () => {}),
+        getHandle: mock((_id: string) => ({ describe: mock(async () => ({})) })),
       },
     };
 
