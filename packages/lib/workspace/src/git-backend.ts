@@ -15,10 +15,14 @@ import { resolveWorktreeBasePath, runGit } from "@koi/git-utils";
 export interface GitWorktreeBackendConfig {
   readonly repoPath: string;
   readonly worktreeBasePath?: string;
-  // Only enable in sandboxed backends where agents cannot forge git refs.
-  // On unsandboxed backends, an agent with repo access can write ownership refs
-  // under another agent's hex, causing cross-agent workspace collisions.
-  readonly trustOwnershipRefs?: boolean;
+  // Set to true only when agents cannot forge git state (e.g., no git access inside
+  // the sandbox, or OS-level isolation). Enables: branch-only crash-survivor discovery,
+  // ownership-ref recovery for drifted/moved workspaces, and setup-attestation trust for
+  // the provider. When false (the default), basename checks mitigate cross-agent branch
+  // spoofing, and ownership refs are ignored. Note that even with isSandboxed=false, a
+  // sufficiently motivated attacker who can run git commands can spoof basename+branch;
+  // unsandboxed deployments should accept this as a known limitation of mutable git state.
+  readonly isSandboxed?: boolean;
 }
 
 interface RegistryEntry {
@@ -40,11 +44,11 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
   }
 
   // Scan git worktree list to recover an entry that survived a process restart.
-  // On untrusted backends (trustOwnershipRefs=false, the default): identity requires BOTH
-  // the branch suffix AND the path basename to match wsId — a moved worktree (renamed
-  // directory) is treated as unrecoverable, which is safer than trusting a mismatched path.
-  // On trustOwnershipRefs=true: agents cannot forge git state, so branch-only match is safe
-  // and moved worktrees are recoverable by branch name alone.
+  // When isSandboxed=false (the default): identity requires BOTH the branch suffix AND
+  // the path basename to match wsId — moved/renamed worktrees are unrecoverable, which
+  // is safer than trusting a mismatched path that an agent could have forged via branch
+  // switch + git worktree move. When isSandboxed=true: agents cannot forge git state,
+  // so branch-only match is sufficient and moved worktrees are recoverable by branch name.
   async function recoverEntry(wsId: WorkspaceId): Promise<RegistryEntry | null> {
     const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
     if (!listResult.ok) return null;
@@ -76,7 +80,7 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       // misidentification if an agent switches its branch to another wsId's managed name.
       // On trusted backends: branch match alone is sufficient; basename may differ after move.
       const pathWsId = path.split(sep).pop();
-      if (!config.trustOwnershipRefs && pathWsId !== wsId) continue;
+      if (!config.isSandboxed && pathWsId !== wsId) continue;
       return { path, branchName };
     }
     return null;
@@ -84,7 +88,7 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
 
   return {
     name: "git-worktree",
-    isSandboxed: false,
+    isSandboxed: config.isSandboxed ?? false,
 
     async create(
       agentId: AgentId,
@@ -284,9 +288,9 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         if (!wsId) continue;
         // On untrusted backends: require path basename to match wsId — closes a cross-agent
         // DoS where an agent switches its branch to another agent's hex to appear as their
-        // crash survivor. On trustOwnershipRefs=true backends, agents cannot forge git state
+        // crash survivor. On isSandboxed=true backends, agents cannot forge git state
         // so branch-name matching is safe even after git worktree move changes the basename.
-        if (!config.trustOwnershipRefs && path.split(sep).pop() !== wsId) continue;
+        if (!config.isSandboxed && path.split(sep).pop() !== wsId) continue;
 
         // Derive recency from the wsId itself (format: ws-<timestamp>-<random>), which is
         // embedded in the git-owned branch name — not from the writable marker file.
@@ -352,9 +356,9 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       }
 
       // Third pass (optional, sandboxed only): recover drifted workspaces via ownership refs.
-      // Only enabled when trustOwnershipRefs=true. On unsandboxed backends, an agent with repo
+      // Only enabled when isSandboxed=true. On unsandboxed backends, an agent with repo
       // access can forge ownership refs under another agent's hex, causing a cross-agent DoS.
-      if (!config.trustOwnershipRefs) return matches.sort((a, b) => b.createdAt - a.createdAt);
+      if (!config.isSandboxed) return matches.sort((a, b) => b.createdAt - a.createdAt);
       const ownershipResult = await runGit(
         ["for-each-ref", "--format=%(refname)", `refs/koi-ownership/${searchHex}/`],
         config.repoPath,
@@ -367,7 +371,7 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
           // different backend instances sharing the same repo from claiming each other's workspaces.
           // Primary: match by basename (wsId === directory name — covers the common case).
           // Fallback: match by managed branch — covers git worktree move (basename changed).
-          // trustOwnershipRefs=true guarantees agents cannot forge refs, making branch-match safe.
+          // isSandboxed=true guarantees agents cannot forge refs, making branch-match safe.
           let foundPath = "";
           const managedBranch = `workspace/${searchHex}/${wsId}`;
           for (const block of blocks) {

@@ -169,8 +169,8 @@ describe("createGitWorktreeBackend", () => {
     // An unsandboxed agent can switch branches, breaking git-owned branch-name discovery.
     // The provider branch `workspace/<hex>/<wsId>` stays in the repo even after drift.
     // The second pass scans git branch list and finds the workspace by matching the original
-    // branch name against the live worktree directory — no trustOwnershipRefs needed.
-    const backend = createGitWorktreeBackend({ repoPath }); // default: trustOwnershipRefs=false
+    // branch name against the live worktree directory — no isSandboxed needed.
+    const backend = createGitWorktreeBackend({ repoPath }); // default: isSandboxed=false
     const result = await backend.create(aid, defaultConfig);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -194,10 +194,10 @@ describe("createGitWorktreeBackend", () => {
     expect(await backend.exists?.(ws.id)).toBe(false);
   });
 
-  it("findByAgentId still finds workspace via ownership ref (trustOwnershipRefs=true)", async () => {
+  it("findByAgentId still finds workspace via ownership ref (isSandboxed=true)", async () => {
     // Additional coverage: ownership-ref third pass works for sandboxed backends where
-    // the git branch list second pass may not apply but trustOwnershipRefs is safe.
-    const backend = createGitWorktreeBackend({ repoPath, trustOwnershipRefs: true });
+    // the git branch list second pass may not apply but isSandboxed is safe.
+    const backend = createGitWorktreeBackend({ repoPath, isSandboxed: true });
     const result = await backend.create(aid, defaultConfig);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -401,11 +401,11 @@ describe("createGitWorktreeBackend", () => {
     ).exited;
   });
 
-  it("findByAgentId recovers moved workspace after restart when trustOwnershipRefs=true", async () => {
+  it("findByAgentId recovers moved workspace after restart when isSandboxed=true", async () => {
     // Regression: after git worktree move renames the directory AND the in-memory registry
     // is cleared (simulating a process restart), findByAgentId must still find the workspace
-    // via its managed branch name (not just by basename). This requires trustOwnershipRefs=true.
-    const backend = createGitWorktreeBackend({ repoPath, trustOwnershipRefs: true });
+    // via its managed branch name (not just by basename). This requires isSandboxed=true.
+    const backend = createGitWorktreeBackend({ repoPath, isSandboxed: true });
     const result = await backend.create(aid, defaultConfig);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -416,7 +416,7 @@ describe("createGitWorktreeBackend", () => {
 
     // Simulate restart: create a fresh backend instance (empty in-memory registry).
     // The workspace should be discoverable by branch name despite the moved directory.
-    const freshBackend = createGitWorktreeBackend({ repoPath, trustOwnershipRefs: true });
+    const freshBackend = createGitWorktreeBackend({ repoPath, isSandboxed: true });
     const survivors = await freshBackend.findByAgentId?.(aid);
     expect(survivors).toHaveLength(1);
     expect(survivors?.[0]?.id).toBe(ws.id);
@@ -428,9 +428,9 @@ describe("createGitWorktreeBackend", () => {
     expect(await freshBackend.exists?.(ws.id)).toBe(false);
   });
 
-  it("findByAgentId does NOT recover moved workspace after restart when trustOwnershipRefs=false (safe default)", async () => {
+  it("findByAgentId does NOT recover moved workspace after restart when isSandboxed=false (safe default)", async () => {
     // On untrusted backends (the default), basename check prevents recovery of moved workspaces
-    // to avoid cross-agent DoS. This is a documented limitation: use trustOwnershipRefs=true
+    // to avoid cross-agent DoS. This is a documented limitation: use isSandboxed=true
     // on trusted backends if move recovery is required.
     const backend = createGitWorktreeBackend({ repoPath });
     const result = await backend.create(aid, defaultConfig);
