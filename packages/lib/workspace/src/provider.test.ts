@@ -406,7 +406,8 @@ describe("createWorkspaceProvider", () => {
     const agent = makeAgent();
 
     // Must NOT throw — exists() confirmed workspace is gone, invariant is safe
-    const result = await provider.attach(agent);
+    const raw = await provider.attach(agent);
+    const result = isAttachResult(raw) ? raw : { components: raw, skipped: [] };
     expect(result.components.size).toBe(1);
     expect(backendWithStuckDispose.created.length).toBe(1);
     await provider.detach?.(agent);
@@ -841,8 +842,9 @@ describe("createWorkspaceProvider", () => {
     const agent = makeAgent();
 
     // Must NOT throw — exists() confirmed the workspace is gone
-    const result = await provider.attach(agent);
-    expect(result.components.size).toBe(1);
+    const raw2 = await provider.attach(agent);
+    const result2 = isAttachResult(raw2) ? raw2 : { components: raw2, skipped: [] };
+    expect(result2.components.size).toBe(1);
     expect(backendGone.created.length).toBe(1);
     await provider.detach?.(agent);
   });
@@ -936,7 +938,7 @@ describe("createWorkspaceProvider", () => {
 
     // detach — dispose returns NOT_FOUND, no exists() → treated as success (workspace gone)
     const done = makeAgent(agent.pid.id);
-    await provider.detach(done); // resolves without throwing
+    await provider.detach?.(done); // resolves without throwing
   });
 
   it("tryDispose treats NOT_FOUND as failure when unsandboxed backend has exists() returning true", async () => {
@@ -975,6 +977,6 @@ describe("createWorkspaceProvider", () => {
     // detach — dispose returns NOT_FOUND but exists() says still present → not confirmed gone
     // Provider should not throw; it logs the failure and moves on (best-effort cleanup)
     const done = makeAgent(agent.pid.id);
-    await provider.detach(done); // resolves without throwing
+    await provider.detach?.(done); // resolves without throwing
   });
 });
