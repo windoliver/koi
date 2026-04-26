@@ -181,6 +181,10 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
         // No token was set on the dormant store: there is no credential to verify a reopener,
         // so any opener gets a fresh store. This prevents cross-lifecycle state leaks via
         // recyclable or guessable groupIds when dormantTtlMs retention was enabled carelessly.
+        // Refund the byte budget before evicting — the entries are being discarded.
+        for (const entry of sharedStore.entries.values()) {
+          totalBytesUsed -= entry.sizeBytes;
+        }
         clearTimeout(sharedStore.dormantTimer);
         if (sharedStore.timer !== null) clearInterval(sharedStore.timer);
         groupRegistry.delete(groupId as string);
