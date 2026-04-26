@@ -2543,19 +2543,26 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: ndjsonPoisonError,
             });
           }
-          const result = await (auditMw.wrapToolCall
-            ? auditMw.wrapToolCall(ctx, request, next)
-            : next(request));
-          await auditMw.flush().catch(() => {
-            // Flush rejects when ndjsonPoisonError is set — fall through to check below.
-          });
+          let toolError: unknown;
+          let toolThrew = false;
+          let toolResult: Awaited<ReturnType<typeof next>> | undefined;
+          try {
+            toolResult = await (auditMw.wrapToolCall
+              ? auditMw.wrapToolCall(ctx, request, next)
+              : next(request));
+          } catch (e: unknown) {
+            toolError = e;
+            toolThrew = true;
+          }
+          await auditMw.flush().catch(() => {});
           if (ndjsonPoisonError !== undefined) {
             throw new Error(
               "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
               { cause: ndjsonPoisonError },
             );
           }
-          return result;
+          if (toolThrew) throw toolError;
+          return toolResult as Awaited<ReturnType<typeof next>>;
         },
         async *wrapModelStream(
           ctx: TurnContext,
@@ -2758,19 +2765,26 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: sqlitePoisonError,
             });
           }
-          const result = await (sqliteAuditMw.wrapToolCall
-            ? sqliteAuditMw.wrapToolCall(ctx, request, next)
-            : next(request));
-          await sqliteAuditMw.flush().catch(() => {
-            // Flush rejects when sqlitePoisonError is set — fall through to check below.
-          });
+          let toolError: unknown;
+          let toolThrew = false;
+          let toolResult: Awaited<ReturnType<typeof next>> | undefined;
+          try {
+            toolResult = await (sqliteAuditMw.wrapToolCall
+              ? sqliteAuditMw.wrapToolCall(ctx, request, next)
+              : next(request));
+          } catch (e: unknown) {
+            toolError = e;
+            toolThrew = true;
+          }
+          await sqliteAuditMw.flush().catch(() => {});
           if (sqlitePoisonError !== undefined) {
             throw new Error(
               "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
               { cause: sqlitePoisonError },
             );
           }
-          return result;
+          if (toolThrew) throw toolError;
+          return toolResult as Awaited<ReturnType<typeof next>>;
         },
         async *wrapModelStream(
           ctx: TurnContext,

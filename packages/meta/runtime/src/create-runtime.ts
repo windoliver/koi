@@ -984,7 +984,7 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
           cause: poisonError,
         });
       }
-      return sink.flush();
+      return sink.flush?.();
     },
   };
 
@@ -1063,24 +1063,31 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       if (poisonError !== undefined) {
         throw new Error("audit sink poisoned — refusing tool call", { cause: poisonError });
       }
-      const result = await (mw.wrapToolCall ? mw.wrapToolCall(ctx, request, next) : next(request));
-      // Force-flush the audit queue so the tool_call entry is durably written (or the
-      // failure is recorded in poisonError) before we return to the caller. Without this
-      // flush, the poison check below is racy: the queue drains asynchronously, so a
-      // sink failure on the tool_call entry could arrive after the post-call check.
+      // Capture tool result/error so we can force-flush regardless of outcome before
+      // re-throwing. A throw from finally would mask the original tool error in Biome.
+      let toolError: unknown;
+      let toolThrew = false;
+      let toolResult: Awaited<ReturnType<typeof next>> | undefined;
+      try {
+        toolResult = await (mw.wrapToolCall ? mw.wrapToolCall(ctx, request, next) : next(request));
+      } catch (e: unknown) {
+        toolError = e;
+        toolThrew = true;
+      }
+      // Force-flush: drain the tool_call audit entry so the poison check below is not racy.
       await mw.flush().catch(() => {
-        // flush() rejects when poisonError is set (via poisonedSink.flush). The rejection
-        // is captured — poisonError is already set — so we fall through to the check below.
+        // flush() rejects when poisonError is set — fall through to check below.
       });
-      // Post-call: surface sink failure so callers cannot treat the side effects as
-      // successfully audited. The tool has already executed — callers MUST NOT retry.
+      // Surface audit failure before returning; the tool has already executed.
+      // Callers MUST NOT retry this tool call on seeing this error.
       if (poisonError !== undefined) {
         throw new Error(
           "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
           { cause: poisonError },
         );
       }
-      return result;
+      if (toolThrew) throw toolError;
+      return toolResult as Awaited<ReturnType<typeof next>>;
     },
     async *wrapModelStream(
       ctx: TurnContext,
