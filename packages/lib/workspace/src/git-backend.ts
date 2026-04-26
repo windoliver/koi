@@ -18,10 +18,7 @@ export interface GitWorktreeBackendConfig {
   // Set to true only when agents cannot forge git state (e.g., no git access inside
   // the sandbox, or OS-level isolation). Enables: branch-only crash-survivor discovery,
   // ownership-ref recovery for drifted/moved workspaces, and setup-attestation trust for
-  // the provider. When false (the default), basename checks mitigate cross-agent branch
-  // spoofing, and ownership refs are ignored. Note that even with isSandboxed=false, a
-  // sufficiently motivated attacker who can run git commands can spoof basename+branch;
-  // unsandboxed deployments should accept this as a known limitation of mutable git state.
+  // the provider.
   readonly isSandboxed?: boolean;
 }
 
@@ -115,6 +112,241 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       return { path, branchName };
     }
     return null;
+  }
+
+  // Always exposed: crash-survivor discovery is required for cleanup-only on ALL backends
+  // (including unsandboxed) to prevent process restarts from stranding live worktrees and
+  // violating the single-workspace-per-agent invariant. Reuse is separately gated by the
+  // provider's isSetupComplete(), which returns false for unsandboxed backends so survivors
+  // are always disposed rather than reused on untrusted backends.
+  async function findByAgentId(searchAgentId: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
+    // Derive ownership from git-owned branch name and worktree path.
+    // Branch format: workspace/<hex(agentId)>/<wsId>
+    // Ownership is matched on hex encoding only — no raw-agentId fallback, which would create
+    // a collision if one agent's literal id equals another agent's hex-encoded id.
+    //
+    // On isSandboxed=false: discovered survivors are never reused — the provider's
+    // isSetupComplete() returns false for unsandboxed backends so tryReuseCrashSurvivor
+    // always disposes them. Discovery here is for cleanup-only: without it, a process restart
+    // strands live worktrees and violates the single-workspace-per-agent invariant.
+    // A hostile agent with write access to both resolvedBase and the repo could forge a
+    // basename+branch entry to trigger disposal of another agent's workspace (DoS). That risk
+    // is accepted for unsandboxed deployments; the victim always recreates fresh afterward.
+    //
+    // On isSandboxed=true: survivors can be safely reused — OS isolation prevents git-state
+    // forgery. Ownership refs (pass 3) are also trusted, enabling moved-worktree recovery.
+    //
+    // We deliberately avoid file-content fallbacks (e.g. reading .koi-workspace): on an
+    // unsandboxed backend, any such file is writable by workspace processes, enabling cross-agent
+    // disposal attacks where a tampered file causes another agent's workspace to be deleted.
+    const searchHex = Buffer.from(searchAgentId as string).toString("hex");
+
+    const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
+    if (!listResult.ok) {
+      // Fail closed: returning [] would let the provider treat discovery failure as
+      // "no survivors" and create a fresh workspace while an existing one may still be live.
+      throw new Error(
+        `Workspace survivor discovery failed for agent ${searchAgentId}: git worktree list error — ${listResult.error.message}`,
+        { cause: listResult.error },
+      );
+    }
+
+    // Collect all matching survivors — multiple can exist when a prior dispose timed out.
+    const matches: WorkspaceInfo[] = [];
+
+    const blocks = listResult.value.split(/\n\n+/);
+    for (const block of blocks) {
+      const lines = block.trim().split("\n");
+      const pathLine = lines.find((l) => l.startsWith("worktree "));
+      if (!pathLine) continue;
+      const path = pathLine.slice("worktree ".length).trim();
+      // Reject worktrees outside this backend's configured base path.
+      // Without this check, two providers sharing a repo but different base paths
+      // can claim each other's worktrees, leading to cross-instance deletion.
+      if (!path.startsWith(resolvedBase + sep)) continue;
+      const branchRef =
+        lines
+          .find((l) => l.startsWith("branch "))
+          ?.slice("branch ".length)
+          .trim() ?? "";
+      const branchName = branchRef.startsWith("refs/heads/")
+        ? branchRef.slice("refs/heads/".length)
+        : branchRef;
+      const parts = branchName.split("/");
+      if (parts.length !== 3 || parts[0] !== "workspace") continue;
+      const segment = parts[1] ?? "";
+      if (segment !== searchHex) continue;
+      const wsId = parts[2];
+      if (!wsId) continue;
+      // On untrusted backends: require path basename to match wsId — closes a cross-agent
+      // DoS where an agent switches its branch to another agent's hex to appear as their
+      // crash survivor. On isSandboxed=true backends, agents cannot forge git state
+      // so branch-name matching is safe even after git worktree move changes the basename.
+      if (!config.isSandboxed && path.split(sep).pop() !== wsId) continue;
+
+      // Derive recency from the wsId itself (format: ws-<timestamp>-<random>), which is
+      // embedded in the git-owned branch name — not from the writable marker file.
+      const tsMatch = wsId.match(/^ws-(\d+)-/);
+      const createdAt = tsMatch !== null && tsMatch[1] !== undefined ? Number(tsMatch[1]) : 0;
+      const metadata: Record<string, string> = { branchName, repoPath: config.repoPath };
+
+      const id = workspaceId(wsId);
+      // Populate registry so subsequent isHealthy() calls work without rescanning
+      if (!registry.has(id)) registry.set(id, { path, branchName, agentHex: searchHex });
+      matches.push({ id, path, createdAt, metadata });
+    }
+
+    // Second pass: recover branch-drifted workspaces via git branch list.
+    // The branch `workspace/<hex>/<wsId>` was created by the provider at create() time and
+    // stays in the repo even when the agent switches the worktree to a different branch.
+    // By scanning branches rather than current worktree heads, we find drifted survivors
+    // that the first pass missed. This uses the same branch-naming signal as pass 1, so
+    // it is no more forgeable than the primary discovery mechanism.
+    const alreadyFound = new Set(matches.map((m) => m.id as string));
+    const branchListResult = await runGit(
+      ["branch", "--list", `workspace/${searchHex}/*`, "--format=%(refname:short)"],
+      config.repoPath,
+    );
+    if (branchListResult.ok) {
+      for (const branchName of branchListResult.value.split("\n").filter(Boolean)) {
+        const parts = branchName.split("/");
+        if (parts.length !== 3) continue;
+        const wsId = parts[2] ?? "";
+        if (!wsId || alreadyFound.has(wsId)) continue;
+        // Search the actual worktree list under resolvedBase by basename — this handles
+        // the default case (wsId === directory name) and avoids a synthesized path that
+        // breaks after `git worktree move` changes the directory name.
+        // Note: if the worktree was both moved (renamed) AND drifted, the basename will
+        // no longer match wsId and recovery is not possible without ownership refs.
+        // Guard: reject any candidate whose current HEAD branch is a DIFFERENT managed
+        // workspace branch for this agent. That means pass 1 already claimed it (or will)
+        // under the correct wsId — stealing it here would map the wrong workspace.
+        let foundPath = "";
+        const managedPrefix = `workspace/${searchHex}/`;
+        for (const block of blocks) {
+          const lines = block.trim().split("\n");
+          const pathLine = lines.find((l) => l.startsWith("worktree "));
+          if (!pathLine) continue;
+          const candidate = pathLine.slice("worktree ".length).trim();
+          if (!candidate.startsWith(resolvedBase + sep)) continue;
+          if (candidate.split(sep).pop() !== wsId) continue;
+          // Check whether this worktree is currently on a different managed branch.
+          const rawRef =
+            lines
+              .find((l) => l.startsWith("branch "))
+              ?.slice("branch ".length)
+              .trim() ?? "";
+          const candidateBranch = rawRef.startsWith("refs/heads/")
+            ? rawRef.slice("refs/heads/".length)
+            : rawRef;
+          if (candidateBranch.startsWith(managedPrefix) && candidateBranch !== branchName) {
+            // Worktree belongs to a different managed workspace — leave it for pass 1.
+            break;
+          }
+          foundPath = candidate;
+          break;
+        }
+        if (!foundPath) continue; // not found under resolvedBase — worktree may have been deleted or moved
+        const id = workspaceId(wsId);
+        if (!registry.has(id)) {
+          registry.set(id, { path: foundPath, branchName, agentHex: searchHex });
+        }
+        const tsMatch = wsId.match(/^ws-(\d+)-/);
+        const createdAt = tsMatch?.[1] !== undefined ? Number(tsMatch[1]) : 0;
+        matches.push({
+          id,
+          path: foundPath,
+          createdAt,
+          metadata: { branchName, repoPath: config.repoPath },
+        });
+        alreadyFound.add(wsId);
+      }
+    }
+
+    // Third pass (optional, sandboxed only): recover drifted workspaces via ownership refs.
+    // Only enabled when isSandboxed=true. On unsandboxed backends, an agent with repo
+    // access can forge ownership refs under another agent's hex, causing a cross-agent DoS.
+    if (!config.isSandboxed) return matches.sort((a, b) => b.createdAt - a.createdAt);
+    const ownershipResult = await runGit(
+      ["for-each-ref", "--format=%(refname)", `refs/koi-ownership/${searchHex}/`],
+      config.repoPath,
+    );
+    if (ownershipResult.ok) {
+      for (const refname of ownershipResult.value.split("\n").filter(Boolean)) {
+        const wsId = refname.split("/").pop() ?? "";
+        if (!wsId || alreadyFound.has(wsId)) continue;
+        // Find this worktree in the already-fetched list — restrict to resolvedBase to prevent
+        // different backend instances sharing the same repo from claiming each other's workspaces.
+        // Primary: match by basename (wsId === directory name — covers the common case).
+        // Fallback: match by managed branch — covers git worktree move (basename changed).
+        // isSandboxed=true guarantees agents cannot forge refs, making branch-match safe.
+        let foundPath = "";
+        const managedBranch = `workspace/${searchHex}/${wsId}`;
+        for (const block of blocks) {
+          const lines = block.trim().split("\n");
+          const pathLine = lines.find((l) => l.startsWith("worktree "));
+          if (!pathLine) continue;
+          const candidate = pathLine.slice("worktree ".length).trim();
+          if (!candidate.startsWith(resolvedBase + sep)) continue;
+          if (candidate.split(sep).pop() === wsId) {
+            foundPath = candidate;
+            break;
+          }
+        }
+        if (!foundPath) {
+          // Branch-name fallback: find the worktree currently on the managed branch.
+          // This recovers moved workspaces where git worktree move changed the directory name.
+          for (const block of blocks) {
+            const lines = block.trim().split("\n");
+            const pathLine = lines.find((l) => l.startsWith("worktree "));
+            if (!pathLine) continue;
+            const candidate = pathLine.slice("worktree ".length).trim();
+            if (!candidate.startsWith(resolvedBase + sep)) continue;
+            const branchRef =
+              lines
+                .find((l) => l.startsWith("branch "))
+                ?.slice("branch ".length)
+                .trim() ?? "";
+            const bn = branchRef.startsWith("refs/heads/")
+              ? branchRef.slice("refs/heads/".length)
+              : branchRef;
+            if (bn === managedBranch) {
+              foundPath = candidate;
+              break;
+            }
+          }
+        }
+        // Verify by checking git worktree list (basePath-scoped)
+        const inList = blocks.some((block) => {
+          const lines = block.trim().split("\n");
+          const pathLine = lines.find((l) => l.startsWith("worktree "));
+          return pathLine?.slice("worktree ".length).trim() === foundPath;
+        });
+        if (!inList) continue; // worktree not present — already gone or relocated outside scope
+        const tsMatch = wsId.match(/^ws-(\d+)-/);
+        const createdAt = tsMatch !== null && tsMatch[1] !== undefined ? Number(tsMatch[1]) : 0;
+        const id = workspaceId(wsId);
+        // Store the ORIGINAL managed branch (not the drifted one) so dispose() only removes
+        // the backend-owned ephemeral branch, never a user branch the agent switched to.
+        const originalBranch = `workspace/${searchHex}/${wsId}`;
+        if (!registry.has(id)) {
+          registry.set(id, { path: foundPath, branchName: originalBranch, agentHex: searchHex });
+        }
+        matches.push({
+          id,
+          path: foundPath,
+          createdAt,
+          metadata: { branchName: originalBranch, repoPath: config.repoPath },
+        });
+      }
+    }
+
+    if (matches.length === 0) return [];
+    // Return all survivors newest-first. The caller validates each candidate in order and
+    // stops at the first healthy, setup-complete one. Older orphans are not pre-disposed here —
+    // deleting alternatives before validation could cause irreversible loss if the newest
+    // turns out incomplete; the provider disposes failed candidates as it iterates.
+    return matches.sort((a, b) => b.createdAt - a.createdAt);
   }
 
   return {
@@ -282,235 +514,7 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       return false;
     },
 
-    async findByAgentId(searchAgentId: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
-      // Derive ownership from git-owned branch name and worktree path.
-      // Branch format: workspace/<hex(agentId)>/<wsId>
-      // Ownership is matched on hex encoding only — no raw-agentId fallback, which would create
-      // a collision if one agent's literal id equals another agent's hex-encoded id.
-      //
-      // On isSandboxed=false: discovered survivors are never reused — the provider's
-      // isSetupComplete() returns false for unsandboxed backends so tryReuseCrashSurvivor
-      // always disposes them. Discovery here is for cleanup-only: without it, a process restart
-      // strands live worktrees and violates the single-workspace-per-agent invariant.
-      // A hostile agent with write access to both resolvedBase and the repo could forge a
-      // basename+branch entry to trigger disposal of another agent's workspace (DoS). That risk
-      // is accepted for unsandboxed deployments; the victim always recreates fresh afterward.
-      //
-      // On isSandboxed=true: survivors can be safely reused — OS isolation prevents git-state
-      // forgery. Ownership refs (pass 3) are also trusted, enabling moved-worktree recovery.
-      //
-      // We deliberately avoid file-content fallbacks (e.g. reading .koi-workspace): on an
-      // unsandboxed backend, any such file is writable by workspace processes, enabling cross-agent
-      // disposal attacks where a tampered file causes another agent's workspace to be deleted.
-      const searchHex = Buffer.from(searchAgentId as string).toString("hex");
-
-      const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
-      if (!listResult.ok) {
-        // Fail closed: returning [] would let the provider treat discovery failure as
-        // "no survivors" and create a fresh workspace while an existing one may still be live.
-        throw new Error(
-          `Workspace survivor discovery failed for agent ${searchAgentId}: git worktree list error — ${listResult.error.message}`,
-          { cause: listResult.error },
-        );
-      }
-
-      // Collect all matching survivors — multiple can exist when a prior dispose timed out.
-      const matches: WorkspaceInfo[] = [];
-
-      const blocks = listResult.value.split(/\n\n+/);
-      for (const block of blocks) {
-        const lines = block.trim().split("\n");
-        const pathLine = lines.find((l) => l.startsWith("worktree "));
-        if (!pathLine) continue;
-        const path = pathLine.slice("worktree ".length).trim();
-        // Reject worktrees outside this backend's configured base path.
-        // Without this check, two providers sharing a repo but different base paths
-        // can claim each other's worktrees, leading to cross-instance deletion.
-        if (!path.startsWith(resolvedBase + sep)) continue;
-        const branchRef =
-          lines
-            .find((l) => l.startsWith("branch "))
-            ?.slice("branch ".length)
-            .trim() ?? "";
-        const branchName = branchRef.startsWith("refs/heads/")
-          ? branchRef.slice("refs/heads/".length)
-          : branchRef;
-        const parts = branchName.split("/");
-        if (parts.length !== 3 || parts[0] !== "workspace") continue;
-        const segment = parts[1] ?? "";
-        if (segment !== searchHex) continue;
-        const wsId = parts[2];
-        if (!wsId) continue;
-        // On untrusted backends: require path basename to match wsId — closes a cross-agent
-        // DoS where an agent switches its branch to another agent's hex to appear as their
-        // crash survivor. On isSandboxed=true backends, agents cannot forge git state
-        // so branch-name matching is safe even after git worktree move changes the basename.
-        if (!config.isSandboxed && path.split(sep).pop() !== wsId) continue;
-
-        // Derive recency from the wsId itself (format: ws-<timestamp>-<random>), which is
-        // embedded in the git-owned branch name — not from the writable marker file.
-        const tsMatch = wsId.match(/^ws-(\d+)-/);
-        const createdAt = tsMatch !== null && tsMatch[1] !== undefined ? Number(tsMatch[1]) : 0;
-        const metadata: Record<string, string> = { branchName, repoPath: config.repoPath };
-
-        const id = workspaceId(wsId);
-        // Populate registry so subsequent isHealthy() calls work without rescanning
-        if (!registry.has(id)) registry.set(id, { path, branchName, agentHex: searchHex });
-        matches.push({ id, path, createdAt, metadata });
-      }
-
-      // Second pass: recover branch-drifted workspaces via git branch list.
-      // The branch `workspace/<hex>/<wsId>` was created by the provider at create() time and
-      // stays in the repo even when the agent switches the worktree to a different branch.
-      // By scanning branches rather than current worktree heads, we find drifted survivors
-      // that the first pass missed. This uses the same branch-naming signal as pass 1, so
-      // it is no more forgeable than the primary discovery mechanism.
-      const alreadyFound = new Set(matches.map((m) => m.id as string));
-      const branchListResult = await runGit(
-        ["branch", "--list", `workspace/${searchHex}/*`, "--format=%(refname:short)"],
-        config.repoPath,
-      );
-      if (branchListResult.ok) {
-        for (const branchName of branchListResult.value.split("\n").filter(Boolean)) {
-          const parts = branchName.split("/");
-          if (parts.length !== 3) continue;
-          const wsId = parts[2] ?? "";
-          if (!wsId || alreadyFound.has(wsId)) continue;
-          // Search the actual worktree list under resolvedBase by basename — this handles
-          // the default case (wsId === directory name) and avoids a synthesized path that
-          // breaks after `git worktree move` changes the directory name.
-          // Note: if the worktree was both moved (renamed) AND drifted, the basename will
-          // no longer match wsId and recovery is not possible without ownership refs.
-          // Guard: reject any candidate whose current HEAD branch is a DIFFERENT managed
-          // workspace branch for this agent. That means pass 1 already claimed it (or will)
-          // under the correct wsId — stealing it here would map the wrong workspace.
-          let foundPath = "";
-          const managedPrefix = `workspace/${searchHex}/`;
-          for (const block of blocks) {
-            const lines = block.trim().split("\n");
-            const pathLine = lines.find((l) => l.startsWith("worktree "));
-            if (!pathLine) continue;
-            const candidate = pathLine.slice("worktree ".length).trim();
-            if (!candidate.startsWith(resolvedBase + sep)) continue;
-            if (candidate.split(sep).pop() !== wsId) continue;
-            // Check whether this worktree is currently on a different managed branch.
-            const rawRef =
-              lines
-                .find((l) => l.startsWith("branch "))
-                ?.slice("branch ".length)
-                .trim() ?? "";
-            const candidateBranch = rawRef.startsWith("refs/heads/")
-              ? rawRef.slice("refs/heads/".length)
-              : rawRef;
-            if (candidateBranch.startsWith(managedPrefix) && candidateBranch !== branchName) {
-              // Worktree belongs to a different managed workspace — leave it for pass 1.
-              break;
-            }
-            foundPath = candidate;
-            break;
-          }
-          if (!foundPath) continue; // not found under resolvedBase — worktree may have been deleted or moved
-          const id = workspaceId(wsId);
-          if (!registry.has(id)) {
-            registry.set(id, { path: foundPath, branchName, agentHex: searchHex });
-          }
-          const tsMatch = wsId.match(/^ws-(\d+)-/);
-          const createdAt = tsMatch?.[1] !== undefined ? Number(tsMatch[1]) : 0;
-          matches.push({
-            id,
-            path: foundPath,
-            createdAt,
-            metadata: { branchName, repoPath: config.repoPath },
-          });
-          alreadyFound.add(wsId);
-        }
-      }
-
-      // Third pass (optional, sandboxed only): recover drifted workspaces via ownership refs.
-      // Only enabled when isSandboxed=true. On unsandboxed backends, an agent with repo
-      // access can forge ownership refs under another agent's hex, causing a cross-agent DoS.
-      if (!config.isSandboxed) return matches.sort((a, b) => b.createdAt - a.createdAt);
-      const ownershipResult = await runGit(
-        ["for-each-ref", "--format=%(refname)", `refs/koi-ownership/${searchHex}/`],
-        config.repoPath,
-      );
-      if (ownershipResult.ok) {
-        for (const refname of ownershipResult.value.split("\n").filter(Boolean)) {
-          const wsId = refname.split("/").pop() ?? "";
-          if (!wsId || alreadyFound.has(wsId)) continue;
-          // Find this worktree in the already-fetched list — restrict to resolvedBase to prevent
-          // different backend instances sharing the same repo from claiming each other's workspaces.
-          // Primary: match by basename (wsId === directory name — covers the common case).
-          // Fallback: match by managed branch — covers git worktree move (basename changed).
-          // isSandboxed=true guarantees agents cannot forge refs, making branch-match safe.
-          let foundPath = "";
-          const managedBranch = `workspace/${searchHex}/${wsId}`;
-          for (const block of blocks) {
-            const lines = block.trim().split("\n");
-            const pathLine = lines.find((l) => l.startsWith("worktree "));
-            if (!pathLine) continue;
-            const candidate = pathLine.slice("worktree ".length).trim();
-            if (!candidate.startsWith(resolvedBase + sep)) continue;
-            if (candidate.split(sep).pop() === wsId) {
-              foundPath = candidate;
-              break;
-            }
-          }
-          if (!foundPath) {
-            // Branch-name fallback: find the worktree currently on the managed branch.
-            // This recovers moved workspaces where git worktree move changed the directory name.
-            for (const block of blocks) {
-              const lines = block.trim().split("\n");
-              const pathLine = lines.find((l) => l.startsWith("worktree "));
-              if (!pathLine) continue;
-              const candidate = pathLine.slice("worktree ".length).trim();
-              if (!candidate.startsWith(resolvedBase + sep)) continue;
-              const branchRef =
-                lines
-                  .find((l) => l.startsWith("branch "))
-                  ?.slice("branch ".length)
-                  .trim() ?? "";
-              const bn = branchRef.startsWith("refs/heads/")
-                ? branchRef.slice("refs/heads/".length)
-                : branchRef;
-              if (bn === managedBranch) {
-                foundPath = candidate;
-                break;
-              }
-            }
-          }
-          // Verify by checking git worktree list (basePath-scoped)
-          const inList = blocks.some((block) => {
-            const lines = block.trim().split("\n");
-            const pathLine = lines.find((l) => l.startsWith("worktree "));
-            return pathLine?.slice("worktree ".length).trim() === foundPath;
-          });
-          if (!inList) continue; // worktree not present — already gone or relocated outside scope
-          const tsMatch = wsId.match(/^ws-(\d+)-/);
-          const createdAt = tsMatch !== null && tsMatch[1] !== undefined ? Number(tsMatch[1]) : 0;
-          const id = workspaceId(wsId);
-          // Store the ORIGINAL managed branch (not the drifted one) so dispose() only removes
-          // the backend-owned ephemeral branch, never a user branch the agent switched to.
-          const originalBranch = `workspace/${searchHex}/${wsId}`;
-          if (!registry.has(id)) {
-            registry.set(id, { path: foundPath, branchName: originalBranch, agentHex: searchHex });
-          }
-          matches.push({
-            id,
-            path: foundPath,
-            createdAt,
-            metadata: { branchName: originalBranch, repoPath: config.repoPath },
-          });
-        }
-      }
-
-      if (matches.length === 0) return [];
-      // Return all survivors newest-first. The caller validates each candidate in order and
-      // stops at the first healthy, setup-complete one. Older orphans are not pre-disposed here —
-      // deleting alternatives before validation could cause irreversible loss if the newest
-      // turns out incomplete; the provider disposes failed candidates as it iterates.
-      return matches.sort((a, b) => b.createdAt - a.createdAt);
-    },
+    findByAgentId,
 
     // Use a git ref as the setup-complete attestation. Note: since isSandboxed is false,
     // an agent running in the worktree can forge refs/koi-setup-ok/* via ordinary git

@@ -438,7 +438,7 @@ describe("createGitWorktreeBackend", () => {
     if (!result.ok) return;
 
     const ws = result.value;
-    const newPath = `${ws.path}-untrusted-moved`; // template literal: biome useTemplate
+    const newPath = `${ws.path}-untrusted-moved`;
     await Bun.spawn(["git", "worktree", "move", ws.path, newPath], { cwd: repoPath }).exited;
 
     // Simulate restart: fresh instance with empty registry.

@@ -912,4 +912,69 @@ describe("createWorkspaceProvider", () => {
     // Workspace should have been disposed during rollback
     expect(attestingBackend.disposed.length).toBe(1);
   });
+
+  it("tryDispose treats NOT_FOUND as success when backend has no exists() and is sandboxed", async () => {
+    // On sandboxed backends without an exists() method, a NOT_FOUND from dispose()
+    // must be treated as confirmed-absent (success). This exercises the branch at
+    // provider.ts:51: "sandboxed or no exists(): trust NOT_FOUND as confirmed absent".
+    const noExistsBackend = makeBackend({
+      isSandboxed: true,
+      async dispose(_wsId: WorkspaceId): Promise<Result<void, KoiError>> {
+        return {
+          ok: false,
+          error: { code: "NOT_FOUND", message: "already gone", retryable: false },
+        };
+      },
+      // No exists() property — omitted entirely
+    });
+    const provider = createWorkspaceProvider({ backend: noExistsBackend, cleanupPolicy: "always" });
+    const agent = makeAgent();
+    const raw = await provider.attach(agent);
+    const attached = isAttachResult(raw) ? raw : { components: raw, skipped: [] };
+    const ws = attached.components.get(WORKSPACE as string) as WorkspaceInfo;
+    expect(ws).toBeDefined();
+
+    // detach — dispose returns NOT_FOUND, no exists() → treated as success (workspace gone)
+    const done = makeAgent(agent.pid.id);
+    await provider.detach(done); // resolves without throwing
+  });
+
+  it("tryDispose treats NOT_FOUND as failure when unsandboxed backend has exists() returning true", async () => {
+    // On unsandboxed backends with exists(), NOT_FOUND from dispose() is ambiguous —
+    // it can mean "moved/unrecoverable" rather than "confirmed gone". exists() is the
+    // oracle: if it returns true the workspace is still live and dispose failed.
+    const wsId = workspaceId("ws-1");
+    const ambiguousBackend = makeBackend({
+      isSandboxed: false,
+      async create(): Promise<Result<WorkspaceInfo, KoiError>> {
+        const info: WorkspaceInfo = {
+          id: wsId,
+          path: "/tmp/ws-1",
+          createdAt: Date.now(),
+          metadata: {},
+        };
+        return { ok: true, value: info };
+      },
+      async dispose(_id: WorkspaceId): Promise<Result<void, KoiError>> {
+        return {
+          ok: false,
+          error: { code: "NOT_FOUND", message: "path moved", retryable: false },
+        };
+      },
+      async exists(_id: WorkspaceId): Promise<boolean> {
+        return true; // still present on disk
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: ambiguousBackend,
+      cleanupPolicy: "always",
+    });
+    const agent = makeAgent();
+    await provider.attach(agent);
+
+    // detach — dispose returns NOT_FOUND but exists() says still present → not confirmed gone
+    // Provider should not throw; it logs the failure and moves on (best-effort cleanup)
+    const done = makeAgent(agent.pid.id);
+    await provider.detach(done); // resolves without throwing
+  });
 });

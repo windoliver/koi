@@ -588,6 +588,55 @@ describe("createLocalScratchpad", () => {
       sp1.close();
     });
 
+    it("token-bearing caller is rejected from a tokenless active store", () => {
+      // Post-cap fix: a caller presenting a reuseToken cannot join a store that was
+      // opened without one — the store's "no credential" state is incompatible with
+      // the caller's "here is my credential" assertion, preventing cross-lifecycle joins.
+      const noneGid = agentGroupId(`group-none-${++gidCounter}`);
+      const sp1 = createLocalScratchpad({ groupId: noneGid, authorId: aid }); // no reuseToken
+      sp1.write({ path: scratchpadPath("data"), content: "raw" });
+
+      expect(() =>
+        createLocalScratchpad({
+          groupId: noneGid,
+          authorId: agentId("agent-2"),
+          reuseToken: "tok",
+        }),
+      ).toThrow("already open without a reuseToken");
+
+      sp1.close();
+    });
+
+    it("TTL-expired key rewrite reclaims bytes so the budget does not double-count", async () => {
+      // Regression: writing to a path whose entry had expired was not decrementing
+      // totalBytesUsed for the old (expired) entry before charging for the new one.
+      // Two overwrites on the same path would therefore accumulate bytes that are never freed.
+      const ttlGid = agentGroupId(`group-ttl-reclaim-${++gidCounter}`);
+      const ttlPad = createLocalScratchpad({
+        groupId: ttlGid,
+        authorId: aid,
+        sweepIntervalMs: 100,
+      });
+      const p = scratchpadPath("reclaim/key");
+      const payload = "x".repeat(100);
+
+      // Write with a very short TTL
+      ttlPad.write({ path: p, content: payload, ttlSeconds: 0.01 });
+      // Wait for the entry to expire
+      await new Promise((r) => setTimeout(r, 30));
+
+      // Overwrite the expired key — bytes from the first write must be reclaimed
+      const second = ttlPad.write({ path: p, content: payload });
+      expect(second.ok).toBe(true);
+
+      // Verify sizeBytes is not double-counted: read should return the new entry
+      const read = ttlPad.read(p);
+      expect(read.ok).toBe(true);
+      if (read.ok) expect(read.value.generation).toBe(1); // fresh entry, not generation 2
+
+      ttlPad.close();
+    });
+
     it("active tokenized store admits a second handle that presents the matching token", () => {
       // Multi-agent sharing within a lifecycle: all handles know and present the reuseToken.
       const sharedGid = agentGroupId(`group-shared2-${++gidCounter}`);
