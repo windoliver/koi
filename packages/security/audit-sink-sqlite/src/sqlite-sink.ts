@@ -12,6 +12,7 @@ import { type AuditLogRow, createInsertStmt, initAuditSchema, readAllRows } from
 
 const DEFAULT_FLUSH_INTERVAL_MS = 2000;
 const DEFAULT_MAX_BUFFER_SIZE = 100;
+const DEFAULT_PRUNE_INTERVAL_MS = 3600_000; // 1 hour
 
 function isString(v: unknown): v is string {
   return typeof v === "string";
@@ -104,6 +105,13 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
   // Mutable buffer — never exposed
   const buffer: AuditEntry[] = [];
 
+  function pruneOldEntries(): void {
+    if (!config.retention) return;
+    const cutoff = Date.now() - config.retention.maxAgeDays * 86_400_000;
+    db.prepare("DELETE FROM audit_log WHERE timestamp < ?").run(cutoff);
+    db.prepare("VACUUM").run();
+  }
+
   function serializeField(value: unknown): string | null {
     if (value === undefined || value === null) return null;
     return JSON.stringify(value);
@@ -140,6 +148,16 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
   const timer = setInterval(flushBuffer, flushIntervalMs);
   if (typeof timer === "object" && timer !== null && "unref" in timer) {
     (timer as { unref: () => void }).unref();
+  }
+
+  // Pruning setup — run immediately on creation, then on interval
+  if (config.retention) {
+    pruneOldEntries();
+    const pruneIntervalMs = config.retention.pruneIntervalMs ?? DEFAULT_PRUNE_INTERVAL_MS;
+    const pruneTimer = setInterval(pruneOldEntries, pruneIntervalMs);
+    if (typeof pruneTimer === "object" && pruneTimer !== null && "unref" in pruneTimer) {
+      (pruneTimer as { unref: () => void }).unref();
+    }
   }
 
   return {
