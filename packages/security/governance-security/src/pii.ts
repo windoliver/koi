@@ -37,7 +37,7 @@ const API_KEY_PATTERNS: readonly RegExp[] = [
   /sk-[a-zA-Z0-9]{32,}/, // OpenAI
   /AKIA[0-9A-Z]{16}/, // AWS IAM
   /gh[pso]_[a-zA-Z0-9]{36,}/, // GitHub PAT/app tokens
-  /xox[baopr]-[0-9]{8,}-[0-9]{8,}-[a-zA-Z0-9]{24,}/, // Slack tokens (workspace-bot-secret)
+  /xox[baopr]-[0-9]{8,}-(?:[0-9]{8,}-)?[a-zA-Z0-9]{24,}/, // Slack tokens (3-part or 4-part)
 ];
 
 export function createEmailDetector(): PiiDetector {
