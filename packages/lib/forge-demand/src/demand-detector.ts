@@ -1012,11 +1012,17 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
-      // Resolve teardown via the bound id so a mutated sessionId
-      // field cannot misdirect cleanup into a different tenant's
-      // bucket — that would leave the original bucket orphaned and
-      // also clear an unrelated tenant's signals. F90 regression.
-      const sid = boundIdFor(ctx);
+      // Resolve teardown via the bound id ONLY — never trust a raw
+      // `ctx.sessionId` for an unobserved context. A caller in
+      // possession of the middleware object could otherwise invoke
+      // `onSessionEnd({ sessionId: victim, ... })` with a fabricated
+      // SessionContext and revoke another tenant's scoped handles /
+      // drop their pending signals + cooldowns, bypassing the
+      // object-identity protections on forSession. F97 regression.
+      // F90: also guards against a previously-observed ctx whose
+      // sessionId was mutated post-binding.
+      const sid = observedSessions.get(ctx);
+      if (sid === undefined) return;
       sessions.delete(sid);
       // Drop the session epoch — every previously issued scoped
       // handle captured a reference to that epoch object, so they

@@ -2308,4 +2308,45 @@ describe("createForgeDemandDetector", () => {
     // check short-circuits all mutation.
     expect(signals.length).toBe(0);
   });
+
+  it("F97: onSessionEnd ignores a fabricated SessionContext targeting another session's id", async () => {
+    // Reviewer F97: onSessionEnd previously fell back to the raw
+    // `ctx.sessionId` for unobserved contexts and deleted state /
+    // bumped epoch under that id. A caller in possession of the
+    // middleware object could fabricate `{ sessionId: victim, ... }`
+    // and revoke another tenant's signals/handles. The fix requires
+    // an observed binding — unobserved contexts are a no-op.
+    const handle = createForgeDemandDetector(
+      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
+    );
+    // Establish a real session with state.
+    const victim = createMockTurnContext({
+      session: { sessionId: "victim-session" } as never,
+    });
+    try {
+      await handle.middleware.wrapToolCall?.(victim, toolReq("flaky"), async () => {
+        throw new Error("boom");
+      });
+    } catch {
+      // expected
+    }
+    const victimHandle = handle.forSession(victim.session);
+    expect(victimHandle.getActiveSignalCount()).toBe(1);
+    // Attacker fabricates a fresh SessionContext literal with the
+    // victim's sessionId and calls onSessionEnd directly.
+    const fake: { sessionId: string; agentId: string; runId: string; metadata: object } = {
+      sessionId: "victim-session",
+      agentId: "attacker",
+      runId: "fake-run",
+      metadata: {},
+    };
+    await handle.middleware.onSessionEnd?.(fake as never);
+    // Victim state must be intact — fake teardown was a no-op.
+    expect(victimHandle.getActiveSignalCount()).toBe(1);
+    const signals = victimHandle.getSignals();
+    expect(signals.length).toBe(1);
+    // And victimHandle is still LIVE (epoch unchanged).
+    victimHandle.dismiss(signals[0]?.id ?? "");
+    expect(victimHandle.getActiveSignalCount()).toBe(0);
+  });
 });
