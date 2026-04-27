@@ -215,6 +215,20 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   };
 
   const sessions = new Map<SessionId, SessionState>();
+  /**
+   * Per-sessionId generation counter, incremented on every onSessionEnd.
+   * Scoped handles capture the generation at issuance and refuse to
+   * read or dismiss against a different generation. Without this, a
+   * sessionId reused across resume/replay would let an old handle
+   * silently attach to the new session's signals — a cross-session
+   * isolation break. F88 regression. Kept separate from `sessions`
+   * because that map is cleared on session end; this counter must
+   * persist for the lifetime of the detector.
+   */
+  const sessionGenerations = new Map<SessionId, number>();
+  function currentGeneration(sid: SessionId): number {
+    return sessionGenerations.get(sid) ?? 0;
+  }
   // Object-identity authorization for forSession(). Authorizing purely
   // by sessionId would let any in-process caller fabricate a
   // `SessionContext` literal carrying another tenant's id and read or
@@ -246,13 +260,23 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     // resolution must use the id we actually authorized for. F76
     // regression.
     const sid = session.sessionId;
+    // Capture the session generation at issuance. If the session ends
+    // and a later session reuses the same id, the generation counter
+    // advances and this stale handle becomes a no-op. F88 regression.
+    const gen = currentGeneration(sid);
+    const isLive = (): boolean => currentGeneration(sid) === gen;
     const scoped: SessionScopedForgeDemandHandle = {
       getSignals: (): readonly ForgeDemandSignal[] => {
+        if (!isLive()) return [];
         const state = sessions.get(sid);
         return state === undefined ? [] : state.signals.map(cloneSignal);
       },
-      dismiss: (signalId: string): void => dismiss(sid, signalId),
+      dismiss: (signalId: string): void => {
+        if (!isLive()) return;
+        dismiss(sid, signalId);
+      },
       getActiveSignalCount: (): number => {
+        if (!isLive()) return 0;
         const state = sessions.get(sid);
         return state === undefined ? 0 : state.signals.length;
       },
@@ -954,16 +978,23 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     async onSessionEnd(ctx: SessionContext): Promise<void> {
       // Drop only this session's state — never touch other live sessions.
       sessions.delete(ctx.sessionId);
+      // Bump generation so any previously issued scoped handles are
+      // revoked: if a future session reuses this sessionId, those
+      // stale closures will not be able to read or dismiss its
+      // signals. F88 regression.
+      sessionGenerations.set(ctx.sessionId, currentGeneration(ctx.sessionId) + 1);
     },
 
-    describeCapabilities(ctx: TurnContext): CapabilityFragment | undefined {
-      const state = sessions.get(ctx.session.sessionId);
-      if (state === undefined || state.signals.length === 0) return undefined;
-      const plural = state.signals.length === 1 ? "" : "s";
-      return {
-        label: "forge-demand",
-        description: `Forge demand: ${String(state.signals.length)} capability gap${plural} detected`,
-      };
+    // The detector is a passive observer: we MUST NOT inject
+    // detector state into the model prompt via the capability banner.
+    // Surfacing signals here conditions future model calls on
+    // observed state (a non-passive behavior change), and a banner
+    // hardcoded to "capability gaps" misleads the model about the
+    // actual trigger kind. Signals are exposed ONLY through the
+    // explicit SessionScopedForgeDemandHandle and onDemand callback.
+    // F87 regression.
+    describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
+      return undefined;
     },
   };
 
@@ -1004,13 +1035,25 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // Capture the sessionId at handle-issuance and close over it.
       // See ensureObserved for the full rationale — F76 regression.
       const sid = session.sessionId;
+      // Capture the current session generation. If the session ends
+      // before this handle is consumed, the generation advances and
+      // every operation becomes a no-op — the new session that
+      // happens to reuse `sid` is not addressable through this stale
+      // handle. F88 regression.
+      const gen = currentGeneration(sid);
+      const isLive = (): boolean => currentGeneration(sid) === gen;
       return {
         getSignals: (): readonly ForgeDemandSignal[] => {
+          if (!isLive()) return [];
           const state = sessions.get(sid);
           return state === undefined ? [] : state.signals.map(cloneSignal);
         },
-        dismiss: (signalId: string): void => dismiss(sid, signalId),
+        dismiss: (signalId: string): void => {
+          if (!isLive()) return;
+          dismiss(sid, signalId);
+        },
         getActiveSignalCount: (): number => {
+          if (!isLive()) return 0;
           const state = sessions.get(sid);
           return state === undefined ? 0 : state.signals.length;
         },

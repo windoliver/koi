@@ -1976,4 +1976,62 @@ describe("createForgeDemandDetector", () => {
     );
     expect(handle.forSession(queryCtx.session).getActiveSignalCount()).toBeGreaterThan(0);
   });
+
+  it("F87: describeCapabilities returns undefined so the passive observer never alters the model prompt", async () => {
+    // Reviewer F87: surfacing detector state through the capability
+    // banner conditioned future model calls on observed signals,
+    // violating the passive-observer contract. The middleware must
+    // return undefined regardless of how many signals are pending.
+    const handle = createForgeDemandDetector(
+      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
+    );
+    try {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("flaky"), async () => {
+        throw new Error("boom");
+      });
+    } catch {
+      // expected
+    }
+    expect(handle.forSession(ctx.session).getActiveSignalCount()).toBe(1);
+    expect(handle.middleware.describeCapabilities?.(ctx)).toBeUndefined();
+  });
+
+  it("F88: a scoped handle is revoked when its session ends and cannot read a reused session", async () => {
+    // Reviewer F88: scoped handles closed only over `sessionId` string,
+    // so a sessionId reused after onSessionEnd would let an old handle
+    // silently read the new session's signals. The fix captures a
+    // generation token at issuance and refuses to operate once
+    // onSessionEnd advances the generation.
+    const handle = createForgeDemandDetector(
+      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
+    );
+    const sessionA = createMockTurnContext({ turnIndex: 1 });
+    try {
+      await handle.middleware.wrapToolCall?.(sessionA, toolReq("flaky"), async () => {
+        throw new Error("boom");
+      });
+    } catch {
+      // expected
+    }
+    const staleHandle = handle.forSession(sessionA.session);
+    expect(staleHandle.getActiveSignalCount()).toBe(1);
+    await handle.middleware.onSessionEnd?.(sessionA.session);
+    expect(staleHandle.getActiveSignalCount()).toBe(0);
+    expect(staleHandle.getSignals().length).toBe(0);
+    // A NEW session reuses the same id.
+    const sessionB = createMockTurnContext({ turnIndex: 2 });
+    expect(sessionB.session.sessionId).toBe(sessionA.session.sessionId);
+    try {
+      await handle.middleware.wrapToolCall?.(sessionB, toolReq("flaky"), async () => {
+        throw new Error("new boom");
+      });
+    } catch {
+      // expected
+    }
+    expect(staleHandle.getActiveSignalCount()).toBe(0);
+    expect(staleHandle.getSignals().length).toBe(0);
+    staleHandle.dismiss("demand-9999");
+    const freshHandle = handle.forSession(sessionB.session);
+    expect(freshHandle.getActiveSignalCount()).toBe(1);
+  });
 });
