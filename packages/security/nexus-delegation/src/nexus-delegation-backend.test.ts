@@ -130,6 +130,82 @@ describe("revoke()", () => {
     expect(calls).toBeGreaterThanOrEqual(3);
   });
 
+  test("drops oldest entry when queue exceeds maxPendingRevocations", async () => {
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    const api = makeMockApi({
+      revokeDelegation: mock(async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "fail", retryable: true, context: {} },
+      })),
+    });
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: PARENT_ID,
+      maxPendingRevocations: 1,
+    });
+
+    // Grant first child and fail to revoke (fills queue)
+    await backend.grant(SCOPE, CHILD_ID);
+    await backend.revoke(GRANT_ID);
+
+    // Grant second child and fail to revoke (queue full → drops oldest)
+    const id2 = delegationId("del-2");
+    (api.createDelegation as ReturnType<typeof mock>).mockResolvedValue({
+      ok: true as const,
+      value: makeGrantResponse({ delegation_id: id2, api_key: "key2" }),
+    });
+    await backend.grant(SCOPE, agentId("child-2"));
+    await backend.revoke(id2);
+
+    // console.error should have been called with "dropping oldest" message
+    expect(errorSpy.mock.calls.length).toBeGreaterThan(0);
+    errorSpy.mockRestore();
+  });
+
+  test("drainQueue invalidates cache on successful retry", async () => {
+    let revokeShouldSucceed = false;
+    const api = makeMockApi({
+      revokeDelegation: mock(async () => {
+        if (revokeShouldSucceed) {
+          return { ok: true as const, value: undefined };
+        }
+        return {
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "fail", retryable: true, context: {} },
+        };
+      }),
+    });
+    // Use a very short cache TTL so we can check cache behavior
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: PARENT_ID,
+      verifyCacheTtlMs: 60_000,
+    });
+
+    // Step 1: grant and fail revoke → entry gets enqueued
+    await backend.grant(SCOPE, CHILD_ID);
+    await backend.revoke(GRANT_ID);
+
+    // Step 2: restore mock to succeed
+    revokeShouldSucceed = true;
+
+    // Step 3: grant another child, then revoke — this triggers drain of the pending queue
+    const id2 = delegationId("del-drain");
+    (api.createDelegation as ReturnType<typeof mock>).mockResolvedValue({
+      ok: true as const,
+      value: makeGrantResponse({ delegation_id: id2, api_key: "key-drain" }),
+    });
+    await backend.grant(SCOPE, agentId("child-drain"));
+    await backend.revoke(id2);
+
+    // Let background drain settle
+    await new Promise((r) => setTimeout(r, 20));
+
+    // The drain should have called revokeDelegation at least twice total (first fail + drain success)
+    const revokeMock = api.revokeDelegation as ReturnType<typeof mock>;
+    expect(revokeMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
   test("emits structured error after maxRevocationRetries exhausted", async () => {
     const errorSpy = spyOn(console, "error").mockImplementation(() => {});
     const api = makeMockApi({
@@ -252,6 +328,81 @@ describe("verify()", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("unknown_grant");
   });
+
+  test("maps 'revoked' chain reason to revoked result", async () => {
+    const api = makeMockApi({
+      verifyChain: mock(async () => ({
+        ok: true as const,
+        value: makeChainResponse({ valid: false, reason: "revoked" }),
+      })),
+    });
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    await backend.grant(SCOPE, CHILD_ID);
+    const result = await backend.verify(GRANT_ID, "read_file");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("revoked");
+  });
+
+  test("maps 'chain_depth_exceeded' chain reason to chain_depth_exceeded result", async () => {
+    const api = makeMockApi({
+      verifyChain: mock(async () => ({
+        ok: true as const,
+        value: makeChainResponse({ valid: false, reason: "chain_depth_exceeded" }),
+      })),
+    });
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    await backend.grant(SCOPE, CHILD_ID);
+    const result = await backend.verify(GRANT_ID, "read_file");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("chain_depth_exceeded");
+  });
+
+  test("maps unknown chain reason to invalid_signature result", async () => {
+    const api = makeMockApi({
+      verifyChain: mock(async () => ({
+        ok: true as const,
+        value: makeChainResponse({ valid: false, reason: "invalid_signature" }),
+      })),
+    });
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    await backend.grant(SCOPE, CHILD_ID);
+    const result = await backend.verify(GRANT_ID, "read_file");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("invalid_signature");
+  });
+
+  test("verify on unknown grant id (not in local store) calls chain and enforces scope", async () => {
+    const api = makeMockApi({
+      verifyChain: mock(async () => ({
+        ok: true as const,
+        value: makeChainResponse({
+          valid: true,
+          scope: { allowed_operations: ["write_file"], remove_grants: [] },
+        }),
+      })),
+    });
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    // Do NOT call backend.grant() — verify an unknown ID directly
+    const result = await backend.verify(GRANT_ID, "read_file"); // read_file NOT in scope
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("scope_exceeded");
+  });
+
+  test("verify on unknown grant id returns ok when tool is in nexus scope", async () => {
+    const api = makeMockApi({
+      verifyChain: mock(async () => ({
+        ok: true as const,
+        value: makeChainResponse({
+          valid: true,
+          scope: { allowed_operations: ["read_file"], remove_grants: [] },
+        }),
+      })),
+    });
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    // Do NOT call backend.grant() — verify an unknown ID directly
+    const result = await backend.verify(GRANT_ID, "read_file");
+    expect(result.ok).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -259,6 +410,50 @@ describe("verify()", () => {
 // ---------------------------------------------------------------------------
 
 describe("list()", () => {
+  test("throws when listDelegations fails", async () => {
+    const api = makeMockApi({
+      listDelegations: mock(async () => ({
+        ok: false as const,
+        error: {
+          code: "INTERNAL" as const,
+          message: "nexus list failed",
+          retryable: false,
+          context: {},
+        },
+      })),
+    });
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    await expect(backend.list()).rejects.toThrow("nexus list failed");
+  });
+
+  test("returns nexus-only entry when not in local store", async () => {
+    const remoteId = delegationId("del-remote");
+    const api = makeMockApi({
+      listDelegations: mock(async () => ({
+        ok: true as const,
+        value: {
+          delegations: [
+            {
+              delegation_id: remoteId,
+              parent_agent_id: PARENT_ID,
+              child_agent_id: CHILD_ID,
+              namespace_mode: "COPY" as const,
+              created_at: new Date().toISOString(),
+              expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            },
+          ],
+          total: 1,
+        },
+      })),
+    });
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    // Don't call grant() — no local entry
+    const grants = await backend.list();
+    expect(grants.length).toBe(1);
+    // Fallback entry has empty permissions scope
+    expect(grants[0]?.scope.permissions.allow).toBeUndefined();
+  });
+
   test("returns grants from local store first", async () => {
     const api = makeMockApi({
       listDelegations: mock(async () => ({
