@@ -183,19 +183,26 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
     },
 
     async onSessionStart(ctx: SessionContext): Promise<void> {
+      // Bind the SessionContext to the sessionId observed at start.
+      // Every subsequent tracker read/write/teardown resolves through
+      // this binding, NOT through ctx.session.sessionId — a host that
+      // mutates that field after start cannot redirect tracker writes
+      // into another session's bucket. F100 regression.
+      observedSessions.set(ctx, ctx.sessionId);
       if (config.forgeHealth !== undefined) {
         trackers.set(ctx.sessionId, createToolHealthTracker(config.forgeHealth));
       }
-      // Record the SessionContext binding so the exposed healthHandle
-      // can resolve snapshot reads only for sessions this middleware
-      // has actually observed.
-      observedSessions.set(ctx, ctx.sessionId);
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
-      const tracker = trackers.get(ctx.sessionId);
+      // Resolve teardown via the bound id ONLY. A fabricated context
+      // (or one whose sessionId was mutated post-start) cannot dispose
+      // another tenant's tracker. F100 regression.
+      const sid = observedSessions.get(ctx);
+      if (sid === undefined) return;
+      const tracker = trackers.get(sid);
       if (tracker !== undefined) {
-        trackers.delete(ctx.sessionId);
+        trackers.delete(sid);
         await tracker.dispose();
       }
       observedSessions.delete(ctx);
@@ -291,7 +298,11 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
         return next(request);
       }
 
-      const tracker = trackers.get(ctx.session.sessionId);
+      // Resolve the tracker via the bound id, not ctx.session.sessionId,
+      // so a mutated sessionId cannot redirect tool-call writes into
+      // another session's tracker. F100 regression.
+      const sid = observedSessions.get(ctx.session) ?? ctx.session.sessionId;
+      const tracker = trackers.get(sid);
       if (tracker !== undefined && (await tracker.isQuarantined(request.toolId))) {
         const feedback: ForgeToolErrorFeedback = {
           kind: "forge_tool_quarantined",

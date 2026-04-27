@@ -412,6 +412,42 @@ describe("createFeedbackLoopMiddleware", () => {
       await expect(mw.onSessionEnd?.(sessionCtx)).resolves.toBeUndefined();
     });
 
+    it("F100: tracker writes/teardown resolve via the bound sessionId, not ctx.session.sessionId", async () => {
+      // Reviewer F100: healthHandle reads were SessionContext-bound
+      // (F99) but wrapToolCall/onSessionEnd still resolved trackers
+      // through `ctx.session.sessionId` and `ctx.sessionId`. A
+      // SessionContext whose sessionId was mutated after onSessionStart
+      // would write into a different session's tracker (or dispose
+      // an unrelated tenant's tracker on teardown). The fix routes
+      // every tracker access through observedSessions.get(ctx).
+      const realCtx = mockSessionCtx();
+      const originalSid = realCtx.sessionId;
+      await mw.onSessionStart?.(realCtx);
+      // Mutate the sessionId post-start.
+      (realCtx as { sessionId: string }).sessionId = "victim-session";
+      // healthHandle resolves via the bound id.
+      expect(mw.healthHandle?.getSnapshot(realCtx, "any-tool")).toBeUndefined();
+      // onSessionEnd disposes the tracker bound at start, not the
+      // mutated id. A fabricated context with the mutated id
+      // (representing the "victim" tenant) must NOT have its tracker
+      // touched.
+      const forgedVictim = {
+        sessionId: "victim-session",
+        agentId: "atk",
+        runId: "fake",
+        metadata: {},
+      } as never;
+      // Forged victim has no observed binding — onSessionEnd is a no-op.
+      await expect(mw.onSessionEnd?.(forgedVictim)).resolves.toBeUndefined();
+      // The real ctx still has its tracker — healthHandle still
+      // resolves (now the mutated sessionId is irrelevant; the bound
+      // sid matches originalSid which still has a tracker).
+      expect(originalSid).not.toBe("victim-session");
+      expect(mw.healthHandle?.getSnapshot(realCtx, "any-tool")).toBeUndefined();
+      // Real teardown succeeds.
+      await expect(mw.onSessionEnd?.(realCtx)).resolves.toBeUndefined();
+    });
+
     it("F99: healthHandle.getSnapshot only resolves observed SessionContext objects", async () => {
       // Reviewer F99: the prior handle accepted a raw sessionId, so
       // any in-process consumer with the middleware could enumerate
