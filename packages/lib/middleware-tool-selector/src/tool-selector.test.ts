@@ -1011,11 +1011,22 @@ describe("createToolSelectorMiddleware — streaming hook", () => {
     }
 
     // The very first turn's snapshot should have been evicted. A
-    // callId-less invocation on that turn should pass through (no
-    // snapshot left to enforce against), proving cleanup happened.
+    // callId-less invocation on that turn must FAIL CLOSED (round 48
+    // F1) — otherwise eviction would create a bypass: a delayed call
+    // from an old turn could re-execute with no enforcement once
+    // enough newer turns aged the snapshot out of the cache.
     const oldCtx = turnCtx({ turnIndex: 0 });
     const toolNext = mock(async () => ({ output: "ok" }));
-    await expect(wrapTool(oldCtx, { toolId: "a", input: {} }, toolNext as never)).resolves.toEqual({
+    await expect(
+      wrapTool(oldCtx, { toolId: "a", input: {} }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
+    expect(toolNext).not.toHaveBeenCalled();
+    // A turn that NEVER ran (no tombstone) still passes through —
+    // the selector legitimately has nothing to enforce against.
+    const freshCtx = turnCtx({ turnIndex: 9999 });
+    await expect(
+      wrapTool(freshCtx, { toolId: "a", input: {} }, toolNext as never),
+    ).resolves.toEqual({
       output: "ok",
     });
   });

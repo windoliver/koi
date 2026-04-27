@@ -342,6 +342,13 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   // by generateReport so on-demand callers cannot page or auto-disable
   // on uncommitted in-memory state (#review-round33-F3).
   let lastCommittedSnapshot: ToolAuditSnapshot = EMPTY_SNAPSHOT;
+  // let: queueLatePersist set this true when overlap or pre-hydration
+  // suppressed signal emission for a late completion. The next clean
+  // session-end (no active overlap, hydrated, no failed persist)
+  // re-emits signals computed from lastCommittedSnapshot so durable
+  // state changes from late tool outcomes are never silent
+  // (#review-round48-F3).
+  let pendingLateSignals = false;
 
   function getOrCreateRecord(toolName: string): MutableToolRecord {
     const existing = tools.get(toolName);
@@ -518,7 +525,11 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       // Emit signals for the late completion under the same guards as
       // recordOnSessionEnd so a late tool outcome (e.g. delayed failure
       // pushing a tool past the high_failure threshold) doesn't change
-      // durable state silently (#review-round39-F2).
+      // durable state silently (#review-round39-F2). When overlap or
+      // missing sink suppresses emission, set the deferred flag so
+      // the next clean session-end drains it — otherwise a late
+      // signal change can become durable without ever notifying the
+      // sink (#review-round48-F3).
       if (
         committed !== undefined &&
         sessionStates.size === 0 &&
@@ -532,6 +543,8 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
         } catch (e: unknown) {
           onError?.(e);
         }
+      } else if (committed !== undefined && onAuditResult !== undefined) {
+        pendingLateSignals = true;
       }
     });
     return savePromise;
@@ -688,6 +701,26 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       } catch (e: unknown) {
         onError?.(e);
       }
+      pendingLateSignals = false;
+    }
+    // Drain any deferred late-completion signal whose emission was
+    // suppressed by overlap (#review-round48-F3). A clean session-end
+    // (no overlap, hydrated, persist succeeded) is the next legal
+    // moment to surface it.
+    if (
+      pendingLateSignals &&
+      !otherSessionsActive &&
+      hydrated &&
+      !pendingFailedPersist &&
+      onAuditResult !== undefined
+    ) {
+      try {
+        const signals = computeLifecycleSignals(lastCommittedSnapshot, validConfig);
+        if (signals.length > 0) onAuditResult(signals);
+      } catch (e: unknown) {
+        onError?.(e);
+      }
+      pendingLateSignals = false;
     }
   }
 

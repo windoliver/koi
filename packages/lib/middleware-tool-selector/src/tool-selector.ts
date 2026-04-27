@@ -95,6 +95,11 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
   // cannot overwrite each other's bindings (#review-round22-F1).
   const callAllowlists = new Map<TurnId, Map<string, ReadonlySet<string>>>();
   const turnSnapshots = new Map<TurnId, ReadonlySet<string>[]>();
+  // Tombstones for turns whose snapshots were evicted. Tool calls
+  // arriving for these turns must fail closed instead of falling
+  // through as if the selector never ran (#review-round48-F1). Bounded
+  // by its own cap to avoid unbounded growth.
+  const evictedTurns = new Set<TurnId>();
   // Hard cap on the number of distinct turns retained at once.
   // onAfterTurn is the primary cleanup but the engine does not fire
   // it reliably on every successful terminal turn, so without a
@@ -102,6 +107,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
   // (#review-round47-F1). Map iteration order is insertion order, so
   // dropping the front entries evicts the oldest turns.
   const MAX_RETAINED_TURNS = 64;
+  const MAX_EVICTED_TOMBSTONES = 1024;
 
   function evictOldTurns(currentTurnId: TurnId): void {
     while (turnSnapshots.size > MAX_RETAINED_TURNS) {
@@ -109,11 +115,24 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       if (oldest === undefined || oldest === currentTurnId) break;
       turnSnapshots.delete(oldest);
       callAllowlists.delete(oldest);
+      evictedTurns.add(oldest);
     }
     while (callAllowlists.size > MAX_RETAINED_TURNS) {
       const oldest = callAllowlists.keys().next().value;
       if (oldest === undefined || oldest === currentTurnId) break;
       callAllowlists.delete(oldest);
+      evictedTurns.add(oldest);
+    }
+    // Bound the tombstone set itself. Set iteration order is
+    // insertion order, so we drop the oldest tombstones first. A
+    // tool call arriving for a turn whose tombstone is also gone
+    // can no longer be distinguished from "never ran" — but at that
+    // depth the call is hopelessly stale and the fall-through is
+    // unavoidable without unbounded retention.
+    while (evictedTurns.size > MAX_EVICTED_TOMBSTONES) {
+      const oldest = evictedTurns.values().next().value;
+      if (oldest === undefined) break;
+      evictedTurns.delete(oldest);
     }
   }
 
@@ -335,12 +354,14 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       //      missingCallIdPolicy: "trust".
       if (request.callId === undefined) {
         const snapshots = turnSnapshots.get(ctx.turnId);
-        if (snapshots === undefined || missingCallIdPolicy === "trust") {
+        if (snapshots === undefined && !evictedTurns.has(ctx.turnId)) {
+          // Turn never ran through the selector — nothing to enforce.
           return next(request);
         }
+        if (missingCallIdPolicy === "trust") return next(request);
         throw KoiRuntimeError.from(
           "PERMISSION",
-          `Tool "${request.toolId}" was invoked without a callId on a turn with active koi:tool-selector snapshots. Set missingCallIdPolicy: "trust" to allow callId-less invocations from trusted internal callers, or enforceFiltering: false to disable.`,
+          `Tool "${request.toolId}" was invoked without a callId on a turn with active koi:tool-selector snapshots${evictedTurns.has(ctx.turnId) ? " (snapshot evicted from retention cache)" : ""}. Set missingCallIdPolicy: "trust" to allow callId-less invocations from trusted internal callers, or enforceFiltering: false to disable.`,
         );
       }
       const allowed = callAllowlists.get(ctx.turnId)?.get(request.callId);
@@ -351,9 +372,20 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
           `Tool "${request.toolId}" was filtered out for this invocation by koi:tool-selector and cannot be invoked. Set enforceFiltering: false to disable execution-time enforcement.`,
         );
       }
-      // callId present but no binding — and there ARE snapshots for
-      // this turn (i.e. selector observed at least one model call).
-      // No snapshots: pass through (selector never ran for this turn).
+      // callId present but no binding. Two sub-cases:
+      //   a) Turn was evicted from the retention cache — fail closed
+      //      (#review-round48-F1). Allowing here would let a delayed/
+      //      retried tool call from an old turn bypass enforcement
+      //      once enough newer turns have run.
+      //   b) Turn never ran (no snapshots, no tombstone) — pass
+      //      through unconditionally; selector never observed this
+      //      turn so there is nothing to enforce.
+      if (evictedTurns.has(ctx.turnId)) {
+        throw KoiRuntimeError.from(
+          "PERMISSION",
+          `Tool "${request.toolId}" was invoked with callId="${request.callId}" on an evicted koi:tool-selector turn (cache expired). Late tool execution from an old turn cannot be re-authorized.`,
+        );
+      }
       const snapshots = turnSnapshots.get(ctx.turnId);
       if (snapshots === undefined) return next(request);
       throw KoiRuntimeError.from(

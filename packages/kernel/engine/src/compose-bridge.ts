@@ -117,19 +117,19 @@ export function createTerminalHandlers(
     async function* (request): AsyncIterable<ModelChunk> {
       const synth = getSynthCallTerminal !== undefined ? getSynthCallTerminal() : rawModelTerminal;
       const response = await synth(request);
-      if (response.content.length > 0) {
-        yield { kind: "text_delta", delta: response.content };
-      }
-      // Convert structured blocks from response.richContent into
-      // matching stream chunks so non-streaming adapters surface the
-      // same observable signals as native streamers. Without this,
-      // consumeModelStream — which executes tool calls solely from
-      // streamed tool_call_* events — drops calls reported via
-      // richContent (#review-round45-F1), and downstream chunk
-      // consumers miss thinking blocks (#review-round46-F2).
+      // When richContent is present, replay blocks IN ORDER so chunk
+      // consumers see the same chronological structure as native
+      // streamers (text → tool_call → text is significant; emitting
+      // all text first followed by tool_calls would reorder
+      // observability and execution timing — #review-round48-F2).
+      // When richContent is absent, fall back to streaming
+      // response.content as a single text_delta. response.content
+      // remains the authoritative aggregate on the terminal `done`.
       if (response.richContent !== undefined) {
         for (const block of response.richContent) {
-          if (block.kind === "tool_call") {
+          if (block.kind === "text") {
+            if (block.text.length > 0) yield { kind: "text_delta", delta: block.text };
+          } else if (block.kind === "tool_call") {
             yield { kind: "tool_call_start", toolName: block.name, callId: block.id };
             yield {
               kind: "tool_call_delta",
@@ -140,9 +140,9 @@ export function createTerminalHandlers(
           } else if (block.kind === "thinking") {
             yield { kind: "thinking_delta", delta: block.text };
           }
-          // text blocks are intentionally not re-emitted: response.content
-          // is the authoritative aggregate and was already streamed above.
         }
+      } else if (response.content.length > 0) {
+        yield { kind: "text_delta", delta: response.content };
       }
       yield { kind: "done", response };
     };

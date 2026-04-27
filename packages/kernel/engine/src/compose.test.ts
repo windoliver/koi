@@ -1565,6 +1565,55 @@ describe("createComposedCallHandlers streaming", () => {
     expect(thinking.delta).toBe("let me reason about this");
   });
 
+  test("synthesized modelStream preserves richContent block order — round 48 F2", async () => {
+    // text → tool_call → text ordering must be preserved on the
+    // stream so chunk consumers see chronological structure. The
+    // earlier round-46 implementation flushed response.content first,
+    // then replayed richContent — flattening interleaved text +
+    // tool_call patterns and breaking observability semantics.
+    const agent = await createStartedAgent();
+    const { toolCallId } = await import("@koi/core");
+    const callId = toolCallId("call-mid");
+    const rawModel = mock(() =>
+      Promise.resolve({
+        content: "before-after",
+        model: "test-model",
+        richContent: [
+          { kind: "text" as const, text: "before-" },
+          {
+            kind: "tool_call" as const,
+            id: callId,
+            name: "calc",
+            arguments: { a: 1 },
+          },
+          { kind: "text" as const, text: "after" },
+        ],
+      } satisfies ModelResponse),
+    );
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+
+    const handlers = createComposedCallHandlers(
+      [],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    const stream = handlers.modelStream;
+    if (stream === undefined) throw new Error("expected synthesized modelStream");
+    const chunks: ModelChunk[] = [];
+    for await (const c of stream({ messages: [] })) chunks.push(c);
+
+    const orderedKinds = chunks.map((c) => c.kind);
+    const idxBefore = chunks.findIndex((c) => c.kind === "text_delta" && c.delta === "before-");
+    const idxStart = orderedKinds.indexOf("tool_call_start");
+    const idxAfter = chunks.findIndex((c) => c.kind === "text_delta" && c.delta === "after");
+    expect(idxBefore).toBeGreaterThanOrEqual(0);
+    expect(idxStart).toBeGreaterThan(idxBefore);
+    expect(idxAfter).toBeGreaterThan(idxStart);
+  });
+
   test("synthesized modelStream fires dual-hook middleware exactly once via wrapModelStream (round 14)", async () => {
     // Round 13 (critical): a single logical request must traverse only
     // one composed model chain. Dual-hook middleware (implements both

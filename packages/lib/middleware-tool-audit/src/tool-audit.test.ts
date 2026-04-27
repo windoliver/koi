@@ -1502,6 +1502,74 @@ describe("createToolAuditMiddleware", () => {
       expect(highFailure).toBeDefined();
     });
 
+    test("late persist signal deferred under overlap, drains on next clean session — round 48 F3", async () => {
+      // queueLatePersist suppresses signal emission while another
+      // session is still active. Without a deferred-signal flag, that
+      // signal change becomes durable but the configured sink is
+      // never notified.
+      const onAuditResult = mock(() => {});
+      // let: stored snapshot — stateful so persistWithRetry re-reads it
+      let stored: ToolAuditSnapshot = { tools: {}, totalSessions: 0, lastUpdatedAt: 0 };
+      const store: ToolAuditStore = {
+        load: () => stored,
+        save: (snap) => {
+          stored = snap;
+        },
+      };
+      const mw = createToolAuditMiddleware(
+        defaultConfig({
+          store,
+          onAuditResult,
+          sessionEndDrainTimeoutMs: 5,
+          highFailureThreshold: 0.5,
+          minCallsForFailure: 1,
+        }),
+      );
+      const wrap = getWrapToolCall(mw);
+
+      // Session A: in-flight tool call, drain timeout, then late failure.
+      await mw.onSessionStart?.(sessionCtx({ sessionId: "A" }));
+      // let: assigned inside Promise constructor
+      let fail: (e: Error) => void = (): void => {};
+      const gate = new Promise<void>((_resolve, reject) => {
+        fail = reject;
+      });
+      const inFlight = wrap(turnCtx(sessionCtx({ sessionId: "A" })), toolReq("flaky"), async () => {
+        await gate;
+        return { output: "unreachable" };
+      }).catch(() => {});
+
+      // Session B starts BEFORE session A ends so overlap is active.
+      await mw.onSessionStart?.(sessionCtx({ sessionId: "B" }));
+      await mw.onSessionEnd?.(sessionCtx({ sessionId: "A" }));
+
+      // Late failure occurs while session B is still active. The
+      // persist runs but signal emission is suppressed by overlap.
+      fail(new Error("boom"));
+      await inFlight;
+
+      // Drain queueLatePersist by chaining via a dirty op on B.
+      await wrap(turnCtx(sessionCtx({ sessionId: "B" })), toolReq("noop"), async () => ({
+        output: "ok",
+      }));
+      const callsBeforeBEnd = onAuditResult.mock.calls.length;
+
+      // End session B (clean path: no overlap left). The deferred
+      // late-signal must drain here; otherwise the high_failure on
+      // "flaky" never reaches the sink.
+      await mw.onSessionEnd?.(sessionCtx({ sessionId: "B" }));
+
+      const allSignals = onAuditResult.mock.calls.flatMap(
+        (c: readonly unknown[]) =>
+          (c[0] ?? []) as readonly { readonly signal: string; readonly toolName: string }[],
+      );
+      const highFailure = allSignals.find(
+        (s) => s.toolName === "flaky" && s.signal === "high_failure",
+      );
+      expect(highFailure).toBeDefined();
+      expect(onAuditResult.mock.calls.length).toBeGreaterThan(callsBeforeBEnd);
+    });
+
     test("hung tool does not pin sessionStates and disable later signals — round 42 F1", async () => {
       // A timed-out tool call that never settles must NOT keep its
       // session entry in sessionStates. Previously it did, so every
