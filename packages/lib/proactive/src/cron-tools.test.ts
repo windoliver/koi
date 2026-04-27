@@ -275,4 +275,51 @@ describe("cancel_schedule tool", () => {
     expect(reissued.deduped).toBeUndefined();
     expect(stub.scheduleCalls).toHaveLength(2);
   });
+
+  test("preserves idempotency mapping when unschedule returns false (no release_key)", async () => {
+    const failing = createSchedulerStub({ unscheduleResult: false });
+    const state = createCronToolState();
+    const cron = createScheduleCronTool({ scheduler: failing.component }, state);
+    const cancel = createCancelScheduleTool({ scheduler: failing.component }, state);
+
+    const first = (await exec(cron, {
+      expression: "*/5 * * * *",
+      idempotency_key: "poll",
+    })) as { schedule_id: string };
+
+    await exec(cancel, { schedule_id: first.schedule_id });
+
+    // The remote schedule may still exist — replay must dedupe to the
+    // existing schedule_id rather than register a duplicate.
+    const replay = (await exec(cron, {
+      expression: "*/5 * * * *",
+      idempotency_key: "poll",
+    })) as { schedule_id: string; deduped?: boolean };
+
+    expect(replay.schedule_id).toBe(first.schedule_id);
+    expect(replay.deduped).toBe(true);
+    expect(failing.scheduleCalls).toHaveLength(1);
+  });
+
+  test("release_key clears idempotency mapping even on removed:false", async () => {
+    const stub = createSchedulerStub({ unscheduleResult: false });
+    const state = createCronToolState();
+    const cron = createScheduleCronTool({ scheduler: stub.component }, state);
+    const cancel = createCancelScheduleTool({ scheduler: stub.component }, state);
+
+    const first = (await exec(cron, {
+      expression: "*/5 * * * *",
+      idempotency_key: "poll",
+    })) as { schedule_id: string };
+
+    await exec(cancel, { schedule_id: first.schedule_id, release_key: true });
+
+    const reissued = (await exec(cron, {
+      expression: "*/5 * * * *",
+      idempotency_key: "poll",
+    })) as { deduped?: boolean };
+
+    expect(reissued.deduped).toBeUndefined();
+    expect(stub.scheduleCalls).toHaveLength(2);
+  });
 });

@@ -264,6 +264,16 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
 
 const cancelScheduleSchema = z.object({
   schedule_id: z.string().min(1).describe("Schedule identifier returned by schedule_cron."),
+  release_key: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, also drop any local idempotency entry pointing at this schedule " +
+        "even if the scheduler returns `removed: false`. Use only when you have " +
+        "independent confirmation that the schedule is gone. Default false: a " +
+        "`removed: false` result preserves the entry to avoid duplicate registrations " +
+        "on retry.",
+    ),
 });
 
 export function createCancelScheduleTool(config: ProactiveToolsConfig, state: CronToolState): Tool {
@@ -285,16 +295,20 @@ export function createCancelScheduleTool(config: ProactiveToolsConfig, state: Cr
         return { ok: false, error: parsed.error.message };
       }
       const idStr = parsed.data.schedule_id;
+      const releaseKey = parsed.data.release_key === true;
       try {
         const removed = await scheduler.unschedule(scheduleId(idStr));
-        // Clear any matching idempotency entry regardless of `removed` so the
-        // key is freed for re-use even when the schedule was already cleared
-        // (e.g., scheduler restart, manual delete, or already unscheduled).
-        for (const [k, v] of state.idempotencyMap) {
-          // Only settled entries have a known scheduleId. A pending entry
-          // can't match because we only learn the id after schedule resolves.
-          if (v.kind === "settled" && v.record.scheduleId === idStr) {
-            state.idempotencyMap.delete(k);
+        // Clear local idempotency state only when the scheduler confirmed
+        // removal, OR when the caller explicitly opted in via release_key.
+        // A bare `removed: false` may indicate the remote schedule still
+        // exists; freeing the key would let a retry register a duplicate.
+        if (removed || releaseKey) {
+          for (const [k, v] of state.idempotencyMap) {
+            // Only settled entries have a known scheduleId. A pending entry
+            // can't match because we only learn the id after schedule resolves.
+            if (v.kind === "settled" && v.record.scheduleId === idStr) {
+              state.idempotencyMap.delete(k);
+            }
           }
         }
         return { ok: true, removed };

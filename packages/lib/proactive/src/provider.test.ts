@@ -4,11 +4,20 @@ import { COMPONENT_PRIORITY, SCHEDULER, toolToken } from "@koi/core";
 import { createProactiveToolsProvider } from "./provider.js";
 import { createSchedulerStub } from "./test-helpers.js";
 
-function makeAgent(scheduler: SchedulerComponent | undefined): Agent {
+function makeAgent(
+  scheduler: SchedulerComponent | undefined,
+  agentIdValue = "agent-default",
+): Agent {
   const map = new Map<string, unknown>();
   if (scheduler !== undefined) map.set(SCHEDULER as string, scheduler);
+  const pid = {
+    id: agentIdValue as unknown as Agent["pid"]["id"],
+    name: agentIdValue,
+    type: "worker" as const,
+    depth: 0,
+  };
   return {
-    pid: "pid" as unknown as Agent["pid"],
+    pid: pid as Agent["pid"],
     // Manifest/state are only consumed by code paths the provider does not exercise;
     // a minimal `unknown`-cast stub avoids importing the full assembly type tree.
     manifest: {} as unknown as Agent["manifest"],
@@ -99,11 +108,37 @@ describe("createProactiveToolsProvider", () => {
     expect(stub.submitCalls).toHaveLength(1);
   });
 
+  test("two agents with the same idempotency_key do NOT share state", async () => {
+    const stubA = createSchedulerStub();
+    const stubB = createSchedulerStub();
+    const agentA = makeAgent(stubA.component, "agent-a");
+    const agentB = makeAgent(stubB.component, "agent-b");
+    const provider = createProactiveToolsProvider();
+
+    const sleepKey = toolToken("sleep") as string;
+    const resA = await provider.attach(agentA);
+    const resB = await provider.attach(agentB);
+    const sleepA = ("components" in resA ? resA.components : resA).get(sleepKey) as {
+      execute: (a: object) => Promise<unknown>;
+    };
+    const sleepB = ("components" in resB ? resB.components : resB).get(sleepKey) as {
+      execute: (a: object) => Promise<unknown>;
+    };
+
+    await sleepA.execute({ duration_ms: 1_000, idempotency_key: "shared" });
+    await sleepB.execute({ duration_ms: 1_000, idempotency_key: "shared" });
+
+    // Each agent must hit its own scheduler — the shared key must NOT
+    // dedupe across agents.
+    expect(stubA.submitCalls).toHaveLength(1);
+    expect(stubB.submitCalls).toHaveLength(1);
+  });
+
   test("each attach uses the attaching agent's own scheduler — no cross-agent leak", async () => {
     const stubA = createSchedulerStub();
     const stubB = createSchedulerStub();
-    const agentA = makeAgent(stubA.component);
-    const agentB = makeAgent(stubB.component);
+    const agentA = makeAgent(stubA.component, "agent-a");
+    const agentB = makeAgent(stubB.component, "agent-b");
     const provider = createProactiveToolsProvider();
 
     const resA = await provider.attach(agentA);

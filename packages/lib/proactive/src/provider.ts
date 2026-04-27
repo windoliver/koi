@@ -95,7 +95,12 @@ export function createProactiveToolsProvider(
         ...(config.now !== undefined ? { now: config.now } : {}),
       };
 
-      const slot = getSlot(String(agent.pid));
+      // ProcessId is an object — slot by its `.id` (branded AgentId, a
+      // string under the brand) so each agent gets its own slot. Stringifying
+      // the whole ProcessId would yield "[object Object]" and collapse every
+      // agent into a single shared slot, leaking idempotency state across
+      // agents and silently dropping wake-ups.
+      const slot = getSlot(String(agent.pid.id));
       const tools = buildTools(toolConfig, slot);
       const entries: (readonly [string, Tool])[] = tools.map(
         (t) => [toolToken(t.descriptor.name) as string, t] as const,
