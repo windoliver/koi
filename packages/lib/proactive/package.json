@@ -21,6 +21,9 @@
     "@koi/tools-core": "workspace:*",
     "zod": "4.3.6"
   },
+  "devDependencies": {
+    "@koi/scheduler": "workspace:*"
+  },
   "koi": {
     "optional": true
   }
