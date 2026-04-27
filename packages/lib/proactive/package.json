@@ -1,0 +1,27 @@
+{
+  "name": "@koi/proactive",
+  "description": "Proactive/autonomous tool surfaces — sleep, wake, and cron tools over SchedulerComponent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/tools-core": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "koi": {
+    "optional": true
+  }
+}
