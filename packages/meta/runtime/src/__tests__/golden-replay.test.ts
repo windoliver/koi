@@ -13851,10 +13851,10 @@ describe("Golden: @koi/permissions-nexus", () => {
     const { createNexusPermissionBackend } = await import("@koi/permissions-nexus");
 
     const nexusDown: import("@koi/nexus-client").NexusTransport = {
-      call: async () => ({
+      call: (async () => ({
         ok: false,
         error: { code: "TIMEOUT" as const, message: "nexus unreachable", retryable: true },
-      }),
+      })) as import("@koi/nexus-client").NexusTransport["call"],
       close: () => {},
     };
 
@@ -13886,7 +13886,7 @@ describe("Golden: @koi/permissions-nexus", () => {
     let rebuildCalledWith: unknown = null;
 
     const transport: import("@koi/nexus-client").NexusTransport = {
-      call: async (method: string, params: Record<string, unknown>) => {
+      call: (async (method: string, params: Record<string, unknown>) => {
         const path = (params as { path: string }).path;
         if (method === "read" && path.endsWith("version.json")) {
           return { ok: true, value: JSON.stringify({ version: 1, updatedAt: Date.now() }) };
@@ -13895,7 +13895,7 @@ describe("Golden: @koi/permissions-nexus", () => {
           return { ok: true, value: JSON.stringify(policy) };
         }
         return { ok: true, value: undefined };
-      },
+      }) as import("@koi/nexus-client").NexusTransport["call"],
       close: () => {},
     };
 
@@ -14114,10 +14114,10 @@ describe("Golden: @koi/audit-sink-nexus", () => {
 
     const written: string[] = [];
     const transport: import("@koi/nexus-client").NexusTransport = {
-      call: async (_method: string, params: Record<string, unknown>) => {
+      call: (async (_method: string, params: Record<string, unknown>) => {
         written.push((params as { path: string }).path);
         return { ok: true, value: undefined };
-      },
+      }) as import("@koi/nexus-client").NexusTransport["call"],
       close: () => {},
     };
 
@@ -14144,7 +14144,7 @@ describe("Golden: @koi/audit-sink-nexus", () => {
 
     const store = new Map<string, string>();
     const transport: import("@koi/nexus-client").NexusTransport = {
-      call: async (method: string, params: Record<string, unknown>) => {
+      call: (async (method: string, params: Record<string, unknown>) => {
         const p = (params as { path: string }).path;
         if (method === "write") {
           store.set(p, (params as { content: string }).content);
@@ -14164,7 +14164,7 @@ describe("Golden: @koi/audit-sink-nexus", () => {
             : { ok: false, error: { code: "NOT_FOUND" as const, message: "nf", retryable: false } };
         }
         return { ok: true, value: undefined };
-      },
+      }) as import("@koi/nexus-client").NexusTransport["call"],
       close: () => {},
     };
 
