@@ -1476,6 +1476,58 @@ describe("createComposedCallHandlers streaming", () => {
     expect(rawModel).toHaveBeenCalled();
   });
 
+  test("synthesized modelStream emits tool_call_* chunks from response.richContent — round 45 F1", async () => {
+    // Non-streaming adapters (e.g. @koi/model-openai-compat's complete())
+    // surface tool calls via ModelResponse.richContent rather than
+    // streamed chunks. Without converting them to tool_call_* events the
+    // synthesized stream would silently drop the call because
+    // consumeModelStream only executes from streamed events.
+    const agent = await createStartedAgent();
+    const { toolCallId } = await import("@koi/core");
+    const callId = toolCallId("call-abc");
+    const rawModel = mock(() =>
+      Promise.resolve({
+        content: "",
+        model: "test-model",
+        stopReason: "tool_use" as const,
+        richContent: [
+          {
+            kind: "tool_call" as const,
+            id: callId,
+            name: "calc",
+            arguments: { a: 1, b: 2 },
+          },
+        ],
+      } satisfies ModelResponse),
+    );
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+
+    const handlers = createComposedCallHandlers(
+      [],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    const stream = handlers.modelStream;
+    if (stream === undefined) throw new Error("expected synthesized modelStream");
+    const chunks = [];
+    for await (const c of stream({ messages: [] })) chunks.push(c);
+
+    const start = chunks.find((c) => c.kind === "tool_call_start");
+    const delta = chunks.find((c) => c.kind === "tool_call_delta");
+    const end = chunks.find((c) => c.kind === "tool_call_end");
+    expect(start).toBeDefined();
+    expect(delta).toBeDefined();
+    expect(end).toBeDefined();
+    if (start?.kind !== "tool_call_start") throw new Error("bad chunk");
+    expect(start.toolName).toBe("calc");
+    expect(start.callId).toBe(callId);
+    if (delta?.kind !== "tool_call_delta") throw new Error("bad chunk");
+    expect(JSON.parse(delta.delta)).toEqual({ a: 1, b: 2 });
+  });
+
   test("synthesized modelStream fires dual-hook middleware exactly once via wrapModelStream (round 14)", async () => {
     // Round 13 (critical): a single logical request must traverse only
     // one composed model chain. Dual-hook middleware (implements both

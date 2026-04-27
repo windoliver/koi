@@ -120,6 +120,25 @@ export function createTerminalHandlers(
       if (response.content.length > 0) {
         yield { kind: "text_delta", delta: response.content };
       }
+      // Convert structured tool-call blocks from response.richContent
+      // into tool_call_* chunks so consumeModelStream actually executes
+      // them. Non-streaming adapters (e.g. @koi/model-openai-compat's
+      // complete() path) report tool calls via richContent instead of
+      // streamed chunks; without this synthesis the calls would
+      // silently drop because consumeModelStream only executes from
+      // streamed events, not from done.response (#review-round45-F1).
+      if (response.richContent !== undefined) {
+        for (const block of response.richContent) {
+          if (block.kind !== "tool_call") continue;
+          yield { kind: "tool_call_start", toolName: block.name, callId: block.id };
+          yield {
+            kind: "tool_call_delta",
+            callId: block.id,
+            delta: JSON.stringify(block.arguments),
+          };
+          yield { kind: "tool_call_end", callId: block.id };
+        }
+      }
       yield { kind: "done", response };
     };
 
