@@ -18,6 +18,14 @@ export interface ToolAuditConfig {
   readonly onAuditResult?: (results: readonly ToolAuditResult[]) => void;
   readonly onError?: (error: unknown) => void;
   readonly clock?: () => number;
+  /**
+   * Maximum time `onSessionEnd` waits for in-flight tool calls to settle
+   * before folding+persisting whatever local state exists. Bounds the
+   * drain so a hung tool on a dead dependency cannot wedge session
+   * teardown indefinitely (#review-round37-F1). Default 5000 ms. Set
+   * Infinity to disable the timeout (round-36 unbounded behavior).
+   */
+  readonly sessionEndDrainTimeoutMs?: number;
 }
 
 function validationError(message: string): { readonly ok: false; readonly error: KoiError } {
@@ -75,6 +83,18 @@ function validateNumericFields(c: Record<string, unknown>): Result<true, KoiErro
   for (const field of RATIO_FIELDS) {
     if (c[field] !== undefined && !isFiniteRatio(c[field])) {
       return validationError(`'${field}' must be a number between 0 and 1`);
+    }
+  }
+  if (c.sessionEndDrainTimeoutMs !== undefined) {
+    const v = c.sessionEndDrainTimeoutMs;
+    // Allow Infinity (caller opts out of the timeout). Otherwise must be
+    // a non-negative finite number.
+    const valid =
+      typeof v === "number" && !Number.isNaN(v) && (v === Number.POSITIVE_INFINITY || v >= 0);
+    if (!valid) {
+      return validationError(
+        "'sessionEndDrainTimeoutMs' must be a non-negative number or Infinity",
+      );
     }
   }
   return { ok: true, value: true };

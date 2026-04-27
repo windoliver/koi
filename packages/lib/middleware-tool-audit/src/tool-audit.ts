@@ -223,6 +223,7 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   const store = validConfig.store ?? createFallbackStore();
   const clock = validConfig.clock ?? Date.now;
   const { onAuditResult, onError } = validConfig;
+  const drainTimeoutMs = validConfig.sessionEndDrainTimeoutMs ?? 5000;
 
   const tools = new Map<string, MutableToolRecord>();
   const sessionStates = new Map<SessionId, ToolAuditSessionState>();
@@ -425,13 +426,30 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
 
     // Wait for any tool calls still awaiting their outcome so the post-
     // await success/failure/latency updates land in localTools BEFORE we
-    // fold and persist (#review-round36-F1). Without this, early teardown
-    // (cancel/timeout/stream-failure) persists half-recorded counts and
-    // the eventual outcome mutates an orphaned record never folded again.
+    // fold and persist (#review-round36-F1). Bounded by drainTimeoutMs
+    // so a hung tool on a dead dependency cannot wedge teardown
+    // indefinitely (#review-round37-F1) — on timeout we fold the
+    // partial state (started call without outcome) so the persisted
+    // snapshot at least reflects the attempt.
     if (state.inFlight.size > 0) {
       // Snapshot before awaiting because each settler removes itself from
       // the set, mutating it during iteration.
-      await Promise.allSettled([...state.inFlight]);
+      const drained = Promise.allSettled([...state.inFlight]);
+      if (drainTimeoutMs === Number.POSITIVE_INFINITY) {
+        await drained;
+      } else {
+        const timedOut = await Promise.race([
+          drained.then(() => false as const),
+          new Promise<true>((resolve) => setTimeout(() => resolve(true), drainTimeoutMs)),
+        ]);
+        if (timedOut) {
+          onError?.(
+            new Error(
+              `tool-audit: session-end drain timed out after ${String(drainTimeoutMs)}ms with ${String(state.inFlight.size)} in-flight tool call(s); persisting partial state`,
+            ),
+          );
+        }
+      }
     }
 
     // Fold session-local tool counters into the shared aggregate now that

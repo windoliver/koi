@@ -359,6 +359,42 @@ describe("createToolAuditMiddleware", () => {
       expect(saves.length).toBe(1);
     });
 
+    test("hung tool call does not wedge session end past drain timeout — round 37 F1", async () => {
+      // Round 36 introduced an unbounded await; round 37 caps it so a
+      // hung dependency cannot block teardown forever. On timeout the
+      // session must still complete and persist whatever state exists.
+      const { store, saves } = createMockStore();
+      const onError = mock((_e: unknown) => {});
+      const mw = createToolAuditMiddleware(
+        defaultConfig({ store, onError, sessionEndDrainTimeoutMs: 50 }),
+      );
+      const wrap = getWrapToolCall(mw);
+
+      await mw.onSessionStart?.(sessionCtx());
+      // Tool promise that never resolves — simulates a hung dependency.
+      const _hung = wrap(
+        turnCtx(),
+        toolReq("search"),
+        () => new Promise<{ output: string }>(() => {}),
+      );
+      void _hung;
+
+      // onSessionEnd must complete within ~drainTimeout, not block forever.
+      const start = Date.now();
+      await mw.onSessionEnd?.(sessionCtx());
+      const elapsed = Date.now() - start;
+      expect(elapsed).toBeLessThan(1000); // generous upper bound
+
+      // Persisted snapshot reflects the attempt even though outcome
+      // never landed: callCount=1 from the pre-await increment.
+      expect(saves.length).toBe(1);
+      expect(saves[0]?.tools.search?.callCount).toBe(1);
+      expect(saves[0]?.tools.search?.successCount).toBe(0);
+      expect(saves[0]?.tools.search?.failureCount).toBe(0);
+      // onError reports the timeout for observability.
+      expect(onError).toHaveBeenCalled();
+    });
+
     test("session end awaits in-flight tool calls before folding/persisting — round 36 F1", async () => {
       // wrapToolCall increments callCount before awaiting and writes the
       // success/failure/latency outcome AFTER awaiting. If onSessionEnd
