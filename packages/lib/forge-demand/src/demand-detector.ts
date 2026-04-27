@@ -38,6 +38,8 @@ import type { ForgeDemandConfig, ForgeDemandHandle, HeuristicThresholds } from "
 
 const DEFAULT_MAX_PENDING_SIGNALS = 10;
 const MAX_FAILED_CALL_MESSAGES = 10;
+/** Chars from the match index used to scope per-gap counters. */
+const GAP_CONTEXT_WINDOW = 120;
 
 const DEFAULT_THRESHOLDS: HeuristicThresholds = {
   repeatedFailureCount: 3,
@@ -129,6 +131,9 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   // `let` justified: mutable counters scoped to this closure. Reset on session end.
   let signalCounter = 0;
   let lastToolCallId = "";
+  // Highest user-message timestamp already scanned for corrections.
+  // Prevents replayed transcript history from re-firing on retry paths.
+  let lastProcessedUserTimestamp = -1;
 
   function isOnCooldown(key: string): boolean {
     const lastEmitted = cooldowns.get(key);
@@ -195,7 +200,18 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     for (const pattern of patterns) {
       const match = pattern.exec(responseText);
       if (match === null) continue;
-      const key = pattern.source;
+      // Bucket by the local context around the match (a normalized window
+      // of the surrounding sentence) rather than just the regex pattern.
+      // This stops unrelated capability gaps that share a phrasing template
+      // ("I don't have a tool for X" / "...for Y") from accumulating into
+      // a single forge signal while still letting genuine repeats add up.
+      const matchStart = match.index;
+      const windowText = responseText
+        .slice(matchStart, matchStart + GAP_CONTEXT_WINDOW)
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .trim();
+      const key = `${pattern.source}|${windowText}`;
       const count = (capabilityGapCounts.get(key) ?? 0) + 1;
       capabilityGapCounts.set(key, count);
       if (count < thresholds.capabilityGapOccurrences) continue;
@@ -208,8 +224,15 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
 
   function checkUserCorrections(request: ModelRequest): void {
     if (correctionPatterns.length === 0 || lastToolCallId === "") return;
+    // Only inspect user-authored messages newer than the last one we've
+    // already scanned. This prevents replayed transcript history (e.g. on
+    // retry paths) from re-firing the same correction repeatedly, and
+    // avoids treating assistant text as a user correction.
+    let highWater = lastProcessedUserTimestamp;
     for (const msg of request.messages) {
-      if (msg.senderId === "system" || msg.senderId === "system:ace") continue;
+      if (msg.senderId !== "user") continue;
+      if (msg.timestamp <= lastProcessedUserTimestamp) continue;
+      if (msg.timestamp > highWater) highWater = msg.timestamp;
       for (const block of msg.content) {
         if (block.kind !== "text") continue;
         const trigger = detectUserCorrection(block.text, correctionPatterns, lastToolCallId);
@@ -218,6 +241,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
         }
       }
     }
+    lastProcessedUserTimestamp = highWater;
   }
 
   function recordFailure(toolId: string, e: unknown): number {
@@ -299,6 +323,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       signals.length = 0;
       signalCounter = 0;
       lastToolCallId = "";
+      lastProcessedUserTimestamp = -1;
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {

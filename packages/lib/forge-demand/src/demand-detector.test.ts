@@ -257,6 +257,73 @@ describe("createForgeDemandDetector", () => {
     }
   });
 
+  it("does not re-fire user_correction when transcript history is replayed on retry", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(makeConfig({ onDemand: (s) => signals.push(s) }));
+
+    const okNext = async (): Promise<ToolResponse> => toolRes();
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("any-tool"), okNext);
+
+    const correction: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "no, that's not right" }],
+      timestamp: 100,
+    };
+    const modelNext = async (): Promise<ModelResponse> => modelRes("ok");
+
+    // First model call: a single new user-correction message → 1 signal.
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), modelNext);
+    expect(signals.length).toBe(1);
+
+    // Second model call: the same message replayed (e.g. retry transcript).
+    // Must not re-fire — timestamp <= lastProcessedUserTimestamp.
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), modelNext);
+    expect(signals.length).toBe(1);
+  });
+
+  it("ignores assistant-authored text that happens to match a correction pattern", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(makeConfig({ onDemand: (s) => signals.push(s) }));
+
+    const okNext = async (): Promise<ToolResponse> => toolRes();
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("a-tool"), okNext);
+
+    const assistantMsg: InboundMessage = {
+      senderId: "assistant",
+      content: [{ kind: "text", text: "I said earlier that this works" }],
+      timestamp: 200,
+    };
+    const modelNext = async (): Promise<ModelResponse> => modelRes("ok");
+
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([assistantMsg]), modelNext);
+    expect(signals.length).toBe(0);
+  });
+
+  it("does not let unrelated capability-gap responses combine into a single signal", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { capabilityGapOccurrences: 2 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+
+    // Two responses match the same broad regex but with different match
+    // text — they bucket separately and neither should hit the threshold.
+    const a = async (): Promise<ModelResponse> =>
+      modelRes("I don't have a tool for compiling rust code");
+    const b = async (): Promise<ModelResponse> =>
+      modelRes("I don't have a tool for parsing protobuf schemas");
+
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([]), a);
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([]), b);
+    expect(signals.length).toBe(0);
+
+    // The same gap repeated *does* cross the threshold.
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([]), a);
+    expect(signals.length).toBe(1);
+  });
+
   it("dismiss removes the signal and clears its cooldown", async () => {
     const handle = createForgeDemandDetector(
       makeConfig({
