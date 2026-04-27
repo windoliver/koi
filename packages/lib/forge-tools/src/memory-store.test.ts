@@ -224,6 +224,8 @@ describe("createInMemoryForgeStore — basic CRUD", () => {
     const brick = makeToolBrick();
     await store.save(brick);
 
+    // Walk a valid transition: draft -> verifying -> active.
+    await store.update(brick.id, { lifecycle: "verifying" });
     const updateResult = await store.update(brick.id, { lifecycle: "active" });
     expect(updateResult.ok).toBe(true);
 
@@ -231,7 +233,7 @@ describe("createInMemoryForgeStore — basic CRUD", () => {
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
       expect(loaded.value.lifecycle).toBe("active");
-      expect(loaded.value.storeVersion).toBe(2);
+      expect(loaded.value.storeVersion).toBe(3);
     }
   });
 
@@ -285,6 +287,9 @@ describe("memory-store: save semantics", () => {
   test("CONFLICT when stored lifecycle is deprecated", async () => {
     const brick = makeToolBrick();
     await store.save(brick);
+    // Walk a valid lifecycle path: draft -> verifying -> active -> deprecated.
+    await store.update(brick.id, { lifecycle: "verifying" });
+    await store.update(brick.id, { lifecycle: "active" });
     await store.update(brick.id, { lifecycle: "deprecated" });
     const r = await store.save(brick);
     expect(r.ok).toBe(false);
@@ -294,6 +299,9 @@ describe("memory-store: save semantics", () => {
   test("CONFLICT when stored lifecycle is quarantined", async () => {
     const brick = makeToolBrick();
     await store.save(brick);
+    // Walk a valid lifecycle path: draft -> verifying -> active -> quarantined.
+    await store.update(brick.id, { lifecycle: "verifying" });
+    await store.update(brick.id, { lifecycle: "active" });
     await store.update(brick.id, { lifecycle: "quarantined" });
     const r = await store.save(brick);
     expect(r.ok).toBe(false);

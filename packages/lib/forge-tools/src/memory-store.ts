@@ -18,6 +18,7 @@ import type {
   KoiError,
   Result,
 } from "@koi/core";
+import { VALID_LIFECYCLE_TRANSITIONS, validatePolicyForKind } from "@koi/core";
 import {
   applyBrickUpdate,
   createMemoryStoreChangeNotifier,
@@ -188,6 +189,19 @@ export function createInMemoryForgeStore(): ForgeStore {
         ),
       };
     }
+    // Policy must be valid for the brick kind (e.g. middleware/channel cannot
+    // be sandbox: true). Catches buggy or compromised callers persisting
+    // artifacts with an unsafe execution policy.
+    const policyCheck = validatePolicyForKind(brick.policy, brick.kind);
+    if (!policyCheck.valid) {
+      return {
+        ok: false,
+        error: invariantViolation(`policy invalid for kind: ${policyCheck.reason}`, {
+          brickId: brick.id,
+          kind: brick.kind,
+        }),
+      };
+    }
     const existing = bricks.get(brick.id);
     if (existing !== undefined) {
       if (!isIdentityEqual(existing, brick)) {
@@ -298,6 +312,33 @@ export function createInMemoryForgeStore(): ForgeStore {
           { expectedVersion: expected, currentVersion },
         ),
       };
+    }
+    // Lifecycle transitions follow VALID_LIFECYCLE_TRANSITIONS — reject any
+    // illegal jump (e.g. draft -> active, failed -> active).
+    if (updates.lifecycle !== undefined && updates.lifecycle !== existing.lifecycle) {
+      const allowed = VALID_LIFECYCLE_TRANSITIONS[existing.lifecycle];
+      if (!allowed.includes(updates.lifecycle)) {
+        return {
+          ok: false,
+          error: invariantViolation(
+            `illegal lifecycle transition: ${existing.lifecycle} -> ${updates.lifecycle}`,
+            { brickId: id, from: existing.lifecycle, to: updates.lifecycle },
+          ),
+        };
+      }
+    }
+    // Policy updates must remain valid for the brick kind.
+    if (updates.policy !== undefined) {
+      const policyCheck = validatePolicyForKind(updates.policy, existing.kind);
+      if (!policyCheck.valid) {
+        return {
+          ok: false,
+          error: invariantViolation(`policy invalid for kind: ${policyCheck.reason}`, {
+            brickId: id,
+            kind: existing.kind,
+          }),
+        };
+      }
     }
     const baseApplied = applyBrickUpdate(existing, updates);
     // applyBrickUpdate (in @koi/validation) does not currently apply
