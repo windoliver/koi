@@ -325,8 +325,16 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     const snapshot = buildSnapshot(tools, totalSessions, clock);
 
     if (onAuditResult !== undefined) {
-      const signals = computeLifecycleSignals(snapshot, config);
-      if (signals.length > 0) onAuditResult(signals);
+      // Observe-phase telemetry must never abort session teardown — a
+      // throwing sink would otherwise reject onSessionEnd and skip the
+      // store.save below, leaving the snapshot unpersisted. Route any
+      // callback failure through onError and continue with persistence.
+      try {
+        const signals = computeLifecycleSignals(snapshot, config);
+        if (signals.length > 0) onAuditResult(signals);
+      } catch (e: unknown) {
+        onError?.(e);
+      }
     }
 
     // Defer persistence until hydration succeeds so we don't overwrite

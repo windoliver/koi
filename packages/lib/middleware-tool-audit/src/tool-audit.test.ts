@@ -285,6 +285,38 @@ describe("createToolAuditMiddleware", () => {
       expect(callback).toHaveBeenCalledTimes(1);
     });
 
+    test("throwing onAuditResult does not abort onSessionEnd or skip store.save (round 10)", async () => {
+      // Round 10: observe-phase telemetry must never abort session
+      // teardown — a throwing sink would otherwise reject onSessionEnd
+      // and skip persistence, leaving the snapshot unsaved.
+      const errors: unknown[] = [];
+      const { store, saves } = createMockStore();
+      const mw = createToolAuditMiddleware(
+        defaultConfig({
+          store,
+          onAuditResult: () => {
+            throw new Error("sink boom");
+          },
+          onError: (e) => {
+            errors.push(e);
+          },
+          highValueMinCalls: 1,
+          highValueSuccessThreshold: 0.9,
+        }),
+      );
+      const wrap = getWrapToolCall(mw);
+
+      await mw.onSessionStart?.(sessionCtx());
+      await wrap(turnCtx(), toolReq("search"), async () => ({ output: "ok" }));
+      // onSessionEnd must NOT throw despite the sink failing.
+      await expect(mw.onSessionEnd?.(sessionCtx())).resolves.toBeUndefined();
+
+      expect(errors.length).toBe(1);
+      expect((errors[0] as Error).message).toBe("sink boom");
+      // Persistence must still happen.
+      expect(saves.length).toBe(1);
+    });
+
     test("saves snapshot to store when dirty", async () => {
       const { store, saves } = createMockStore();
       const mw = createToolAuditMiddleware(defaultConfig({ store }));

@@ -1476,6 +1476,47 @@ describe("createComposedCallHandlers streaming", () => {
     expect(rawModel).toHaveBeenCalled();
   });
 
+  test("synthesized modelStream fires wrapModelStream once and does NOT re-enter wrapModelCall (round 10)", async () => {
+    // Round 10 regression: synthetic stream must not double-fire model
+    // middleware. A middleware implementing both hooks should see exactly
+    // one of them fire per request through the synthesized stream path.
+    const agent = await createStartedAgent();
+    const callCount = { call: 0, stream: 0 };
+    const mw: KoiMiddleware = {
+      name: "double-hook-observer",
+      describeCapabilities: () => undefined,
+      wrapModelCall: async (_ctx, req, next) => {
+        callCount.call += 1;
+        return next(req);
+      },
+      wrapModelStream: (_ctx, req, next) => ({
+        async *[Symbol.asyncIterator]() {
+          callCount.stream += 1;
+          yield* next(req);
+        },
+      }),
+    };
+    const rawModel = mock(() => Promise.resolve(mockModelResponse()));
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+    const handlers = createComposedCallHandlers(
+      [mw],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    const stream = handlers.modelStream;
+    if (stream === undefined) throw new Error("expected synthesized modelStream");
+    for await (const _ of stream({ messages: [] })) {
+      // drain
+    }
+
+    expect(callCount.stream).toBe(1);
+    expect(callCount.call).toBe(0);
+    expect(rawModel).toHaveBeenCalledTimes(1);
+  });
+
   test("streaming middleware fires through composed handlers", async () => {
     const agent = await createStartedAgent();
     const observed: string[] = [];
