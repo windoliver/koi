@@ -1009,14 +1009,20 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       try {
         const response = await next(request);
         if (!isCurrentEpoch(sid, epoch)) return response;
-        markToolCallCompleted(callEntry);
         // NEUTRAL: pre-execution VALIDATION rejects neither succeeded
         // nor failed at the tool boundary — the tool body never ran.
         // Preserve any in-flight repeated_failure streak (do NOT reset)
         // and skip latency accounting (no real call to measure). F108.
+        // Also drop the in-flight callEntry: leaving it in
+        // recentToolCalls would let `resolveCorrectedToolId` attribute
+        // a later user_correction to a tool that never executed —
+        // mirrors the throw-path's KoiRuntimeError(VALIDATION) skip
+        // (F105) which removes the entry before re-raising. F114.
         if (isInBandValidationError(response.output)) {
+          removeToolCall(state, callEntry);
           return response;
         }
+        markToolCallCompleted(callEntry);
         if (isInBandToolError(response.output)) {
           const inBand = new Error((response.output as { readonly error: string }).error);
           const count = recordFailure(state, toolId, inBand);

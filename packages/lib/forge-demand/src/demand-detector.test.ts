@@ -2687,4 +2687,42 @@ describe("createForgeDemandDetector", () => {
     const gapSignals = signals.filter((s) => s.trigger.kind === "capability_gap");
     expect(gapSignals.length).toBe(1);
   });
+
+  it("F114: an in-band VALIDATION response is not eligible for user_correction attribution", async () => {
+    // Reviewer F114: wrapToolCall created and completed `callEntry`
+    // before the in-band VALIDATION check, so a pre-execution reject
+    // looked like a real completed tool call in `recentToolCalls`.
+    // resolveCorrectedToolId would then misattribute a subsequent
+    // user_correction to a tool that never actually ran — burning
+    // forge budget and potentially driving replacement of a healthy
+    // tool. Fix mirrors the throw-path's VALIDATION skip (F105):
+    // remove the in-flight entry before returning.
+    const signals: ForgeDemandSignal[] = [];
+    let now = 10;
+    const handle = observedDetector(
+      makeConfig({
+        clock: () => now,
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    // Drive a tool call that returns in-band VALIDATION — the tool
+    // body never ran.
+    now = 50;
+    const validationFail = async (): Promise<ToolResponse> => ({
+      output: { error: "missing arg 'path'", code: "VALIDATION" },
+    });
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("healthy"), validationFail);
+    // User correction follows. With the fix, recentToolCalls is empty
+    // → no attribution → no user_correction signal.
+    now = 100;
+    const correction: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "no, that's not right" }],
+      timestamp: 80,
+    };
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), async () =>
+      modelRes("acknowledged"),
+    );
+    expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(0);
+  });
 });
