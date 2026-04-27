@@ -304,7 +304,20 @@ export function createNdjsonAuditSink(
   }
 
   function enqueue(task: () => Promise<void>): Promise<void> {
-    writeChain = writeChain.then(task, task); // swallow upstream rejection so chain never stalls
+    // Guard inside the queued task so tasks enqueued before init settles are rejected
+    // when startup later fails — the synchronous checks in log/flush/close don't cover
+    // tasks that were already in the chain before startupError was set.
+    const guarded = (): Promise<void> => {
+      if (startupError !== undefined) {
+        return Promise.reject(
+          new Error("audit NDJSON sink failed to initialize — cannot execute queued task", {
+            cause: startupError,
+          }),
+        );
+      }
+      return task();
+    };
+    writeChain = writeChain.then(guarded, guarded); // swallow upstream rejection so chain never stalls
     return writeChain;
   }
 
@@ -422,6 +435,8 @@ export function createNdjsonAuditSink(
       closedFlag = true;
       if (startupError !== undefined) {
         clearInterval(timer);
+        // Always release the writer to prevent file handle leaks even when startup failed.
+        void Promise.resolve(writer.end()).catch(() => {});
         return Promise.reject(
           new Error("audit NDJSON sink failed to initialize — close cannot guarantee flush", {
             cause: startupError,
