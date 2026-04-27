@@ -1675,4 +1675,87 @@ describe("createForgeDemandDetector", () => {
     );
     expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(0);
   });
+
+  it("F80: capability-gap aggregates the same ask across turns with distinct timestamps", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { capabilityGapOccurrences: 2 },
+        capabilityGapPatterns: [/I don'?t have a tool/],
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const refusal = "I don't have a tool for compiling rust code";
+    const askT1: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "compile rust" }],
+      timestamp: 100,
+    };
+    // Same content, distinct wall-clock — must still aggregate. Pre-fix
+    // this would land in a fresh bucket because messageIdentity baked
+    // the timestamp into the key.
+    const askT2: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "compile rust" }],
+      timestamp: 999_999,
+    };
+    const ctx1 = createMockTurnContext({ turnIndex: 1 });
+    const ctx2 = createMockTurnContext({ turnIndex: 2 });
+    await handle.middleware.wrapModelCall?.(ctx1, modelReq([askT1]), async () => modelRes(refusal));
+    await handle.middleware.wrapModelCall?.(ctx2, modelReq([askT2]), async () => modelRes(refusal));
+    expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(1);
+  });
+
+  it("F81: failedToolCalls history is reset after a successful run", async () => {
+    // Reviewer F81: a successful tool call reset the failure counter
+    // but left accumulated error messages attached. A later signal
+    // would surface stale errors alongside a fresh failureCount,
+    // misleading downstream context.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { repeatedFailureCount: 2 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const failOld = async (): Promise<ToolResponse> => {
+      throw new Error("OLD-STREAK-ERROR");
+    };
+    const succeed = async (): Promise<ToolResponse> => toolRes();
+    const failNew = async (): Promise<ToolResponse> => {
+      throw new Error("NEW-STREAK-ERROR");
+    };
+    // First failure streak (emits a signal at threshold 2).
+    for (let i = 0; i < 2; i += 1) {
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, toolReq("flaky"), failOld);
+      } catch {
+        // expected
+      }
+    }
+    // Recovery must clear the failure-message history. Use a different
+    // tool id is NOT needed — same toolId tests the per-tool clear.
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("flaky"), succeed);
+    // Dismiss the OLD-streak signal so cooldown does not block the
+    // fresh signal we want to inspect.
+    const allSignalsAfterRecovery = handle.forSession(ctx.session).getSignals();
+    for (const s of allSignalsAfterRecovery) {
+      handle.forSession(ctx.session).dismiss(s.id);
+    }
+    const beforeNewStreak = signals.length;
+    for (let i = 0; i < 2; i += 1) {
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, toolReq("flaky"), failNew);
+      } catch {
+        // expected
+      }
+    }
+    expect(signals.length).toBeGreaterThan(beforeNewStreak);
+    const newSignal = signals[signals.length - 1];
+    expect(newSignal).toBeDefined();
+    if (newSignal === undefined) return;
+    const calls = newSignal.context.failedToolCalls;
+    expect(calls.some((m) => m.includes("OLD-STREAK-ERROR"))).toBe(false);
+    expect(calls.some((m) => m.includes("NEW-STREAK-ERROR"))).toBe(true);
+  });
 });

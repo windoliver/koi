@@ -422,7 +422,22 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   function taskContextFingerprint(request: ModelRequest): string {
     for (let i = request.messages.length - 1; i >= 0; i -= 1) {
       const msg = request.messages[i];
-      if (msg !== undefined && msg.senderId === "user") return messageIdentity(msg);
+      if (msg === undefined || msg.senderId !== "user") continue;
+      // CONTENT-only fingerprint — must NOT include `msg.timestamp`.
+      // The same ask repeated in a later turn carries a fresh
+      // wall-clock timestamp, and timestamp-based scoping would put
+      // every retry into its own bucket — defeating the threshold.
+      // Per-response retry dedup is handled separately via
+      // `recentGapResponseIds`. F80 regression.
+      let textFingerprint = "";
+      let len = 0;
+      for (const block of msg.content) {
+        if (block.kind === "text") {
+          textFingerprint += block.text;
+          len += block.text.length;
+        }
+      }
+      return `${msg.senderId}|${String(len)}|${fnv1a(textFingerprint)}`;
     }
     return "";
   }
@@ -721,6 +736,13 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
           return response;
         }
         state.consecutiveFailures.set(toolId, 0);
+        // Clear historical failure messages on a clean success so a
+        // later repeated-failure signal carries only errors from the
+        // current streak. Without this, a tool that recovers and then
+        // fails again would surface stale messages from a prior run
+        // alongside the fresh failureCount, misleading downstream
+        // auto-forge / debugging context. F81 regression.
+        state.failedToolCalls.delete(`rf:${toolId}`);
         checkLatencyDegradation(state, ctx.session.sessionId, toolId);
         return response;
       } catch (e: unknown) {
