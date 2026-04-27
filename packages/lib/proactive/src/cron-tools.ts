@@ -176,25 +176,29 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
 
       // Reserve before awaiting. Concurrent same-key callers will see this
       // pending entry on their map.get and await the same promise.
-      // scheduler.schedule may throw synchronously on invalid expressions;
-      // Promise.try captures both sync and async failures uniformly.
-      const submission = Promise.try(() =>
-        scheduler.schedule(
-          expression,
-          { kind: "text", text: message },
-          "dispatch",
-          scheduleOptions,
-        ),
-      ).then((id): CronRecord => {
-        const rec: CronRecord = {
-          scheduleId: String(id),
-          expression,
-          wakeMessage: message,
-          timezone,
-        };
-        state.idempotencyMap.set(idempotency_key, { kind: "settled", record: rec });
-        return rec;
-      });
+      // scheduler.schedule may throw synchronously on invalid expressions.
+      // Use Promise.resolve().then(...) so both sync throws and async
+      // rejections become Promise rejections — and the pattern is portable
+      // across older Node runtimes that lack Promise.try (Node 22.10+).
+      const submission = Promise.resolve()
+        .then(() =>
+          scheduler.schedule(
+            expression,
+            { kind: "text", text: message },
+            "dispatch",
+            scheduleOptions,
+          ),
+        )
+        .then((id): CronRecord => {
+          const rec: CronRecord = {
+            scheduleId: String(id),
+            expression,
+            wakeMessage: message,
+            timezone,
+          };
+          state.idempotencyMap.set(idempotency_key, { kind: "settled", record: rec });
+          return rec;
+        });
       const trackedSubmission = submission.catch((err: unknown): never => {
         state.idempotencyMap.delete(idempotency_key);
         throw err;

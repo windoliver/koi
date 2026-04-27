@@ -187,19 +187,22 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
       // Reserve before awaiting. Concurrent same-key callers will see this
       // pending entry on their map.get and await the same promise.
       // SchedulerComponent.submit returns TaskId | Promise<TaskId> and may
-      // throw synchronously; Promise.try captures both shapes uniformly.
-      const submission = Promise.try(() =>
-        scheduler.submit({ kind: "text", text: message }, "dispatch", submitOptions),
-      ).then((id): SleepRecord => {
-        const rec: SleepRecord = {
-          taskId: String(id),
-          wakeAtMs: wakeAt,
-          durationMs: duration_ms,
-          wakeMessage: message,
-        };
-        state.idempotencyMap.set(idempotency_key, { kind: "settled", record: rec });
-        return rec;
-      });
+      // throw synchronously. We invoke through Promise.resolve().then(...) so
+      // both sync throws and async rejections become Promise rejections — and
+      // the pattern is portable across older Node runtimes that lack
+      // Promise.try (added in Node 22.10).
+      const submission = Promise.resolve()
+        .then(() => scheduler.submit({ kind: "text", text: message }, "dispatch", submitOptions))
+        .then((id): SleepRecord => {
+          const rec: SleepRecord = {
+            taskId: String(id),
+            wakeAtMs: wakeAt,
+            durationMs: duration_ms,
+            wakeMessage: message,
+          };
+          state.idempotencyMap.set(idempotency_key, { kind: "settled", record: rec });
+          return rec;
+        });
       // Catch the rejection so we can drop the failed reservation. We also
       // re-throw so the awaiting promise propagates to concurrent callers.
       const trackedSubmission = submission.catch((err: unknown): never => {
