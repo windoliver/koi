@@ -40,6 +40,8 @@ const DEFAULT_MAX_PENDING_SIGNALS = 10;
 const MAX_FAILED_CALL_MESSAGES = 10;
 /** Chars from the match index used to scope per-gap counters. */
 const GAP_CONTEXT_WINDOW = 120;
+/** Max successful tool calls retained for user-correction attribution. */
+const RECENT_TOOL_CALL_HISTORY = 16;
 
 const DEFAULT_THRESHOLDS: HeuristicThresholds = {
   repeatedFailureCount: 3,
@@ -128,9 +130,13 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   const failedToolCalls = new Map<string, string[]>();
   const capabilityGapCounts = new Map<string, number>();
   const noMatchingToolCounts = new Map<string, number>();
+  // Bounded log of recent successful tool calls. Used to attribute user
+  // corrections to the tool the user is actually rejecting (the most recent
+  // call before the user's message timestamp), not whichever tool happened
+  // to run last in the session.
+  const recentToolCalls: Array<{ readonly toolId: string; readonly at: number }> = [];
   // `let` justified: mutable counters scoped to this closure. Reset on session end.
   let signalCounter = 0;
-  let lastToolCallId = "";
   // Highest user-message timestamp already scanned for corrections.
   // Prevents replayed transcript history from re-firing on retry paths.
   let lastProcessedUserTimestamp = -1;
@@ -165,11 +171,42 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     };
 
     if (signals.length >= maxPending) {
-      signals.shift();
+      // Drop the oldest and clear its cooldown together — otherwise the
+      // queue rolls over silently while still suppressing identical
+      // detections for the remainder of the cooldown window.
+      const evicted = signals.shift();
+      if (evicted !== undefined) cooldowns.delete(triggerKey(evicted.trigger));
     }
     signals.push(signal);
     cooldowns.set(key, clock());
     safeInvoke(config.onDemand, signal);
+  }
+
+  function resetTriggerState(trigger: ForgeTrigger): void {
+    // Clear the per-trigger counters so dismissal is a real acknowledgement.
+    // Without this, the next matching event re-fires immediately because the
+    // accumulator is still at or above threshold.
+    switch (trigger.kind) {
+      case "repeated_failure":
+        consecutiveFailures.delete(trigger.toolName);
+        failedToolCalls.delete(`rf:${trigger.toolName}`);
+        return;
+      case "no_matching_tool":
+        noMatchingToolCounts.delete(trigger.query);
+        return;
+      case "capability_gap": {
+        // requiredCapability carries the windowed bucket text; the bucket
+        // key is `${pattern.source}|${requiredCapability}`. Clear every
+        // pattern key matching this window text.
+        const suffix = `|${trigger.requiredCapability}`;
+        for (const k of capabilityGapCounts.keys()) {
+          if (k.endsWith(suffix)) capabilityGapCounts.delete(k);
+        }
+        return;
+      }
+      default:
+        return;
+    }
   }
 
   function dismiss(signalId: string): void {
@@ -178,6 +215,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     const signal = signals[idx];
     if (signal !== undefined) {
       cooldowns.delete(triggerKey(signal.trigger));
+      resetTriggerState(signal.trigger);
     }
     signals.splice(idx, 1);
     safeInvoke(config.onDismiss, signalId);
@@ -237,7 +275,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
    * with the same transcript would silently drop the correction signal.
    */
   function checkUserCorrections(request: ModelRequest): number {
-    if (correctionPatterns.length === 0 || lastToolCallId === "") {
+    if (correctionPatterns.length === 0 || recentToolCalls.length === 0) {
       return lastProcessedUserTimestamp;
     }
     // Only inspect user-authored messages newer than the last one we've
@@ -249,15 +287,40 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       if (msg.senderId !== "user") continue;
       if (msg.timestamp <= lastProcessedUserTimestamp) continue;
       if (msg.timestamp > highWater) highWater = msg.timestamp;
+      // Attribute the correction to the most recent tool call that ran
+      // BEFORE this user message — not the session-global last tool call.
+      // This handles multi-tool turns correctly.
+      const correctedToolId = resolveCorrectedToolId(msg.timestamp);
+      if (correctedToolId === "") continue;
       for (const block of msg.content) {
         if (block.kind !== "text") continue;
-        const trigger = detectUserCorrection(block.text, correctionPatterns, lastToolCallId);
+        const trigger = detectUserCorrection(block.text, correctionPatterns, correctedToolId);
         if (trigger !== undefined) {
           emitSignal(trigger, { failureCount: 1, threshold: 1 });
         }
       }
     }
     return highWater;
+  }
+
+  function resolveCorrectedToolId(userMessageTimestamp: number): string {
+    // Walk back through recent calls; pick the latest with `at <= timestamp`,
+    // falling back to the latest call if no timestamps line up (e.g. messages
+    // carry timestamp 0 in tests).
+    for (let i = recentToolCalls.length - 1; i >= 0; i -= 1) {
+      const call = recentToolCalls[i];
+      if (call !== undefined && call.at <= userMessageTimestamp) {
+        return call.toolId;
+      }
+    }
+    return recentToolCalls[recentToolCalls.length - 1]?.toolId ?? "";
+  }
+
+  function recordToolCall(toolId: string): void {
+    recentToolCalls.push({ toolId, at: clock() });
+    if (recentToolCalls.length > RECENT_TOOL_CALL_HISTORY) {
+      recentToolCalls.splice(0, recentToolCalls.length - RECENT_TOOL_CALL_HISTORY);
+    }
   }
 
   function recordFailure(toolId: string, e: unknown): number {
@@ -290,7 +353,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       try {
         const response = await next(request);
         consecutiveFailures.set(toolId, 0);
-        lastToolCallId = toolId;
+        recordToolCall(toolId);
         checkLatencyDegradation(toolId);
         return response;
       } catch (e: unknown) {
@@ -342,7 +405,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       cooldowns.clear();
       signals.length = 0;
       signalCounter = 0;
-      lastToolCallId = "";
+      recentToolCalls.length = 0;
       lastProcessedUserTimestamp = -1;
     },
 

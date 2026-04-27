@@ -400,6 +400,110 @@ describe("createForgeDemandDetector", () => {
     }
   });
 
+  it("attributes user_correction to the tool that ran before the user message, not the latest", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    // Driveable clock so tool calls + correction timestamps are deterministic.
+    let now = 1000;
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        clock: () => now,
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+
+    const okNext = async (): Promise<ToolResponse> => toolRes();
+    now = 1000;
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("tool-A"), okNext);
+    now = 2000;
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("tool-B"), okNext);
+
+    // User message at t=2500 — between tool-B (2000) and tool-C (3000).
+    const correction: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "no, that's not right" }],
+      timestamp: 2500,
+    };
+
+    now = 3000;
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("tool-C"), okNext);
+
+    const okModel = async (): Promise<ModelResponse> => modelRes("ok");
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), okModel);
+
+    const corr = signals.find((s) => s.trigger.kind === "user_correction");
+    expect(corr).toBeDefined();
+    if (corr?.trigger.kind === "user_correction") {
+      // Must be tool-B (last call BEFORE the user message), not tool-C.
+      expect(corr.trigger.correctedToolCall).toBe("tool-B");
+    }
+  });
+
+  it("clears the cooldown of an evicted signal when the queue rolls over", async () => {
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        budget: { ...DEFAULT_FORGE_BUDGET, cooldownMs: 60_000 },
+        heuristics: { repeatedFailureCount: 1 },
+        maxPendingSignals: 2,
+      }),
+    );
+
+    const failNext = async (): Promise<ToolResponse> => {
+      throw new Error("nope");
+    };
+
+    // Fill: A, B, C — C evicts A. After eviction, A's cooldown must be
+    // cleared so a fresh A failure can re-emit.
+    for (const id of ["tool-A", "tool-B", "tool-C"]) {
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, toolReq(id), failNext);
+      } catch {
+        // expected
+      }
+    }
+    expect(handle.getActiveSignalCount()).toBe(2);
+
+    try {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("tool-A"), failNext);
+    } catch {
+      // expected
+    }
+    // tool-A re-emitted (its cooldown was cleared on eviction) → queue evicts B.
+    const ids = handle
+      .getSignals()
+      .map((s) => (s.trigger.kind === "repeated_failure" ? s.trigger.toolName : ""));
+    expect(ids).toContain("tool-A");
+  });
+
+  it("dismiss resets the per-trigger counters so the next single event does not re-fire", async () => {
+    const handle = createForgeDemandDetector(
+      makeConfig({ heuristics: { repeatedFailureCount: 3 } }),
+    );
+
+    const failNext = async (): Promise<ToolResponse> => {
+      throw new Error("nope");
+    };
+    for (let i = 0; i < 3; i += 1) {
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, toolReq("flaky"), failNext);
+      } catch {
+        // expected
+      }
+    }
+    const [first] = handle.getSignals();
+    expect(first).toBeDefined();
+    if (first === undefined) return;
+
+    handle.dismiss(first.id);
+
+    // One more failure must NOT re-emit — counter was reset by dismiss.
+    try {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("flaky"), failNext);
+    } catch {
+      // expected
+    }
+    expect(handle.getActiveSignalCount()).toBe(0);
+  });
+
   it("dismiss removes the signal and clears its cooldown", async () => {
     const handle = createForgeDemandDetector(
       makeConfig({
