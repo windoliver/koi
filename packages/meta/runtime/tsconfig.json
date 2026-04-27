@@ -40,6 +40,7 @@
     { "path": "../../lib/tools-web" },
     { "path": "../../lib/url-safety" },
     { "path": "../../lib/file-type" },
+    { "path": "../../lib/forge-demand" },
     { "path": "../../lib/tool-browser" },
     { "path": "../../lib/tool-notebook" },
     { "path": "../../lib/lsp" },

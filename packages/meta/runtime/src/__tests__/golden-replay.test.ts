@@ -13841,3 +13841,77 @@ describe("Golden: @koi/temporal", () => {
     expect(snap.capacity).toBe(3);
   });
 });
+
+describe("Golden: @koi/forge-demand", () => {
+  test("createForgeDemandDetector returns a handle with passive middleware (priority 455, no required hooks)", async () => {
+    const { createForgeDemandDetector, DEFAULT_FORGE_DEMAND_CONFIG } = await import(
+      "@koi/forge-demand"
+    );
+    const handle = createForgeDemandDetector(DEFAULT_FORGE_DEMAND_CONFIG);
+    expect(handle.middleware.name).toBe("forge-demand-detector");
+    expect(handle.middleware.priority).toBe(455);
+    expect(typeof handle.middleware.wrapToolCall).toBe("function");
+    expect(typeof handle.middleware.wrapModelCall).toBe("function");
+    expect(typeof handle.getSignals).toBe("function");
+    expect(typeof handle.dismiss).toBe("function");
+    expect(handle.getActiveSignalCount()).toBe(0);
+  });
+
+  test("repeated tool failures emit a deterministic, deduplicated forge demand signal", async () => {
+    const { createForgeDemandDetector } = await import("@koi/forge-demand");
+    const signals: unknown[] = [];
+    const handle = createForgeDemandDetector({
+      budget: {
+        maxForgesPerSession: 5,
+        computeTimeBudgetMs: 120_000,
+        demandThreshold: 0.7,
+        cooldownMs: 30_000,
+      },
+      heuristics: {
+        repeatedFailureCount: 3,
+        capabilityGapOccurrences: 2,
+        latencyDegradationP95Ms: 5_000,
+      },
+      onDemand: (s) => signals.push(s),
+      clock: () => 1_000_000,
+    });
+
+    const ctxSession = {
+      agentId: "forge-demand-golden",
+      sessionId: sessionId("fd-golden"),
+      runId: runId("r1"),
+      metadata: {} as JsonObject,
+    };
+    const ctx: TurnContext = {
+      session: ctxSession,
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+
+    const failingNext = async (): Promise<never> => {
+      throw new Error("boom");
+    };
+    const wrap = handle.middleware.wrapToolCall;
+    if (!wrap) throw new Error("wrapToolCall missing");
+
+    for (let i = 0; i < 4; i++) {
+      try {
+        await wrap(ctx, { toolId: "search", input: {} }, failingNext);
+      } catch {
+        /* expected */
+      }
+    }
+
+    // 4 failures → threshold (3) crossed → 1 signal emitted; cooldown dedupes the 4th.
+    expect(signals.length).toBe(1);
+    const pending = handle.getSignals();
+    expect(pending.length).toBe(1);
+    const first = pending[0];
+    expect(first?.trigger.kind).toBe("repeated_failure");
+    expect(first?.confidence).toBeGreaterThanOrEqual(0.7);
+    // Deterministic confidence: same threshold + same count → same score on replay.
+    expect(first?.confidence).toBeLessThanOrEqual(1);
+  });
+});
