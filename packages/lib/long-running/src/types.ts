@@ -6,6 +6,7 @@ import type {
   HarnessMetrics,
   HarnessSnapshotStore,
   HarnessStatus,
+  InboundMessage,
   KeyArtifact,
   KoiError,
   KoiMiddleware,
@@ -152,6 +153,31 @@ export interface LongRunningConfig {
    * transition.
    */
   readonly onFailed?: OnFailedCallback;
+  /**
+   * Persist `start()` initialInput on the session row. Default false
+   * (opt-in) — see privacy note below. When enabled, persistence is
+   * orthogonal to whether the input is replayed on resume; that is
+   * controlled separately by `replayInitialInputOnResume`.
+   *
+   * Privacy: prompts contain user content and the session row is
+   * exposed through generic loadSession/listSessions/recovery APIs.
+   * Default-off avoids broadening retention or tenant boundaries.
+   */
+  readonly persistInitialInput?: boolean;
+  /**
+   * Replay the persisted `longRunningInitialInput` as a fresh
+   * text/messages prompt when `resume()` finds no `lastEngineState`.
+   * Default false (opt-in) — see safety note below.
+   *
+   * Safety: replaying the first turn after a crash duplicates ANY
+   * side effects (tool calls, external writes, retries) that the
+   * first turn began before crashing. Set this to true ONLY when the
+   * host can prove first-turn side effects are idempotent or
+   * fenced externally. With this off (default), pre-checkpoint
+   * crashes surface as NOT_FOUND on resume, matching the strict
+   * fail-closed semantic.
+   */
+  readonly replayInitialInputOnResume?: boolean;
   /** Optional clock injection for tests. Defaults to Date.now. */
   readonly now?: () => number;
 }
@@ -161,8 +187,30 @@ export interface CheckpointMiddlewareConfig {
   readonly softCheckpointInterval?: number;
 }
 
+/**
+ * Initial prompt payload accepted by `start()`. Restricted to
+ * non-resume variants so callers cannot smuggle prior engine state
+ * through the fresh-run code path; use `resume()` for that. Volatile
+ * `EngineInputBase` fields (callHandlers, correlationIds,
+ * maxStopRetries) are deliberately excluded — they are per-call
+ * execution context that the harness cannot reattach durably after a
+ * crash/resume cycle, so admitting them on `start()` would create a
+ * silent compat hazard.
+ */
+export type StartInput =
+  | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "messages"; readonly messages: readonly InboundMessage[] };
+
 export interface LongRunningHarness {
-  readonly start: () => Promise<Result<StartResult, KoiError>>;
+  /**
+   * Begin a fresh run. Optional `initialInput` is forwarded as the
+   * first turn's prompt/messages and is persisted with the session
+   * row so crash recovery before the first soft checkpoint replays
+   * the same input. When omitted, the harness emits an empty `text`
+   * input — adapter-specific behavior on empty prompts; supply real
+   * input for production runs.
+   */
+  readonly start: (initialInput?: StartInput) => Promise<Result<StartResult, KoiError>>;
   readonly resume: () => Promise<Result<ResumeResult, KoiError>>;
   readonly pause: (
     lease: SessionLease,

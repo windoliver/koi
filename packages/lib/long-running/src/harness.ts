@@ -42,6 +42,7 @@ import {
   type LongRunningConfig,
   type LongRunningHarness,
   type SessionLease,
+  type StartInput,
   type StartResult,
 } from "./types.js";
 
@@ -111,6 +112,28 @@ function validateConfig(cfg: LongRunningConfig): KoiError | undefined {
 
 function isStartable(phase: HarnessPhase | undefined): boolean {
   return phase === undefined || phase === "idle" || phase === "completed" || phase === "failed";
+}
+
+/**
+ * Validate a persisted longRunningInitialInput value pulled from
+ * arbitrary `SessionRecord.metadata`. Returns a typed StartInput when
+ * the shape matches `{ kind: "text", text: string }` or
+ * `{ kind: "messages", messages: array }`; otherwise undefined. Treat
+ * malformed/missing payloads as fail-closed (resume falls through to
+ * NOT_FOUND) rather than feeding untyped data into the engine adapter.
+ * Inner message structure is not deep-validated — we only check the
+ * outer envelope.
+ */
+function parsePersistedInitialInput(raw: unknown): StartInput | undefined {
+  if (raw === undefined || raw === null || typeof raw !== "object") return undefined;
+  const obj = raw as { kind?: unknown; text?: unknown; messages?: unknown };
+  if (obj.kind === "text" && typeof obj.text === "string") {
+    return { kind: "text", text: obj.text };
+  }
+  if (obj.kind === "messages" && Array.isArray(obj.messages)) {
+    return { kind: "messages", messages: obj.messages } as StartInput;
+  }
+  return undefined;
 }
 
 export function createLongRunningHarness(
@@ -351,10 +374,54 @@ export function createLongRunningHarness(
     state.failureReason = state.failureReason ? `${state.failureReason}; ${note}` : note;
   };
 
-  const buildEngineInput = (signal: AbortSignal, st?: EngineState | undefined): EngineInput =>
-    st ? { kind: "resume", state: st, signal } : { kind: "text", text: "", signal };
+  const buildEngineInput = (
+    signal: AbortSignal,
+    st?: EngineState | undefined,
+    initial?: StartInput,
+  ): EngineInput => {
+    if (st) return { kind: "resume", state: st, signal };
+    if (initial) {
+      // StartInput is statically narrowed to non-resume kinds. Attach
+      // the freshly minted lease's signal so abort propagates to the
+      // engine adapter.
+      if (initial.kind === "messages") {
+        return { kind: "messages", messages: initial.messages, signal };
+      }
+      return { kind: "text", text: initial.text, signal };
+    }
+    return { kind: "text", text: "", signal };
+  };
 
-  const activate = async (expect: "start" | "resume"): Promise<Result<StartResult, KoiError>> => {
+  const activate = async (
+    expect: "start" | "resume",
+    initialInput?: StartInput,
+  ): Promise<Result<StartResult, KoiError>> => {
+    // Pre-serialize a recovery copy of initialInput when persistence
+    // is enabled. We DO NOT mutate the live initialInput — JSON
+    // round-tripping silently strips `undefined` / Function / Symbol
+    // values and coerces Date/Map/class instances inside
+    // ButtonBlock.payload / CustomBlock.data (typed as `unknown`),
+    // which would change first-turn semantics on the happy path. By
+    // persisting a separate normalized copy, a recovered first turn
+    // may differ from the original — but that's the recovery path,
+    // gated by `replayInitialInputOnResume`. Surface BigInt/circular
+    // failures at the API boundary as VALIDATION.
+    let initialInputForPersistence: StartInput | undefined;
+    if (expect === "start" && initialInput !== undefined && cfg.persistInitialInput === true) {
+      try {
+        initialInputForPersistence = JSON.parse(JSON.stringify(initialInput)) as StartInput;
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          ok: false,
+          error: err(
+            "VALIDATION",
+            `start() initialInput is not JSON-serializable (required when persistInitialInput is enabled): ${msg}`,
+            false,
+          ),
+        };
+      }
+    }
     const headRes = await loadHead();
     if (!headRes.ok) return { ok: false, error: headRes.error };
     const head = headRes.value;
@@ -471,7 +538,31 @@ export function createLongRunningHarness(
       const priorRes = await cfg.sessionPersistence.loadSession(priorSessionId);
       if (!priorRes.ok) return { ok: false, error: priorRes.error };
       carriedState = priorRes.value.lastEngineState;
-      if (carriedState === undefined) {
+      if (carriedState === undefined && cfg.replayInitialInputOnResume === true) {
+        // Pre-checkpoint crash recovery (opt-in via
+        // replayInitialInputOnResume): if start() persisted the
+        // initial prompt and the host has explicitly accepted the
+        // side-effect-replay risk, use it as the engine input.
+        // Without this opt-in we keep the strict fail-closed behavior
+        // (NOT_FOUND below) — replaying the first turn duplicates any
+        // side effects it began before the crash.
+        const rawPersisted = priorRes.value.metadata?.longRunningInitialInput;
+        const persistedInitial = parsePersistedInitialInput(rawPersisted);
+        if (persistedInitial !== undefined) {
+          initialInput = persistedInitial;
+          // carriedState remains undefined — buildEngineInput will
+          // emit a text/messages input, not a resume input.
+          //
+          // Re-persist on the new session row UNCONDITIONALLY so a
+          // SECOND crash before the first soft checkpoint stays
+          // recoverable, even if the operator restarted under a
+          // config with persistInitialInput=false. The host already
+          // committed to replay semantics via replayInitialInputOnResume,
+          // so the durability commitment must follow.
+          initialInputForPersistence = persistedInitial;
+        }
+      }
+      if (carriedState === undefined && initialInput === undefined) {
         // Compatibility hook for legacy suspended heads that pre-date
         // the saveState requirement. Distinguish three cases:
         //   - hook absent → permanent NOT_FOUND (no fallback wired)
@@ -495,14 +586,14 @@ export function createLongRunningHarness(
             };
           }
         }
-        if (carriedState === undefined) {
+        if (carriedState === undefined && initialInput === undefined) {
           return {
             ok: false,
             error: err(
               "NOT_FOUND",
               cfg.legacyResumeFallback
                 ? "cannot resume: legacyResumeFallback returned no state for prior session"
-                : "cannot resume: prior session has no lastEngineState and no legacyResumeFallback was supplied",
+                : "cannot resume: prior session has no lastEngineState, no longRunningInitialInput, and no legacyResumeFallback was supplied",
               false,
               { priorSessionId },
             ),
@@ -534,7 +625,24 @@ export function createLongRunningHarness(
       // would manufacture phantom recovery work. Flip to `running`
       // only after the active snapshot commits successfully.
       status: "idle",
-      metadata: {},
+      // Persist the initial start input on the session row so a crash
+      // before the first soft checkpoint (which is when the engine
+      // adapter writes lastEngineState) can replay the same first-turn
+      // prompt/messages on recovery instead of restarting from an
+      // empty input. The same persistence applies on `resume` paths
+      // that bootstrap from a previously persisted initialInput — a
+      // second crash before the first checkpoint must remain
+      // recoverable, so we re-persist on the new session row.
+      //
+      // Privacy note: `messages` start inputs contain raw user
+      // content. Hosts that process sensitive prompts and don't need
+      // pre-checkpoint crash recovery can opt out via
+      // `cfg.persistInitialInput: false` to avoid durable exposure
+      // of prompt content in generic session metadata.
+      metadata:
+        initialInputForPersistence !== undefined
+          ? { longRunningInitialInput: initialInputForPersistence }
+          : {},
     };
     const restorePreStart = (): void => {
       if (!preStartSnapshot) return;
@@ -747,7 +855,7 @@ export function createLongRunningHarness(
       ok: true,
       value: {
         lease,
-        engineInput: buildEngineInput(lease.abort, carriedState),
+        engineInput: buildEngineInput(lease.abort, carriedState, initialInput),
         sessionId: sid,
       },
     };
@@ -1333,7 +1441,7 @@ export function createLongRunningHarness(
   });
 
   const harness: LongRunningHarness = {
-    start: () => withLock(() => activate("start")),
+    start: (initialInput?: StartInput) => withLock(() => activate("start", initialInput)),
     resume: () => withLock(() => activate("resume")),
     pause: (lease, sessionResult) =>
       withLock(async (): Promise<Result<void, KoiError>> => {
