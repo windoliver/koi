@@ -65,7 +65,9 @@ function triggerKey(trigger: ForgeTrigger): string {
     case "performance_degradation":
       return `pd:${trigger.toolName}`;
     case "user_correction":
-      return `uc:${trigger.correctionDescription.slice(0, 50)}`;
+      // Include the corrected tool so the same phrasing against different
+      // tools does not collapse into a single cooldown bucket.
+      return `uc:${trigger.correctedToolCall}|${trigger.correctionDescription.slice(0, 50)}`;
     default:
       return `other:${trigger.kind}`;
   }
@@ -140,6 +142,10 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   // Highest user-message timestamp already scanned for corrections.
   // Prevents replayed transcript history from re-firing on retry paths.
   let lastProcessedUserTimestamp = -1;
+  // Forge-budget bookkeeping. Initialized lazily on first emission so the
+  // session window starts when the detector actually sees traffic.
+  let sessionStartedAt = -1;
+  let sessionEmitCount = 0;
 
   function isOnCooldown(key: string): boolean {
     const lastEmitted = cooldowns.get(key);
@@ -150,6 +156,14 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   function emitSignal(trigger: ForgeTrigger, context: DemandContext): void {
     const key = triggerKey(trigger);
     if (isOnCooldown(key)) return;
+
+    // Forge-budget enforcement — both fields are checked here so the
+    // detector's contract matches its declared `ForgeBudget`. Without this,
+    // downstream consumers that trust the budget could keep receiving
+    // signals after the session cap was exhausted.
+    if (sessionStartedAt < 0) sessionStartedAt = clock();
+    if (sessionEmitCount >= config.budget.maxForgesPerSession) return;
+    if (clock() - sessionStartedAt >= config.budget.computeTimeBudgetMs) return;
 
     const confidence = computeDemandConfidence(trigger, thresholds.confidenceWeights, context);
     if (confidence < config.budget.demandThreshold) return;
@@ -179,6 +193,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     }
     signals.push(signal);
     cooldowns.set(key, clock());
+    sessionEmitCount += 1;
     safeInvoke(config.onDemand, signal);
   }
 
@@ -407,6 +422,8 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       signalCounter = 0;
       recentToolCalls.length = 0;
       lastProcessedUserTimestamp = -1;
+      sessionStartedAt = -1;
+      sessionEmitCount = 0;
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {

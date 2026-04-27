@@ -504,6 +504,107 @@ describe("createForgeDemandDetector", () => {
     expect(handle.getActiveSignalCount()).toBe(0);
   });
 
+  it("does not collapse user_correction cooldown across different tools", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    let now = 100;
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        clock: () => now,
+        // Active cooldown — the cooldown key must include the corrected
+        // tool so identical phrasing against different tools both fire.
+        budget: { ...DEFAULT_FORGE_BUDGET, cooldownMs: 60_000 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+
+    const okNext = async (): Promise<ToolResponse> => toolRes();
+    now = 100;
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("tool-A"), okNext);
+    const okModel = async (): Promise<ModelResponse> => modelRes("ok");
+    await handle.middleware.wrapModelCall?.(
+      ctx,
+      modelReq([
+        {
+          senderId: "user",
+          content: [{ kind: "text", text: "no, that's not right" }],
+          timestamp: 200,
+        },
+      ]),
+      okModel,
+    );
+
+    now = 300;
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("tool-B"), okNext);
+    await handle.middleware.wrapModelCall?.(
+      ctx,
+      modelReq([
+        {
+          senderId: "user",
+          content: [{ kind: "text", text: "no, that's not right" }],
+          timestamp: 400,
+        },
+      ]),
+      okModel,
+    );
+
+    const corrections = signals.filter((s) => s.trigger.kind === "user_correction");
+    expect(corrections.length).toBe(2);
+  });
+
+  it("enforces maxForgesPerSession and stops emitting once the cap is reached", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        budget: { ...DEFAULT_FORGE_BUDGET, maxForgesPerSession: 2, cooldownMs: 0 },
+        heuristics: { repeatedFailureCount: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const failNext = async (): Promise<ToolResponse> => {
+      throw new Error("nope");
+    };
+    for (const id of ["t1", "t2", "t3", "t4"]) {
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, toolReq(id), failNext);
+      } catch {
+        // expected
+      }
+    }
+    expect(signals.length).toBe(2);
+  });
+
+  it("enforces computeTimeBudgetMs by stopping emissions past the budget window", async () => {
+    let now = 0;
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        clock: () => now,
+        budget: { ...DEFAULT_FORGE_BUDGET, computeTimeBudgetMs: 1_000, cooldownMs: 0 },
+        heuristics: { repeatedFailureCount: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const failNext = async (): Promise<ToolResponse> => {
+      throw new Error("nope");
+    };
+
+    now = 0;
+    try {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("a"), failNext);
+    } catch {
+      // expected
+    }
+    expect(signals.length).toBe(1);
+
+    now = 5_000; // way past computeTimeBudgetMs
+    try {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("b"), failNext);
+    } catch {
+      // expected
+    }
+    expect(signals.length).toBe(1);
+  });
+
   it("dismiss removes the signal and clears its cooldown", async () => {
     const handle = createForgeDemandDetector(
       makeConfig({
