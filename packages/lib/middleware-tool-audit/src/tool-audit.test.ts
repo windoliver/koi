@@ -359,6 +359,86 @@ describe("createToolAuditMiddleware", () => {
       expect(saves.length).toBe(1);
     });
 
+    test("overlapping session ends with CAS rebase do not roll back rival increments — round 30 F1", async () => {
+      // Round-29 built the snapshot at queue time, so a save earlier in
+      // the chain that ran adoptNewBaseline could leave a later queued
+      // save diffing against a newer baseline than its prebuilt snapshot
+      // had observed — producing negative deltas that rolled back the
+      // rebased counts. Round-30 rebuilds the snapshot inside the save
+      // closure so each save diffs against the baseline it actually runs
+      // against. This test pumps an overlap + CAS conflict and asserts
+      // the final disk state contains BOTH writers' work.
+      let diskVersion = 0;
+      let diskSnapshot: ToolAuditSnapshot = {
+        tools: {},
+        totalSessions: 0,
+        lastUpdatedAt: 0,
+        version: diskVersion,
+      };
+      let conflictsToInject = 1;
+      const store: ToolAuditStore = {
+        load: () => diskSnapshot,
+        save: () => {
+          throw new Error("plain save should not be called when saveIfVersion is provided");
+        },
+        saveIfVersion: (snap, expected) => {
+          if (expected !== diskVersion) {
+            return { ok: false, current: diskSnapshot };
+          }
+          if (conflictsToInject > 0) {
+            conflictsToInject -= 1;
+            diskVersion += 1;
+            diskSnapshot = {
+              tools: {
+                rival: {
+                  toolName: "rival",
+                  callCount: 5,
+                  successCount: 5,
+                  failureCount: 0,
+                  lastUsedAt: 50,
+                  avgLatencyMs: 1,
+                  minLatencyMs: 1,
+                  maxLatencyMs: 1,
+                  totalLatencyMs: 5,
+                  sessionsAvailable: 1,
+                  sessionsUsed: 1,
+                },
+              },
+              totalSessions: 1,
+              lastUpdatedAt: 50,
+              version: diskVersion,
+            };
+            return { ok: false, current: diskSnapshot };
+          }
+          diskVersion += 1;
+          diskSnapshot = { ...snap, version: diskVersion };
+          return { ok: true };
+        },
+      };
+      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+      const wrap = getWrapToolCall(mw);
+
+      const sessA = sessionCtx({ sessionId: "sess-A" });
+      const sessB = sessionCtx({ sessionId: "sess-B" });
+      await mw.onSessionStart?.(sessA);
+      await mw.onSessionStart?.(sessB);
+      await wrap(turnCtx(sessA), toolReq("search"), async () => ({ output: "ok" }));
+      await wrap(turnCtx(sessB), toolReq("read"), async () => ({ output: "ok" }));
+
+      // Concurrent ends: A serializes through savePromise then B. The CAS
+      // conflict rebases baseline mid-flight; B's later save must build
+      // its snapshot from the rebased state, NOT from a prebuilt stale
+      // snapshot.
+      await Promise.all([mw.onSessionEnd?.(sessA), mw.onSessionEnd?.(sessB)]);
+
+      // All three contributors must survive on disk: rival (CAS conflict
+      // injection), search (sess-A), and read (sess-B). No counter rolled
+      // back below the rebased baseline.
+      expect(diskSnapshot.tools.rival?.callCount).toBe(5);
+      expect(diskSnapshot.tools.search?.callCount).toBe(1);
+      expect(diskSnapshot.tools.read?.callCount).toBe(1);
+    });
+
     test("uses saveIfVersion CAS and retries on conflict — round 28 F1", async () => {
       // Multi-writer correctness: when the store advances disk between
       // our read and write (another runtime committed first), saveIfVersion
@@ -503,7 +583,17 @@ describe("createToolAuditMiddleware", () => {
       const onAuditResult = mock((s: readonly unknown[]) => {
         (auditResults as unknown[][]).push([...s]);
       });
-      const { store } = createMockStore();
+      // Use a stateful store: round-30 builds the snapshot inside the
+      // save closure and diffs against the just-saved baseline, so a
+      // stateless mock (load always returns initial) would show
+      // negative deltas after the first save.
+      let stored: ToolAuditSnapshot = { tools: {}, totalSessions: 0, lastUpdatedAt: 0 };
+      const store: ToolAuditStore = {
+        load: () => stored,
+        save: (s) => {
+          stored = s;
+        },
+      };
       const mw = createToolAuditMiddleware(
         defaultConfig({
           store,

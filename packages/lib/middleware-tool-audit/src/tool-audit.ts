@@ -419,44 +419,24 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       return;
     }
 
-    const snapshot = buildSnapshot(tools, totalSessions, clock);
     const otherSessionsActive = sessionStates.size > 0;
-
-    // Defer signal emission while OTHER sessions are still active. The
-    // shared `tools` map contains in-flight call counts / latencies from
-    // those sessions but their sessionsAvailable / sessionsUsed counters
-    // have not been folded in yet, so lifecycle signals computed now
-    // would falsely flag tools as high_failure / low_adoption during
-    // overlap windows and trigger downstream pages or auto-disable
-    // (#review-round17-F1, #review-round18-F2). The last completing
-    // session in the active set drains the deferred signal.
-    // PERSISTENCE intentionally does NOT defer here: a long-lived or
-    // stuck session blocking flushes process-wide meant a crash/redeploy
-    // before the active set drained lost ALL completed-session counters
-    // (#review-round26-F2). loadAndMergeForSave's read-modify-write
-    // makes overlapping persists safe for in-flight counters.
-    // Mark for the next session to drain signals if overlap suppressed
-    // emission this round; clear otherwise.
     pendingPersist = otherSessionsActive;
 
     // Serialize saves so two concurrent session ends in this process can't
-    // race each other. Across PROCESSES sharing one ToolAuditStore, we
-    // additionally re-load before saving and merge any new disk state into
-    // the snapshot we're about to write — converting the raw load/save
-    // contract into an at-least-once read-modify-write. When the store
-    // implements `saveIfVersion` (CAS) we retry on conflict by re-merging
-    // against the current disk snapshot and bumping the version, which
+    // race each other. CRITICAL: the snapshot is built INSIDE the queued
+    // closure (not at queue time) so each save diffs against the baseline
+    // it actually runs against. A pre-built snapshot would miss any
+    // adoptNewBaseline rebases performed by an earlier save in the chain
+    // and could write stale (or negative) deltas, rolling back rival
+    // writers' increments (#review-round30-F1). Cross-process safety:
+    // loadAndMergeForSave does read-modify-write; saveIfVersion (CAS)
     // closes the multi-writer lost-update window (#review-round28-F1).
-    // Stores without saveIfVersion fall back to plain save and remain
-    // safe under single-writer usage only.
     const previous = savePromise;
-    // let: tracks whether persistWithRetry committed so signal emission
-    // below can gate on it (#review-round29-F3).
-    let persistOk = false;
+    // let: snapshot the save closure committed; signals emit from it.
+    let committedSnapshot: ToolAuditSnapshot | undefined;
     savePromise = previous.then(async () => {
       try {
-        await persistWithRetry(snapshot);
-        persistOk = true;
+        committedSnapshot = await persistWithRetry();
       } catch (e: unknown) {
         onError?.(e);
       }
@@ -468,9 +448,9 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     // hit disk; on restart the same signals would re-fire because the
     // baseline never advanced (#review-round29-F3). Defer when overlap is
     // active so partial counters don't trigger false signals.
-    if (persistOk && !otherSessionsActive && onAuditResult !== undefined) {
+    if (committedSnapshot !== undefined && !otherSessionsActive && onAuditResult !== undefined) {
       try {
-        const signals = computeLifecycleSignals(snapshot, validConfig);
+        const signals = computeLifecycleSignals(committedSnapshot, validConfig);
         if (signals.length > 0) onAuditResult(signals);
       } catch (e: unknown) {
         onError?.(e);
@@ -479,32 +459,33 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   }
 
   /**
-   * Persist with optional CAS retry. On conflict, fold the rival writer's
-   * delta into the in-memory `tools` map so our pending snapshot reflects
-   * BOTH our work and theirs, then retry. Capped to avoid pathological
-   * livelock under heavy contention.
+   * Persist with optional CAS retry. Builds the pending snapshot from
+   * CURRENT in-memory state (after any earlier saves' rebases have
+   * settled). On conflict, fold the rival writer's delta into the
+   * in-memory `tools` map so our pending snapshot reflects BOTH our
+   * work and theirs, then retry. Capped to avoid pathological livelock
+   * under heavy contention. Returns the snapshot actually committed.
    */
-  async function persistWithRetry(snapshot: ToolAuditSnapshot): Promise<void> {
+  async function persistWithRetry(): Promise<ToolAuditSnapshot> {
     if (store.saveIfVersion === undefined) {
-      const merged = await loadAndMergeForSave(snapshot);
+      const pending = buildSnapshot(tools, totalSessions, clock);
+      const merged = await loadAndMergeForSave(pending);
       await store.save(merged);
       baselineSnapshot = merged;
-      return;
+      return merged;
     }
     const maxAttempts = 8;
-    // let: working snapshot for the retry loop
-    let pending = snapshot;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const pending = buildSnapshot(tools, totalSessions, clock);
       const merged = await loadAndMergeForSave(pending);
       const expectedVersion = baselineSnapshot.version ?? 0;
       const next: ToolAuditSnapshot = { ...merged, version: expectedVersion + 1 };
       const result = await store.saveIfVersion(next, expectedVersion);
       if (result.ok) {
         baselineSnapshot = next;
-        return;
+        return next;
       }
       adoptNewBaseline(result.current);
-      pending = buildSnapshot(tools, totalSessions, clock);
     }
     throw new Error(
       `tool-audit: saveIfVersion conflict not resolved after ${String(maxAttempts)} attempts`,
