@@ -228,6 +228,97 @@ describe("createNdjsonAuditSink — rotation", () => {
     await sink.close();
   });
 
+  test("rotation seq is monotonic across sink restart (no collision with prior archives)", async () => {
+    archiveDir = `${testFilePath}.archive`;
+    const seqOf = (name: string): number => Number(/^(\d{8})-/.exec(name)?.[1] ?? "0");
+    const maxSeq = (names: readonly string[]): number =>
+      names.reduce((m, n) => Math.max(m, seqOf(n)), 0);
+
+    {
+      const sink = createNdjsonAuditSink({
+        filePath: testFilePath,
+        rotation: { maxSizeBytes: 100 },
+      });
+      await sink.log(makeEntry({ kind: "session_start" }));
+      await sink.log(makeEntry({ kind: "model_call" }));
+      await sink.log(makeEntry({ kind: "tool_call" }));
+      await sink.close();
+    }
+    const seqsBefore = await readdir(archiveDir);
+    const maxBefore = maxSeq(seqsBefore);
+    expect(maxBefore).toBeGreaterThan(0);
+
+    // Re-open against the same dir — rotationSeq must seed from max(existing) so new
+    // archives never collide with prior ones, even if seq counters reset on restart.
+    {
+      const sink = createNdjsonAuditSink({
+        filePath: testFilePath,
+        rotation: { maxSizeBytes: 100 },
+      });
+      await sink.log(makeEntry({ kind: "session_start" }));
+      await sink.log(makeEntry({ kind: "model_call" }));
+      await sink.log(makeEntry({ kind: "tool_call" }));
+      await sink.close();
+    }
+    const seqsAfter = await readdir(archiveDir);
+    const maxAfter = maxSeq(seqsAfter);
+    expect(maxAfter).toBeGreaterThan(maxBefore);
+    // No two archives may share a seq prefix.
+    const allSeqs = seqsAfter.map(seqOf);
+    expect(new Set(allSeqs).size).toBe(allSeqs.length);
+  });
+
+  test("getEntries() merges legacy (no-seq) and seq archives in chronological order", async () => {
+    archiveDir = `${testFilePath}.archive`;
+    const { mkdir, writeFile } = await import("node:fs/promises");
+
+    // Pre-seed a legacy archive (no seq prefix) with an old timestamp.
+    await mkdir(archiveDir, { recursive: true });
+    const legacyEntry = makeEntry({
+      kind: "session_start",
+      timestamp: 1_000_000,
+      sessionId: "legacy",
+    });
+    await writeFile(join(archiveDir, "legacy.ndjson"), `${JSON.stringify(legacyEntry)}\n`);
+
+    // Now run a sink that rotates → produces seq-prefixed archives with newer timestamps.
+    const sink = createNdjsonAuditSink({
+      filePath: testFilePath,
+      rotation: { maxSizeBytes: 100 },
+    });
+    await sink.log(makeEntry({ kind: "model_call", timestamp: 2_000_000, sessionId: "modern" }));
+    await sink.log(makeEntry({ kind: "tool_call", timestamp: 3_000_000, sessionId: "modern" })); // rotation
+    await sink.flush();
+
+    const all = await sink.getEntries();
+    // Legacy entry (ts=1M) precedes seq-archived entries (ts=2M, 3M).
+    expect(all[0]?.sessionId).toBe("legacy");
+    expect(all.at(-1)?.timestamp).toBeGreaterThanOrEqual(2_000_000);
+
+    await sink.close();
+  });
+
+  test("getEntries() ignores stray non-ndjson files in archive dir", async () => {
+    archiveDir = `${testFilePath}.archive`;
+    const sink = createNdjsonAuditSink({
+      filePath: testFilePath,
+      rotation: { maxSizeBytes: 100 },
+    });
+    await sink.log(makeEntry({ kind: "session_start" }));
+    await sink.log(makeEntry({ kind: "model_call" })); // rotates
+    await sink.flush();
+
+    // Drop noise into archive dir — must be ignored, not throw.
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(join(archiveDir, ".DS_Store"), "ignored");
+    await writeFile(join(archiveDir, "partial.ndjson.tmp"), "garbage");
+
+    const entries = await sink.getEntries();
+    expect(entries.length).toBeGreaterThan(0);
+
+    await sink.close();
+  });
+
   test("hash-chain prev_hash is preserved across rotation boundary", async () => {
     archiveDir = `${testFilePath}.archive`;
     const sink = createNdjsonAuditSink({

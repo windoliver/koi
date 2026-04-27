@@ -1020,9 +1020,13 @@ if (decision.effect === "ask") {
 
 **Coverage:** persistent always-allow, session always-allow, cache hit, coalesced inflight allow, fresh approval (allow/modify/always-allow), and all deny paths.
 
-### Dispatch durability + concurrency (#1992)
+### Dispatch durability (#1992)
 
-`dispatchPermissionDecision` is invoked fire-and-forget on the hot path so a slow audit hook never blocks tool execution; durability is provided by the post-execution flush already required by the audit middleware. To prevent a wedged hook from leaking work indefinitely, every dispatch is wrapped in a **30 s timeout** that is cleared and `unref`'d as soon as the hook settles (no event-loop pinning, no spurious timeout after success). Multiple registered `onPermissionDecision` hooks now run **concurrently** (`Promise.allSettled`) instead of serially, so a single slow observer cannot delay siblings — each still has its own 30 s deadline. Filter-time (`filter-tools.ts`) and deny-path dispatches use the same primitive.
+All three dispatch call sites in `wrap-tool-call.ts` (allow path, deny path, fresh-approval ask path) invoke `ctx.dispatchPermissionDecision?.(query, decision)` **fire-and-forget** (`void`). This preserves the public contract that `onPermissionDecision` is a non-blocking observer hook — a slow or failing observer can never stall or fail approved tool execution.
+
+Durability of the audit record is provided by the **post-execution force-flush** in `wrapToolCall` / `wrapModelCall`, which drains both the permission-decision and tool-call records atomically before returning the tool result. If the flush fails, `poisonError` is set and the result is withheld.
+
+Hook execution is sequential (`runPermissionDecisionHooks` awaits each `onPermissionDecision` in turn). A single slow observer therefore delays subsequent observers within the same dispatch, but never the caller — keep observer hooks short (queue-and-return) and let post-execution flush handle durability.
 
 ---
 
