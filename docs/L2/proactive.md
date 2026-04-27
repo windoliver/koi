@@ -139,11 +139,20 @@ them. We deliberately **do not** expire on wall-clock time: a backlogged or
 paused scheduler may still deliver the original task after `wake_at_ms` has
 passed, and silently dropping the entry would risk duplicate wake-ups.
 
-**Known durability gap:** the map is in-memory. Durable cross-restart dedup
-requires the underlying scheduler to honour idempotency keys at submit/schedule
-time, which the current `@koi/scheduler` does not. After a restart, a model
-retry can still produce a duplicate. Closing that is an L0/L2 contract change
-tracked separately — we deliberately do not fake durability here.
+**Scope: same-process retry guard only.** The map is in-memory. After a
+process restart or agent reassembly it is empty, and a retry with the same key
+registers a second wake-up / second recurring schedule. The tool descriptions
+the model sees state this explicitly — `idempotency_key` is documented as
+"NOT durable across process restart" so callers do not mistake it for a
+cross-restart correctness guarantee.
+
+The caller-supplied key is forwarded as `TaskOptions.idempotencyKey` so any
+future scheduler implementation that honours the field durably can dedupe at
+the boundary without further changes here. Until that lands, hosts that need
+cross-restart safety should additionally ensure the agent that issued the
+original `sleep` / `schedule_cron` is not re-driven from the same caller after
+restart, or wait for the L0 widening (tracked separately) before routing
+externally-triggered retries through these tools.
 
 ## Key Design Decisions
 

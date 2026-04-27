@@ -4,15 +4,20 @@
  * Each tool is a thin wrapper over a single SchedulerComponent method. Errors
  * surface as `{ ok: false, error }` rather than throwing.
  *
- * In-memory idempotency: when the caller supplies `idempotency_key`, the
- * provider remembers `key → schedule_id` and returns the existing id on
- * re-submit. This makes retries inside one agent session safe (the common
- * failure mode after an ambiguous tool ACK). Durable cross-restart dedup
- * requires the underlying scheduler to honour idempotency keys at the
- * schedule layer — the current `@koi/scheduler` implementation does not, so
- * a restart followed by a retry can still create a duplicate. That gap is
- * an L0/L2 contract change tracked separately and deliberately not papered
- * over here.
+ * Process-local idempotency
+ * -------------------------
+ * `idempotency_key` is a same-process retry guard. The provider keeps an
+ * in-memory map keyed by the caller-supplied string, with each entry holding
+ * a fingerprint (expression + wake_message + timezone) of the original
+ * registration. A retry within the same process with matching fields returns
+ * the original schedule_id (`deduped: true`); mismatches fail closed.
+ *
+ * It is NOT durable. After a process restart or agent reassembly the map is
+ * empty, and a retry with the same key registers a second recurring schedule.
+ * The caller-supplied key is forwarded as `TaskOptions.idempotencyKey` so any
+ * future scheduler that honours it durably can dedupe at the boundary, but
+ * the current `@koi/scheduler` ignores the field. Closing the cross-restart
+ * gap is an L0/L2 contract change tracked separately.
  *
  * Listing existing schedules is intentionally not exposed here: the L0
  * `SchedulerComponent` interface does not currently surface a per-agent
@@ -46,10 +51,13 @@ const scheduleCronSchema = z.object({
     .min(1)
     .optional()
     .describe(
-      "Stable caller-supplied key. Re-using the same key with the same expression is a no-op " +
-        "(the existing schedule_id is returned), so retrying after an ambiguous failure cannot " +
-        "create duplicate recurring schedules. Strongly recommended for any cron the agent " +
-        "might re-issue.",
+      "Best-effort process-local dedupe key. Re-using the same key with the same expression, " +
+        "wake_message, and timezone inside the SAME running process returns the existing " +
+        "schedule_id (deduped:true); mismatched fields fail closed. NOT durable across " +
+        "process restart or agent reassembly — after a restart, the same key on a retry will " +
+        "register a second recurring schedule. Use only as a same-session retry guard. For " +
+        "durable cross-restart correctness, the host runtime must additionally guarantee the " +
+        "scheduler is not re-driven from the same caller after restart.",
     ),
 });
 

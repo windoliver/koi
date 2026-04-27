@@ -48,10 +48,12 @@ const schema = z.object({
     .min(1)
     .optional()
     .describe(
-      "Stable caller-supplied key. Re-using the same key with the same duration and wake " +
-        "message returns the original task_id (deduped:true). Mismatched fields fail closed " +
-        "with an error rather than silently registering a duplicate wake-up. Entry persists " +
-        "until cancel_sleep is called.",
+      "Best-effort process-local dedupe key. Re-using the same key with the same duration " +
+        "and wake_message inside the SAME running process returns the original task_id " +
+        "(deduped:true); mismatched fields fail closed. NOT durable across process restart " +
+        "or agent reassembly — after a restart, the same key on a retry will register a " +
+        "second wake-up. Use only as a same-session retry guard, not as a cross-restart " +
+        "correctness guarantee. Entry persists until cancel_sleep is called.",
     ),
 });
 
