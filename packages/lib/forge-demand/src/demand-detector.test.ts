@@ -2869,38 +2869,35 @@ describe("createForgeDemandDetector", () => {
     }
   });
 
-  it("F120: onSessionEnd accepts a rebuilt SessionContext and revokes the original token", async () => {
-    // Reviewer F120: F118 admitted rebuilt SessionContexts via stable
-    // sessionId+runId tokens, but onSessionEnd still required the
-    // original JS object. A host that proxies/rebuilds contexts could
-    // therefore admit + drive traffic but never tear down — leaving
-    // sessions/sessionEpoch and the admission token live, which
-    // could let a future logical session inherit prior state. Fix:
-    // resolve teardown via the same token-based admission registry,
-    // and revoke the ORIGINAL token captured at admission so a later
-    // sessionId/runId mutation does not leak it.
+  it("F127: onSessionEnd is authorized by object identity — a fabricated tuple cannot revoke a victim", async () => {
+    // Reviewer F127: prior rounds widened onSessionEnd to fall back to
+    // `tokenFor(ctx)` when the original ctx WeakMap missed, so a
+    // rebuilt SessionContext could revoke its admission. But
+    // (sessionId, runId) are plain branded strings; an in-process
+    // caller learning a victim's ids could fabricate `{sessionId,
+    // runId}` and clear the victim's signals. Fix: teardown requires
+    // the original object identity captured in `originalTokenByCtx`.
     const handle = createForgeDemandDetector(makeConfig({}));
-    const original = createMockTurnContext({
-      session: { sessionId: "sess-end" } as never,
+    const victim = createMockTurnContext({
+      session: { sessionId: "victim-sess" } as never,
     });
-    await handle.middleware.onSessionStart?.(original.session);
-    // End via a REBUILT SessionContext with the same token.
-    const rebuilt: SessionContext = { ...original.session };
-    expect(rebuilt).not.toBe(original.session);
-    await handle.middleware.onSessionEnd?.(rebuilt);
-    // After rebuilt-end: a fresh wrap call on the original object
-    // must NOT find a registered admission token (admission revoked).
+    await handle.middleware.onSessionStart?.(victim.session);
+    // Fabricated ctx with the victim's ids — must NOT revoke.
+    const forged: SessionContext = { ...victim.session };
+    expect(forged).not.toBe(victim.session);
+    await handle.middleware.onSessionEnd?.(forged);
+    // Victim is still admitted: a wrap on the original ctx runs the
+    // detector silently (no "unobserved session" warning).
     const swallowed: unknown[] = [];
     const origErr = console.error;
     console.error = (...a: unknown[]): void => {
       swallowed.push(a);
     };
     try {
-      await handle.middleware.wrapToolCall?.(original, toolReq("any"), async () => toolRes());
+      await handle.middleware.wrapToolCall?.(victim, toolReq("any"), async () => toolRes());
     } finally {
       console.error = origErr;
     }
-    // Skipped-warning landed: detector treats the session as unobserved.
     expect(
       swallowed.some((a) =>
         Array.isArray(a)
@@ -2910,7 +2907,7 @@ describe("createForgeDemandDetector", () => {
             )
           : false,
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("F120: onSessionEnd revokes the ORIGINAL admission token even if sessionId mutates after admission", async () => {

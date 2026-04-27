@@ -685,12 +685,13 @@ describe("createFeedbackLoopMiddleware", () => {
       expect(next).toHaveBeenCalledTimes(1);
     });
 
-    it("F120: onSessionEnd accepts a rebuilt SessionContext and disposes the tracker", async () => {
-      // Reviewer F120: F118 widened wrap* admission to rebuilt
-      // SessionContexts via stable sessionId+runId tokens, but
-      // onSessionEnd still required the original JS object. Tracker
-      // would never dispose for hosts that proxy/rebuild contexts,
-      // leaking quarantine/health state across logical sessions.
+    it("F128: onSessionEnd is authorized by object identity — a fabricated tuple cannot dispose a victim's tracker", async () => {
+      // Reviewer F128: prior rounds widened onSessionEnd to fall back
+      // to `tokenFor(ctx)`, so any caller knowing a victim's
+      // (sessionId, runId) tuple could dispose its tracker — wiping
+      // quarantine, demotion, and failure history. Fix: teardown
+      // requires the original object identity captured at
+      // onSessionStart in `originalTokenByCtx`.
       const dispose = mock(async () => {});
       const fakeTracker: ToolHealthTracker = {
         recordSuccess: () => {},
@@ -707,19 +708,17 @@ describe("createFeedbackLoopMiddleware", () => {
         const mw = createFeedbackLoopMiddleware({ forgeHealth: makeMinimalForgeHealth() });
         const original = mockSessionCtx();
         await mw.onSessionStart?.(original);
-        // Tear down via a REBUILT SessionContext with the same token.
-        const rebuilt: SessionContext = { ...original };
-        await mw.onSessionEnd?.(rebuilt);
-        // Tracker disposed exactly once via the rebuilt-context path.
-        expect(dispose).toHaveBeenCalledTimes(1);
-        // Subsequent traffic on the original object now fails the
-        // strict admission gate (token revoked) — proves the original
-        // token was actually removed, not just shadowed.
+        // Fabricated ctx with the victim's ids — must NOT dispose.
+        const forged: SessionContext = { ...original };
+        await mw.onSessionEnd?.(forged);
+        expect(dispose).not.toHaveBeenCalled();
+        // Original admission is still live: traffic on the original
+        // ctx passes through (the only ctx that can revoke is the
+        // engine-issued one).
         const next = mock(async (_req: ToolRequest) => mockToolResponse());
-        await expect(
-          mw.wrapToolCall?.(mockTurnCtx(original), mockToolRequest(), next),
-        ).rejects.toMatchObject({ code: "VALIDATION" });
-        expect(next).not.toHaveBeenCalled();
+        const result = await mw.wrapToolCall?.(mockTurnCtx(original), mockToolRequest(), next);
+        expect(result).toBeDefined();
+        expect(next).toHaveBeenCalledTimes(1);
       } finally {
         spy.mockRestore();
       }

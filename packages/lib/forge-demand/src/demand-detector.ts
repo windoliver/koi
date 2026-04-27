@@ -1347,16 +1347,21 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // Without (1), a caller in possession of the middleware could
       // forge `{ sessionId: victim, ... }` and revoke another tenant's
       // state. F97 regression.
+      // F127: teardown is authorized by object identity ONLY. Earlier
+      // rounds added a `tokenFor(ctx)` fallback so a rebuilt
+      // SessionContext could revoke its own admission, but
+      // `(sessionId, runId)` are plain branded strings — admitting a
+      // rebuilt-from-tuple object turns teardown into a tuple-guessing
+      // problem. An in-process caller learning another session's ids
+      // could clear its detector state. Require the original
+      // engine-issued ctx (or a ctx that was admitted via the same
+      // object identity captured in `originalTokenByCtx`); otherwise
+      // teardown is a silent no-op.
       const originalToken = originalTokenByCtx.get(ctx);
-      let resolvedToken: string | undefined;
-      if (originalToken !== undefined && admittedTokens.has(originalToken)) {
-        resolvedToken = originalToken;
-      } else {
-        const currentToken = tokenFor(ctx);
-        if (admittedTokens.has(currentToken)) {
-          resolvedToken = currentToken;
-        }
-      }
+      const resolvedToken =
+        originalToken !== undefined && admittedTokens.has(originalToken)
+          ? originalToken
+          : undefined;
       const sid =
         resolvedToken !== undefined ? sidByToken.get(resolvedToken) : observedSessions.get(ctx);
       if (sid === undefined) return;

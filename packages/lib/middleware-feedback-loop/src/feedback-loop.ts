@@ -305,16 +305,17 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
       // post-start) cannot dispose another tenant's tracker because
       // (1) wins for legitimately-admitted contexts and (2)/(3)
       // require the attacker to know the engine-issued runId.
+      // F128: teardown is authorized by object identity ONLY. The
+      // earlier `tokenFor(ctx)` fallback let any caller knowing a
+      // (sessionId, runId) tuple dispose another session's tracker —
+      // wiping quarantine, demotion, and failure history. Require
+      // the original engine-issued ctx (captured at onSessionStart
+      // in `originalTokenByCtx`); otherwise teardown is a no-op.
       const originalToken = originalTokenByCtx.get(ctx);
-      let resolvedToken: string | undefined;
-      if (originalToken !== undefined && admittedTokens.has(originalToken)) {
-        resolvedToken = originalToken;
-      } else {
-        const currentToken = tokenFor(ctx);
-        if (admittedTokens.has(currentToken)) {
-          resolvedToken = currentToken;
-        }
-      }
+      const resolvedToken =
+        originalToken !== undefined && admittedTokens.has(originalToken)
+          ? originalToken
+          : undefined;
       const sid =
         resolvedToken !== undefined ? sidByToken.get(resolvedToken) : observedSessions.get(ctx);
       if (sid === undefined) return;
