@@ -29,6 +29,7 @@
     "@koi/engine": "workspace:*",
     "@koi/engine-compose": "workspace:*",
     "@koi/event-trace": "workspace:*",
+    "@koi/execution-context": "workspace:*",
     "@koi/file-type": "workspace:*",
     "@koi/forge-tools": "workspace:*",
     "@koi/gateway-webhook": "workspace:*",

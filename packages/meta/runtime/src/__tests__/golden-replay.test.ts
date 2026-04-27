@@ -5908,6 +5908,91 @@ describe("Golden: @koi/spawn-tools", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/forge-tools (2 standalone queries, no LLM needed)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/forge-tools", () => {
+  test("synthesize-then-inspect — round-trip via forge_tool then forge_inspect", async () => {
+    const { createInMemoryForgeStore, createForgeToolTool, createForgeInspectTool } = await import(
+      "@koi/forge-tools"
+    );
+    const { runWithExecutionContext } = await import("@koi/execution-context");
+    const { sessionId, runId } = await import("@koi/core");
+
+    const store = createInMemoryForgeStore();
+    const synth = createForgeToolTool({ store });
+    const inspect = createForgeInspectTool({ store });
+
+    const ctx = {
+      session: {
+        agentId: "golden-agent-A",
+        sessionId: sessionId("golden-s1"),
+        runId: runId("golden-r1"),
+        metadata: {},
+      },
+      turnIndex: 0,
+    } as const;
+
+    // Synthesize.
+    const synthRaw = await runWithExecutionContext(ctx, () =>
+      synth.execute({
+        name: "add-numbers",
+        description: "Sum two numbers and return the result.",
+        version: "0.0.1",
+        scope: "agent",
+        implementation: "return args.a + args.b;",
+        inputSchema: {
+          type: "object",
+          properties: { a: { type: "number" }, b: { type: "number" } },
+          required: ["a", "b"],
+        },
+      }),
+    );
+    const synthOk = synthRaw as { ok: true; value: { brickId: string; lifecycle: string } };
+    expect(synthOk.ok).toBe(true);
+    expect(synthOk.value.lifecycle).toBe("draft");
+
+    // Inspect — assert artifact matches what was synthesized.
+    const inspectRaw = await runWithExecutionContext(ctx, () =>
+      inspect.execute({ brickId: synthOk.value.brickId }),
+    );
+    const inspectOk = inspectRaw as {
+      ok: true;
+      value: { artifact: { id: string; kind: string; name: string; lifecycle: string } };
+    };
+    expect(inspectOk.ok).toBe(true);
+    expect(inspectOk.value.artifact.id).toBe(synthOk.value.brickId);
+    expect(inspectOk.value.artifact.kind).toBe("tool");
+    expect(inspectOk.value.artifact.name).toBe("add-numbers");
+    expect(inspectOk.value.artifact.lifecycle).toBe("draft");
+  });
+
+  test("list-empty-store — forge_list returns empty summaries on a fresh store", async () => {
+    const { createInMemoryForgeStore, createForgeListTool } = await import("@koi/forge-tools");
+    const { runWithExecutionContext } = await import("@koi/execution-context");
+    const { sessionId, runId } = await import("@koi/core");
+
+    const store = createInMemoryForgeStore();
+    const list = createForgeListTool({ store });
+
+    const ctx = {
+      session: {
+        agentId: "golden-agent-B",
+        sessionId: sessionId("golden-s2"),
+        runId: runId("golden-r2"),
+        metadata: {},
+      },
+      turnIndex: 0,
+    } as const;
+
+    const raw = await runWithExecutionContext(ctx, () => list.execute({}));
+    const ok = raw as { ok: true; value: { summaries: readonly unknown[] } };
+    expect(ok.ok).toBe(true);
+    expect(ok.value.summaries).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // @koi/spawn-tools ATIF trajectory (golden file — produced by real LLM recording)
 // ---------------------------------------------------------------------------
 

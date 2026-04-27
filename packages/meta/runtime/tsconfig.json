@@ -25,6 +25,7 @@
     { "path": "../../lib/fs-scoped" },
     { "path": "../../lib/ipc-local" },
     { "path": "../../lib/event-trace" },
+    { "path": "../../lib/execution-context" },
     { "path": "../../lib/hooks" },
     { "path": "../../lib/loop" },
     { "path": "../../lib/query-engine" },
