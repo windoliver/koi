@@ -102,14 +102,28 @@ describe("createNexusRevocationRegistry", () => {
     expect(map.get(id3)).toBe(false); // NOT_FOUND = not revoked
   });
 
-  test("revoke(cascade=true) throws — cascade requires caller to revoke each descendant", async () => {
+  test("revoke(cascade=true) persists target then throws — target is revoked even though cascade is unsupported", async () => {
+    const calls: Array<{ method: string; params: CallArgs }> = [];
     const registry = createNexusRevocationRegistry({
-      transport: makeTransport(async () => ({ ok: true, value: "" })),
+      transport: makeTransport(async (method, params) => {
+        calls.push({ method, params: params as CallArgs });
+        return { ok: true, value: "" };
+      }),
     });
 
     await expect(registry.revoke(delegationId("grant-abc"), true)).rejects.toThrow(
       /cascade=true is not supported/,
     );
+
+    // Target write must have happened before the cascade throw
+    const writeCalls = calls.filter((c) => c.method === "write");
+    expect(writeCalls).toHaveLength(1);
+    const write = writeCalls[0];
+    expect(write).toBeDefined();
+    if (write !== undefined) {
+      expect(write.params.path).toBe("koi/permissions/revocations/grant-abc.json");
+      expect(JSON.parse(write.params.content ?? "{}")).toEqual({ revoked: true });
+    }
   });
 
   test("revoke(cascade=false) writes { revoked: true } to correct path", async () => {
@@ -131,6 +145,24 @@ describe("createNexusRevocationRegistry", () => {
       expect(call.params.path).toBe("koi/permissions/revocations/grant-xyz.json");
       expect(JSON.parse(call.params.content ?? "{}")).toEqual({ revoked: true });
     }
+  });
+
+  test("isRevoked rejects DelegationId with path-traversal characters", async () => {
+    const registry = createNexusRevocationRegistry({
+      transport: makeTransport(async () => notFoundError()),
+    });
+    await expect(registry.isRevoked(delegationId("../etc/passwd"))).rejects.toThrow(
+      /unsafe path characters/,
+    );
+  });
+
+  test("revoke rejects DelegationId with slash characters", async () => {
+    const registry = createNexusRevocationRegistry({
+      transport: makeTransport(async () => ({ ok: true, value: "" })),
+    });
+    await expect(registry.revoke(delegationId("a/b"), false)).rejects.toThrow(
+      /unsafe path characters/,
+    );
   });
 
   test("custom policyPath is used", async () => {

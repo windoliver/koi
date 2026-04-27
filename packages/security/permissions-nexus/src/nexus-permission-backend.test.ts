@@ -69,7 +69,7 @@ describe("createNexusPermissionBackend", () => {
         return notFoundResult();
       }),
       localBackend: makeLocalBackend(ALLOW),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: () => makeLocalBackend(),
       syncIntervalMs: 0,
     });
@@ -89,7 +89,7 @@ describe("createNexusPermissionBackend", () => {
     const backend = createNexusPermissionBackend({
       transport: makeTransport(async () => notFoundResult()),
       localBackend: makeLocalBackend(DENY),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: () => makeLocalBackend(),
       syncIntervalMs: 0,
     });
@@ -107,7 +107,7 @@ describe("createNexusPermissionBackend", () => {
     const backend = createNexusPermissionBackend({
       transport: makeTransport(async () => notFoundResult()),
       localBackend,
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: () => makeLocalBackend(),
       syncIntervalMs: 0,
     });
@@ -133,7 +133,7 @@ describe("createNexusPermissionBackend", () => {
     const backend = createNexusPermissionBackend({
       transport: makeTransport(async () => notFoundResult()),
       localBackend,
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: () => makeLocalBackend(),
       syncIntervalMs: 0,
     });
@@ -156,7 +156,7 @@ describe("createNexusPermissionBackend", () => {
         return notFoundResult();
       }),
       localBackend: makeLocalBackend(),
-      getCurrentPolicy: () => ({ rules: ["default-deny"] }),
+
       rebuildBackend: () => makeLocalBackend(),
       syncIntervalMs: 0,
     });
@@ -180,7 +180,7 @@ describe("createNexusPermissionBackend", () => {
         return notFoundResult();
       }),
       localBackend: makeLocalBackend(ALLOW),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: rebuildMock,
       syncIntervalMs: 0,
     });
@@ -203,7 +203,7 @@ describe("createNexusPermissionBackend", () => {
     const backend = createNexusPermissionBackend({
       transport: makeTransport(async () => timeoutResult()),
       localBackend: makeLocalBackend(ALLOW),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: rebuildMock,
       syncIntervalMs: 0,
     });
@@ -232,7 +232,7 @@ describe("createNexusPermissionBackend", () => {
         return notFoundResult();
       }),
       localBackend: makeLocalBackend(),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: rebuildMock,
       syncIntervalMs: 0,
     });
@@ -266,7 +266,7 @@ describe("createNexusPermissionBackend", () => {
         return notFoundResult();
       }),
       localBackend: makeLocalBackend(ALLOW),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: rebuildMock,
       syncIntervalMs: 0,
     });
@@ -292,7 +292,7 @@ describe("createNexusPermissionBackend", () => {
     const backend = createNexusPermissionBackend({
       transport: makeTransport(async () => notFoundResult()),
       localBackend: makeLocalBackend(),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: () => makeLocalBackend(),
       syncIntervalMs: 5000,
     });
@@ -305,7 +305,7 @@ describe("createNexusPermissionBackend", () => {
     const backend = createNexusPermissionBackend({
       transport: makeTransport(async () => notFoundResult()),
       localBackend: makeLocalBackend(),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: () => makeLocalBackend(),
       syncIntervalMs: 0,
     });
@@ -326,7 +326,7 @@ describe("createNexusPermissionBackend", () => {
         return notFoundResult();
       }),
       localBackend: makeLocalBackend(ALLOW),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: rebuildMock,
       syncIntervalMs: 0,
     });
@@ -354,7 +354,7 @@ describe("createNexusPermissionBackend", () => {
         return notFoundResult();
       }),
       localBackend: makeLocalBackend(ALLOW),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: rebuildMock,
       syncIntervalMs: 0,
     });
@@ -373,7 +373,7 @@ describe("createNexusPermissionBackend", () => {
     const backend2 = createNexusPermissionBackend({
       transport: pollTransport,
       localBackend: makeLocalBackend(ALLOW),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: rebuildMock,
       syncIntervalMs: 0,
     });
@@ -404,7 +404,7 @@ describe("createNexusPermissionBackend", () => {
         return notFoundResult();
       }),
       localBackend: makeLocalBackend(ALLOW),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: rebuildMock,
       syncIntervalMs: 0,
     });
@@ -425,7 +425,7 @@ describe("createNexusPermissionBackend", () => {
         return notFoundResult();
       }),
       localBackend: makeLocalBackend(ALLOW),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: rebuildMock,
       syncIntervalMs: 0,
     });
@@ -447,7 +447,7 @@ describe("createNexusPermissionBackend", () => {
     const backend = createNexusPermissionBackend({
       transport: makeTransport(async () => notFoundResult()),
       localBackend: makeLocalBackend(),
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: () => makeLocalBackend(),
       syncIntervalMs: 60_000, // non-zero — polling should be active
     });
@@ -468,7 +468,7 @@ describe("createNexusPermissionBackend", () => {
     const backend = createNexusPermissionBackend({
       transport: makeTransport(async () => notFoundResult()),
       localBackend,
-      getCurrentPolicy: () => ({}),
+
       rebuildBackend: () => makeLocalBackend(),
       syncIntervalMs: 0,
     });

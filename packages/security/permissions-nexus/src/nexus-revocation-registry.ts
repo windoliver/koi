@@ -8,14 +8,22 @@ export interface NexusRevocationRegistryConfig {
 
 const DEFAULT_POLICY_PATH = "koi/permissions";
 
+function validateDelegationIdPath(id: string): string {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+    throw new Error(`DelegationId contains unsafe path characters: ${id}`);
+  }
+  return id;
+}
+
 export function createNexusRevocationRegistry(
   config: NexusRevocationRegistryConfig,
 ): Required<RevocationRegistry> {
   const policyPath = config.policyPath ?? DEFAULT_POLICY_PATH;
 
   const isRevoked = async (id: DelegationId): Promise<boolean> => {
+    const safePath = validateDelegationIdPath(id);
     const result = await config.transport.call<string>("read", {
-      path: `${policyPath}/revocations/${id}.json`,
+      path: `${policyPath}/revocations/${safePath}.json`,
     });
     if (!result.ok) {
       return result.error.code !== "NOT_FOUND"; // NOT_FOUND = not revoked; else fail-closed
@@ -43,23 +51,24 @@ export function createNexusRevocationRegistry(
   };
 
   const revoke = async (id: DelegationId, cascade: boolean): Promise<void> => {
-    if (cascade) {
-      // Cascade requires traversing the delegation chain, which the Nexus registry
-      // cannot do without an index. Callers must call revoke() on each descendant
-      // individually (DelegationManager handles this at a higher layer).
-      throw new Error(
-        `NexusRevocationRegistry: cascade=true is not supported. ` +
-          `Revoke each descendant explicitly or use an in-memory registry for cascade.`,
-      );
-    }
+    const safePath = validateDelegationIdPath(id);
     const result = await config.transport.call("write", {
-      path: `${policyPath}/revocations/${id}.json`,
+      path: `${policyPath}/revocations/${safePath}.json`,
       content: JSON.stringify({ revoked: true }),
     });
     if (!result.ok) {
       throw new Error(`Failed to persist revocation for grant ${id}: ${result.error.message}`, {
         cause: result.error,
       });
+    }
+    if (cascade) {
+      // Cascade requires traversing the delegation chain, which the Nexus registry
+      // cannot do without an index. The target is already persisted above.
+      // Callers must revoke each descendant individually.
+      throw new Error(
+        `NexusRevocationRegistry: cascade=true is not supported. ` +
+          `Revoke each descendant explicitly or use an in-memory registry for cascade.`,
+      );
     }
   };
 

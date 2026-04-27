@@ -5,8 +5,6 @@ export interface NexusPermissionsConfig {
   readonly transport: NexusTransport;
   /** Current local backend — used for all check() calls. */
   readonly localBackend: PermissionBackend;
-  /** Serialize current policy to a JSON-storable object. */
-  readonly getCurrentPolicy: () => unknown;
   /** Reconstruct a PermissionBackend from a Nexus-loaded policy. */
   readonly rebuildBackend: (policy: unknown) => PermissionBackend;
   /** Poll interval in ms. Default: 30_000. Set 0 to disable. */
@@ -18,7 +16,6 @@ export interface NexusPermissionsConfig {
 interface RawConfig {
   readonly transport: unknown;
   readonly localBackend: unknown;
-  readonly getCurrentPolicy: unknown;
   readonly rebuildBackend: unknown;
   readonly syncIntervalMs: unknown;
 }
@@ -46,16 +43,6 @@ export function validateNexusPermissionsConfig(
       error: {
         code: "VALIDATION",
         message: "config.localBackend must be provided",
-        retryable: false,
-      },
-    };
-  }
-  if (typeof obj.getCurrentPolicy !== "function") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "config.getCurrentPolicy must be a function",
         retryable: false,
       },
     };

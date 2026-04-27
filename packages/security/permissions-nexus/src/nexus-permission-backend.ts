@@ -5,13 +5,17 @@ import type { NexusVersionTag } from "./types.js";
 export interface NexusPermissionBackendConfig {
   readonly transport: NexusTransport;
   readonly localBackend: PermissionBackend;
-  readonly getCurrentPolicy: () => unknown;
   readonly rebuildBackend: (policy: unknown) => PermissionBackend;
   readonly syncIntervalMs?: number | undefined;
   readonly policyPath?: string | undefined;
 }
 
 export interface NexusPermissionBackend extends PermissionBackend {
+  /**
+   * Resolves when the initial Nexus policy sync completes (or falls back to local).
+   * Await before first use if you need the remote policy applied before any check().
+   */
+  readonly ready: Promise<void>;
   /** Always defined — delegates to local backend's checkBatch or falls back to sequential checks. */
   readonly checkBatch: (
     queries: readonly PermissionQuery[],
@@ -130,8 +134,8 @@ export function createNexusPermissionBackend(
     }
   }
 
-  // Fire-and-forget startup: init then start polling
-  void initializePolicy()
+  // Startup: init then start polling; expose as `ready` so callers can await before first use
+  const ready: Promise<void> = initializePolicy()
     .catch(() => {
       console.warn("[permissions-nexus] startup Nexus sync failed, running on local rules");
     })
@@ -163,6 +167,7 @@ export function createNexusPermissionBackend(
     check,
     checkBatch,
     dispose,
+    ready,
     _poll: poll,
   };
 

@@ -13867,7 +13867,7 @@ describe("Golden: @koi/permissions-nexus", () => {
     const backend = createNexusPermissionBackend({
       transport: nexusDown,
       localBackend: local,
-      getCurrentPolicy: () => [],
+
       rebuildBackend: () => local,
       syncIntervalMs: 0,
     });
@@ -13912,7 +13912,7 @@ describe("Golden: @koi/permissions-nexus", () => {
     const backend = createNexusPermissionBackend({
       transport,
       localBackend: denying,
-      getCurrentPolicy: () => [],
+
       rebuildBackend: (p) => {
         rebuildCalledWith = p;
         return allowing;

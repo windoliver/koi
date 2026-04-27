@@ -21,7 +21,6 @@ describe("validateNexusPermissionsConfig", () => {
     const config = {
       transport: makeTransport(),
       localBackend: makeLocalBackend(),
-      getCurrentPolicy: () => ({}),
       rebuildBackend: () => makeLocalBackend(),
     };
     const result = validateNexusPermissionsConfig(config);
@@ -51,7 +50,6 @@ describe("validateNexusPermissionsConfig", () => {
   test("missing transport returns VALIDATION error", () => {
     const result = validateNexusPermissionsConfig({
       localBackend: makeLocalBackend(),
-      getCurrentPolicy: () => ({}),
       rebuildBackend: () => makeLocalBackend(),
     });
     expect(result.ok).toBe(false);
@@ -65,7 +63,6 @@ describe("validateNexusPermissionsConfig", () => {
     const result = validateNexusPermissionsConfig({
       transport: null,
       localBackend: makeLocalBackend(),
-      getCurrentPolicy: () => ({}),
       rebuildBackend: () => makeLocalBackend(),
     });
     expect(result.ok).toBe(false);
@@ -78,7 +75,6 @@ describe("validateNexusPermissionsConfig", () => {
   test("missing localBackend returns VALIDATION error", () => {
     const result = validateNexusPermissionsConfig({
       transport: makeTransport(),
-      getCurrentPolicy: () => ({}),
       rebuildBackend: () => makeLocalBackend(),
     });
     expect(result.ok).toBe(false);
@@ -88,25 +84,10 @@ describe("validateNexusPermissionsConfig", () => {
     }
   });
 
-  test("non-function getCurrentPolicy returns VALIDATION error", () => {
-    const result = validateNexusPermissionsConfig({
-      transport: makeTransport(),
-      localBackend: makeLocalBackend(),
-      getCurrentPolicy: "not-a-function",
-      rebuildBackend: () => makeLocalBackend(),
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("VALIDATION");
-      expect(result.error.message).toContain("getCurrentPolicy");
-    }
-  });
-
   test("non-function rebuildBackend returns VALIDATION error", () => {
     const result = validateNexusPermissionsConfig({
       transport: makeTransport(),
       localBackend: makeLocalBackend(),
-      getCurrentPolicy: () => ({}),
       rebuildBackend: 42,
     });
     expect(result.ok).toBe(false);
@@ -120,7 +101,6 @@ describe("validateNexusPermissionsConfig", () => {
     const result = validateNexusPermissionsConfig({
       transport: makeTransport(),
       localBackend: makeLocalBackend(),
-      getCurrentPolicy: () => ({}),
       rebuildBackend: () => makeLocalBackend(),
       syncIntervalMs: 0,
     });
@@ -131,7 +111,6 @@ describe("validateNexusPermissionsConfig", () => {
     const result = validateNexusPermissionsConfig({
       transport: makeTransport(),
       localBackend: makeLocalBackend(),
-      getCurrentPolicy: () => ({}),
       rebuildBackend: () => makeLocalBackend(),
       syncIntervalMs: 5000,
     });
@@ -142,7 +121,6 @@ describe("validateNexusPermissionsConfig", () => {
     const result = validateNexusPermissionsConfig({
       transport: makeTransport(),
       localBackend: makeLocalBackend(),
-      getCurrentPolicy: () => ({}),
       rebuildBackend: () => makeLocalBackend(),
       syncIntervalMs: -1,
     });
@@ -157,7 +135,6 @@ describe("validateNexusPermissionsConfig", () => {
     const result = validateNexusPermissionsConfig({
       transport: makeTransport(),
       localBackend: makeLocalBackend(),
-      getCurrentPolicy: () => ({}),
       rebuildBackend: () => makeLocalBackend(),
       syncIntervalMs: "30000",
     });

@@ -14,6 +14,13 @@ export interface NexusDelegationHooks {
 
 const DEFAULT_POLICY_PATH = "koi/permissions";
 
+function validateDelegationIdPath(id: string): string {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+    throw new Error(`DelegationId contains unsafe path characters: ${id}`);
+  }
+  return id;
+}
+
 function mapGrantToTuples(grant: DelegationGrant): readonly RelationshipTuple[] {
   const allow = grant.scope.permissions.allow ?? [];
   const deny = grant.scope.permissions.deny ?? [];
@@ -50,8 +57,9 @@ export function createNexusDelegationHooks(
     const tuples = mapGrantToTuples(grant);
     if (tuples.length === 0) return;
 
+    const safePath = validateDelegationIdPath(grant.id);
     const result = await config.transport.call("write", {
-      path: `${policyPath}/tuples/${grant.id}.json`,
+      path: `${policyPath}/tuples/${safePath}.json`,
       content: JSON.stringify(tuples),
     });
 
@@ -63,9 +71,10 @@ export function createNexusDelegationHooks(
   };
 
   const onRevoke = async (grantId: DelegationId, _cascade: boolean): Promise<void> => {
+    const safePath = validateDelegationIdPath(grantId);
     // Best-effort — silently swallow (revocation is the safety operation)
     await config.transport
-      .call("delete", { path: `${policyPath}/tuples/${grantId}.json` })
+      .call("delete", { path: `${policyPath}/tuples/${safePath}.json` })
       .catch(() => {});
   };
 

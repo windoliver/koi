@@ -12,8 +12,13 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
   const batchSize = config.batchSize ?? DEFAULT_BATCH_SIZE;
   const flushIntervalMs = config.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
 
+  interface BufferEntry {
+    readonly entry: AuditEntry;
+    readonly path: string; // computed at enqueue so retries use the same Nexus path
+  }
+
   // let justified: mutable buffer swapped atomically on flush
-  let buffer: AuditEntry[] = [];
+  let buffer: BufferEntry[] = [];
   // let justified: lifecycle state
   let timer: ReturnType<typeof setInterval> | undefined;
   let flushPromise: Promise<void> | undefined;
@@ -25,10 +30,10 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
     return `${basePath}/${safeSession}/${entry.timestamp}-${entry.turnIndex}-${entry.kind}-${seq}.json`;
   }
 
-  async function writeEntry(transport: NexusTransport, entry: AuditEntry): Promise<void> {
+  async function writeEntry(transport: NexusTransport, buffered: BufferEntry): Promise<void> {
     const result = await transport.call("write", {
-      path: computePath(entry),
-      content: JSON.stringify(entry),
+      path: buffered.path,
+      content: JSON.stringify(buffered.entry),
     });
     if (!result.ok) {
       throw new Error(result.error.message, { cause: result.error });
@@ -42,12 +47,12 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
     buffer = [];
 
     const results = await Promise.allSettled(
-      batch.map((entry) => writeEntry(config.transport, entry)),
+      batch.map((buffered) => writeEntry(config.transport, buffered)),
     );
 
     const failed = batch.filter((_, i) => results[i]?.status === "rejected");
     if (failed.length > 0) {
-      buffer = [...failed, ...buffer]; // re-enqueue for next flush
+      buffer = [...failed, ...buffer]; // re-enqueue with same paths for idempotent retry
     }
 
     const firstFailed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
@@ -75,7 +80,7 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
   }
 
   const log = async (entry: AuditEntry): Promise<void> => {
-    buffer = [...buffer, entry];
+    buffer = [...buffer, { entry, path: computePath(entry) }];
     ensureTimer();
     if (buffer.length >= batchSize) {
       void startFlush().catch(() => {}); // fire-and-forget
