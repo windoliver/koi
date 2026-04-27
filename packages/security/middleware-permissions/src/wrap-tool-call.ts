@@ -32,20 +32,26 @@ const PERMISSION_DISPATCH_TIMEOUT_MS = 30_000;
 
 function dispatchWithTimeout(p: Promise<void> | void | undefined): Promise<void> {
   if (p === undefined || !(p instanceof Promise)) return Promise.resolve();
-  return Promise.race([
-    p,
-    new Promise<never>((_, reject) =>
-      setTimeout(
-        () =>
-          reject(
-            new Error(
-              "permission-decision hook dispatch timed out — observer hook did not complete in 30 s",
-            ),
+  // let: assigned once synchronously before any await.
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    handle = setTimeout(
+      () =>
+        reject(
+          new Error(
+            "permission-decision hook dispatch timed out — observer hook did not complete in 30 s",
           ),
-        PERMISSION_DISPATCH_TIMEOUT_MS,
-      ),
-    ),
-  ]);
+        ),
+      PERMISSION_DISPATCH_TIMEOUT_MS,
+    );
+    // Prevent the timer from holding the process open when the hook settles first.
+    if (typeof handle === "object" && handle !== null && "unref" in handle) {
+      (handle as { unref: () => void }).unref();
+    }
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    clearTimeout(handle);
+  });
 }
 
 export interface WrapToolCallDeps {
