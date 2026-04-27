@@ -71,6 +71,34 @@ describe("createProactiveToolsProvider", () => {
     expect(skipped[0]?.reason).toContain("SchedulerComponent");
   });
 
+  test("idempotency_key reservation survives reattach for the same agent pid", async () => {
+    const stub = createSchedulerStub();
+    const agent = makeAgent(stub.component);
+    const provider = createProactiveToolsProvider();
+
+    const sleepKey = toolToken("sleep") as string;
+    const first = await provider.attach(agent);
+    const firstComps = "components" in first ? first.components : first;
+    const sleepFirst = firstComps.get(sleepKey) as { execute: (a: object) => Promise<unknown> };
+    const r1 = (await sleepFirst.execute({
+      duration_ms: 5_000,
+      idempotency_key: "k",
+    })) as { task_id: string };
+
+    // Reattach: simulate runtime reassembly between turns.
+    const second = await provider.attach(agent);
+    const secondComps = "components" in second ? second.components : second;
+    const sleepSecond = secondComps.get(sleepKey) as { execute: (a: object) => Promise<unknown> };
+    const r2 = (await sleepSecond.execute({
+      duration_ms: 5_000,
+      idempotency_key: "k",
+    })) as { task_id: string; deduped?: boolean };
+
+    expect(r2.task_id).toBe(r1.task_id);
+    expect(r2.deduped).toBe(true);
+    expect(stub.submitCalls).toHaveLength(1);
+  });
+
   test("each attach uses the attaching agent's own scheduler — no cross-agent leak", async () => {
     const stubA = createSchedulerStub();
     const stubB = createSchedulerStub();

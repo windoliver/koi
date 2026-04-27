@@ -87,12 +87,45 @@ type SleepEntry =
   | { readonly kind: "pending"; readonly promise: Promise<SleepRecord> }
   | { readonly kind: "settled"; readonly record: SleepRecord };
 
+/**
+ * Hard cap on the idempotency map. Without it, agents that use unique keys
+ * for every sleep would grow this state without bound (a successful wake
+ * has no completion callback that we can hook for cleanup — the wake spawns
+ * a fresh agent run, not a tool callback). When the cap is reached we evict
+ * in insertion order, which on a `Map` is the same as least-recently-set
+ * since callers don't update entries in place. Practical throughput targets:
+ * 1 sleep / minute for ~17 hours of continuous activity before eviction.
+ */
+const DEFAULT_MAX_IDEMPOTENCY_ENTRIES = 1024;
+
 export interface SleepToolState {
   readonly idempotencyMap: Map<string, SleepEntry>;
+  readonly maxEntries: number;
 }
 
-export function createSleepToolState(): SleepToolState {
-  return { idempotencyMap: new Map<string, SleepEntry>() };
+export function createSleepToolState(maxEntries?: number): SleepToolState {
+  return {
+    idempotencyMap: new Map<string, SleepEntry>(),
+    maxEntries: maxEntries ?? DEFAULT_MAX_IDEMPOTENCY_ENTRIES,
+  };
+}
+
+/**
+ * Insert/update with FIFO eviction when the cap is reached. We delete first
+ * if the key already exists so re-setting bumps it to the back (Map iteration
+ * order is insertion order). Eviction targets the oldest entry — agents
+ * trying to retry the very oldest key after a reattach + 1024+ unique sleeps
+ * may legitimately produce a duplicate; that is the documented bound, not a
+ * silent correctness failure.
+ */
+function setBounded(state: SleepToolState, key: string, value: SleepEntry): void {
+  if (state.idempotencyMap.has(key)) {
+    state.idempotencyMap.delete(key);
+  } else if (state.idempotencyMap.size >= state.maxEntries) {
+    const oldest = state.idempotencyMap.keys().next().value;
+    if (oldest !== undefined) state.idempotencyMap.delete(oldest);
+  }
+  state.idempotencyMap.set(key, value);
 }
 
 function recordMatches(
@@ -217,7 +250,7 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
             durationMs: duration_ms,
             wakeMessage: message,
           };
-          state.idempotencyMap.set(idempotency_key, { kind: "settled", record: rec });
+          setBounded(state, idempotency_key, { kind: "settled", record: rec });
           return rec;
         });
       // Catch the rejection so we can drop the failed reservation. We also
@@ -227,7 +260,7 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
         throw err;
       });
 
-      state.idempotencyMap.set(idempotency_key, {
+      setBounded(state, idempotency_key, {
         kind: "pending",
         promise: trackedSubmission,
       });

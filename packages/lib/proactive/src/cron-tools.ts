@@ -88,16 +88,38 @@ type CronEntry =
   | { readonly kind: "settled"; readonly record: CronRecord };
 
 /**
+ * Hard cap on the cron idempotency map. Recurring schedules typically don't
+ * complete on their own, so this cap mainly protects against agents that
+ * register a long tail of throwaway keys. The default is generous enough
+ * for normal use; eviction is FIFO-order.
+ */
+const DEFAULT_MAX_IDEMPOTENCY_ENTRIES = 1024;
+
+/**
  * Per-tool-instance state shared between schedule_cron and cancel_schedule.
  * Lets cancel_schedule clear an idempotency mapping once its schedule is gone.
  */
 export interface CronToolState {
   /** idempotency_key → CronEntry */
   readonly idempotencyMap: Map<string, CronEntry>;
+  readonly maxEntries: number;
 }
 
-export function createCronToolState(): CronToolState {
-  return { idempotencyMap: new Map<string, CronEntry>() };
+export function createCronToolState(maxEntries?: number): CronToolState {
+  return {
+    idempotencyMap: new Map<string, CronEntry>(),
+    maxEntries: maxEntries ?? DEFAULT_MAX_IDEMPOTENCY_ENTRIES,
+  };
+}
+
+function setBoundedCron(state: CronToolState, key: string, value: CronEntry): void {
+  if (state.idempotencyMap.has(key)) {
+    state.idempotencyMap.delete(key);
+  } else if (state.idempotencyMap.size >= state.maxEntries) {
+    const oldest = state.idempotencyMap.keys().next().value;
+    if (oldest !== undefined) state.idempotencyMap.delete(oldest);
+  }
+  state.idempotencyMap.set(key, value);
 }
 
 function recordsMatch(rec: CronRecord, other: Omit<CronRecord, "scheduleId">): boolean {
@@ -210,7 +232,7 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
             wakeMessage: message,
             timezone,
           };
-          state.idempotencyMap.set(idempotency_key, { kind: "settled", record: rec });
+          setBoundedCron(state, idempotency_key, { kind: "settled", record: rec });
           return rec;
         });
       const trackedSubmission = submission.catch((err: unknown): never => {
@@ -218,7 +240,7 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
         throw err;
       });
 
-      state.idempotencyMap.set(idempotency_key, {
+      setBoundedCron(state, idempotency_key, {
         kind: "pending",
         promise: trackedSubmission,
       });

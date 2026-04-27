@@ -236,6 +236,21 @@ describe("sleep tool", () => {
     expect(stub.submitCalls[0]?.options?.delayMs).toBe(5_000);
   });
 
+  test("evicts the oldest idempotency entry when the cap is reached", async () => {
+    const stub = createSchedulerStub();
+    const state = createSleepToolState(2);
+    const tool = createSleepTool({ scheduler: stub.component }, state);
+
+    await exec(tool, { duration_ms: 1_000, idempotency_key: "a" });
+    await exec(tool, { duration_ms: 1_000, idempotency_key: "b" });
+    await exec(tool, { duration_ms: 1_000, idempotency_key: "c" });
+
+    expect(state.idempotencyMap.size).toBe(2);
+    expect(state.idempotencyMap.has("a")).toBe(false);
+    expect(state.idempotencyMap.has("b")).toBe(true);
+    expect(state.idempotencyMap.has("c")).toBe(true);
+  });
+
   test("rejects idempotency_key containing ':' (Temporal stable-id delimiter)", async () => {
     const stub = createSchedulerStub();
     const state = createSleepToolState();
