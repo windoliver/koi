@@ -1496,5 +1496,74 @@ describe("createToolAuditMiddleware", () => {
       );
       expect(highFailure).toBeDefined();
     });
+
+    test("late persist defers when hydration has not succeeded — round 41 F1", async () => {
+      // Initial load fails repeatedly. A drain-timeout + late tool
+      // completion must NOT overwrite the (unreadable) store with
+      // outage-local in-memory state. The late delta lives in memory
+      // and only reaches disk after a successful hydrate.
+      // let: how many failed loads to inject before recovering
+      let loadFailures = 5;
+      const saves: ToolAuditSnapshot[] = [];
+      // let: stored snapshot returned once load recovers
+      let stored: ToolAuditSnapshot = {
+        tools: {
+          historical: {
+            toolName: "historical",
+            callCount: 99,
+            successCount: 99,
+            failureCount: 0,
+            lastUsedAt: 1,
+            avgLatencyMs: 1,
+            minLatencyMs: 1,
+            maxLatencyMs: 1,
+            totalLatencyMs: 99,
+            sessionsAvailable: 50,
+            sessionsUsed: 50,
+          },
+        },
+        totalSessions: 50,
+        lastUpdatedAt: 1,
+      };
+      const store: ToolAuditStore = {
+        load: () => {
+          if (loadFailures > 0) {
+            loadFailures -= 1;
+            throw new Error("disk unreachable");
+          }
+          return stored;
+        },
+        save: (snap) => {
+          saves.push(snap);
+          stored = snap;
+        },
+      };
+      const mw = createToolAuditMiddleware(defaultConfig({ store, sessionEndDrainTimeoutMs: 10 }));
+      const wrap = getWrapToolCall(mw);
+
+      // Session 1: load fails on start (hydration deferred), tool
+      // call started, drain times out, then tool settles late.
+      await mw.onSessionStart?.(sessionCtx());
+      // let: assigned inside Promise constructor
+      let release: () => void = (): void => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const inFlight = wrap(turnCtx(), toolReq("flaky"), async () => {
+        await gate;
+        return { output: "ok" };
+      });
+      await mw.onSessionEnd?.(sessionCtx());
+      release();
+      await inFlight;
+      // Drain the queued late persist.
+      await new Promise((r) => setTimeout(r, 5));
+
+      // CRITICAL: no save must have run while still un-hydrated —
+      // otherwise the historical snapshot would be overwritten by
+      // outage-local state that doesn't include `historical`.
+      expect(saves.length).toBe(0);
+      expect(stored.tools.historical?.callCount).toBe(99);
+    });
   });
 });

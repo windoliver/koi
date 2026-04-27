@@ -492,6 +492,19 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   function queueLatePersist(): Promise<void> {
     const previous = savePromise;
     savePromise = previous.then(async () => {
+      // Apply the same pre-hydration gate as recordOnSessionEnd.
+      // Without this, a late tool completion that fires while the
+      // store is still in a startup/outage state would call
+      // persistWithRetry → loadAndMergeForSave (which falls back to
+      // the in-memory snapshot when load throws) → store.save() and
+      // commit outage-local counters over the historical disk state
+      // we never managed to read (#review-round41-F1). Defer the
+      // write; the late delta lives in `tools` and pendingPersist
+      // forces a flush on the next session whose hydration succeeds.
+      if (!hydrated) {
+        pendingPersist = true;
+        return;
+      }
       // let: snapshot the closure committed; signals emit from it.
       let committed: ToolAuditSnapshot | undefined;
       try {
