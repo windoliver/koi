@@ -13917,10 +13917,12 @@ describe("Golden: @koi/long-running — harness lifecycle", () => {
       close: () => undefined,
     };
 
-    const sessions = new Map<string, { status: string }>();
+    // Store full session records so resume() can find lastEngineState
+    // written by pause()'s saveState capture.
+    const sessions = new Map<string, Record<string, unknown>>();
     const persistence = {
-      saveSession: (rec: { sessionId: string; status: string }) => {
-        sessions.set(rec.sessionId, { status: rec.status });
+      saveSession: (rec: { sessionId: string }) => {
+        sessions.set(rec.sessionId, { ...rec });
         return { ok: true as const, value: undefined };
       },
       loadSession: (id: string) => {

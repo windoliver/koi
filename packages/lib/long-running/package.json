@@ -1,6 +1,6 @@
 {
   "name": "@koi/long-running",
-  "description": "Long-running harness — multi-turn agent lifecycle with task-board, soft checkpointing, pause/resume, and crash recovery via existing SessionPersistence + HarnessSnapshotStore",
+  "description": "Long-running harness — multi-turn agent lifecycle with soft checkpointing, pause/resume, and crash recovery",
   "version": "0.0.0",
   "private": true,
   "type": "module",
