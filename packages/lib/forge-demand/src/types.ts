@@ -64,6 +64,18 @@ export interface ForgeDemandConfig {
   readonly budget: ForgeBudget;
   /** Optional health tracker handle — enables latency degradation detection. */
   readonly healthTracker?: FeedbackLoopHealthHandle | undefined;
+  /**
+   * Opt-in escape hatch for trackers whose declared `getSnapshot` arity
+   * is 1. By default such trackers are rejected at validation time
+   * because they almost always indicate the legacy single-argument
+   * `(toolId)` shape — the detector calls `(sessionId, toolId)`, so a
+   * legacy tracker silently uses the sessionId as the toolId key and
+   * `performance_degradation` becomes permanently dormant. Set this
+   * flag only after wrapping a legitimate single-arg implementation
+   * (e.g. one with a defaulted second parameter) into a clearly-
+   * intentional shape. F75 regression.
+   */
+  readonly acceptLegacySingleArgHealthTracker?: boolean | undefined;
   /** Regex patterns for capability gap detection in model responses. */
   readonly capabilityGapPatterns?: readonly RegExp[] | undefined;
   /** Regex patterns for user correction detection. */

@@ -121,31 +121,6 @@ function isHealthTrackerLike(v: unknown): boolean {
   return typeof obj.getSnapshot === "function";
 }
 
-/**
- * Warn (do not reject) when getSnapshot's declared arity matches the
- * legacy `(toolId)` shape rather than the documented `(sessionId, toolId)`
- * contract. Rest-parameter wrappers (`(...args) => ...`, `length === 0`)
- * and default-value second parameters (`(s, t = "") => ...`, `length === 1`)
- * are valid implementations but report length 0/1 — we cannot reject
- * them without breaking valid integrations (F73). length === 1
- * specifically is the high-confidence legacy-tracker shape from
- * `feedback-loop`'s raw ToolHealthTracker; surface it loudly so a
- * silent dormancy of performance_degradation is at least observable.
- */
-function warnIfSuspectArity(v: unknown): void {
-  if (v === null || v === undefined || typeof v !== "object") return;
-  const fn = (v as Record<string, unknown>).getSnapshot as { readonly length?: number };
-  if (typeof fn?.length === "number" && fn.length === 1) {
-    console.warn(
-      "[forge-demand] healthTracker.getSnapshot declared arity is 1; " +
-        "the detector calls getSnapshot(sessionId, toolId). If this is a " +
-        "legacy single-argument tracker, performance_degradation will " +
-        "silently mis-key snapshots. Wrap it with " +
-        "`(sessionId, toolId) => tracker.getSnapshot(toolId)` if intentional.",
-    );
-  }
-}
-
 function isRegExpArray(v: unknown): v is readonly RegExp[] {
   return Array.isArray(v) && v.every((p) => p instanceof RegExp);
 }
@@ -191,12 +166,28 @@ export function validateForgeDemandConfig(raw: unknown): Result<ForgeDemandConfi
         error: validationError("healthTracker must expose a 'getSnapshot' function"),
       };
     }
-    // Behavioral validation is impossible without invoking the function
-    // (which may have side effects). Surface a loud warning when the
-    // declared arity matches the high-confidence legacy single-argument
-    // shape — the most common silent-dormancy case — without rejecting
-    // valid rest-arg or default-param wrappers (F73).
-    warnIfSuspectArity(c.healthTracker);
+    // Length === 1 is the high-confidence legacy `(toolId)` shape. A
+    // warning alone is too easy to miss in production (F75), so we
+    // reject by default. Callers with a legitimate length-1 shape
+    // (e.g. defaulted second parameter) can set
+    // `acceptLegacySingleArgHealthTracker: true` to opt in. Rest-arg
+    // wrappers report length 0 and remain silently accepted (F73).
+    const fn = (c.healthTracker as { readonly getSnapshot?: { readonly length?: number } })
+      .getSnapshot;
+    const declaredArity = typeof fn?.length === "number" ? fn.length : 2;
+    if (declaredArity === 1 && c.acceptLegacySingleArgHealthTracker !== true) {
+      return {
+        ok: false,
+        error: validationError(
+          "healthTracker.getSnapshot has declared arity 1; the detector calls " +
+            "getSnapshot(sessionId, toolId). Legacy single-argument trackers " +
+            "silently mis-key snapshots and disable performance_degradation. " +
+            "Wrap with `(sessionId, toolId) => tracker.getSnapshot(toolId)` " +
+            "or set `acceptLegacySingleArgHealthTracker: true` if your " +
+            "implementation is intentional (e.g. defaulted second param).",
+        ),
+      };
+    }
   }
   if (c.onDemand !== undefined && typeof c.onDemand !== "function") {
     return { ok: false, error: validationError("onDemand must be a function") };
@@ -277,6 +268,9 @@ export function validateForgeDemandConfig(raw: unknown): Result<ForgeDemandConfi
     ...base,
     ...(c.healthTracker !== undefined
       ? { healthTracker: c.healthTracker as ForgeDemandConfig["healthTracker"] }
+      : {}),
+    ...(c.acceptLegacySingleArgHealthTracker === true
+      ? { acceptLegacySingleArgHealthTracker: true as const }
       : {}),
     ...(c.capabilityGapPatterns !== undefined
       ? { capabilityGapPatterns: c.capabilityGapPatterns as readonly RegExp[] }

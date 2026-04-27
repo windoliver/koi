@@ -1397,6 +1397,50 @@ describe("createForgeDemandDetector", () => {
     expect(b).toEqual(a);
   });
 
+  it("isolates a throwing healthTracker — wrapToolCall must not surface its error", async () => {
+    // Regression for F74 (round 11) — checkLatencyDegradation called
+    // healthTracker.getSnapshot directly with no isolation, so a
+    // throwing tracker bubbled out of wrapToolCall after the tool
+    // had already succeeded (or masked the original tool error on
+    // the failure path), violating the passive-observer contract.
+    const originalErr = console.error;
+    const swallowed: unknown[] = [];
+    console.error = (...args: unknown[]): void => {
+      swallowed.push(args);
+    };
+    try {
+      const handle = createForgeDemandDetector(
+        makeConfig({
+          healthTracker: {
+            getSnapshot: (_sid: string, _tid: string) => {
+              throw new Error("tracker boom");
+            },
+          },
+        }),
+      );
+      // Successful tool call — must return its response unchanged
+      // even though the tracker throws inside checkLatencyDegradation.
+      const response = await handle.middleware.wrapToolCall?.(ctx, toolReq("any"), async () =>
+        toolRes(),
+      );
+      expect(response?.output).toBe("ok");
+      // Failure path — original tool error must propagate, not the
+      // tracker's "tracker boom".
+      let caught: unknown;
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, toolReq("any"), async () => {
+          throw new Error("real tool error");
+        });
+      } catch (e) {
+        caught = e;
+      }
+      expect((caught as Error)?.message).toBe("real tool error");
+      expect(swallowed.length).toBeGreaterThan(0);
+    } finally {
+      console.error = originalErr;
+    }
+  });
+
   it("retries onSessionAttached delivery on next traffic when the callback throws", async () => {
     // Regression for F72 (round 10) — the detector previously marked
     // a session observed before firing the callback, so a transient

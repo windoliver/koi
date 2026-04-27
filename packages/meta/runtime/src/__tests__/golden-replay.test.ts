@@ -14123,46 +14123,42 @@ describe("Golden: @koi/forge-demand", () => {
     expect(attached[0]?.scoped.getActiveSignalCount()).toBe(0);
   });
 
-  test("validateForgeDemandConfig warns (but does not reject) a single-arg getSnapshot", async () => {
-    // Regression for round-7 F68 (legacy tracker is high-confidence
-    // wrong) reconciled with round-10 F73 (rest-arg wrappers report
-    // length 0/1 but are valid). The validator now warns loudly on
-    // length === 1 — the high-confidence legacy case — without
-    // rejecting valid rest-arg / default-param implementations.
+  test("validateForgeDemandConfig rejects legacy single-arg getSnapshot unless explicitly opted in", async () => {
+    // Regression reconciling F68 (round 7 — strict reject), F73
+    // (round 10 — don't block valid rest-arg wrappers), and F75
+    // (round 11 — a warning alone is too easy to miss). The
+    // validator now rejects length === 1 by default but accepts
+    // it with `acceptLegacySingleArgHealthTracker: true`. Rest-arg
+    // (length === 0) is always accepted.
     const { validateForgeDemandConfig } = await import("@koi/forge-demand");
-    const warnings: string[] = [];
-    const originalWarn = console.warn;
-    console.warn = (msg: unknown): void => {
-      warnings.push(String(msg));
+    const baseBudget = {
+      maxForgesPerSession: 5,
+      computeTimeBudgetMs: 120_000,
+      demandThreshold: 0.7,
+      cooldownMs: 1_000,
     };
-    try {
-      const legacy = validateForgeDemandConfig({
-        budget: {
-          maxForgesPerSession: 5,
-          computeTimeBudgetMs: 120_000,
-          demandThreshold: 0.7,
-          cooldownMs: 1_000,
-        },
-        healthTracker: { getSnapshot: (_toolId: string) => undefined },
-      });
-      expect(legacy.ok).toBe(true);
-      expect(warnings.some((w) => /declared arity is 1/.test(w))).toBe(true);
-      // Rest-arg wrapper (length === 0) is silently accepted with no warning.
-      warnings.length = 0;
-      const restArg = validateForgeDemandConfig({
-        budget: {
-          maxForgesPerSession: 5,
-          computeTimeBudgetMs: 120_000,
-          demandThreshold: 0.7,
-          cooldownMs: 1_000,
-        },
-        healthTracker: { getSnapshot: (...args: unknown[]) => args[1] && undefined },
-      });
-      expect(restArg.ok).toBe(true);
-      expect(warnings.some((w) => /declared arity is 1/.test(w))).toBe(false);
-    } finally {
-      console.warn = originalWarn;
+    // Default: length === 1 is rejected.
+    const legacy = validateForgeDemandConfig({
+      budget: baseBudget,
+      healthTracker: { getSnapshot: (_toolId: string) => undefined },
+    });
+    expect(legacy.ok).toBe(false);
+    if (!legacy.ok) {
+      expect(legacy.error.message).toMatch(/declared arity 1/);
     }
+    // Explicit opt-in: length === 1 is accepted.
+    const optedIn = validateForgeDemandConfig({
+      budget: baseBudget,
+      healthTracker: { getSnapshot: (_toolId: string) => undefined },
+      acceptLegacySingleArgHealthTracker: true,
+    });
+    expect(optedIn.ok).toBe(true);
+    // Rest-arg wrapper (length === 0) is silently accepted.
+    const restArg = validateForgeDemandConfig({
+      budget: baseBudget,
+      healthTracker: { getSnapshot: (...args: unknown[]) => args[1] && undefined },
+    });
+    expect(restArg.ok).toBe(true);
   });
 
   test("auto-wiring honors a caller-preinstalled feedback-loop in config.middleware", async () => {

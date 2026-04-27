@@ -376,7 +376,18 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     toolId: string,
   ): void {
     if (config.healthTracker === undefined) return;
-    const snapshot = config.healthTracker.getSnapshot(sessionId, toolId);
+    // The detector is a passive observer: a throwing health tracker
+    // must NOT escape wrapToolCall and turn a successful tool call
+    // into a failure or mask the real tool error on the failure path.
+    // Isolate the read; on error, skip latency detection for this
+    // call and log. F74 regression.
+    let snapshot: ReturnType<NonNullable<typeof config.healthTracker>["getSnapshot"]>;
+    try {
+      snapshot = config.healthTracker.getSnapshot(sessionId, toolId);
+    } catch (e: unknown) {
+      console.error("[forge-demand] healthTracker.getSnapshot threw:", e);
+      return;
+    }
     const trigger = detectLatencyDegradation(toolId, snapshot, thresholds.latencyDegradationAvgMs);
     if (trigger !== undefined) {
       emitSignal(state, trigger, {
