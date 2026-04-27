@@ -13918,4 +13918,18 @@ describe("Golden: @koi/forge-demand", () => {
     // Deterministic confidence: same threshold + same count → same score on replay.
     expect(first?.confidence).toBeLessThanOrEqual(1);
   });
+
+  test("createRuntime rejects an invalid forgeDemand config at startup", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    // Invalid `budget` (null) — must throw at startup, not crash later in
+    // request handling. Cast through `unknown` to model the real risk:
+    // a config-file/IPC caller bypassing TypeScript checks.
+    expect(() =>
+      createRuntime({
+        forgeDemand: { budget: null } as unknown as NonNullable<
+          Parameters<typeof createRuntime>[0]
+        >["forgeDemand"],
+      }),
+    ).toThrow(/Invalid forgeDemand config/);
+  });
 });

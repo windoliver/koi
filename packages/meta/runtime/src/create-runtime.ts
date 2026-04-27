@@ -54,7 +54,7 @@ import {
   sortMiddlewareByPhase,
 } from "@koi/engine-compose";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
-import { createForgeDemandDetector } from "@koi/forge-demand";
+import { createForgeDemandDetector, validateForgeDemandConfig } from "@koi/forge-demand";
 import { createHttpTransport, type NexusTransport } from "@koi/fs-nexus";
 import { createGovernanceMiddleware, GOVERNANCE_MIDDLEWARE_NAME } from "@koi/governance-core";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
@@ -260,13 +260,39 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // follow-up; until then `performance_degradation` is dormant in the
     // default runtime path.
     // Build the runtime-owned handle when forgeDemand config is provided.
+    // The caller's config is validated up-front so a partial/untyped object
+    // surfaces as a startup error rather than a `Cannot read properties of
+    // undefined` later when a tool/model call hits an unset budget field.
     // If the caller ALSO preinstalled their own `forge-demand-detector`
     // middleware in config.middleware, the runtime version replaces it
     // (filtered out below) so `RuntimeHandle.forgeDemand` always points
     // at the active detector — preinstalled middleware without config
     // is left untouched (caller owns the handle out-of-band).
-    const forgeDemandHandle =
-      config.forgeDemand !== undefined ? createForgeDemandDetector(config.forgeDemand) : undefined;
+    let forgeDemandHandle: ReturnType<typeof createForgeDemandDetector> | undefined;
+    if (config.forgeDemand !== undefined) {
+      const validated = validateForgeDemandConfig(config.forgeDemand);
+      if (!validated.ok) {
+        throw new Error(
+          `Invalid forgeDemand config: ${validated.error.message}` +
+            (validated.error.context !== undefined
+              ? ` (${JSON.stringify(validated.error.context)})`
+              : ""),
+        );
+      }
+      // Loud warning when latency detection is silently dormant — the
+      // detector advertises four trigger kinds, but `performance_degradation`
+      // only fires when a `healthTracker` handle is supplied. Without this
+      // log, callers can mistake "no signal" for "no degradation".
+      if (validated.value.healthTracker === undefined) {
+        console.warn(
+          "[forge-demand] performance_degradation trigger is dormant: " +
+            "config.forgeDemand.healthTracker not provided. " +
+            "Pass a ToolHealthTracker (e.g. from @koi/middleware-feedback-loop) " +
+            "or accept that latency-based forge demand will not fire.",
+        );
+      }
+      forgeDemandHandle = createForgeDemandDetector(validated.value);
+    }
     const baseWithForgeDemand: readonly KoiMiddleware[] =
       forgeDemandHandle !== undefined
         ? [
