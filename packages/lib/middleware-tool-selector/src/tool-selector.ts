@@ -32,7 +32,7 @@ import type {
 import { KoiRuntimeError, swallowError } from "@koi/errors";
 import type { ToolSelectorConfig } from "./config.js";
 import { DEFAULT_MAX_TOOLS, DEFAULT_MIN_TOOLS, validateToolSelectorConfig } from "./config.js";
-import { extractLastUserText } from "./extract-query.js";
+import { extractLastUserText, hasUserMessage } from "./extract-query.js";
 
 /** Priority slot — runs after guards (0–100) and before the model adapter. */
 const TOOL_SELECTOR_PRIORITY = 200;
@@ -67,6 +67,13 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     (isUserSender !== undefined
       ? (messages): string => extractLastUserText(messages, isUserSender)
       : extractLastUserText);
+  // Used only for the multimodal-vs-untrusted distinction below; never
+  // overridden by configExtractQuery (which returns a string and so can't
+  // signal "valid turn but no text"). Defaults match the bundled extractor.
+  const detectUserMessage: (messages: readonly InboundMessage[]) => boolean =
+    isUserSender !== undefined
+      ? (messages): boolean => hasUserMessage(messages, isUserSender)
+      : hasUserMessage;
 
   // Each model invocation produces an immutable allowlist snapshot.
   // wrapModelStream binds incoming `tool_call_start` chunks' callIds
@@ -154,11 +161,27 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
 
     const query = extractQuery(request.messages);
     if (query === "") {
-      // Cannot derive trusted user intent. Under enforceFiltering,
-      // fail closed to alwaysInclude — never widen back to the full
-      // advertised set, which would silently disable filtering for
-      // multimodal turns or unrecognized sender shapes
-      // (#review-round23-F2).
+      // Empty query has two distinct causes — handle them separately.
+      // (a) A valid user turn whose latest message has only non-text
+      //     blocks (image-only, attachment-only, etc.). Failing closed
+      //     here would make multimodal turns silently lose nearly all
+      //     tools (#review-round31-F1). Pass through unchanged — the
+      //     model gets the full advertised set as if filtering were
+      //     skipped.
+      // (b) No recognized user message at all (untrusted provenance:
+      //     unrecognized sender shape, assistant-only transcript). Under
+      //     enforceFiltering, fail closed to alwaysInclude so a forged
+      //     transcript can't authorize the full tool set
+      //     (#review-round23-F2).
+      if (detectUserMessage(request.messages)) {
+        // Bind to the full advertised set under enforceFiltering so
+        // tool_call_start callIds get an explicit snapshot (otherwise
+        // wrapToolCall's "callId present but unbound" path would reject
+        // multimodal tool calls when other invocations in the same turn
+        // installed snapshots).
+        const snapshot = captureSnapshot(ctx.turnId, new Set<string>(tools.map((t) => t.name)));
+        return { request, snapshot };
+      }
       if (enforceFiltering) {
         const fallbackTools = tools.filter((t) => alwaysInclude.includes(t.name));
         const snapshot = captureSnapshot(

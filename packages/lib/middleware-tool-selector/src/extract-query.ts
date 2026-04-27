@@ -72,3 +72,22 @@ const USER_SENDER_RE = new RegExp(
 function isUserSender(senderId: string): boolean {
   return USER_SENDER_RE.test(senderId);
 }
+
+/**
+ * True when the transcript contains at least one message from a recognized
+ * user sender, regardless of whether that message has any text content.
+ * Used to distinguish "untrusted provenance" (no user message at all) from
+ * "valid multimodal user turn" (user message with only non-text blocks).
+ * The selector skips filtering for the latter rather than collapsing to
+ * alwaysInclude only (#review-round31-F1).
+ */
+export function hasUserMessage(
+  messages: readonly InboundMessage[],
+  isUser: (senderId: string) => boolean = isUserSender,
+): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg !== undefined && isUser(msg.senderId)) return true;
+  }
+  return false;
+}

@@ -450,17 +450,17 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     expect(select).toHaveBeenCalledTimes(1);
   });
 
-  test("empty query under enforceFiltering fails closed to alwaysInclude — round 23 F2", async () => {
-    // Round 23 (high): empty-query fallback used to widen to the
-    // full advertised set, silently disabling filtering for any
-    // multimodal turn or unrecognized sender shape. Now restricted
-    // to alwaysInclude, with execution-time enforcement intact.
+  test("empty query with no recognized user message fails closed to alwaysInclude — round 23 F2 / round 31 F1", async () => {
+    // Untrusted provenance (no recognized user sender in transcript).
+    // Round 31 (high): a recognized user message with non-text content
+    // is multimodal → pass through (separate test below). Empty-query
+    // fail-closed is reserved for transcripts where no user message
+    // can be identified at all.
     const select = mock(async () => []);
     const mw = createToolSelectorMiddleware({
       selectTools: select,
       minTools: 0,
       alwaysInclude: ["safe"],
-      extractQuery: () => "",
     });
     const tools = [tool("safe"), tool("dangerous")];
     const ctx = turnCtx();
@@ -473,7 +473,13 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
       yield { kind: "tool_call_end", callId: dangerCall };
       yield { kind: "done", response: modelResponse() };
     };
-    for await (const _ of wrapStream(ctx, { messages: [userMsg("hi")], tools }, stream)) {
+    // Sender is not a recognized user shape → no user message detected.
+    const fakeMsg: InboundMessage = {
+      content: [{ kind: "text", text: "" }],
+      senderId: "assistant-impostor",
+      timestamp: 0,
+    };
+    for await (const _ of wrapStream(ctx, { messages: [fakeMsg], tools }, stream)) {
       // drain
     }
     expect(select).not.toHaveBeenCalled();
@@ -486,6 +492,32 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     await expect(
       wrapTool(ctx, { toolId: "dangerous", input: {}, callId: dangerCall }, toolNext as never),
     ).rejects.toBeInstanceOf(KoiRuntimeError);
+  });
+
+  test("multimodal user turn (text-empty user message with non-text content) is not stripped to alwaysInclude — round 31 F1", async () => {
+    // A recognized user message whose content is image-only / attachment-
+    // only must NOT be treated as untrusted-provenance fail-closed.
+    // The model should still see the full advertised tool set.
+    const select = mock(async () => []);
+    const mw = createToolSelectorMiddleware({
+      selectTools: select,
+      minTools: 0,
+      alwaysInclude: ["safe"],
+    });
+    const tools = [tool("safe"), tool("vision")];
+    const next = mock<ModelHandler>(async (req) => {
+      // Pass-through: the model sees BOTH tools, not just alwaysInclude.
+      expect(req.tools?.map((t) => t.name).sort()).toEqual(["safe", "vision"]);
+      return modelResponse();
+    });
+    const multimodalMsg: InboundMessage = {
+      content: [{ kind: "image", mimeType: "image/png", data: "base64..." } as never],
+      senderId: "user",
+      timestamp: 0,
+    };
+    await getWrap(mw)(turnCtx(), { messages: [multimodalMsg], tools }, next);
+    expect(select).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
   });
 
   test("empty query in advisory mode (enforceFiltering=false) leaves request unchanged — round 23 F2", async () => {
