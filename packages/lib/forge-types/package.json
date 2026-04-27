@@ -18,5 +18,8 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*"
+  },
+  "koi": {
+    "optional": true
   }
 }
