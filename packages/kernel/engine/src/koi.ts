@@ -22,6 +22,7 @@ import type {
   JsonObject,
   KoiMiddleware,
   ModelChunk,
+  ModelHandler,
   ModelRequest,
   ModelResponse,
   RunId,
@@ -49,6 +50,7 @@ import type {
 } from "@koi/engine-compose";
 import {
   composeExtensions,
+  composeModelChain,
   computeCapabilityBanner,
   createDebugInstrumentation,
   createDefaultGuardExtension,
@@ -1202,6 +1204,24 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         };
         const rawModelStreamTerminal = adapter.terminals.modelStream;
 
+        // Compose a CALL-ONLY middleware chain (wrapModelCall but no
+        // wrapModelStream) around the raw terminal. The stream synth
+        // (in createTerminalHandlers, when no native modelStream) uses
+        // this so call-only hooks still fire on non-streaming adapters
+        // without dual-hook middleware double-firing — each middleware
+        // fires exactly once per logical request (#review-round14-F1).
+        const callOnlyMiddleware = allMiddleware.filter(
+          (mw) => mw.wrapModelCall !== undefined && mw.wrapModelStream === undefined,
+        );
+        const callOnlyModelChain = composeModelChain(
+          callOnlyMiddleware,
+          rawModelTerminal,
+          debugInstrumentation,
+          staticProvenanceHints,
+        );
+        const synthCallTerminal: ModelHandler = (request) =>
+          callOnlyModelChain(getTurnContext(), request);
+
         // Create lifecycle-aware terminal handlers (cached for reuse across turns)
         cachedTerminals = createTerminalHandlers(
           agent,
@@ -1210,6 +1230,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           rawModelStreamTerminal,
           debugInstrumentation,
           () => currentTurnIndex,
+          synthCallTerminal,
         );
 
         // Initial chain composition (allMiddleware is already phase-sorted)

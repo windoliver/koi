@@ -1476,15 +1476,19 @@ describe("createComposedCallHandlers streaming", () => {
     expect(rawModel).toHaveBeenCalled();
   });
 
-  test("synthesized modelStream fires wrapModelStream once and bypasses wrapModelCall (round 13)", async () => {
+  test("synthesized modelStream fires dual-hook middleware exactly once via wrapModelStream (round 14)", async () => {
     // Round 13 (critical): a single logical request must traverse only
-    // one composed model chain. Re-entering wrapModelCall from inside
-    // the synthesized stream double-fires every middleware that
-    // implements both hooks — concurrency-guard self-deadlocks, budget
-    // guards double-charge tokens. The synth therefore bridges to the
-    // RAW model terminal, not the composed modelChain. Documented
-    // trade-off: wrapModelCall-only middleware does not fire on
-    // synthesized streams.
+    // one composed model chain. Dual-hook middleware (implements both
+    // wrapModelCall AND wrapModelStream) must fire exactly once — not
+    // twice — to avoid concurrency-guard self-deadlock and budget
+    // double-charge.
+    //
+    // Round 14 (high): call-only middleware (only wrapModelCall) MUST
+    // still fire on non-streaming adapters. The synth runs a chain
+    // composed of just call-only middleware around the raw terminal,
+    // so dual-hook middleware is excluded from the synth path and
+    // fires exactly once via the outer wrapModelStream chain. See
+    // "synthesized modelStream still runs call-only middleware".
     const agent = await createStartedAgent();
     const callCount = { call: 0, stream: 0 };
     const mw: KoiMiddleware = {
@@ -1519,6 +1523,45 @@ describe("createComposedCallHandlers streaming", () => {
 
     expect(callCount.stream).toBe(1);
     expect(callCount.call).toBe(0);
+    expect(rawModel).toHaveBeenCalledTimes(1);
+  });
+
+  test("synthesized modelStream still runs call-only middleware (round 14)", async () => {
+    // Round 14 regression (high): call-only middleware (wrapModelCall
+    // implemented, wrapModelStream NOT implemented) was silently
+    // bypassed on non-streaming adapters after the round-13 synth
+    // change. Examples in the wild include collective-memory's prompt
+    // injection. The synth must run a call-only middleware chain
+    // around the raw terminal so these hooks fire exactly once on
+    // non-streaming adapters.
+    const agent = await createStartedAgent();
+    let callOnlyHits = 0;
+    const callOnlyMw: KoiMiddleware = {
+      name: "call-only-injector",
+      describeCapabilities: () => undefined,
+      wrapModelCall: async (_ctx, req, next) => {
+        callOnlyHits += 1;
+        return next(req);
+      },
+    };
+    const rawModel = mock(() => Promise.resolve(mockModelResponse()));
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+    // No rawStream — forces synth path
+    const handlers = createComposedCallHandlers(
+      [callOnlyMw],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    const stream = handlers.modelStream;
+    if (stream === undefined) throw new Error("expected synthesized modelStream");
+    for await (const _ of stream({ messages: [] })) {
+      // drain
+    }
+
+    expect(callOnlyHits).toBe(1);
     expect(rawModel).toHaveBeenCalledTimes(1);
   });
 

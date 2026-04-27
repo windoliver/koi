@@ -48,6 +48,7 @@ export function createTerminalHandlers(
   rawModelStreamTerminal?: ModelStreamHandler,
   debugInstrumentation?: DebugInstrumentation,
   getTurnIndex?: () => number,
+  synthCallTerminal?: ModelHandler,
 ): TerminalHandlers {
   const modelHandler: ModelHandler = async (request) => {
     agent.transition({ kind: "wait", reason: "model_call" });
@@ -85,33 +86,33 @@ export function createTerminalHandlers(
     }
   };
 
-  // Synthesize a stream terminal from the RAW model terminal when the
-  // adapter doesn't expose a native modelStream. This unifies the engine
-  // pipeline so `wrapModelStream` middleware (e.g. @koi/middleware-tool-
-  // recovery) runs for every adapter — not just streaming-native ones.
+  // Synthesize a stream terminal when the adapter doesn't expose a
+  // native modelStream. This unifies the engine pipeline so
+  // `wrapModelStream` middleware (e.g. @koi/middleware-tool-recovery)
+  // runs for every adapter — not just streaming-native ones.
   //
-  // We deliberately bypass the composed modelChain (and any wrapModelCall
-  // middleware) here. Re-entering modelChain inside the stream chain
-  // double-fires every middleware that implements both hooks, which
-  // deadlocks the concurrency guard, double-charges budget guards, and
-  // duplicates accounting (#review-round13-F1, F2). One logical request
-  // must traverse exactly one composed model chain.
+  // The synth invokes `synthCallTerminal` when provided. Callers
+  // compose this from CALL-ONLY middleware (those that implement
+  // wrapModelCall but NOT wrapModelStream) around the raw terminal,
+  // so call-only hooks still fire on non-streaming adapters
+  // (#review-round14-F1). Dual-hook middleware is excluded from this
+  // chain — it fires exactly once via the outer wrapModelStream
+  // chain, avoiding the round-13 concurrency-guard self-deadlock and
+  // budget double-charge. Each middleware fires exactly once per
+  // logical request regardless of adapter shape.
   //
-  // Trade-off: middleware that ONLY implements `wrapModelCall` will not
-  // fire when an adapter is routed through the synthesized stream. This
-  // is documented contract — middleware that needs to apply universally
-  // should implement both hooks (and tolerate either firing).
-  //
-  // We also bypass `modelHandler` (lifecycle-wrapped) so the inner call
-  // doesn't emit a nested wait(model_call)/resume that would prematurely
-  // transition the agent back to `running` while stream middleware is
-  // still buffering chunks (#review-round11-F3). The outer
-  // `modelStreamHandler` below owns the wait(model_stream)/resume pair
-  // for the entire stream lifecycle.
+  // The synth uses raw terminals (not the lifecycle-wrapped
+  // `modelHandler`) so the inner call doesn't emit a nested
+  // wait(model_call)/resume that would prematurely transition the
+  // agent back to `running` while stream middleware is still
+  // buffering chunks (#review-round11-F3). The outer
+  // `modelStreamHandler` below owns the wait(model_stream)/resume
+  // pair for the entire stream lifecycle.
+  const synthSource = synthCallTerminal ?? rawModelTerminal;
   const effectiveStreamTerminal: ModelStreamHandler =
     rawModelStreamTerminal ??
     async function* (request): AsyncIterable<ModelChunk> {
-      const response = await rawModelTerminal(request);
+      const response = await synthSource(request);
       if (response.content.length > 0) {
         yield { kind: "text_delta", delta: response.content };
       }
@@ -192,11 +193,24 @@ export function createComposedCallHandlers(
 ): ComposedCallHandlers {
   const sorted = sortMiddlewareByPhase(middleware);
 
+  // Compose a chain of CALL-ONLY middleware (wrapModelCall but no
+  // wrapModelStream) around the raw terminal. The stream synth uses
+  // this so call-only hooks still fire on non-streaming adapters
+  // without dual-hook middleware double-firing (#review-round14-F1).
+  const callOnly = sorted.filter(
+    (mw) => mw.wrapModelCall !== undefined && mw.wrapModelStream === undefined,
+  );
+  const callOnlyChain = composeModelChain(callOnly, rawModelTerminal);
+  const synthCallTerminal: ModelHandler = (request) => callOnlyChain(getTurnContext(), request);
+
   const { modelHandler, modelStreamHandler, toolHandler } = createTerminalHandlers(
     agent,
     rawModelTerminal,
     rawToolTerminal,
     rawModelStreamTerminal,
+    undefined,
+    undefined,
+    synthCallTerminal,
   );
 
   const modelChain = composeModelChain(sorted, modelHandler);
