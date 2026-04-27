@@ -517,6 +517,35 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  test("empty text-only user message does not bypass enforceFiltering as multimodal — round 34 F1", async () => {
+    // Round 31 added a multimodal pass-through for user turns whose
+    // content has only non-text blocks. Round 34 (high): an empty TEXT
+    // block was indistinguishable from "no text", so a client could
+    // send `[{kind:"text", text:""}]` and skip filtering — a real
+    // authorization bypass under enforceFiltering.
+    const select = mock(async () => []);
+    const next = mock<ModelHandler>(async (req) => {
+      // Must fall through to the alwaysInclude fail-closed path, not
+      // pass through the full advertised tool set.
+      expect(req.tools?.map((t) => t.name).sort()).toEqual(["safe"]);
+      return modelResponse();
+    });
+    const mw = createToolSelectorMiddleware({
+      selectTools: select,
+      minTools: 0,
+      alwaysInclude: ["safe"],
+    });
+    const tools = [tool("safe"), tool("dangerous")];
+    const emptyTextMsg: InboundMessage = {
+      content: [{ kind: "text", text: "" }],
+      senderId: "user",
+      timestamp: 0,
+    };
+    await getWrap(mw)(turnCtx(), { messages: [emptyTextMsg], tools }, next);
+    expect(select).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
   test("multimodal user turn (text-empty user message with non-text content) is not stripped to alwaysInclude — round 31 F1", async () => {
     // A recognized user message whose content is image-only / attachment-
     // only must NOT be treated as untrusted-provenance fail-closed.

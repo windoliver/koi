@@ -79,20 +79,21 @@ function isUserSender(senderId: string): boolean {
 }
 
 /**
- * True when the transcript contains at least one message from a recognized
- * user sender, regardless of whether that message has any text content.
- * Used to distinguish "untrusted provenance" (no user message at all) from
- * "valid multimodal user turn" (user message with only non-text blocks).
- * The selector skips filtering for the latter rather than collapsing to
- * alwaysInclude only (#review-round31-F1).
+ * True when the most recent recognized user message contains at least one
+ * NON-TEXT content block (image, attachment, etc.). Used by the selector
+ * to recognize a genuinely multimodal turn and pass tools through. An
+ * empty-string text block does NOT qualify — that would let any client
+ * send `[{kind:"text", text:""}]` to bypass enforceFiltering and get the
+ * full advertised tool set (#review-round34-F1).
  */
-export function hasUserMessage(
+export function hasMultimodalUserMessage(
   messages: readonly InboundMessage[],
   isUser: (senderId: string) => boolean = isUserSender,
 ): boolean {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
-    if (msg !== undefined && isUser(msg.senderId)) return true;
+    if (msg === undefined || !isUser(msg.senderId)) continue;
+    return msg.content.some((block) => block.kind !== "text");
   }
   return false;
 }

@@ -276,6 +276,12 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
           // Baseline = what's on disk now. Saves compute their delta
           // against this so concurrent writers' increments survive.
           baselineSnapshot = snapshot;
+          // Seed the committed-snapshot cache from disk so generateReport
+          // can return historical signals immediately after a restart,
+          // before any new save runs (#review-round34-F2). Without this
+          // seed, a populated store loaded fresh would still report []
+          // until the next dirty session committed.
+          lastCommittedSnapshot = snapshot;
           hydrated = true;
           // Outage-era deltas (recorded before this successful load) must
           // be persisted even if the next session is otherwise clean. Without

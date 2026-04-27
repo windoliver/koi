@@ -32,7 +32,7 @@ import type {
 import { KoiRuntimeError, swallowError } from "@koi/errors";
 import type { ToolSelectorConfig } from "./config.js";
 import { DEFAULT_MAX_TOOLS, DEFAULT_MIN_TOOLS, validateToolSelectorConfig } from "./config.js";
-import { extractLastUserText, hasUserMessage } from "./extract-query.js";
+import { extractLastUserText, hasMultimodalUserMessage } from "./extract-query.js";
 
 /** Priority slot — runs after guards (0–100) and before the model adapter. */
 const TOOL_SELECTOR_PRIORITY = 200;
@@ -67,13 +67,15 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     (isUserSender !== undefined
       ? (messages): string => extractLastUserText(messages, isUserSender)
       : extractLastUserText);
-  // Used only for the multimodal-vs-untrusted distinction below; never
-  // overridden by configExtractQuery (which returns a string and so can't
-  // signal "valid turn but no text"). Defaults match the bundled extractor.
-  const detectUserMessage: (messages: readonly InboundMessage[]) => boolean =
+  // Multimodal detector: distinguishes "valid user turn with non-text
+  // content" from "no recognized user message" AND from "user message
+  // with text-only content (possibly empty)" — only the first case
+  // takes the pass-through branch (#review-round34-F1). Never
+  // overridden by configExtractQuery.
+  const detectMultimodal: (messages: readonly InboundMessage[]) => boolean =
     isUserSender !== undefined
-      ? (messages): boolean => hasUserMessage(messages, isUserSender)
-      : hasUserMessage;
+      ? (messages): boolean => hasMultimodalUserMessage(messages, isUserSender)
+      : hasMultimodalUserMessage;
 
   // Each model invocation produces an immutable allowlist snapshot.
   // wrapModelStream binds incoming `tool_call_start` chunks' callIds
@@ -176,7 +178,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       //     enforceFiltering, fail closed to alwaysInclude so a forged
       //     transcript can't authorize the full tool set
       //     (#review-round23-F2).
-      if (configExtractQuery === undefined && detectUserMessage(request.messages)) {
+      if (configExtractQuery === undefined && detectMultimodal(request.messages)) {
         // Bind to the full advertised set under enforceFiltering so
         // tool_call_start callIds get an explicit snapshot (otherwise
         // wrapToolCall's "callId present but unbound" path would reject

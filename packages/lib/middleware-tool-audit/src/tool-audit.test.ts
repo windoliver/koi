@@ -1195,6 +1195,49 @@ describe("createToolAuditMiddleware", () => {
       expect(mw.generateReport()).toEqual([]);
     });
 
+    test("returns historical signals from a populated store immediately after cold start — round 34 F2", async () => {
+      // After process restart against a populated store, generateReport
+      // must return the historical signals from the loaded snapshot —
+      // not [] until the next dirty session writes again. Without
+      // seeding lastCommittedSnapshot from hydration, callers using
+      // generateReport for lifecycle alerts would silently lose all
+      // pre-restart signal coverage.
+      const populatedDisk: ToolAuditSnapshot = {
+        tools: {
+          search: {
+            toolName: "search",
+            callCount: 100,
+            successCount: 100,
+            failureCount: 0,
+            lastUsedAt: 999,
+            avgLatencyMs: 1,
+            minLatencyMs: 1,
+            maxLatencyMs: 1,
+            totalLatencyMs: 100,
+            sessionsAvailable: 50,
+            sessionsUsed: 50,
+          },
+        },
+        totalSessions: 50,
+        lastUpdatedAt: 999,
+      };
+      const store: ToolAuditStore = {
+        load: () => populatedDisk,
+        save: () => {},
+      };
+      const mw = createToolAuditMiddleware(
+        defaultConfig({ store, highValueMinCalls: 20, highValueSuccessThreshold: 0.9 }),
+      );
+
+      // Trigger hydration via a session start (no work, no save).
+      await mw.onSessionStart?.(sessionCtx());
+      await mw.onSessionEnd?.(sessionCtx());
+
+      const report = mw.generateReport();
+      const highValue = report.find((r) => r.toolName === "search" && r.signal === "high_value");
+      expect(highValue).toBeDefined();
+    });
+
     test("returns empty before initial hydration succeeds — round 28 F2", async () => {
       const store: ToolAuditStore = {
         load: () => {
