@@ -1,6 +1,6 @@
 import { createAgentResolver } from "@koi/agent-runtime";
-import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
-import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
+import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit-sink-ndjson";
+import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
 import { type Checkpoint, createCheckpoint } from "@koi/checkpoint";
 import type {
   ApprovalHandler,
@@ -1040,24 +1040,59 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
   if (isAuditSink(sinkInput)) {
     sink = sinkInput;
   } else if (sinkInput.kind === "ndjson") {
-    const built = createNdjsonAuditSink({
+    // F126: validate the config and fail fast on unknown keys so a
+    // caller passing rotation/retention/agentId fields (which the
+    // sink package no longer supports) gets a hard error instead of
+    // silently dropped options.
+    const allowedNdjsonKeys: ReadonlySet<string> = new Set(["kind", "filePath", "flushIntervalMs"]);
+    for (const key of Object.keys(sinkInput)) {
+      if (!allowedNdjsonKeys.has(key)) {
+        throw new Error(
+          `Unsupported NDJSON audit sink option: "${key}" — recognized keys are kind, filePath, flushIntervalMs`,
+        );
+      }
+    }
+    const ndjsonConfig = {
       filePath: sinkInput.filePath,
       ...(sinkInput.flushIntervalMs !== undefined
         ? { flushIntervalMs: sinkInput.flushIntervalMs }
         : {}),
-    });
+    };
+    const ndjsonValidation = validateNdjsonAuditSinkConfig(ndjsonConfig);
+    if (!ndjsonValidation.ok) {
+      throw new Error(`Invalid NDJSON audit sink config: ${ndjsonValidation.error.message}`);
+    }
+    const built = createNdjsonAuditSink(ndjsonConfig);
     sink = built;
     ownedSinkClose = async () => {
       await built.close();
     };
   } else if (sinkInput.kind === "sqlite") {
-    const built = createSqliteAuditSink({
+    const allowedSqliteKeys: ReadonlySet<string> = new Set([
+      "kind",
+      "dbPath",
+      "flushIntervalMs",
+      "maxBufferSize",
+    ]);
+    for (const key of Object.keys(sinkInput)) {
+      if (!allowedSqliteKeys.has(key)) {
+        throw new Error(
+          `Unsupported SQLite audit sink option: "${key}" — recognized keys are kind, dbPath, flushIntervalMs, maxBufferSize`,
+        );
+      }
+    }
+    const sqliteConfig = {
       dbPath: sinkInput.dbPath,
       ...(sinkInput.flushIntervalMs !== undefined
         ? { flushIntervalMs: sinkInput.flushIntervalMs }
         : {}),
       ...(sinkInput.maxBufferSize !== undefined ? { maxBufferSize: sinkInput.maxBufferSize } : {}),
-    });
+    };
+    const sqliteValidation = validateSqliteAuditSinkConfig(sqliteConfig);
+    if (!sqliteValidation.ok) {
+      throw new Error(`Invalid SQLite audit sink config: ${sqliteValidation.error.message}`);
+    }
+    const built = createSqliteAuditSink(sqliteConfig);
     sink = built;
     ownedSinkClose = async () => {
       built.close();
