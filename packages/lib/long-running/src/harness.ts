@@ -30,6 +30,7 @@ import type {
   SnapshotNode,
   Task,
   TaskResult,
+  TurnContext,
 } from "@koi/core";
 import { chainId as toChainId, sessionId as toSessionId } from "@koi/core";
 
@@ -59,7 +60,13 @@ interface MutableState {
   lastNodeId: NodeId | undefined;
   lastSessionId: string | undefined;
   turnCount: number;
-  inTurn: boolean;
+  // Turn-id ownership set: each onBeforeTurn(ctx) adds ctx.turnId,
+  // each onAfterTurn(ctx) removes it. Quiesce drains when this is
+  // empty. Tracking by turnId (not a single boolean) keeps drain
+  // accounting balanced per call: a stale onAfterTurn from an old
+  // session naturally removes only its own token, while a live turn
+  // in flight still holds the gate.
+  turnsInFlight: Map<string, Set<string>>;
   terminating: boolean;
   // Effective task-retry budget for this harness instance. Persisted in
   // snapshot node metadata so resumed sessions cannot silently change
@@ -174,7 +181,7 @@ export function createLongRunningHarness(
     lastNodeId: undefined,
     lastSessionId: undefined,
     turnCount: 0,
-    inTurn: false,
+    turnsInFlight: new Map<string, Set<string>>(),
     terminating: false,
     effectiveTaskMaxRetries: cfg.taskMaxRetries ?? 3,
     timeoutHandle: undefined,
@@ -275,6 +282,16 @@ export function createLongRunningHarness(
     state.abortController?.abort();
     state.lease = undefined;
     state.abortController = undefined;
+    // Do NOT clear turnsInFlight buckets here. (1) revokeLease can be
+    // called synchronously from inside onTurnEnd's try-block (e.g. a
+    // soft-checkpoint failure path), where the matching finally has
+    // not yet run; clearing would let a concurrent terminal
+    // transition observe an empty drain gate before the turn callback
+    // has unwound. (2) buckets are now session-scoped, so any stale
+    // entries from this session are automatically isolated from the
+    // next session's drain count — they cannot wedge a later quiesce.
+    // Cleanup of the prior session's bucket happens lazily in the
+    // stale onAfterTurn branch.
   };
 
   const verifyLease = (lease: SessionLease): KoiError | undefined =>
@@ -283,16 +300,26 @@ export function createLongRunningHarness(
   const sleep = (ms: number): Promise<void> =>
     new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+  // In-flight count for the currently-active session only. Stale
+  // entries from prior sessions (e.g. a turn that started under a
+  // session that was paused before its onAfterTurn ran) are isolated
+  // to their own bucket and cannot wedge a later session's drain.
+  const activeInFlightCount = (): number => {
+    const sid = state.lastSessionId;
+    if (sid === undefined) return 0;
+    return state.turnsInFlight.get(sid)?.size ?? 0;
+  };
+
   const quiesce = async (deadlineMs: number): Promise<boolean> => {
     const start = now();
     const lease = state.lease;
     const sessionIdStr = state.lastSessionId;
     if (!lease || !sessionIdStr) {
       // No current owner — nothing to drain.
-      while (state.inTurn && now() - start < deadlineMs) {
+      while (activeInFlightCount() > 0 && now() - start < deadlineMs) {
         await sleep(10);
       }
-      return !state.inTurn;
+      return activeInFlightCount() === 0;
     }
     const sessionId = toSessionId(sessionIdStr);
     // Run the host drain callback concurrently with the inTurn poll
@@ -312,10 +339,13 @@ export function createLongRunningHarness(
     void callbackPromise.then((r) => {
       outcomeBox.value = r;
     });
-    while ((state.inTurn || outcomeBox.value === "pending") && now() - start < deadlineMs) {
+    while (
+      (activeInFlightCount() > 0 || outcomeBox.value === "pending") &&
+      now() - start < deadlineMs
+    ) {
       await sleep(10);
     }
-    const turnCleared = !state.inTurn;
+    const turnCleared = activeInFlightCount() === 0;
     // If callback is still pending at the deadline, wait one tick for
     // microtask resolution before deciding.
     if (outcomeBox.value === "pending") {
@@ -1216,16 +1246,84 @@ export function createLongRunningHarness(
     // the snapshot chain implies.
     const captured = await captureEngineState();
     if (captured.kind === "error") return { ok: false, error: captured.error };
-    // Persist engine state BEFORE publishing the snapshot so the
-    // session row's lastEngineState always matches (or post-dates) the
-    // active head.
-    if (sidAtEntry !== undefined) {
-      const writeRes = await writeCapturedEngineState(captured, sidAtEntry);
-      if (!writeRes.ok) return { ok: false, error: writeRes.error };
-    }
+    // Publish the harness snapshot FIRST, then persist engine state.
+    //
+    // Ordering rationale: the harness snapshot is the source of truth
+    // for harness-level progress (board, summaries, metrics). If the
+    // session-row write fails after this, lastEngineState lags the
+    // snapshot — on resume, the engine adapter replays from older
+    // engine state up to the head's expected state, which is the
+    // documented soft-checkpoint replay window.
+    //
+    // The reverse order is unsafe: writing lastEngineState first and
+    // then failing to publish the snapshot would let resume() load
+    // engine state ahead of the harness head, so the engine would
+    // emit turns whose effects the harness has not recorded — split
+    // state with no recovery path.
     const snapshot = buildSnapshot("active", undefined, delta);
     const putRes = await putSnapshot(snapshot);
     if (!putRes.ok) return { ok: false, error: putRes.error };
+    if (sidAtEntry !== undefined) {
+      const writeRes = await writeCapturedEngineState(captured, sidAtEntry);
+      if (!writeRes.ok) {
+        // Snapshot is already durable but lastEngineState write
+        // failed. Resume requires lastEngineState behind any active
+        // head, so we cannot leave the run in `active`. Roll forward
+        // to a durable `failed` head — same pattern as pause's
+        // saveState-failed branch (see publishTerminal). After this
+        // returns, the caller observes phase=failed via getStatus()
+        // and can dispose; resume() will reject NOT_FOUND.
+        commitDelta(delta);
+        const failReason = `softCheckpoint: snapshot durable but lastEngineState write failed: ${writeRes.error.message}`;
+        const failedSnap = buildSnapshot("failed", failReason);
+        let failPut = await putSnapshot(failedSnap);
+        if (!failPut.ok) {
+          const headRes = await loadHead();
+          if (headRes.ok && headRes.value) state.lastNodeId = headRes.value.nodeId;
+          failPut = await putSnapshot(buildSnapshot("failed", failReason));
+        }
+        revokeLease();
+        if (failPut.ok) {
+          state.phase = "failed";
+          state.failureReason = failReason;
+          if (state.lastSessionId) {
+            await persistSessionStatus(toSessionId(state.lastSessionId), "done");
+          }
+          if (cfg.onFailed) {
+            try {
+              await cfg.onFailed(getStatus(), err("EXTERNAL", failReason, false));
+            } catch (e: unknown) {
+              const msg = e instanceof Error ? e.message : String(e);
+              state.failureReason = `${state.failureReason}; onFailed: ${msg}`;
+            }
+          }
+          return { ok: false, error: err("EXTERNAL", failReason, false) };
+        }
+        // Roll-forward itself failed: the snapshot store holds a
+        // durable `active` head with no engine state behind it. Do
+        // NOT poison the session row: leaving status="running" keeps
+        // the row visible to crash recovery (which is what should
+        // reconcile this kind of stranded head), and resume() already
+        // refuses to advance a head whose lastEngineState is missing
+        // (NOT_FOUND), so the bad head cannot be resurrected through
+        // the harness API regardless. In-memory state is left
+        // consistent with the durable head: phase stays `active` but
+        // the lease is revoked, so the only valid next call is
+        // dispose() (which becomes a no-op and lets the caller
+        // proceed) or fail() with a fresh lease (rejected as
+        // STALE_REF). The fatal INTERNAL surface below tells the
+        // caller the snapshot store is in a degraded state.
+        state.failureReason = `${failReason}; failed-roll-forward: ${failPut.error.message}`;
+        return {
+          ok: false,
+          error: err(
+            "INTERNAL",
+            `softCheckpoint: lastEngineState write failed and failed-snapshot roll-forward also failed: ${failPut.error.message}`,
+            true,
+          ),
+        };
+      }
+    }
     commitDelta(delta);
     return { ok: true, value: undefined };
   };
@@ -1388,16 +1486,72 @@ export function createLongRunningHarness(
     return { delta: { taskBoard: { items, results: state.taskBoard.results } }, found };
   };
 
-  const onTurnStart = (): void => {
-    // Self-heal: a new turn starting is proof the engine drained the
-    // previous one and is making progress. If a prior turn errored
-    // after onBeforeTurn but before onAfterTurn, inTurn would still
-    // be true here — re-asserting it (rather than the terminal path
-    // force-clearing) means quiesce stays correct: we only return
-    // success when an actual onAfterTurn (or quiesceEngine) confirms.
-    state.inTurn = true;
+  // Gate hook callbacks on the originating turn's session id. The
+  // middleware is wired once per harness, so a late onAfterTurn from a
+  // paused/timed-out session can fire after a new start()/resume() has
+  // activated — without this gate it would mutate the new session's
+  // counters or trigger a soft checkpoint against the wrong head.
+  const turnContextMatchesActive = (ctx: TurnContext): boolean => {
+    // Gate against an actively-running session: phase must be active
+    // AND a lease must be live AND the ctx's session id must match the
+    // current run's session id. `state.lastSessionId` alone is not
+    // sufficient — it persists across pause/suspended until resume
+    // assigns a new id, so a stale callback received during suspended
+    // would otherwise pass the gate.
+    if (state.phase !== "active" || state.lease === undefined) return false;
+    // Trust the L0 TurnContext contract: `session.sessionId` and
+    // `turnId` are required. Silently degrading on missing fields
+    // would let a malformed host pass the gate as "not active",
+    // disabling turn-in-flight tracking and letting pause()/dispose()
+    // race a live turn.
+    const ctxSid = ctx.session.sessionId;
+    return state.lastSessionId !== undefined && ctxSid === state.lastSessionId;
   };
-  const onTurnEnd = async (intervalOverride?: number): Promise<void> => {
+
+  // turnsInFlight tracks per-turn ownership keyed by sessionId →
+  // Set<turnId>. Session-scoping isolates orphans: a real turn that
+  // started under session A and was aborted before its onAfterTurn
+  // ran is stranded in A's bucket, but quiesce only consults the
+  // active session's bucket, so it cannot wedge a later session.
+  // onTurnStart is gated to the active session; onTurnEnd's finally
+  // removes from THAT turn's session bucket regardless of whether the
+  // session is still active, so even stale onAfterTurn callbacks
+  // perform their own cleanup. Session-scoped bookkeeping (turnCount,
+  // metrics, softCheckpoint) is gated by isActiveTurn below.
+  const onTurnStart = (ctx: TurnContext): void => {
+    if (!turnContextMatchesActive(ctx)) return;
+    const sid = ctx.session.sessionId;
+    let bucket = state.turnsInFlight.get(sid);
+    if (bucket === undefined) {
+      bucket = new Set<string>();
+      state.turnsInFlight.set(sid, bucket);
+    }
+    bucket.add(ctx.turnId);
+  };
+  const onTurnEnd = async (ctx: TurnContext, intervalOverride?: number): Promise<void> => {
+    const isActiveTurn = turnContextMatchesActive(ctx);
+    const removeOwnTurn = (): void => {
+      const sid = ctx.session.sessionId;
+      const bucket = state.turnsInFlight.get(sid);
+      if (bucket === undefined) return;
+      bucket.delete(ctx.turnId);
+      if (bucket.size === 0) state.turnsInFlight.delete(sid);
+    };
+    if (!isActiveTurn) {
+      // Stale callback (its session was paused/disposed). Still clean
+      // up its own bucket so the prior session's entries do not leak
+      // for the lifetime of the harness.
+      removeOwnTurn();
+      return;
+    }
+    // Hook is intentionally NOT wrapped in withLock(): a terminal
+    // transition (pause/fail/dispose/timeout) holds the lifecycle
+    // mutex while quiesce() waits for inTurn=false. If onTurnEnd
+    // queued behind that lock it could never clear inTurn → deadlock
+    // → false TIMEOUT. The session-id gate above plus single-session
+    // semantics (only one active lease at a time, transitions
+    // serialize through withLock for state.lease itself) provide the
+    // ordering we need without holding the lifecycle mutex here.
     state.turnCount += 1;
     state.metrics = { ...state.metrics, totalTurns: state.metrics.totalTurns + 1 };
     const effectiveInterval = intervalOverride ?? interval;
@@ -1422,10 +1576,10 @@ export function createLongRunningHarness(
       state.failureReason = state.failureReason ? `${state.failureReason}; ${note}` : note;
       state.abortController?.abort();
     } finally {
-      // Always clear inTurn — even on checkpoint error/throw — so quiesce
-      // can drain. Otherwise a transient store fault would wedge every
-      // subsequent terminal transition.
-      state.inTurn = false;
+      // Always remove this turn — even on checkpoint error/throw — so
+      // quiesce can drain. Otherwise a transient store fault would
+      // wedge every subsequent terminal transition.
+      removeOwnTurn();
     }
   };
 
@@ -1664,7 +1818,7 @@ export function createLongRunningHarness(
       return createCheckpointMiddleware({
         intervalTurns,
         onTurnStart,
-        onTurnEnd: () => onTurnEnd(intervalTurns),
+        onTurnEnd: (ctx: TurnContext) => onTurnEnd(ctx, intervalTurns),
       });
     },
   };

@@ -265,6 +265,80 @@ describe("createLongRunningHarness", () => {
     expect(r.value.status().phase).toBe("failed");
   });
 
+  it("stale onBeforeTurn from paused session cannot wedge active drain gate", async () => {
+    const r = createLongRunningHarness(baseConfig());
+    if (!r.ok) throw new Error("create failed");
+    const started = await r.value.start();
+    if (!started.ok) throw new Error("start failed");
+    const mw = r.value.createMiddleware();
+    const staleCtx = {
+      session: { sessionId: started.value.sessionId },
+      turnId: "turn-stale",
+    } as Parameters<NonNullable<typeof mw.onBeforeTurn>>[0];
+    // Pause the session. After this, the prior session id is no longer
+    // the active one — a late onBeforeTurn from it must be ignored.
+    await r.value.pause(started.value.lease, {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    });
+    await mw.onBeforeTurn?.(staleCtx);
+    // Resume and immediately try to dispose — if the stale start had
+    // wedged the drain gate, dispose would burn the abort timeout.
+    const resumed = await r.value.resume();
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) return;
+    const t0 = Date.now();
+    const disposed = await r.value.dispose(resumed.value.lease);
+    expect(disposed.ok).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  it("orphan turn from prior session does not wedge later session's drain", async () => {
+    // Use a short abortTimeoutMs: the prior session's pause itself
+    // will see its own orphan in the drain set (legitimate behavior),
+    // so we let it time out quickly, then verify the resumed session
+    // is unaffected.
+    const r = createLongRunningHarness({ ...baseConfig(), abortTimeoutMs: 50 });
+    if (!r.ok) throw new Error("create failed");
+    const started = await r.value.start();
+    if (!started.ok) throw new Error("start failed");
+    const mw = r.value.createMiddleware();
+    const sessionACtx = {
+      session: { sessionId: started.value.sessionId },
+      turnId: "turn-A-orphan",
+    } as Parameters<NonNullable<typeof mw.onBeforeTurn>>[0];
+    // Real onBeforeTurn under session A — registers a turn-in-flight
+    // entry under A's bucket.
+    await mw.onBeforeTurn?.(sessionACtx);
+    // Pause/resume before A's onAfterTurn runs. A's bucket is now
+    // orphaned but session-scoped, so it must not affect session B.
+    await r.value.pause(started.value.lease, {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    });
+    const resumed = await r.value.resume();
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) return;
+    const t0 = Date.now();
+    const disposed = await r.value.dispose(resumed.value.lease);
+    expect(disposed.ok).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
   it("createMiddleware advances soft checkpoint cadence", async () => {
     const cfg = { ...baseConfig(), softCheckpointInterval: 2 };
     const r = createLongRunningHarness(cfg);
@@ -272,7 +346,12 @@ describe("createLongRunningHarness", () => {
     const started = await r.value.start();
     if (!started.ok) throw new Error("start failed");
     const mw = r.value.createMiddleware();
-    const fakeCtx = {} as Parameters<NonNullable<typeof mw.onAfterTurn>>[0];
+    // Hooks are now session-scoped: a turn context must carry the
+    // active session id, otherwise the callback no-ops to prevent
+    // stale-callback contamination across pause/resume cycles.
+    const fakeCtx = {
+      session: { sessionId: started.value.sessionId },
+    } as Parameters<NonNullable<typeof mw.onAfterTurn>>[0];
     await mw.onBeforeTurn?.(fakeCtx);
     await mw.onAfterTurn?.(fakeCtx);
     await mw.onBeforeTurn?.(fakeCtx);
