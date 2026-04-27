@@ -228,7 +228,20 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
             session: SessionContext,
             toolId: string,
           ): L0ToolHealthSnapshot | undefined => {
-            const sid = observedSessions.get(session);
+            // Read-only snapshot resolves via the same admission table
+            // that gates wrapToolCall (F118 token admission). A rebuilt /
+            // proxied SessionContext carrying a registered
+            // (sessionId, runId) tuple gets the same view as the original
+            // engine-issued object — otherwise auto-wired
+            // performance_degradation in forge-demand silently never
+            // fires for hosts that proxy SessionContext (F125). The
+            // forged-id surface (F99) is still closed: an attacker would
+            // need a matching engine-issued runId to forge a token.
+            const direct = observedSessions.get(session);
+            if (direct !== undefined) return trackers.get(direct)?.getL0Snapshot(toolId);
+            const token = originalTokenByCtx.get(session) ?? tokenFor(session);
+            if (!admittedTokens.has(token)) return undefined;
+            const sid = sidByToken.get(token);
             if (sid === undefined) return undefined;
             return trackers.get(sid)?.getL0Snapshot(toolId);
           },

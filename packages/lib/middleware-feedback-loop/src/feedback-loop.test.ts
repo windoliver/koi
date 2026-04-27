@@ -759,15 +759,16 @@ describe("createFeedbackLoopMiddleware", () => {
       }
     });
 
-    it("F123: a token-admitted rebuilt SessionContext cannot escalate to healthHandle.getSnapshot", async () => {
-      // Reviewer F123: prior wrap* path silently added every token-
-      // admitted ctx into the privileged `observedSessions` map. Once
-      // there, `healthHandle.getSnapshot(rebuilt, ...)` would treat
-      // the rebuilt object as engine-issued and return per-session
-      // tracker state, leaking quarantine/health snapshots across
-      // tenants. Fix: observedSessions is populated only from
-      // onSessionStart (object identity); wrap admission uses a
-      // separate token table and does NOT promote into observedSessions.
+    it("F125: healthHandle.getSnapshot resolves rebuilt SessionContexts via the admission token", async () => {
+      // Reviewer F125: wrapToolCall was widened (F118) to admit
+      // rebuilt/proxied contexts by `sessionId|runId` token, but the
+      // read-only healthHandle still required exact JS-object identity.
+      // Result: forge-demand auto-wired performance_degradation
+      // silently never fired for hosts that proxy SessionContext —
+      // the snapshot lookup returned undefined for the same call that
+      // wrapToolCall happily executed. Fix: getSnapshot now resolves
+      // through the same admission table. Forged-id surface (F99) is
+      // still closed because admission requires a registered runId.
       const sentinel = mock(() => undefined);
       const fakeTracker: ToolHealthTracker = {
         recordSuccess: () => {},
@@ -785,17 +786,19 @@ describe("createFeedbackLoopMiddleware", () => {
         const original = mockSessionCtx();
         await mw.onSessionStart?.(original);
         const rebuilt: SessionContext = { ...original };
-        const next = mock(async (_req: ToolRequest) => mockToolResponse());
-        // Token-admitted traffic on the rebuilt object passes through.
-        const result = await mw.wrapToolCall?.(mockTurnCtx(rebuilt), mockToolRequest(), next);
-        expect(result).toBeDefined();
-        sentinel.mockClear();
         // Engine-issued ctx reaches the tracker.
+        sentinel.mockClear();
         mw.healthHandle?.getSnapshot(original, "any-tool");
         expect(sentinel).toHaveBeenCalledTimes(1);
+        // Rebuilt ctx (same engine-issued ids) ALSO reaches the
+        // tracker — token-based resolution.
         sentinel.mockClear();
-        // Rebuilt ctx must NOT — observedSessions was not promoted.
-        const out = mw.healthHandle?.getSnapshot(rebuilt, "any-tool");
+        mw.healthHandle?.getSnapshot(rebuilt, "any-tool");
+        expect(sentinel).toHaveBeenCalledTimes(1);
+        // Forged ctx (different runId) does NOT — F99 invariant.
+        const forged: SessionContext = { ...original, runId: "fake" } as never;
+        sentinel.mockClear();
+        const out = mw.healthHandle?.getSnapshot(forged, "any-tool");
         expect(out).toBeUndefined();
         expect(sentinel).not.toHaveBeenCalled();
       } finally {
