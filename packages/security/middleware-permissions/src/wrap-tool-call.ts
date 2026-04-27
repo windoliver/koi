@@ -435,8 +435,10 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
     if (decision.effect === "ask") {
       // Pass a dispatch callback so each approval path fires the outcome
       // BEFORE calling next(request) — ensures recording even if the tool throws.
+      // Awaited here (not fire-and-forget): ask approvals can persist reusable
+      // grants and execute the tool; we want the audit record durable first.
       return handleAskDecision(ctx, request, resource, grantKey, next, decision, async (d) => {
-        void ctx.dispatchPermissionDecision?.(query, d);
+        await ctx.dispatchPermissionDecision?.(query, d);
       });
     }
 
