@@ -13967,14 +13967,17 @@ describe("Golden: @koi/forge-demand", () => {
       createRuntime({
         forgeDemand: { budget: DEFAULT_FORGE_BUDGET },
       }),
-    ).toThrow(/forgeDemand requires a consumption path/);
-    // With onDemand present, creation succeeds.
+    ).toThrow(/forgeDemand requires `config\.forgeDemand\.onSessionAttached`/);
+    // F101: onDemand alone is NOT sufficient — it has no dismiss
+    // capability, so signals it observes cannot be acknowledged and
+    // the same condition can re-emit after cooldown.
     expect(() =>
       createRuntime({
         forgeDemand: { budget: DEFAULT_FORGE_BUDGET, onDemand: () => {} },
       }),
-    ).not.toThrow();
-    // With onSessionAttached present, creation succeeds.
+    ).toThrow(/forgeDemand requires `config\.forgeDemand\.onSessionAttached`/);
+    // With onSessionAttached present, creation succeeds — the scoped
+    // handle delivered to it provides the only valid dismiss path.
     expect(() =>
       createRuntime({
         forgeDemand: { budget: DEFAULT_FORGE_BUDGET, onSessionAttached: () => {} },
@@ -14045,8 +14048,9 @@ describe("Golden: @koi/forge-demand", () => {
     const { createRuntime } = await import("../create-runtime.js");
     const runtime = createRuntime({
       forgeDemand: {
-        // F96: a consumption path is required at runtime creation.
-        onDemand: () => {},
+        // F96/F101: onSessionAttached is required (only surface that
+        // can dismiss pending signals).
+        onSessionAttached: () => {},
         budget: {
           maxForgesPerSession: 5,
           computeTimeBudgetMs: 120_000,
@@ -14087,8 +14091,9 @@ describe("Golden: @koi/forge-demand", () => {
       const runtime = createRuntime({
         feedbackLoop: {}, // no forgeHealth
         forgeDemand: {
-          // F96: a consumption path is required at runtime creation.
-          onDemand: () => {},
+          // F96/F101: onSessionAttached is required (only surface
+          // that can dismiss pending signals).
+          onSessionAttached: () => {},
           budget: {
             maxForgesPerSession: 5,
             computeTimeBudgetMs: 120_000,
@@ -14228,8 +14233,9 @@ describe("Golden: @koi/forge-demand", () => {
       const runtime = createRuntime({
         middleware: [preinstalled],
         forgeDemand: {
-          // F96: a consumption path is required at runtime creation.
-          onDemand: () => {},
+          // F96/F101: onSessionAttached is required (only surface
+          // that can dismiss pending signals).
+          onSessionAttached: () => {},
           budget: {
             maxForgesPerSession: 5,
             computeTimeBudgetMs: 120_000,

@@ -272,24 +272,25 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
               : ""),
         );
       }
-      // Enforce a usable consumption path AFTER validation passes. The
-      // runtime intentionally does not expose a sessionId-keyed lookup
-      // (F67), so the only ways for the host to read or dismiss
-      // pending demand signals are `onSessionAttached` (delivered
-      // scoped handle) and `onDemand` (per-signal callback). Without
-      // one of these, signals accumulate internally with no operational
-      // recovery path. Reject the config at startup rather than ship a
-      // write-only feature. F96 regression.
-      if (
-        validated.value.onSessionAttached === undefined &&
-        validated.value.onDemand === undefined
-      ) {
+      // Require `onSessionAttached` specifically. The runtime
+      // intentionally does not expose a sessionId-keyed lookup (F67),
+      // and `onDemand` alone is NOT sufficient: it receives only a
+      // copied signal value with no dismiss capability, so once a
+      // signal is emitted there is no way to acknowledge it. A signal
+      // that survives cooldown can re-emit, advance sessionEmitCount,
+      // and eventually suppress unrelated demand work in the same
+      // session. The scoped handle delivered via `onSessionAttached`
+      // is the only surface that supports both read and dismiss.
+      // F96/F101 regression.
+      if (validated.value.onSessionAttached === undefined) {
         throw new Error(
-          "forgeDemand requires a consumption path: set " +
-            "`config.forgeDemand.onSessionAttached` (preferred — delivers a " +
-            "scoped handle for read/dismiss) and/or `config.forgeDemand.onDemand` " +
-            "(per-signal callback). The runtime does not expose a sessionId-keyed " +
-            "lookup, so without one of these signals are unreachable.",
+          "forgeDemand requires `config.forgeDemand.onSessionAttached`. The " +
+            "runtime does not expose a sessionId-keyed lookup; the scoped " +
+            "handle delivered to onSessionAttached is the only surface that " +
+            "can dismiss pending signals. `onDemand` alone is insufficient — " +
+            "a signal it observes cannot be acknowledged, and the same " +
+            "condition can re-emit after cooldown until session budgets " +
+            "suppress unrelated demand work.",
         );
       }
       const baseForgeConfig = validated.value;
