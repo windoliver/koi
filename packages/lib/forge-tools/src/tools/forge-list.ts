@@ -29,6 +29,12 @@ const schema = z.object({
   lifecycle: z
     .enum(["draft", "verifying", "active", "failed", "deprecated", "quarantined"])
     .optional(),
+  /** Exact case-insensitive match against brick name. Use when confirming a just-synthesized brick. */
+  name: z.string().min(1).optional(),
+  /** Case-insensitive substring match against brick name and description. */
+  text: z.string().min(1).optional(),
+  /** Sort order. Default: "fitness". Use "recency" to surface freshly created drafts. */
+  orderBy: z.enum(["fitness", "recency", "usage", "trailStrength"]).optional(),
   limit: z.number().int().positive().max(HARD_CAP).optional(),
 });
 
@@ -56,8 +62,10 @@ export function createForgeListTool(deps: ForgeListDeps): Tool {
     descriptor: {
       name: "forge_list",
       description:
-        "List forge brick summaries visible to the caller. Filters by kind, scope, lifecycle. " +
-        "Returns at most 200 summaries; default 50. Visibility: caller's own agent-scoped bricks plus all globals.",
+        "List forge brick summaries visible to the caller. Filters by kind, scope, lifecycle, name (exact, case-insensitive), or text (substring). " +
+        "Use `name` to deterministically confirm a just-synthesized brick — the default fitness ranking can otherwise push fresh drafts off the first page. " +
+        '`orderBy: "recency"` is also supported. ' +
+        "Returns at most 200 summaries; default 50. Visibility: caller's own agent-scoped bricks plus active globals.",
       inputSchema: toJSONSchema(schema) as JsonObject,
       origin: "primordial",
     },
@@ -106,16 +114,22 @@ export function createForgeListTool(deps: ForgeListDeps): Tool {
           };
           return success;
         }
+        const commonFilters = {
+          ...(input.kind !== undefined ? { kind: input.kind } : {}),
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.text !== undefined ? { text: input.text } : {}),
+          ...(input.orderBy !== undefined ? { orderBy: input.orderBy } : {}),
+        };
         const query: ForgeQuery = wantAgent
           ? {
-              ...(input.kind !== undefined ? { kind: input.kind } : {}),
+              ...commonFilters,
               ...(input.lifecycle !== undefined ? { lifecycle: input.lifecycle } : {}),
               scope: "agent",
               createdBy: caller.agentId,
               limit: callerLimit,
             }
           : {
-              ...(input.kind !== undefined ? { kind: input.kind } : {}),
+              ...commonFilters,
               // Force lifecycle: "active" for globals.
               lifecycle: "active",
               scope: "global",
@@ -137,9 +151,15 @@ export function createForgeListTool(deps: ForgeListDeps): Tool {
       // artifacts (which carry ranking keys like createdAt/fitness). The
       // store deep-clones the per-scope slice, but each slice is bounded
       // by callerLimit so total work is O(callerLimit), not O(total bricks).
+      const commonFilters = {
+        ...(input.kind !== undefined ? { kind: input.kind } : {}),
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.text !== undefined ? { text: input.text } : {}),
+        ...(input.orderBy !== undefined ? { orderBy: input.orderBy } : {}),
+      };
       const queries: ForgeQuery[] = [
         {
-          ...(input.kind !== undefined ? { kind: input.kind } : {}),
+          ...commonFilters,
           ...(input.lifecycle !== undefined ? { lifecycle: input.lifecycle } : {}),
           scope: "agent",
           createdBy: caller.agentId,
@@ -150,7 +170,7 @@ export function createForgeListTool(deps: ForgeListDeps): Tool {
       // if the caller requested a non-active lifecycle.
       if (!globalLifecycleHidden) {
         queries.push({
-          ...(input.kind !== undefined ? { kind: input.kind } : {}),
+          ...commonFilters,
           lifecycle: "active",
           scope: "global",
           limit: callerLimit,
@@ -165,7 +185,7 @@ export function createForgeListTool(deps: ForgeListDeps): Tool {
       }
       const merged: readonly BrickArtifact[] = responses.flatMap((r) => (r.ok ? r.value : []));
       const mergeQuery: ForgeQuery = {
-        ...(input.kind !== undefined ? { kind: input.kind } : {}),
+        ...commonFilters,
         ...(input.lifecycle !== undefined ? { lifecycle: input.lifecycle } : {}),
         limit: callerLimit,
       };

@@ -571,11 +571,35 @@ const [stAgentSpawn] = spawnToolsAll as [import("@koi/core").Tool];
 // Used by the `forge-synthesize` cassette + trajectory recording.
 // ---------------------------------------------------------------------------
 
-const forgeStore = createInMemoryForgeStore();
-const forgeToolTool = createForgeToolTool({ store: forgeStore });
-const forgeMiddlewareTool = createForgeMiddlewareTool({ store: forgeStore });
-const forgeListTool = createForgeListTool({ store: forgeStore });
-const forgeInspectTool = createForgeInspectTool({ store: forgeStore });
+/**
+ * Build a fresh in-memory forge store + tool quartet. Each cassette and
+ * standalone-query recording must use its own instance so cross-run
+ * residue cannot satisfy a flow that should require a real save.
+ */
+function createForgeToolSet(): {
+  readonly store: ReturnType<typeof createInMemoryForgeStore>;
+  readonly forgeToolTool: import("@koi/core").Tool;
+  readonly forgeMiddlewareTool: import("@koi/core").Tool;
+  readonly forgeListTool: import("@koi/core").Tool;
+  readonly forgeInspectTool: import("@koi/core").Tool;
+} {
+  const store = createInMemoryForgeStore();
+  return {
+    store,
+    forgeToolTool: createForgeToolTool({ store }),
+    forgeMiddlewareTool: createForgeMiddlewareTool({ store }),
+    forgeListTool: createForgeListTool({ store }),
+    forgeInspectTool: createForgeInspectTool({ store }),
+  };
+}
+
+// One quartet for query-config providers (reused across non-forge cassettes
+// where forge tools are part of the descriptor list but not invoked).
+const initialForgeSet = createForgeToolSet();
+const forgeToolTool = initialForgeSet.forgeToolTool;
+const forgeMiddlewareTool = initialForgeSet.forgeMiddlewareTool;
+const forgeListTool = initialForgeSet.forgeListTool;
+const forgeInspectTool = initialForgeSet.forgeInspectTool;
 
 // ---------------------------------------------------------------------------
 // Memory tools (backed by @koi/memory-tools with in-memory backend)
@@ -4533,35 +4557,39 @@ await recordCassette(
 );
 
 // forge-synthesize uses Sonnet 4.6 — same rationale as spawn-tools for
-// reliable multi-tool function-call token emission.
-await recordCassette(
-  "forge-synthesize",
-  () =>
-    sonnetAdapter.stream({
-      messages: [
-        {
-          senderId: "user",
-          timestamp: Date.now(),
-          content: [
-            {
-              kind: "text",
-              text:
-                "Use forge_tool to create a tool named 'add-numbers' that takes two numbers a and b and returns their sum. " +
-                "Then call forge_list to confirm it appears. " +
-                "Then call forge_inspect with the returned brickId to retrieve the artifact.",
-            },
-          ],
-        },
-      ],
-      tools: [
-        forgeToolTool.descriptor,
-        forgeMiddlewareTool.descriptor,
-        forgeListTool.descriptor,
-        forgeInspectTool.descriptor,
-      ],
-    }),
-  { model: SONNET_MODEL },
-);
+// reliable multi-tool function-call token emission. Use a FRESH forge
+// store + tools quartet so cross-run residue cannot mask a missing save.
+{
+  const fresh = createForgeToolSet();
+  await recordCassette(
+    "forge-synthesize",
+    () =>
+      sonnetAdapter.stream({
+        messages: [
+          {
+            senderId: "user",
+            timestamp: Date.now(),
+            content: [
+              {
+                kind: "text",
+                text:
+                  "Use forge_tool to create a tool named 'add-numbers' that takes two numbers a and b and returns their sum. " +
+                  "Then call forge_list with name: 'add-numbers' to confirm it appears. " +
+                  "Then call forge_inspect with the returned brickId to retrieve the artifact.",
+              },
+            ],
+          },
+        ],
+        tools: [
+          fresh.forgeToolTool.descriptor,
+          fresh.forgeMiddlewareTool.descriptor,
+          fresh.forgeListTool.descriptor,
+          fresh.forgeInspectTool.descriptor,
+        ],
+      }),
+    { model: SONNET_MODEL },
+  );
+}
 
 await recordCassette("memory-store", () =>
   modelAdapter.stream({
