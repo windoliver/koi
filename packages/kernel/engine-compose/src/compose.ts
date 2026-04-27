@@ -128,6 +128,16 @@ export function recomposeChains(
     instrumentation,
     provenanceHints,
   );
+  // Stream chain is composed only when the adapter provides a native
+  // stream terminal. When absent, callers (compose-bridge / koi.ts) are
+  // responsible for installing a synthesized stream terminal in
+  // `terminals.modelStreamHandler` BEFORE calling recomposeChains. We
+  // intentionally do NOT synthesize from the composed `modelChain` here
+  // because wrapModelStream + wrapModelCall middleware double-fire
+  // (concurrency-guard self-deadlock, budget double-charge —
+  // #review-round13-F1, F2). The synth lives at the terminal layer so
+  // exactly one composed chain (wrapModelStream around a raw-terminal
+  // synth) governs each logical request.
   const streamChain =
     terminals.modelStreamHandler !== undefined
       ? composeModelStreamChain(

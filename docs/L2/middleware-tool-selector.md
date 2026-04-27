@@ -520,3 +520,12 @@ L2  @koi/middleware-tool-selector ◄──────┘
 | **exclude** | Tags that cause a tool to be removed regardless of include match |
 | **keyword scoring** | Default strategy: score tools by term overlap with query |
 | **tag profile** | A named set of include/exclude tags defining a tool surface |
+
+
+## Recent trust-boundary + memory hardening (rounds 43-49)
+
+- **Round 43 F1** — `missingCallIdPolicy` (default `"fail-closed"`) controls whether tool calls without a `callId` are rejected on turns with active selector snapshots. Set to `"trust"` for adapter / internal orchestration paths that legitimately invoke `callHandlers.toolCall` directly.
+- **Round 47 F1** — Per-turn snapshot maps are now bounded by `MAX_RETAINED_TURNS` (64). Older turns are evicted in insertion order on first-touch of a new turn, since `onAfterTurn` is not reliably fired by the engine on every successful terminal turn.
+- **Round 48 F1** — Evicted turns are tombstoned in `evictedTurns` so a delayed/retried tool call from an aged-out turn fails closed instead of falling through.
+- **Round 49 F2** — Per-turn state itself is bounded (`MAX_SNAPSHOTS_PER_TURN` = 256, `MAX_CALL_BINDINGS_PER_TURN` = 1024) so a single pathological turn that re-prompts or emits many tool calls cannot poison a long-lived runtime.
+
