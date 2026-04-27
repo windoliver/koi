@@ -324,6 +324,82 @@ describe("createForgeDemandDetector", () => {
     expect(signals.length).toBe(1);
   });
 
+  it("preserves user_correction across a failed model call replayed on retry", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    // Active cooldown — the correction must fire once and NOT be dropped on
+    // retry because the watermark advanced before the failed model call.
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        budget: { ...DEFAULT_FORGE_BUDGET, cooldownMs: 60_000 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+
+    const okNext = async (): Promise<ToolResponse> => toolRes();
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("any-tool"), okNext);
+
+    const correction: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "no, that's not right" }],
+      timestamp: 100,
+    };
+
+    // First model call throws — watermark must NOT advance, so the retry
+    // can re-scan the same transcript. Cooldown then dedupes.
+    const failModel = async (): Promise<ModelResponse> => {
+      throw new Error("transport boom");
+    };
+    try {
+      await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), failModel);
+    } catch {
+      // expected
+    }
+
+    const okModel = async (): Promise<ModelResponse> => modelRes("ok");
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), okModel);
+
+    const corrections = signals.filter((s) => s.trigger.kind === "user_correction");
+    // Watermark must NOT have advanced on the failure — retry re-scanned
+    // and cooldown deduped the second emission.
+    expect(corrections.length).toBe(1);
+  });
+
+  it("does not let one capability-gap signal suppress unrelated gaps via cooldown", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        // Active cooldown — without per-bucket keys this would suppress the
+        // second gap because the trigger.requiredCapability shares a prefix.
+        budget: { ...DEFAULT_FORGE_BUDGET, cooldownMs: 60_000 },
+        heuristics: { capabilityGapOccurrences: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+
+    const a = async (): Promise<ModelResponse> =>
+      modelRes("I don't have a tool for compiling rust code");
+    const b = async (): Promise<ModelResponse> =>
+      modelRes("I don't have a tool for parsing protobuf schemas");
+
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([]), a);
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([]), b);
+
+    const gaps = signals.filter((s) => s.trigger.kind === "capability_gap");
+    expect(gaps.length).toBe(2);
+  });
+
+  it("validateForgeDemandConfig rejects stateful (g/y) capability-gap patterns", async () => {
+    const { validateForgeDemandConfig } = await import("./config.js");
+    const result = validateForgeDemandConfig({
+      budget: DEFAULT_FORGE_BUDGET,
+      capabilityGapPatterns: [/I don'?t have a tool/g],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("'g' or 'y'");
+    }
+  });
+
   it("dismiss removes the signal and clears its cooldown", async () => {
     const handle = createForgeDemandDetector(
       makeConfig({

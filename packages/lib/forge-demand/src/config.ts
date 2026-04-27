@@ -106,6 +106,15 @@ function isRegExpArray(v: unknown): v is readonly RegExp[] {
   return Array.isArray(v) && v.every((p) => p instanceof RegExp);
 }
 
+/**
+ * Reject regexes whose `lastIndex` mutates across calls (`g` / `y` flags).
+ * Stateful regexes make capability-gap and user-correction detection
+ * dependent on prior traffic — the same input can alternate match/miss.
+ */
+function hasStatefulFlag(p: RegExp): boolean {
+  return p.global || p.sticky;
+}
+
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
@@ -146,11 +155,31 @@ export function validateForgeDemandConfig(raw: unknown): Result<ForgeDemandConfi
   if (c.clock !== undefined && typeof c.clock !== "function") {
     return { ok: false, error: validationError("clock must be a function") };
   }
-  if (c.capabilityGapPatterns !== undefined && !isRegExpArray(c.capabilityGapPatterns)) {
-    return { ok: false, error: validationError("capabilityGapPatterns must be RegExp[]") };
+  if (c.capabilityGapPatterns !== undefined) {
+    if (!isRegExpArray(c.capabilityGapPatterns)) {
+      return { ok: false, error: validationError("capabilityGapPatterns must be RegExp[]") };
+    }
+    if (c.capabilityGapPatterns.some(hasStatefulFlag)) {
+      return {
+        ok: false,
+        error: validationError(
+          "capabilityGapPatterns must not use 'g' or 'y' flags (stateful regex)",
+        ),
+      };
+    }
   }
-  if (c.userCorrectionPatterns !== undefined && !isRegExpArray(c.userCorrectionPatterns)) {
-    return { ok: false, error: validationError("userCorrectionPatterns must be RegExp[]") };
+  if (c.userCorrectionPatterns !== undefined) {
+    if (!isRegExpArray(c.userCorrectionPatterns)) {
+      return { ok: false, error: validationError("userCorrectionPatterns must be RegExp[]") };
+    }
+    if (c.userCorrectionPatterns.some(hasStatefulFlag)) {
+      return {
+        ok: false,
+        error: validationError(
+          "userCorrectionPatterns must not use 'g' or 'y' flags (stateful regex)",
+        ),
+      };
+    }
   }
 
   const p = parsed.value;

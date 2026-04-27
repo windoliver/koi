@@ -66,6 +66,9 @@ export function detectCapabilityGap(
   threshold: number,
 ): ForgeTrigger | undefined {
   for (const pattern of patterns) {
+    // Defensive: reset stateful flags so detection cannot depend on
+    // prior traffic if a `g`/`y` pattern slipped past validation.
+    pattern.lastIndex = 0;
     const match = pattern.exec(responseText);
     if (match !== null) {
       const count = gapCounts.get(pattern.source) ?? 0;
@@ -114,6 +117,8 @@ export function detectUserCorrection(
   recentToolCall: string,
 ): ForgeTrigger | undefined {
   for (const pattern of patterns) {
+    // Defensive: reset stateful flags (see detectCapabilityGap above).
+    pattern.lastIndex = 0;
     if (pattern.test(userText)) {
       const correctionText = userText.slice(0, 200);
       return {

@@ -198,6 +198,10 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   function checkCapabilityGaps(responseText: string): void {
     if (patterns.length === 0 || responseText.length === 0) return;
     for (const pattern of patterns) {
+      // Defensive: reset stateful flags so a `g`/`y` regex cannot make
+      // detection depend on prior calls (validator already rejects these,
+      // but createForgeDemandDetector also accepts direct construction).
+      pattern.lastIndex = 0;
       const match = pattern.exec(responseText);
       if (match === null) continue;
       // Bucket by the local context around the match (a normalized window
@@ -215,15 +219,27 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       const count = (capabilityGapCounts.get(key) ?? 0) + 1;
       capabilityGapCounts.set(key, count);
       if (count < thresholds.capabilityGapOccurrences) continue;
+      // Carry the windowed context as `requiredCapability` so the cooldown
+      // key (built from `requiredCapability` in `triggerKey`) distinguishes
+      // gaps that share a phrasing prefix. The bucket key and the cooldown
+      // key are then aligned end-to-end.
       emitSignal(
-        { kind: "capability_gap", requiredCapability: match[0] },
+        { kind: "capability_gap", requiredCapability: windowText },
         { failureCount: count, threshold: thresholds.capabilityGapOccurrences },
       );
     }
   }
 
-  function checkUserCorrections(request: ModelRequest): void {
-    if (correctionPatterns.length === 0 || lastToolCallId === "") return;
+  /**
+   * Scan request.messages for user corrections and return the new high-water
+   * timestamp. The caller commits the watermark only after the wrapped model
+   * call succeeds — otherwise a transient model failure followed by a retry
+   * with the same transcript would silently drop the correction signal.
+   */
+  function checkUserCorrections(request: ModelRequest): number {
+    if (correctionPatterns.length === 0 || lastToolCallId === "") {
+      return lastProcessedUserTimestamp;
+    }
     // Only inspect user-authored messages newer than the last one we've
     // already scanned. This prevents replayed transcript history (e.g. on
     // retry paths) from re-firing the same correction repeatedly, and
@@ -241,7 +257,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
         }
       }
     }
-    lastProcessedUserTimestamp = highWater;
+    return highWater;
   }
 
   function recordFailure(toolId: string, e: unknown): number {
@@ -307,8 +323,12 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      checkUserCorrections(request);
+      const nextWatermark = checkUserCorrections(request);
       const response = await next(request);
+      // Commit the user-correction watermark only after a successful model
+      // call. If `next` throws and the runtime retries the same transcript,
+      // the same user message is re-scanned (cooldowns then dedupe it).
+      lastProcessedUserTimestamp = nextWatermark;
       checkCapabilityGaps(extractResponseText(response));
       return response;
     },
