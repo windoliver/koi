@@ -1,6 +1,6 @@
 # @koi/long-running — Multi-Session Agent Harness with Delegation
 
-State manager for agents that operate over hours or days across multiple sessions. Tracks task progress, bridges context between sessions, auto-dispatches spawn tasks to worker agents, reconciles external state, and persists engine state at meaningful boundaries — enabling an agent to manage complex multi-agent workflows end-to-end.
+Multi-turn agent lifecycle with soft checkpointing, pause/resume, and crash recovery. State manager for agents that operate over hours or days across multiple sessions. Tracks task progress, bridges context between sessions, auto-dispatches spawn tasks to worker agents, reconciles external state, and persists engine state at meaningful boundaries — enabling an agent to manage complex multi-agent workflows end-to-end.
 
 ---
 

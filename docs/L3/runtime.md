@@ -4,6 +4,15 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+`@koi/long-running` wired (#1386): added as a dependency of `@koi/runtime` and
+included in the `tsconfig.json` project references list (alongside `@koi/hash`,
+required transitively by golden-replay tests). Two standalone golden queries
+added to `golden-replay.test.ts` (`Golden: @koi/long-running — harness lifecycle`)
+covering soft-checkpoint cadence and start/pause/resume phase transitions with
+in-memory `HarnessSnapshotStore` + `SessionPersistence` stubs (no LLM, no
+network). No cassette trajectory recorded — the harness wraps the engine loop
+and is exercised standalone via the public `createLongRunningHarness` factory.
+
 Doc-wiring sync for lib review fixes (#2063): refreshed integration notes for
 `@koi/spawn-tools`, `@koi/tool-exec`, `@koi/tools-bash`, and `@koi/tools-web`.
 Runtime wiring is unchanged. The integrated behavior now documents structured
