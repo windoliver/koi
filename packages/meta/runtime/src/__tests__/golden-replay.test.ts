@@ -14123,25 +14123,45 @@ describe("Golden: @koi/forge-demand", () => {
     expect(attached[0]?.scoped.getActiveSignalCount()).toBe(0);
   });
 
-  test("validateForgeDemandConfig rejects a single-arg getSnapshot", async () => {
-    // Regression for round-7 F68: validation previously accepted any
-    // object with a `getSnapshot` function. A legacy
-    // `getSnapshot(toolId)` swallows the second argument in JS,
-    // silently disabling performance_degradation. We now reject
-    // anything whose declared arity is < 2.
+  test("validateForgeDemandConfig warns (but does not reject) a single-arg getSnapshot", async () => {
+    // Regression for round-7 F68 (legacy tracker is high-confidence
+    // wrong) reconciled with round-10 F73 (rest-arg wrappers report
+    // length 0/1 but are valid). The validator now warns loudly on
+    // length === 1 — the high-confidence legacy case — without
+    // rejecting valid rest-arg / default-param implementations.
     const { validateForgeDemandConfig } = await import("@koi/forge-demand");
-    const result = validateForgeDemandConfig({
-      budget: {
-        maxForgesPerSession: 5,
-        computeTimeBudgetMs: 120_000,
-        demandThreshold: 0.7,
-        cooldownMs: 1_000,
-      },
-      healthTracker: { getSnapshot: (_toolId: string) => undefined },
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.message).toMatch(/sessionId, toolId/);
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: unknown): void => {
+      warnings.push(String(msg));
+    };
+    try {
+      const legacy = validateForgeDemandConfig({
+        budget: {
+          maxForgesPerSession: 5,
+          computeTimeBudgetMs: 120_000,
+          demandThreshold: 0.7,
+          cooldownMs: 1_000,
+        },
+        healthTracker: { getSnapshot: (_toolId: string) => undefined },
+      });
+      expect(legacy.ok).toBe(true);
+      expect(warnings.some((w) => /declared arity is 1/.test(w))).toBe(true);
+      // Rest-arg wrapper (length === 0) is silently accepted with no warning.
+      warnings.length = 0;
+      const restArg = validateForgeDemandConfig({
+        budget: {
+          maxForgesPerSession: 5,
+          computeTimeBudgetMs: 120_000,
+          demandThreshold: 0.7,
+          cooldownMs: 1_000,
+        },
+        healthTracker: { getSnapshot: (...args: unknown[]) => args[1] && undefined },
+      });
+      expect(restArg.ok).toBe(true);
+      expect(warnings.some((w) => /declared arity is 1/.test(w))).toBe(false);
+    } finally {
+      console.warn = originalWarn;
     }
   });
 

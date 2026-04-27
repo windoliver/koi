@@ -118,17 +118,32 @@ function validationError(message: string): KoiError {
 function isHealthTrackerLike(v: unknown): boolean {
   if (v === null || v === undefined || typeof v !== "object") return false;
   const obj = v as Record<string, unknown>;
-  if (typeof obj.getSnapshot !== "function") return false;
-  // The detector calls getSnapshot(sessionId, toolId). A legacy
-  // single-arg `getSnapshot(toolId)` (e.g. feedback-loop's raw
-  // ToolHealthTracker) silently swallows the second arg in JS,
-  // collapsing all sessions onto whichever toolId it sees first.
-  // Reject anything whose declared arity is < 2 so the mismatch
-  // surfaces at startup instead of as a permanent silent dormancy
-  // of `performance_degradation`. F68 regression.
-  const fn = obj.getSnapshot as { readonly length?: number };
-  if (typeof fn.length === "number" && fn.length < 2) return false;
-  return true;
+  return typeof obj.getSnapshot === "function";
+}
+
+/**
+ * Warn (do not reject) when getSnapshot's declared arity matches the
+ * legacy `(toolId)` shape rather than the documented `(sessionId, toolId)`
+ * contract. Rest-parameter wrappers (`(...args) => ...`, `length === 0`)
+ * and default-value second parameters (`(s, t = "") => ...`, `length === 1`)
+ * are valid implementations but report length 0/1 — we cannot reject
+ * them without breaking valid integrations (F73). length === 1
+ * specifically is the high-confidence legacy-tracker shape from
+ * `feedback-loop`'s raw ToolHealthTracker; surface it loudly so a
+ * silent dormancy of performance_degradation is at least observable.
+ */
+function warnIfSuspectArity(v: unknown): void {
+  if (v === null || v === undefined || typeof v !== "object") return;
+  const fn = (v as Record<string, unknown>).getSnapshot as { readonly length?: number };
+  if (typeof fn?.length === "number" && fn.length === 1) {
+    console.warn(
+      "[forge-demand] healthTracker.getSnapshot declared arity is 1; " +
+        "the detector calls getSnapshot(sessionId, toolId). If this is a " +
+        "legacy single-argument tracker, performance_degradation will " +
+        "silently mis-key snapshots. Wrap it with " +
+        "`(sessionId, toolId) => tracker.getSnapshot(toolId)` if intentional.",
+    );
+  }
 }
 
 function isRegExpArray(v: unknown): v is readonly RegExp[] {
@@ -169,15 +184,19 @@ export function validateForgeDemandConfig(raw: unknown): Result<ForgeDemandConfi
   );
   if (!parsed.ok) return parsed;
 
-  if (c.healthTracker !== undefined && !isHealthTrackerLike(c.healthTracker)) {
-    return {
-      ok: false,
-      error: validationError(
-        "healthTracker.getSnapshot must accept (sessionId, toolId) — " +
-          "legacy single-argument trackers silently mis-key snapshots " +
-          "and disable performance_degradation",
-      ),
-    };
+  if (c.healthTracker !== undefined) {
+    if (!isHealthTrackerLike(c.healthTracker)) {
+      return {
+        ok: false,
+        error: validationError("healthTracker must expose a 'getSnapshot' function"),
+      };
+    }
+    // Behavioral validation is impossible without invoking the function
+    // (which may have side effects). Surface a loud warning when the
+    // declared arity matches the high-confidence legacy single-argument
+    // shape — the most common silent-dormancy case — without rejecting
+    // valid rest-arg or default-param wrappers (F73).
+    warnIfSuspectArity(c.healthTracker);
   }
   if (c.onDemand !== undefined && typeof c.onDemand !== "function") {
     return { ok: false, error: validationError("onDemand must be a function") };

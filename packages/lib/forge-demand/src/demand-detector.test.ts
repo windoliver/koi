@@ -1397,6 +1397,47 @@ describe("createForgeDemandDetector", () => {
     expect(b).toEqual(a);
   });
 
+  it("retries onSessionAttached delivery on next traffic when the callback throws", async () => {
+    // Regression for F72 (round 10) — the detector previously marked
+    // a session observed before firing the callback, so a transient
+    // callback failure permanently stranded the session: subsequent
+    // traffic short-circuited and the host could never recover the
+    // scoped handle. Now we mark observed only after delivery
+    // succeeds, so the next call retries.
+    const originalErr = console.error;
+    const swallowed: unknown[] = [];
+    console.error = (...args: unknown[]): void => {
+      swallowed.push(args);
+    };
+    try {
+      let attempt = 0;
+      const delivered: number[] = [];
+      const handle = createForgeDemandDetector(
+        makeConfig({
+          onSessionAttached: (_session, _scoped) => {
+            attempt += 1;
+            if (attempt === 1) throw new Error("transient");
+            delivered.push(attempt);
+          },
+        }),
+      );
+      // First call — callback throws; session must remain UNobserved
+      // so the next call retries.
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), async () => toolRes());
+      expect(attempt).toBe(1);
+      expect(delivered.length).toBe(0);
+      // Second call — callback succeeds; session is now observed and
+      // a third call would short-circuit.
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), async () => toolRes());
+      expect(attempt).toBe(2);
+      expect(delivered).toEqual([2]);
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), async () => toolRes());
+      expect(attempt).toBe(2);
+    } finally {
+      console.error = originalErr;
+    }
+  });
+
   it("createDefaultForgeDemandConfig preserves onSessionAttached through to the detector", async () => {
     // Regression for F69 (round 8) — the default-config factory dropped
     // onSessionAttached, so any caller using the documented

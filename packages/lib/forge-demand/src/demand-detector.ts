@@ -123,15 +123,6 @@ function safeInvoke<T>(cb: ((value: T) => void) | undefined, value: T): void {
   }
 }
 
-function safeInvoke2<A, B>(cb: ((a: A, b: B) => void) | undefined, a: A, b: B): void {
-  if (cb === undefined) return;
-  try {
-    cb(a, b);
-  } catch (e: unknown) {
-    console.error("[forge-demand] observer callback threw:", e);
-  }
-}
-
 function mergeThresholds(overrides: Partial<HeuristicThresholds> | undefined): HeuristicThresholds {
   return {
     ...DEFAULT_THRESHOLDS,
@@ -216,26 +207,36 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
 
   function ensureObserved(session: SessionContext): void {
     if (observedSessions.has(session)) return;
-    observedSessions.add(session);
     // First sighting — deliver the unforgeable scoped handle to the
-    // legitimate session owner. We build the handle inline (forSession
-    // would re-check the WeakSet, but we've just added it so the check
-    // will pass). Errors in user callbacks must not break the wrapped
-    // call.
-    if (config.onSessionAttached !== undefined) {
-      const scoped: SessionScopedForgeDemandHandle = {
-        getSignals: (): readonly ForgeDemandSignal[] => {
-          const state = sessions.get(session.sessionId);
-          return state === undefined ? [] : state.signals.map(cloneSignal);
-        },
-        dismiss: (signalId: string): void => dismiss(session.sessionId, signalId),
-        getActiveSignalCount: (): number => {
-          const state = sessions.get(session.sessionId);
-          return state === undefined ? 0 : state.signals.length;
-        },
-      };
-      safeInvoke2(config.onSessionAttached, session, scoped);
+    // legitimate session owner BEFORE marking the session observed,
+    // so a transient callback failure does not permanently strand
+    // the session: the next call retries delivery. Once the callback
+    // returns cleanly, mark observed so subsequent traffic short-
+    // circuits without re-firing the callback. If no callback is
+    // configured, mark observed immediately. F72 regression.
+    if (config.onSessionAttached === undefined) {
+      observedSessions.add(session);
+      return;
     }
+    const scoped: SessionScopedForgeDemandHandle = {
+      getSignals: (): readonly ForgeDemandSignal[] => {
+        const state = sessions.get(session.sessionId);
+        return state === undefined ? [] : state.signals.map(cloneSignal);
+      },
+      dismiss: (signalId: string): void => dismiss(session.sessionId, signalId),
+      getActiveSignalCount: (): number => {
+        const state = sessions.get(session.sessionId);
+        return state === undefined ? 0 : state.signals.length;
+      },
+    };
+    let delivered = true;
+    try {
+      config.onSessionAttached(session, scoped);
+    } catch (e: unknown) {
+      delivered = false;
+      console.error("[forge-demand] onSessionAttached threw, will retry on next traffic:", e);
+    }
+    if (delivered) observedSessions.add(session);
   }
   // Handle-level counter so signal ids are unique across sessions —
   // otherwise two concurrent tenants would both produce `demand-1` and
