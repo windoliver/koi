@@ -1,6 +1,6 @@
 {
   "name": "@koi/forge-types",
-  "description": "Shared type + contract surfaces for the @koi/forge-* L2 packages (demand, candidate, artifact, policy, lifecycle, events). L0u — no logic beyond pure type guards.",
+  "description": "Shared type + contract surfaces for @koi/forge-* L2 packages. L0u types-only.",
   "version": "0.0.0",
   "private": true,
   "type": "module",
