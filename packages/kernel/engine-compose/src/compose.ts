@@ -528,9 +528,10 @@ export async function runStopGate(
  * Dispatch a permission decision to all middleware implementing `onPermissionDecision`.
  * Called by the permissions middleware via `ctx.dispatchPermissionDecision`.
  *
- * Hooks run concurrently so a slow observer cannot delay the durability-critical audit
- * hook. If any hook rejects (e.g., the audit sink is poisoned), the first rejection
- * propagates; the rest are abandoned.
+ * Fire-and-forget from the caller's perspective — errors are swallowed per the public
+ * middleware contract. Audit durability is enforced by the post-execution force-flush in
+ * wrapToolCall/wrapModelCall, which drains both the permission-decision and tool-call
+ * records atomically before returning the tool result to the caller.
  */
 export async function runPermissionDecisionHooks(
   middleware: readonly KoiMiddleware[],
@@ -538,11 +539,11 @@ export async function runPermissionDecisionHooks(
   query: PermissionQuery,
   decision: PermissionDecision,
 ): Promise<void> {
-  await Promise.all(
-    middleware
-      .filter((mw) => mw.onPermissionDecision !== undefined)
-      .map((mw) => mw.onPermissionDecision?.(ctx, query, decision) ?? Promise.resolve()),
-  );
+  for (const mw of middleware) {
+    if (mw.onPermissionDecision !== undefined) {
+      await mw.onPermissionDecision(ctx, query, decision);
+    }
+  }
 }
 
 /**
