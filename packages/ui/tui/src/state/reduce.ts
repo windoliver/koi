@@ -266,9 +266,9 @@ function updateToolBlock(state: TuiState, callId: string, patch: Partial<ToolCal
 
   const tool = findToolBlock(found.msg.blocks, callId);
   if (!tool) {
-    // Dev-mode warning: tool_result or tool_call_end for an unregistered callId.
-    // Possible causes: TUI missed tool_call_start (reconnect), or a bug upstream.
-    console.warn(`[tui/reduce] no tool_call block found for callId="${callId}"`);
+    // tui-single-writer-exception: inside pure reducer — cannot dispatch to store.
+    // Possible causes: TUI missed tool_call_start (reconnect) or upstream bug.
+    process.stderr.write(`[tui/reduce] no tool_call block found for callId="${callId}"\n`);
     return state;
   }
 

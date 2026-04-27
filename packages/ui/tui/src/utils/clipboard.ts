@@ -1,7 +1,11 @@
 /**
  * Terminal clipboard utilities.
  *
- * Write: OSC 52 escape sequence (supported by most modern terminals).
+ * Write: use CliRenderer.copyToClipboardOSC52() — routes OSC 52 through the
+ * renderer's output path to avoid out-of-band stdout writes that corrupt TUI
+ * frame composition. Direct process.stdout.write is prohibited in active TUI
+ * contexts (issue #1940).
+ *
  * Read image: platform-native APIs (osascript/wl-paste/xclip/PowerShell).
  *
  * @see https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
@@ -9,31 +13,6 @@
 
 import { platform } from "node:os";
 import { detectFromBytes } from "@koi/file-type";
-
-/**
- * Safe upper bound for OSC 52 payload size in bytes.
- * Terminal-dependent; 100 KB is a conservative default that works
- * across iTerm2, Ghostty, WezTerm, and Kitty.
- */
-export const MAX_CLIPBOARD_BYTES = 100_000;
-
-/**
- * Copy text to the system clipboard via OSC 52 terminal escape sequence.
- *
- * Returns `true` if the sequence was written, `false` if stdout is not a TTY
- * or the text exceeds the safe OSC 52 payload limit.
- */
-export function copyToClipboard(text: string): boolean {
-  if (!process.stdout.isTTY) return false;
-
-  const base64 = Buffer.from(text).toString("base64");
-  // Enforce limit on the encoded payload (what the terminal actually receives).
-  // OSC 52 framing adds ~8 bytes; the base64 string is the dominant cost.
-  if (base64.length > MAX_CLIPBOARD_BYTES) return false;
-
-  process.stdout.write(`\x1b]52;c;${base64}\x07`);
-  return true;
-}
 
 // ---------------------------------------------------------------------------
 // Clipboard image reading (#11) — platform-native APIs

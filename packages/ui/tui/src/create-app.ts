@@ -618,9 +618,9 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           const hasRawModeMarker = e instanceof Error && /setRawMode|errno: 2/.test(e.message);
           const isStdinRawModeError = hasRawModeMarker && (hasErrnoCode || errno === undefined);
           if (!isStdinRawModeError) {
-            // Log unexpected renderer teardown failures so they surface in
-            // crash reports without tripping the non-throwing stop() contract.
-            console.error("createTuiApp.stop: renderer.destroy() threw", e);
+            // tui-single-writer-exception: renderer is being destroyed — cannot
+            // dispatch to store. Stderr fallback for crash reports only.
+            process.stderr.write(`[tui] stop: renderer.destroy() threw: ${String(e)}\n`);
           }
         }
       }

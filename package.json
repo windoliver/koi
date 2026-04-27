@@ -35,6 +35,7 @@
     "bench:startup:local": "bun scripts/measure-startup.ts --local",
     "check:golden-queries": "bun scripts/check-golden-queries.ts",
     "check:tui-tools": "bun scripts/check-tui-tools.ts",
+    "check:tui-single-writer": "bun scripts/check-tui-single-writer.ts",
     "check:trajectories": "bun scripts/check-trajectories.ts",
     "check:unused": "bunx knip",
     "check:duplicates": "bunx jscpd .",

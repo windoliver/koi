@@ -166,7 +166,9 @@ describe("TuiStore — no-op guard", () => {
 
 describe("TuiStore — throwing listener", () => {
   test("throwing listener does not prevent other listeners from firing", async () => {
-    const consoleSpy = spyOn(console, "error").mockImplementation(() => {});
+    // #1940: store uses process.stderr.write (not console.error) so the error
+    // diagnostic does not go through the TUI renderer's stdout canvas.
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
     const store = makeStore();
     const before = mock(() => {});
     const thrower = mock(() => {
@@ -181,8 +183,8 @@ describe("TuiStore — throwing listener", () => {
     expect(before).toHaveBeenCalledTimes(1);
     expect(thrower).toHaveBeenCalledTimes(1);
     expect(after).toHaveBeenCalledTimes(1);
-    expect(consoleSpy).toHaveBeenCalledTimes(1);
-    consoleSpy.mockRestore();
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    stderrSpy.mockRestore();
   });
 });
 

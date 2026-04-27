@@ -46,7 +46,6 @@ import type {
   TuiModal,
   TuiView,
 } from "./state/types.js";
-import { copyToClipboard } from "./utils/clipboard.js";
 import {
   StoreContext,
   useTuiStore,
@@ -315,7 +314,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         // copy-on-select in MessageList.
         const sel = renderer.getSelection();
         const text = sel?.getSelectedText();
-        if (text && text.length > 0 && copyToClipboard(text)) {
+        if (text && text.length > 0 && renderer.copyToClipboardOSC52(text)) {
           renderer.clearSelection();
           // clearSelection() doesn't emit a null selection event, so
           // MessageList's onSelectionEnd never fires. Dispatch resume_follow

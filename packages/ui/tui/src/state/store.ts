@@ -62,7 +62,9 @@ export function createStore(initialState: TuiState): TuiStore {
       try {
         listener();
       } catch (e: unknown) {
-        console.error("TuiStore listener threw:", e);
+        // tui-single-writer-exception: listener exception — dispatching back to the
+        // store from inside notifySubscribers() would be circular. Stderr-only.
+        process.stderr.write(`[TuiStore] listener threw: ${String(e)}\n`);
       }
     }
   }

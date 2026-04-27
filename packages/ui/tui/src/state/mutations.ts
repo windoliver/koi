@@ -124,7 +124,8 @@ function updateToolBlock(state: Draft, callId: string, patch: Partial<ToolCallBl
   if (!msg) return;
   const blockIdx = findToolBlockIdx(msg.blocks, callId);
   if (blockIdx < 0) {
-    console.warn(`[tui/mutate] no tool_call block found for callId="${callId}"`);
+    // tui-single-writer-exception: inside produce() — cannot dispatch back to store.
+    process.stderr.write(`[tui/mutate] no tool_call block found for callId="${callId}"\n`);
     return;
   }
   const block = msg.blocks[blockIdx] as ToolCallBlock;
