@@ -80,9 +80,6 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
   // #review-round20-F1.
   const callAllowlists = new Map<string, ReadonlySet<string>>();
   const turnSnapshots = new Map<TurnId, ReadonlySet<string>[]>();
-  // let justified: tracks the most recently captured snapshot per turn so
-  // tool_call_start chunks emitted by the inner stream can bind to it.
-  const lastSnapshotByTurn = new Map<TurnId, ReadonlySet<string>>();
 
   function recordSnapshot(turnId: TurnId, allowed: ReadonlySet<string>): void {
     const list = turnSnapshots.get(turnId);
@@ -91,7 +88,18 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     } else {
       list.push(allowed);
     }
-    lastSnapshotByTurn.set(turnId, allowed);
+  }
+
+  /**
+   * Result of filtering one model invocation: the rewritten request and
+   * the immutable allowlist snapshot that was recorded for it. Returned
+   * as a pair (rather than via a shared `lastSnapshotByTurn` map) so
+   * concurrent invocations on the same turn cannot read each other's
+   * snapshot after an `await` boundary (#review-round21-F1).
+   */
+  interface FilterResult {
+    readonly request: ModelRequest;
+    readonly snapshot: ReadonlySet<string> | undefined;
   }
 
   function reportError(e: unknown): void {
@@ -102,33 +110,36 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     swallowError(e, { package: "middleware-tool-selector", operation: "selectTools" });
   }
 
-  async function filterRequest(ctx: TurnContext, request: ModelRequest): Promise<ModelRequest> {
+  function captureSnapshot(
+    turnId: TurnId,
+    allowed: ReadonlySet<string>,
+  ): ReadonlySet<string> | undefined {
+    if (!enforceFiltering) return undefined;
+    recordSnapshot(turnId, allowed);
+    return allowed;
+  }
+
+  async function filterRequest(ctx: TurnContext, request: ModelRequest): Promise<FilterResult> {
     const tools = request.tools;
     if (tools === undefined || tools.length <= minTools) {
       // Fast path: no semantic filtering needed because the toolset is
-      // already small enough (or absent). When enforceFiltering is on,
-      // install an allowlist matching exactly what the model was shown
-      // — including the EMPTY set for deny-all turns where tools is
-      // undefined. wrapToolCall must still reject tool calls that were
-      // not advertised, otherwise a caller omitting `tools` to disable
-      // tools for a turn gets no enforcement at all and any native
-      // tool_call_* the adapter emits still executes
+      // already small enough (or absent). Install an allowlist matching
+      // exactly what the model was shown — including the EMPTY set for
+      // deny-all turns where tools is undefined. wrapToolCall must
+      // still reject tool calls that were not advertised, otherwise a
+      // caller omitting `tools` to disable tools gets no enforcement
       // (#review-round11-F1, #review-round16-F1).
-      if (enforceFiltering) {
-        const advertised = tools ?? [];
-        recordSnapshot(ctx.turnId, new Set<string>(advertised.map((t) => t.name)));
-      }
-      return request;
+      const advertised = tools ?? [];
+      const snapshot = captureSnapshot(ctx.turnId, new Set<string>(advertised.map((t) => t.name)));
+      return { request, snapshot };
     }
 
     const query = extractQuery(request.messages);
     if (query === "") {
       // No query to drive selection, but keep enforcement honest by
       // pinning the allowlist to what's currently advertised.
-      if (enforceFiltering) {
-        recordSnapshot(ctx.turnId, new Set<string>(tools.map((t) => t.name)));
-      }
-      return request;
+      const snapshot = captureSnapshot(ctx.turnId, new Set<string>(tools.map((t) => t.name)));
+      return { request, snapshot };
     }
 
     // let: assigned in try, read after the catch — required by the fail-open path.
@@ -143,23 +154,17 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
         // Returning the original (unfiltered) request without an allowlist
         // would let the model both see and call every tool — defeating the
         // very trust boundary enforceFiltering exists to provide.
-        recordSnapshot(ctx.turnId, new Set<string>(alwaysInclude));
+        const snapshot = captureSnapshot(ctx.turnId, new Set<string>(alwaysInclude));
         const fallbackTools = tools.filter((t) => alwaysInclude.includes(t.name));
-        return { ...request, tools: fallbackTools };
+        return { request: { ...request, tools: fallbackTools }, snapshot };
       }
-      return request;
+      return { request, snapshot: undefined };
     }
 
     const nameSet = new Set<string>([...selectedNames.slice(0, maxTools), ...alwaysInclude]);
     const filteredTools = tools.filter((t) => nameSet.has(t.name));
 
-    if (enforceFiltering) {
-      // Snapshot the allowed set so wrapToolCall can fail closed for any
-      // tool the model emits that wasn't in this invocation's advertised
-      // set. Per-invocation snapshot, not per-turn — multiple model
-      // requests in the same turn each get their own snapshot.
-      recordSnapshot(ctx.turnId, new Set<string>(filteredTools.map((t) => t.name)));
-    }
+    const snapshot = captureSnapshot(ctx.turnId, new Set<string>(filteredTools.map((t) => t.name)));
 
     const metadata: JsonObject = {
       ...request.metadata,
@@ -167,7 +172,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       toolsAfterFilter: filteredTools.length,
     };
 
-    return { ...request, tools: filteredTools, metadata };
+    return { request: { ...request, tools: filteredTools, metadata }, snapshot };
   }
 
   const description =
@@ -190,20 +195,18 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      return next(await filterRequest(ctx, request));
+      const { request: filtered } = await filterRequest(ctx, request);
+      return next(filtered);
     },
     async *wrapModelStream(
       ctx: TurnContext,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      const filtered = await filterRequest(ctx, request);
-      // Snapshot the allowlist that was in force when THIS invocation
-      // ran, so tool_call_start chunks emitted by the inner stream can
-      // bind to it — even if a subsequent model call in the same turn
-      // overwrites lastSnapshotByTurn. Captured here (not at chunk
-      // time) so concurrent invocations don't race on the shared map.
-      const snapshot = enforceFiltering ? lastSnapshotByTurn.get(ctx.turnId) : undefined;
+      // Capture this invocation's snapshot directly from filterRequest
+      // — concurrent overlapping streams on the same turn cannot
+      // race on a shared map after this point (#review-round21-F1).
+      const { request: filtered, snapshot } = await filterRequest(ctx, request);
       for await (const chunk of next(filtered)) {
         if (snapshot !== undefined && chunk.kind === "tool_call_start") {
           callAllowlists.set(chunk.callId, snapshot);
@@ -212,7 +215,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       }
     },
     async wrapToolCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
@@ -229,24 +232,25 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
           );
         }
       }
-      // Fallback: non-streaming path or stream wrapper that didn't
-      // preserve callIds. Allow if the tool appeared in ANY of the
-      // turn's snapshots — strictly looser than per-call enforcement
-      // but never looser than the historical per-turn semantics.
-      const snapshots = turnSnapshots.get(_ctx.turnId);
+      // No callId binding available. Two cases:
+      //   1. The turn has snapshots — adapter executed a tool call
+      //      that wasn't bound to any model invocation we filtered.
+      //      Fail closed (#review-round21-F2): widening to "in any
+      //      turn snapshot" let adapters bypass per-invocation
+      //      enforcement by simply omitting callId.
+      //   2. The turn has NO snapshots — selector never ran for this
+      //      turn (e.g. no model call yet, or filter skipped). Pass
+      //      through, since there is nothing to enforce against.
+      const snapshots = turnSnapshots.get(ctx.turnId);
       if (snapshots === undefined) return next(request);
-      for (const allowed of snapshots) {
-        if (allowed.has(request.toolId)) return next(request);
-      }
       throw KoiRuntimeError.from(
         "PERMISSION",
-        `Tool "${request.toolId}" was filtered out for this turn by koi:tool-selector and cannot be invoked. Set enforceFiltering: false to disable execution-time enforcement.`,
+        `Tool "${request.toolId}" was invoked without a callId bound to a koi:tool-selector snapshot. With enforceFiltering: true, model-originated tool execution must carry the tool_call_start callId. Set enforceFiltering: false to disable execution-time enforcement.`,
       );
     },
     async onAfterTurn(ctx: TurnContext): Promise<void> {
       const snapshots = turnSnapshots.get(ctx.turnId);
       turnSnapshots.delete(ctx.turnId);
-      lastSnapshotByTurn.delete(ctx.turnId);
       // Drop callId bindings recorded under this turn's snapshots so
       // long-lived sessions don't leak entries.
       if (snapshots !== undefined) {

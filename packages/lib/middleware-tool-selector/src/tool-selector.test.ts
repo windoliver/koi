@@ -158,6 +158,115 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     ).rejects.toBeInstanceOf(KoiRuntimeError);
   });
 
+  test("overlapping wrapModelStream invocations bind callIds to their own snapshots — round 21 F1", async () => {
+    // Two streams interleave. Without round-21 (snapshot returned
+    // synchronously from filterRequest), invocation A's
+    // tool_call_start would bind to invocation B's allowlist via the
+    // shared lastSnapshotByTurn map after the await boundary.
+    let nthCall = 0;
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => {
+        nthCall += 1;
+        return nthCall === 1 ? ["alpha"] : ["gamma"];
+      },
+      minTools: 0,
+    });
+    const wrapStream = mw.wrapModelStream;
+    if (!wrapStream) throw new Error("wrapModelStream missing");
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const ctx = turnCtx();
+    const tools = [tool("alpha"), tool("beta"), tool("gamma")];
+    const callA = toolCallId("conc-A");
+    const callB = toolCallId("conc-B");
+
+    // Hold-open generators — both start before either completes.
+    let releaseA = (): void => {};
+    let releaseB = (): void => {};
+    const streamA: ModelStreamHandler = async function* () {
+      await new Promise<void>((r) => {
+        releaseA = r;
+      });
+      yield { kind: "tool_call_start", toolName: "alpha", callId: callA };
+      yield { kind: "tool_call_end", callId: callA };
+      yield { kind: "done", response: modelResponse() };
+    };
+    const streamB: ModelStreamHandler = async function* () {
+      await new Promise<void>((r) => {
+        releaseB = r;
+      });
+      yield { kind: "tool_call_start", toolName: "gamma", callId: callB };
+      yield { kind: "tool_call_end", callId: callB };
+      yield { kind: "done", response: modelResponse() };
+    };
+
+    const drainA = (async (): Promise<void> => {
+      for await (const _ of wrapStream(ctx, { messages: [userMsg("a")], tools }, streamA));
+    })();
+    const drainB = (async (): Promise<void> => {
+      for await (const _ of wrapStream(ctx, { messages: [userMsg("b")], tools }, streamB));
+    })();
+    // Let both filterRequest calls resolve and snapshots be captured.
+    await new Promise<void>((r) => setTimeout(r, 5));
+    // Release B FIRST so its snapshot is the most-recent. If A's
+    // snapshot leaked through a shared map, A's tool_call_start
+    // would bind to {gamma} and accept gamma below.
+    releaseB();
+    await new Promise<void>((r) => setTimeout(r, 5));
+    releaseA();
+    await Promise.all([drainA, drainB]);
+
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "ok" }),
+    );
+
+    // call-A bound to A's snapshot {alpha}; call-B bound to B's snapshot {gamma}.
+    await expect(
+      wrapTool(ctx, { toolId: "alpha", input: {}, callId: callA }, toolNext as never),
+    ).resolves.toEqual({ output: "ok" });
+    await expect(
+      wrapTool(ctx, { toolId: "gamma", input: {}, callId: callA }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
+    await expect(
+      wrapTool(ctx, { toolId: "gamma", input: {}, callId: callB }, toolNext as never),
+    ).resolves.toEqual({ output: "ok" });
+  });
+
+  test("rejects tool calls without callId once snapshots exist — round 21 F2", async () => {
+    // Adapters that omit callId (or stream wrappers that drop it)
+    // must not bypass per-invocation enforcement by widening to a
+    // turn-scope union of allowlists.
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => ["safe"],
+      minTools: 0,
+    });
+    const wrapStream = mw.wrapModelStream;
+    if (!wrapStream) throw new Error("wrapModelStream missing");
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const ctx = turnCtx();
+    const tools = [tool("safe"), tool("dangerous")];
+    const callId = toolCallId("c1");
+    const stream: ModelStreamHandler = async function* () {
+      yield { kind: "tool_call_start", toolName: "safe", callId };
+      yield { kind: "tool_call_end", callId };
+      yield { kind: "done", response: modelResponse() };
+    };
+    for await (const _ of wrapStream(ctx, { messages: [userMsg("go")], tools }, stream)) {
+      // drain
+    }
+
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "ok" }),
+    );
+    // Snapshots exist for this turn but the request has no callId.
+    // Even an "in-snapshot" tool name must be rejected: the binding
+    // is the trust signal, not the tool name.
+    await expect(
+      wrapTool(ctx, { toolId: "safe", input: {} }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
+  });
+
   test("custom isUserSender predicate routes filtering for non-default sender IDs — round 19 F1", async () => {
     // Deployments using non-default user sender IDs (e.g. test harnesses
     // or custom channels) need a way to keep tool filtering enabled
@@ -333,12 +442,22 @@ describe("createToolSelectorMiddleware — selector-error handling", () => {
       onError,
       minTools: 0,
     });
-    const next = mock<ModelHandler>(async (req) => {
-      expect(req.tools?.map((t) => t.name)).toEqual(["a"]);
-      return modelResponse();
-    });
+    // Run the stream-call hook so callIds get bound to the snapshot.
     const ctx = turnCtx();
-    await getWrap(mw)(ctx, { messages: [userMsg("go")], tools }, next);
+    const wrapStream = mw.wrapModelStream;
+    if (!wrapStream) throw new Error("wrapModelStream missing");
+    const callIdA = toolCallId("call-a");
+    const callIdB = toolCallId("call-b");
+    const stream: ModelStreamHandler = async function* () {
+      yield { kind: "tool_call_start", toolName: "a", callId: callIdA };
+      yield { kind: "tool_call_end", callId: callIdA };
+      yield { kind: "tool_call_start", toolName: "b", callId: callIdB };
+      yield { kind: "tool_call_end", callId: callIdB };
+      yield { kind: "done", response: modelResponse() };
+    };
+    for await (const _ of wrapStream(ctx, { messages: [userMsg("go")], tools }, stream)) {
+      // drain
+    }
     expect(onError).toHaveBeenCalledTimes(1);
 
     // wrapToolCall MUST also reject the dropped tools — selector failure
@@ -349,11 +468,11 @@ describe("createToolSelectorMiddleware — selector-error handling", () => {
       async () => ({ output: "ok" }),
     );
     await expect(
-      wrapTool(ctx, { toolId: "b", input: {} }, toolNext as never),
+      wrapTool(ctx, { toolId: "b", input: {}, callId: callIdB }, toolNext as never),
     ).rejects.toBeInstanceOf(KoiRuntimeError);
-    await expect(wrapTool(ctx, { toolId: "a", input: {} }, toolNext as never)).resolves.toEqual({
-      output: "ok",
-    });
+    await expect(
+      wrapTool(ctx, { toolId: "a", input: {}, callId: callIdA }, toolNext as never),
+    ).resolves.toEqual({ output: "ok" });
   });
 
   test("with enforceFiltering=false, selector throw passes original tools through", async () => {
@@ -400,11 +519,22 @@ describe("createToolSelectorMiddleware — execution-time enforcement", () => {
       minTools: 0,
     });
 
-    // Run the model-call hook so the per-turn allowlist is populated.
+    // Run the stream-call hook so callIds get bound to the snapshot.
     const ctx = turnCtx();
-    const wrapModel = getWrap(mw);
-    const next = mock<ModelHandler>(async () => modelResponse());
-    await wrapModel(ctx, { messages: [userMsg("go")], tools }, next);
+    const wrapStream = mw.wrapModelStream;
+    if (!wrapStream) throw new Error("wrapModelStream missing");
+    const callSafe = toolCallId("call-safe");
+    const callDangerous = toolCallId("call-dangerous");
+    const stream: ModelStreamHandler = async function* () {
+      yield { kind: "tool_call_start", toolName: "safe", callId: callSafe };
+      yield { kind: "tool_call_end", callId: callSafe };
+      yield { kind: "tool_call_start", toolName: "dangerous", callId: callDangerous };
+      yield { kind: "tool_call_end", callId: callDangerous };
+      yield { kind: "done", response: modelResponse() };
+    };
+    for await (const _ of wrapStream(ctx, { messages: [userMsg("go")], tools }, stream)) {
+      // drain
+    }
 
     const wrapTool = mw.wrapToolCall;
     if (!wrapTool) throw new Error("wrapToolCall missing");
@@ -413,13 +543,13 @@ describe("createToolSelectorMiddleware — execution-time enforcement", () => {
     );
 
     await expect(
-      wrapTool(ctx, { toolId: "dangerous", input: {} }, toolNext as never),
+      wrapTool(ctx, { toolId: "dangerous", input: {}, callId: callDangerous }, toolNext as never),
     ).rejects.toBeInstanceOf(KoiRuntimeError);
     expect(toolNext).toHaveBeenCalledTimes(0);
     // Filtered-in tool still passes through.
-    await expect(wrapTool(ctx, { toolId: "safe", input: {} }, toolNext as never)).resolves.toEqual({
-      output: "ok",
-    });
+    await expect(
+      wrapTool(ctx, { toolId: "safe", input: {}, callId: callSafe }, toolNext as never),
+    ).resolves.toEqual({ output: "ok" });
   });
 
   test("does not enforce when enforceFiltering is false", async () => {

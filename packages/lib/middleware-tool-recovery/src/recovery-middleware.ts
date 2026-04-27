@@ -56,6 +56,7 @@ interface RecoveryRun {
 
 function runRecovery(
   ctx: TurnContext,
+  invocationNonce: string,
   bufferedText: string,
   tools: readonly { readonly name: string }[],
   patterns: readonly ToolCallPattern[],
@@ -66,9 +67,15 @@ function runRecovery(
   const result = recoverToolCalls(bufferedText, patterns, allowed, maxCalls, onEvent);
   if (result === undefined) return undefined;
 
+  // Seed callIds with a per-invocation nonce so multiple recovered
+  // model invocations within the same turn don't collide on
+  // `recovery-<turnId>-<index>`. Collisions overwrote earlier
+  // selector bindings keyed by callId and corrupted any other
+  // callId-keyed correlation (transcript, result pairing).
+  // #review-round21-F3.
   const calls: readonly RecoveredCall[] = result.toolCalls.map((call, index) => ({
     toolName: call.toolName,
-    callId: toolCallId(`recovery-${ctx.turnId}-${String(index)}`),
+    callId: toolCallId(`recovery-${ctx.turnId}-${invocationNonce}-${String(index)}`),
     input: call.arguments,
   }));
   return { cleanedText: result.remainingText, calls };
@@ -150,6 +157,10 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     // let: flips true if the adapter emits a native tool call — recovery is
     // disabled and remaining chunks pass through unmodified.
     let bypass = false;
+    // Per-invocation nonce so recovered callIds don't collide across
+    // multiple model invocations within the same turn
+    // (#review-round21-F3). Random hex segment + monotonic clock.
+    const invocationNonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
     try {
       for await (const chunk of next(request)) {
@@ -251,7 +262,15 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
           return;
         }
 
-        const recovered = runRecovery(ctx, bufferedText, tools, patterns, maxCalls, onEvent);
+        const recovered = runRecovery(
+          ctx,
+          invocationNonce,
+          bufferedText,
+          tools,
+          patterns,
+          maxCalls,
+          onEvent,
+        );
 
         if (recovered === undefined) {
           for (const buf of pending) yield buf;
@@ -283,7 +302,15 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
       // original error via response.metadata so callers can still
       // observe the underlying failure. #review-round12-F3.
       if (!bypass && mode === "buffer") {
-        const recovered = runRecovery(ctx, bufferedText, tools, patterns, maxCalls, onEvent);
+        const recovered = runRecovery(
+          ctx,
+          invocationNonce,
+          bufferedText,
+          tools,
+          patterns,
+          maxCalls,
+          onEvent,
+        );
         if (recovered !== undefined && recovered.calls.length > 0) {
           for (const buf of pending) {
             if (buf.kind !== "text_delta") yield buf;
