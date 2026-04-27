@@ -16,7 +16,7 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
   let buffer: AuditEntry[] = [];
   // let justified: lifecycle state
   let timer: ReturnType<typeof setInterval> | undefined;
-  let flushing = false;
+  let flushPromise: Promise<void> | undefined;
   let entrySeq = 0;
 
   function computePath(entry: AuditEntry): string {
@@ -35,36 +35,39 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
     }
   }
 
-  async function flushBuffer(): Promise<void> {
-    if (buffer.length === 0 || flushing) return;
+  async function drainBuffer(): Promise<void> {
+    if (buffer.length === 0) return;
 
-    flushing = true;
     const batch = buffer;
     buffer = [];
 
-    try {
-      const results = await Promise.allSettled(
-        batch.map((entry) => writeEntry(config.transport, entry)),
-      );
+    const results = await Promise.allSettled(
+      batch.map((entry) => writeEntry(config.transport, entry)),
+    );
 
-      const failed = batch.filter((_, i) => results[i]?.status === "rejected");
-      if (failed.length > 0) {
-        buffer = [...failed, ...buffer]; // re-enqueue for next flush
-      }
-
-      const firstFailed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
-      if (firstFailed !== undefined) {
-        throw new Error("Failed to write audit entry", { cause: firstFailed.reason });
-      }
-    } finally {
-      flushing = false;
+    const failed = batch.filter((_, i) => results[i]?.status === "rejected");
+    if (failed.length > 0) {
+      buffer = [...failed, ...buffer]; // re-enqueue for next flush
     }
+
+    const firstFailed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (firstFailed !== undefined) {
+      throw new Error("Failed to write audit entry", { cause: firstFailed.reason });
+    }
+  }
+
+  function startFlush(): Promise<void> {
+    if (flushPromise !== undefined) return flushPromise;
+    flushPromise = drainBuffer().finally(() => {
+      flushPromise = undefined;
+    });
+    return flushPromise;
   }
 
   function ensureTimer(): void {
     if (timer !== undefined) return;
     timer = setInterval(() => {
-      void flushBuffer().catch(() => {}); // fire-and-forget on interval
+      void startFlush().catch(() => {}); // fire-and-forget on interval
     }, flushIntervalMs);
     if (typeof timer === "object" && timer !== null && "unref" in timer) {
       (timer as { unref: () => void }).unref();
@@ -75,7 +78,7 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
     buffer = [...buffer, entry];
     ensureTimer();
     if (buffer.length >= batchSize) {
-      void flushBuffer().catch(() => {}); // fire-and-forget
+      void startFlush().catch(() => {}); // fire-and-forget
     }
   };
 
@@ -84,24 +87,53 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
       clearInterval(timer);
       timer = undefined;
     }
-    await flushBuffer();
+    // Await any in-flight size-triggered flush first, then drain what remains
+    if (flushPromise !== undefined) await flushPromise.catch(() => {});
+    await drainBuffer();
   };
+
+  function extractListFiles(value: unknown): readonly { readonly path: string }[] {
+    if (Array.isArray(value)) return value as { readonly path: string }[];
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "files" in value &&
+      Array.isArray((value as { files: unknown }).files)
+    ) {
+      return (value as { files: { readonly path: string }[] }).files;
+    }
+    return [];
+  }
+
+  function extractContent(value: unknown): string {
+    if (typeof value === "string") return value;
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "content" in value &&
+      typeof (value as { content: unknown }).content === "string"
+    ) {
+      return (value as { content: string }).content;
+    }
+    throw new Error("unexpected NFS read response shape");
+  }
 
   const query = async (sessionId: string): Promise<readonly AuditEntry[]> => {
     await flush();
 
     const safeSession = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const listResult = await config.transport.call<readonly { readonly path: string }[]>("list", {
+    const listResult = await config.transport.call<unknown>("list", {
       path: `${basePath}/${safeSession}`,
     });
     if (!listResult.ok) return [];
 
+    const files = extractListFiles(listResult.value);
     const entries: AuditEntry[] = [];
-    for (const file of listResult.value) {
-      const readResult = await config.transport.call<string>("read", { path: file.path });
+    for (const file of files) {
+      const readResult = await config.transport.call<unknown>("read", { path: file.path });
       if (readResult.ok) {
         try {
-          entries.push(JSON.parse(readResult.value) as AuditEntry);
+          entries.push(JSON.parse(extractContent(readResult.value)) as AuditEntry);
         } catch {
           // Skip malformed entries
         }

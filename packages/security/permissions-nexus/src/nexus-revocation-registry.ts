@@ -43,10 +43,15 @@ export function createNexusRevocationRegistry(
   };
 
   const revoke = async (id: DelegationId, cascade: boolean): Promise<void> => {
-    await config.transport.call("write", {
+    const result = await config.transport.call("write", {
       path: `${policyPath}/revocations/${id}.json`,
       content: JSON.stringify({ revoked: true, cascade }),
     });
+    if (!result.ok) {
+      throw new Error(`Failed to persist revocation for grant ${id}: ${result.error.message}`, {
+        cause: result.error,
+      });
+    }
   };
 
   return { isRevoked, isRevokedBatch, revoke };

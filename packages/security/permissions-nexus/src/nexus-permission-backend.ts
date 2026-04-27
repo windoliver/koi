@@ -38,42 +38,68 @@ export function createNexusPermissionBackend(
   let timer: ReturnType<typeof setInterval> | undefined;
   let disposed = false;
 
+  function extractString(value: unknown): string {
+    if (typeof value === "string") return value;
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "content" in value &&
+      typeof (value as { content: unknown }).content === "string"
+    ) {
+      return (value as { content: string }).content;
+    }
+    throw new Error("unexpected NFS read response shape");
+  }
+
   async function writeCurrentPolicy(): Promise<void> {
     const policy = config.getCurrentPolicy();
-    await config.transport.call("write", {
+    const policyWrite = await config.transport.call("write", {
       path: `${policyPath}/policy.json`,
       content: JSON.stringify(policy),
     });
+    if (!policyWrite.ok) {
+      throw new Error(`Failed to write policy: ${policyWrite.error.message}`, {
+        cause: policyWrite.error,
+      });
+    }
     const newVersion = lastSeenVersion + 1;
-    await config.transport.call("write", {
+    const versionWrite = await config.transport.call("write", {
       path: `${policyPath}/version.json`,
       content: JSON.stringify({
         version: newVersion,
         updatedAt: Date.now(),
       } satisfies NexusVersionTag),
     });
+    if (!versionWrite.ok) {
+      throw new Error(`Failed to write version tag: ${versionWrite.error.message}`, {
+        cause: versionWrite.error,
+      });
+    }
     lastSeenVersion = newVersion;
   }
 
   async function initializePolicy(): Promise<void> {
-    const versionResult = await config.transport.call<string>("read", {
+    const versionResult = await config.transport.call<unknown>("read", {
       path: `${policyPath}/version.json`,
     });
 
     if (!versionResult.ok) {
-      // Nexus unreachable or no policy — write current local policy (best-effort)
-      await writeCurrentPolicy().catch(() => {});
+      if (versionResult.error.code === "NOT_FOUND") {
+        // No policy in Nexus yet — this node becomes the initial authority (best-effort)
+        await writeCurrentPolicy().catch(() => {});
+      }
+      // Any other error (transient timeout, auth): run local-only, poller retries
       return;
     }
 
-    const policyResult = await config.transport.call<string>("read", {
+    const policyResult = await config.transport.call<unknown>("read", {
       path: `${policyPath}/policy.json`,
     });
     if (!policyResult.ok) return;
 
     try {
-      const tag = JSON.parse(versionResult.value) as NexusVersionTag;
-      const policy: unknown = JSON.parse(policyResult.value);
+      const tag = JSON.parse(extractString(versionResult.value)) as NexusVersionTag;
+      const policy: unknown = JSON.parse(extractString(policyResult.value));
       localBackend = config.rebuildBackend(policy);
       lastSeenVersion = tag.version;
     } catch {
@@ -81,29 +107,43 @@ export function createNexusPermissionBackend(
     }
   }
 
+  // let justified: in-flight poll promise to prevent concurrent overlapping polls
+  let pollInFlight: Promise<void> | undefined;
+
   async function poll(): Promise<void> {
-    const versionResult = await config.transport.call<string>("read", {
+    if (pollInFlight !== undefined) return; // skip if already polling
+    pollInFlight = doPoll().finally(() => {
+      pollInFlight = undefined;
+    });
+    return pollInFlight;
+  }
+
+  async function doPoll(): Promise<void> {
+    const versionResult = await config.transport.call<unknown>("read", {
       path: `${policyPath}/version.json`,
     });
     if (!versionResult.ok) return;
 
     let tag: NexusVersionTag;
     try {
-      tag = JSON.parse(versionResult.value) as NexusVersionTag;
+      tag = JSON.parse(extractString(versionResult.value)) as NexusVersionTag;
     } catch {
       return;
     }
-    if (tag.version === lastSeenVersion) return;
+    if (tag.version <= lastSeenVersion) return; // monotonicity: discard stale results
 
-    const policyResult = await config.transport.call<string>("read", {
+    const policyResult = await config.transport.call<unknown>("read", {
       path: `${policyPath}/policy.json`,
     });
     if (!policyResult.ok) return;
 
     try {
-      const policy: unknown = JSON.parse(policyResult.value);
-      localBackend = config.rebuildBackend(policy);
-      lastSeenVersion = tag.version;
+      const policy: unknown = JSON.parse(extractString(policyResult.value));
+      // Re-check version monotonicity after async fetch — another poll may have applied newer
+      if (tag.version > lastSeenVersion) {
+        localBackend = config.rebuildBackend(policy);
+        lastSeenVersion = tag.version;
+      }
     } catch {
       console.warn("[permissions-nexus] malformed Nexus policy during sync, skipping update");
     }
