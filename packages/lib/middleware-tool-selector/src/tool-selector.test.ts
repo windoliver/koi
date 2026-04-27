@@ -983,4 +983,40 @@ describe("createToolSelectorMiddleware — streaming hook", () => {
     }
     expect(chunks.length).toBe(1);
   });
+
+  test("evicts oldest turn snapshots past retention cap when onAfterTurn does not fire — round 47 F1", async () => {
+    // The engine does not reliably fire onAfterTurn on every successful
+    // terminal turn. Without a backstop, turnSnapshots / callAllowlists
+    // accumulate without bound on long-lived runtimes. Exercise more
+    // turns than the internal cap (64) and assert internal Map sizes
+    // do not grow unboundedly via the cumulative-snapshot fallback
+    // path: a tool call on a never-cleaned old turn should still
+    // succeed (LRU eviction means the binding is gone, but the round-43
+    // missingCallIdPolicy default rejects callId-less invocations on
+    // turns that still have snapshots — so absence of error implies
+    // the old turn was evicted).
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => ["a"],
+      minTools: 0,
+    });
+    const wrap = getWrap(mw);
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const tools = [tool("a")];
+    const next: ModelHandler = async () => modelResponse();
+
+    // Run 100 distinct turns (well over the 64-turn cap).
+    for (let i = 0; i < 100; i += 1) {
+      await wrap(turnCtx({ turnIndex: i }), { messages: [userMsg("go")], tools }, next);
+    }
+
+    // The very first turn's snapshot should have been evicted. A
+    // callId-less invocation on that turn should pass through (no
+    // snapshot left to enforce against), proving cleanup happened.
+    const oldCtx = turnCtx({ turnIndex: 0 });
+    const toolNext = mock(async () => ({ output: "ok" }));
+    await expect(wrapTool(oldCtx, { toolId: "a", input: {} }, toolNext as never)).resolves.toEqual({
+      output: "ok",
+    });
+  });
 });

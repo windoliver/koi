@@ -95,6 +95,27 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
   // cannot overwrite each other's bindings (#review-round22-F1).
   const callAllowlists = new Map<TurnId, Map<string, ReadonlySet<string>>>();
   const turnSnapshots = new Map<TurnId, ReadonlySet<string>[]>();
+  // Hard cap on the number of distinct turns retained at once.
+  // onAfterTurn is the primary cleanup but the engine does not fire
+  // it reliably on every successful terminal turn, so without a
+  // backstop these maps grow without bound on long-lived runtimes
+  // (#review-round47-F1). Map iteration order is insertion order, so
+  // dropping the front entries evicts the oldest turns.
+  const MAX_RETAINED_TURNS = 64;
+
+  function evictOldTurns(currentTurnId: TurnId): void {
+    while (turnSnapshots.size > MAX_RETAINED_TURNS) {
+      const oldest = turnSnapshots.keys().next().value;
+      if (oldest === undefined || oldest === currentTurnId) break;
+      turnSnapshots.delete(oldest);
+      callAllowlists.delete(oldest);
+    }
+    while (callAllowlists.size > MAX_RETAINED_TURNS) {
+      const oldest = callAllowlists.keys().next().value;
+      if (oldest === undefined || oldest === currentTurnId) break;
+      callAllowlists.delete(oldest);
+    }
+  }
 
   function bindCall(turnId: TurnId, callId: string, snapshot: ReadonlySet<string>): void {
     let m = callAllowlists.get(turnId);
@@ -109,6 +130,11 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     const list = turnSnapshots.get(turnId);
     if (list === undefined) {
       turnSnapshots.set(turnId, [allowed]);
+      // Backstop the per-turn map cleanup that onAfterTurn was
+      // expected to handle. Done on first-touch of a new turn so
+      // historical entries don't accumulate across long-lived runs
+      // (#review-round47-F1).
+      evictOldTurns(turnId);
     } else {
       list.push(allowed);
     }
