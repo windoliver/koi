@@ -52,6 +52,16 @@ export interface ToolRecoveryConfig {
   readonly maxToolCallsPerResponse?: number | undefined;
   /** Callback for recovery observability events (recovered / rejected / parse_error). */
   readonly onRecoveryEvent?: ((event: RecoveryEvent) => void) | undefined;
+  /**
+   * When `true`, recover tool calls from buffered text after a terminal
+   * `error` chunk OR a thrown stream exception, synthesizing a `done`
+   * with the recovered calls so the engine executes them. Default
+   * `false`: degraded streams surface the failure instead of converting
+   * partial model output into irreversible tool side effects. Opt in
+   * only when recovered tools are idempotent / read-only and partial
+   * model output is safe to act on (#review-round35-F2).
+   */
+  readonly recoverOnStreamError?: boolean | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -117,6 +127,13 @@ export function validateToolRecoveryConfig(config: unknown): Result<ToolRecovery
 
   if (config.onRecoveryEvent !== undefined && typeof config.onRecoveryEvent !== "function") {
     return validationError("'onRecoveryEvent' must be a function");
+  }
+
+  if (
+    config.recoverOnStreamError !== undefined &&
+    typeof config.recoverOnStreamError !== "boolean"
+  ) {
+    return validationError("'recoverOnStreamError' must be a boolean");
   }
 
   return { ok: true, value: config as ToolRecoveryConfig };

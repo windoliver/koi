@@ -56,6 +56,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     isUserSender,
     onError,
     enforceFiltering = true,
+    multimodalPolicy = "fail-closed",
   } = validated.value;
   // When the caller doesn't supply a full extractQuery override but does
   // pass a custom isUserSender predicate, weave the predicate into the
@@ -178,12 +179,14 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       //     enforceFiltering, fail closed to alwaysInclude so a forged
       //     transcript can't authorize the full tool set
       //     (#review-round23-F2).
-      if (configExtractQuery === undefined && detectMultimodal(request.messages)) {
-        // Bind to the full advertised set under enforceFiltering so
-        // tool_call_start callIds get an explicit snapshot (otherwise
-        // wrapToolCall's "callId present but unbound" path would reject
-        // multimodal tool calls when other invocations in the same turn
-        // installed snapshots).
+      if (
+        configExtractQuery === undefined &&
+        detectMultimodal(request.messages) &&
+        multimodalPolicy === "pass-through"
+      ) {
+        // Caller explicitly opted into the round-31 multimodal pass-
+        // through. Bind to the full advertised set under enforceFiltering
+        // so tool_call_start callIds get an explicit snapshot.
         const snapshot = captureSnapshot(ctx.turnId, new Set<string>(tools.map((t) => t.name)));
         return { request, snapshot };
       }

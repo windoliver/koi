@@ -103,6 +103,7 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
   const patternEntries = cfg.patterns ?? DEFAULT_PATTERN_NAMES;
   const patterns: readonly ToolCallPattern[] = resolvePatterns(patternEntries);
   const maxCalls = cfg.maxToolCallsPerResponse ?? DEFAULT_MAX_TOOL_CALLS;
+  const recoverOnStreamError = cfg.recoverOnStreamError ?? false;
   // Wrap the user-supplied telemetry sink so a throwing observer cannot
   // abort recoverToolCalls and turn an otherwise valid recovered tool
   // call into a user-visible model-stream failure (worse: in the catch
@@ -280,7 +281,7 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
             yield chunk;
             return;
           }
-          if (!bypass) {
+          if (!bypass && recoverOnStreamError) {
             const recovered = runRecovery(
               ctx,
               invocationNonce,
@@ -369,7 +370,7 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
       // runner aborts the turn on any thrown stream. We surface the
       // original error via response.metadata so callers can still
       // observe the underlying failure. #review-round12-F3.
-      if (!bypass && mode === "buffer") {
+      if (!bypass && mode === "buffer" && recoverOnStreamError) {
         const recovered = runRecovery(
           ctx,
           invocationNonce,

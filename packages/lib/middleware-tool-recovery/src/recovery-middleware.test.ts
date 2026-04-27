@@ -423,13 +423,61 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
     expect(out.some((c) => c.kind === "thinking_delta")).toBe(true);
   });
 
-  test("recovers tool calls when upstream stream throws after a complete tool_call markup (round 12)", async () => {
-    // Round 12 (high): a provider error after a fully-formed tool call
-    // must NOT abort the turn. Recovery synthesizes both the
-    // tool_call_* chunks AND a synthetic done so the engine actually
-    // executes the recovered call. Original error surfaces via
-    // response.metadata.recoveryError.
-    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
+  test("does NOT auto-execute recovered calls on stream throw by default — round 35 F2", async () => {
+    // Default recoverOnStreamError=false: a degraded stream surfaces
+    // the failure rather than silently triggering tool side effects
+    // from partial model output.
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes"] });
+    const tools = [tool("foo")];
+    const next: ModelStreamHandler = async function* () {
+      yield {
+        kind: "text_delta",
+        delta: '<tool_call>{"name":"foo","arguments":{"x":1}}</tool_call>',
+      };
+      throw new Error("connection reset");
+    };
+
+    const out: ModelChunk[] = [];
+    let caught: unknown;
+    try {
+      for await (const c of getStream(mw)(turnCtx(), { messages: [], tools }, next)) {
+        out.push(c);
+      }
+    } catch (e: unknown) {
+      caught = e;
+    }
+    expect((caught as Error | undefined)?.message).toBe("connection reset");
+    // No synthesized tool execution.
+    expect(out.some((c) => c.kind === "tool_call_start")).toBe(false);
+    expect(out.some((c) => c.kind === "done")).toBe(false);
+  });
+
+  test("does NOT auto-execute recovered calls on terminal error chunk by default — round 35 F2", async () => {
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes"] });
+    const tools = [tool("foo")];
+    const next: ModelStreamHandler = async function* () {
+      yield {
+        kind: "text_delta",
+        delta: '<tool_call>{"name":"foo","arguments":{"x":1}}</tool_call>',
+      };
+      yield { kind: "error", message: "stream interrupted" };
+    };
+    const out: ModelChunk[] = [];
+    for await (const c of getStream(mw)(turnCtx(), { messages: [], tools }, next)) {
+      out.push(c);
+    }
+    expect(out.some((c) => c.kind === "tool_call_start")).toBe(false);
+    expect(out.some((c) => c.kind === "error")).toBe(true);
+  });
+
+  test("recovers tool calls when upstream stream throws after a complete tool_call markup (round 12 / round 35 F2)", async () => {
+    // Round 12 introduced failure-path recovery. Round 35 made it
+    // opt-in via recoverOnStreamError to avoid silently executing
+    // partial-stream tool calls.
+    const mw = createToolRecoveryMiddleware({
+      patterns: ["hermes", "llama31"],
+      recoverOnStreamError: true,
+    });
     const tools = [tool("foo")];
     const next: ModelStreamHandler = async function* () {
       yield { kind: "thinking_delta", delta: "thinking..." };
@@ -530,10 +578,14 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
   });
 
   test("terminal error chunk in buffer mode synthesizes done when recovery succeeds — round 26 F1", async () => {
-    // If recovery DOES produce executable calls, prefer synthesizing a
+    // If recovery DOES produce executable calls AND the caller opted
+    // into failure-path recovery (round-35 F2), prefer synthesizing a
     // done with recoveryError metadata so the engine runs the recovered
     // call (mirrors the stream-throw catch path).
-    const mw = createToolRecoveryMiddleware({ patterns: ["hermes"] });
+    const mw = createToolRecoveryMiddleware({
+      patterns: ["hermes"],
+      recoverOnStreamError: true,
+    });
     const tools = [tool("foo")];
     const next: ModelStreamHandler = async function* () {
       yield {
@@ -591,10 +643,12 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
 
   test("throwing onRecoveryEvent does not abort recovery on the stream-error path — round 25 F2", async () => {
     // Same guarantee as above, but on the catch-path retry inside
-    // wrapModelStreamImpl. A telemetry failure on the second invocation
-    // must not promote to a stream failure.
+    // wrapModelStreamImpl (requires recoverOnStreamError opt-in per
+    // round-35 F2). A telemetry failure on the second invocation must
+    // not promote to a stream failure.
     const mw = createToolRecoveryMiddleware({
       patterns: ["hermes"],
+      recoverOnStreamError: true,
       onRecoveryEvent: () => {
         throw new Error("telemetry sink failure");
       },

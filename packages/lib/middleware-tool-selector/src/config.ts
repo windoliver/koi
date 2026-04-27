@@ -47,6 +47,17 @@ export interface ToolSelectorConfig {
    * from the prompt.
    */
   readonly enforceFiltering?: boolean;
+  /**
+   * Policy for multimodal user turns (latest user message has at least one
+   * non-text content block). The bundled extractor returns "" for these,
+   * so the selector cannot derive intent from text. Default
+   * `"fail-closed"`: collapse to `alwaysInclude`, matching the
+   * untrusted-provenance fallback. Set `"pass-through"` to opt into the
+   * round-31 behavior of authorizing the full advertised tool set —
+   * suitable only when downstream policy already gates dangerous tools
+   * for multimodal turns (#review-round35-F1).
+   */
+  readonly multimodalPolicy?: "fail-closed" | "pass-through";
 }
 
 /** Default cap on `selectTools` results — prevents runaway tool counts on large agents. */
@@ -111,6 +122,13 @@ export function validateToolSelectorConfig(config: unknown): Result<ToolSelector
   }
   if (c.enforceFiltering !== undefined && typeof c.enforceFiltering !== "boolean") {
     return validationError("'enforceFiltering' must be a boolean");
+  }
+  if (
+    c.multimodalPolicy !== undefined &&
+    c.multimodalPolicy !== "fail-closed" &&
+    c.multimodalPolicy !== "pass-through"
+  ) {
+    return validationError("'multimodalPolicy' must be 'fail-closed' or 'pass-through'");
   }
 
   return { ok: true, value: c as unknown as ToolSelectorConfig };

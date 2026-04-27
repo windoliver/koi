@@ -546,15 +546,41 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  test("multimodal user turn (text-empty user message with non-text content) is not stripped to alwaysInclude — round 31 F1", async () => {
-    // A recognized user message whose content is image-only / attachment-
-    // only must NOT be treated as untrusted-provenance fail-closed.
-    // The model should still see the full advertised tool set.
+  test("multimodal user turn fails closed to alwaysInclude by default — round 35 F1", async () => {
+    // Default multimodalPolicy='fail-closed': image-only user turns must
+    // NOT widen authorization to the full advertised tool set, even when
+    // a recognized user sender is present.
+    const select = mock(async () => []);
+    const next = mock<ModelHandler>(async (req) => {
+      expect(req.tools?.map((t) => t.name)).toEqual(["safe"]);
+      return modelResponse();
+    });
+    const mw = createToolSelectorMiddleware({
+      selectTools: select,
+      minTools: 0,
+      alwaysInclude: ["safe"],
+    });
+    const tools = [tool("safe"), tool("dangerous")];
+    const multimodalMsg: InboundMessage = {
+      content: [{ kind: "image", mimeType: "image/png", data: "base64..." } as never],
+      senderId: "user",
+      timestamp: 0,
+    };
+    await getWrap(mw)(turnCtx(), { messages: [multimodalMsg], tools }, next);
+    expect(select).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  test("multimodal user turn passes through full tool set when multimodalPolicy='pass-through' — round 31 F1 / round 35 F1", async () => {
+    // Round 31 added multimodal pass-through; round 35 made it opt-in to
+    // close the unauthenticated-bypass concern. Callers wanting full
+    // multimodal tool exposure must set multimodalPolicy: "pass-through".
     const select = mock(async () => []);
     const mw = createToolSelectorMiddleware({
       selectTools: select,
       minTools: 0,
       alwaysInclude: ["safe"],
+      multimodalPolicy: "pass-through",
     });
     const tools = [tool("safe"), tool("vision")];
     const next = mock<ModelHandler>(async (req) => {
