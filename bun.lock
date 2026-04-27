@@ -1260,6 +1260,14 @@
         "zod": "4.3.6",
       },
     },
+    "packages/security/permissions-nexus": {
+      "name": "@koi/permissions-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+    },
     "packages/security/redaction": {
       "name": "@koi/redaction",
       "version": "0.0.0",
@@ -1835,6 +1843,8 @@
     "@koi/outcome-evaluator": ["@koi/outcome-evaluator@workspace:packages/lib/outcome-evaluator"],
 
     "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
+
+    "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/security/permissions-nexus"],
 
     "@koi/plugins": ["@koi/plugins@workspace:packages/lib/plugins"],
 
