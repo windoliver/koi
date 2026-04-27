@@ -289,10 +289,10 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     ).rejects.toBeInstanceOf(KoiRuntimeError);
   });
 
-  test("rejects tool calls without callId once snapshots exist — round 21 F2", async () => {
-    // Adapters that omit callId (or stream wrappers that drop it)
-    // must not bypass per-invocation enforcement by widening to a
-    // turn-scope union of allowlists.
+  test("rejects tool calls with callId not bound to any snapshot — round 21 F2 / round 29 F2", async () => {
+    // A tool_call carrying a callId that wasn't emitted by tool_call_start
+    // on the wrapped model stream did not come from a model invocation we
+    // observed. Treat as forged.
     const mw = createToolSelectorMiddleware({
       selectTools: async () => ["safe"],
       minTools: 0,
@@ -303,10 +303,10 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     if (!wrapTool) throw new Error("wrapToolCall missing");
     const ctx = turnCtx();
     const tools = [tool("safe"), tool("dangerous")];
-    const callId = toolCallId("c1");
+    const boundCallId = toolCallId("c1");
     const stream: ModelStreamHandler = async function* () {
-      yield { kind: "tool_call_start", toolName: "safe", callId };
-      yield { kind: "tool_call_end", callId };
+      yield { kind: "tool_call_start", toolName: "safe", callId: boundCallId };
+      yield { kind: "tool_call_end", callId: boundCallId };
       yield { kind: "done", response: modelResponse() };
     };
     for await (const _ of wrapStream(ctx, { messages: [userMsg("go")], tools }, stream)) {
@@ -316,12 +316,42 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
       async () => ({ output: "ok" }),
     );
-    // Snapshots exist for this turn but the request has no callId.
-    // Even an "in-snapshot" tool name must be rejected: the binding
-    // is the trust signal, not the tool name.
+    // Unbound callId: not from tool_call_start on this turn's stream.
     await expect(
-      wrapTool(ctx, { toolId: "safe", input: {} }, toolNext as never),
+      wrapTool(ctx, { toolId: "safe", input: {}, callId: toolCallId("forged") }, toolNext as never),
     ).rejects.toBeInstanceOf(KoiRuntimeError);
+  });
+
+  test("passes through trusted adapter tool calls without callId — round 29 F2", async () => {
+    // Adapters / internal orchestration that invoke callHandlers.toolCall
+    // directly (no model callId) are inside the trust boundary; the
+    // selector enforces against MODEL-originated tool execution only.
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => ["safe"],
+      minTools: 0,
+    });
+    const wrapStream = mw.wrapModelStream;
+    if (!wrapStream) throw new Error("wrapModelStream missing");
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const ctx = turnCtx();
+    const tools = [tool("safe"), tool("dangerous")];
+    const stream: ModelStreamHandler = async function* () {
+      yield { kind: "done", response: modelResponse() };
+    };
+    for await (const _ of wrapStream(ctx, { messages: [userMsg("go")], tools }, stream)) {
+      // drain
+    }
+
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "ok" }),
+    );
+    // No callId → trusted adapter / internal invocation. Must pass through
+    // even when filtered snapshots exist for this turn.
+    await expect(
+      wrapTool(ctx, { toolId: "anything", input: {} }, toolNext as never),
+    ).resolves.toEqual({ output: "ok" });
+    expect(toolNext).toHaveBeenCalled();
   });
 
   test("custom isUserSender predicate routes filtering for non-default sender IDs — round 19 F1", async () => {
@@ -354,16 +384,26 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  test("deny-all turn (tools undefined) installs empty allowlist enforced at execution — round 16 F1", async () => {
-    // Callers can disable tools for a turn by omitting `tools`. Without
-    // an explicit empty allowlist, wrapToolCall would still execute any
-    // native tool_call_* the adapter emits — defeating the trust
-    // boundary on the deny-all case.
+  test("deny-all turn (tools undefined) installs empty allowlist enforced against bound model callIds — round 16 F1 / round 29 F2", async () => {
+    // Callers can disable tools for a turn by omitting `tools`. Any
+    // model-originated tool_call_start in that turn is bound to an
+    // empty allowlist and rejected at execution. (Trusted adapter
+    // calls without a callId pass through — they are outside the
+    // selector's scope per #review-round29-F2.)
     const select = mock(async () => []);
     const mw = createToolSelectorMiddleware({ selectTools: select });
     const ctx = turnCtx();
-    const next = mock<ModelHandler>(async () => modelResponse());
-    await getWrap(mw)(ctx, { messages: [userMsg("hi")] }, next);
+    const wrapStream = mw.wrapModelStream;
+    if (!wrapStream) throw new Error("wrapModelStream missing");
+    const callId = toolCallId("c-denied");
+    const stream: ModelStreamHandler = async function* () {
+      yield { kind: "tool_call_start", toolName: "anything", callId };
+      yield { kind: "tool_call_end", callId };
+      yield { kind: "done", response: modelResponse() };
+    };
+    for await (const _ of wrapStream(ctx, { messages: [userMsg("hi")] }, stream)) {
+      // drain — installs empty snapshot bound to callId
+    }
 
     const wrapTool = mw.wrapToolCall;
     if (!wrapTool) throw new Error("wrapToolCall missing");
@@ -371,7 +411,7 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
       async () => ({ output: "ok" }),
     );
     await expect(
-      wrapTool(ctx, { toolId: "anything", input: {} }, toolNext as never),
+      wrapTool(ctx, { toolId: "anything", input: {}, callId }, toolNext as never),
     ).rejects.toBeInstanceOf(KoiRuntimeError);
     expect(toolNext).not.toHaveBeenCalled();
   });

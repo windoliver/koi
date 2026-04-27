@@ -34,11 +34,19 @@ const VALID_PATTERN_NAMES: ReadonlySet<string> = new Set<string>([
 /**
  * Public configuration for `createToolRecoveryMiddleware`.
  *
- * All fields are optional. With no config the middleware applies all three
- * built-in patterns and caps recovered calls at {@link DEFAULT_MAX_TOOL_CALLS}.
+ * All fields are optional. Recovery is OFF by default — see
+ * {@link DEFAULT_PATTERN_NAMES} for the trust-boundary rationale. Callers
+ * must opt in by passing `patterns: ["hermes"]` (or "llama31",
+ * "json-fence") at construction time. Recovered calls are capped at
+ * {@link DEFAULT_MAX_TOOL_CALLS}.
  */
 export interface ToolRecoveryConfig {
-  /** Pattern names (string) or custom patterns. Default: all built-in patterns. */
+  /**
+   * Pattern names (string) or custom patterns. Default: empty (recovery
+   * disabled). Pass an explicit list of built-in pattern names or custom
+   * `ToolCallPattern` objects to enable. See {@link DEFAULT_PATTERN_NAMES}
+   * for the trust-boundary reason recovery is opt-in.
+   */
   readonly patterns?: readonly (string | ToolCallPattern)[] | undefined;
   /** Maximum tool calls to extract from a single response. Default: 10. */
   readonly maxToolCallsPerResponse?: number | undefined;

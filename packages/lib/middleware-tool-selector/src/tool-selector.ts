@@ -257,30 +257,37 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       // was emitted by the model stream (#review-round20-F1). Lookup
       // is scoped by turn so recycled callIds across sessions /
       // overlapping turns never collide (#review-round22-F1).
-      if (request.callId !== undefined) {
-        const allowed = callAllowlists.get(ctx.turnId)?.get(request.callId);
-        if (allowed !== undefined) {
-          if (allowed.has(request.toolId)) return next(request);
-          throw KoiRuntimeError.from(
-            "PERMISSION",
-            `Tool "${request.toolId}" was filtered out for this invocation by koi:tool-selector and cannot be invoked. Set enforceFiltering: false to disable execution-time enforcement.`,
-          );
-        }
+      // Model-originated tool calls always carry a callId bound at
+      // tool_call_start (see wrapModelStream above). Three cases:
+      //   1. callId present AND bound to a snapshot → enforce against
+      //      that snapshot. The snapshot is what the model "saw" when
+      //      it chose this tool, so off-snapshot tools are forged.
+      //   2. callId present but UNBOUND → suspicious: a callId without
+      //      a matching tool_call_start did not come from the model
+      //      stream this selector observed. Fail closed
+      //      (#review-round21-F2).
+      //   3. callId absent → trusted adapter / internal orchestration
+      //      path (e.g. callHandlers.toolCall called directly). Models
+      //      always supply a callId, so the absence indicates a
+      //      non-model origin that the selector was never meant to
+      //      gate (#review-round29-F2). Pass through.
+      if (request.callId === undefined) return next(request);
+      const allowed = callAllowlists.get(ctx.turnId)?.get(request.callId);
+      if (allowed !== undefined) {
+        if (allowed.has(request.toolId)) return next(request);
+        throw KoiRuntimeError.from(
+          "PERMISSION",
+          `Tool "${request.toolId}" was filtered out for this invocation by koi:tool-selector and cannot be invoked. Set enforceFiltering: false to disable execution-time enforcement.`,
+        );
       }
-      // No callId binding available. Two cases:
-      //   1. The turn has snapshots — adapter executed a tool call
-      //      that wasn't bound to any model invocation we filtered.
-      //      Fail closed (#review-round21-F2): widening to "in any
-      //      turn snapshot" let adapters bypass per-invocation
-      //      enforcement by simply omitting callId.
-      //   2. The turn has NO snapshots — selector never ran for this
-      //      turn (e.g. no model call yet, or filter skipped). Pass
-      //      through, since there is nothing to enforce against.
+      // callId present but no binding — and there ARE snapshots for
+      // this turn (i.e. selector observed at least one model call).
+      // No snapshots: pass through (selector never ran for this turn).
       const snapshots = turnSnapshots.get(ctx.turnId);
       if (snapshots === undefined) return next(request);
       throw KoiRuntimeError.from(
         "PERMISSION",
-        `Tool "${request.toolId}" was invoked without a callId bound to a koi:tool-selector snapshot. With enforceFiltering: true, model-originated tool execution must carry the tool_call_start callId. Set enforceFiltering: false to disable execution-time enforcement.`,
+        `Tool "${request.toolId}" was invoked with callId="${request.callId}" that does not match any koi:tool-selector snapshot binding for this turn. Set enforceFiltering: false to disable execution-time enforcement.`,
       );
     },
     async onAfterTurn(ctx: TurnContext): Promise<void> {

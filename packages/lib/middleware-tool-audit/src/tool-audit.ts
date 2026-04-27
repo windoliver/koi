@@ -435,18 +435,6 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     // before the active set drained lost ALL completed-session counters
     // (#review-round26-F2). loadAndMergeForSave's read-modify-write
     // makes overlapping persists safe for in-flight counters.
-    if (!otherSessionsActive && onAuditResult !== undefined) {
-      // Observe-phase telemetry must never abort session teardown — a
-      // throwing sink would otherwise reject onSessionEnd and skip the
-      // store.save below, leaving the snapshot unpersisted. Route any
-      // callback failure through onError and continue with persistence.
-      try {
-        const signals = computeLifecycleSignals(snapshot, validConfig);
-        if (signals.length > 0) onAuditResult(signals);
-      } catch (e: unknown) {
-        onError?.(e);
-      }
-    }
     // Mark for the next session to drain signals if overlap suppressed
     // emission this round; clear otherwise.
     pendingPersist = otherSessionsActive;
@@ -462,14 +450,32 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     // Stores without saveIfVersion fall back to plain save and remain
     // safe under single-writer usage only.
     const previous = savePromise;
+    // let: tracks whether persistWithRetry committed so signal emission
+    // below can gate on it (#review-round29-F3).
+    let persistOk = false;
     savePromise = previous.then(async () => {
       try {
         await persistWithRetry(snapshot);
+        persistOk = true;
       } catch (e: unknown) {
         onError?.(e);
       }
     });
     await savePromise;
+
+    // Emit lifecycle signals ONLY after the snapshot is durably committed.
+    // Pre-commit emission risks paging / auto-disable on state that never
+    // hit disk; on restart the same signals would re-fire because the
+    // baseline never advanced (#review-round29-F3). Defer when overlap is
+    // active so partial counters don't trigger false signals.
+    if (persistOk && !otherSessionsActive && onAuditResult !== undefined) {
+      try {
+        const signals = computeLifecycleSignals(snapshot, validConfig);
+        if (signals.length > 0) onAuditResult(signals);
+      } catch (e: unknown) {
+        onError?.(e);
+      }
+    }
   }
 
   /**
