@@ -19,7 +19,7 @@ describe("end-to-end chain A → B → C", () => {
     C: CapabilityToken;
     registry: ReturnType<typeof createMemoryCapabilityRevocationRegistry>;
   }> {
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const registry = createMemoryCapabilityRevocationRegistry();
     const A = await issueRootCapability({
       signer,

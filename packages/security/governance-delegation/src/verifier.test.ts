@@ -21,7 +21,7 @@ const newHmacRoot = async (): Promise<{
   signer: Signer;
   token: CapabilityToken;
 }> => {
-  const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+  const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
   const token = await issueRootCapability({
     signer,
     issuerId: agentId("engine"),
@@ -52,7 +52,7 @@ describe("createCapabilityVerifier", () => {
   test("ok=false invalid_signature when secret differs", async () => {
     const { token } = await newHmacRoot();
     const verifier = createCapabilityVerifier({
-      hmac: { secret: randomBytes(32) },
+      hmac: { secret: new Uint8Array(randomBytes(32)) },
       scopeChecker: createGlobScopeChecker(),
     });
     const result = await verifier.verify(token, ctx());
@@ -165,8 +165,8 @@ describe("createCapabilityVerifier", () => {
 
   test("ed25519 token verifies", async () => {
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    const pubDer = publicKey.export({ format: "der", type: "spki" });
-    const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+    const pubDer = new Uint8Array(publicKey.export({ format: "der", type: "spki" }));
+    const privDer = new Uint8Array(privateKey.export({ format: "der", type: "pkcs8" }));
     const fp = Buffer.from(pubDer).toString("base64");
     const tok = await issueRootCapability({
       signer: { kind: "ed25519", privateKey: privDer, publicKeyFingerprint: fp },
@@ -209,8 +209,8 @@ describe("authority binding (codex round-1: critical)", () => {
 
   test("Ed25519 issuerKeys binding enforced — wrong AgentId rejected", async () => {
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    const pubDer = publicKey.export({ format: "der", type: "spki" });
-    const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+    const pubDer = new Uint8Array(publicKey.export({ format: "der", type: "spki" }));
+    const privDer = new Uint8Array(privateKey.export({ format: "der", type: "pkcs8" }));
     const fp = Buffer.from(pubDer).toString("base64");
     const tok = await issueRootCapability({
       signer: { kind: "ed25519", privateKey: privDer, publicKeyFingerprint: fp },
@@ -237,8 +237,8 @@ describe("authority binding (codex round-1: critical)", () => {
 
   test("Ed25519 unbound fingerprint rejected when issuerKeys configured", async () => {
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    const pubDer = publicKey.export({ format: "der", type: "spki" });
-    const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+    const pubDer = new Uint8Array(publicKey.export({ format: "der", type: "spki" }));
+    const privDer = new Uint8Array(privateKey.export({ format: "der", type: "pkcs8" }));
     const fp = Buffer.from(pubDer).toString("base64");
     const tok = await issueRootCapability({
       signer: { kind: "ed25519", privateKey: privDer, publicKeyFingerprint: fp },
@@ -266,7 +266,7 @@ describe("authority binding (codex round-1: critical)", () => {
 
 describe("chain validation (codex round-1: critical)", () => {
   test("chainDepth>0 token without tokenStore rejected as unknown_grant", async () => {
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const registry = createMemoryCapabilityRevocationRegistry();
     const root = await issueRootCapability({
       signer,
@@ -332,7 +332,7 @@ describe("chain validation (codex round-1: critical)", () => {
   });
 
   test("forged child claiming wider scope than parent rejected at verify time", async () => {
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const registry = createMemoryCapabilityRevocationRegistry();
     const root = await issueRootCapability({
       signer,
@@ -386,9 +386,9 @@ describe("round-2 hardening", () => {
     // continuity check (parent.delegateeId === child.issuerId) would pass.
     const kpA = generateKeyPairSync("ed25519");
     const kpB = generateKeyPairSync("ed25519");
-    const pubA = kpA.publicKey.export({ format: "der", type: "spki" });
-    const pubB = kpB.publicKey.export({ format: "der", type: "spki" });
-    const privA = kpA.privateKey.export({ format: "der", type: "pkcs8" });
+    const pubA = new Uint8Array(kpA.publicKey.export({ format: "der", type: "spki" }));
+    const pubB = new Uint8Array(kpB.publicKey.export({ format: "der", type: "spki" }));
+    const privA = new Uint8Array(kpA.privateKey.export({ format: "der", type: "pkcs8" }));
     const fpA = Buffer.from(pubA).toString("base64");
     const fpB = Buffer.from(pubB).toString("base64");
 
@@ -423,7 +423,7 @@ describe("round-2 hardening", () => {
   });
 
   test("forged child exceeding parent.maxChainDepth rejected (codex round-2: high)", async () => {
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const registry = createMemoryCapabilityRevocationRegistry();
     const root = await issueRootCapability({
       signer,
@@ -472,8 +472,8 @@ describe("round-2 hardening", () => {
     // now required, but at runtime an attacker-supplied empty issuerKeys
     // map must still reject every Ed25519 token (no fingerprint bound).
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    const pubDer = publicKey.export({ format: "der", type: "spki" });
-    const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+    const pubDer = new Uint8Array(publicKey.export({ format: "der", type: "spki" }));
+    const privDer = new Uint8Array(privateKey.export({ format: "der", type: "pkcs8" }));
     const fp = Buffer.from(pubDer).toString("base64");
     const tok = await issueRootCapability({
       signer: { kind: "ed25519", privateKey: privDer, publicKeyFingerprint: fp },
@@ -502,7 +502,7 @@ describe("round-2 hardening", () => {
     // Without explicit Number.isFinite gating, NaN expiresAt would make
     // both `now < createdAt` and `now >= expiresAt` evaluate false, so a
     // signed token with NaN expiry would verify indefinitely.
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const { signHmac } = await import("./hmac.js");
     const { capabilityId } = await import("@koi/core");
     const unsigned = {
@@ -535,7 +535,7 @@ describe("round-2 hardening", () => {
     // those reads — the signature check runs against the original
     // payload but the scope check runs against the mutated permissions,
     // authorizing tools that the signature did not cover.
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const token = await issueRootCapability({
       signer,
       issuerId: agentId("engine"),
@@ -571,7 +571,7 @@ describe("round-2 hardening", () => {
     // verifier reading `perms.allow` via the prototype chain authorizes
     // the polluted entry. Defense: rebuild permission containers as
     // null-prototype objects and read fields only via Object.hasOwn.
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const token = await issueRootCapability({
       signer,
       issuerId: agentId("engine"),
@@ -605,7 +605,7 @@ describe("round-2 hardening", () => {
     // naive verify() would read the inherited array via property access
     // and authorize it. Snapshotting via structuredClone strips the
     // prototype chain, defeating this prototype-pollution path.
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const { signHmac } = await import("./hmac.js");
     const { capabilityId } = await import("@koi/core");
     // Build a permissions object whose own properties are empty but
@@ -647,7 +647,7 @@ describe("round-2 hardening", () => {
     // — a well-formed child claiming `allow: ["bash"]` could then verify
     // for bash even though the malformed parent itself would not. Fix:
     // run shape validation on every ancestor.
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const { signHmac } = await import("./hmac.js");
     const { capabilityId } = await import("@koi/core");
     const malformedParentId = capabilityId("malformed-parent");
@@ -716,7 +716,7 @@ describe("round-2 hardening", () => {
     // proof.kind would throw, and any upstream "deny on throw" policy
     // could fail open. Every malformed shape must yield a deny result.
     const verifier = createCapabilityVerifier({
-      hmac: { secret: randomBytes(32) },
+      hmac: { secret: new Uint8Array(randomBytes(32)) },
       scopeChecker: createGlobScopeChecker(),
     });
     const cases: Array<unknown> = [
@@ -761,7 +761,7 @@ describe("round-2 hardening", () => {
     // token for an unknown parentId lookup. Without binding parent.id
     // to child.parentId after the lookup, the signed child would verify
     // against the wrong parent.
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const real = await issueRootCapability({
       signer,
       issuerId: agentId("engine"),
@@ -815,9 +815,13 @@ describe("round-2 hardening", () => {
     // root; verifyRootAuthority must reject it.
     const kpEngine = generateKeyPairSync("ed25519");
     const kpDelegatee = generateKeyPairSync("ed25519");
-    const pubEngine = kpEngine.publicKey.export({ format: "der", type: "spki" });
-    const pubDelegatee = kpDelegatee.publicKey.export({ format: "der", type: "spki" });
-    const privDelegatee = kpDelegatee.privateKey.export({ format: "der", type: "pkcs8" });
+    const pubEngine = new Uint8Array(kpEngine.publicKey.export({ format: "der", type: "spki" }));
+    const pubDelegatee = new Uint8Array(
+      kpDelegatee.publicKey.export({ format: "der", type: "spki" }),
+    );
+    const privDelegatee = new Uint8Array(
+      kpDelegatee.privateKey.export({ format: "der", type: "pkcs8" }),
+    );
     const fpEngine = Buffer.from(pubEngine).toString("base64");
     const fpDelegatee = Buffer.from(pubDelegatee).toString("base64");
 
@@ -881,8 +885,8 @@ describe("round-2 hardening", () => {
     // chainDepth=0 token can verify, even if its key is otherwise valid
     // for chain delegation.
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    const pubDer = publicKey.export({ format: "der", type: "spki" });
-    const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+    const pubDer = new Uint8Array(publicKey.export({ format: "der", type: "spki" }));
+    const privDer = new Uint8Array(privateKey.export({ format: "der", type: "pkcs8" }));
     const fp = Buffer.from(pubDer).toString("base64");
     const tok = await issueRootCapability({
       signer: { kind: "ed25519", privateKey: privDer, publicKeyFingerprint: fp },
@@ -913,7 +917,7 @@ describe("round-2 hardening", () => {
     // (issue-time ask preservation), but a malicious holder of the secret
     // can mint the child directly. The verifier must reject it via chain
     // attenuation.
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const registry = createMemoryCapabilityRevocationRegistry();
     const root = await issueRootCapability({
       signer,
@@ -957,7 +961,7 @@ describe("round-2 hardening", () => {
   });
 
   test("non-finite ttlMs rejected at issue time (codex round-3: high)", async () => {
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     await expect(
       issueRootCapability({
         signer,
@@ -975,7 +979,7 @@ describe("round-2 hardening", () => {
     // default glob checker has no requested-resource projection from
     // VerifyContext, so it must fail closed rather than silently allowing
     // a tool match while ignoring the resource constraint.
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const tok = await issueRootCapability({
       signer,
       issuerId: agentId("engine"),

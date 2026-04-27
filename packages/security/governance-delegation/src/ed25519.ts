@@ -24,9 +24,9 @@ export function verifyEd25519(
     return false;
   }
 
-  let sigBytes: Buffer;
+  let sigBytes: Uint8Array;
   try {
-    sigBytes = Buffer.from(token.proof.signature, "base64");
+    sigBytes = new Uint8Array(Buffer.from(token.proof.signature, "base64"));
   } catch {
     return false;
   }
