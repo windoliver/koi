@@ -2617,4 +2617,74 @@ describe("createForgeDemandDetector", () => {
     }
     expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(1);
   });
+
+  it("F112: a permanently throwing onSessionAttached cannot accumulate undismissable signals", async () => {
+    // Reviewer F112: bindObserved bound the session BEFORE attempted
+    // onSessionAttached delivery, so wrap* hooks would proceed even
+    // when the host never received a scoped handle. Signals would
+    // emit, cooldowns advance, and maxForgesPerSession burn — but
+    // nothing could acknowledge or dismiss them. Fix: gate detector
+    // logic on `isSessionReady` (observed AND, if callback configured,
+    // delivered). Until then, wrap* passes through silently.
+    const swallowed: unknown[] = [];
+    const originalErr = console.error;
+    console.error = (...a: unknown[]): void => {
+      swallowed.push(a);
+    };
+    try {
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        makeConfig({
+          heuristics: { repeatedFailureCount: 1 },
+          onDemand: (s) => signals.push(s),
+          onSessionAttached: () => {
+            throw new Error("perma-fail");
+          },
+        }),
+      );
+      await handle.middleware.onSessionStart?.(ctx.session);
+      // Drive 5 failing tool calls — every wrap* attempts delivery,
+      // each throws, none ever sets attachedDelivered. Detector logic
+      // must NOT advance counters or emit.
+      const failNext = async (): Promise<ToolResponse> => {
+        throw new Error("boom");
+      };
+      for (let i = 0; i < 5; i += 1) {
+        try {
+          await handle.middleware.wrapToolCall?.(ctx, toolReq("flaky"), failNext);
+        } catch {
+          // expected
+        }
+      }
+      expect(signals.length).toBe(0);
+      // Delivery attempts are logged at console.error — at least 6
+      // (1 from onSessionStart + 5 from wrap* retries).
+      expect(swallowed.length).toBeGreaterThanOrEqual(6);
+    } finally {
+      console.error = originalErr;
+    }
+  });
+
+  it("F113: overlapping capability-gap patterns produce only one signal per response", async () => {
+    // Reviewer F113: checkCapabilityGaps iterated every regex and
+    // emitted independently for each match. Built-in patterns overlap
+    // for typical refusals ("I can't ...", "I don't have a tool ..."),
+    // so a single response could increment multiple counters, evict
+    // unrelated pending signals, and burn multiple forge-budget slots.
+    // Fix: pick the earliest-position match per response and emit at
+    // most one signal.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = observedDetector(
+      makeConfig({
+        heuristics: { capabilityGapOccurrences: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    // Refusal crafted to match multiple built-in gap patterns at once.
+    const refusal = "I can't do that, and I don't have a tool to parse protobuf schemas right now.";
+    const ask = userMsg("parse my protobuf schema");
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([ask]), async () => modelRes(refusal));
+    const gapSignals = signals.filter((s) => s.trigger.kind === "capability_gap");
+    expect(gapSignals.length).toBe(1);
+  });
 });

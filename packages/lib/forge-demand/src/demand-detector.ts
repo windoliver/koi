@@ -376,6 +376,23 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     }
     if (delivered) attachedDelivered.add(session);
   }
+
+  /**
+   * Detector logic runs only when the session is fully ready: observed
+   * (registered via onSessionStart) AND, if `onSessionAttached` is
+   * configured, that callback has successfully delivered the scoped
+   * handle. Without this gate, a permanently-throwing callback would
+   * leave the host with no reference to the scoped handle while signals
+   * still accumulate, cooldowns advance, and `maxForgesPerSession`
+   * burns — producing an undismissable backlog. While not ready, wrap*
+   * hooks pass traffic through unchanged and counters do not advance.
+   * F112 regression.
+   */
+  function isSessionReady(session: SessionContext): boolean {
+    if (!observedSessions.has(session)) return false;
+    if (config.onSessionAttached === undefined) return true;
+    return attachedDelivered.has(session);
+  }
   // Handle-level counter so signal ids are unique across sessions —
   // otherwise two concurrent tenants would both produce `demand-1` and
   // `dismiss()` could clear the wrong session's signal.
@@ -678,37 +695,49 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       const oldest = state.recentGapResponseIds.values().next().value;
       if (oldest !== undefined) state.recentGapResponseIds.delete(oldest);
     }
+    // Canonicalize each response to AT MOST ONE capability-gap bucket
+    // per turn. Iterating every pattern and emitting on each independent
+    // match would let overlapping built-in patterns (or caller-supplied
+    // ones) inflate counters from a single refusal — a single response
+    // could increment many buckets, evict unrelated pending signals, and
+    // burn multiple `maxForgesPerSession` slots. F113. We pick the
+    // pattern whose match starts earliest in the response (ties broken
+    // by registration order — `patterns` iteration order).
+    let chosen: { readonly pattern: RegExp; readonly matchStart: number } | undefined;
     for (const pattern of patterns) {
       pattern.lastIndex = 0;
       const match = pattern.exec(responseText);
       if (match === null) continue;
-      const matchStart = match.index;
-      const windowText = responseText
-        .slice(matchStart, matchStart + GAP_CONTEXT_WINDOW)
-        .toLowerCase()
-        .replace(/\s+/g, " ")
-        .trim();
-      // Scope the counter by task context (last user message identity)
-      // so unrelated requests producing the same generic refusal do not
-      // collapse into one bucket. F77 regression.
-      const bucketKey = `${pattern.source}|${taskContext}|${windowText}`;
-      const count = (state.capabilityGapCounts.get(bucketKey) ?? 0) + 1;
-      setBoundedMap(state.capabilityGapCounts, bucketKey, count, CAPABILITY_GAP_BUCKET_CAP);
-      if (count < thresholds.capabilityGapOccurrences) continue;
-      // Pass the full bucket key as cooldownKey so suppression and
-      // dismissal scope to this exact (pattern,task,window) tuple,
-      // not to every task that happens to share the same refusal
-      // window. F84 regression.
-      const emitted = emitSignal(
-        state,
-        { kind: "capability_gap", requiredCapability: windowText },
-        { failureCount: count, threshold: thresholds.capabilityGapOccurrences },
-        `cg:${bucketKey}`,
-      );
-      if (emitted) {
-        const lastSignal = state.signals[state.signals.length - 1];
-        if (lastSignal !== undefined) state.gapBucketBySignal.set(lastSignal.id, bucketKey);
+      if (chosen === undefined || match.index < chosen.matchStart) {
+        chosen = { pattern, matchStart: match.index };
       }
+    }
+    if (chosen === undefined) return;
+    const windowText = responseText
+      .slice(chosen.matchStart, chosen.matchStart + GAP_CONTEXT_WINDOW)
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+    // Scope the counter by task context (last user message identity)
+    // so unrelated requests producing the same generic refusal do not
+    // collapse into one bucket. F77 regression.
+    const bucketKey = `${chosen.pattern.source}|${taskContext}|${windowText}`;
+    const count = (state.capabilityGapCounts.get(bucketKey) ?? 0) + 1;
+    setBoundedMap(state.capabilityGapCounts, bucketKey, count, CAPABILITY_GAP_BUCKET_CAP);
+    if (count < thresholds.capabilityGapOccurrences) return;
+    // Pass the full bucket key as cooldownKey so suppression and
+    // dismissal scope to this exact (pattern,task,window) tuple,
+    // not to every task that happens to share the same refusal
+    // window. F84 regression.
+    const emitted = emitSignal(
+      state,
+      { kind: "capability_gap", requiredCapability: windowText },
+      { failureCount: count, threshold: thresholds.capabilityGapOccurrences },
+      `cg:${bucketKey}`,
+    );
+    if (emitted) {
+      const lastSignal = state.signals[state.signals.length - 1];
+      if (lastSignal !== undefined) state.gapBucketBySignal.set(lastSignal.id, bucketKey);
     }
   }
 
@@ -963,6 +992,11 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // Retry onSessionAttached delivery for observed sessions whose
       // first delivery threw. Idempotent on the bind step. F98.
       bindObserved(ctx.session);
+      // Until the scoped handle is delivered, the host has no way to
+      // dismiss accumulated signals — pass through silently. F112.
+      if (!isSessionReady(ctx.session)) {
+        return next(request);
+      }
       const sid = boundIdFor(ctx.session);
       // Capture the session epoch BEFORE awaiting downstream work so
       // a late completion that crosses an onSessionEnd does not
@@ -1050,6 +1084,10 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       }
       // Retry onSessionAttached delivery if first attempt threw. F98.
       bindObserved(ctx.session);
+      // Pass through until scoped-handle delivery succeeds. F112.
+      if (!isSessionReady(ctx.session)) {
+        return next(request);
+      }
       const sid = boundIdFor(ctx.session);
       // Capture epoch pre-await — see wrapToolCall comment. F95 regression.
       const epoch = getOrCreateEpoch(sid);
@@ -1075,6 +1113,10 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       }
       // Retry onSessionAttached delivery if first attempt threw. F98.
       bindObserved(ctx.session);
+      // Pass through until scoped-handle delivery succeeds. F112.
+      if (!isSessionReady(ctx.session)) {
+        return next(request);
+      }
       const sid = boundIdFor(ctx.session);
       // Capture epoch pre-await. A long-running stream that crosses
       // onSessionEnd must not commit corrections or capability-gap
