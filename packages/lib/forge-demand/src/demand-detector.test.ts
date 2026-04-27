@@ -1288,4 +1288,62 @@ describe("createForgeDemandDetector", () => {
 
     expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(2);
   });
+
+  it("freezes emitted signals so onDemand cannot mutate detector state", async () => {
+    // Regression for F57 (round 2) — onDemand received the live stored
+    // signal object. Mutating `id`/`trigger`/`context.failedToolCalls`
+    // through the callback corrupted dismissal/cooldown bookkeeping.
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { repeatedFailureCount: 1 },
+        onDemand: (s) => {
+          // Attempt mutations a buggy observer might do.
+          expect(() => {
+            (s as unknown as { id: string }).id = "tampered";
+          }).toThrow();
+          expect(() => {
+            (s.context.failedToolCalls as unknown as string[]).push("tampered");
+          }).toThrow();
+        },
+      }),
+    );
+    try {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), async () => {
+        throw new Error("boom");
+      });
+    } catch {
+      /* expected */
+    }
+    const [stored] = handle.forSession(ctx.session).getSignals();
+    expect(stored?.id).not.toBe("tampered");
+  });
+
+  it("does NOT emit user_correction when corrected answer was model-only (no adjacent tool)", async () => {
+    // Regression for F58 (round 2) — correction attribution previously
+    // returned the most recent completed tool in the session, even when
+    // the corrected assistant turn was a pure-model response. That made
+    // any earlier tool blamed for an unrelated user complaint.
+    const signals: ForgeDemandSignal[] = [];
+    let now = 0;
+    const handle = createForgeDemandDetector(
+      makeConfig({ clock: () => now, onDemand: (s) => signals.push(s) }),
+    );
+    // Tool runs early — bound to the pre-correction part of the conversation.
+    now = 50;
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("early-tool"), async () => toolRes());
+    // Earlier user turn (model-only response between u1 and u2 — no tool).
+    const u1: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "tell me a joke" }],
+      timestamp: 100,
+    };
+    // Later user turn — corrects a model-only answer. Must NOT blame `early-tool`.
+    const u2: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "no, that's not right" }],
+      timestamp: 200,
+    };
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([u1, u2]), async () => modelRes("ok"));
+    expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(0);
+  });
 });

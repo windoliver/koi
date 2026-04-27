@@ -237,7 +237,9 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     if (state.sessionEmitCount >= config.budget.maxForgesPerSession) return false;
 
     globalSignalCounter += 1;
-    const signal: ForgeDemandSignal = {
+    // Snapshot failedToolCalls — callers must never see, and onDemand
+    // observers must never be able to mutate, the live state array.
+    const signal = cloneSignal({
       id: `demand-${String(globalSignalCounter)}`,
       kind: "forge_demand",
       trigger,
@@ -248,7 +250,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
         failedToolCalls: state.failedToolCalls.get(key) ?? [],
       },
       emittedAt: clock(),
-    };
+    });
 
     if (state.signals.length >= maxPending) {
       const evicted = state.signals.shift();
@@ -440,11 +442,22 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   ): readonly PendingCorrection[] {
     if (correctionPatterns.length === 0) return [];
     const pending: PendingCorrection[] = [];
+    // Track the previous user-message TURN timestamp seen in THIS transcript
+    // scan. Adjacency uses transcript order, not the per-session watermark
+    // (the watermark advances on scan and would equal the current
+    // timestamp on retry replays — defeating the check). Multiple user
+    // messages sharing one timestamp are treated as a single turn so
+    // adjacency does not collapse against same-ms peers.
+    let prevUserTurnTs = -1;
+    let currentUserTurnTs = -1;
     for (const msg of request.messages) {
       if (msg.senderId !== "user") continue;
+      if (msg.timestamp !== currentUserTurnTs) {
+        prevUserTurnTs = currentUserTurnTs;
+        currentUserTurnTs = msg.timestamp;
+      }
       const id = messageIdentity(msg);
-      if (state.emittedCorrectionIds.has(id)) continue;
-      if (state.scannedCorrectionIds.has(id)) continue;
+      if (state.emittedCorrectionIds.has(id) || state.scannedCorrectionIds.has(id)) continue;
       const toolsCompletedAtScan = hasAnyCompletedTool(state);
       if (!toolsCompletedAtScan) {
         addBoundedId(state.scannedCorrectionIds, id);
@@ -453,7 +466,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       if (msg.timestamp > state.lastProcessedUserTimestamp) {
         state.lastProcessedUserTimestamp = msg.timestamp;
       }
-      const correctedToolId = resolveCorrectedToolId(state, msg.timestamp);
+      const correctedToolId = resolveCorrectedToolId(state, msg.timestamp, prevUserTurnTs);
       if (correctedToolId === "") continue;
       for (const block of msg.content) {
         if (block.kind !== "text") continue;
@@ -476,13 +489,35 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     }
   }
 
-  function resolveCorrectedToolId(state: SessionState, userMessageTimestamp: number): string {
+  /**
+   * Attribute a user-correction to a tool call ONLY when that tool ran in
+   * the assistant turn the user is correcting — i.e., between the previous
+   * user message and this one. Without this adjacency check, a user
+   * correcting a pure-model answer in a session that earlier used tools
+   * would falsely blame an unrelated tool and burn the session forge
+   * budget on noise.
+   */
+  function resolveCorrectedToolId(
+    state: SessionState,
+    userMessageTimestamp: number,
+    previousUserTimestamp: number,
+  ): string {
     for (let i = state.recentToolCalls.length - 1; i >= 0; i -= 1) {
       const call = state.recentToolCalls[i];
-      if (call !== undefined && call.completedAt >= 0 && call.completedAt <= userMessageTimestamp) {
+      if (
+        call !== undefined &&
+        call.completedAt >= 0 &&
+        call.completedAt > previousUserTimestamp &&
+        call.completedAt <= userMessageTimestamp
+      ) {
         return call.toolId;
       }
     }
+    // userMessageTimestamp === 0 is the deterministic / mock-clock sentinel
+    // (no real timestamp ordering available). In that mode there is no
+    // adjacency signal to use, so fall back to "most recent completed tool"
+    // — the original behavior. Real-time messages always have non-zero
+    // timestamps and skip this fallback.
     if (userMessageTimestamp !== 0) return "";
     for (let i = state.recentToolCalls.length - 1; i >= 0; i -= 1) {
       const call = state.recentToolCalls[i];
