@@ -274,17 +274,48 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         );
       }
       const baseForgeConfig = validated.value;
-      // Auto-wire ONLY when feedback-loop has live trackers (forgeHealth
-      // configured). With feedback-loop installed but no forgeHealth, its
-      // healthHandle would always return undefined — wiring it anyway
-      // would silently dormant performance_degradation while suppressing
-      // the warning that would otherwise flag the gap (F64 regression).
-      const feedbackLoopHasLiveTrackers =
-        feedbackLoopMiddleware !== undefined && config.feedbackLoop?.forgeHealth !== undefined;
+      // Auto-wire ONLY when an installed feedback-loop has live trackers.
+      // We look across the entire effective middleware list — including
+      // any caller-supplied feedback-loop in `config.middleware` — for a
+      // middleware exposing the typed `healthHandle` surface. Without
+      // forgeHealth (runtime-built variant) or an exposed handle
+      // (preinstalled variant), wiring would silently dormant
+      // performance_degradation while suppressing the warning that
+      // would otherwise flag the gap (F64 / F66 regression).
+      const installedFeedbackLoopHandle = (() => {
+        // Runtime-built path — inspect the original config rather than
+        // relying on healthHandle exposure (since healthHandle is set
+        // unconditionally by the factory but only has live trackers when
+        // forgeHealth is configured).
+        if (
+          feedbackLoopMiddleware !== undefined &&
+          config.feedbackLoop?.forgeHealth !== undefined
+        ) {
+          return feedbackLoopMiddleware.healthHandle;
+        }
+        // Preinstalled path — caller composed feedback-loop in
+        // config.middleware. We can only honor it when it actually
+        // exposes the typed healthHandle (newer API); legacy
+        // pre-handle middleware is treated as opaque and gets the
+        // dormant-trigger warning. Skip the runtime-built instance —
+        // it was already vetted (or rejected) by the forgeHealth
+        // check above; reaching here means it failed that check and
+        // must NOT be wired silently.
+        const preinstalled = baseWithFeedbackLoop.find(
+          (mw) => mw.name === "feedback-loop" && mw !== feedbackLoopMiddleware,
+        );
+        const handle = (preinstalled as { readonly healthHandle?: unknown } | undefined)
+          ?.healthHandle;
+        if (
+          handle !== undefined &&
+          typeof (handle as { getSnapshot?: unknown }).getSnapshot === "function"
+        ) {
+          return handle as NonNullable<typeof feedbackLoopMiddleware>["healthHandle"];
+        }
+        return undefined;
+      })();
       const autoHealthHandle =
-        baseForgeConfig.healthTracker === undefined && feedbackLoopHasLiveTrackers
-          ? feedbackLoopMiddleware?.healthHandle
-          : undefined;
+        baseForgeConfig.healthTracker === undefined ? installedFeedbackLoopHandle : undefined;
       const finalForgeConfig =
         autoHealthHandle !== undefined
           ? { ...baseForgeConfig, healthTracker: autoHealthHandle }
@@ -321,6 +352,13 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         return next(request);
       },
       wrapModelCall(ctx, request, next) {
+        sessionContextById.set(ctx.session.sessionId, ctx.session);
+        return next(request);
+      },
+      // Stream-only sessions never enter wrapModelCall — without
+      // capturing here, forSessionId() throws for agents that use
+      // streaming responses exclusively. F65 regression.
+      wrapModelStream(ctx, request, next) {
         sessionContextById.set(ctx.session.sessionId, ctx.session);
         return next(request);
       },

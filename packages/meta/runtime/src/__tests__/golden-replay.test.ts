@@ -14052,4 +14052,86 @@ describe("Golden: @koi/forge-demand", () => {
       console.warn = originalWarn;
     }
   });
+
+  test("session-capture middleware records SessionContext on wrapModelStream too", async () => {
+    // Regression for round-6 F65: capture middleware previously hooked
+    // only wrapToolCall and wrapModelCall, so stream-only sessions
+    // never populated sessionContextById and forSessionId() threw —
+    // signals were stuck until cooldown/session end. The capture
+    // middleware now also runs on wrapModelStream.
+    const { createRuntime } = await import("../create-runtime.js");
+    const runtime = createRuntime({
+      forgeDemand: {
+        budget: {
+          maxForgesPerSession: 5,
+          computeTimeBudgetMs: 120_000,
+          demandThreshold: 0.7,
+          cooldownMs: 1_000,
+        },
+        heuristics: {
+          repeatedFailureCount: 3,
+          capabilityGapOccurrences: 2,
+          latencyDegradationAvgMs: 5_000,
+        },
+      },
+    });
+    const captureMw = runtime.middleware.find((mw) => mw.name === "forge-demand-session-capture");
+    expect(captureMw).toBeDefined();
+    expect(typeof captureMw?.wrapModelStream).toBe("function");
+    await runtime.dispose();
+  });
+
+  test("auto-wiring honors a caller-preinstalled feedback-loop in config.middleware", async () => {
+    // Regression for round-6 F66: auto-wiring previously bound to the
+    // runtime-built variable only. If the caller composed feedback-loop
+    // themselves in config.middleware, the runtime skipped wiring AND
+    // emitted the dormant warning even though a valid healthHandle was
+    // live in the chain. We now scan the effective middleware list and
+    // honor any feedback-loop exposing a typed healthHandle.
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: unknown): void => {
+      warnings.push(String(msg));
+    };
+    try {
+      const { createRuntime } = await import("../create-runtime.js");
+      const preinstalled = createFeedbackLoopMiddleware({
+        forgeHealth: {
+          quarantineThreshold: 0.5,
+          windowSize: 10,
+          forgeStore: {
+            load: async () => ({ ok: false, error: { code: "NOT_FOUND" } }) as never,
+            save: async () => ({ ok: true, value: undefined }) as never,
+          } as never,
+          snapshotChainStore: {} as never,
+          resolveBrickId: () => undefined,
+        },
+      });
+      const runtime = createRuntime({
+        middleware: [preinstalled],
+        forgeDemand: {
+          budget: {
+            maxForgesPerSession: 5,
+            computeTimeBudgetMs: 120_000,
+            demandThreshold: 0.7,
+            cooldownMs: 1_000,
+          },
+          heuristics: {
+            repeatedFailureCount: 3,
+            capabilityGapOccurrences: 2,
+            latencyDegradationAvgMs: 5_000,
+          },
+        },
+      });
+      // No dormant-trigger warning when a preinstalled feedback-loop
+      // exposes a wireable healthHandle.
+      expect(warnings.some((w) => /performance_degradation trigger is dormant/.test(w))).toBe(
+        false,
+      );
+      await runtime.dispose();
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
 });
