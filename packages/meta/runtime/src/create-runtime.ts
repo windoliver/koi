@@ -54,6 +54,7 @@ import {
   sortMiddlewareByPhase,
 } from "@koi/engine-compose";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
+import { createForgeDemandDetector } from "@koi/forge-demand";
 import { createHttpTransport, type NexusTransport } from "@koi/fs-nexus";
 import { createGovernanceMiddleware, GOVERNANCE_MIDDLEWARE_NAME } from "@koi/governance-core";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
@@ -245,10 +246,21 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         ? [...baseWithGovernance, createFeedbackLoopMiddleware(config.feedbackLoop)]
         : baseWithGovernance;
 
+    // Install forge-demand detector when config.forgeDemand is provided and not already
+    // present. Priority 455 — sits next to feedback-loop so it can observe the same
+    // tool/model traffic without duplicating health-tracking concerns.
+    const hasForgeDemand = new Set(baseWithFeedbackLoop.map((mw) => mw.name)).has(
+      "forge-demand-detector",
+    );
+    const baseWithForgeDemand: readonly KoiMiddleware[] =
+      config.forgeDemand !== undefined && !hasForgeDemand
+        ? [...baseWithFeedbackLoop, createForgeDemandDetector(config.forgeDemand).middleware]
+        : baseWithFeedbackLoop;
+
     // Install exfiltration guard by default when: (1) not explicitly disabled,
     // (2) not already provided, and (3) the adapter has terminals so the intercept
     // phase won't be silently bypassed. Stub adapters have no terminals.
-    const providedNames = new Set(baseWithFeedbackLoop.map((mw) => mw.name));
+    const providedNames = new Set(baseWithForgeDemand.map((mw) => mw.name));
     const exfiltrationRequested =
       config.exfiltrationGuard !== false && !providedNames.has("exfiltration-guard");
     const canInstallExfiltrationGuard = rawAdapter.terminals !== undefined;
@@ -269,10 +281,10 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     const afterExfiltration: readonly KoiMiddleware[] =
       exfiltrationRequested && canInstallExfiltrationGuard
         ? [
-            ...baseWithFeedbackLoop,
+            ...baseWithForgeDemand,
             createExfiltrationGuardMiddleware(config.exfiltrationGuard ?? undefined),
           ]
-        : baseWithFeedbackLoop;
+        : baseWithForgeDemand;
 
     // Append model-router as the innermost model-call interceptor (after exfiltration
     // guard and semantic-retry) so each retry attempt independently benefits from

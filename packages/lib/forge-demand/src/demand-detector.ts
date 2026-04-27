@@ -11,10 +11,13 @@ import type {
   CapabilityFragment,
   ForgeDemandSignal,
   ForgeTrigger,
+  InboundMessage,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -157,15 +160,16 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     completedAt: number;
   };
   const recentToolCalls: RecentToolCall[] = [];
-  // Set of user-message timestamps already converted into emissions.
-  // Lets `scanUserCorrections` emit synchronously while still deduping
-  // when the runtime replays the same transcript on retry.
-  const emittedCorrectionTimestamps = new Set<number>();
-  // Set of user-message timestamps already SCANNED (regardless of whether
-  // they emitted). Distinct from `emittedCorrectionTimestamps` so a
-  // message replayed before any tool ran cannot resurrect later — once a
-  // message is scanned it is never re-scanned even if attribution failed.
-  const scannedCorrectionTimestamps = new Set<number>();
+  // Stable identity strings for user messages already emitted. Identity
+  // combines senderId, timestamp, and a content fingerprint so two
+  // distinct corrections that happen to share a millisecond timestamp
+  // (replay/import paths can collide) do not silently dedupe each other.
+  const emittedCorrectionIds = new Set<string>();
+  // Stable identity strings already SCANNED (regardless of whether they
+  // emitted). Distinct from `emittedCorrectionIds` so a message replayed
+  // before any tool ran cannot resurrect later — once a message is
+  // scanned it is never re-scanned even if attribution failed.
+  const scannedCorrectionIds = new Set<string>();
   // `let` justified: mutable counters scoped to this closure. Reset on session end.
   let signalCounter = 0;
   // Highest user-message timestamp already scanned for corrections.
@@ -322,21 +326,41 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
    *   - duplicate the correction signal (emit fired before next throws,
    *     then retry re-scans the same transcript and emits again).
    */
+  function messageIdentity(msg: InboundMessage): string {
+    // Collision-resistant message identity: senderId + timestamp +
+    // fingerprint of content. Two distinct corrections that share a
+    // millisecond timestamp (replay/import) must not dedupe each other.
+    let textFingerprint = "";
+    let len = 0;
+    for (const block of msg.content) {
+      if (block.kind === "text") {
+        textFingerprint += block.text;
+        len += block.text.length;
+      }
+    }
+    // Trim to a bounded length so identity strings stay small while still
+    // discriminating distinct messages — prefix + length is enough to
+    // distinguish realistic correction phrasings.
+    const head = textFingerprint.slice(0, 64);
+    return `${msg.senderId}|${String(msg.timestamp)}|${String(len)}|${head}`;
+  }
+
   function scanUserCorrections(request: ModelRequest): void {
     if (correctionPatterns.length === 0) return;
     for (const msg of request.messages) {
       if (msg.senderId !== "user") continue;
-      // Two-tier dedupe:
-      //   - scannedCorrectionTimestamps: this message has already been
-      //     evaluated. Don't re-scan, even if no signal emitted last time
-      //     (otherwise a replayed pre-tool correction could fire late
-      //     against a newer tool that completed after).
-      //   - emittedCorrectionTimestamps: this message has already
-      //     produced an emission. Belt-and-suspenders against any
-      //     scenario where the scanned set is reset but emissions persist.
-      if (scannedCorrectionTimestamps.has(msg.timestamp)) continue;
-      if (emittedCorrectionTimestamps.has(msg.timestamp)) continue;
-      scannedCorrectionTimestamps.add(msg.timestamp);
+      // Two-tier dedupe keyed on stable message identity, not raw timestamp:
+      //   - scannedCorrectionIds: this message has already been evaluated.
+      //     Don't re-scan, even if no signal emitted last time (otherwise
+      //     a replayed pre-tool correction could fire late against a newer
+      //     tool that completed after).
+      //   - emittedCorrectionIds: this message has already produced an
+      //     emission. Belt-and-suspenders against any scenario where the
+      //     scanned set is reset but emissions persist.
+      const id = messageIdentity(msg);
+      if (scannedCorrectionIds.has(id)) continue;
+      if (emittedCorrectionIds.has(id)) continue;
+      scannedCorrectionIds.add(id);
       if (msg.timestamp > lastProcessedUserTimestamp) {
         lastProcessedUserTimestamp = msg.timestamp;
       }
@@ -351,7 +375,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
           matched = true;
         }
       }
-      if (matched) emittedCorrectionTimestamps.add(msg.timestamp);
+      if (matched) emittedCorrectionIds.add(id);
     }
   }
 
@@ -487,7 +511,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      // Emit corrections synchronously and dedupe by message timestamp.
+      // Emit corrections synchronously and dedupe by stable message identity.
       // This survives both transcript replay (retry) and a model-call
       // failure with no replay — neither path can lose or duplicate the
       // correction signal.
@@ -495,6 +519,39 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       const response = await next(request);
       checkCapabilityGaps(extractResponseText(response));
       return response;
+    },
+
+    wrapModelStream(
+      _ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      // Streaming path mirrors wrapModelCall: scan user corrections before
+      // dispatch (so retries still fire correctly), then assemble streamed
+      // text deltas into a single buffer for capability-gap detection on
+      // stream completion. Without this, two of the three text-driven
+      // triggers (capability_gap, user_correction) silently disappear on
+      // any runtime that uses streaming adapters.
+      scanUserCorrections(request);
+      const upstream = next(request);
+      return (async function* relay() {
+        let buffer = "";
+        let finalResponse: ModelResponse | undefined;
+        for await (const chunk of upstream) {
+          if (chunk.kind === "text_delta") {
+            buffer += chunk.delta;
+          } else if (chunk.kind === "done") {
+            finalResponse = chunk.response;
+          }
+          yield chunk;
+        }
+        // Prefer the canonical response text when the adapter provides it
+        // via the `done` chunk; fall back to assembled deltas for adapters
+        // that emit text-only streams without a terminal response.
+        const text =
+          finalResponse !== undefined ? extractResponseText(finalResponse) || buffer : buffer;
+        if (text.length > 0) checkCapabilityGaps(text);
+      })();
     },
 
     async onSessionEnd(): Promise<void> {
@@ -507,8 +564,8 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       signals.length = 0;
       signalCounter = 0;
       recentToolCalls.length = 0;
-      emittedCorrectionTimestamps.clear();
-      scannedCorrectionTimestamps.clear();
+      emittedCorrectionIds.clear();
+      scannedCorrectionIds.clear();
       lastProcessedUserTimestamp = -1;
       sessionEmitCount = 0;
     },

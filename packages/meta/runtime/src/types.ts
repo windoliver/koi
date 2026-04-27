@@ -441,6 +441,15 @@ export interface RuntimeConfig {
   readonly feedbackLoop?: import("@koi/middleware-feedback-loop").FeedbackLoopConfig | undefined;
 
   /**
+   * Forge-demand detector configuration. When provided, wires
+   * `@koi/forge-demand` as a passive observer on tool/model traffic to
+   * surface forge-demand signals (repeated_failure, capability_gap,
+   * user_correction, performance_degradation). Skipped if a middleware
+   * named "forge-demand-detector" is already in `config.middleware`.
+   */
+  readonly forgeDemand?: import("@koi/forge-demand").ForgeDemandConfig | undefined;
+
+  /**
    * Browser tool provider configuration. When provided, wires `@koi/tool-browser`
    * and exposes the resulting `ComponentProvider` on `RuntimeHandle.browserProvider`
    * so callers can pass it to `createKoi({ providers })`.

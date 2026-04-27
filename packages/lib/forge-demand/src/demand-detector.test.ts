@@ -3,6 +3,7 @@ import type {
   ForgeBudget,
   ForgeDemandSignal,
   InboundMessage,
+  ModelChunk,
   ModelRequest,
   ModelResponse,
   ToolRequest,
@@ -867,5 +868,79 @@ describe("createForgeDemandDetector", () => {
 
     handle.dismiss(first.id);
     expect(handle.getActiveSignalCount()).toBe(0);
+  });
+
+  it("wrapModelStream scans corrections and runs capability-gap on assembled deltas", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    let now = 10;
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        clock: () => now,
+        heuristics: { capabilityGapOccurrences: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+
+    now = 50;
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("search-tool"), async () => toolRes());
+
+    const correction: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "no, that's not right" }],
+      timestamp: 100,
+    };
+
+    // Stream emits deltas that, when assembled, match the capability-gap pattern.
+    const streamNext = (): AsyncIterable<ModelChunk> =>
+      (async function* () {
+        yield { kind: "text_delta", delta: "I don't have a tool for " };
+        yield { kind: "text_delta", delta: "compiling rust code" };
+        yield {
+          kind: "done",
+          response: {
+            content: "I don't have a tool for compiling rust code",
+            model: "test",
+            usage: { inputTokens: 0, outputTokens: 0 },
+          },
+        };
+      })();
+
+    const stream = handle.middleware.wrapModelStream?.(ctx, modelReq([correction]), streamNext);
+    if (stream === undefined) throw new Error("wrapModelStream not implemented");
+    const collected: ModelChunk[] = [];
+    for await (const chunk of stream) collected.push(chunk);
+
+    // Corrections fired before stream dispatch + capability_gap detected on completion.
+    expect(signals.some((s) => s.trigger.kind === "user_correction")).toBe(true);
+    expect(signals.some((s) => s.trigger.kind === "capability_gap")).toBe(true);
+    // All chunks were relayed to the caller untouched.
+    expect(collected.length).toBe(3);
+  });
+
+  it("dedupes user corrections by content identity, not raw timestamp", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    let now = 10;
+    const handle = createForgeDemandDetector(
+      makeConfig({ clock: () => now, onDemand: (s) => signals.push(s) }),
+    );
+
+    now = 50;
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("any-tool"), async () => toolRes());
+
+    // Two distinct user corrections that happen to share a millisecond
+    // timestamp must NOT collapse into one signal.
+    const a: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "no, that's not right" }],
+      timestamp: 100,
+    };
+    const b: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "actually, use the other tool" }],
+      timestamp: 100,
+    };
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([a, b]), async () => modelRes("ok"));
+
+    expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(2);
   });
 });
