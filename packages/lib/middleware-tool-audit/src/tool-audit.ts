@@ -189,6 +189,10 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   let hydrated = false;
   // let: accumulated session count
   let totalSessions = 0;
+  // let: snapshot of the last value we observed on disk (post-hydrate or
+  // post-save). Used as the baseline for additive-delta merges so concurrent
+  // writers' increments aren't lost. Empty until first successful hydrate.
+  let baselineSnapshot: ToolAuditSnapshot = EMPTY_SNAPSHOT;
 
   function getOrCreateRecord(toolName: string): MutableToolRecord {
     const existing = tools.get(toolName);
@@ -211,6 +215,9 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
           // merge degenerates to a copy of the disk snapshot.
           mergeSnapshotIntoMemory(tools, snapshot);
           totalSessions += snapshot.totalSessions;
+          // Baseline = what's on disk now. Saves compute their delta
+          // against this so concurrent writers' increments survive.
+          baselineSnapshot = snapshot;
           hydrated = true;
         }
       } catch (e: unknown) {
@@ -343,11 +350,55 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       try {
         const merged = await loadAndMergeForSave(snapshot);
         await store.save(merged);
+        // Successful save — advance the baseline so the next save's
+        // delta is computed against what's now on disk.
+        baselineSnapshot = merged;
       } catch (e: unknown) {
         onError?.(e);
       }
     });
     await savePromise;
+  }
+
+  function applyDelta(
+    pending: ToolUsageRecord | undefined,
+    base: ToolUsageRecord | undefined,
+    disk: ToolUsageRecord | undefined,
+    name: string,
+  ): ToolUsageRecord | undefined {
+    if (pending === undefined && disk === undefined) return undefined;
+    const baseCount = base?.callCount ?? 0;
+    const baseSuccess = base?.successCount ?? 0;
+    const baseFailure = base?.failureCount ?? 0;
+    const baseTotalLat = base?.totalLatencyMs ?? 0;
+    const baseSessAvail = base?.sessionsAvailable ?? 0;
+    const baseSessUsed = base?.sessionsUsed ?? 0;
+    const callCount = (disk?.callCount ?? 0) + ((pending?.callCount ?? 0) - baseCount);
+    const successCount = (disk?.successCount ?? 0) + ((pending?.successCount ?? 0) - baseSuccess);
+    const failureCount = (disk?.failureCount ?? 0) + ((pending?.failureCount ?? 0) - baseFailure);
+    const totalLatencyMs =
+      (disk?.totalLatencyMs ?? 0) + ((pending?.totalLatencyMs ?? 0) - baseTotalLat);
+    const sessionsAvailable =
+      (disk?.sessionsAvailable ?? 0) + ((pending?.sessionsAvailable ?? 0) - baseSessAvail);
+    const sessionsUsed = (disk?.sessionsUsed ?? 0) + ((pending?.sessionsUsed ?? 0) - baseSessUsed);
+    const lastUsedAt = Math.max(disk?.lastUsedAt ?? 0, pending?.lastUsedAt ?? 0);
+    const minA = pending?.minLatencyMs ?? 0;
+    const minB = disk?.minLatencyMs ?? 0;
+    const minLatencyMs = minA === 0 ? minB : minB === 0 ? minA : Math.min(minA, minB);
+    const maxLatencyMs = Math.max(pending?.maxLatencyMs ?? 0, disk?.maxLatencyMs ?? 0);
+    return {
+      toolName: name,
+      callCount,
+      successCount,
+      failureCount,
+      lastUsedAt,
+      avgLatencyMs: callCount > 0 ? totalLatencyMs / callCount : 0,
+      minLatencyMs,
+      maxLatencyMs,
+      totalLatencyMs,
+      sessionsAvailable,
+      sessionsUsed,
+    };
   }
 
   async function loadAndMergeForSave(
@@ -364,60 +415,33 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       return pendingSnapshot;
     }
 
-    // Always max-merge against disk. Cumulative counters are
-    // monotonic-non-decreasing (callCount/successCount/failureCount/
-    // sessions*), so taking the max of (in-memory, on-disk) preserves any
-    // delta another writer landed since our last hydration/save without
-    // losing our own. We can't gate on `lastUpdatedAt` because the pending
-    // snapshot's timestamp is generated at save time and almost always
-    // exceeds the on-disk timestamp — even when another writer's
-    // higher-count delta is present. The max-merge is idempotent: when no
-    // other writer ran, disk values equal in-memory and the result is a
-    // no-op.
+    // Baseline-delta merge: our in-memory state = baseline + our deltas.
+    // The on-disk state may have advanced past baseline (another writer).
+    // Final = disk + (pending - baseline). For each cumulative counter
+    // (callCount, successCount, failureCount, totalLatencyMs, sessions*,
+    // totalSessions) this preserves both writers' increments without
+    // double-counting our own. Latency extremes (min/max) and lastUsedAt
+    // are not additive — take the safe min/max of (disk, pending) which
+    // both include the baseline.
     const mergedTools: Record<string, ToolUsageRecord> = {};
     const allNames = new Set<string>([
       ...Object.keys(pendingSnapshot.tools),
       ...Object.keys(onDisk.tools),
     ]);
     for (const name of allNames) {
-      const a = pendingSnapshot.tools[name];
-      const b = onDisk.tools[name];
-      if (a === undefined && b !== undefined) {
-        mergedTools[name] = b;
-        continue;
-      }
-      if (b === undefined && a !== undefined) {
-        mergedTools[name] = a;
-        continue;
-      }
-      if (a === undefined || b === undefined) continue;
-      const callCount = Math.max(a.callCount, b.callCount);
-      const successCount = Math.max(a.successCount, b.successCount);
-      const failureCount = Math.max(a.failureCount, b.failureCount);
-      const totalLatencyMs = Math.max(a.totalLatencyMs, b.totalLatencyMs);
-      mergedTools[name] = {
-        toolName: name,
-        callCount,
-        successCount,
-        failureCount,
-        lastUsedAt: Math.max(a.lastUsedAt, b.lastUsedAt),
-        avgLatencyMs: callCount > 0 ? totalLatencyMs / callCount : 0,
-        minLatencyMs:
-          a.minLatencyMs === 0
-            ? b.minLatencyMs
-            : b.minLatencyMs === 0
-              ? a.minLatencyMs
-              : Math.min(a.minLatencyMs, b.minLatencyMs),
-        maxLatencyMs: Math.max(a.maxLatencyMs, b.maxLatencyMs),
-        totalLatencyMs,
-        sessionsAvailable: Math.max(a.sessionsAvailable, b.sessionsAvailable),
-        sessionsUsed: Math.max(a.sessionsUsed, b.sessionsUsed),
-      };
+      const merged = applyDelta(
+        pendingSnapshot.tools[name],
+        baselineSnapshot.tools[name],
+        onDisk.tools[name],
+        name,
+      );
+      if (merged !== undefined) mergedTools[name] = merged;
     }
 
+    const totalSessionsDelta = pendingSnapshot.totalSessions - baselineSnapshot.totalSessions;
     return {
       tools: mergedTools,
-      totalSessions: Math.max(pendingSnapshot.totalSessions, onDisk.totalSessions),
+      totalSessions: onDisk.totalSessions + totalSessionsDelta,
       lastUpdatedAt: Math.max(pendingSnapshot.lastUpdatedAt, onDisk.lastUpdatedAt),
     };
   }

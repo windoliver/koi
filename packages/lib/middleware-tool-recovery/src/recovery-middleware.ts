@@ -246,12 +246,28 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
         return;
       }
     } finally {
-      if (!completed) {
+      if (!completed && !bypass) {
         if (mode === "passthrough") {
           const tail = bufferedText.slice(flushedTextIndex);
           if (tail.length > 0) yield { kind: "text_delta", delta: tail };
-        } else if (pending.length > 0) {
-          for (const buf of pending) yield buf;
+        } else {
+          // Abnormal termination after we entered buffer mode: the model
+          // emitted tool-call markup but the stream errored before `done`.
+          // Replaying the raw buffered text would leak markup AND drop a
+          // potentially valid tool invocation. Try recovery first; only
+          // fall back to raw replay if recovery yields nothing parseable.
+          const recovered = runRecovery(ctx, bufferedText, tools, patterns, maxCalls, onEvent);
+          if (recovered !== undefined) {
+            for (const buf of pending) {
+              if (buf.kind !== "text_delta") yield buf;
+            }
+            if (recovered.cleanedText.length > 0) {
+              yield { kind: "text_delta", delta: recovered.cleanedText };
+            }
+            yield* synthesizeToolCallChunks(recovered.calls);
+          } else if (pending.length > 0) {
+            for (const buf of pending) yield buf;
+          }
         }
       }
     }

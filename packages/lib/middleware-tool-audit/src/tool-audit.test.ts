@@ -395,11 +395,13 @@ describe("createToolAuditMiddleware", () => {
 
       // We hydrate, then another writer lands a much higher call count.
       await mw.onSessionStart?.(sessionCtx());
+      const initialSearch = diskState.tools.search;
+      if (initialSearch === undefined) throw new Error("seed search record missing");
       diskState = {
         ...diskState,
         tools: {
           search: {
-            ...diskState.tools.search!,
+            ...initialSearch,
             callCount: 999,
             successCount: 999,
             sessionsUsed: 50,
@@ -416,6 +418,59 @@ describe("createToolAuditMiddleware", () => {
       // not silently roll them back to our hydrated baseline + delta.
       expect(diskState.tools.search?.callCount).toBeGreaterThanOrEqual(999);
       expect(diskState.totalSessions).toBeGreaterThanOrEqual(50);
+    });
+
+    test("preserves both writers' increments under concurrent +1/+1 contention (no double-counting, no lost update)", async () => {
+      // Round 9: max-merge silently drops one writer's increment when both
+      // writers start from the same baseline N and each record +1 — the
+      // result is N+1 instead of N+2. Baseline-delta merge keeps both.
+      let diskState: ToolAuditSnapshot = {
+        tools: {
+          search: {
+            toolName: "search",
+            callCount: 5,
+            successCount: 5,
+            failureCount: 0,
+            lastUsedAt: 0,
+            avgLatencyMs: 0,
+            minLatencyMs: 0,
+            maxLatencyMs: 0,
+            totalLatencyMs: 0,
+            sessionsAvailable: 0,
+            sessionsUsed: 0,
+          },
+        },
+        totalSessions: 5,
+        lastUpdatedAt: 100,
+      };
+      const store: ToolAuditStore = {
+        load: () => diskState,
+        save: (s) => {
+          diskState = s;
+        },
+      };
+      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+      const wrap = getWrapToolCall(mw);
+
+      // We hydrate at baseline=5, then another writer lands their own +1
+      // (disk = 6) before we save our +1.
+      await mw.onSessionStart?.(sessionCtx());
+      const seedSearch = diskState.tools.search;
+      if (seedSearch === undefined) throw new Error("seed search record missing");
+      diskState = {
+        ...diskState,
+        tools: {
+          search: { ...seedSearch, callCount: 6, successCount: 6 },
+        },
+        lastUpdatedAt: 150,
+      };
+
+      await wrap(turnCtx(), toolReq("search"), async () => ({ output: "ok" }));
+      await mw.onSessionEnd?.(sessionCtx());
+
+      // Both writers' +1 must survive: 5 + 1 (other) + 1 (us) = 7.
+      expect(diskState.tools.search?.callCount).toBe(7);
+      expect(diskState.tools.search?.successCount).toBe(7);
     });
 
     test("serializes concurrent saves so a slow earlier save cannot overwrite a faster later save", async () => {

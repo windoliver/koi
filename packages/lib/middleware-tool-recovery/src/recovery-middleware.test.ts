@@ -395,6 +395,43 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
     expect(out.some((c) => c.kind === "thinking_delta")).toBe(true);
   });
 
+  test("recovers tool calls when upstream stream throws after a complete tool_call markup", async () => {
+    // Round 9: provider error after a fully-formed tool call must not
+    // discard the recovered call or leak raw markup. Recovery runs in
+    // finally on abnormal termination.
+    const mw = createToolRecoveryMiddleware();
+    const tools = [tool("foo")];
+    const next: ModelStreamHandler = async function* () {
+      yield { kind: "thinking_delta", delta: "thinking..." };
+      yield {
+        kind: "text_delta",
+        delta: 'Here you go: <tool_call>{"name":"foo","arguments":{"x":1}}</tool_call>',
+      };
+      throw new Error("connection reset");
+    };
+
+    const out: ModelChunk[] = [];
+    let caught: unknown;
+    try {
+      for await (const c of getStream(mw)(turnCtx(), { messages: [], tools }, next)) {
+        out.push(c);
+      }
+    } catch (e: unknown) {
+      caught = e;
+    }
+
+    expect((caught as Error).message).toBe("connection reset");
+    // The tool_call_* chunks must be synthesized from the buffered text.
+    const toolStarts = out.filter((c) => c.kind === "tool_call_start");
+    expect(toolStarts.length).toBe(1);
+    // Raw markup must not leak through as text_delta.
+    const allText = out
+      .filter((c): c is Extract<ModelChunk, { kind: "text_delta" }> => c.kind === "text_delta")
+      .map((c) => c.delta)
+      .join("");
+    expect(allText).not.toContain("<tool_call>");
+  });
+
   test("thinking_delta and usage chunks are preserved across the buffer", async () => {
     const mw = createToolRecoveryMiddleware();
     const tools = [tool("foo")];

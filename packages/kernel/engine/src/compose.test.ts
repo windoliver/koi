@@ -1452,7 +1452,10 @@ describe("createComposedCallHandlers streaming", () => {
     expect(typeof handlers.modelStream).toBe("function");
   });
 
-  test("omits modelStream when rawModelStreamTerminal not provided", async () => {
+  test("synthesizes modelStream from modelCall when rawModelStreamTerminal not provided", async () => {
+    // Round 9: engine fallback. Adapters with only a modelCall terminal
+    // get a synthesized stream pipeline so wrapModelStream middleware
+    // (e.g. tool-recovery) runs uniformly across all adapters.
     const agent = await createStartedAgent();
     const rawModel = mock(() => Promise.resolve(mockModelResponse()));
     const rawTool = mock(() => Promise.resolve(mockToolResponse()));
@@ -1465,7 +1468,12 @@ describe("createComposedCallHandlers streaming", () => {
       rawTool,
     );
 
-    expect(handlers.modelStream).toBeUndefined();
+    const stream = handlers.modelStream;
+    if (stream === undefined) throw new Error("expected synthesized modelStream");
+    const chunks = [];
+    for await (const c of stream({ messages: [] })) chunks.push(c);
+    expect(chunks.some((c) => c.kind === "done")).toBe(true);
+    expect(rawModel).toHaveBeenCalled();
   });
 
   test("streaming middleware fires through composed handlers", async () => {
