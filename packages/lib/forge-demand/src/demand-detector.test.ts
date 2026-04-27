@@ -628,10 +628,10 @@ describe("createForgeDemandDetector", () => {
     }
   });
 
-  it("does not duplicate user_correction across model retries even with cooldownMs=0", async () => {
+  it("emits user_correction once and survives both replay and a no-replay model failure (cooldownMs=0)", async () => {
     const signals: ForgeDemandSignal[] = [];
-    // cooldown=0 (the default makeConfig budget) — without idempotent
-    // emission this would produce duplicate corrections on retry.
+    // cooldownMs=0 — dedupe must come from the per-message timestamp set,
+    // NOT from cooldown.
     const handle = createForgeDemandDetector(makeConfig({ onDemand: (s) => signals.push(s) }));
     await handle.middleware.wrapToolCall?.(ctx, toolReq("any"), async () => toolRes());
     const correction: InboundMessage = {
@@ -642,13 +642,16 @@ describe("createForgeDemandDetector", () => {
     const failModel = async (): Promise<ModelResponse> => {
       throw new Error("transport boom");
     };
+
+    // Failed model call — correction must STILL emit (not lost on no-replay).
     try {
       await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), failModel);
     } catch {
       // expected
     }
-    expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(0);
+    expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(1);
 
+    // Retry replays the same transcript — must not duplicate.
     const okModel = async (): Promise<ModelResponse> => modelRes("ok");
     await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), okModel);
     expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(1);
@@ -749,6 +752,59 @@ describe("createForgeDemandDetector", () => {
     expect(corr).toBeDefined();
     if (corr?.trigger.kind === "user_correction") {
       expect(corr.trigger.correctedToolCall).toBe("tool-B");
+    }
+  });
+
+  it("does not let a long-running tool steal user_correction from an earlier completed tool", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    let now = 0;
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        clock: () => now,
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+
+    // tool-A completes at t=100.
+    now = 50;
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("tool-A"), async () => {
+      now = 100;
+      return toolRes();
+    });
+
+    // tool-B starts at t=150 but has not finished by the user message at t=200.
+    let pendingResolve: ((value: ToolResponse) => void) | undefined;
+    now = 150;
+    const pendingB = handle.middleware.wrapToolCall?.(
+      ctx,
+      toolReq("tool-B"),
+      () =>
+        new Promise<ToolResponse>((resolve) => {
+          pendingResolve = resolve;
+        }),
+    );
+
+    // User correction at t=200 — tool-B is still in flight.
+    const correction: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "no, that's not right" }],
+      timestamp: 200,
+    };
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), async () =>
+      modelRes("ok"),
+    );
+
+    // Now finish tool-B at t=300 (after the user message).
+    now = 300;
+    pendingResolve?.(toolRes());
+    await pendingB;
+
+    const corr = signals.find((s) => s.trigger.kind === "user_correction");
+    expect(corr).toBeDefined();
+    if (corr?.trigger.kind === "user_correction") {
+      // The user could not have been reacting to tool-B (still running) —
+      // attribution must be tool-A.
+      expect(corr.trigger.correctedToolCall).toBe("tool-A");
     }
   });
 

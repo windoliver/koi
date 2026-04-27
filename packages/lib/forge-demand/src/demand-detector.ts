@@ -144,11 +144,21 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   const failedToolCalls = new Map<string, string[]>();
   const capabilityGapCounts = new Map<string, number>();
   const noMatchingToolCounts = new Map<string, number>();
-  // Bounded log of recent successful tool calls. Used to attribute user
-  // corrections to the tool the user is actually rejecting (the most recent
-  // call before the user's message timestamp), not whichever tool happened
-  // to run last in the session.
-  const recentToolCalls: Array<{ readonly toolId: string; readonly at: number }> = [];
+  // Bounded log of recent tool calls. Each entry tracks both `startedAt`
+  // and `completedAt` so user-correction attribution can require the tool
+  // outcome to exist BEFORE the user message — a long-running tool that
+  // started early but finished late cannot steal a correction from an
+  // earlier tool whose outcome the user actually saw.
+  // `completedAt = -1` means the call is still in flight.
+  const recentToolCalls: Array<{
+    readonly toolId: string;
+    readonly startedAt: number;
+    completedAt: number;
+  }> = [];
+  // Set of user-message timestamps already converted into emissions.
+  // Lets `scanUserCorrections` emit synchronously while still deduping
+  // when the runtime replays the same transcript on retry.
+  const emittedCorrectionTimestamps = new Set<number>();
   // `let` justified: mutable counters scoped to this closure. Reset on session end.
   let signalCounter = 0;
   // Highest user-message timestamp already scanned for corrections.
@@ -308,50 +318,61 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
    *   - duplicate the correction signal (emit fired before next throws,
    *     then retry re-scans the same transcript and emits again).
    */
-  function scanUserCorrections(request: ModelRequest): {
-    readonly highWater: number;
-    readonly triggers: readonly ForgeTrigger[];
-  } {
-    if (correctionPatterns.length === 0 || recentToolCalls.length === 0) {
-      return { highWater: lastProcessedUserTimestamp, triggers: [] };
-    }
-    let highWater = lastProcessedUserTimestamp;
-    const triggers: ForgeTrigger[] = [];
+  function scanUserCorrections(request: ModelRequest): void {
+    if (correctionPatterns.length === 0 || recentToolCalls.length === 0) return;
     for (const msg of request.messages) {
       if (msg.senderId !== "user") continue;
-      if (msg.timestamp <= lastProcessedUserTimestamp) continue;
-      if (msg.timestamp > highWater) highWater = msg.timestamp;
-      // Attribute the correction to the most recent tool call that ran
-      // BEFORE this user message — not the session-global last tool call.
+      // Per-message dedupe — survives both transcript replay (retry) and a
+      // model-call failure that does NOT replay. Independent of cooldownMs.
+      if (emittedCorrectionTimestamps.has(msg.timestamp)) continue;
+      if (msg.timestamp > lastProcessedUserTimestamp) {
+        lastProcessedUserTimestamp = msg.timestamp;
+      }
       const correctedToolId = resolveCorrectedToolId(msg.timestamp);
       if (correctedToolId === "") continue;
+      let matched = false;
       for (const block of msg.content) {
         if (block.kind !== "text") continue;
         const trigger = detectUserCorrection(block.text, correctionPatterns, correctedToolId);
-        if (trigger !== undefined) triggers.push(trigger);
+        if (trigger !== undefined) {
+          emitSignal(trigger, { failureCount: 1, threshold: 1 });
+          matched = true;
+        }
       }
+      if (matched) emittedCorrectionTimestamps.add(msg.timestamp);
     }
-    return { highWater, triggers };
   }
 
   function resolveCorrectedToolId(userMessageTimestamp: number): string {
-    // Walk back through recent calls; pick the latest with `at <= timestamp`,
-    // falling back to the latest call if no timestamps line up (e.g. messages
-    // carry timestamp 0 in tests).
+    // The user can only react to a tool whose outcome existed before they
+    // typed. Pick the latest call whose `completedAt` is set and ≤ the user
+    // message timestamp. Fall back to the latest completed call when the
+    // message has no usable timestamp (e.g. tests use 0).
     for (let i = recentToolCalls.length - 1; i >= 0; i -= 1) {
       const call = recentToolCalls[i];
-      if (call !== undefined && call.at <= userMessageTimestamp) {
+      if (call !== undefined && call.completedAt >= 0 && call.completedAt <= userMessageTimestamp) {
         return call.toolId;
       }
     }
-    return recentToolCalls[recentToolCalls.length - 1]?.toolId ?? "";
+    for (let i = recentToolCalls.length - 1; i >= 0; i -= 1) {
+      const call = recentToolCalls[i];
+      if (call !== undefined && call.completedAt >= 0) return call.toolId;
+    }
+    return "";
   }
 
-  function recordToolCall(toolId: string): void {
-    recentToolCalls.push({ toolId, at: clock() });
+  function recordToolCall(toolId: string): number {
+    const startedAt = clock();
+    recentToolCalls.push({ toolId, startedAt, completedAt: -1 });
     if (recentToolCalls.length > RECENT_TOOL_CALL_HISTORY) {
       recentToolCalls.splice(0, recentToolCalls.length - RECENT_TOOL_CALL_HISTORY);
     }
+    return recentToolCalls.length - 1;
+  }
+
+  function markToolCallCompleted(idx: number): void {
+    const entry = recentToolCalls[idx];
+    if (entry !== undefined) entry.completedAt = clock();
   }
 
   function recordFailure(toolId: string, e: unknown): number {
@@ -382,12 +403,13 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     ): Promise<ToolResponse> {
       const { toolId } = request;
       // Record EVERY attempt (success, throw, in-band error) for correction
-      // attribution. If we only logged successes, a user correction
-      // immediately after a failed tool call would be misattributed to the
-      // previous successful tool.
-      recordToolCall(toolId);
+      // attribution. completedAt is filled in once the call finishes so a
+      // long-running tool cannot be attributed a correction it could not
+      // yet have prompted.
+      const callIdx = recordToolCall(toolId);
       try {
         const response = await next(request);
+        markToolCallCompleted(callIdx);
         // In-band errors must count as failures — many tools in this repo
         // return `{ error, code }` instead of throwing. Without this branch
         // repeated user-visible failures never reach `repeated_failure`.
@@ -408,6 +430,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
         checkLatencyDegradation(toolId);
         return response;
       } catch (e: unknown) {
+        markToolCallCompleted(callIdx);
         if (e instanceof KoiRuntimeError && e.code === "NOT_FOUND") {
           // Per-query attempt counter — confidence scales with severity so
           // repeated misses can clear the threshold even after a cooldown.
@@ -437,15 +460,12 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      const { highWater, triggers } = scanUserCorrections(request);
+      // Emit corrections synchronously and dedupe by message timestamp.
+      // This survives both transcript replay (retry) and a model-call
+      // failure with no replay — neither path can lose or duplicate the
+      // correction signal.
+      scanUserCorrections(request);
       const response = await next(request);
-      // Commit the watermark + emit corrections only after the model call
-      // succeeds. This makes correction emission idempotent across retries
-      // independently of cooldown configuration.
-      lastProcessedUserTimestamp = highWater;
-      for (const trigger of triggers) {
-        emitSignal(trigger, { failureCount: 1, threshold: 1 });
-      }
       checkCapabilityGaps(extractResponseText(response));
       return response;
     },
@@ -460,6 +480,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       signals.length = 0;
       signalCounter = 0;
       recentToolCalls.length = 0;
+      emittedCorrectionTimestamps.clear();
       lastProcessedUserTimestamp = -1;
       sessionStartedAt = -1;
       sessionEmitCount = 0;
