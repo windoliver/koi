@@ -1,11 +1,25 @@
 import { describe, expect, test } from "bun:test";
-import { delegationId } from "@koi/core";
+import type { DelegationVerifyResult } from "@koi/core";
+import { agentId, delegationId } from "@koi/core";
 import { createTtlVerifyCache } from "./ttl-verify-cache.js";
 
 const id = delegationId("grant-1");
 const tool = "read_file";
-const okResult = { ok: true as const, grant: { id } as never };
-const failResult = { ok: false as const, reason: "revoked" as const };
+const okResult: DelegationVerifyResult = {
+  ok: true,
+  grant: {
+    id,
+    issuerId: agentId("issuer-1"),
+    delegateeId: agentId("delegatee-1"),
+    scope: { permissions: { allow: ["read_file"] } },
+    chainDepth: 0,
+    maxChainDepth: 3,
+    createdAt: 0,
+    expiresAt: Date.now() + 3_600_000,
+    proof: { kind: "nexus", token: "test-token" },
+  },
+};
+const failResult: DelegationVerifyResult = { ok: false, reason: "revoked" };
 
 describe("createTtlVerifyCache", () => {
   test("miss returns undefined", () => {
