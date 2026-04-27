@@ -13854,11 +13854,19 @@ describe("Golden: @koi/forge-demand", () => {
     expect(handle.middleware.priority).toBe(445);
     expect(typeof handle.middleware.wrapToolCall).toBe("function");
     expect(typeof handle.middleware.wrapModelCall).toBe("function");
-    expect(typeof handle.getSignals).toBe("function");
-    expect(typeof handle.dismiss).toBe("function");
-    // Inspection requires a sessionId — the handle never aggregates across
-    // sessions. An unknown id returns the empty list.
-    expect(handle.getActiveSignalCount(sessionId("probe"))).toBe(0);
+    expect(typeof handle.forSession).toBe("function");
+    // Inspection requires a SessionContext — the handle never aggregates
+    // across sessions. An unknown session returns an empty scoped view.
+    const probeSession = {
+      agentId: "forge-demand-probe",
+      sessionId: sessionId("probe"),
+      runId: runId("probe-r"),
+      metadata: {} as JsonObject,
+    };
+    const scoped = handle.forSession(probeSession);
+    expect(typeof scoped.getSignals).toBe("function");
+    expect(typeof scoped.dismiss).toBe("function");
+    expect(scoped.getActiveSignalCount()).toBe(0);
   });
 
   test("repeated tool failures emit a deterministic, deduplicated forge demand signal", async () => {
@@ -13910,7 +13918,7 @@ describe("Golden: @koi/forge-demand", () => {
 
     // 4 failures → threshold (3) crossed → 1 signal emitted; cooldown dedupes the 4th.
     expect(signals.length).toBe(1);
-    const pending = handle.getSignals(ctx.session.sessionId);
+    const pending = handle.forSession(ctx.session).getSignals();
     expect(pending.length).toBe(1);
     const first = pending[0];
     expect(first?.trigger.kind).toBe("repeated_failure");

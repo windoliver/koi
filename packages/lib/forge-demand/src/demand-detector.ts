@@ -301,9 +301,13 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     safeInvoke(config.onDismiss, signalId);
   }
 
-  function checkLatencyDegradation(state: SessionState, toolId: string): void {
+  function checkLatencyDegradation(
+    state: SessionState,
+    sessionId: SessionId,
+    toolId: string,
+  ): void {
     if (config.healthTracker === undefined) return;
-    const snapshot = config.healthTracker.getSnapshot(toolId);
+    const snapshot = config.healthTracker.getSnapshot(sessionId, toolId);
     const trigger = detectLatencyDegradation(toolId, snapshot, thresholds.latencyDegradationAvgMs);
     if (trigger !== undefined) {
       emitSignal(state, trigger, {
@@ -560,11 +564,11 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
               threshold: thresholds.repeatedFailureCount,
             });
           }
-          checkLatencyDegradation(state, toolId);
+          checkLatencyDegradation(state, ctx.session.sessionId, toolId);
           return response;
         }
         state.consecutiveFailures.set(toolId, 0);
-        checkLatencyDegradation(state, toolId);
+        checkLatencyDegradation(state, ctx.session.sessionId, toolId);
         return response;
       } catch (e: unknown) {
         markToolCallCompleted(callEntry);
@@ -576,7 +580,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
             { kind: "no_matching_tool", query: toolId, attempts },
             { failureCount: attempts, threshold: 1 },
           );
-          checkLatencyDegradation(state, toolId);
+          checkLatencyDegradation(state, ctx.session.sessionId, toolId);
           throw e;
         }
 
@@ -588,7 +592,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
             threshold: thresholds.repeatedFailureCount,
           });
         }
-        checkLatencyDegradation(state, toolId);
+        checkLatencyDegradation(state, ctx.session.sessionId, toolId);
         throw e;
       }
     },
@@ -678,14 +682,16 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
 
   return {
     middleware,
-    getSignals: (sessionId: SessionId): readonly ForgeDemandSignal[] => {
-      const state = sessions.get(sessionId);
-      return state === undefined ? [] : state.signals.map(cloneSignal);
-    },
-    dismiss,
-    getActiveSignalCount: (sessionId: SessionId): number => {
-      const state = sessions.get(sessionId);
-      return state === undefined ? 0 : state.signals.length;
-    },
+    forSession: (session: SessionContext) => ({
+      getSignals: (): readonly ForgeDemandSignal[] => {
+        const state = sessions.get(session.sessionId);
+        return state === undefined ? [] : state.signals.map(cloneSignal);
+      },
+      dismiss: (signalId: string): void => dismiss(session.sessionId, signalId),
+      getActiveSignalCount: (): number => {
+        const state = sessions.get(session.sessionId);
+        return state === undefined ? 0 : state.signals.length;
+      },
+    }),
   };
 }

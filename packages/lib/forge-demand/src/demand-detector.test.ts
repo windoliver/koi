@@ -58,7 +58,6 @@ function userMsg(text: string): InboundMessage {
 }
 
 const ctx: TurnContext = createMockTurnContext();
-const defaultSid = ctx.session.sessionId;
 
 // ---------------------------------------------------------------------------
 // Tests — issue spec
@@ -88,7 +87,7 @@ describe("createForgeDemandDetector", () => {
 
     expect(signals.length).toBe(1);
     expect(signals[0]?.trigger.kind).toBe("repeated_failure");
-    expect(handle.getActiveSignalCount(defaultSid)).toBe(1);
+    expect(handle.forSession(ctx.session).getActiveSignalCount()).toBe(1);
   });
 
   it("detects user correction patterns via wrapModelCall", async () => {
@@ -161,7 +160,7 @@ describe("createForgeDemandDetector", () => {
       }
     }
 
-    const [signal] = handle.getSignals(defaultSid);
+    const [signal] = handle.forSession(ctx.session).getSignals();
     expect(signal).toBeDefined();
     if (signal === undefined) return;
 
@@ -198,7 +197,7 @@ describe("createForgeDemandDetector", () => {
           // expected
         }
       }
-      return handle.getSignals(defaultSid)[0]?.confidence;
+      return handle.forSession(ctx.session).getSignals()[0]?.confidence;
     }
 
     const a = await firstSignalConfidence();
@@ -248,9 +247,9 @@ describe("createForgeDemandDetector", () => {
       expect(ok).toEqual(toolRes());
 
       // Dismiss path: throwing onDismiss must not bubble out.
-      const [first] = handle.getSignals(defaultSid);
+      const [first] = handle.forSession(ctx.session).getSignals();
       if (first !== undefined) {
-        expect(() => handle.dismiss(defaultSid, first.id)).not.toThrow();
+        expect(() => handle.forSession(ctx.session).dismiss(first.id)).not.toThrow();
       }
 
       expect(swallowed.length).toBeGreaterThan(0);
@@ -482,7 +481,7 @@ describe("createForgeDemandDetector", () => {
         // expected
       }
     }
-    expect(handle.getActiveSignalCount(defaultSid)).toBe(2);
+    expect(handle.forSession(ctx.session).getActiveSignalCount()).toBe(2);
 
     try {
       await handle.middleware.wrapToolCall?.(ctx, toolReq("tool-A"), failNext);
@@ -491,7 +490,8 @@ describe("createForgeDemandDetector", () => {
     }
     // tool-A re-emitted (its cooldown was cleared on eviction) → queue evicts B.
     const ids = handle
-      .getSignals(defaultSid)
+      .forSession(ctx.session)
+      .getSignals()
       .map((s) => (s.trigger.kind === "repeated_failure" ? s.trigger.toolName : ""));
     expect(ids).toContain("tool-A");
   });
@@ -511,11 +511,11 @@ describe("createForgeDemandDetector", () => {
         // expected
       }
     }
-    const [first] = handle.getSignals(defaultSid);
+    const [first] = handle.forSession(ctx.session).getSignals();
     expect(first).toBeDefined();
     if (first === undefined) return;
 
-    handle.dismiss(defaultSid, first.id);
+    handle.forSession(ctx.session).dismiss(first.id);
 
     // One more failure must NOT re-emit — counter was reset by dismiss.
     try {
@@ -523,7 +523,7 @@ describe("createForgeDemandDetector", () => {
     } catch {
       // expected
     }
-    expect(handle.getActiveSignalCount(defaultSid)).toBe(0);
+    expect(handle.forSession(ctx.session).getActiveSignalCount()).toBe(0);
   });
 
   it("does not collapse user_correction cooldown across different tools", async () => {
@@ -882,12 +882,12 @@ describe("createForgeDemandDetector", () => {
     } catch {
       // expected
     }
-    const [first] = handle.getSignals(defaultSid);
+    const [first] = handle.forSession(ctx.session).getSignals();
     expect(first).toBeDefined();
     if (first === undefined) return;
 
-    handle.dismiss(defaultSid, first.id);
-    expect(handle.getActiveSignalCount(defaultSid)).toBe(0);
+    handle.forSession(ctx.session).dismiss(first.id);
+    expect(handle.forSession(ctx.session).getActiveSignalCount()).toBe(0);
   });
 
   it("wrapModelStream scans corrections and runs capability-gap on assembled deltas", async () => {
@@ -1130,7 +1130,7 @@ describe("createForgeDemandDetector", () => {
     } catch {
       // expected
     }
-    const [signal] = handle.getSignals(defaultSid);
+    const [signal] = handle.forSession(ctx.session).getSignals();
     if (signal === undefined) throw new Error("no signal");
 
     // Mutating the returned object must throw in strict mode and must not
@@ -1138,7 +1138,7 @@ describe("createForgeDemandDetector", () => {
     expect(() => {
       (signal as unknown as { id: string }).id = "tampered";
     }).toThrow();
-    const [again] = handle.getSignals(defaultSid);
+    const [again] = handle.forSession(ctx.session).getSignals();
     expect(again?.id).not.toBe("tampered");
   });
 
@@ -1192,8 +1192,8 @@ describe("createForgeDemandDetector", () => {
         // expected
       }
     }
-    const aSignals = handle.getSignals(ctxA.session.sessionId);
-    const bSignals = handle.getSignals(ctxB.session.sessionId);
+    const aSignals = handle.forSession(ctxA.session).getSignals();
+    const bSignals = handle.forSession(ctxB.session).getSignals();
     expect(aSignals.length).toBe(1);
     expect(bSignals.length).toBe(1);
     // Distinct ids — no `demand-1` collision across sessions.
@@ -1202,15 +1202,15 @@ describe("createForgeDemandDetector", () => {
     // Dismiss in session A — must NOT clear B's signal even if id were known.
     const aId = aSignals[0]?.id;
     if (aId === undefined) throw new Error("no a signal");
-    handle.dismiss(ctxA.session.sessionId, aId);
-    expect(handle.getActiveSignalCount(ctxA.session.sessionId)).toBe(0);
-    expect(handle.getActiveSignalCount(ctxB.session.sessionId)).toBe(1);
+    handle.forSession(ctxA.session).dismiss(aId);
+    expect(handle.forSession(ctxA.session).getActiveSignalCount()).toBe(0);
+    expect(handle.forSession(ctxB.session).getActiveSignalCount()).toBe(1);
 
     // Cross-session dismiss with B's id from A's session must NOT touch B.
     const bId = bSignals[0]?.id;
     if (bId === undefined) throw new Error("no b signal");
-    handle.dismiss(ctxA.session.sessionId, bId);
-    expect(handle.getActiveSignalCount(ctxB.session.sessionId)).toBe(1);
+    handle.forSession(ctxA.session).dismiss(bId);
+    expect(handle.forSession(ctxB.session).getActiveSignalCount()).toBe(1);
   });
 
   it("isolates state per session — failures and signals do not bleed across tenants", async () => {

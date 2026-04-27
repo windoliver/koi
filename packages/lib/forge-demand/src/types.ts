@@ -8,6 +8,7 @@ import type {
   ForgeBudget,
   ForgeDemandSignal,
   KoiMiddleware,
+  SessionContext,
   SessionId,
   ToolHealthSnapshot,
 } from "@koi/core";
@@ -18,13 +19,16 @@ import type {
 
 /**
  * Read-only health interface consumed by the demand detector.
- * The caller (L3 wiring) injects this — `@koi/forge-demand` never imports
- * from `@koi/middleware-feedback-loop` directly. Method name + return shape
- * mirror `ToolHealthTracker` from feedback-loop so the tracker can be passed
- * directly without an adapter.
+ *
+ * Takes a `sessionId` so session-bound implementations (the typical case
+ * — feedback-loop keeps trackers per session) can return the right
+ * snapshot. Static "global tracker" implementations are still legal:
+ * they may ignore the sessionId. The caller (L3 wiring) injects this;
+ * `@koi/forge-demand` never imports from `@koi/middleware-feedback-loop`
+ * directly.
  */
 export interface FeedbackLoopHealthHandle {
-  readonly getSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
+  readonly getSnapshot: (sessionId: SessionId, toolId: string) => ToolHealthSnapshot | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,23 +85,30 @@ export interface ForgeDemandConfig {
 // ---------------------------------------------------------------------------
 
 /**
+ * Session-scoped view of one detector's state. Returned by
+ * `ForgeDemandHandle.forSession(ctx)` — the only way to inspect or
+ * dismiss signals. There is intentionally no cross-session aggregator
+ * exposed: signals carry tenant-private context (failure messages,
+ * correction text) and the detector must not let one caller read or
+ * acknowledge another tenant's demand state.
+ */
+export interface SessionScopedForgeDemandHandle {
+  readonly getSignals: () => readonly ForgeDemandSignal[];
+  readonly dismiss: (signalId: string) => void;
+  readonly getActiveSignalCount: () => number;
+}
+
+/**
  * Handle returned by the demand detector factory.
  *
- * Inspection and dismissal are scoped to a `sessionId`. Signals contain
- * tenant-private context (failure messages, correction text) so the
- * detector never aggregates across sessions — callers must pass the
- * `ctx.session.sessionId` they are operating on.
+ * `forSession(ctx)` produces a session-scoped handle. Callers are
+ * expected to pass the `SessionContext` they received from the agent
+ * loop (`ctx.session`). The bare cross-session `getSignals(sessionId)`
+ * surface is intentionally NOT exposed — it would let any in-process
+ * caller with knowledge of a sessionId read or dismiss tenant-private
+ * signals, and there is no capability check at this layer.
  */
 export interface ForgeDemandHandle {
   readonly middleware: KoiMiddleware;
-  /** Pending signals for one session, in emission order. */
-  readonly getSignals: (sessionId: SessionId) => readonly ForgeDemandSignal[];
-  /**
-   * Dismiss a signal by id within `sessionId`. No-op if the id does not
-   * exist in that session — callers cannot affect other sessions' state
-   * even with a known id.
-   */
-  readonly dismiss: (sessionId: SessionId, signalId: string) => void;
-  /** Pending signal count for one session. */
-  readonly getActiveSignalCount: (sessionId: SessionId) => number;
+  readonly forSession: (session: SessionContext) => SessionScopedForgeDemandHandle;
 }
