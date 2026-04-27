@@ -2274,4 +2274,38 @@ describe("createForgeDemandDetector", () => {
     );
     expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(0);
   });
+
+  it("F95: a tool call that completes after onSessionEnd does not emit signals against detached state", async () => {
+    // Reviewer F95: middleware captured `state` before awaiting next()
+    // and continued mutating it post-await. If the session ended
+    // mid-flight, late completions still fired onDemand and advanced
+    // counters on a detached state object — invisible to forSession,
+    // impossible to dismiss. The fix captures the session epoch and
+    // re-checks after the await: a stale epoch short-circuits all
+    // post-await mutation.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { repeatedFailureCount: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const session = createMockTurnContext({ turnIndex: 1 });
+    let resolveNext: (() => void) | undefined;
+    const slowTool = (): Promise<ToolResponse> =>
+      new Promise<ToolResponse>((_resolve, reject) => {
+        resolveNext = (): void => reject(new Error("late boom"));
+      });
+    const inflight = handle.middleware
+      .wrapToolCall?.(session, toolReq("flaky"), slowTool)
+      .catch(() => undefined);
+    // End the session WHILE the tool call is still in flight.
+    await handle.middleware.onSessionEnd?.(session.session);
+    // Resolve the in-flight call AFTER teardown.
+    resolveNext?.();
+    await inflight;
+    // No signal must have been emitted — the post-await liveness
+    // check short-circuits all mutation.
+    expect(signals.length).toBe(0);
+  });
 });

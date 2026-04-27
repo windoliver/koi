@@ -272,6 +272,26 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
               : ""),
         );
       }
+      // Enforce a usable consumption path AFTER validation passes. The
+      // runtime intentionally does not expose a sessionId-keyed lookup
+      // (F67), so the only ways for the host to read or dismiss
+      // pending demand signals are `onSessionAttached` (delivered
+      // scoped handle) and `onDemand` (per-signal callback). Without
+      // one of these, signals accumulate internally with no operational
+      // recovery path. Reject the config at startup rather than ship a
+      // write-only feature. F96 regression.
+      if (
+        validated.value.onSessionAttached === undefined &&
+        validated.value.onDemand === undefined
+      ) {
+        throw new Error(
+          "forgeDemand requires a consumption path: set " +
+            "`config.forgeDemand.onSessionAttached` (preferred — delivers a " +
+            "scoped handle for read/dismiss) and/or `config.forgeDemand.onDemand` " +
+            "(per-signal callback). The runtime does not expose a sessionId-keyed " +
+            "lookup, so without one of these signals are unreachable.",
+        );
+      }
       const baseForgeConfig = validated.value;
       // Auto-wire ONLY when an installed feedback-loop has live trackers.
       // We look across the entire effective middleware list — including

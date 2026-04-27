@@ -13955,6 +13955,33 @@ describe("Golden: @koi/forge-demand", () => {
     ).toThrow(/Invalid forgeDemand config/);
   });
 
+  test("F96: createRuntime rejects forgeDemand without onSessionAttached or onDemand", async () => {
+    // Reviewer F96: the runtime intentionally does not expose a
+    // sessionId-keyed lookup, so without onSessionAttached or
+    // onDemand, signals accumulate internally with no operational
+    // recovery path. createRuntime must reject at startup rather
+    // than ship a write-only feature.
+    const { createRuntime } = await import("../create-runtime.js");
+    const { DEFAULT_FORGE_BUDGET } = await import("@koi/core");
+    expect(() =>
+      createRuntime({
+        forgeDemand: { budget: DEFAULT_FORGE_BUDGET },
+      }),
+    ).toThrow(/forgeDemand requires a consumption path/);
+    // With onDemand present, creation succeeds.
+    expect(() =>
+      createRuntime({
+        forgeDemand: { budget: DEFAULT_FORGE_BUDGET, onDemand: () => {} },
+      }),
+    ).not.toThrow();
+    // With onSessionAttached present, creation succeeds.
+    expect(() =>
+      createRuntime({
+        forgeDemand: { budget: DEFAULT_FORGE_BUDGET, onSessionAttached: () => {} },
+      }),
+    ).not.toThrow();
+  });
+
   test("createForgeDemandDetector validates config at the factory boundary", async () => {
     // Standalone L2 consumers (not going through createRuntime) must also
     // fail fast on malformed config — otherwise the host crashes on the
@@ -14012,6 +14039,8 @@ describe("Golden: @koi/forge-demand", () => {
     const { createRuntime } = await import("../create-runtime.js");
     const runtime = createRuntime({
       forgeDemand: {
+        // F96: a consumption path is required at runtime creation.
+        onDemand: () => {},
         budget: {
           maxForgesPerSession: 5,
           computeTimeBudgetMs: 120_000,
@@ -14052,6 +14081,8 @@ describe("Golden: @koi/forge-demand", () => {
       const runtime = createRuntime({
         feedbackLoop: {}, // no forgeHealth
         forgeDemand: {
+          // F96: a consumption path is required at runtime creation.
+          onDemand: () => {},
           budget: {
             maxForgesPerSession: 5,
             computeTimeBudgetMs: 120_000,
@@ -14191,6 +14222,8 @@ describe("Golden: @koi/forge-demand", () => {
       const runtime = createRuntime({
         middleware: [preinstalled],
         forgeDemand: {
+          // F96: a consumption path is required at runtime creation.
+          onDemand: () => {},
           budget: {
             maxForgesPerSession: 5,
             computeTimeBudgetMs: 120_000,

@@ -897,11 +897,18 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       next: ToolHandler,
     ): Promise<ToolResponse> {
       ensureObserved(ctx.session);
-      const state = getOrCreate(boundIdFor(ctx.session));
+      const sid = boundIdFor(ctx.session);
+      // Capture the session epoch BEFORE awaiting downstream work so
+      // a late completion that crosses an onSessionEnd does not
+      // mutate a detached state object or fire onDemand against a
+      // session the caller has already torn down. F95 regression.
+      const epoch = getOrCreateEpoch(sid);
+      const state = getOrCreate(sid);
       const { toolId } = request;
       const callEntry = recordToolCall(state, toolId);
       try {
         const response = await next(request);
+        if (!isCurrentEpoch(sid, epoch)) return response;
         markToolCallCompleted(callEntry);
         if (isInBandToolError(response.output)) {
           const inBand = new Error((response.output as { readonly error: string }).error);
@@ -913,24 +920,16 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
               threshold: thresholds.repeatedFailureCount,
             });
           }
-          checkLatencyDegradation(state, boundIdFor(ctx.session), toolId);
+          checkLatencyDegradation(state, sid, toolId);
           return response;
         }
         state.consecutiveFailures.set(toolId, 0);
-        // Clear historical failure messages on a clean success so a
-        // later repeated-failure signal carries only errors from the
-        // current streak. Without this, a tool that recovers and then
-        // fails again would surface stale messages from a prior run
-        // alongside the fresh failureCount, misleading downstream
-        // auto-forge / debugging context. F81 regression.
         state.failedToolCalls.delete(`rf:${toolId}`);
-        checkLatencyDegradation(state, boundIdFor(ctx.session), toolId);
+        checkLatencyDegradation(state, sid, toolId);
         return response;
       } catch (e: unknown) {
+        if (!isCurrentEpoch(sid, epoch)) throw e;
         if (e instanceof KoiRuntimeError && e.code === "NOT_FOUND") {
-          // Unresolved tool lookup never executed — drop it from the
-          // recent-tool-call history so a later user_correction cannot
-          // be misattributed to a phantom tool. F62 regression.
           removeToolCall(state, callEntry);
           const attempts = (state.noMatchingToolCounts.get(toolId) ?? 0) + 1;
           setBoundedMap(state.noMatchingToolCounts, toolId, attempts, NO_MATCHING_TOOL_BUCKET_CAP);
@@ -939,7 +938,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
             { kind: "no_matching_tool", query: toolId, attempts },
             { failureCount: attempts, threshold: 1 },
           );
-          checkLatencyDegradation(state, boundIdFor(ctx.session), toolId);
+          checkLatencyDegradation(state, sid, toolId);
           throw e;
         }
         markToolCallCompleted(callEntry);
@@ -952,7 +951,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
             threshold: thresholds.repeatedFailureCount,
           });
         }
-        checkLatencyDegradation(state, boundIdFor(ctx.session), toolId);
+        checkLatencyDegradation(state, sid, toolId);
         throw e;
       }
     },
@@ -963,18 +962,15 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       next: ModelHandler,
     ): Promise<ModelResponse> {
       ensureObserved(ctx.session);
-      const state = getOrCreate(boundIdFor(ctx.session));
-      // Detect corrections eagerly but defer emission — a transient
-      // transport/validator failure must not consume forge budget for a
-      // response the user never sees.
+      const sid = boundIdFor(ctx.session);
+      // Capture epoch pre-await — see wrapToolCall comment. F95 regression.
+      const epoch = getOrCreateEpoch(sid);
+      const state = getOrCreate(sid);
       const pending = detectPendingCorrections(state, request);
       const fp = requestFingerprint(ctx, request);
-      // No user-authored message → fall back to per-request fingerprint
-      // so unrelated autonomous/internal turns cannot collapse into a
-      // single capability-gap bucket via empty-string scoping. F82
-      // regression.
       const taskCtx = taskContextFingerprint(request) || `internal:${fp}`;
       const response = await next(request);
+      if (!isCurrentEpoch(sid, epoch)) return response;
       commitCorrections(state, pending);
       checkCapabilityGaps(state, extractResponseText(response), fp, taskCtx);
       return response;
@@ -986,13 +982,14 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
       ensureObserved(ctx.session);
-      const state = getOrCreate(boundIdFor(ctx.session));
+      const sid = boundIdFor(ctx.session);
+      // Capture epoch pre-await. A long-running stream that crosses
+      // onSessionEnd must not commit corrections or capability-gap
+      // counts against detached state. F95 regression.
+      const epoch = getOrCreateEpoch(sid);
+      const state = getOrCreate(sid);
       const pending = detectPendingCorrections(state, request);
       const fp = requestFingerprint(ctx, request);
-      // No user-authored message → fall back to per-request fingerprint
-      // so unrelated autonomous/internal turns cannot collapse into a
-      // single capability-gap bucket via empty-string scoping. F82
-      // regression.
       const taskCtx = taskContextFingerprint(request) || `internal:${fp}`;
       const upstream = next(request);
       return (async function* relay() {
@@ -1001,26 +998,16 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
           if (chunk.kind === "text_delta") {
             buffer += chunk.delta;
           } else if (chunk.kind === "done") {
-            // Commit BEFORE yielding the terminal chunk so a consumer that
-            // breaks/returns immediately after receiving `done` cannot
-            // silently drop committed signals. The `done` chunk itself is
-            // the commit-point — once seen, the model output is committed
-            // regardless of how the consumer drains the iterator.
             const text = extractResponseText(chunk.response) || buffer;
-            // Match wrapModelCall ordering: commit corrections first,
-            // then capability gaps. Different orderings here would let
-            // the same conversation drop a different signal under
-            // tight maxForgesPerSession / cooldown budgets depending
-            // only on whether the provider used streaming. F71
-            // regression.
-            commitCorrections(state, pending);
-            if (text.length > 0) checkCapabilityGaps(state, text, fp, taskCtx);
+            // Skip commit if the session has been torn down or rebound
+            // mid-stream — late writes would mutate detached state.
+            if (isCurrentEpoch(sid, epoch)) {
+              commitCorrections(state, pending);
+              if (text.length > 0) checkCapabilityGaps(state, text, fp, taskCtx);
+            }
           }
           yield chunk;
         }
-        // Aborted streams (no `done` chunk delivered, transport threw, or
-        // consumer stopped before the terminal chunk) commit nothing —
-        // partial text is uncommitted output and can flip-flop on retry.
       })();
     },
 
