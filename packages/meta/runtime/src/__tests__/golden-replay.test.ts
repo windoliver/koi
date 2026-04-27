@@ -5908,6 +5908,286 @@ describe("Golden: @koi/spawn-tools", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/forge-tools (2 standalone queries, no LLM needed)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/forge-tools", () => {
+  test("synthesize-then-inspect — round-trip via forge_tool then forge_inspect", async () => {
+    const { createInMemoryForgeStore, createForgeToolTool, createForgeInspectTool } = await import(
+      "@koi/forge-tools"
+    );
+    const { runWithExecutionContext } = await import("@koi/execution-context");
+    const { sessionId, runId } = await import("@koi/core");
+
+    const store = createInMemoryForgeStore();
+    const synth = createForgeToolTool({ store });
+    const inspect = createForgeInspectTool({ store });
+
+    const ctx = {
+      session: {
+        agentId: "golden-agent-A",
+        sessionId: sessionId("golden-s1"),
+        runId: runId("golden-r1"),
+        metadata: {},
+      },
+      turnIndex: 0,
+    } as const;
+
+    // Synthesize.
+    const synthRaw = await runWithExecutionContext(ctx, () =>
+      synth.execute({
+        name: "add-numbers",
+        description: "Sum two numbers and return the result.",
+        version: "0.0.1",
+        scope: "agent",
+        implementation: "return args.a + args.b;",
+        inputSchema: {
+          type: "object",
+          properties: { a: { type: "number" }, b: { type: "number" } },
+          required: ["a", "b"],
+        },
+      }),
+    );
+    const synthOk = synthRaw as { ok: true; value: { brickId: string; lifecycle: string } };
+    expect(synthOk.ok).toBe(true);
+    expect(synthOk.value.lifecycle).toBe("draft");
+
+    // Inspect — assert artifact matches what was synthesized.
+    const inspectRaw = await runWithExecutionContext(ctx, () =>
+      inspect.execute({ brickId: synthOk.value.brickId }),
+    );
+    const inspectOk = inspectRaw as {
+      ok: true;
+      value: { artifact: { id: string; kind: string; name: string; lifecycle: string } };
+    };
+    expect(inspectOk.ok).toBe(true);
+    expect(inspectOk.value.artifact.id).toBe(synthOk.value.brickId);
+    expect(inspectOk.value.artifact.kind).toBe("tool");
+    expect(inspectOk.value.artifact.name).toBe("add-numbers");
+    expect(inspectOk.value.artifact.lifecycle).toBe("draft");
+  });
+
+  test("list-empty-store — forge_list returns empty summaries on a fresh store", async () => {
+    const { createInMemoryForgeStore, createForgeListTool } = await import("@koi/forge-tools");
+    const { runWithExecutionContext } = await import("@koi/execution-context");
+    const { sessionId, runId } = await import("@koi/core");
+
+    const store = createInMemoryForgeStore();
+    const list = createForgeListTool({ store });
+
+    const ctx = {
+      session: {
+        agentId: "golden-agent-B",
+        sessionId: sessionId("golden-s2"),
+        runId: runId("golden-r2"),
+        metadata: {},
+      },
+      turnIndex: 0,
+    } as const;
+
+    const raw = await runWithExecutionContext(ctx, () => list.execute({}));
+    const ok = raw as { ok: true; value: { summaries: readonly unknown[] } };
+    expect(ok.ok).toBe(true);
+    expect(ok.value.summaries).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Full-loop replay: forge-tools cassette → createKoi → live ATIF
+// Exercises: @koi/forge-tools wired through createKoi
+// Cassette: LLM calls forge_tool / forge_list / forge_inspect; replay validates live ATIF
+// ---------------------------------------------------------------------------
+
+describe("Full-loop replay: forge-tools cassette → createKoi → live ATIF", () => {
+  test("forge_tool executes through full middleware stack and appears in live ATIF", async () => {
+    const cassetteFile = Bun.file(`${FIXTURES}/forge-synthesize.cassette.json`);
+    if (!(await cassetteFile.exists())) {
+      console.warn("forge-synthesize.cassette.json not recorded yet — skipping");
+      return;
+    }
+    const cassette = await loadCassette(`${FIXTURES}/forge-synthesize.cassette.json`);
+    const {
+      createInMemoryForgeStore,
+      createForgeToolTool,
+      createForgeMiddlewareTool,
+      createForgeListTool,
+      createForgeInspectTool,
+    } = await import("@koi/forge-tools");
+
+    const trajDir = `/tmp/koi-replay-forge-tools-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-forge-tools";
+
+    const store = createAtifDocumentStore(
+      { agentName: "replay-forge-tools" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "replay-forge-tools",
+      clock,
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" as const }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "replay test (bypass)",
+    });
+
+    // Forge store + four tools
+    const forgeStore = createInMemoryForgeStore();
+    const forgeTool = createForgeToolTool({ store: forgeStore });
+    const forgeMiddleware = createForgeMiddlewareTool({ store: forgeStore });
+    const forgeList = createForgeListTool({ store: forgeStore });
+    const forgeInspect = createForgeInspectTool({ store: forgeStore });
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: { name: "replay-forge-tools", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "forge-tool",
+          toolName: "forge_tool",
+          createTool: () => forgeTool,
+        }),
+        createSingleToolProvider({
+          name: "forge-middleware",
+          toolName: "forge_middleware",
+          createTool: () => forgeMiddleware,
+        }),
+        createSingleToolProvider({
+          name: "forge-list",
+          toolName: "forge_list",
+          createTool: () => forgeList,
+        }),
+        createSingleToolProvider({
+          name: "forge-inspect",
+          toolName: "forge_inspect",
+          createTool: () => forgeInspect,
+        }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text:
+        "Use forge_tool to create a tool named 'add-numbers' that takes two numbers a and b and returns their sum. " +
+        "Then call forge_list to confirm it appears. " +
+        "Then call forge_inspect with the returned brickId.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const steps = await store.getDocument(docId);
+
+    // forge_tool tool was executed and recorded in live ATIF
+    const toolSteps = steps.filter((s) => s.kind === "tool_call");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    const forgeToolStep = toolSteps.find((s) => s.identifier === "forge_tool");
+    expect(forgeToolStep).toBeDefined();
+    expect(forgeToolStep?.outcome).toBe("success");
+
+    // The cassette captures only the first model turn (one tool_call_start),
+    // so replay exercises forge_tool but not the follow-up forge_list /
+    // forge_inspect calls — those are validated separately against the
+    // recorded ATIF trajectory file (see "forge-tools ATIF trajectory"
+    // describe block below).
+
+    // MW spans fired (event-trace + permissions wired through createKoi)
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    expect(mwSpans.length).toBeGreaterThan(0);
+
+    // Model step present (cassette drove the model call)
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+  }, 15000);
+});
+
+// ---------------------------------------------------------------------------
+// @koi/forge-tools ATIF trajectory (golden file — produced by real LLM recording)
+// ---------------------------------------------------------------------------
+
+describe("forge-tools ATIF trajectory (golden file)", () => {
+  test("schema_version is ATIF-v1.6", async () => {
+    const file = Bun.file(`${FIXTURES}/forge-synthesize.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("forge-synthesize.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as { schema_version?: string };
+    expect(traj.schema_version).toBe("ATIF-v1.6");
+  });
+
+  test("trajectory contains forge_tool tool call", async () => {
+    const file = Bun.file(`${FIXTURES}/forge-synthesize.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("forge-synthesize.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as {
+      steps?: ReadonlyArray<{
+        source?: string;
+        tool_calls?: ReadonlyArray<{ function_name?: string }>;
+      }>;
+    };
+    const toolSteps = (traj.steps ?? []).filter((s) => s.source === "tool");
+    const toolNames = toolSteps.flatMap((s) => (s.tool_calls ?? []).map((tc) => tc.function_name));
+    expect(toolNames).toContain("forge_tool");
+  });
+
+  test("trajectory contains forge_list tool call", async () => {
+    const file = Bun.file(`${FIXTURES}/forge-synthesize.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("forge-synthesize.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as {
+      steps?: ReadonlyArray<{
+        source?: string;
+        tool_calls?: ReadonlyArray<{ function_name?: string }>;
+      }>;
+    };
+    const toolSteps = (traj.steps ?? []).filter((s) => s.source === "tool");
+    const toolNames = toolSteps.flatMap((s) => (s.tool_calls ?? []).map((tc) => tc.function_name));
+    expect(toolNames).toContain("forge_list");
+  });
+
+  test("trajectory contains forge_inspect tool call", async () => {
+    const file = Bun.file(`${FIXTURES}/forge-synthesize.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("forge-synthesize.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as {
+      steps?: ReadonlyArray<{
+        source?: string;
+        tool_calls?: ReadonlyArray<{ function_name?: string }>;
+      }>;
+    };
+    const toolSteps = (traj.steps ?? []).filter((s) => s.source === "tool");
+    const toolNames = toolSteps.flatMap((s) => (s.tool_calls ?? []).map((tc) => tc.function_name));
+    expect(toolNames).toContain("forge_inspect");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // @koi/spawn-tools ATIF trajectory (golden file — produced by real LLM recording)
 // ---------------------------------------------------------------------------
 

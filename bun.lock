@@ -298,6 +298,18 @@
       "name": "@koi/file-type",
       "version": "0.0.0",
     },
+    "packages/lib/forge-tools": {
+      "name": "@koi/forge-tools",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/execution-context": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/forge-types": {
       "name": "@koi/forge-types",
       "version": "0.0.0",
@@ -810,6 +822,7 @@
         "@koi/engine": "workspace:*",
         "@koi/event-trace": "workspace:*",
         "@koi/file-type": "workspace:*",
+        "@koi/forge-tools": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
         "@koi/governance-approval-tiers": "workspace:*",
@@ -927,7 +940,9 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-compose": "workspace:*",
         "@koi/event-trace": "workspace:*",
+        "@koi/execution-context": "workspace:*",
         "@koi/file-type": "workspace:*",
+        "@koi/forge-tools": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
@@ -1785,6 +1800,8 @@
     "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/lib/file-resolution"],
 
     "@koi/file-type": ["@koi/file-type@workspace:packages/lib/file-type"],
+
+    "@koi/forge-tools": ["@koi/forge-tools@workspace:packages/lib/forge-tools"],
 
     "@koi/forge-types": ["@koi/forge-types@workspace:packages/lib/forge-types"],
 
