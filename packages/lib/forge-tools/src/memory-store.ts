@@ -178,9 +178,29 @@ export function createInMemoryForgeStore(): ForgeStore {
   const update = async (id: BrickId, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
     const existing = bricks.get(id);
     if (existing === undefined) return { ok: false, error: notFoundError(id) };
+    if (updates.scope !== undefined && updates.scope !== existing.scope) {
+      return {
+        ok: false,
+        error: invariantViolation(
+          "scope is identity-bearing in @koi/forge-tools; resynthesize to change scope",
+          { brickId: id, fromScope: existing.scope, toScope: updates.scope },
+        ),
+      };
+    }
+    const expected = updates.expectedVersion;
+    const currentVersion = existing.storeVersion ?? 0;
+    if (expected !== undefined && currentVersion !== expected) {
+      return {
+        ok: false,
+        error: conflict(
+          id,
+          `Stale storeVersion: expected ${String(expected)}, current ${String(currentVersion)}`,
+          { expectedVersion: expected, currentVersion },
+        ),
+      };
+    }
     const applied = applyBrickUpdate(existing, updates);
-    const nextVersion = (existing.storeVersion ?? 0) + 1;
-    const versioned: BrickArtifact = { ...applied, storeVersion: nextVersion };
+    const versioned: BrickArtifact = { ...applied, storeVersion: currentVersion + 1 };
     bricks.set(id, versioned);
     notifier.notify({ kind: "updated", brickId: id, scope: versioned.scope });
     return { ok: true, value: undefined };

@@ -309,3 +309,86 @@ describe("memory-store: save semantics", () => {
     if (!r.ok) expect(r.error.code).toBe("INTERNAL");
   });
 });
+
+describe("memory-store: update", () => {
+  let store: ReturnType<typeof createInMemoryForgeStore>;
+
+  beforeEach(() => {
+    store = createInMemoryForgeStore();
+  });
+
+  test("rejects scope changes with INTERNAL", async () => {
+    const brick = makeToolBrick();
+    await store.save(brick);
+    const r = await store.update(brick.id, { scope: "global" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("INTERNAL");
+  });
+
+  test("rejects stale expectedVersion with CONFLICT", async () => {
+    const brick = makeToolBrick();
+    await store.save(brick);
+    await store.update(brick.id, { lifecycle: "verifying" });
+    const r = await store.update(brick.id, { lifecycle: "active", expectedVersion: 1 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("CONFLICT");
+  });
+
+  test("accepts matching expectedVersion and bumps storeVersion", async () => {
+    const brick = makeToolBrick();
+    await store.save(brick);
+    const r = await store.update(brick.id, { lifecycle: "verifying", expectedVersion: 1 });
+    expect(r.ok).toBe(true);
+    const loaded = await store.load(brick.id);
+    if (loaded.ok) {
+      expect(loaded.value.lifecycle).toBe("verifying");
+      expect(loaded.value.storeVersion).toBe(2);
+    }
+  });
+
+  test("empty update is a no-op success", async () => {
+    const brick = makeToolBrick();
+    await store.save(brick);
+    const r = await store.update(brick.id, {});
+    expect(r.ok).toBe(true);
+  });
+
+  test("update missing id returns NOT_FOUND", async () => {
+    const ghostId = makeToolBrick({ name: "ghost" }).id;
+    const r = await store.update(ghostId, { lifecycle: "verifying" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("NOT_FOUND");
+  });
+});
+
+describe("memory-store: watcher", () => {
+  let store: ReturnType<typeof createInMemoryForgeStore>;
+
+  beforeEach(() => {
+    store = createInMemoryForgeStore();
+  });
+
+  test("fires on save / update / remove with correct kind", async () => {
+    const events: string[] = [];
+    const unsub = store.watch?.((e) => {
+      events.push(e.kind);
+    });
+    expect(unsub).toBeDefined();
+    const brick = makeToolBrick();
+    await store.save(brick);
+    await store.update(brick.id, { lifecycle: "verifying" });
+    await store.remove(brick.id);
+    unsub?.();
+    expect(events).toEqual(["saved", "updated", "removed"]);
+  });
+
+  test("unsubscribed listener stops receiving events", async () => {
+    const events: string[] = [];
+    const unsub = store.watch?.((e) => {
+      events.push(e.kind);
+    });
+    unsub?.();
+    await store.save(makeToolBrick());
+    expect(events).toEqual([]);
+  });
+});
