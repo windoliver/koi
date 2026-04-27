@@ -262,12 +262,23 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     const hasForgeDemand = new Set(baseWithFeedbackLoop.map((mw) => mw.name)).has(
       "forge-demand-detector",
     );
+    // Fail closed: a caller cannot ask the runtime to install forge-demand
+    // while ALSO preinstalling their own forge-demand-detector middleware.
+    // Either path is fine alone, but mixing them produces a runtime where
+    // `RuntimeHandle.forgeDemand` cannot inspect the active middleware's
+    // signals — a half-wired control surface that would silently lose
+    // dismissal and cooldown recovery.
+    if (config.forgeDemand !== undefined && hasForgeDemand) {
+      throw new Error(
+        "config.forgeDemand was provided but a middleware named 'forge-demand-detector' " +
+          "is already in config.middleware. Pass forgeDemand config OR preinstall the " +
+          "middleware with your own handle, not both.",
+      );
+    }
     // Build the handle once and surface it on RuntimeHandle so callers can
     // dismiss signals and inspect pending state.
     const forgeDemandHandle =
-      config.forgeDemand !== undefined && !hasForgeDemand
-        ? createForgeDemandDetector(config.forgeDemand)
-        : undefined;
+      config.forgeDemand !== undefined ? createForgeDemandDetector(config.forgeDemand) : undefined;
     const baseWithForgeDemand: readonly KoiMiddleware[] =
       forgeDemandHandle !== undefined
         ? [...baseWithFeedbackLoop, forgeDemandHandle.middleware]

@@ -979,6 +979,63 @@ describe("createForgeDemandDetector", () => {
     expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(1);
   });
 
+  it("commits streamed signals on `done` chunk even if the consumer breaks immediately after", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { capabilityGapOccurrences: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+
+    const streamNext = (): AsyncIterable<ModelChunk> =>
+      (async function* () {
+        yield { kind: "text_delta", delta: "I don't have a tool for compiling rust code" };
+        yield {
+          kind: "done",
+          response: {
+            content: "I don't have a tool for compiling rust code",
+            model: "test",
+            usage: { inputTokens: 0, outputTokens: 0 },
+          },
+        };
+      })();
+
+    const stream = handle.middleware.wrapModelStream?.(ctx, modelReq([]), streamNext);
+    if (stream === undefined) throw new Error("wrapModelStream not implemented");
+    // Break immediately after seeing the `done` chunk — post-loop code in
+    // the relay generator would not run, so commit-on-done is required.
+    for await (const chunk of stream) {
+      if (chunk.kind === "done") break;
+    }
+
+    expect(signals.some((s) => s.trigger.kind === "capability_gap")).toBe(true);
+  });
+
+  it("returns frozen signal clones from getSignals so callers cannot mutate detector state", async () => {
+    const handle = createForgeDemandDetector(
+      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
+    );
+    const failNext = async (): Promise<ToolResponse> => {
+      throw new Error("nope");
+    };
+    try {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("x"), failNext);
+    } catch {
+      // expected
+    }
+    const [signal] = handle.getSignals(defaultSid);
+    if (signal === undefined) throw new Error("no signal");
+
+    // Mutating the returned object must throw in strict mode and must not
+    // affect the next read from the handle.
+    expect(() => {
+      (signal as unknown as { id: string }).id = "tampered";
+    }).toThrow();
+    const [again] = handle.getSignals(defaultSid);
+    expect(again?.id).not.toBe("tampered");
+  });
+
   it("does not commit capability-gap signals when wrapModelStream aborts mid-stream", async () => {
     const signals: ForgeDemandSignal[] = [];
     const handle = createForgeDemandDetector(

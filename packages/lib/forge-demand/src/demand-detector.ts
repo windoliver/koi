@@ -589,28 +589,24 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       const upstream = next(request);
       return (async function* relay() {
         let buffer = "";
-        let finalResponse: ModelResponse | undefined;
-        let streamCompleted = false;
         for await (const chunk of upstream) {
           if (chunk.kind === "text_delta") {
             buffer += chunk.delta;
           } else if (chunk.kind === "done") {
-            finalResponse = chunk.response;
+            // Commit BEFORE yielding the terminal chunk so a consumer that
+            // breaks/returns immediately after receiving `done` cannot
+            // silently drop committed signals. The `done` chunk itself is
+            // the commit-point — once seen, the model output is committed
+            // regardless of how the consumer drains the iterator.
+            const text = extractResponseText(chunk.response) || buffer;
+            if (text.length > 0) checkCapabilityGaps(state, text, fp);
+            commitCorrections(state, pending);
           }
           yield chunk;
         }
-        streamCompleted = true;
-        // Aborted streams (consumer stops early, transport throws, no
-        // `done` chunk) MUST NOT consume capability-gap budget — partial
-        // text is uncommitted output and can flip-flop on retry. The
-        // detector mirrors wrapModelCall's "observe only committed state"
-        // contract: capability-gap and corrections both gate on a clean
-        // stream completion (`done` chunk delivered).
-        if (streamCompleted && finalResponse !== undefined) {
-          const text = extractResponseText(finalResponse) || buffer;
-          if (text.length > 0) checkCapabilityGaps(state, text, fp);
-          commitCorrections(state, pending);
-        }
+        // Aborted streams (no `done` chunk delivered, transport threw, or
+        // consumer stopped before the terminal chunk) commit nothing —
+        // partial text is uncommitted output and can flip-flop on retry.
       })();
     },
 
@@ -630,11 +626,29 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     },
   };
 
+  /**
+   * Deep-clone + freeze a signal so external consumers cannot mutate
+   * detector-owned state through shared references. `dismiss()` and
+   * cooldown cleanup rely on the internal copy being authoritative —
+   * letting callers mutate `id` or `trigger` on the returned object
+   * would corrupt those code paths.
+   */
+  function cloneSignal(s: ForgeDemandSignal): ForgeDemandSignal {
+    return Object.freeze({
+      ...s,
+      trigger: Object.freeze({ ...s.trigger }) as ForgeTrigger,
+      context: Object.freeze({
+        failureCount: s.context.failureCount,
+        failedToolCalls: Object.freeze([...s.context.failedToolCalls]),
+      }),
+    });
+  }
+
   return {
     middleware,
     getSignals: (sessionId: SessionId): readonly ForgeDemandSignal[] => {
       const state = sessions.get(sessionId);
-      return state === undefined ? [] : [...state.signals];
+      return state === undefined ? [] : state.signals.map(cloneSignal);
     },
     dismiss,
     getActiveSignalCount: (sessionId: SessionId): number => {
