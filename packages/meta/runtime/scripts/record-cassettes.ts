@@ -3513,28 +3513,34 @@ const queries: readonly QueryConfig[] = [
     permissionRules: BYPASS_RULES,
     permissionDescription: "bypass (allow all)",
     hooks: [],
-    providers: [
-      createSingleToolProvider({
-        name: "forge-tool",
-        toolName: "forge_tool",
-        createTool: () => forgeToolTool,
-      }),
-      createSingleToolProvider({
-        name: "forge-middleware",
-        toolName: "forge_middleware",
-        createTool: () => forgeMiddlewareTool,
-      }),
-      createSingleToolProvider({
-        name: "forge-list",
-        toolName: "forge_list",
-        createTool: () => forgeListTool,
-      }),
-      createSingleToolProvider({
-        name: "forge-inspect",
-        toolName: "forge_inspect",
-        createTool: () => forgeInspectTool,
-      }),
-    ],
+    providers: [],
+    // Fresh ForgeStore per trajectory run so cassette/test residue cannot
+    // satisfy the synthesize -> list -> inspect flow without an actual save.
+    providerFactory: () => {
+      const fresh = createForgeToolSet();
+      return [
+        createSingleToolProvider({
+          name: "forge-tool",
+          toolName: "forge_tool",
+          createTool: () => fresh.forgeToolTool,
+        }),
+        createSingleToolProvider({
+          name: "forge-middleware",
+          toolName: "forge_middleware",
+          createTool: () => fresh.forgeMiddlewareTool,
+        }),
+        createSingleToolProvider({
+          name: "forge-list",
+          toolName: "forge_list",
+          createTool: () => fresh.forgeListTool,
+        }),
+        createSingleToolProvider({
+          name: "forge-inspect",
+          toolName: "forge_inspect",
+          createTool: () => fresh.forgeInspectTool,
+        }),
+      ];
+    },
     maxTurns: 4,
     // Use Sonnet 4.6 — multi-tool sequences benefit from the more reliable
     // function-call token emission, same rationale as spawn-tools.

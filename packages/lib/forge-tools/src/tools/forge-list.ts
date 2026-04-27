@@ -33,8 +33,14 @@ const schema = z.object({
   name: z.string().min(1).optional(),
   /** Case-insensitive substring match against brick name and description. */
   text: z.string().min(1).optional(),
-  /** Sort order. Default: "fitness". Use "recency" to surface freshly created drafts. */
-  orderBy: z.enum(["fitness", "recency", "usage", "trailStrength"]).optional(),
+  /**
+   * Sort order. Default: "fitness". Note: "recency" is intentionally
+   * omitted here — the underlying ranker keys recency on
+   * `fitness.lastUsedAt`, which is 0 for freshly synthesized drafts, so
+   * the option does not actually surface new bricks. Use the `name`
+   * filter to confirm a just-created brick.
+   */
+  orderBy: z.enum(["fitness", "usage", "trailStrength"]).optional(),
   limit: z.number().int().positive().max(HARD_CAP).optional(),
 });
 
@@ -64,7 +70,6 @@ export function createForgeListTool(deps: ForgeListDeps): Tool {
       description:
         "List forge brick summaries visible to the caller. Filters by kind, scope, lifecycle, name (exact, case-insensitive), or text (substring). " +
         "Use `name` to deterministically confirm a just-synthesized brick — the default fitness ranking can otherwise push fresh drafts off the first page. " +
-        '`orderBy: "recency"` is also supported. ' +
         "Returns at most 200 summaries; default 50. Visibility: caller's own agent-scoped bricks plus active globals.",
       inputSchema: toJSONSchema(schema) as JsonObject,
       origin: "primordial",
