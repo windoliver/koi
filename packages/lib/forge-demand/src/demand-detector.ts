@@ -63,6 +63,13 @@ const CAPABILITY_GAP_BUCKET_CAP = 128;
 const NO_MATCHING_TOOL_BUCKET_CAP = 64;
 /** Max distinct toolIds retained in failure counters per session. */
 const FAILURE_TOOL_CAP = 64;
+/**
+ * Number of trailing user messages folded into the capability-gap
+ * task-context fingerprint. 3 is enough to distinguish unrelated
+ * conversations that share a generic follow-up ("try again", "do it")
+ * without inflating bucket cardinality. F94 regression.
+ */
+const TASK_CONTEXT_USER_TURNS = 3;
 
 const DEFAULT_THRESHOLDS: HeuristicThresholds = {
   repeatedFailureCount: 3,
@@ -216,33 +223,30 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
 
   const sessions = new Map<SessionId, SessionState>();
   /**
-   * Per-handle revocation tag. Each scoped handle captures a fresh
-   * mutable `{ revoked: false }` cell at issuance; onSessionEnd flips
-   * `revoked = true` for every handle bound to that session. Reads/
-   * dismiss on a revoked handle become no-ops, so a sessionId reused
-   * after teardown cannot be addressed through stale handles. Tokens
-   * are stored per-session in `liveHandlesBySid` and removed when the
-   * session ends (no permanent map entry — the prior generation-
-   * counter design leaked a record per ended session). F88/F92
-   * regression.
+   * Per-session epoch object. Each scoped handle captures the current
+   * epoch reference at issuance and compares by identity on every
+   * call: if the session has ended (sessionEpoch[sid] removed) or a
+   * new session has started under the same id (different epoch
+   * object), the captured ref no longer matches and the handle
+   * becomes a no-op. This avoids:
+   *   - per-handle Set growth in long-lived sessions where callers
+   *     call forSession() repeatedly to poll signals (F93 regression),
+   *   - process-global generation counters that leak one record per
+   *     ended session (F92 regression).
+   * The map only carries entries for sessions currently observed; it
+   * is removed on onSessionEnd, so size is bounded by live sessions.
    */
-  type HandleTag = { revoked: boolean };
-  const liveHandlesBySid = new Map<SessionId, Set<HandleTag>>();
-  function newHandleTag(sid: SessionId): HandleTag {
-    const tag: HandleTag = { revoked: false };
-    let set = liveHandlesBySid.get(sid);
-    if (set === undefined) {
-      set = new Set<HandleTag>();
-      liveHandlesBySid.set(sid, set);
+  const sessionEpoch = new Map<SessionId, object>();
+  function getOrCreateEpoch(sid: SessionId): object {
+    let e = sessionEpoch.get(sid);
+    if (e === undefined) {
+      e = {};
+      sessionEpoch.set(sid, e);
     }
-    set.add(tag);
-    return tag;
+    return e;
   }
-  function revokeHandlesFor(sid: SessionId): void {
-    const set = liveHandlesBySid.get(sid);
-    if (set === undefined) return;
-    for (const t of set) t.revoked = true;
-    liveHandlesBySid.delete(sid);
+  function isCurrentEpoch(sid: SessionId, epoch: object): boolean {
+    return sessionEpoch.get(sid) === epoch;
   }
   // Object-identity authorization for forSession(). Authorizing purely
   // by sessionId would let any in-process caller fabricate a
@@ -295,12 +299,12 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     // resolution must use the id we actually authorized for. F76
     // regression.
     const sid = session.sessionId;
-    // Per-handle revocation cell. onSessionEnd flips this for every
-    // handle still bound to the session, so stale closures cannot
-    // address a future session that reuses the same sessionId.
+    // Capture the current session epoch by reference. onSessionEnd
+    // deletes the entry; a future session reusing this sid creates a
+    // fresh epoch object — identity mismatch → handle is a no-op.
     // F88 regression.
-    const tag = newHandleTag(sid);
-    const isLive = (): boolean => !tag.revoked;
+    const epoch = getOrCreateEpoch(sid);
+    const isLive = (): boolean => isCurrentEpoch(sid, epoch);
     const scoped: SessionScopedForgeDemandHandle = {
       getSignals: (): readonly ForgeDemandSignal[] => {
         if (!isLive()) return [];
@@ -546,26 +550,35 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
    * Returns "" when no user message is present (the bucket falls back
    * to refusal-text-only — identical to pre-F77 behavior for that edge).
    */
+  /** Number of trailing user messages folded into the task context. */
   function taskContextFingerprint(request: ModelRequest): string {
-    for (let i = request.messages.length - 1; i >= 0; i -= 1) {
+    // Hash up to TASK_CONTEXT_USER_TURNS most-recent user messages.
+    // Keying off only the LAST user message merged unrelated tasks
+    // whenever they happened to share a generic follow-up like
+    // "try again" or "do it" (F94). Folding in a few prior user
+    // turns disambiguates: "compile rust" → "try again" and
+    // "summarize this" → "try again" land in different buckets, while
+    // a literal repeat of the same conversation tail still shares one
+    // bucket. Content-only (no timestamps), block-aware (F83),
+    // timestamp-free (F80).
+    const tail: string[] = [];
+    for (
+      let i = request.messages.length - 1;
+      i >= 0 && tail.length < TASK_CONTEXT_USER_TURNS;
+      i -= 1
+    ) {
       const msg = request.messages[i];
       if (msg === undefined || msg.senderId !== "user") continue;
-      // CONTENT-only fingerprint — must NOT include `msg.timestamp`.
-      // The same ask repeated in a later turn carries a fresh
-      // wall-clock timestamp, and timestamp-based scoping would put
-      // every retry into its own bucket — defeating the threshold
-      // (F80). Includes EVERY content block (not just text) so two
-      // turns with the same prompt over different attachments/images
-      // do not collapse into one bucket. F83 regression.
       let body = "";
       let total = 0;
       for (const block of msg.content) {
         body += `${blockFingerprint(block)};`;
         total += 1;
       }
-      return `${msg.senderId}|n=${String(total)}|${fnv1a(body)}`;
+      tail.push(`${msg.senderId}|n=${String(total)}|${fnv1a(body)}`);
     }
-    return "";
+    if (tail.length === 0) return "";
+    return tail.join("/");
   }
 
   /**
@@ -1018,11 +1031,12 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // also clear an unrelated tenant's signals. F90 regression.
       const sid = boundIdFor(ctx);
       sessions.delete(sid);
-      // Revoke every live scoped handle bound to this session: if a
-      // future session reuses this sessionId, those stale closures
-      // will not be able to read or dismiss its signals. F88
-      // regression.
-      revokeHandlesFor(sid);
+      // Drop the session epoch — every previously issued scoped
+      // handle captured a reference to that epoch object, so they
+      // become no-ops via identity mismatch. A future session reusing
+      // this sid will create a fresh epoch object on next observation.
+      // F88 regression.
+      sessionEpoch.delete(sid);
       // Unbind the SessionContext object too — if the host reuses the
       // same SessionContext for a later logical session (mutating its
       // sessionId), ensureObserved must re-bind to the NEW id and
@@ -1081,11 +1095,12 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
             "fabricated literal carrying only a sessionId.",
         );
       }
-      // Per-handle revocation cell. onSessionEnd revokes every live
-      // handle for the session so stale closures cannot address a
-      // future session that reuses `sid`. F88 regression.
-      const tag = newHandleTag(sid);
-      const isLive = (): boolean => !tag.revoked;
+      // Capture the current session epoch by reference. Multiple
+      // calls to forSession in one logical session share the SAME
+      // epoch object (identity check), so polling does not allocate
+      // unbounded per-handle revocation state. F93 regression.
+      const epoch = getOrCreateEpoch(sid);
+      const isLive = (): boolean => isCurrentEpoch(sid, epoch);
       return {
         getSignals: (): readonly ForgeDemandSignal[] => {
           if (!isLive()) return [];

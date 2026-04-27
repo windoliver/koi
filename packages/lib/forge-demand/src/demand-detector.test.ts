@@ -2191,4 +2191,87 @@ describe("createForgeDemandDetector", () => {
     expect(signals[0]?.context.failedToolCalls.some((m) => m.includes("boom-2"))).toBe(true);
     expect(signals[0]?.context.failedToolCalls.some((m) => m.includes("boom-1"))).toBe(false);
   });
+
+  it("F93: repeated forSession() calls in one session do not allocate unbounded revocation state", async () => {
+    // Reviewer F93: prior design pushed every issued handle into a
+    // strong per-session Set. A host that polls forSession() to
+    // render pending signals would grow memory linearly with reads.
+    // The fix shares a per-session epoch object — every handle in
+    // one logical session captures the same reference; revocation is
+    // by identity check on session end. This test exercises a long
+    // poll loop and asserts handles still revoke correctly when the
+    // session ends.
+    const handle = createForgeDemandDetector(
+      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
+    );
+    const sessionA = createMockTurnContext({ turnIndex: 1 });
+    try {
+      await handle.middleware.wrapToolCall?.(sessionA, toolReq("flaky"), async () => {
+        throw new Error("boom");
+      });
+    } catch {
+      // expected
+    }
+    const earlyHandle = handle.forSession(sessionA.session);
+    // Simulate a polling consumer.
+    const pollHandles: ReturnType<typeof handle.forSession>[] = [];
+    for (let i = 0; i < 1000; i += 1) {
+      pollHandles.push(handle.forSession(sessionA.session));
+    }
+    expect(pollHandles[999]?.getActiveSignalCount()).toBe(1);
+    expect(earlyHandle.getActiveSignalCount()).toBe(1);
+    // End the session — every poll handle, including the very first
+    // one, must observe revocation regardless of how many were issued.
+    await handle.middleware.onSessionEnd?.(sessionA.session);
+    expect(earlyHandle.getActiveSignalCount()).toBe(0);
+    expect(pollHandles[0]?.getActiveSignalCount()).toBe(0);
+    expect(pollHandles[500]?.getActiveSignalCount()).toBe(0);
+    expect(pollHandles[999]?.getActiveSignalCount()).toBe(0);
+  });
+
+  it("F94: capability-gap counters separate unrelated tasks that share the same generic follow-up", async () => {
+    // Reviewer F94: scoping the task context on ONLY the last user
+    // message merged distinct conversations whenever they ended on
+    // the same generic prompt ("try again", "do it"). The fix folds
+    // the last few user turns into the task fingerprint so the prior
+    // ask disambiguates the bucket.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { capabilityGapOccurrences: 2 },
+        capabilityGapPatterns: [/I don'?t have a tool/],
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const refusal = "I don't have a tool for that.";
+    const tryAgain: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "try again" }],
+      timestamp: 5,
+    };
+    const askA: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "compile rust" }],
+      timestamp: 1,
+    };
+    const askB: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "summarize this email" }],
+      timestamp: 2,
+    };
+    // Two unrelated conversations, each ending in the same generic
+    // follow-up. Pre-fix these would share a bucket and aggregate to
+    // threshold across unrelated tasks.
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 1 }),
+      modelReq([askA, tryAgain]),
+      async () => modelRes(refusal),
+    );
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 2 }),
+      modelReq([askB, tryAgain]),
+      async () => modelRes(refusal),
+    );
+    expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(0);
+  });
 });
