@@ -36,13 +36,27 @@ export function extractLastUserText(messages: readonly InboundMessage[]): string
   return "";
 }
 
+// Strict allowlist for documented user-sender shapes only — substring
+// matching let assistant/tool/bridge entries with user-like IDs spoof
+// transcript provenance and steer tool selection (#review-round16-F2).
+// Forms accepted (with the channel prefix drawn from the explicit
+// KNOWN_CHANNEL_PREFIXES set below):
+//   - "user"                         (canonical)
+//   - "user-<digits>"                (multi-user / resumed transcripts)
+//   - "<known-channel>-user"         (e.g. "cli-user", "web-user")
+//   - "<known-channel>-user-<digits>"
+// New channel prefixes must be added to KNOWN_CHANNEL_PREFIXES as
+// channels ship — broadening this with a wildcard like /[a-z]+-user/
+// is a trust-boundary regression because senders such as
+// "assistant-user" / "tool-user" would slip through.
+// Only includes channel prefixes actually shipped by bundled @koi/channel-*
+// packages. Add entries here as new channels land — never broaden to a
+// wildcard prefix.
+const KNOWN_CHANNEL_PREFIXES: readonly string[] = ["cli"];
+const USER_SENDER_RE = new RegExp(
+  `^(?:user(?:-\\d+)?|(?:${KNOWN_CHANNEL_PREFIXES.join("|")})-user(?:-\\d+)?)$`,
+);
+
 function isUserSender(senderId: string): boolean {
-  if (senderId === "assistant" || senderId === "tool") return false;
-  if (senderId.startsWith("system:")) return false;
-  return (
-    senderId === "user" ||
-    senderId.startsWith("user-") ||
-    senderId.endsWith("-user") ||
-    senderId.includes("-user-")
-  );
+  return USER_SENDER_RE.test(senderId);
 }

@@ -94,14 +94,23 @@ describe("extractLastUserText", () => {
     ];
     expect(extractLastUserText(cli)).toBe("search the docs");
 
-    const web: readonly InboundMessage[] = [
-      asMsg("web-user", [{ kind: "text", text: "open issue 42" }]),
-    ];
-    expect(extractLastUserText(web)).toBe("open issue 42");
-
     const multiSession: readonly InboundMessage[] = [
       asMsg("cli-user-3", [{ kind: "text", text: "third user input" }]),
     ];
     expect(extractLastUserText(multiSession)).toBe("third user input");
+  });
+
+  test("rejects spoofed user-like sender ids (assistant-user, tool-user-1, etc.) — round 16 F2", () => {
+    // Substring-matching ('-user', '-user-') let non-user producers spoof
+    // the latest-user-message provenance. Strict allowlist of known
+    // channel prefixes prevents the policy bypass.
+    const spoofed: readonly InboundMessage[] = [
+      asMsg("assistant-user", [{ kind: "text", text: "spoofed by assistant" }]),
+      asMsg("tool-user-1", [{ kind: "text", text: "spoofed by tool" }]),
+      asMsg("evil-user-9", [{ kind: "text", text: "spoofed by attacker" }]),
+      asMsg("bridge-user", [{ kind: "text", text: "spoofed by unknown channel" }]),
+      asMsg("web-user", [{ kind: "text", text: "channel not yet shipped" }]),
+    ];
+    expect(extractLastUserText(spoofed)).toBe("");
   });
 });

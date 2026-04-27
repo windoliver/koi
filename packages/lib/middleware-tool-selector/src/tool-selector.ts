@@ -74,13 +74,17 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     const tools = request.tools;
     if (tools === undefined || tools.length <= minTools) {
       // Fast path: no semantic filtering needed because the toolset is
-      // already small enough. But when enforceFiltering is on, still
-      // install an allowlist of the advertised tools so wrapToolCall can
-      // reject any tool the model invokes that wasn't advertised this
-      // turn (e.g. prompt-injected or hallucinated calls to other
-      // registered tools). #review-round11-F1.
-      if (enforceFiltering && tools !== undefined) {
-        turnAllowlists.set(ctx.turnId, new Set<string>(tools.map((t) => t.name)));
+      // already small enough (or absent). When enforceFiltering is on,
+      // install an allowlist matching exactly what the model was shown
+      // — including the EMPTY set for deny-all turns where tools is
+      // undefined. wrapToolCall must still reject tool calls that were
+      // not advertised, otherwise a caller omitting `tools` to disable
+      // tools for a turn gets no enforcement at all and any native
+      // tool_call_* the adapter emits still executes
+      // (#review-round11-F1, #review-round16-F1).
+      if (enforceFiltering) {
+        const advertised = tools ?? [];
+        turnAllowlists.set(ctx.turnId, new Set<string>(advertised.map((t) => t.name)));
       }
       return request;
     }

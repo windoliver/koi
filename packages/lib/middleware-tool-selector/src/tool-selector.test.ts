@@ -82,6 +82,28 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  test("deny-all turn (tools undefined) installs empty allowlist enforced at execution — round 16 F1", async () => {
+    // Callers can disable tools for a turn by omitting `tools`. Without
+    // an explicit empty allowlist, wrapToolCall would still execute any
+    // native tool_call_* the adapter emits — defeating the trust
+    // boundary on the deny-all case.
+    const select = mock(async () => []);
+    const mw = createToolSelectorMiddleware({ selectTools: select });
+    const ctx = turnCtx();
+    const next = mock<ModelHandler>(async () => modelResponse());
+    await getWrap(mw)(ctx, { messages: [userMsg("hi")] }, next);
+
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "ok" }),
+    );
+    await expect(
+      wrapTool(ctx, { toolId: "anything", input: {} }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
+    expect(toolNext).not.toHaveBeenCalled();
+  });
+
   test("passes request through when tool count is at or below minTools", async () => {
     const select = mock(async () => []);
     const mw = createToolSelectorMiddleware({ selectTools: select, minTools: 5 });
