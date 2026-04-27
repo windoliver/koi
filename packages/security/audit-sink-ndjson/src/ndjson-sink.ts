@@ -120,28 +120,29 @@ async function readArchiveEntries(archiveDir: string): Promise<readonly AuditEnt
 
   // Only ingest .ndjson files — stray .DS_Store, editor temps, or partial copies
   // must not cause a corruption error that takes the entire audit trail offline.
-  // Sequence-prefixed files (8-digit prefix) use that prefix for stable ordering.
-  // Legacy files (timestamp- or UUID-named, no sequence prefix) are sorted by the
-  // timestamp of their first entry — the only stable ordering available for arbitrary
-  // filename schemes — and placed before sequence-numbered files (legacy = older).
+  // Sort by content-derived first-entry timestamp (primary) so ordering is correct
+  // across format versions and rollbacks. Sequence number (secondary) breaks ties
+  // within a single process run; filename (tertiary) is the last resort.
+  // Reading timestamps for every archive is slightly slower than relying on the
+  // seq prefix alone, but correctness under mixed-version directories requires it:
+  // seq numbers restart on each process and are not comparable across rollbacks.
   const ndjsonFiles = files.filter((f) => f.endsWith(".ndjson"));
 
   type WithKey = {
     readonly name: string;
     readonly seq: number;
-    readonly tiebreak: number;
+    readonly ts: number;
   };
   const withKeys = await Promise.all(
     ndjsonFiles.map(async (name): Promise<WithKey> => {
       const seq = parseArchiveSeq(name);
-      if (seq > 0) return { name, seq, tiebreak: 0 };
       const ts = await readFirstEntryTimestamp(join(archiveDir, name));
-      return { name, seq: 0, tiebreak: ts ?? 0 };
+      return { name, seq, ts: ts ?? 0 };
     }),
   );
   withKeys.sort((a, b) => {
+    if (a.ts !== b.ts) return a.ts - b.ts;
     if (a.seq !== b.seq) return a.seq - b.seq;
-    if (a.tiebreak !== b.tiebreak) return a.tiebreak - b.tiebreak;
     return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
   });
 
@@ -351,6 +352,13 @@ export function createNdjsonAuditSink(
           }),
         );
       }
+      if (timerFlushError !== undefined) {
+        return Promise.reject(
+          new Error("audit NDJSON sink has a prior background flush failure — cannot flush", {
+            cause: timerFlushError,
+          }),
+        );
+      }
       return enqueue(() => Promise.resolve(writer.flush()).then(() => {}));
     },
 
@@ -424,6 +432,14 @@ export function createNdjsonAuditSink(
         clearInterval(timer);
         await Promise.resolve(writer.flush());
         await Promise.resolve(writer.end());
+        // Surface any background flush failure that occurred before close() was called.
+        // Resources are released first so the sink is not left in a half-closed state.
+        if (timerFlushError !== undefined) {
+          throw new Error(
+            "audit NDJSON sink closed with prior background flush failures — audit trail may be incomplete",
+            { cause: timerFlushError },
+          );
+        }
       });
     },
   };
