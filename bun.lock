@@ -322,6 +322,7 @@
         "@koi/core": "workspace:*",
         "@koi/edit-match": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
       },
     },
     "packages/lib/fs-scoped": {
@@ -519,6 +520,13 @@
         "@koi/errors": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
+      },
+    },
+    "packages/lib/nexus-client": {
+      "name": "@koi/nexus-client",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/lib/outcome-evaluator": {
@@ -788,6 +796,7 @@
         "@koi/agent-summary": "workspace:*",
         "@koi/artifacts": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
+        "@koi/audit-sink-nexus": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/bash-ast": "workspace:*",
         "@koi/channel-cli": "workspace:*",
@@ -833,7 +842,9 @@
         "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
         "@koi/permissions": "workspace:*",
+        "@koi/permissions-nexus": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/rules-loader": "workspace:*",
@@ -898,6 +909,7 @@
         "@koi/artifacts": "workspace:*",
         "@koi/artifacts-s3": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
+        "@koi/audit-sink-nexus": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/bash-ast": "workspace:*",
         "@koi/bash-security": "workspace:*",
@@ -957,8 +969,10 @@
         "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
         "@koi/outcome-evaluator": "workspace:*",
         "@koi/permissions": "workspace:*",
+        "@koi/permissions-nexus": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/replay": "workspace:*",
@@ -1185,6 +1199,14 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/security/audit-sink-nexus": {
+      "name": "@koi/audit-sink-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+    },
     "packages/security/audit-sink-sqlite": {
       "name": "@koi/audit-sink-sqlite",
       "version": "0.0.0",
@@ -1274,6 +1296,14 @@
         "@koi/settings": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
+      },
+    },
+    "packages/security/permissions-nexus": {
+      "name": "@koi/permissions-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
       },
     },
     "packages/security/redaction": {
@@ -1696,6 +1726,8 @@
 
     "@koi/audit-sink-ndjson": ["@koi/audit-sink-ndjson@workspace:packages/security/audit-sink-ndjson"],
 
+    "@koi/audit-sink-nexus": ["@koi/audit-sink-nexus@workspace:packages/security/audit-sink-nexus"],
+
     "@koi/audit-sink-sqlite": ["@koi/audit-sink-sqlite@workspace:packages/security/audit-sink-sqlite"],
 
     "@koi/bash-ast": ["@koi/bash-ast@workspace:packages/lib/bash-ast"],
@@ -1852,9 +1884,13 @@
 
     "@koi/model-router": ["@koi/model-router@workspace:packages/lib/model-router"],
 
+    "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/lib/nexus-client"],
+
     "@koi/outcome-evaluator": ["@koi/outcome-evaluator@workspace:packages/lib/outcome-evaluator"],
 
     "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
+
+    "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/security/permissions-nexus"],
 
     "@koi/plugins": ["@koi/plugins@workspace:packages/lib/plugins"],
 

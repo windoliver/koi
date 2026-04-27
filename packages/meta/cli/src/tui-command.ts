@@ -67,6 +67,7 @@ import {
   createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
+import { createHttpTransport } from "@koi/nexus-client";
 import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import {
@@ -1658,6 +1659,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The `dispose()` on this backend closes the bridge subprocess and unsubscribes.
   let resolvedFilesystemBackend: import("@koi/core").FileSystemBackend | undefined;
 
+  // let: set when nexus local-bridge transport resolves; passed to runtime for
+  // permission policy sync and audit trail. Undefined for local-only sessions.
+  let nexusFilesystemTransport: import("@koi/nexus-client").NexusTransport | undefined;
+
   // Single OAuthChannel — shared by nexus and MCP. Created unconditionally so
   // nav:mcp-auth and MCP onAuthNeeded always have a renderer regardless of whether
   // a nexus filesystem is configured. submitAuthCode is forwarded to the nexus
@@ -1695,6 +1700,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
       });
       tuiAuthInterceptor = createAuthInterceptor(transport);
+      // Store for createKoiRuntime — permissions + audit nexus wiring
+      nexusFilesystemTransport = transport as unknown as import("@koi/nexus-client").NexusTransport;
+    } else if (manifestFilesystemConfig?.backend === "nexus") {
+      // HTTP nexus backend: create a lightweight HTTP transport for permissions/audit.
+      // resolveFileSystemAsync only returns transport for local-bridge; HTTP transport
+      // is created internally inside createNexusFileSystem and not exposed. We build
+      // a separate one here — same URL/apiKey, owned by the runtime for lifetime.
+      const opts = manifestFilesystemConfig.options;
+      if (typeof opts?.url === "string") {
+        nexusFilesystemTransport = createHttpTransport({
+          url: opts.url,
+          apiKey: typeof opts.apiKey === "string" ? opts.apiKey : undefined,
+        });
+      }
     }
   }
 
@@ -2049,6 +2068,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // compensating ops through the right backend. Omitted when undefined —
     // factory falls back to the default local backend rooted at cwd.
     ...(resolvedFilesystemBackend !== undefined ? { filesystem: resolvedFilesystemBackend } : {}),
+    // Nexus transport (when a local-bridge resolved above) enables permission
+    // policy sync and nexus audit trail alongside NDJSON/SQLite sinks.
+    ...(nexusFilesystemTransport !== undefined ? { nexusTransport: nexusFilesystemTransport } : {}),
     // @koi/artifacts tools — wired when the advisory lock was acquired at
     // boot. When construction failed (concurrent TUI, FS issue) the array
     // is empty and the artifact_* tools are simply absent from the agent.

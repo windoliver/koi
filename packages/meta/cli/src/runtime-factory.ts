@@ -32,6 +32,7 @@ import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import type { NdjsonRotationConfig } from "@koi/audit-sink-ndjson";
 import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit-sink-ndjson";
+import { createNexusAuditSink } from "@koi/audit-sink-nexus";
 import type { SqliteRetentionConfig } from "@koi/audit-sink-sqlite";
 import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
@@ -99,8 +100,11 @@ import {
   type FeedbackLoopConfig,
 } from "@koi/middleware-feedback-loop";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
-import type { ApprovalStore } from "@koi/middleware-permissions";
-import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import type { ApprovalStore, PermissionRules } from "@koi/middleware-permissions";
+import {
+  createPatternPermissionBackend,
+  createPermissionsMiddleware,
+} from "@koi/middleware-permissions";
 import { createPlanPersistMiddleware } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
@@ -113,6 +117,8 @@ import {
   SOURCE_PRECEDENCE,
   widenCommandScopedRulesForTui,
 } from "@koi/permissions";
+import type { NexusPermissionBackend } from "@koi/permissions-nexus";
+import { createNexusPermissionBackend } from "@koi/permissions-nexus";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
 import { loadSettings } from "@koi/settings";
 import type { SkillsRuntime } from "@koi/skills-runtime";
@@ -815,6 +821,15 @@ export interface KoiRuntimeConfig {
   readonly manifestNdjsonSourcePath?: string | undefined;
   readonly manifestSqliteSourcePath?: string | undefined;
   readonly manifestViolationsSourcePath?: string | undefined;
+  /**
+   * Nexus transport for permission policy sync and audit trail.
+   * When set (from the manifest filesystem nexus transport), the runtime:
+   *  - Wraps the assembled TUI permission backend with `createNexusPermissionBackend`
+   *    (local-first: TUI rules apply when Nexus has no policy or is unreachable)
+   *  - Adds a `createNexusAuditSink` alongside NDJSON/SQLite sinks
+   * Omit when no nexus filesystem is configured.
+   */
+  readonly nexusTransport?: import("@koi/nexus-client").NexusTransport | undefined;
   /**
    * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
    * session end. The TUI surfaces this via `KOI_REPORT_ENABLED=true`.
@@ -1752,6 +1767,63 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       ],
     });
   }
+  // --- Nexus permission backend (opt-in via config.nexusTransport) ---
+  // Wraps the fully-assembled TUI permBackend so nexus policy rules
+  // layer on top while TUI rules remain the local fallback.
+  // let: nexusPermBackend held for disposal
+  let nexusPermBackend: NexusPermissionBackend | undefined;
+  if (config.nexusTransport !== undefined) {
+    const transport = config.nexusTransport;
+    const tuiPermBackend = permBackend; // captured before wrapping
+    nexusPermBackend = createNexusPermissionBackend({
+      transport,
+      localBackend: tuiPermBackend,
+      rebuildBackend: (policy: unknown): PermissionBackend => {
+        // Parse nexus policy as { rules: { allow, deny, ask } }.
+        // If malformed or empty, fall back to TUI backend unchanged.
+        try {
+          if (typeof policy === "object" && policy !== null && "rules" in policy) {
+            const rawRules = (policy as { rules: unknown }).rules;
+            if (
+              typeof rawRules === "object" &&
+              rawRules !== null &&
+              "allow" in rawRules &&
+              "deny" in rawRules &&
+              "ask" in rawRules
+            ) {
+              const nexusPatternBackend = createPatternPermissionBackend({
+                rules: rawRules as PermissionRules,
+              });
+              // Chain: nexus first, TUI backend as fallback for no-opinion decisions.
+              return {
+                check: async (query: PermissionQuery): Promise<PermissionDecision> => {
+                  const decision = await Promise.resolve(nexusPatternBackend.check(query));
+                  if (
+                    decision.effect === "ask" &&
+                    decision.reason === "No matching permission rule"
+                  ) {
+                    return Promise.resolve(tuiPermBackend.check(query));
+                  }
+                  return decision;
+                },
+                ...(tuiPermBackend.dispose != null
+                  ? { dispose: tuiPermBackend.dispose.bind(tuiPermBackend) }
+                  : {}),
+                ...(tuiPermBackend.supportsDefaultDenyMarker === true
+                  ? { supportsDefaultDenyMarker: true as const }
+                  : {}),
+              };
+            }
+          }
+        } catch {
+          // fall through
+        }
+        return tuiPermBackend;
+      },
+    });
+    permBackend = nexusPermBackend;
+  }
+
   const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
 
   // Bash prefix enrichment (#1881). Feeds the raw command to
@@ -2975,6 +3047,26 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       };
     }
 
+    // --- Nexus audit middleware (opt-in via config.nexusTransport) ---
+    // Batches audit entries to Nexus alongside any NDJSON/SQLite sinks.
+    // No signing: Nexus is an append-only store with its own integrity.
+    // let: retained so shutdown can flush.
+    let nexusAuditMwForShutdown: { readonly flush: () => Promise<void> } | undefined;
+    if (config.nexusTransport !== undefined) {
+      const nexusSink = createNexusAuditSink({ transport: config.nexusTransport });
+      const nexusAuditMw = createAuditMiddleware({ sink: nexusSink });
+      complianceRecorders.push(
+        createAuditSinkComplianceRecorder(nexusSink, { sessionId: getLiveSessionId }),
+      );
+      auditPresetExtras.push(nexusAuditMw);
+      // Use nexus sink for ledger query if SQLite is not already doing it
+      // (nexus supports .query() so /trajectory audit lane works)
+      if (ledgerAuditSink === undefined) {
+        ledgerAuditSink = nexusSink;
+      }
+      nexusAuditMwForShutdown = { flush: () => nexusAuditMw.flush() };
+    }
+
     // --- Report middleware (opt-in via config.reportEnabled) ---
     // Accumulates model/tool call metrics and emits a RunReport at session
     // end. No shutdown resources — the report is printed via onReport.
@@ -4034,6 +4126,31 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               );
             }
           })();
+        }
+        if (nexusAuditMwForShutdown !== undefined) {
+          const nexusAudit = nexusAuditMwForShutdown;
+          void (async () => {
+            try {
+              await nexusAudit.flush();
+            } catch (err) {
+              console.warn(
+                `[koi/${hostId}] Nexus audit shutdown failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          })();
+        }
+        if (nexusPermBackend !== undefined) {
+          try {
+            nexusPermBackend.dispose();
+          } catch (err) {
+            console.warn(
+              `[koi/${hostId}] Nexus permission backend dispose failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
         }
         if (violationStore !== undefined) {
           try {

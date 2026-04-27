@@ -13843,6 +13843,94 @@ describe("Golden: @koi/temporal", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/permissions-nexus (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/permissions-nexus", () => {
+  test("local-first: check() passes through to local backend when Nexus is down", async () => {
+    const { createNexusPermissionBackend } = await import("@koi/permissions-nexus");
+
+    const nexusDown: import("@koi/nexus-client").NexusTransport = {
+      call: (async () => ({
+        ok: false,
+        error: { code: "TIMEOUT" as const, message: "nexus unreachable", retryable: true },
+      })) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const local: import("@koi/core").PermissionBackend = {
+      check: () => ({ effect: "allow" as const }),
+      dispose: () => {},
+      supportsDefaultDenyMarker: true as const,
+    };
+
+    const backend = createNexusPermissionBackend({
+      transport: nexusDown,
+      localBackend: local,
+
+      rebuildBackend: () => local,
+      syncIntervalMs: 0,
+    });
+
+    const decision = await Promise.resolve(
+      backend.check({ principal: "agent", action: "execute", resource: "tool:bash" }),
+    );
+    expect(decision.effect).toBe("allow");
+    backend.dispose();
+  });
+
+  test("sync: rebuilt backend is used after Nexus returns updated policy", async () => {
+    const { createNexusPermissionBackend } = await import("@koi/permissions-nexus");
+
+    const policy = [{ pattern: "*", effect: "allow" }];
+    let rebuildCalledWith: unknown = null;
+
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (method: string, params: Record<string, unknown>) => {
+        const path = (params as { path: string }).path;
+        if (method === "read" && path.endsWith("version.json")) {
+          return { ok: true, value: JSON.stringify({ version: 1, updatedAt: Date.now() }) };
+        }
+        if (method === "read" && path.endsWith("policy.json")) {
+          return { ok: true, value: JSON.stringify(policy) };
+        }
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const denying: import("@koi/core").PermissionBackend = {
+      check: () => ({ effect: "deny" as const, reason: "local deny" }),
+      supportsDefaultDenyMarker: true as const,
+    };
+
+    const allowing: import("@koi/core").PermissionBackend = {
+      check: () => ({ effect: "allow" as const }),
+      supportsDefaultDenyMarker: true as const,
+    };
+
+    const backend = createNexusPermissionBackend({
+      transport,
+      localBackend: denying,
+
+      rebuildBackend: (p) => {
+        rebuildCalledWith = p;
+        return allowing;
+      },
+      syncIntervalMs: 0,
+    });
+
+    await new Promise<void>((r) => setTimeout(r, 0)); // flush init microtasks
+    expect(rebuildCalledWith).toEqual(policy);
+    const decision = await Promise.resolve(
+      backend.check({ principal: "agent", action: "execute", resource: "tool:bash" }),
+    );
+    expect(decision.effect).toBe("allow");
+    backend.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/long-running (#1386)
 //
 // Standalone golden queries that exercise the long-running harness lifecycle
@@ -14013,5 +14101,87 @@ describe("Golden: @koi/long-running — harness lifecycle", () => {
     expect(harness.status().phase).toBe("active");
 
     expect(EMPTY_TASK_BOARD.items).toHaveLength(0);
+  });
+});
+
+// L2 golden queries: @koi/audit-sink-nexus (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/audit-sink-nexus", () => {
+  test("log and flush writes entries to Nexus transport", async () => {
+    const { createNexusAuditSink } = await import("@koi/audit-sink-nexus");
+    type AuditEntry = import("@koi/core").AuditEntry;
+
+    const written: string[] = [];
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (_method: string, params: Record<string, unknown>) => {
+        written.push((params as { path: string }).path);
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const entry: AuditEntry = {
+      schema_version: 1,
+      timestamp: Date.now(),
+      sessionId: "golden-session",
+      agentId: "agent-1",
+      turnIndex: 0,
+      kind: "tool_call",
+      durationMs: 10,
+    };
+
+    const sink = createNexusAuditSink({ transport, batchSize: 100 });
+    await sink.log(entry);
+    await sink.flush?.();
+    expect(written.length).toBe(1);
+    expect(written[0]).toMatch(/^koi\/audit\/golden-session\//);
+  });
+
+  test("query returns entries sorted by timestamp", async () => {
+    const { createNexusAuditSink } = await import("@koi/audit-sink-nexus");
+    type AuditEntry = import("@koi/core").AuditEntry;
+
+    const store = new Map<string, string>();
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (method: string, params: Record<string, unknown>) => {
+        const p = (params as { path: string }).path;
+        if (method === "write") {
+          store.set(p, (params as { content: string }).content);
+          return { ok: true, value: undefined };
+        }
+        if (method === "list") {
+          const prefix = `${p}/`;
+          return {
+            ok: true,
+            value: [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ path: k })),
+          };
+        }
+        if (method === "read") {
+          const v = store.get(p);
+          return v !== undefined
+            ? { ok: true, value: v }
+            : { ok: false, error: { code: "NOT_FOUND" as const, message: "nf", retryable: false } };
+        }
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const base: Omit<AuditEntry, "timestamp" | "turnIndex"> = {
+      schema_version: 1,
+      sessionId: "golden-q",
+      agentId: "a",
+      kind: "model_call",
+      durationMs: 5,
+    };
+
+    const sink = createNexusAuditSink({ transport, batchSize: 100 });
+    await sink.log({ ...base, timestamp: 200, turnIndex: 1 });
+    await sink.log({ ...base, timestamp: 100, turnIndex: 0 });
+    const entries = (await sink.query?.("golden-q")) ?? [];
+    expect(entries).toHaveLength(2);
+    expect(entries[0]?.timestamp).toBe(100);
+    expect(entries[1]?.timestamp).toBe(200);
   });
 });
