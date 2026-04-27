@@ -46,6 +46,7 @@ import {
 import type {
   DebugInstrumentation,
   IterationGuardHandle,
+  MiddlewareSource,
   TerminalHandlers,
 } from "@koi/engine-compose";
 import {
@@ -658,6 +659,20 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // let justified: cached terminals created once at session start, reused across turns
     let cachedTerminals: TerminalHandlers | undefined;
 
+    // let justified: rebuilt by applyRecomposition() so the stream synth picks up
+    // forge/dynamic call-only middleware on subsequent calls (#review-round15-F1).
+    // The synth getter passed to createTerminalHandlers reads this on every call.
+    let activeSynthCallTerminal: ModelHandler | undefined;
+    // let justified: closure that knows how to rebuild activeSynthCallTerminal from
+    // a sorted middleware snapshot. Initialized in inner scope where rawModelTerminal
+    // is available.
+    let rebuildSynthCallTerminal:
+      | ((
+          sorted: readonly KoiMiddleware[],
+          provenanceHints: ReadonlyMap<string, MiddlewareSource>,
+        ) => void)
+      | undefined;
+
     // let justified: previous forge middleware ref for identity-based skip
     let previousForgedMw: readonly KoiMiddleware[] | undefined;
 
@@ -845,6 +860,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       activeToolChain = chains.toolChain;
       activeModelChain = chains.modelChain;
       activeStreamChain = chains.streamChain;
+      // Rebuild the inner call-only chain used by the stream synth so
+      // forged/dynamic call-only middleware added after startup fire on
+      // non-streaming adapters (#review-round15-F1). Safe no-op when
+      // never initialized (no run yet).
+      rebuildSynthCallTerminal?.(sorted, provenanceHints);
     }
 
     /**
@@ -1210,17 +1230,24 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         // this so call-only hooks still fire on non-streaming adapters
         // without dual-hook middleware double-firing — each middleware
         // fires exactly once per logical request (#review-round14-F1).
-        const callOnlyMiddleware = allMiddleware.filter(
-          (mw) => mw.wrapModelCall !== undefined && mw.wrapModelStream === undefined,
-        );
-        const callOnlyModelChain = composeModelChain(
-          callOnlyMiddleware,
-          rawModelTerminal,
-          debugInstrumentation,
-          staticProvenanceHints,
-        );
-        const synthCallTerminal: ModelHandler = (request) =>
-          callOnlyModelChain(getTurnContext(), request);
+        //
+        // Rebuilt by applyRecomposition() whenever the active middleware
+        // set changes (forge/dynamic), and the synth resolves it via the
+        // getter on every call so newly added call-only middleware fires
+        // on subsequent stream requests (#review-round15-F1).
+        rebuildSynthCallTerminal = (sorted, provenanceHints) => {
+          const callOnly = sorted.filter(
+            (mw) => mw.wrapModelCall !== undefined && mw.wrapModelStream === undefined,
+          );
+          const chain = composeModelChain(
+            callOnly,
+            rawModelTerminal,
+            debugInstrumentation,
+            provenanceHints,
+          );
+          activeSynthCallTerminal = (request) => chain(getTurnContext(), request);
+        };
+        rebuildSynthCallTerminal(allMiddleware, staticProvenanceHints);
 
         // Create lifecycle-aware terminal handlers (cached for reuse across turns)
         cachedTerminals = createTerminalHandlers(
@@ -1230,7 +1257,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           rawModelStreamTerminal,
           debugInstrumentation,
           () => currentTurnIndex,
-          synthCallTerminal,
+          () => activeSynthCallTerminal ?? rawModelTerminal,
         );
 
         // Initial chain composition (allMiddleware is already phase-sorted)

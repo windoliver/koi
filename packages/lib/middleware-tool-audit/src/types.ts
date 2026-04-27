@@ -7,6 +7,21 @@ import type { KoiMiddleware } from "@koi/core/middleware";
 /**
  * External persistence interface — snapshot-based load/save.
  * In-memory fallback used when no store is provided.
+ *
+ * Concurrency contract (#review-round15-F3): the snapshot load/save
+ * shape gives no compare-and-swap or version semantics, so this
+ * interface is safe ONLY under SINGLE-WRITER usage. The middleware
+ * serializes saves within one process AND re-loads + merges before
+ * each save to narrow the multi-writer lost-update window, but
+ * nothing prevents two processes that read the same baseline from
+ * later overwriting one another. Deployments that share an audit
+ * store across writers (multi-process / multi-host) must implement
+ * their own transactional store (e.g. database row with version
+ * column, file lock, ETag-based object store) and reject stale
+ * writes inside `save`. Until a versioned `save` contract is added
+ * to this interface, multi-writer deployments using the bundled
+ * file-backed store can drop session counts and tool counters under
+ * contention.
  */
 export interface ToolAuditStore {
   readonly load: () => ToolAuditSnapshot | Promise<ToolAuditSnapshot>;

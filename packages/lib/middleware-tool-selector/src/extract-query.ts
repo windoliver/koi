@@ -9,13 +9,14 @@ import type { InboundMessage } from "@koi/core";
 
 /**
  * Walks the transcript backward and returns the concatenated text of the most
- * recent message authored by a user. Matches the platform-wide convention
- * (see message.ts) that user messages have `senderId` of `"user"` or any
- * `"user-..."` prefix (e.g. `"user-1"` for multi-user transcripts and
- * imported/resumed sessions). Skips assistant replies, tool results, and
- * system entries so selection is keyed on user intent — not stale assistant
- * or tool output that happens to be at the tail. Returns "" when no user
- * message has any text block (caller treats empty as "skip filtering").
+ * recent user-authored message. Matches the platform-wide convention that
+ * user messages may have `senderId` of `"user"`, the multi-user
+ * `"user-<n>"` form (e.g. `"user-1"`), or a channel-prefixed form like
+ * `"cli-user"` / `"web-user"` (see channel-cli, channel-web). Skips
+ * assistant replies, tool results, and `system:*` entries so selection is
+ * keyed on user intent — not stale assistant/tool output that happens to
+ * sit at the tail. Returns "" when no user message has any text block
+ * (caller treats empty as "skip filtering"). #review-round15-F2.
  */
 export function extractLastUserText(messages: readonly InboundMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -36,5 +37,12 @@ export function extractLastUserText(messages: readonly InboundMessage[]): string
 }
 
 function isUserSender(senderId: string): boolean {
-  return senderId === "user" || senderId.startsWith("user-");
+  if (senderId === "assistant" || senderId === "tool") return false;
+  if (senderId.startsWith("system:")) return false;
+  return (
+    senderId === "user" ||
+    senderId.startsWith("user-") ||
+    senderId.endsWith("-user") ||
+    senderId.includes("-user-")
+  );
 }

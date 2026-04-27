@@ -48,7 +48,7 @@ export function createTerminalHandlers(
   rawModelStreamTerminal?: ModelStreamHandler,
   debugInstrumentation?: DebugInstrumentation,
   getTurnIndex?: () => number,
-  synthCallTerminal?: ModelHandler,
+  getSynthCallTerminal?: () => ModelHandler,
 ): TerminalHandlers {
   const modelHandler: ModelHandler = async (request) => {
     agent.transition({ kind: "wait", reason: "model_call" });
@@ -91,15 +91,19 @@ export function createTerminalHandlers(
   // `wrapModelStream` middleware (e.g. @koi/middleware-tool-recovery)
   // runs for every adapter — not just streaming-native ones.
   //
-  // The synth invokes `synthCallTerminal` when provided. Callers
-  // compose this from CALL-ONLY middleware (those that implement
-  // wrapModelCall but NOT wrapModelStream) around the raw terminal,
-  // so call-only hooks still fire on non-streaming adapters
+  // The synth resolves `getSynthCallTerminal` per-call when provided.
+  // Callers compose this from CALL-ONLY middleware (those that
+  // implement wrapModelCall but NOT wrapModelStream) around the raw
+  // terminal, so call-only hooks still fire on non-streaming adapters
   // (#review-round14-F1). Dual-hook middleware is excluded from this
   // chain — it fires exactly once via the outer wrapModelStream
   // chain, avoiding the round-13 concurrency-guard self-deadlock and
   // budget double-charge. Each middleware fires exactly once per
   // logical request regardless of adapter shape.
+  //
+  // Resolved per-call (not captured at construction) so dynamic /
+  // forged middleware added after startup are picked up on the next
+  // synth invocation (#review-round15-F1).
   //
   // The synth uses raw terminals (not the lifecycle-wrapped
   // `modelHandler`) so the inner call doesn't emit a nested
@@ -108,11 +112,11 @@ export function createTerminalHandlers(
   // buffering chunks (#review-round11-F3). The outer
   // `modelStreamHandler` below owns the wait(model_stream)/resume
   // pair for the entire stream lifecycle.
-  const synthSource = synthCallTerminal ?? rawModelTerminal;
   const effectiveStreamTerminal: ModelStreamHandler =
     rawModelStreamTerminal ??
     async function* (request): AsyncIterable<ModelChunk> {
-      const response = await synthSource(request);
+      const synth = getSynthCallTerminal !== undefined ? getSynthCallTerminal() : rawModelTerminal;
+      const response = await synth(request);
       if (response.content.length > 0) {
         yield { kind: "text_delta", delta: response.content };
       }
@@ -210,7 +214,7 @@ export function createComposedCallHandlers(
     rawModelStreamTerminal,
     undefined,
     undefined,
-    synthCallTerminal,
+    () => synthCallTerminal,
   );
 
   const modelChain = composeModelChain(sorted, modelHandler);

@@ -80,7 +80,28 @@ describe("extractLastUserText", () => {
       asMsg("usertool", [{ kind: "text", text: "fake user payload" }]),
       asMsg("system:something", [{ kind: "text", text: "system" }]),
     ];
-    // Neither matches "user" or "user-..." → no user text found.
+    // None match the user-sender shape → no user text found.
     expect(extractLastUserText(messages)).toBe("");
+  });
+
+  test("recognizes channel-prefixed user sender ids (e.g. cli-user) — round 15 F2", () => {
+    // Bundled channels emit channel-prefixed user senders (cli-user,
+    // web-user, etc.). The selector previously missed them and silently
+    // disabled tool filtering for default CLI sessions.
+    const cli: readonly InboundMessage[] = [
+      asMsg("cli-user", [{ kind: "text", text: "search the docs" }]),
+      asMsg("assistant", [{ kind: "text", text: "ok" }]),
+    ];
+    expect(extractLastUserText(cli)).toBe("search the docs");
+
+    const web: readonly InboundMessage[] = [
+      asMsg("web-user", [{ kind: "text", text: "open issue 42" }]),
+    ];
+    expect(extractLastUserText(web)).toBe("open issue 42");
+
+    const multiSession: readonly InboundMessage[] = [
+      asMsg("cli-user-3", [{ kind: "text", text: "third user input" }]),
+    ];
+    expect(extractLastUserText(multiSession)).toBe("third user input");
   });
 });
