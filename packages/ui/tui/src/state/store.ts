@@ -62,13 +62,22 @@ export function createStore(initialState: TuiState): TuiStore {
       try {
         listener();
       } catch (e: unknown) {
-        // tui-single-writer-exception: listener exception — dispatching back to the
-        // store from inside notifySubscribers() would be circular. Only emit when
-        // stderr is not a TTY (i.e. redirected/piped) to avoid interleaving raw
-        // bytes into the active terminal frame buffer (#1940).
-        if (!process.stderr.isTTY) {
-          process.stderr.write(`[TuiStore] listener threw: ${String(e)}\n`);
-        }
+        // tui-single-writer-exception: listener exception — direct dispatch from
+        // notifySubscribers() is safe (schedules via microtask, not synchronous
+        // re-entry). Surface via add_error so the TUI shows it, and also write
+        // to stderr for CI/log contexts. Stderr ≠ stdout: it does not touch the
+        // renderer's frame buffer (#1940).
+        process.stderr.write(`[TuiStore] listener threw: ${String(e)}\n`);
+        // Surface in TUI as an error block — dispatch is queued asynchronously.
+        queueMicrotask(() => {
+          applyState(
+            reduce(snapshot, {
+              kind: "add_error",
+              code: "STORE_LISTENER_ERROR",
+              message: `Store listener threw: ${e instanceof Error ? e.message : String(e)}`,
+            }),
+          );
+        });
       }
     }
   }

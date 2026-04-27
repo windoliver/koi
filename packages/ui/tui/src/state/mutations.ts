@@ -125,10 +125,9 @@ function updateToolBlock(state: Draft, callId: string, patch: Partial<ToolCallBl
   const blockIdx = findToolBlockIdx(msg.blocks, callId);
   if (blockIdx < 0) {
     // tui-single-writer-exception: inside produce() — cannot dispatch back to store.
-    // Only emit when stderr is not a TTY to avoid interleaving with active frame (#1940).
-    if (!process.stderr.isTTY) {
-      process.stderr.write(`[tui/mutate] no tool_call block found for callId="${callId}"\n`);
-    }
+    // Stderr write is intentional: invariant violation operators must see.
+    // Stderr does not touch the renderer's frame buffer (#1940).
+    process.stderr.write(`[tui/mutate] no tool_call block found for callId="${callId}"\n`);
     return;
   }
   const block = msg.blocks[blockIdx] as ToolCallBlock;
