@@ -537,6 +537,28 @@ export interface RuntimeDebugInfo {
 // Runtime handle
 // ---------------------------------------------------------------------------
 
+/**
+ * Runtime-facing forge-demand handle. The L2 detector authorizes by
+ * SessionContext object identity (engine-issued, not caller-supplied),
+ * but normal runtime callers never see those objects. This wrapper
+ * captures the legitimate SessionContext from the live middleware
+ * chain and lets callers query by `sessionId` instead. The middleware
+ * is re-exported for assembly inspection only — wiring is automatic.
+ */
+export interface RuntimeForgeDemandHandle {
+  readonly middleware: import("@koi/core").KoiMiddleware;
+  /**
+   * Session-scoped view bound to a sessionId observed by the runtime.
+   * Throws when the sessionId has not yet been observed (no traffic
+   * for this session, or session already ended) — this fails closed
+   * rather than silently returning empty data, so callers do not
+   * confuse "not yet active" with "no signals".
+   */
+  readonly forSessionId: (
+    sessionId: string,
+  ) => import("@koi/forge-demand").SessionScopedForgeDemandHandle;
+}
+
 /** The assembled runtime returned by createRuntime. */
 export interface RuntimeHandle {
   readonly adapter: EngineAdapter;
@@ -684,12 +706,17 @@ export interface RuntimeHandle {
 
   /**
    * Forge-demand handle. Only populated when `config.forgeDemand` is provided.
-   * Exposes `getSignals()`, `dismiss(id)`, and `getActiveSignalCount()` so
-   * runtime callers can inspect pending demand signals and acknowledge them
-   * — without this, signals would re-fire after cooldown expiry and consume
-   * the per-session forge budget until session end.
+   *
+   * @see RuntimeForgeDemandHandle
+   * Exposes `forSessionId(sessionId)` to obtain a session-scoped view of
+   * pending signals — runtime callers do not have direct access to the
+   * engine-issued `SessionContext` object, so a sessionId-keyed surface
+   * is the only operable inspection path. Without this, signals would
+   * re-fire after cooldown expiry and consume the per-session forge
+   * budget until session end. Throws when the sessionId has not been
+   * observed in the runtime — there is no cross-tenant aggregator.
    */
-  readonly forgeDemand?: import("@koi/forge-demand").ForgeDemandHandle | undefined;
+  readonly forgeDemand?: RuntimeForgeDemandHandle | undefined;
 
   /** Dispose all resources. */
   readonly dispose: () => Promise<void>;

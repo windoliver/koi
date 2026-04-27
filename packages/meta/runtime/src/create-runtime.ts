@@ -19,6 +19,7 @@ import type {
   ModelResponse,
   RetrySignalReader,
   RichTrajectoryStep,
+  SessionContext,
   ToolDescriptor,
   ToolRequest,
   ToolResponse,
@@ -273,9 +274,16 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         );
       }
       const baseForgeConfig = validated.value;
+      // Auto-wire ONLY when feedback-loop has live trackers (forgeHealth
+      // configured). With feedback-loop installed but no forgeHealth, its
+      // healthHandle would always return undefined — wiring it anyway
+      // would silently dormant performance_degradation while suppressing
+      // the warning that would otherwise flag the gap (F64 regression).
+      const feedbackLoopHasLiveTrackers =
+        feedbackLoopMiddleware !== undefined && config.feedbackLoop?.forgeHealth !== undefined;
       const autoHealthHandle =
-        baseForgeConfig.healthTracker === undefined && feedbackLoopMiddleware !== undefined
-          ? feedbackLoopMiddleware.healthHandle
+        baseForgeConfig.healthTracker === undefined && feedbackLoopHasLiveTrackers
+          ? feedbackLoopMiddleware?.healthHandle
           : undefined;
       const finalForgeConfig =
         autoHealthHandle !== undefined
@@ -285,17 +293,46 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         console.warn(
           "[forge-demand] performance_degradation trigger is dormant: " +
             "no healthTracker on config.forgeDemand and no feedback-loop " +
-            "middleware to auto-wire. Either install feedback-loop with " +
-            "forgeHealth, or supply a custom { getSnapshot(sessionId, toolId) } " +
-            "handle on config.forgeDemand.healthTracker.",
+            "with forgeHealth to auto-wire. Either install feedback-loop " +
+            "with `forgeHealth` configured, or supply a custom " +
+            "{ getSnapshot(sessionId, toolId) } handle on " +
+            "config.forgeDemand.healthTracker.",
         );
       }
       forgeDemandHandle = createForgeDemandDetector(finalForgeConfig);
     }
+    // Runtime-owned SessionContext capture so RuntimeHandle.forgeDemand
+    // can expose `forSessionId(sessionId)`. The L2 detector authorizes
+    // forSession() by SessionContext object identity (F61) — but normal
+    // runtime callers never see those engine-owned objects. The capture
+    // middleware records each (sessionId → SessionContext) pair as
+    // sessions flow through the chain, and the wrapper looks up the
+    // legitimate context for the caller.
+    const sessionContextById = new Map<string, SessionContext>();
+    const captureMiddleware: KoiMiddleware = {
+      name: "forge-demand-session-capture",
+      // 444 sits just outside forge-demand (445), so this captures
+      // the same SessionContext the detector observes a moment
+      // later in the chain.
+      priority: 444,
+      describeCapabilities: () => undefined,
+      wrapToolCall(ctx, request, next) {
+        sessionContextById.set(ctx.session.sessionId, ctx.session);
+        return next(request);
+      },
+      wrapModelCall(ctx, request, next) {
+        sessionContextById.set(ctx.session.sessionId, ctx.session);
+        return next(request);
+      },
+      async onSessionEnd(ctx) {
+        sessionContextById.delete(ctx.sessionId);
+      },
+    };
     const baseWithForgeDemand: readonly KoiMiddleware[] =
       forgeDemandHandle !== undefined
         ? [
             ...baseWithFeedbackLoop.filter((mw) => mw.name !== "forge-demand-detector"),
+            captureMiddleware,
             forgeDemandHandle.middleware,
           ]
         : baseWithFeedbackLoop;
@@ -734,7 +771,23 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       browserProvider,
       lspProvider,
       memoryStore,
-      forgeDemand: forgeDemandHandle,
+      forgeDemand:
+        forgeDemandHandle !== undefined
+          ? {
+              middleware: forgeDemandHandle.middleware,
+              forSessionId: (sid: string) => {
+                const ctx = sessionContextById.get(sid);
+                if (ctx === undefined) {
+                  throw new Error(
+                    `forSessionId(${sid}) failed: no SessionContext observed for this id. ` +
+                      "The session has not yet sent traffic through the middleware " +
+                      "chain or was already ended.",
+                  );
+                }
+                return forgeDemandHandle.forSession(ctx);
+              },
+            }
+          : undefined,
       createDecisionLedger: decisionLedgerFactory,
       dispose: async () => {
         // Unsubscribe approval sink to prevent leak on long-lived permission handles

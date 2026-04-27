@@ -13983,4 +13983,73 @@ describe("Golden: @koi/forge-demand", () => {
     // forge-demand's detector treats undefined as "no degradation signal".
     expect(fl.healthHandle.getSnapshot("missing-session", "missing-tool")).toBeUndefined();
   });
+
+  test("RuntimeHandle.forgeDemand exposes forSessionId for runtime callers", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    // Regression for round-5 F63: the prior surface only exposed
+    // `forSession(SessionContext)`, but normal runtime callers never
+    // see engine-issued SessionContext objects. The runtime now wraps
+    // the handle to provide a sessionId-keyed view backed by a capture
+    // middleware that records the legitimate SessionContext.
+    const runtime = createRuntime({
+      forgeDemand: {
+        budget: {
+          maxForgesPerSession: 5,
+          computeTimeBudgetMs: 120_000,
+          demandThreshold: 0.7,
+          cooldownMs: 1_000,
+        },
+        heuristics: {
+          repeatedFailureCount: 3,
+          capabilityGapOccurrences: 2,
+          latencyDegradationAvgMs: 5_000,
+        },
+      },
+    });
+    expect(runtime.forgeDemand).toBeDefined();
+    expect(typeof runtime.forgeDemand?.forSessionId).toBe("function");
+    // Unobserved sessionId fails closed — never silently returns empty
+    // data (which would hide "session not yet active" from callers).
+    expect(() => runtime.forgeDemand?.forSessionId("never-seen")).toThrow(
+      /no SessionContext observed/,
+    );
+    await runtime.dispose();
+  });
+
+  test("auto-wiring is suppressed when feedbackLoop is configured without forgeHealth", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    // Regression for round-5 F64: the runtime previously wired
+    // feedback-loop's healthHandle into forge-demand whenever
+    // feedback-loop was present. But feedback-loop only creates live
+    // trackers when forgeHealth is configured — so without it, the
+    // injected handle always returned undefined and
+    // performance_degradation was silently dormant with no warning.
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: unknown): void => {
+      warnings.push(String(msg));
+    };
+    try {
+      const runtime = createRuntime({
+        feedbackLoop: {}, // no forgeHealth
+        forgeDemand: {
+          budget: {
+            maxForgesPerSession: 5,
+            computeTimeBudgetMs: 120_000,
+            demandThreshold: 0.7,
+            cooldownMs: 1_000,
+          },
+          heuristics: {
+            repeatedFailureCount: 3,
+            capabilityGapOccurrences: 2,
+            latencyDegradationAvgMs: 5_000,
+          },
+        },
+      });
+      expect(warnings.some((w) => /performance_degradation trigger is dormant/.test(w))).toBe(true);
+      await runtime.dispose();
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
 });

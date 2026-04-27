@@ -28,4 +28,5 @@ export type {
   ForgeDemandConfig,
   ForgeDemandHandle,
   HeuristicThresholds,
+  SessionScopedForgeDemandHandle,
 } from "./types.js";
