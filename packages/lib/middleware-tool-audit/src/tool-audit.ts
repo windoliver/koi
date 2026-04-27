@@ -797,16 +797,14 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   async function loadAndMergeForSave(
     pendingSnapshot: ToolAuditSnapshot,
   ): Promise<ToolAuditSnapshot> {
-    // Re-read disk so we can detect concurrent writes from other writers.
-    // If load throws, fall back to the in-memory snapshot — better than
-    // skipping the save entirely.
-    let onDisk: ToolAuditSnapshot | undefined;
-    try {
-      onDisk = await store.load();
-    } catch (e: unknown) {
-      onError?.(e);
-      return pendingSnapshot;
-    }
+    // Re-read disk so we can detect concurrent writes from other
+    // writers. If load throws we MUST abort the save instead of
+    // committing the in-memory pending snapshot: that would write an
+    // ungrounded read-modify-write result, potentially rolling back
+    // counts another writer committed since baselineSnapshot
+    // (#review-round44-F2). Propagate the error so persistWithRetry
+    // sets pendingFailedPersist and the next session retries.
+    const onDisk = await store.load();
 
     // Baseline-delta merge: our in-memory state = baseline + our deltas.
     // The on-disk state may have advanced past baseline (another writer).

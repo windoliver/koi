@@ -1545,6 +1545,66 @@ describe("createToolAuditMiddleware", () => {
       expect(highValue).toBeDefined();
     });
 
+    test("persist aborts when pre-save load fails, retries next session — round 44 F2", async () => {
+      // After a successful hydrate, a subsequent store.load() failure
+      // during read-modify-write must abort the save instead of
+      // committing an ungrounded snapshot. Otherwise concurrent
+      // writers' counts can be silently rolled back.
+      // let: how many post-hydration loads to fail before recovering
+      let pendingLoadFailures = 1;
+      const initial: ToolAuditSnapshot = {
+        tools: {},
+        totalSessions: 0,
+        lastUpdatedAt: 0,
+      };
+      // let: stored snapshot; mutated by save closure
+      let stored: ToolAuditSnapshot = initial;
+      const saves: ToolAuditSnapshot[] = [];
+      const onError = mock(() => {});
+      const store: ToolAuditStore = {
+        load: () => {
+          if (pendingLoadFailures > 0 && saves.length > 0) {
+            // Only fail loads AFTER the hydration load has succeeded.
+            pendingLoadFailures -= 1;
+            throw new Error("disk read failure");
+          }
+          return stored;
+        },
+        save: (snap) => {
+          saves.push(snap);
+          stored = snap;
+        },
+      };
+      const mw = createToolAuditMiddleware(defaultConfig({ store, onError }));
+      const wrap = getWrapToolCall(mw);
+
+      // Session 1: hydrates (load #1 ok), does work, save runs (load
+      // #2 ok), commits a baseline.
+      await mw.onSessionStart?.(sessionCtx());
+      await wrap(turnCtx(), toolReq("alpha"), async () => ({ output: "ok" }));
+      await mw.onSessionEnd?.(sessionCtx());
+      const savesAfterFirst = saves.length;
+      expect(savesAfterFirst).toBeGreaterThan(0);
+
+      // Session 2: read-modify-write reload fails. No save must
+      // occur (would write ungrounded snapshot).
+      await mw.onSessionStart?.(sessionCtx({ sessionId: "s2" }));
+      await wrap(turnCtx(sessionCtx({ sessionId: "s2" })), toolReq("beta"), async () => ({
+        output: "ok",
+      }));
+      await mw.onSessionEnd?.(sessionCtx({ sessionId: "s2" }));
+      expect(saves.length).toBe(savesAfterFirst);
+      expect(onError).toHaveBeenCalled();
+
+      // Session 3: load now succeeds; pendingFailedPersist forces a
+      // retry. The merged snapshot includes both alpha and beta.
+      await mw.onSessionStart?.(sessionCtx({ sessionId: "s3" }));
+      await mw.onSessionEnd?.(sessionCtx({ sessionId: "s3" }));
+      expect(saves.length).toBeGreaterThan(savesAfterFirst);
+      expect(stored.tools.alpha?.callCount).toBe(1);
+      expect(stored.tools.beta?.callCount).toBe(1);
+    });
+
     test("late persist defers when hydration has not succeeded — round 41 F1", async () => {
       // Initial load fails repeatedly. A drain-timeout + late tool
       // completion must NOT overwrite the (unreadable) store with
