@@ -2161,6 +2161,44 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       : manifestAudit?.violations !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
         ? { violationSqlitePath: manifestAudit.violations }
         : {}),
+    // KOI_AUDIT_NDJSON_MAX_BYTES=<n> enables size-based NDJSON log rotation.
+    // KOI_AUDIT_NDJSON_DAILY=1 enables daily UTC rotation.
+    ...(() => {
+      const rawBytes = process.env.KOI_AUDIT_NDJSON_MAX_BYTES;
+      const maxBytes = rawBytes !== undefined ? Number(rawBytes) : undefined;
+      if (
+        rawBytes !== undefined &&
+        (maxBytes === undefined || !Number.isFinite(maxBytes) || maxBytes <= 0)
+      ) {
+        console.warn(
+          `[koi] KOI_AUDIT_NDJSON_MAX_BYTES="${rawBytes}" is not a positive number — NDJSON size rotation disabled`,
+        );
+      }
+      const daily = process.env.KOI_AUDIT_NDJSON_DAILY === "1";
+      const validMaxBytes = maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes > 0;
+      if (validMaxBytes || daily) {
+        return {
+          auditNdjsonRotation: {
+            ...(validMaxBytes ? { maxSizeBytes: maxBytes } : {}),
+            ...(daily ? { daily: true as const } : {}),
+          },
+        };
+      }
+      return {};
+    })(),
+    // KOI_AUDIT_SQLITE_RETENTION_DAYS is not supported in the CLI audit path because
+    // the CLI always writes signed (hash-chained) audit entries, which are incompatible
+    // with session-granular pruning. Warn and ignore instead of aborting at boot.
+    ...(() => {
+      const rawDays = process.env.KOI_AUDIT_SQLITE_RETENTION_DAYS;
+      if (rawDays !== undefined) {
+        console.warn(
+          "[koi] KOI_AUDIT_SQLITE_RETENTION_DAYS is not supported in the CLI audit path " +
+            "(signed/hash-chained logs cannot be pruned). The setting is ignored.",
+        );
+      }
+      return {};
+    })(),
     // Per-sink manifest provenance: only pass the source path for sinks that
     // actually came from the manifest (not from operator env vars). This lets
     // createKoiRuntime run a final containment check immediately before each

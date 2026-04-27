@@ -12,6 +12,7 @@ import { type AuditLogRow, createInsertStmt, initAuditSchema, readAllRows } from
 
 const DEFAULT_FLUSH_INTERVAL_MS = 2000;
 const DEFAULT_MAX_BUFFER_SIZE = 100;
+const DEFAULT_PRUNE_INTERVAL_MS = 3600_000; // 1 hour
 
 function isString(v: unknown): v is string {
   return typeof v === "string";
@@ -103,6 +104,134 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
 
   // Mutable buffer — never exposed
   const buffer: AuditEntry[] = [];
+  // let: set once on first background prune failure; gates subsequent log/flush.
+  let pruneError: unknown;
+
+  function pruneOldEntries(): void {
+    if (!config.retention) return;
+    // Flush first so no buffered expired row survives pruning or re-inserts after DELETE.
+    flushBuffer();
+    try {
+      // Hash-chain compatibility check: session-granular pruning is fundamentally
+      // incompatible with a continuous cross-session hash chain. Every non-tail session
+      // has later rows with prev_hash IS NOT NULL (the chain continues), so no expired
+      // session would ever be prunable and retention is effectively a no-op.
+      // Throw (via the outer try/catch → safePrune) so operators see a clear error
+      // instead of silently growing the DB while believing retention is enforced.
+      // Scope the probe to this agent's rows when agentId is configured — a different
+      // agent's signed rows must not block retention for an unsigned agent sharing the DB.
+      const hasChain =
+        config.agentId !== undefined
+          ? db
+              .prepare(
+                "SELECT 1 FROM audit_log WHERE agent_id = ? AND prev_hash IS NOT NULL LIMIT 1",
+              )
+              .get(config.agentId)
+          : db.prepare("SELECT 1 FROM audit_log WHERE prev_hash IS NOT NULL LIMIT 1").get();
+      if (hasChain !== null) {
+        throw new Error(
+          "audit_log: retention is incompatible with hash-chained (signed) audit logs. " +
+            "Disable signing in the audit middleware, or remove the retention configuration. " +
+            "Session-granular pruning cannot preserve chain validity across session boundaries.",
+        );
+      }
+
+      const cutoff = Date.now() - config.retention.maxAgeDays * 86_400_000;
+
+      // Prune sessions that are both fully expired AND explicitly closed.
+      //
+      // A session is prunable only when:
+      //   1. ALL entries have timestamps older than the cutoff (fully expired), AND
+      //   2. The session contains a 'session_end' entry (explicitly closed).
+      //
+      // Requiring session_end prevents two failure modes:
+      //   - Long-lived or reused session IDs: a session that's been active for months
+      //     would have MAX(timestamp) >= cutoff even though old entries are expired.
+      //     Without this guard, operators enabling retention on long-lived sessions
+      //     would see no pruning and assume the feature is broken.
+      //   - Incomplete sessions (crashed before session_end): without a close marker,
+      //     we cannot know whether more entries will be written. Pruning an open session
+      //     that resumes later would leave dangling prev_hash references.
+      //
+      // Trade-off: sessions that crash before session_end are never pruned.
+      // Operators who need guaranteed cleanup for crashed sessions can restart
+      // the agent (which writes session_end) before enabling retention.
+      // Group by (agent_id, session_id) rather than session_id alone: session IDs
+      // are host-supplied and may be reused across agents or tenants sharing the same
+      // audit DB. Scoping to the agent+session pair prevents cross-agent prune collisions
+      // where one agent's expired session could match — and delete — another agent's rows.
+      //
+      // When config.agentId is set, further restrict the subquery to that agent so one
+      // sink instance cannot prune sessions belonging to other agents in a shared DB.
+      // Step 1: Find candidate sessions (expired + session_end).
+      // Step 2: Filter out sessions that are part of an active hash chain —
+      //   if any row with id > max(session's ids) has prev_hash IS NOT NULL,
+      //   this session is mid-chain and pruning it would make the remaining chain
+      //   unverifiable (surviving rows would have prev_hash pointing at deleted rows).
+      //   SQLite does not allow outer aggregate references inside correlated HAVING
+      //   subqueries, so we do the chain-safety check in two SQL steps.
+      // Require that the row with MAX(id) is the session_end marker — i.e., the last
+      // event for this (agent_id, session_id) group is a close. This guards against
+      // session ID reuse: if the same ID was used for a later crashed session (no
+      // session_end), MAX(id) belongs to that crashed run and will NOT equal
+      // MAX(id WHERE kind='session_end'), so the group is correctly excluded from pruning.
+      const candidateStmt =
+        config.agentId !== undefined
+          ? db.prepare(
+              `SELECT agent_id, session_id, MAX(id) AS max_id FROM audit_log
+               WHERE agent_id = ?
+               GROUP BY agent_id, session_id
+               HAVING MAX(timestamp) < ?
+                 AND MAX(CASE WHEN kind = 'session_end' THEN id ELSE 0 END) = MAX(id)`,
+            )
+          : db.prepare(
+              `SELECT agent_id, session_id, MAX(id) AS max_id FROM audit_log
+               GROUP BY agent_id, session_id
+               HAVING MAX(timestamp) < ?
+                 AND MAX(CASE WHEN kind = 'session_end' THEN id ELSE 0 END) = MAX(id)`,
+            );
+
+      const candidates = (
+        config.agentId !== undefined
+          ? candidateStmt.all(config.agentId, cutoff)
+          : candidateStmt.all(cutoff)
+      ) as Array<{ agent_id: string; session_id: string; max_id: number }>;
+
+      // When agentId is set, scope the chain-follower check to this agent's rows.
+      // A signed row from a different agent sharing the DB must not prevent pruning
+      // of this agent's unsigned sessions.
+      const chainFollowerStmt =
+        config.agentId !== undefined
+          ? db.prepare(
+              `SELECT 1 FROM audit_log WHERE id > ? AND agent_id = ? AND prev_hash IS NOT NULL LIMIT 1`,
+            )
+          : db.prepare(`SELECT 1 FROM audit_log WHERE id > ? AND prev_hash IS NOT NULL LIMIT 1`);
+
+      db.transaction(() => {
+        for (const { agent_id, session_id, max_id } of candidates) {
+          // Skip sessions mid-chain: if any later row is hash-chained, deleting
+          // this session would corrupt the audit trail of subsequent sessions.
+          const hasChainFollower =
+            config.agentId !== undefined
+              ? chainFollowerStmt.get(max_id, config.agentId)
+              : chainFollowerStmt.get(max_id);
+          if (hasChainFollower !== null) continue;
+          db.prepare("DELETE FROM audit_log WHERE agent_id = ? AND session_id = ?").run(
+            agent_id,
+            session_id,
+          );
+        }
+      })();
+    } catch (e: unknown) {
+      throw new Error("audit_log: failed to prune old entries", { cause: e });
+    }
+    // VACUUM is best-effort: SQLITE_BUSY from concurrent readers is expected and harmless.
+    try {
+      db.prepare("VACUUM").run();
+    } catch {
+      // Space reclamation deferred to next prune cycle — not a correctness failure.
+    }
+  }
 
   function serializeField(value: unknown): string | null {
     if (value === undefined || value === null) return null;
@@ -142,8 +271,38 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
     (timer as { unref: () => void }).unref();
   }
 
+  // Pruning setup — run immediately on creation, then on interval.
+  // safePrune poisons the sink on failure so callers see structured rejection rather than
+  // silent storage growth from indefinitely non-enforced retention.
+  function safePrune(): void {
+    try {
+      pruneOldEntries();
+    } catch (e: unknown) {
+      if (pruneError === undefined) {
+        pruneError = e;
+      }
+    }
+  }
+
+  let pruneTimer: ReturnType<typeof setInterval> | undefined;
+  if (config.retention) {
+    // Initial prune at construction: let errors propagate so incompatible configurations
+    // (hash-chained DB, unreadable schema) fail fast rather than silently accumulate rows.
+    pruneOldEntries();
+    const pruneIntervalMs = config.retention.pruneIntervalMs ?? DEFAULT_PRUNE_INTERVAL_MS;
+    pruneTimer = setInterval(safePrune, pruneIntervalMs);
+    if (typeof pruneTimer === "object" && pruneTimer !== null && "unref" in pruneTimer) {
+      (pruneTimer as unknown as { unref: () => void }).unref();
+    }
+  }
+
   return {
     async log(entry: AuditEntry): Promise<void> {
+      if (pruneError !== undefined) {
+        throw new Error("audit SQLite sink poisoned by background retention prune failure", {
+          cause: pruneError,
+        });
+      }
       buffer.push(entry);
       if (buffer.length >= maxBufferSize) {
         flushBuffer();
@@ -151,6 +310,11 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
     },
 
     async flush(): Promise<void> {
+      if (pruneError !== undefined) {
+        throw new Error("audit SQLite sink poisoned by background retention prune failure", {
+          cause: pruneError,
+        });
+      }
       flushBuffer();
     },
 
@@ -162,19 +326,39 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
       // from the decision-ledger and /trajectory audit lane. When that
       // becomes necessary, add a proper `queryPage({ sessionId, cursor,
       // limit })` surface and propagate `hasMore` through the ledger.
-      const rows = db
-        .prepare("SELECT * FROM audit_log WHERE session_id = ? ORDER BY id ASC")
-        .all(sessionId);
+      //
+      // When config.agentId is set (shared-DB mode), scope reads to that
+      // agent's rows so one sink cannot observe another agent's audit history
+      // via a colliding or reused session ID. Callers needing cross-agent reads
+      // (e.g. multi-agent compliance review) should omit agentId from config.
+      const rows =
+        config.agentId !== undefined
+          ? db
+              .prepare(
+                "SELECT * FROM audit_log WHERE session_id = ? AND agent_id = ? ORDER BY id ASC",
+              )
+              .all(sessionId, config.agentId)
+          : db
+              .prepare("SELECT * FROM audit_log WHERE session_id = ? ORDER BY id ASC")
+              .all(sessionId);
       return rows.map(mapRow);
     },
 
     getEntries(): readonly AuditEntry[] {
       flushBuffer();
+      if (config.agentId !== undefined) {
+        return (
+          db
+            .prepare("SELECT * FROM audit_log WHERE agent_id = ? ORDER BY id ASC")
+            .all(config.agentId) as unknown[]
+        ).map(mapRow);
+      }
       return readAllRows(db).map(mapRow);
     },
 
     close(): void {
       clearInterval(timer);
+      clearInterval(pruneTimer);
       flushBuffer();
       db.close();
     },

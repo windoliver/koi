@@ -48,6 +48,7 @@ export function createTerminalHandlers(
   rawModelStreamTerminal?: ModelStreamHandler,
   debugInstrumentation?: DebugInstrumentation,
   getTurnIndex?: () => number,
+  getSynthCallTerminal?: () => ModelHandler,
 ): TerminalHandlers {
   const modelHandler: ModelHandler = async (request) => {
     agent.transition({ kind: "wait", reason: "model_call" });
@@ -85,9 +86,66 @@ export function createTerminalHandlers(
     }
   };
 
-  if (rawModelStreamTerminal === undefined) {
-    return { modelHandler, toolHandler };
-  }
+  // Synthesize a stream terminal when the adapter doesn't expose a
+  // native modelStream. This unifies the engine pipeline so
+  // `wrapModelStream` middleware (e.g. @koi/middleware-tool-recovery)
+  // runs for every adapter — not just streaming-native ones.
+  //
+  // The synth resolves `getSynthCallTerminal` per-call when provided.
+  // Callers compose this from CALL-ONLY middleware (those that
+  // implement wrapModelCall but NOT wrapModelStream) around the raw
+  // terminal, so call-only hooks still fire on non-streaming adapters
+  // (#review-round14-F1). Dual-hook middleware is excluded from this
+  // chain — it fires exactly once via the outer wrapModelStream
+  // chain, avoiding the round-13 concurrency-guard self-deadlock and
+  // budget double-charge. Each middleware fires exactly once per
+  // logical request regardless of adapter shape.
+  //
+  // Resolved per-call (not captured at construction) so dynamic /
+  // forged middleware added after startup are picked up on the next
+  // synth invocation (#review-round15-F1).
+  //
+  // The synth uses raw terminals (not the lifecycle-wrapped
+  // `modelHandler`) so the inner call doesn't emit a nested
+  // wait(model_call)/resume that would prematurely transition the
+  // agent back to `running` while stream middleware is still
+  // buffering chunks (#review-round11-F3). The outer
+  // `modelStreamHandler` below owns the wait(model_stream)/resume
+  // pair for the entire stream lifecycle.
+  const effectiveStreamTerminal: ModelStreamHandler =
+    rawModelStreamTerminal ??
+    async function* (request): AsyncIterable<ModelChunk> {
+      const synth = getSynthCallTerminal !== undefined ? getSynthCallTerminal() : rawModelTerminal;
+      const response = await synth(request);
+      // When richContent is present, replay blocks IN ORDER so chunk
+      // consumers see the same chronological structure as native
+      // streamers (text → tool_call → text is significant; emitting
+      // all text first followed by tool_calls would reorder
+      // observability and execution timing — #review-round48-F2).
+      // When richContent is absent, fall back to streaming
+      // response.content as a single text_delta. response.content
+      // remains the authoritative aggregate on the terminal `done`.
+      if (response.richContent !== undefined) {
+        for (const block of response.richContent) {
+          if (block.kind === "text") {
+            if (block.text.length > 0) yield { kind: "text_delta", delta: block.text };
+          } else if (block.kind === "tool_call") {
+            yield { kind: "tool_call_start", toolName: block.name, callId: block.id };
+            yield {
+              kind: "tool_call_delta",
+              callId: block.id,
+              delta: JSON.stringify(block.arguments),
+            };
+            yield { kind: "tool_call_end", callId: block.id };
+          } else if (block.kind === "thinking") {
+            yield { kind: "thinking_delta", delta: block.text };
+          }
+        }
+      } else if (response.content.length > 0) {
+        yield { kind: "text_delta", delta: response.content };
+      }
+      yield { kind: "done", response };
+    };
 
   const modelStreamHandler: ModelStreamHandler = (request) => {
     let finished = false;
@@ -111,7 +169,7 @@ export function createTerminalHandlers(
     return {
       [Symbol.asyncIterator](): AsyncIterator<ModelChunk> {
         agent.transition({ kind: "wait", reason: "model_stream" });
-        const inner = rawModelStreamTerminal(request)[Symbol.asyncIterator]();
+        const inner = effectiveStreamTerminal(request)[Symbol.asyncIterator]();
 
         return {
           async next(): Promise<IteratorResult<ModelChunk>> {
@@ -163,11 +221,24 @@ export function createComposedCallHandlers(
 ): ComposedCallHandlers {
   const sorted = sortMiddlewareByPhase(middleware);
 
+  // Compose a chain of CALL-ONLY middleware (wrapModelCall but no
+  // wrapModelStream) around the raw terminal. The stream synth uses
+  // this so call-only hooks still fire on non-streaming adapters
+  // without dual-hook middleware double-firing (#review-round14-F1).
+  const callOnly = sorted.filter(
+    (mw) => mw.wrapModelCall !== undefined && mw.wrapModelStream === undefined,
+  );
+  const callOnlyChain = composeModelChain(callOnly, rawModelTerminal);
+  const synthCallTerminal: ModelHandler = (request) => callOnlyChain(getTurnContext(), request);
+
   const { modelHandler, modelStreamHandler, toolHandler } = createTerminalHandlers(
     agent,
     rawModelTerminal,
     rawToolTerminal,
     rawModelStreamTerminal,
+    undefined,
+    undefined,
+    () => synthCallTerminal,
   );
 
   const modelChain = composeModelChain(sorted, modelHandler);
@@ -189,15 +260,21 @@ export function createComposedCallHandlers(
     return injectCapabilities(sorted, getTurnContext(), withTools, capabilityConfig);
   };
 
-  if (modelStreamHandler === undefined) {
+  // createTerminalHandlers always returns a modelStreamHandler — either
+  // the adapter's native one or a synth around the raw model terminal.
+  // So the stream chain is always defined here.
+  const streamChain =
+    modelStreamHandler !== undefined
+      ? composeModelStreamChain(sorted, modelStreamHandler)
+      : undefined;
+
+  if (streamChain === undefined) {
     return {
       modelCall: (request) => modelChain(getTurnContext(), prepareRequest(request)),
       toolCall: (request) => toolChain(getTurnContext(), request),
       tools: toolDescriptors,
     };
   }
-
-  const streamChain = composeModelStreamChain(sorted, modelStreamHandler);
 
   return {
     modelCall: (request) => modelChain(getTurnContext(), prepareRequest(request)),

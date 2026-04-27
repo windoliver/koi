@@ -42,6 +42,8 @@ export interface SpawnRequest {
   readonly taskIndex?: number | undefined;
   /** Task board item reference for orchestrator correlation. */
   readonly taskId?: TaskItemId | undefined;
+  /** Optional structured context supplied by the spawn initiator. */
+  readonly context?: JsonObject | undefined;
   /** Target agent ID for copilot routing. */
   readonly agentId?: AgentId | undefined;
   /**

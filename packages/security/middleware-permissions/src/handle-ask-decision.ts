@@ -84,7 +84,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
     grantKey: string,
     next: ToolHandler,
     decision: PermissionDecision & { readonly effect: "ask" },
-    dispatchApprovalOutcome?: (d: PermissionDecision) => void,
+    dispatchApprovalOutcome?: (d: PermissionDecision) => void | Promise<void>,
   ) => Promise<ToolResponse>;
 } {
   const {
@@ -113,7 +113,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
     grantKey: string,
     next: ToolHandler,
     decision: PermissionDecision & { readonly effect: "ask" },
-    dispatchApprovalOutcome?: (d: PermissionDecision) => void,
+    dispatchApprovalOutcome?: (d: PermissionDecision) => void | Promise<void>,
   ): Promise<ToolResponse> {
     const approvalHandler = ctx.requestApproval;
 
@@ -136,6 +136,11 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
     const persistentUserId = ctx.session.userId;
     const persistentAid = persistentAgentId ?? ctx.session.agentId;
     if (persistentStore !== undefined && persistentUserId !== undefined) {
+      // Narrow try/catch to store reads only — dispatch and next() must not be
+      // inside the catch so audit failures abort execution rather than falling
+      // through to a second approval prompt.
+      let persistentAutoApprove = false;
+      let persistentStartMs = 0;
       try {
         // Key persistent grants by `grantKey` (exact-command hash) so
         // approving `bash:git status` does not auto-approve the stricter
@@ -171,7 +176,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
           hasLegacy = !isComplexForm && !isDangerous && !isSpecGuardAsk;
         }
         if (hasExact || hasLegacy) {
-          const persistentStartMs = clock();
+          persistentStartMs = clock();
           getTracker(ctx.session.sessionId as string).record({
             toolId: resource,
             reason: `auto-approved (persistent always-allow grant, agent: ${ctx.session.agentId})`,
@@ -199,12 +204,17 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
               /* remembered */ true,
             );
           }
-          // Dispatch before next() so the permission outcome is recorded even if the tool throws
-          dispatchApprovalOutcome?.({ effect: "allow" });
-          return next(request);
+          persistentAutoApprove = true;
         }
       } catch {
-        // Fall through to session/cache/prompt — fail-open.
+        // Fall through to session/cache/prompt — fail-open on store errors only.
+      }
+      if (persistentAutoApprove) {
+        // Outside the try/catch: dispatch and next() must propagate failures so
+        // an audit flush error aborts execution rather than silently falling
+        // through to a second prompt.
+        await dispatchApprovalOutcome?.({ effect: "allow" });
+        return next(request);
       }
     }
 
@@ -233,8 +243,8 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
         request.input,
         alwaysAllowStartMs,
       );
-      // Dispatch before next() so the permission outcome is recorded even if the tool throws
-      dispatchApprovalOutcome?.({ effect: "allow" });
+      // Await dispatch before next() so the approval record is durable before tool execution
+      await dispatchApprovalOutcome?.({ effect: "allow" });
       return next(request);
     }
 
@@ -258,8 +268,8 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
 
       if (cacheKey !== undefined && approvalCache.has(cacheKey)) {
         emitApprovalStep(ctx, request.toolId, { kind: "allow" }, request.input, clock());
-        // Dispatch before next() so the permission outcome is recorded even if the tool throws
-        dispatchApprovalOutcome?.({ effect: "allow" });
+        // Await dispatch before next() so the approval record is durable before tool execution
+        await dispatchApprovalOutcome?.({ effect: "allow" });
         return next(request);
       }
     }
@@ -342,7 +352,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
         }
 
         if (result === undefined || result.kind === "deny") {
-          dispatchApprovalOutcome?.({
+          await dispatchApprovalOutcome?.({
             effect: "deny",
             reason: `Tool "${request.toolId}" denied (coalesced approval)`,
           });
@@ -352,8 +362,8 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
             retryable: false,
           });
         }
-        // Dispatch allow before next() so outcome is recorded even if the tool throws
-        dispatchApprovalOutcome?.({ effect: "allow" });
+        // Await dispatch before next() so the approval record is durable before tool execution
+        await dispatchApprovalOutcome?.({ effect: "allow" });
         if (result.kind === "modify") {
           return next({ ...request, input: result.updatedInput });
         }
@@ -472,7 +482,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
           approvalStartMs,
         );
         stepEmitted = true;
-        dispatchApprovalOutcome?.({ effect: "deny", reason: "malformed_response" });
+        await dispatchApprovalOutcome?.({ effect: "deny", reason: "malformed_response" });
         throw new KoiRuntimeError({
           code: "PERMISSION",
           message: `Malformed approval response for "${request.toolId}" — failing closed`,
@@ -505,7 +515,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
           source: "approval",
         });
 
-        dispatchApprovalOutcome?.({ effect: "deny", reason: approvalResult.reason });
+        await dispatchApprovalOutcome?.({ effect: "deny", reason: approvalResult.reason });
         throw new KoiRuntimeError({
           code: "PERMISSION",
           message: `Tool "${request.toolId}" denied by approval handler: ${approvalResult.reason}`,
@@ -521,12 +531,17 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
       // same exact-command grant key.
       if (approvalResult.kind === "always-allow") {
         const sid = ctx.session.sessionId as string;
+        const sessionGrantKey = `${ctx.session.agentId}\0${grantKey}`;
+
+        // Await audit dispatch BEFORE mutating any grant state so that if the
+        // flush fails, no reusable bypass survives without a durable audit record.
+        await dispatchApprovalOutcome?.({ effect: "allow" });
+
         let allowed = alwaysAllowedBySession.get(sid);
         if (allowed === undefined) {
           allowed = new Set();
           alwaysAllowedBySession.set(sid, allowed);
         }
-        const sessionGrantKey = `${ctx.session.agentId}\0${grantKey}`;
         allowed.add(sessionGrantKey);
 
         // Persist to durable storage if scope is "always", store is configured,
@@ -557,8 +572,6 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
           source: "approval",
         });
 
-        // Dispatch before next() so the permission outcome is recorded even if the tool throws
-        dispatchApprovalOutcome?.({ effect: "allow" });
         return next(request);
       }
 
@@ -566,10 +579,14 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
       // Never cache modify results: the input rewrite is the safety mechanism,
       // and caching would replay the original unsafe input on subsequent calls
       if (approvalResult.kind === "modify") {
-        // Dispatch before next() so the permission outcome is recorded even if the tool throws
-        dispatchApprovalOutcome?.({ effect: "allow" });
+        // Await dispatch before next() so the approval record is durable before tool execution
+        await dispatchApprovalOutcome?.({ effect: "allow" });
         return next({ ...request, input: approvalResult.updatedInput });
       }
+
+      // Await audit dispatch BEFORE caching the approval so that if the flush fails,
+      // no reusable cache entry survives without a durable audit record.
+      await dispatchApprovalOutcome?.({ effect: "allow" });
 
       // Cache allow-only approvals (never modify — see above)
       if (approvalCache !== undefined) {
@@ -590,8 +607,6 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
         if (cacheKey !== undefined) approvalCache.set(cacheKey);
       }
 
-      // "allow" — dispatch before next() so outcome is recorded even if the tool throws
-      dispatchApprovalOutcome?.({ effect: "allow" });
       return next(request);
     } catch (e: unknown) {
       // Emit a failure trajectory step for timeout/handler errors so they
