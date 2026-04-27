@@ -59,31 +59,58 @@ export function canonicalize(value: unknown): string {
 }
 
 /**
+ * Common immutable BrickArtifactBase fields that participate in identity.
+ * Spread alongside kind-specific content so two artifacts that differ only
+ * in `files` / `requires` / `configSchema` / `composition` cannot collapse
+ * onto the same id.
+ */
+function baseImmutables(brick: BrickArtifact): JsonObject {
+  return {
+    ...(brick.files !== undefined ? { files: brick.files } : {}),
+    ...(brick.requires !== undefined ? { requires: brick.requires } : {}),
+    ...(brick.configSchema !== undefined ? { configSchema: brick.configSchema } : {}),
+    ...(brick.composition !== undefined ? { composition: brick.composition } : {}),
+  };
+}
+
+/**
  * Extract the kind-specific identity content from a persisted BrickArtifact,
- * mirroring exactly what the synthesizer passed to `computeIdentityBrickId`.
+ * mirroring exactly what the synthesizer passed to `computeIdentityBrickId`,
+ * extended with all immutable BrickArtifactBase fields so distinct content
+ * cannot alias under one id.
  *
  * Throws for kinds whose identity content is not defined here. The store must
  * reject these rather than silently bypass content-address validation.
  */
 export function extractIdentityContent(brick: BrickArtifact): JsonObject {
+  const base = baseImmutables(brick);
   if (brick.kind === "tool") {
     return {
+      ...base,
       implementation: brick.implementation,
       inputSchema: brick.inputSchema,
       ...(brick.outputSchema !== undefined ? { outputSchema: brick.outputSchema } : {}),
+      ...(brick.testCases !== undefined ? { testCases: brick.testCases } : {}),
+      ...(brick.counterexamples !== undefined ? { counterexamples: brick.counterexamples } : {}),
     };
   }
   if (brick.kind === "middleware" || brick.kind === "channel") {
-    return { implementation: brick.implementation };
+    return {
+      ...base,
+      implementation: brick.implementation,
+      ...(brick.testCases !== undefined ? { testCases: brick.testCases } : {}),
+      ...(brick.counterexamples !== undefined ? { counterexamples: brick.counterexamples } : {}),
+    };
   }
   if (brick.kind === "skill") {
-    return { content: brick.content };
+    return { ...base, content: brick.content };
   }
   if (brick.kind === "agent") {
-    return { manifestYaml: brick.manifestYaml };
+    return { ...base, manifestYaml: brick.manifestYaml };
   }
   if (brick.kind === "composite") {
     return {
+      ...base,
       steps: brick.steps,
       exposedInput: brick.exposedInput,
       exposedOutput: brick.exposedOutput,

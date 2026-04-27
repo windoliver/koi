@@ -44,39 +44,15 @@ function isTerminalLifecycle(l: BrickLifecycle): boolean {
 
 /**
  * Compare identity-bearing fields between two artifacts that share an id.
- * Same id is the precondition; this verifies the precondition holds (i.e.
- * detects either tampering or a sha256 collision).
+ * Uniform structural comparison over the full immutable artifact surface
+ * so that omitted-but-set immutable fields (`files`, `requires`,
+ * `configSchema`, `composition`, kind-specific `testCases` /
+ * `counterexamples`, etc.) cannot alias under the same id.
+ *
+ * Strips mutable runtime metadata first so two retries that differ only in
+ * usageCount, fitness, provenance.metadata.finishedAt, etc. are still equal.
  */
 function isIdentityEqual(a: BrickArtifact, b: BrickArtifact): boolean {
-  if (a.kind !== b.kind) return false;
-  if (a.name !== b.name) return false;
-  if (a.description !== b.description) return false;
-  if (a.version !== b.version) return false;
-  if (a.scope !== b.scope) return false;
-  if (a.kind === "tool" && b.kind === "tool") {
-    // Use the same canonical representation as the identity hash so equivalent
-    // schemas with different key insertion order are treated as equal.
-    return (
-      a.implementation === b.implementation &&
-      canonicalize(a.inputSchema) === canonicalize(b.inputSchema) &&
-      canonicalize(a.outputSchema ?? null) === canonicalize(b.outputSchema ?? null)
-    );
-  }
-  if (a.kind === "middleware" && b.kind === "middleware") {
-    return a.implementation === b.implementation;
-  }
-  if (a.kind === "channel" && b.kind === "channel") {
-    return a.implementation === b.implementation;
-  }
-  if (a.kind === "skill" && b.kind === "skill") {
-    return a.content === b.content;
-  }
-  if (a.kind === "agent" && b.kind === "agent") {
-    return a.manifestYaml === b.manifestYaml;
-  }
-  // composite or unknown — be conservative: structural identity comparison
-  // after stripping mutable runtime metadata. Canonicalize so key order
-  // differences do not cause spurious mismatches.
   return canonicalize(stripMutable(a)) === canonicalize(stripMutable(b));
 }
 
@@ -121,6 +97,62 @@ function toSummary(brick: BrickArtifact): BrickSummary {
 export function createInMemoryForgeStore(): ForgeStore {
   const bricks = new Map<BrickId, BrickArtifact>();
   const notifier = createMemoryStoreChangeNotifier();
+  // Indexes keep visibility-oriented lookups (forge_list) bounded to the
+  // caller's own bricks plus globals, so peer-data volume cannot inflate
+  // a list operation's cost.
+  const byScope = new Map<string, Set<BrickId>>();
+  const byScopeAndCreatedBy = new Map<string, Set<BrickId>>();
+
+  const scopeKey = (scope: string): string => scope;
+  const scopeCreatedByKey = (scope: string, agentId: string): string => `${scope}|${agentId}`;
+  const addToIndex = (map: Map<string, Set<BrickId>>, key: string, id: BrickId): void => {
+    let set = map.get(key);
+    if (set === undefined) {
+      set = new Set<BrickId>();
+      map.set(key, set);
+    }
+    set.add(id);
+  };
+  const removeFromIndex = (map: Map<string, Set<BrickId>>, key: string, id: BrickId): void => {
+    const set = map.get(key);
+    if (set === undefined) return;
+    set.delete(id);
+    if (set.size === 0) map.delete(key);
+  };
+  const indexInsert = (brick: BrickArtifact): void => {
+    addToIndex(byScope, scopeKey(brick.scope), brick.id);
+    const createdBy = brick.provenance.metadata.agentId;
+    if (typeof createdBy === "string" && createdBy.length > 0) {
+      addToIndex(byScopeAndCreatedBy, scopeCreatedByKey(brick.scope, createdBy), brick.id);
+    }
+  };
+  const indexDelete = (brick: BrickArtifact): void => {
+    removeFromIndex(byScope, scopeKey(brick.scope), brick.id);
+    const createdBy = brick.provenance.metadata.agentId;
+    if (typeof createdBy === "string" && createdBy.length > 0) {
+      removeFromIndex(byScopeAndCreatedBy, scopeCreatedByKey(brick.scope, createdBy), brick.id);
+    }
+  };
+  /** Pick the smallest candidate set for a given query (scope and/or createdBy). */
+  const candidateBricks = (query: ForgeQuery): Iterable<BrickArtifact> => {
+    if (query.scope !== undefined && query.createdBy !== undefined) {
+      const set = byScopeAndCreatedBy.get(scopeCreatedByKey(query.scope, query.createdBy));
+      if (set === undefined) return [];
+      return mapIdsToBricks(set);
+    }
+    if (query.scope !== undefined) {
+      const set = byScope.get(scopeKey(query.scope));
+      if (set === undefined) return [];
+      return mapIdsToBricks(set);
+    }
+    return bricks.values();
+  };
+  function* mapIdsToBricks(set: ReadonlySet<BrickId>): Generator<BrickArtifact> {
+    for (const id of set) {
+      const b = bricks.get(id);
+      if (b !== undefined) yield b;
+    }
+  }
 
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
     // Defense-in-depth: verify the caller-supplied BrickId matches the
@@ -177,6 +209,7 @@ export function createInMemoryForgeStore(): ForgeStore {
     // shared references on nested objects (provenance, schemas, tags, etc.).
     const stored: BrickArtifact = { ...structuredClone(brick), storeVersion: 1 };
     bricks.set(brick.id, stored);
+    indexInsert(stored);
     notifier.notify({ kind: "saved", brickId: brick.id, scope: brick.scope });
     return { ok: true, value: undefined };
   };
@@ -189,8 +222,10 @@ export function createInMemoryForgeStore(): ForgeStore {
   };
 
   const search = async (query: ForgeQuery): Promise<Result<readonly BrickArtifact[], KoiError>> => {
+    // Use scope/createdBy indexes when available so visibility-oriented
+    // queries (forge_list) do not pay the cost of every other tenant's data.
     const filtered: BrickArtifact[] = [];
-    for (const brick of bricks.values()) {
+    for (const brick of candidateBricks(query)) {
       if (matchesBrickQuery(brick, query)) filtered.push(brick);
     }
     const sorted = sortBricks(filtered, query, { nowMs: Date.now() });
@@ -208,8 +243,10 @@ export function createInMemoryForgeStore(): ForgeStore {
   };
 
   const remove = async (id: BrickId): Promise<Result<void, KoiError>> => {
-    if (!bricks.has(id)) return { ok: false, error: notFoundError(id) };
+    const existing = bricks.get(id);
+    if (existing === undefined) return { ok: false, error: notFoundError(id) };
     bricks.delete(id);
+    indexDelete(existing);
     notifier.notify({ kind: "removed", brickId: id });
     return { ok: true, value: undefined };
   };
@@ -261,7 +298,9 @@ export function createInMemoryForgeStore(): ForgeStore {
       ...structuredClone(applied),
       storeVersion: currentVersion + 1,
     };
+    indexDelete(existing);
     bricks.set(id, versioned);
+    indexInsert(versioned);
     notifier.notify({ kind: "updated", brickId: id, scope: versioned.scope });
     return { ok: true, value: undefined };
   };
