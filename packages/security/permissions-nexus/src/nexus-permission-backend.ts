@@ -84,11 +84,9 @@ export function createNexusPermissionBackend(
     });
 
     if (!versionResult.ok) {
-      if (versionResult.error.code === "NOT_FOUND") {
-        // No policy in Nexus yet — this node becomes the initial authority (best-effort)
-        await writeCurrentPolicy().catch(() => {});
-      }
-      // Any other error (transient timeout, auth): run local-only, poller retries
+      // NOT_FOUND or any error: run local-only; poller retries on interval.
+      // Do NOT write to Nexus here — concurrent nodes starting simultaneously
+      // would race with no CAS guarantee, risking policy divergence.
       return;
     }
 

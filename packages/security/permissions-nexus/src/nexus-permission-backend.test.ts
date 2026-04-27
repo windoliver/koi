@@ -147,14 +147,13 @@ describe("createNexusPermissionBackend", () => {
     backend.dispose();
   });
 
-  test("writes policy to Nexus on construction when Nexus has no existing policy (NOT_FOUND)", async () => {
+  test("does NOT write to Nexus on construction when version.json returns NOT_FOUND (run local-only)", async () => {
     const calls: Array<{ method: string; params: CallArgs }> = [];
     const backend = createNexusPermissionBackend({
       transport: makeTransport(async (method, params) => {
         calls.push({ method, params });
-        // version.json read returns NOT_FOUND — triggers writeCurrentPolicy
-        if (method === "read") return notFoundResult();
-        return { ok: true, value: "" };
+        // version.json NOT_FOUND — must NOT trigger any write (concurrent nodes could race)
+        return notFoundResult();
       }),
       localBackend: makeLocalBackend(),
       getCurrentPolicy: () => ({ rules: ["default-deny"] }),
@@ -163,14 +162,10 @@ describe("createNexusPermissionBackend", () => {
     });
 
     await flushMicrotasks();
-    // Small extra wait for the async chain to complete
     await new Promise((r) => setTimeout(r, 10));
 
     const writeCalls = calls.filter((c) => c.method === "write");
-    expect(writeCalls.length).toBeGreaterThanOrEqual(2); // policy.json + version.json
-    const paths = writeCalls.map((c) => c.params.path as string);
-    expect(paths.some((p) => p.endsWith("policy.json"))).toBe(true);
-    expect(paths.some((p) => p.endsWith("version.json"))).toBe(true);
+    expect(writeCalls).toHaveLength(0); // no write — avoids concurrent-node race
     backend.dispose();
   });
 

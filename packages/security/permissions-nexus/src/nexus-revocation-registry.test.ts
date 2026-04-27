@@ -102,28 +102,17 @@ describe("createNexusRevocationRegistry", () => {
     expect(map.get(id3)).toBe(false); // NOT_FOUND = not revoked
   });
 
-  test("revoke writes to correct path with { revoked: true, cascade }", async () => {
-    const calls: Array<{ method: string; params: CallArgs }> = [];
+  test("revoke(cascade=true) throws — cascade requires caller to revoke each descendant", async () => {
     const registry = createNexusRevocationRegistry({
-      transport: makeTransport(async (method, params) => {
-        calls.push({ method, params: params as CallArgs });
-        return { ok: true, value: "" };
-      }),
+      transport: makeTransport(async () => ({ ok: true, value: "" })),
     });
 
-    await registry.revoke(delegationId("grant-abc"), true);
-
-    expect(calls).toHaveLength(1);
-    const call = calls[0];
-    expect(call).toBeDefined();
-    if (call !== undefined) {
-      expect(call.method).toBe("write");
-      expect(call.params.path).toBe("koi/permissions/revocations/grant-abc.json");
-      expect(JSON.parse(call.params.content ?? "{}")).toEqual({ revoked: true, cascade: true });
-    }
+    await expect(registry.revoke(delegationId("grant-abc"), true)).rejects.toThrow(
+      /cascade=true is not supported/,
+    );
   });
 
-  test("revoke with cascade: false writes correct content", async () => {
+  test("revoke(cascade=false) writes { revoked: true } to correct path", async () => {
     const calls: Array<{ method: string; params: CallArgs }> = [];
     const registry = createNexusRevocationRegistry({
       transport: makeTransport(async (method, params) => {
@@ -138,7 +127,9 @@ describe("createNexusRevocationRegistry", () => {
     const call = calls[0];
     expect(call).toBeDefined();
     if (call !== undefined) {
-      expect(JSON.parse(call.params.content ?? "{}")).toEqual({ revoked: true, cascade: false });
+      expect(call.method).toBe("write");
+      expect(call.params.path).toBe("koi/permissions/revocations/grant-xyz.json");
+      expect(JSON.parse(call.params.content ?? "{}")).toEqual({ revoked: true });
     }
   });
 

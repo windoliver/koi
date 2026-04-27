@@ -125,7 +125,12 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
     const listResult = await config.transport.call<unknown>("list", {
       path: `${basePath}/${safeSession}`,
     });
-    if (!listResult.ok) return [];
+    if (!listResult.ok) {
+      throw new Error(
+        `[audit-sink-nexus] query failed: unable to list audit entries for session ${sessionId}: ${listResult.error.message}`,
+        { cause: listResult.error },
+      );
+    }
 
     const files = extractListFiles(listResult.value);
     const entries: AuditEntry[] = [];
@@ -135,7 +140,7 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
         try {
           entries.push(JSON.parse(extractContent(readResult.value)) as AuditEntry);
         } catch {
-          // Skip malformed entries
+          // Skip malformed individual entries — log at caller's discretion
         }
       }
     }

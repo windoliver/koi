@@ -15,20 +15,30 @@ export interface NexusDelegationHooks {
 const DEFAULT_POLICY_PATH = "koi/permissions";
 
 function mapGrantToTuples(grant: DelegationGrant): readonly RelationshipTuple[] {
-  const permissions = grant.scope.permissions.allow ?? [];
+  const allow = grant.scope.permissions.allow ?? [];
+  const deny = grant.scope.permissions.deny ?? [];
   const resources = grant.scope.resources;
   const subject = `agent:${grant.delegateeId}`;
 
-  if (resources !== undefined && resources.length > 0) {
-    return permissions.flatMap((permission) =>
-      resources.map((resource) => ({ subject, relation: permission, object: resource })),
-    );
-  }
-  return permissions.map((permission) => ({
+  const allowTuples: RelationshipTuple[] =
+    resources !== undefined && resources.length > 0
+      ? allow.flatMap((permission) =>
+          resources.map((resource) => ({ subject, relation: permission, object: resource })),
+        )
+      : allow.map((permission) => ({
+          subject,
+          relation: permission,
+          object: `delegation:${grant.id}`,
+        }));
+
+  // Deny rules grow monotonically through delegation chains and must be preserved
+  const denyTuples: RelationshipTuple[] = deny.map((permission) => ({
     subject,
-    relation: permission,
+    relation: `deny:${permission}`,
     object: `delegation:${grant.id}`,
   }));
+
+  return [...allowTuples, ...denyTuples];
 }
 
 export function createNexusDelegationHooks(

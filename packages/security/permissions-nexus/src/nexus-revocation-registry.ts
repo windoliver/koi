@@ -21,8 +21,8 @@ export function createNexusRevocationRegistry(
       return result.error.code !== "NOT_FOUND"; // NOT_FOUND = not revoked; else fail-closed
     }
     try {
-      const data = JSON.parse(result.value) as { readonly revoked: boolean };
-      return data.revoked;
+      const data = JSON.parse(result.value) as { readonly revoked: unknown };
+      return data.revoked === true; // strict boolean check — anything else fails closed
     } catch {
       return true; // Malformed = fail-closed
     }
@@ -43,9 +43,18 @@ export function createNexusRevocationRegistry(
   };
 
   const revoke = async (id: DelegationId, cascade: boolean): Promise<void> => {
+    if (cascade) {
+      // Cascade requires traversing the delegation chain, which the Nexus registry
+      // cannot do without an index. Callers must call revoke() on each descendant
+      // individually (DelegationManager handles this at a higher layer).
+      throw new Error(
+        `NexusRevocationRegistry: cascade=true is not supported. ` +
+          `Revoke each descendant explicitly or use an in-memory registry for cascade.`,
+      );
+    }
     const result = await config.transport.call("write", {
       path: `${policyPath}/revocations/${id}.json`,
-      content: JSON.stringify({ revoked: true, cascade }),
+      content: JSON.stringify({ revoked: true }),
     });
     if (!result.ok) {
       throw new Error(`Failed to persist revocation for grant ${id}: ${result.error.message}`, {
