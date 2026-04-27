@@ -11,6 +11,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { DEFAULT_FORGE_BUDGET } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 import type { ForgeCandidate } from "@koi/forge-types";
 import { createMockTurnContext } from "@koi/test";
 import { createForgeDemandDetector } from "./demand-detector.js";
@@ -1316,6 +1317,65 @@ describe("createForgeDemandDetector", () => {
     }
     const [stored] = handle.forSession(ctx.session).getSignals();
     expect(stored?.id).not.toBe("tampered");
+  });
+
+  it("forSession rejects a fabricated SessionContext literal (cross-tenant guard)", async () => {
+    // Regression for F61 (round 4) — forSession previously authorized
+    // purely by `session.sessionId`, so any in-process caller with a
+    // victim's sessionId could fabricate a SessionContext literal and
+    // read or dismiss the victim's signals. Now authorization is by
+    // observed-object identity.
+    const handle = createForgeDemandDetector(
+      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
+    );
+    // Run a real hook so `ctx.session` becomes an observed (legitimate)
+    // SessionContext, then verify a forged literal carrying the same
+    // sessionId is rejected.
+    try {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), async () => {
+        throw new Error("boom");
+      });
+    } catch {
+      /* expected */
+    }
+    // Real ctx.session is admitted.
+    expect(() => handle.forSession(ctx.session)).not.toThrow();
+    // Forged literal with the same sessionId — must be rejected.
+    const forged = { ...ctx.session };
+    expect(() => handle.forSession(forged)).toThrow(/observed by the detector/);
+  });
+
+  it("excludes NOT_FOUND tool lookups from correction attribution history", async () => {
+    // Regression for F62 (round 4) — wrapToolCall recorded every request
+    // in recentToolCalls and marked it completed even on NOT_FOUND, so
+    // a later user_correction would blame a phantom tool that never
+    // executed and burn forge budget.
+    const signals: ForgeDemandSignal[] = [];
+    let now = 0;
+    const handle = createForgeDemandDetector(
+      makeConfig({ clock: () => now, onDemand: (s) => signals.push(s) }),
+    );
+    now = 50;
+    // The unresolved-tool request itself emits a `no_matching_tool`
+    // signal (ignored here) but must NOT linger in recentToolCalls.
+    try {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("missing-tool"), async () => {
+        throw KoiRuntimeError.from("NOT_FOUND", "tool 'missing-tool' is not registered");
+      });
+    } catch {
+      /* expected */
+    }
+    const correction: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "no, that's not right" }],
+      timestamp: 100,
+    };
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), async () =>
+      modelRes("ok"),
+    );
+    // No tool ever executed — correction attribution must skip the
+    // unresolved lookup, so no `user_correction` signal fires.
+    expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(0);
   });
 
   it("does NOT emit user_correction when corrected answer was model-only (no adjacent tool)", async () => {

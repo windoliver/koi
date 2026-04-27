@@ -13856,13 +13856,27 @@ describe("Golden: @koi/forge-demand", () => {
     expect(typeof handle.middleware.wrapModelCall).toBe("function");
     expect(typeof handle.forSession).toBe("function");
     // Inspection requires a SessionContext — the handle never aggregates
-    // across sessions. An unknown session returns an empty scoped view.
+    // across sessions, and forSession authorizes by object identity so a
+    // fabricated probe literal is rejected (F61). Drive a real hook to
+    // register the SessionContext, then assert the scoped view.
     const probeSession = {
       agentId: "forge-demand-probe",
       sessionId: sessionId("probe"),
       runId: runId("probe-r"),
       metadata: {} as JsonObject,
     };
+    const probeCtx = {
+      session: probeSession,
+      turnIndex: 0,
+      turnId: `${runId("probe-r")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+    await handle.middleware.wrapModelCall?.(
+      probeCtx,
+      { messages: [], model: "test" },
+      async () => ({ content: "", model: "test" }),
+    );
     const scoped = handle.forSession(probeSession);
     expect(typeof scoped.getSignals).toBe("function");
     expect(typeof scoped.dismiss).toBe("function");

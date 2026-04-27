@@ -190,6 +190,15 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   };
 
   const sessions = new Map<SessionId, SessionState>();
+  // Object-identity authorization for forSession(). Authorizing purely
+  // by sessionId would let any in-process caller fabricate a
+  // `SessionContext` literal carrying another tenant's id and read or
+  // dismiss that tenant's signals. We only register SessionContext
+  // objects that have actually flowed through this detector's
+  // middleware hooks (wrapToolCall / wrapModelCall / onSessionEnd) —
+  // i.e. real engine-issued contexts — and `forSession` rejects
+  // anything else.
+  const observedSessions = new WeakSet<SessionContext>();
   // Handle-level counter so signal ids are unique across sessions —
   // otherwise two concurrent tenants would both produce `demand-1` and
   // `dismiss()` could clear the wrong session's signal.
@@ -567,6 +576,11 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     entry.completedAt = clock();
   }
 
+  function removeToolCall(state: SessionState, entry: RecentToolCall): void {
+    const idx = state.recentToolCalls.indexOf(entry);
+    if (idx !== -1) state.recentToolCalls.splice(idx, 1);
+  }
+
   function recordFailure(state: SessionState, toolId: string, e: unknown): number {
     const count = (state.consecutiveFailures.get(toolId) ?? 0) + 1;
     state.consecutiveFailures.set(toolId, count);
@@ -602,6 +616,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
+      observedSessions.add(ctx.session);
       const state = getOrCreate(ctx.session.sessionId);
       const { toolId } = request;
       const callEntry = recordToolCall(state, toolId);
@@ -625,8 +640,11 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
         checkLatencyDegradation(state, ctx.session.sessionId, toolId);
         return response;
       } catch (e: unknown) {
-        markToolCallCompleted(callEntry);
         if (e instanceof KoiRuntimeError && e.code === "NOT_FOUND") {
+          // Unresolved tool lookup never executed — drop it from the
+          // recent-tool-call history so a later user_correction cannot
+          // be misattributed to a phantom tool. F62 regression.
+          removeToolCall(state, callEntry);
           const attempts = (state.noMatchingToolCounts.get(toolId) ?? 0) + 1;
           state.noMatchingToolCounts.set(toolId, attempts);
           emitSignal(
@@ -637,6 +655,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
           checkLatencyDegradation(state, ctx.session.sessionId, toolId);
           throw e;
         }
+        markToolCallCompleted(callEntry);
 
         const count = recordFailure(state, toolId, e);
         const repeated = detectRepeatedFailure(toolId, count, thresholds.repeatedFailureCount);
@@ -656,6 +675,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
+      observedSessions.add(ctx.session);
       const state = getOrCreate(ctx.session.sessionId);
       // Detect corrections eagerly but defer emission — a transient
       // transport/validator failure must not consume forge budget for a
@@ -673,6 +693,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
+      observedSessions.add(ctx.session);
       const state = getOrCreate(ctx.session.sessionId);
       const pending = detectPendingCorrections(state, request);
       const fp = requestFingerprint(ctx, request);
@@ -736,16 +757,31 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
 
   return {
     middleware,
-    forSession: (session: SessionContext) => ({
-      getSignals: (): readonly ForgeDemandSignal[] => {
-        const state = sessions.get(session.sessionId);
-        return state === undefined ? [] : state.signals.map(cloneSignal);
-      },
-      dismiss: (signalId: string): void => dismiss(session.sessionId, signalId),
-      getActiveSignalCount: (): number => {
-        const state = sessions.get(session.sessionId);
-        return state === undefined ? 0 : state.signals.length;
-      },
-    }),
+    forSession: (session: SessionContext) => {
+      // Authorize by SessionContext object identity, not by sessionId
+      // string. A caller forging a literal `{ sessionId: <victim> }` to
+      // read another tenant's signals cannot reach here — only contexts
+      // that actually flowed through the detector's middleware hooks
+      // are admitted. F61 regression.
+      if (!observedSessions.has(session)) {
+        throw new Error(
+          "forSession requires a SessionContext that has been observed by " +
+            "the detector middleware. Pass the SessionContext your runtime " +
+            "issued to the engine (e.g. ctx.session inside a hook), not a " +
+            "fabricated literal carrying only a sessionId.",
+        );
+      }
+      return {
+        getSignals: (): readonly ForgeDemandSignal[] => {
+          const state = sessions.get(session.sessionId);
+          return state === undefined ? [] : state.signals.map(cloneSignal);
+        },
+        dismiss: (signalId: string): void => dismiss(session.sessionId, signalId),
+        getActiveSignalCount: (): number => {
+          const state = sessions.get(session.sessionId);
+          return state === undefined ? 0 : state.signals.length;
+        },
+      };
+    },
   };
 }
