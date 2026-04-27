@@ -186,7 +186,7 @@ describe("sleep tool", () => {
     expect(stub.submitCalls).toHaveLength(1);
   });
 
-  test("entries persist across wake_at_ms — wall-clock expiry would risk duplicates", async () => {
+  test("dedupes within the grace window — backlogged scheduler retries are safe", async () => {
     const stub = createSchedulerStub();
     const state = createSleepToolState();
     // let justified: virtual clock advances between calls to simulate time passing
@@ -196,14 +196,14 @@ describe("sleep tool", () => {
     const first = (await exec(tool, { duration_ms: 5_000, idempotency_key: "k" })) as {
       task_id: string;
     };
-    virtualNow += 6_000; // wake time has passed but no completion signal received
+    // Just past wake time but well inside the 60s grace floor — a backlogged
+    // scheduler could still deliver the original wake-up.
+    virtualNow += 6_000;
     const second = (await exec(tool, { duration_ms: 5_000, idempotency_key: "k" })) as {
       task_id: string;
       deduped?: boolean;
     };
 
-    // The package never expires entries on time alone — a backlogged scheduler
-    // could still deliver the original. The second call must dedupe.
     expect(second.task_id).toBe(first.task_id);
     expect(second.deduped).toBe(true);
     expect(stub.submitCalls).toHaveLength(1);
@@ -256,6 +256,31 @@ describe("sleep tool", () => {
     // Only the two pre-cap submits made it to the scheduler — the 3rd
     // failed closed rather than silently registering a duplicate-prone task.
     expect(stub.submitCalls).toHaveLength(2);
+  });
+
+  test("reclaims entries past wake_at_ms + grace so cap recovers under steady load", async () => {
+    const stub = createSchedulerStub();
+    const state = createSleepToolState(2);
+    let nowMs = 1_000_000;
+    const tool = createSleepTool({ scheduler: stub.component, now: () => nowMs }, state);
+
+    await exec(tool, { duration_ms: 1_000, idempotency_key: "old-a" });
+    await exec(tool, { duration_ms: 1_000, idempotency_key: "old-b" });
+    expect(state.idempotencyMap.size).toBe(2);
+
+    // Advance well past wake_at + grace floor (60s). Both timers are far
+    // enough overdue that further delivery would be a fault, not backlog —
+    // the entries are eligible for reclaim.
+    nowMs += 5 * 60_000;
+
+    const fresh = (await exec(tool, { duration_ms: 5_000, idempotency_key: "new-c" })) as {
+      ok: boolean;
+    };
+    expect(fresh.ok).toBe(true);
+    expect(stub.submitCalls).toHaveLength(3);
+    expect(state.idempotencyMap.has("old-a")).toBe(false);
+    expect(state.idempotencyMap.has("old-b")).toBe(false);
+    expect(state.idempotencyMap.has("new-c")).toBe(true);
   });
 
   test("at the cap, an existing key still dedupes (update, not new entry)", async () => {

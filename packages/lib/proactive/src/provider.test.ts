@@ -108,7 +108,7 @@ describe("createProactiveToolsProvider", () => {
     expect(stub.submitCalls).toHaveLength(1);
   });
 
-  test("scheduler replacement invalidates the slot — no stale dedup against new scheduler", async () => {
+  test("scheduler swap preserves dedupe state — durable backends behind fresh wrappers keep working", async () => {
     const stubA = createSchedulerStub();
     const stubB = createSchedulerStub();
     const agent = makeAgent(stubA.component, "agent-x");
@@ -119,20 +119,30 @@ describe("createProactiveToolsProvider", () => {
     const sleep1 = ("components" in first ? first.components : first).get(sleepKey) as {
       execute: (a: object) => Promise<unknown>;
     };
-    await sleep1.execute({ duration_ms: 5_000, idempotency_key: "k" });
+    const r1 = (await sleep1.execute({ duration_ms: 5_000, idempotency_key: "k" })) as {
+      task_id: string;
+    };
     expect(stubA.submitCalls).toHaveLength(1);
 
-    // Simulate scheduler replacement (in-memory restart, failover, test reset)
-    // by re-attaching the same agent against a different scheduler instance.
+    // Re-attach against a different scheduler instance. Hosts commonly wrap
+    // the same durable backend in a fresh adapter object (in-memory restart,
+    // test reassembly), so we preserve dedupe state and rely on the durable
+    // task ID still being valid. If the host swapped to a genuinely-fresh
+    // backend, they should tear down the agent first.
     const replacedAgent = makeAgent(stubB.component, "agent-x");
     const second = await provider.attach(replacedAgent);
     const sleep2 = ("components" in second ? second.components : second).get(sleepKey) as {
       execute: (a: object) => Promise<unknown>;
     };
-    await sleep2.execute({ duration_ms: 5_000, idempotency_key: "k" });
+    const r2 = (await sleep2.execute({ duration_ms: 5_000, idempotency_key: "k" })) as {
+      task_id: string;
+      deduped?: boolean;
+    };
 
-    // Stale ID would have been useless on stubB — must register fresh.
-    expect(stubB.submitCalls).toHaveLength(1);
+    // No duplicate submission: dedupe matched the cached entry.
+    expect(stubB.submitCalls).toHaveLength(0);
+    expect(r2.task_id).toBe(r1.task_id);
+    expect(r2.deduped).toBe(true);
   });
 
   test("two agents with the same idempotency_key do NOT share state", async () => {

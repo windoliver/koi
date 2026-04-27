@@ -32,24 +32,6 @@ import type { ProactiveToolsConfig, ProactiveToolsProviderConfig } from "./types
 interface AgentStateSlot {
   readonly cron: CronToolState;
   readonly sleep: SleepToolState;
-  /**
-   * The SchedulerComponent instance this slot's task_id / schedule_id values
-   * came from. If a later attach observes a different scheduler instance for
-   * the same agent (in-memory scheduler restart, failover, test reassembly),
-   * the cached IDs no longer refer to anything live and must be discarded.
-   *
-   * Trade-off: the L0 SchedulerComponent contract exposes no stable identity
-   * or epoch, so we can't distinguish "host wrapped the same durable backend
-   * in a fresh adapter object" from "host swapped to a brand-new scheduler".
-   * We pick the safer of the two failure modes: a wrapper swap may forget a
-   * still-live durable schedule (causing one duplicate registration on the
-   * next retry), but preserving state across object swaps would risk dedupe
-   * matches against task IDs the new scheduler has never seen — which fails
-   * silently at fire time. Hosts that need cross-swap continuity should
-   * surface a stable identity from their scheduler implementation; once the
-   * L0 contract grows that, we can key invalidation off it.
-   */
-  readonly scheduler: object;
 }
 
 export function createProactiveToolsProvider(
@@ -58,22 +40,26 @@ export function createProactiveToolsProvider(
   const priority = config.priority ?? COMPONENT_PRIORITY.BUNDLED;
   // State lives at provider scope, keyed by stable agent identity (pid).
   // This survives reattach within the same process so a retry with the
-  // same idempotency_key reuses the prior reservation. The slot also
-  // remembers which scheduler instance owned the cached IDs so we can
-  // invalidate on scheduler replacement (non-durable scheduler restart,
-  // failover, test reassembly).
+  // same idempotency_key reuses the prior reservation.
+  //
+  // We deliberately do NOT key the slot by scheduler instance identity:
+  // hosts often wrap the same durable backend in a fresh adapter object
+  // (in-memory restart, test reassembly) where the underlying task IDs
+  // remain valid. Resetting state on every wrapper swap would let a
+  // legitimate retry register a duplicate against the still-live durable
+  // record. Preserving state means a swap to a genuinely-fresh backend
+  // may dedupe to a stale ID; that surfaces as cancel returning
+  // removed:false (handled) or a wake delivery against an ID the new
+  // backend never saw. Both failure modes are addressable by the host
+  // tearing down the agent on hard scheduler resets.
   const slots = new Map<string, AgentStateSlot>();
 
-  function getSlot(pid: string, scheduler: object): AgentStateSlot {
+  function getSlot(pid: string): AgentStateSlot {
     const existing = slots.get(pid);
-    if (existing !== undefined && existing.scheduler === scheduler) return existing;
-    // No slot, or scheduler instance changed — start fresh. Reusing stale
-    // entries against a different scheduler would silently dedupe to IDs
-    // the new scheduler does not know about.
+    if (existing !== undefined) return existing;
     const fresh: AgentStateSlot = {
       cron: createCronToolState(),
       sleep: createSleepToolState(),
-      scheduler,
     };
     slots.set(pid, fresh);
     return fresh;
@@ -125,7 +111,7 @@ export function createProactiveToolsProvider(
       // the whole ProcessId would yield "[object Object]" and collapse every
       // agent into a single shared slot, leaking idempotency state across
       // agents and silently dropping wake-ups.
-      const slot = getSlot(String(agent.pid.id), scheduler as unknown as object);
+      const slot = getSlot(String(agent.pid.id));
       const tools = buildTools(toolConfig, slot);
       const entries: (readonly [string, Tool])[] = tools.map(
         (t) => [toolToken(t.descriptor.name) as string, t] as const,

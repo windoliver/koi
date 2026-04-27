@@ -111,19 +111,39 @@ export function createSleepToolState(maxEntries?: number): SleepToolState {
 }
 
 /**
+ * Grace buffer past `wake_at_ms` before a settled entry is treated as
+ * "definitely fired" and eligible for reclaim. Sized as max(durationMs, 60s)
+ * so a backlogged scheduler has at least the original sleep length, or one
+ * minute, to deliver the wake after the nominal deadline. After this window
+ * the original wake-up has either been delivered or is so far overdue that a
+ * retry registering a fresh task is the better failure mode than letting the
+ * dedupe map grow unbounded and eventually deny all new keys.
+ */
+const GRACE_FLOOR_MS = 60_000;
+
+/**
+ * Reclaim settled entries whose wake time + grace buffer has elapsed. Pending
+ * entries are never reclaimed — their submission may still be in-flight and
+ * evicting them risks duplicates against the same key.
+ */
+function reclaimFiredEntries(state: SleepToolState, nowMs: number): void {
+  for (const [k, v] of state.idempotencyMap) {
+    if (v.kind !== "settled") continue;
+    const grace = Math.max(v.record.durationMs, GRACE_FLOOR_MS);
+    if (v.record.wakeAtMs + grace <= nowMs) {
+      state.idempotencyMap.delete(k);
+    }
+  }
+}
+
+/**
  * True iff inserting `key` would exceed `maxEntries`. Updates to an existing
  * key never count against the cap — they replace, not grow. We refuse new
  * keys at the cap rather than FIFO-evicting live entries: evicting a still-
  * pending entry would let a retry with the same key submit a duplicate
- * wake-up.
- *
- * Phase-1 limitation: there is no scheduler completion callback yet, and
- * wall-clock-based reclaim (deleting entries past `wake_at_ms`) is unsafe
- * because a backlogged scheduler may deliver the original wake after the
- * nominal deadline — a retry after that point would register a duplicate.
- * Operators of long-running processes should size `maxEntries` for their
- * keyed-sleep volume or call `cancel_sleep(release_key:true)` after
- * confirmed delivery. This is documented in `docs/L2/proactive.md`.
+ * wake-up. Callers should reclaim fired entries first via
+ * `reclaimFiredEntries` so the cap only blocks when the map is genuinely
+ * saturated with live (recent) sleeps.
  */
 function sleepCapReached(state: SleepToolState, key: string): boolean {
   if (state.idempotencyMap.has(key)) return false;
@@ -214,12 +234,17 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
       };
 
       // Path 2: idempotency_key supplied. Reserve atomically.
+      // Reclaim entries past wake_at_ms + grace before checking the cap.
+      // Without this, long-running processes accumulate fired entries until
+      // every new keyed sleep starts failing.
+      reclaimFiredEntries(state, now());
       if (sleepCapReached(state, idempotency_key)) {
         return {
           ok: false,
           error:
-            `proactive sleep idempotency cap reached (${state.maxEntries} active keys). ` +
-            "Cancel a prior task with cancel_sleep (release_key:true) before registering more, " +
+            `proactive sleep idempotency cap reached (${state.maxEntries} live keys). ` +
+            "All entries are pending or recently fired. Cancel a prior task with " +
+            "cancel_sleep (release_key:true), wait for the grace window to elapse, " +
             "or omit idempotency_key to bypass the dedupe map.",
         };
       }
