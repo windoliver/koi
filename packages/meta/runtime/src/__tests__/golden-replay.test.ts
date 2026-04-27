@@ -14151,7 +14151,7 @@ describe("Golden: @koi/audit-sink-nexus", () => {
           return { ok: true, value: undefined };
         }
         if (method === "list") {
-          const prefix = p + "/";
+          const prefix = `${p}/`;
           return {
             ok: true,
             value: [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ path: k })),
