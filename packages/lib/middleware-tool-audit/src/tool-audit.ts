@@ -193,6 +193,10 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   // post-save). Used as the baseline for additive-delta merges so concurrent
   // writers' increments aren't lost. Empty until first successful hydrate.
   let baselineSnapshot: ToolAuditSnapshot = EMPTY_SNAPSHOT;
+  // let: true when a concurrent session ended dirty but skipped its own
+  // save because other sessions were still active. The tail (last session
+  // to end while sessionStates is empty) drains it (#review-round17-F1).
+  let pendingPersist = false;
 
   function getOrCreateRecord(toolName: string): MutableToolRecord {
     const existing = tools.get(toolName);
@@ -320,15 +324,19 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
 
     sessionStates.delete(ctx.sessionId);
 
-    if (!state.dirty) return;
+    // Skip when this session contributed nothing AND no earlier
+    // concurrent session left a deferred persist for us to drain.
+    if (!state.dirty && !pendingPersist) return;
 
     const snapshot = buildSnapshot(tools, totalSessions, clock);
 
-    if (onAuditResult !== undefined) {
+    if (onAuditResult !== undefined && state.dirty) {
       // Observe-phase telemetry must never abort session teardown — a
       // throwing sink would otherwise reject onSessionEnd and skip the
       // store.save below, leaving the snapshot unpersisted. Route any
       // callback failure through onError and continue with persistence.
+      // Only fire the callback for sessions that actually contributed,
+      // not for tails draining a deferred persist.
       try {
         const signals = computeLifecycleSignals(snapshot, config);
         if (signals.length > 0) onAuditResult(signals);
@@ -344,6 +352,24 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     // next successful load (see mergeSnapshotIntoMemory in
     // recordOnSessionStart).
     if (!hydrated) return;
+
+    // Defer persistence while OTHER sessions are still active. The
+    // shared `tools` map already contains in-flight call counts /
+    // latencies from those sessions; persisting now would commit
+    // partial data that the still-active session has not finalized
+    // (no matching sessionsAvailable/sessionsUsed updates yet). If
+    // that session later aborts or crashes, the disk snapshot is
+    // left with orphaned per-call counters. The last completing
+    // session in the active set takes the snapshot and saves it
+    // once everyone has folded in their session-level totals
+    // (#review-round17-F1). Sets a pending flag so even if every
+    // remaining session is non-dirty, the active set's tail still
+    // persists.
+    if (sessionStates.size > 0) {
+      pendingPersist = true;
+      return;
+    }
+    pendingPersist = false;
 
     // Serialize saves so two concurrent session ends in this process can't
     // race each other. Across PROCESSES sharing one ToolAuditStore, we
