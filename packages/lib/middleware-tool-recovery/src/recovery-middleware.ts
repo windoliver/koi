@@ -127,9 +127,10 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     request: ModelRequest,
     next: ModelStreamHandler,
   ): AsyncIterable<ModelChunk> {
-    // Cheap pre-check — skip recovery when there are no tools to recover into.
+    // Cheap pre-check — skip recovery when there are no tools to recover
+    // into, or when no patterns were configured (the safe default).
     const tools = request.tools;
-    if (tools === undefined || tools.length === 0) {
+    if (tools === undefined || tools.length === 0 || patterns.length === 0) {
       yield* next(request);
       return;
     }

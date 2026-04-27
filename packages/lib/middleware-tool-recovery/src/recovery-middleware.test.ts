@@ -67,7 +67,7 @@ function getToolCallChunks(
 
 describe("createToolRecoveryMiddleware — defaults & metadata", () => {
   test("emits resolve-phase middleware with priority 180", () => {
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     expect(mw.phase).toBe("resolve");
     expect(mw.priority).toBe(180);
     expect(mw.name).toBe("koi:tool-recovery");
@@ -81,13 +81,13 @@ describe("createToolRecoveryMiddleware — defaults & metadata", () => {
   });
 
   test("default patterns omit json-fence to avoid promoting example JSON", () => {
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const cap = mw.describeCapabilities(turnCtx());
     expect(cap?.description).not.toContain("json-fence");
   });
 
   test("exposes only wrapModelStream — wrapModelCall is intentionally absent", () => {
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     expect(mw.wrapModelStream).toBeDefined();
     // Generic ModelResponse.metadata is not a trusted execution channel,
     // so recovery refuses to operate on the non-streaming path.
@@ -101,7 +101,7 @@ describe("createToolRecoveryMiddleware — defaults & metadata", () => {
 
 describe("createToolRecoveryMiddleware — pass-through paths", () => {
   test("forwards stream untouched when request.tools is undefined", async () => {
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const text = '<tool_call>{"name":"foo","arguments":{}}</tool_call>';
     const chunks = await collect(getStream(mw)(turnCtx(), { messages: [] }, streamFromText(text)));
     expect(chunks.length).toBe(2);
@@ -109,7 +109,7 @@ describe("createToolRecoveryMiddleware — pass-through paths", () => {
   });
 
   test("forwards stream untouched when no pattern matches", async () => {
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("foo")];
     const chunks = await collect(
       getStream(mw)(turnCtx(), { messages: [], tools }, streamFromText("plain text response")),
@@ -122,7 +122,7 @@ describe("createToolRecoveryMiddleware — pass-through paths", () => {
 
 describe("createToolRecoveryMiddleware — recovery behavior", () => {
   test("hermes tag is converted into synthesized tool_call_* chunks and stripped from text", async () => {
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("get_weather")];
     const text =
       "I'll check the weather. " +
@@ -156,7 +156,7 @@ describe("createToolRecoveryMiddleware — recovery behavior", () => {
   });
 
   test("multiple tool calls produce one start/delta/end triplet each", async () => {
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("a"), tool("b")];
     const text =
       '<tool_call>{"name":"a","arguments":{}}</tool_call>' +
@@ -190,6 +190,7 @@ describe("createToolRecoveryMiddleware — recovery behavior", () => {
   test("over-cap recovery fails closed: rejects entire batch + preserves raw markup", async () => {
     const events: RecoveryEvent[] = [];
     const mw = createToolRecoveryMiddleware({
+      patterns: ["hermes"],
       maxToolCallsPerResponse: 2,
       onRecoveryEvent: (e) => events.push(e),
     });
@@ -245,7 +246,10 @@ describe("createToolRecoveryMiddleware — recovery behavior", () => {
 
   test("rejects tool calls whose name is not in the request allowlist", async () => {
     const events: RecoveryEvent[] = [];
-    const mw = createToolRecoveryMiddleware({ onRecoveryEvent: (e) => events.push(e) });
+    const mw = createToolRecoveryMiddleware({
+      patterns: ["hermes"],
+      onRecoveryEvent: (e) => events.push(e),
+    });
     const tools = [tool("good")];
     const text =
       '<tool_call>{"name":"good","arguments":{}}</tool_call>' +
@@ -262,7 +266,7 @@ describe("createToolRecoveryMiddleware — recovery behavior", () => {
 
 describe("createToolRecoveryMiddleware — incremental streaming passthrough", () => {
   test("forwards text_delta chunks immediately when no marker has appeared", async () => {
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("foo")];
     const yielded: ModelChunk[] = [];
 
@@ -299,7 +303,7 @@ describe("createToolRecoveryMiddleware — incremental streaming passthrough", (
   });
 
   test("switches to buffer mode the first time a pattern marker appears", async () => {
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("foo")];
     const yielded: ModelChunk[] = [];
 
@@ -327,7 +331,7 @@ describe("createToolRecoveryMiddleware — incremental streaming passthrough", (
 
 describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
   test("does not leak raw markup as text_delta — original raw text never reaches consumers", async () => {
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("foo")];
     const next: ModelStreamHandler = async function* () {
       yield { kind: "text_delta", delta: "thinking..." };
@@ -351,7 +355,7 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
   });
 
   test("native tool_call_start triggers bypass — buffered text + raw markup forwarded as-is", async () => {
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("foo")];
     const cid = toolCallId("native-1");
     const next: ModelStreamHandler = async function* () {
@@ -370,7 +374,7 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
   });
 
   test("flushes buffered chunks and rethrows when upstream stream throws before done", async () => {
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("foo")];
     const next: ModelStreamHandler = async function* () {
       yield { kind: "text_delta", delta: "partial assistant text " };
@@ -399,7 +403,7 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
     // Round 9: provider error after a fully-formed tool call must not
     // discard the recovered call or leak raw markup. Recovery runs in
     // finally on abnormal termination.
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("foo")];
     const next: ModelStreamHandler = async function* () {
       yield { kind: "thinking_delta", delta: "thinking..." };
@@ -433,7 +437,7 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
   });
 
   test("thinking_delta and usage chunks are preserved across the buffer", async () => {
-    const mw = createToolRecoveryMiddleware();
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("foo")];
     const next: ModelStreamHandler = async function* () {
       yield { kind: "thinking_delta", delta: "let me check..." };

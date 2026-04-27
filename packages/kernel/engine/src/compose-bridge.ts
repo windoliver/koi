@@ -85,18 +85,22 @@ export function createTerminalHandlers(
     }
   };
 
-  // Synthesize a stream terminal from the (lifecycle-wrapped) modelHandler
-  // when the adapter doesn't expose a native modelStream. This unifies the
-  // engine pipeline so `wrapModelStream` middleware (e.g.
-  // @koi/middleware-tool-recovery) runs for every adapter — not just
-  // streaming-native ones. The synthetic terminal calls the raw modelCall,
-  // then yields a text_delta per text content block followed by a single
-  // done chunk. Stream-middleware composition above (recomposeChains)
-  // wraps this with all `wrapModelStream` middleware, in priority order.
+  // Synthesize a stream terminal from the RAW model terminal (NOT the
+  // lifecycle-wrapped modelHandler) when the adapter doesn't expose a
+  // native modelStream. This unifies the engine pipeline so
+  // `wrapModelStream` middleware (e.g. @koi/middleware-tool-recovery) runs
+  // for every adapter — not just streaming-native ones.
+  //
+  // We deliberately bypass `modelHandler` here: the outer
+  // `modelStreamHandler` below already emits wait(model_stream)/resume for
+  // the whole stream lifecycle, and a nested wait(model_call)/resume from
+  // `modelHandler` would prematurely transition the agent back to
+  // `running` while stream middleware is still buffering chunks
+  // (#review-round11-F3).
   const effectiveStreamTerminal: ModelStreamHandler =
     rawModelStreamTerminal ??
     async function* (request): AsyncIterable<ModelChunk> {
-      const response = await modelHandler(request);
+      const response = await rawModelTerminal(request);
       if (response.content.length > 0) {
         yield { kind: "text_delta", delta: response.content };
       }

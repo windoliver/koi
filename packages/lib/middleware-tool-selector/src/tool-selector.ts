@@ -73,11 +73,25 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
   async function filterRequest(ctx: TurnContext, request: ModelRequest): Promise<ModelRequest> {
     const tools = request.tools;
     if (tools === undefined || tools.length <= minTools) {
+      // Fast path: no semantic filtering needed because the toolset is
+      // already small enough. But when enforceFiltering is on, still
+      // install an allowlist of the advertised tools so wrapToolCall can
+      // reject any tool the model invokes that wasn't advertised this
+      // turn (e.g. prompt-injected or hallucinated calls to other
+      // registered tools). #review-round11-F1.
+      if (enforceFiltering && tools !== undefined) {
+        turnAllowlists.set(ctx.turnId, new Set<string>(tools.map((t) => t.name)));
+      }
       return request;
     }
 
     const query = extractQuery(request.messages);
     if (query === "") {
+      // No query to drive selection, but keep enforcement honest by
+      // pinning the allowlist to what's currently advertised.
+      if (enforceFiltering) {
+        turnAllowlists.set(ctx.turnId, new Set<string>(tools.map((t) => t.name)));
+      }
       return request;
     }
 

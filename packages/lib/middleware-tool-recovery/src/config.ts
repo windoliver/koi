@@ -12,13 +12,17 @@ export const DEFAULT_MAX_TOOL_CALLS = 10;
 /**
  * Default built-in pattern names (applied when `config.patterns` is omitted).
  *
- * `json-fence` is intentionally NOT in the defaults: any model output that
- * contains a fenced JSON snippet with `name`/`arguments` fields (a code
- * example, schema fragment, or quoted payload) would otherwise be promoted
- * to a live tool call. Callers must opt in explicitly when their model is
- * known to use plain `json` fences as the actual tool-invocation channel.
+ * Empty by default. Recovery is a trust-boundary downgrade: the middleware
+ * promotes plain assistant text into executable tool calls. A model that
+ * quotes, echoes, or is prompt-injected into emitting Hermes/Llama/JSON-fence
+ * markup would otherwise have arbitrary text routed to a live tool. Callers
+ * must positively identify the model's native tool-protocol format and opt
+ * in by passing `patterns: ["hermes"]` (or "llama31", "json-fence") — at
+ * which point they're asserting that all matching text in this model's
+ * output is genuinely a tool-invocation channel, not user/quoted content.
+ * #review-round11-F2.
  */
-export const DEFAULT_PATTERN_NAMES: readonly string[] = ["hermes", "llama31"];
+export const DEFAULT_PATTERN_NAMES: readonly string[] = [];
 
 /** Built-in pattern names accepted as strings in `config.patterns`. */
 const VALID_PATTERN_NAMES: ReadonlySet<string> = new Set<string>([

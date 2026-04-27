@@ -54,8 +54,10 @@ describe("validateToolRecoveryConfig", () => {
 
   test("default constants line up with the spec", () => {
     expect(DEFAULT_MAX_TOOL_CALLS).toBe(10);
-    // json-fence is intentionally excluded from defaults — it can promote
-    // example/quoted JSON into live tool calls. Callers must opt in.
-    expect(DEFAULT_PATTERN_NAMES).toEqual(["hermes", "llama31"]);
+    // Round 11 (high): default to NO patterns. Recovery promotes plain
+    // assistant text into tool calls — quoted/echoed/injected markup
+    // would otherwise be executable. Callers must opt in to a pattern
+    // that matches their model's actual tool-invocation channel.
+    expect(DEFAULT_PATTERN_NAMES).toEqual([]);
   });
 });
