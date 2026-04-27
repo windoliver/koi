@@ -270,6 +270,13 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
           // and-synth-done logic; if recovery fails, replay pending and
           // surface the error.
           if (mode === "passthrough") {
+            // Flush the withheld marker-prefix tail before surfacing the
+            // terminal error — otherwise the last `longestMarkerLen`
+            // characters of assistant text are silently dropped, which
+            // can erase the entire response on short outputs
+            // (#review-round32-F2).
+            const tail = bufferedText.slice(flushedTextIndex);
+            if (tail.length > 0) yield { kind: "text_delta", delta: tail };
             yield chunk;
             return;
           }

@@ -35,14 +35,19 @@ export function extractLastUserText(
     const msg = messages[i];
     if (msg === undefined || !isUser(msg.senderId)) continue;
 
-    const text = msg.content
+    // Stop at the FIRST recognized user message and return its text
+    // (empty string if it has no text blocks). Walking past it to find
+    // older text would let the selector build an allowlist from stale
+    // prior-turn intent — e.g. an image-only turn after a prior text
+    // turn like "deploy" inheriting the deployment tool selection
+    // (#review-round32-F1). The middleware uses hasUserMessage() to
+    // distinguish empty-text-multimodal from no-user-at-all.
+    return msg.content
       .filter(
         (block): block is Extract<typeof block, { readonly kind: "text" }> => block.kind === "text",
       )
       .map((block) => block.text)
       .join(" ");
-
-    if (text.length > 0) return text;
   }
 
   return "";

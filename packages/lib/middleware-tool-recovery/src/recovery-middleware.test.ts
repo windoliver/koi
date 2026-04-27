@@ -501,6 +501,34 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
     expect(err.message).toBe("provider rate limited");
   });
 
+  test("passthrough mode flushes withheld marker-prefix tail before terminal error chunk — round 32 F2", async () => {
+    // In passthrough mode the wrapper holds back the trailing
+    // longestMarkerLen characters so a marker split across chunks can
+    // be detected. That tail was flushed on done and on thrown errors
+    // but NOT on terminal error chunks — silently dropping the tail of
+    // assistant text exactly when the provider was already degraded.
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes"] });
+    const tools = [tool("foo")];
+    const next: ModelStreamHandler = async function* () {
+      // No marker → stays in passthrough mode. The full text is buffered
+      // because longestMarkerLen withholds the tail.
+      yield { kind: "text_delta", delta: "Here is your answer." };
+      yield { kind: "error", message: "stream cut" };
+    };
+
+    const out: ModelChunk[] = [];
+    for await (const c of getStream(mw)(turnCtx(), { messages: [], tools }, next)) {
+      out.push(c);
+    }
+    const text = out
+      .filter((c): c is Extract<ModelChunk, { kind: "text_delta" }> => c.kind === "text_delta")
+      .map((c) => c.delta)
+      .join("");
+    expect(text).toBe("Here is your answer.");
+    const errors = out.filter((c) => c.kind === "error");
+    expect(errors.length).toBe(1);
+  });
+
   test("terminal error chunk in buffer mode synthesizes done when recovery succeeds — round 26 F1", async () => {
     // If recovery DOES produce executable calls, prefer synthesizing a
     // done with recoveryError metadata so the engine runs the recovered

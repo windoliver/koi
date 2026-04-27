@@ -100,6 +100,19 @@ describe("extractLastUserText", () => {
     expect(extractLastUserText(multiSession)).toBe("third user input");
   });
 
+  test("does not inherit prior user-turn text when current user turn has no text — round 32 F1", () => {
+    // An image-only user turn following a prior text user turn must NOT
+    // re-use the prior turn's text. Otherwise the selector authorizes
+    // tools based on stale intent ("deploy" → shell tools) for a
+    // visually unrelated multimodal turn.
+    const messages: readonly InboundMessage[] = [
+      asMsg("user", [{ kind: "text", text: "deploy the app" }]),
+      asMsg("assistant", [{ kind: "text", text: "running deploy" }]),
+      asMsg("user", [{ kind: "image", url: "https://example.com/screenshot.png" }]),
+    ];
+    expect(extractLastUserText(messages)).toBe("");
+  });
+
   test("rejects spoofed user-like sender ids (assistant-user, tool-user-1, etc.) — round 16 F2", () => {
     // Substring-matching ('-user', '-user-') let non-user producers spoof
     // the latest-user-message provenance. Strict allowlist of known
