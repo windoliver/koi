@@ -362,9 +362,17 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   }
 
   function messageIdentity(msg: InboundMessage): string {
-    // Collision-resistant message identity: senderId + timestamp +
-    // fingerprint of content. Two distinct corrections that share a
-    // millisecond timestamp (replay/import) must not dedupe each other.
+    // Per-message identity: senderId + timestamp + content fingerprint.
+    // Both timestamp AND content are required:
+    //   - Two distinct corrections with the SAME text targeting different
+    //     tools (different turns of the conversation) must not collapse
+    //     to one signal — content alone fails that case.
+    //   - Two messages with the same timestamp but different content must
+    //     not collapse — timestamp alone fails that.
+    // The koi transport contract treats `msg.timestamp` as stable for a
+    // given inbound message, so retries replay the same identity (no
+    // restamping in the runtime). Imports that rewrite timestamps are
+    // out of scope — they are a logically new transcript.
     let textFingerprint = "";
     let len = 0;
     for (const block of msg.content) {
@@ -373,10 +381,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
         len += block.text.length;
       }
     }
-    // Trim to a bounded length so identity strings stay small while still
-    // discriminating distinct messages — prefix + length is enough to
-    // distinguish realistic correction phrasings.
-    const head = textFingerprint.slice(0, 64);
+    const head = textFingerprint.slice(0, 256);
     return `${msg.senderId}|${String(msg.timestamp)}|${String(len)}|${head}`;
   }
 
@@ -387,8 +392,25 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     return false;
   }
 
-  function scanUserCorrections(state: SessionState, request: ModelRequest): void {
-    if (correctionPatterns.length === 0) return;
+  type PendingCorrection = {
+    readonly id: string;
+    readonly trigger: ForgeTrigger;
+  };
+
+  /**
+   * Detect (but do not emit) user corrections present in the request. The
+   * caller commits the result with `commitCorrections()` only after the
+   * wrapped model call succeeds — otherwise a transient transport/validator
+   * failure would consume the session forge budget and lock the cooldown
+   * for a response that never reached the user. Pre-tool-completion replay
+   * IS marked scanned here so it cannot resurrect after a later tool runs.
+   */
+  function detectPendingCorrections(
+    state: SessionState,
+    request: ModelRequest,
+  ): readonly PendingCorrection[] {
+    if (correctionPatterns.length === 0) return [];
+    const pending: PendingCorrection[] = [];
     for (const msg of request.messages) {
       if (msg.senderId !== "user") continue;
       const id = messageIdentity(msg);
@@ -404,16 +426,20 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       }
       const correctedToolId = resolveCorrectedToolId(state, msg.timestamp);
       if (correctedToolId === "") continue;
-      let matched = false;
       for (const block of msg.content) {
         if (block.kind !== "text") continue;
         const trigger = detectUserCorrection(block.text, correctionPatterns, correctedToolId);
-        if (trigger !== undefined) {
-          emitSignal(state, trigger, { failureCount: 1, threshold: 1 });
-          matched = true;
-        }
+        if (trigger !== undefined) pending.push({ id, trigger });
       }
-      if (matched) state.emittedCorrectionIds.add(id);
+    }
+    return pending;
+  }
+
+  function commitCorrections(state: SessionState, pending: readonly PendingCorrection[]): void {
+    for (const p of pending) {
+      if (state.emittedCorrectionIds.has(p.id)) continue;
+      emitSignal(state, p.trigger, { failureCount: 1, threshold: 1 });
+      state.emittedCorrectionIds.add(p.id);
     }
   }
 
@@ -544,9 +570,13 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       next: ModelHandler,
     ): Promise<ModelResponse> {
       const state = getOrCreate(ctx.session.sessionId);
-      scanUserCorrections(state, request);
+      // Detect corrections eagerly but defer emission — a transient
+      // transport/validator failure must not consume forge budget for a
+      // response the user never sees.
+      const pending = detectPendingCorrections(state, request);
       const fp = requestFingerprint(ctx, request);
       const response = await next(request);
+      commitCorrections(state, pending);
       checkCapabilityGaps(state, extractResponseText(response), fp);
       return response;
     },
@@ -557,23 +587,36 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
       const state = getOrCreate(ctx.session.sessionId);
-      scanUserCorrections(state, request);
+      const pending = detectPendingCorrections(state, request);
       const fp = requestFingerprint(ctx, request);
       const upstream = next(request);
       return (async function* relay() {
         let buffer = "";
         let finalResponse: ModelResponse | undefined;
-        for await (const chunk of upstream) {
-          if (chunk.kind === "text_delta") {
-            buffer += chunk.delta;
-          } else if (chunk.kind === "done") {
-            finalResponse = chunk.response;
+        let streamCompleted = false;
+        try {
+          for await (const chunk of upstream) {
+            if (chunk.kind === "text_delta") {
+              buffer += chunk.delta;
+            } else if (chunk.kind === "done") {
+              finalResponse = chunk.response;
+            }
+            yield chunk;
           }
-          yield chunk;
+          streamCompleted = true;
+        } finally {
+          // Capability-gap detection runs even when the stream aborts or
+          // the consumer stops early — a partial refusal like "I don't
+          // have a tool…" is still a real demand signal. Buffer-only
+          // fallback is used when no `done` chunk arrived.
+          const text =
+            finalResponse !== undefined ? extractResponseText(finalResponse) || buffer : buffer;
+          if (text.length > 0) checkCapabilityGaps(state, text, fp);
+          // User corrections only commit on a clean stream completion,
+          // for the same reason wrapModelCall defers them: a failed
+          // stream produced no committed model interaction.
+          if (streamCompleted) commitCorrections(state, pending);
         }
-        const text =
-          finalResponse !== undefined ? extractResponseText(finalResponse) || buffer : buffer;
-        if (text.length > 0) checkCapabilityGaps(state, text, fp);
       })();
     },
 

@@ -670,16 +670,22 @@ describe("createForgeDemandDetector", () => {
       throw new Error("transport boom");
     };
 
-    // Failed model call — correction must STILL emit (not lost on no-replay).
+    // Failed model call — emission is deferred to a successful next() so
+    // a transient transport/validator failure does not consume forge
+    // budget for a response the user never sees.
     try {
       await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), failModel);
     } catch {
       // expected
     }
+    expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(0);
+
+    // Successful retry commits the correction exactly once.
+    const okModel = async (): Promise<ModelResponse> => modelRes("ok");
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), okModel);
     expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(1);
 
-    // Retry replays the same transcript — must not duplicate.
-    const okModel = async (): Promise<ModelResponse> => modelRes("ok");
+    // Replaying the same transcript again must NOT duplicate.
     await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), okModel);
     expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(1);
   });
@@ -970,6 +976,35 @@ describe("createForgeDemandDetector", () => {
     const ctxB = createMockTurnContext({ turnIndex: 1 });
     await handle.middleware.wrapModelCall?.(ctxB, modelReq([userTurn]), sameResp);
     expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(1);
+  });
+
+  it("runs capability-gap detection even when wrapModelStream aborts mid-stream", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { capabilityGapOccurrences: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+
+    // Stream emits a refusal then throws — capability_gap must still fire.
+    const streamNext = (): AsyncIterable<ModelChunk> =>
+      (async function* () {
+        yield { kind: "text_delta", delta: "I don't have a tool for compiling rust code" };
+        throw new Error("transport boom mid-stream");
+      })();
+
+    const stream = handle.middleware.wrapModelStream?.(ctx, modelReq([]), streamNext);
+    if (stream === undefined) throw new Error("wrapModelStream not implemented");
+    await expect(
+      (async () => {
+        for await (const _c of stream) {
+          // drain
+        }
+      })(),
+    ).rejects.toThrow("transport boom mid-stream");
+
+    expect(signals.some((s) => s.trigger.kind === "capability_gap")).toBe(true);
   });
 
   it("emits globally unique signal ids across sessions so dismiss() targets the right one", async () => {
