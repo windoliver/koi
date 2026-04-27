@@ -96,6 +96,9 @@ export function createDefaultForgeDemandConfig(
     }),
     ...(overrides?.onDemand !== undefined && { onDemand: overrides.onDemand }),
     ...(overrides?.onDismiss !== undefined && { onDismiss: overrides.onDismiss }),
+    ...(overrides?.onSessionAttached !== undefined && {
+      onSessionAttached: overrides.onSessionAttached,
+    }),
     ...(overrides?.clock !== undefined && { clock: overrides.clock }),
   };
 }

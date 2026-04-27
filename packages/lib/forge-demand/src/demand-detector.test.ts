@@ -1345,6 +1345,26 @@ describe("createForgeDemandDetector", () => {
     expect(() => handle.forSession(forged)).toThrow(/observed by the detector/);
   });
 
+  it("createDefaultForgeDemandConfig preserves onSessionAttached through to the detector", async () => {
+    // Regression for F69 (round 8) — the default-config factory dropped
+    // onSessionAttached, so any caller using the documented
+    // `createDefaultForgeDemandConfig({ onSessionAttached, ... })`
+    // flow silently lost the callback. With sessionId-keyed lookup
+    // intentionally absent, scoped handles became unreachable and
+    // emitted signals could not be dismissed.
+    const { createDefaultForgeDemandConfig } = await import("./config.js");
+    const attached: number[] = [];
+    const config = createDefaultForgeDemandConfig({
+      onSessionAttached: (s) => {
+        attached.push(s.sessionId.length);
+      },
+    });
+    expect(typeof config.onSessionAttached).toBe("function");
+    const handle = createForgeDemandDetector(config);
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("any"), async () => toolRes());
+    expect(attached.length).toBe(1);
+  });
+
   it("excludes NOT_FOUND tool lookups from correction attribution history", async () => {
     // Regression for F62 (round 4) — wrapToolCall recorded every request
     // in recentToolCalls and marked it completed even on NOT_FOUND, so
