@@ -376,9 +376,14 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     expect(toolNext).not.toHaveBeenCalled();
   });
 
-  test("passes request through when tool count is at or below minTools", async () => {
+  test("minTools fast-path skips selection only in advisory mode (enforceFiltering=false) — round 23 F1", async () => {
+    // In advisory mode the fast-path is purely an optimization.
     const select = mock(async () => []);
-    const mw = createToolSelectorMiddleware({ selectTools: select, minTools: 5 });
+    const mw = createToolSelectorMiddleware({
+      selectTools: select,
+      minTools: 5,
+      enforceFiltering: false,
+    });
     const tools = [tool("a"), tool("b"), tool("c"), tool("d"), tool("e")];
     const next = mock<ModelHandler>(async (req) => {
       expect(req.tools).toBe(tools);
@@ -388,11 +393,67 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     expect(select).not.toHaveBeenCalled();
   });
 
-  test("passes request through when extracted query is empty", async () => {
+  test("under enforceFiltering, minTools fast-path does NOT skip selection — round 23 F1", async () => {
+    // Round 23 (high): minTools=5 default skipped selection for
+    // small toolsets and authorized every advertised tool, defeating
+    // enforceFiltering on exactly the agents with a few high-impact
+    // tools. Selection now runs regardless of tool count when
+    // enforceFiltering is on.
+    const select = mock(async () => ["a"]);
+    const mw = createToolSelectorMiddleware({ selectTools: select, minTools: 5 }); // default enforceFiltering=true
+    const tools = [tool("a"), tool("b")];
+    const next = mock<ModelHandler>(async (req) => {
+      expect(req.tools?.map((t) => t.name)).toEqual(["a"]);
+      return modelResponse();
+    });
+    await getWrap(mw)(turnCtx(), { messages: [userMsg("go")], tools }, next);
+    expect(select).toHaveBeenCalledTimes(1);
+  });
+
+  test("empty query under enforceFiltering fails closed to alwaysInclude — round 23 F2", async () => {
+    // Round 23 (high): empty-query fallback used to widen to the
+    // full advertised set, silently disabling filtering for any
+    // multimodal turn or unrecognized sender shape. Now restricted
+    // to alwaysInclude, with execution-time enforcement intact.
     const select = mock(async () => []);
     const mw = createToolSelectorMiddleware({
       selectTools: select,
       minTools: 0,
+      alwaysInclude: ["safe"],
+      extractQuery: () => "",
+    });
+    const tools = [tool("safe"), tool("dangerous")];
+    const ctx = turnCtx();
+    const wrapStream = mw.wrapModelStream;
+    if (!wrapStream) throw new Error("wrapModelStream missing");
+    const dangerCall = toolCallId("call-danger");
+    const stream: ModelStreamHandler = async function* () {
+      // Forged: model never saw "dangerous" in the rewritten request.
+      yield { kind: "tool_call_start", toolName: "dangerous", callId: dangerCall };
+      yield { kind: "tool_call_end", callId: dangerCall };
+      yield { kind: "done", response: modelResponse() };
+    };
+    for await (const _ of wrapStream(ctx, { messages: [userMsg("hi")], tools }, stream)) {
+      // drain
+    }
+    expect(select).not.toHaveBeenCalled();
+
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "ok" }),
+    );
+    await expect(
+      wrapTool(ctx, { toolId: "dangerous", input: {}, callId: dangerCall }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
+  });
+
+  test("empty query in advisory mode (enforceFiltering=false) leaves request unchanged — round 23 F2", async () => {
+    const select = mock(async () => []);
+    const mw = createToolSelectorMiddleware({
+      selectTools: select,
+      minTools: 0,
+      enforceFiltering: false,
       extractQuery: () => "",
     });
     const tools = [tool("a"), tool("b")];

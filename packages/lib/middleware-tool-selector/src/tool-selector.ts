@@ -134,25 +134,40 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
 
   async function filterRequest(ctx: TurnContext, request: ModelRequest): Promise<FilterResult> {
     const tools = request.tools;
-    if (tools === undefined || tools.length <= minTools) {
-      // Fast path: no semantic filtering needed because the toolset is
-      // already small enough (or absent). Install an allowlist matching
-      // exactly what the model was shown — including the EMPTY set for
-      // deny-all turns where tools is undefined. wrapToolCall must
-      // still reject tool calls that were not advertised, otherwise a
-      // caller omitting `tools` to disable tools gets no enforcement
-      // (#review-round11-F1, #review-round16-F1).
-      const advertised = tools ?? [];
-      const snapshot = captureSnapshot(ctx.turnId, new Set<string>(advertised.map((t) => t.name)));
+    // No tools to filter: install the empty allowlist so wrapToolCall
+    // fails closed on the deny-all case (#review-round11-F1,
+    // #review-round16-F1).
+    if (tools === undefined) {
+      const snapshot = captureSnapshot(ctx.turnId, new Set<string>());
       return { request, snapshot };
+    }
+
+    // minTools fast-path is an OPTIMIZATION (skip semantic filtering
+    // for already-small toolsets). It must NOT weaken the trust
+    // boundary: under enforceFiltering, run selectTools regardless of
+    // tool count so the snapshot reflects what selectTools chose, not
+    // the full advertised set. Pure advisory mode (enforceFiltering
+    // false) keeps the optimization (#review-round23-F1).
+    if (tools.length <= minTools && !enforceFiltering) {
+      return { request, snapshot: undefined };
     }
 
     const query = extractQuery(request.messages);
     if (query === "") {
-      // No query to drive selection, but keep enforcement honest by
-      // pinning the allowlist to what's currently advertised.
-      const snapshot = captureSnapshot(ctx.turnId, new Set<string>(tools.map((t) => t.name)));
-      return { request, snapshot };
+      // Cannot derive trusted user intent. Under enforceFiltering,
+      // fail closed to alwaysInclude — never widen back to the full
+      // advertised set, which would silently disable filtering for
+      // multimodal turns or unrecognized sender shapes
+      // (#review-round23-F2).
+      if (enforceFiltering) {
+        const fallbackTools = tools.filter((t) => alwaysInclude.includes(t.name));
+        const snapshot = captureSnapshot(
+          ctx.turnId,
+          new Set<string>(fallbackTools.map((t) => t.name)),
+        );
+        return { request: { ...request, tools: fallbackTools }, snapshot };
+      }
+      return { request, snapshot: undefined };
     }
 
     // let: assigned in try, read after the catch — required by the fail-open path.
