@@ -117,7 +117,12 @@ export function createFilterTools(deps: FilterToolsDeps): {
       return true;
     };
 
-    const filtered = tools.filter((tool, i) => {
+    // Async loop so emit() can await dispatchPermissionDecision before returning.
+    // Same logic as the previous synchronous tools.filter(), split into a for loop.
+    const filtered: (typeof tools)[number][] = [];
+    for (let i = 0; i < tools.length; i++) {
+      // biome-ignore lint/style/noNonNullAssertion: decisions.length === tools.length (resolveBatch returns same length)
+      const tool = tools[i]!;
       // biome-ignore lint/style/noNonNullAssertion: decisions.length === tools.length (resolveBatch returns same length)
       const decision = decisions[i]!;
       // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
@@ -128,19 +133,25 @@ export function createFilterTools(deps: FilterToolsDeps): {
         // Pass through. Record an allow decision for observability so
         // reporting/audit still see the tool was offered to the model.
         enforcedDecisionByIndex.set(i, { effect: "allow" });
-        return true;
+        filtered.push(tool);
+        continue;
       }
 
       // #1650 loop round-4: audit/dispatch fire AFTER the hard-conversion
       // checks so observers see the FINAL decision shape, not the original
       // soft decision that was about to be hard-converted. Keeps audit sinks
       // consistent with what was actually enforced.
-      const emit = (finalDecision: PermissionDecision): void => {
+      const emit = async (finalDecision: PermissionDecision): Promise<void> => {
         enforcedDecisionByIndex.set(i, finalDecision);
         if (auditSink !== undefined) {
           auditFilterDecision(ctx, tool.name, finalDecision, auditSink, clock);
         }
-        void ctx.dispatchPermissionDecision?.(query, finalDecision);
+        // Fire-and-forget: filter-time dispatch is observability-only; execution-time
+        // wrapToolCall is the fail-closed gate. Awaiting per tool would add O(n) flush
+        // latency on every planning pass for large tool registries.
+        void Promise.resolve(ctx.dispatchPermissionDecision?.(query, finalDecision)).catch(
+          () => {},
+        );
       };
 
       if (decision.effect === "deny") {
@@ -176,8 +187,8 @@ export function createFilterTools(deps: FilterToolsDeps): {
                 origin: "soft-conversion",
               });
             }
-            emit(hardened);
-            return false;
+            await emit(hardened);
+            continue;
           }
           // #1650 loop round-2/6: if the soft-deny counter is ALREADY at or
           // over cap for this tool in the current turn, stop advertising the
@@ -223,8 +234,8 @@ export function createFilterTools(deps: FilterToolsDeps): {
               disposition: "hard",
               reason: `${decision.reason} (soft-deny retry cap ${cap} exceeded this turn)`,
             };
-            emit(hardened);
-            return false;
+            await emit(hardened);
+            continue;
           }
           // Soft-deny → keep tool visible. Record in isolated SoftDenyLog so
           // high-volume soft denies don't evict native hard-deny history from
@@ -239,8 +250,9 @@ export function createFilterTools(deps: FilterToolsDeps): {
             turnIndex: ctx.turnIndex,
             queryKey: cacheKey,
           });
-          emit(decision);
-          return true;
+          await emit(decision);
+          filtered.push(tool);
+          continue;
         }
         // Hard-deny: existing behavior — record with softness+origin, emit, strip.
         sessionTracker.record({
@@ -254,13 +266,13 @@ export function createFilterTools(deps: FilterToolsDeps): {
           softness: "hard",
           origin: "native",
         });
-        emit(decision);
-        return false;
+        await emit(decision);
+        continue;
       }
       // allow/ask — emit the original decision so audit/observer chain sees it.
-      emit(decision);
-      return true;
-    });
+      await emit(decision);
+      filtered.push(tool);
+    }
 
     const filteredCount = tools.length - filtered.length;
     if (filteredCount > 0) {

@@ -1020,6 +1020,14 @@ if (decision.effect === "ask") {
 
 **Coverage:** persistent always-allow, session always-allow, cache hit, coalesced inflight allow, fresh approval (allow/modify/always-allow), and all deny paths.
 
+### Dispatch durability (#1992)
+
+All three dispatch call sites in `wrap-tool-call.ts` (allow path, deny path, fresh-approval ask path) invoke `ctx.dispatchPermissionDecision?.(query, decision)` **fire-and-forget** (`void`). This preserves the public contract that `onPermissionDecision` is a non-blocking observer hook — a slow or failing observer can never stall or fail approved tool execution.
+
+Durability of the audit record is provided by the **post-execution force-flush** in `wrapToolCall` / `wrapModelCall`, which drains both the permission-decision and tool-call records atomically before returning the tool result. If the flush fails, `poisonError` is set and the result is withheld.
+
+Hook execution is sequential (`runPermissionDecisionHooks` awaits each `onPermissionDecision` in turn). A single slow observer therefore delays subsequent observers within the same dispatch, but never the caller — keep observer hooks short (queue-and-return) and let post-execution flush handle durability.
+
 ---
 
 ## UI-only `callId` channel (#1759)

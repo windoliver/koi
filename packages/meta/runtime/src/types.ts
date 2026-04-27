@@ -4,6 +4,8 @@ import type {
   RegistryConflictWarning,
 } from "@koi/agent-runtime";
 import type { ArtifactStore } from "@koi/artifacts";
+import type { NdjsonRotationConfig } from "@koi/audit-sink-ndjson";
+import type { SqliteRetentionConfig } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
 import type {
   AgentResolver,
@@ -407,12 +409,25 @@ export interface RuntimeConfig {
               readonly kind: "ndjson";
               readonly filePath: string;
               readonly flushIntervalMs?: number | undefined;
+              readonly rotation?: NdjsonRotationConfig | undefined;
             }
           | {
               readonly kind: "sqlite";
               readonly dbPath: string;
+              /**
+               * Scope all sink operations (reads and pruning) to this agent ID.
+               * When set, query() filters by (session_id AND agent_id), and the
+               * retention DELETE subquery is further restricted to that agent's rows.
+               * Use in shared databases to prevent cross-agent audit reads and
+               * cross-agent prune collisions. Callers that need to read audit rows
+               * across multiple agents (e.g. multi-agent compliance review) should
+               * omit this field and filter programmatically.
+               * Omit for single-agent deployments.
+               */
+              readonly agentId?: string | undefined;
               readonly flushIntervalMs?: number | undefined;
               readonly maxBufferSize?: number | undefined;
+              readonly retention?: SqliteRetentionConfig | undefined;
             }
           | AuditSink;
         readonly maxQueueDepth?: number | undefined;

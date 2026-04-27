@@ -30,8 +30,10 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
-import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
-import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
+import type { NdjsonRotationConfig } from "@koi/audit-sink-ndjson";
+import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit-sink-ndjson";
+import type { SqliteRetentionConfig } from "@koi/audit-sink-sqlite";
+import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type { BudgetConfig } from "@koi/context-manager";
@@ -39,6 +41,7 @@ import type {
   Agent,
   AgentId,
   ApprovalHandler,
+  AuditEntry,
   AuditSink,
   ComplianceRecorder,
   ComponentProvider,
@@ -52,6 +55,9 @@ import type {
   InboundMessage,
   KoiMiddleware,
   ModelAdapter,
+  ModelChunk,
+  ModelRequest,
+  ModelStreamHandler,
   PermissionBackend,
   PermissionDecision,
   PermissionQuery,
@@ -60,6 +66,7 @@ import type {
   RuleDescriptor,
   SessionId,
   SessionTranscript,
+  TurnContext,
   Violation,
   ViolationStore,
 } from "@koi/core";
@@ -762,6 +769,12 @@ export interface KoiRuntimeConfig {
    */
   readonly auditNdjsonPath?: string | undefined;
   /**
+   * Optional NDJSON rotation policy. When set, the sink archives the active file
+   * to `<auditNdjsonPath>.archive/` when the configured threshold is reached.
+   * Requires `auditNdjsonPath` to be set — ignored otherwise.
+   */
+  readonly auditNdjsonRotation?: NdjsonRotationConfig | undefined;
+  /**
    * Optional absolute path to a SQLite audit database file.
    *
    * The TUI surfaces this via the `KOI_AUDIT_SQLITE` environment variable
@@ -770,6 +783,12 @@ export interface KoiRuntimeConfig {
    * owned by the runtime and closed during shutdown.
    */
   readonly auditSqlitePath?: string | undefined;
+  /**
+   * Optional SQLite audit retention policy. When set, rows older than
+   * `maxAgeDays` are pruned on the configured interval.
+   * Requires `auditSqlitePath` to be set — ignored otherwise.
+   */
+  readonly auditSqliteRetention?: SqliteRetentionConfig | undefined;
   /** Path to the SQLite DB backing the ViolationStore.
    *  - `undefined` (default): auto-wires to `~/.koi/violations.db` when
    *    governance is enabled — mirrors the `~/.koi/governance-alerts.jsonl`
@@ -2421,14 +2440,232 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             "Set KOI_AUDIT_NDJSON instead.",
         );
       }
-      const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
-      const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
+      const ndjsonSinkConfig = {
+        filePath: config.auditNdjsonPath,
+        ...(config.auditNdjsonRotation !== undefined
+          ? { rotation: config.auditNdjsonRotation }
+          : {}),
+      };
+      const ndjsonValidation = validateNdjsonAuditSinkConfig(ndjsonSinkConfig);
+      if (!ndjsonValidation.ok) {
+        throw new Error(`Invalid NDJSON audit sink config: ${ndjsonValidation.error.message}`);
+      }
+      const auditSink = createNdjsonAuditSink(ndjsonSinkConfig);
+      let ndjsonPoisonError: unknown;
+      const ndjsonOriginalLog = auditSink.log.bind(auditSink);
+      const poisonedNdjsonSink: typeof auditSink = {
+        ...auditSink,
+        log: async (entry: AuditEntry): Promise<void> => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink poisoned — previous write failure prevents further audit writes",
+              { cause: ndjsonPoisonError },
+            );
+          }
+          return ndjsonOriginalLog(entry);
+        },
+      };
+      const auditMw = createAuditMiddleware({
+        sink: poisonedNdjsonSink,
+        signing: true,
+        onError: (error: unknown) => {
+          if (ndjsonPoisonError === undefined) {
+            ndjsonPoisonError = error;
+            console.error(
+              "[koi/cli] audit sink write failed — sink poisoned, no further audit writes accepted:",
+              error,
+            );
+            process.exitCode = 1;
+          }
+          throw new Error("audit sink write failed — aborting to preserve audit trail integrity", {
+            cause: error,
+          });
+        },
+      });
       complianceRecorders.push(
-        createAuditSinkComplianceRecorder(auditSink, {
+        createAuditSinkComplianceRecorder(poisonedNdjsonSink, {
           sessionId: getLiveSessionId,
+          onError: (error: unknown) => {
+            // Compliance writes are fire-and-forget by design; the only way to
+            // guarantee no further work runs after a compliance write failure is
+            // synchronous termination. process.exit(1) is correct here.
+            console.error("[koi/cli] compliance sink write failed — terminating:", error);
+            process.exit(1);
+          },
         }),
       );
-      auditPresetExtras.push(auditMw);
+      const guardedAuditMw: KoiMiddleware = {
+        ...auditMw,
+        onSessionStart: async (ctx) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record session_start event", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          await auditMw.onSessionStart?.(ctx);
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after session_start — cannot proceed without durable audit record",
+              { cause: ndjsonPoisonError },
+            );
+          }
+        },
+        onBeforeTurn: async (ctx) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink poisoned — refusing new turn to preserve audit trail integrity",
+              { cause: ndjsonPoisonError },
+            );
+          }
+          return auditMw.onBeforeTurn?.(ctx);
+        },
+        onSessionEnd: async (ctx) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record session_end event", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          await auditMw.onSessionEnd?.(ctx);
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after session_end — audit record may be incomplete",
+              { cause: ndjsonPoisonError },
+            );
+          }
+        },
+        onPermissionDecision: async (ctx, query, decision) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record permission_decision event", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          await auditMw.onPermissionDecision?.(ctx, query, decision);
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after permission decision — cannot proceed without durable audit record",
+              { cause: ndjsonPoisonError },
+            );
+          }
+        },
+        wrapModelCall: async (ctx, request, next) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing model call", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          let modelError: unknown;
+          let modelThrew = false;
+          let modelResult: Awaited<ReturnType<typeof next>> | undefined;
+          try {
+            modelResult = await (auditMw.wrapModelCall
+              ? auditMw.wrapModelCall(ctx, request, next)
+              : next(request));
+          } catch (e: unknown) {
+            modelError = e;
+            modelThrew = true;
+          }
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink write failed mid-turn — turn aborted", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          if (modelThrew) throw modelError;
+          return modelResult as Awaited<ReturnType<typeof next>>;
+        },
+        wrapToolCall: async (ctx, request, next) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing tool call", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          let toolError: unknown;
+          let toolThrew = false;
+          let toolResult: Awaited<ReturnType<typeof next>> | undefined;
+          try {
+            toolResult = await (auditMw.wrapToolCall
+              ? auditMw.wrapToolCall(ctx, request, next)
+              : next(request));
+          } catch (e: unknown) {
+            toolError = e;
+            toolThrew = true;
+          }
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
+              { cause: ndjsonPoisonError },
+            );
+          }
+          if (toolThrew) throw toolError;
+          return toolResult as Awaited<ReturnType<typeof next>>;
+        },
+        async *wrapModelStream(
+          ctx: TurnContext,
+          request: ModelRequest,
+          next: ModelStreamHandler,
+        ): AsyncIterable<ModelChunk> {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing model stream", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          const inner = auditMw.wrapModelStream
+            ? auditMw.wrapModelStream(ctx, request, next)
+            : next(request);
+          let streamError: unknown;
+          let streamThrew = false;
+          try {
+            for await (const chunk of inner) {
+              if (ndjsonPoisonError !== undefined) {
+                throw new Error("audit sink write failed mid-stream — stream aborted", {
+                  cause: ndjsonPoisonError,
+                });
+              }
+              yield chunk;
+            }
+          } catch (e: unknown) {
+            streamError = e;
+            streamThrew = true;
+          } finally {
+            await auditMw.flush().catch((flushErr: unknown) => {
+              if (ndjsonPoisonError === undefined) {
+                ndjsonPoisonError = flushErr;
+              }
+            });
+          }
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink write failed after stream — turn aborted", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          if (streamThrew) throw streamError;
+        },
+      };
+      auditPresetExtras.push(guardedAuditMw);
       // Deliberately NOT captured into `ledgerAuditSink`. The ledger is
       // refreshed after every settled turn; NDJSON `.query(sessionId)`
       // re-parses the entire file on each call, so long sessions would
@@ -2500,14 +2737,237 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             "Set KOI_AUDIT_SQLITE instead.",
         );
       }
-      const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
-      const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
+      const sqliteSinkConfig = {
+        dbPath: config.auditSqlitePath,
+        agentId: precomputedAgentId,
+        ...(config.auditSqliteRetention !== undefined
+          ? { retention: config.auditSqliteRetention }
+          : {}),
+      };
+      if (sqliteSinkConfig.retention !== undefined) {
+        throw new Error(
+          "audit sink: SQLite retention cannot be used with the signed audit path. " +
+            "Session-granular pruning would break the signed hash chain. " +
+            "Remove the retention configuration to use signed SQLite auditing.",
+        );
+      }
+      const sqliteValidation = validateSqliteAuditSinkConfig(sqliteSinkConfig);
+      if (!sqliteValidation.ok) {
+        throw new Error(`Invalid SQLite audit sink config: ${sqliteValidation.error.message}`);
+      }
+      const sqliteSink = createSqliteAuditSink(sqliteSinkConfig);
+      let sqlitePoisonError: unknown;
+      const sqliteOriginalLog = sqliteSink.log.bind(sqliteSink);
+      const poisonedSqliteSink: typeof sqliteSink = {
+        ...sqliteSink,
+        log: async (entry: AuditEntry): Promise<void> => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink poisoned — previous write failure prevents further audit writes",
+              { cause: sqlitePoisonError },
+            );
+          }
+          return sqliteOriginalLog(entry);
+        },
+      };
+      const sqliteAuditMw = createAuditMiddleware({
+        sink: poisonedSqliteSink,
+        signing: true,
+        onError: (error: unknown) => {
+          if (sqlitePoisonError === undefined) {
+            sqlitePoisonError = error;
+            console.error(
+              "[koi/cli] audit sink write failed — sink poisoned, no further audit writes accepted:",
+              error,
+            );
+            process.exitCode = 1;
+          }
+          throw new Error("audit sink write failed — aborting to preserve audit trail integrity", {
+            cause: error,
+          });
+        },
+      });
       complianceRecorders.push(
-        createAuditSinkComplianceRecorder(sqliteSink, {
+        createAuditSinkComplianceRecorder(poisonedSqliteSink, {
           sessionId: getLiveSessionId,
+          onError: (error: unknown) => {
+            console.error("[koi/cli] compliance sink write failed — terminating:", error);
+            process.exit(1);
+          },
         }),
       );
-      auditPresetExtras.push(sqliteAuditMw);
+      const guardedSqliteAuditMw: KoiMiddleware = {
+        ...sqliteAuditMw,
+        onSessionStart: async (ctx) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record session_start event", {
+              cause: sqlitePoisonError,
+            });
+          }
+          await sqliteAuditMw.onSessionStart?.(ctx);
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after session_start — cannot proceed without durable audit record",
+              { cause: sqlitePoisonError },
+            );
+          }
+        },
+        onBeforeTurn: async (ctx) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink poisoned — refusing new turn to preserve audit trail integrity",
+              { cause: sqlitePoisonError },
+            );
+          }
+          return sqliteAuditMw.onBeforeTurn?.(ctx);
+        },
+        onSessionEnd: async (ctx) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record session_end event", {
+              cause: sqlitePoisonError,
+            });
+          }
+          await sqliteAuditMw.onSessionEnd?.(ctx);
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after session_end — audit record may be incomplete",
+              { cause: sqlitePoisonError },
+            );
+          }
+        },
+        onPermissionDecision: async (ctx, query, decision) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record permission_decision event", {
+              cause: sqlitePoisonError,
+            });
+          }
+          await sqliteAuditMw.onPermissionDecision?.(ctx, query, decision);
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after permission decision — cannot proceed without durable audit record",
+              { cause: sqlitePoisonError },
+            );
+          }
+        },
+        wrapModelCall: async (ctx, request, next) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing model call", {
+              cause: sqlitePoisonError,
+            });
+          }
+          let modelError: unknown;
+          let modelThrew = false;
+          let modelResult: Awaited<ReturnType<typeof next>> | undefined;
+          try {
+            modelResult = await (sqliteAuditMw.wrapModelCall
+              ? sqliteAuditMw.wrapModelCall(ctx, request, next)
+              : next(request));
+          } catch (e: unknown) {
+            modelError = e;
+            modelThrew = true;
+          }
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink write failed mid-turn — turn aborted", {
+              cause: sqlitePoisonError,
+            });
+          }
+          if (modelThrew) throw modelError;
+          return modelResult as Awaited<ReturnType<typeof next>>;
+        },
+        wrapToolCall: async (ctx, request, next) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing tool call", {
+              cause: sqlitePoisonError,
+            });
+          }
+          let toolError: unknown;
+          let toolThrew = false;
+          let toolResult: Awaited<ReturnType<typeof next>> | undefined;
+          try {
+            toolResult = await (sqliteAuditMw.wrapToolCall
+              ? sqliteAuditMw.wrapToolCall(ctx, request, next)
+              : next(request));
+          } catch (e: unknown) {
+            toolError = e;
+            toolThrew = true;
+          }
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
+              { cause: sqlitePoisonError },
+            );
+          }
+          if (toolThrew) throw toolError;
+          return toolResult as Awaited<ReturnType<typeof next>>;
+        },
+        async *wrapModelStream(
+          ctx: TurnContext,
+          request: ModelRequest,
+          next: ModelStreamHandler,
+        ): AsyncIterable<ModelChunk> {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing model stream", {
+              cause: sqlitePoisonError,
+            });
+          }
+          const inner = sqliteAuditMw.wrapModelStream
+            ? sqliteAuditMw.wrapModelStream(ctx, request, next)
+            : next(request);
+          let streamError: unknown;
+          let streamThrew = false;
+          try {
+            for await (const chunk of inner) {
+              if (sqlitePoisonError !== undefined) {
+                throw new Error("audit sink write failed mid-stream — stream aborted", {
+                  cause: sqlitePoisonError,
+                });
+              }
+              yield chunk;
+            }
+          } catch (e: unknown) {
+            streamError = e;
+            streamThrew = true;
+          } finally {
+            await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+              if (sqlitePoisonError === undefined) {
+                sqlitePoisonError = flushErr;
+              }
+            });
+          }
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink write failed after stream — turn aborted", {
+              cause: sqlitePoisonError,
+            });
+          }
+          if (streamThrew) throw streamError;
+        },
+      };
+      auditPresetExtras.push(guardedSqliteAuditMw);
       ledgerAuditSink = sqliteSink;
       auditSqliteMwForShutdown = {
         flush: () => sqliteAuditMw.flush(),
