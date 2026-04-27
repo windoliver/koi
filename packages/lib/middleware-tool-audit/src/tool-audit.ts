@@ -611,17 +611,20 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       getOrCreateRecord(toolName).sessionsUsed += 1;
     }
 
-    // Defer cleanup if drain timed out with in-flight calls still
-    // pending. Marking cleanedUp routes any late completion through the
+    // Mark cleanedUp so any late completion routes through the
     // late-fold path (wrapToolCall finally), which folds the new delta
     // into global and queues a follow-up persist instead of stranding
     // the outcome on a deleted session's local record
-    // (#review-round38-F1).
+    // (#review-round38-F1). Always delete from sessionStates: a hung
+    // tool that never settles must not pin this entry and poison the
+    // `otherSessionsActive` overlap gate, which would suppress
+    // generateReport() and onAuditResult emission for the remainder of
+    // the process (#review-round42-F1). Late completions still find
+    // the session via the captured `state` closure in wrapToolCall.
     if (state.inFlight.size > 0) {
       state.cleanedUp = true;
-    } else {
-      sessionStates.delete(ctx.sessionId);
     }
+    sessionStates.delete(ctx.sessionId);
 
     // Skip when this session contributed nothing AND no earlier
     // concurrent session left a deferred signal flush for us to drain

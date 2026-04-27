@@ -104,6 +104,7 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
   const patterns: readonly ToolCallPattern[] = resolvePatterns(patternEntries);
   const maxCalls = cfg.maxToolCallsPerResponse ?? DEFAULT_MAX_TOOL_CALLS;
   const recoverOnStreamError = cfg.recoverOnStreamError ?? false;
+  const defaultModel = cfg.defaultModel;
   // Wrap the user-supplied telemetry sink so a throwing observer cannot
   // abort recoverToolCalls and turn an otherwise valid recovered tool
   // call into a user-visible model-stream failure (worse: in the catch
@@ -334,7 +335,7 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
               // anonymous calls (#review-round40-F1).
               const syntheticResponse: ModelResponse = {
                 content: streamedPrefix + recovered.cleanedText,
-                model: request.model ?? "unknown",
+                model: request.model ?? defaultModel ?? "unknown",
                 ...(lastUsage !== undefined ? { usage: lastUsage } : {}),
                 metadata: { recoveryError: chunk.message, recovered: true },
               };
@@ -435,7 +436,7 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
           // (#review-round40-F1).
           const syntheticResponse: ModelResponse = {
             content: streamedPrefix + recovered.cleanedText,
-            model: request.model ?? "unknown",
+            model: request.model ?? defaultModel ?? "unknown",
             ...(lastUsage !== undefined ? { usage: lastUsage } : {}),
             metadata: { recoveryError: errorMessage, recovered: true },
           };

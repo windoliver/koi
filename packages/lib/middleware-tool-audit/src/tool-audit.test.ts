@@ -1476,8 +1476,13 @@ describe("createToolAuditMiddleware", () => {
       // Now make the call fail after teardown — late-fold path runs.
       fail(new Error("boom"));
       await inFlight;
-      // Drain the queued late persist by chaining onto a clean session.
+      // Drain the queued late persist by chaining onto a dirty session
+      // (queueLatePersist's promise becomes savePromise, and a dirty
+      // session-end awaits savePromise via the chained then).
       await mw.onSessionStart?.(sessionCtx({ sessionId: "sess-2" }));
+      await wrap(turnCtx(sessionCtx({ sessionId: "sess-2" })), toolReq("noop"), async () => ({
+        output: "ok",
+      }));
       await mw.onSessionEnd?.(sessionCtx({ sessionId: "sess-2" }));
 
       // Late failure must be durable.
@@ -1495,6 +1500,49 @@ describe("createToolAuditMiddleware", () => {
         (s) => s.toolName === "flaky" && s.signal === "high_failure",
       );
       expect(highFailure).toBeDefined();
+    });
+
+    test("hung tool does not pin sessionStates and disable later signals — round 42 F1", async () => {
+      // A timed-out tool call that never settles must NOT keep its
+      // session entry in sessionStates. Previously it did, so every
+      // subsequent session-end saw otherSessionsActive=true and
+      // generateReport saw sessionStates.size>0 — silencing all
+      // signals/reports for the rest of the process.
+      const onAuditResult = mock(() => {});
+      const { store } = createMockStore();
+      const mw = createToolAuditMiddleware(
+        defaultConfig({
+          store,
+          onAuditResult,
+          sessionEndDrainTimeoutMs: 5,
+          highValueMinCalls: 1,
+          highValueSuccessThreshold: 0.5,
+        }),
+      );
+      const wrap = getWrapToolCall(mw);
+
+      // Session 1: kick off a tool that never settles.
+      await mw.onSessionStart?.(sessionCtx({ sessionId: "hung" }));
+      const hungInFlight = wrap(
+        turnCtx(sessionCtx({ sessionId: "hung" })),
+        toolReq("zombie"),
+        () => new Promise(() => {}),
+      ).catch(() => {});
+      void hungInFlight; // intentionally never awaited
+      await mw.onSessionEnd?.(sessionCtx({ sessionId: "hung" }));
+
+      // Session 2: clean run, should observe no overlap from session 1.
+      await mw.onSessionStart?.(sessionCtx({ sessionId: "later" }));
+      await wrap(turnCtx(sessionCtx({ sessionId: "later" })), toolReq("good"), async () => ({
+        output: "ok",
+      }));
+      await mw.onSessionEnd?.(sessionCtx({ sessionId: "later" }));
+
+      // generateReport must work even though a hung tool from session 1
+      // is still technically "in flight" — its session was deleted.
+      const report = mw.generateReport();
+      const highValue = report.find((r) => r.toolName === "good" && r.signal === "high_value");
+      expect(highValue).toBeDefined();
     });
 
     test("late persist defers when hydration has not succeeded — round 41 F1", async () => {

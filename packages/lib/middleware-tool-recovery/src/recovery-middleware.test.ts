@@ -734,6 +734,48 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
     expect(throwDone.response.usage).toEqual({ inputTokens: 200, outputTokens: 11 });
   });
 
+  test("defaultModel config supplies provider identity when request.model is omitted — round 42 F2", async () => {
+    // The runtime's main turn-runner builds ModelRequest without a
+    // `model` field, so falling back to "unknown" silently breaks
+    // cost attribution on recovery. defaultModel lets the
+    // adapter/runtime layer plumb the resolved provider identity at
+    // factory time.
+    const mw = createToolRecoveryMiddleware({
+      patterns: ["hermes"],
+      recoverOnStreamError: true,
+      defaultModel: "anthropic/claude-3.5-sonnet",
+    });
+    const tools = [tool("foo")];
+    const next: ModelStreamHandler = async function* () {
+      yield {
+        kind: "text_delta",
+        delta: '<tool_call>{"name":"foo","arguments":{"x":1}}</tool_call>',
+      };
+      throw new Error("connection reset");
+    };
+    // Note: request.model intentionally omitted — defaultModel must fill in.
+    const out = await collect(getStream(mw)(turnCtx(), { messages: [], tools }, next));
+    const done = out.find((c) => c.kind === "done");
+    expect(done).toBeDefined();
+    if (done?.kind !== "done") throw new Error("expected done");
+    expect(done.response.model).toBe("anthropic/claude-3.5-sonnet");
+
+    // request.model still wins when both are set.
+    const next2: ModelStreamHandler = async function* () {
+      yield {
+        kind: "text_delta",
+        delta: '<tool_call>{"name":"foo","arguments":{"x":1}}</tool_call>',
+      };
+      throw new Error("connection reset");
+    };
+    const out2 = await collect(
+      getStream(mw)(turnCtx(), { messages: [], tools, model: "openai/gpt-4o" }, next2),
+    );
+    const done2 = out2.find((c) => c.kind === "done");
+    if (done2?.kind !== "done") throw new Error("expected done");
+    expect(done2.response.model).toBe("openai/gpt-4o");
+  });
+
   test("thinking_delta and usage chunks are preserved across the buffer", async () => {
     const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("foo")];

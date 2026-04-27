@@ -62,6 +62,17 @@ export interface ToolRecoveryConfig {
    * model output is safe to act on (#review-round35-F2).
    */
   readonly recoverOnStreamError?: boolean | undefined;
+  /**
+   * Provider/model identifier used as the `model` field on synthesized
+   * recovery `done` responses when the upstream stream errors before
+   * surfacing one. `ModelRequest.model` is preferred; this is the
+   * fallback. Without it, recovered tool executions on the degraded
+   * path attribute to "unknown", silently breaking downstream cost
+   * accounting and incident analysis (#review-round42-F2). Wire from
+   * the adapter or runtime layer that knows the resolved provider
+   * identity.
+   */
+  readonly defaultModel?: string | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -134,6 +145,10 @@ export function validateToolRecoveryConfig(config: unknown): Result<ToolRecovery
     typeof config.recoverOnStreamError !== "boolean"
   ) {
     return validationError("'recoverOnStreamError' must be a boolean");
+  }
+
+  if (config.defaultModel !== undefined && typeof config.defaultModel !== "string") {
+    return validationError("'defaultModel' must be a string");
   }
 
   return { ok: true, value: config as ToolRecoveryConfig };
