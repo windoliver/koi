@@ -426,20 +426,54 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // CONTENT-only fingerprint — must NOT include `msg.timestamp`.
       // The same ask repeated in a later turn carries a fresh
       // wall-clock timestamp, and timestamp-based scoping would put
-      // every retry into its own bucket — defeating the threshold.
-      // Per-response retry dedup is handled separately via
-      // `recentGapResponseIds`. F80 regression.
-      let textFingerprint = "";
-      let len = 0;
+      // every retry into its own bucket — defeating the threshold
+      // (F80). Includes EVERY content block (not just text) so two
+      // turns with the same prompt over different attachments/images
+      // do not collapse into one bucket. F83 regression.
+      let body = "";
+      let total = 0;
       for (const block of msg.content) {
-        if (block.kind === "text") {
-          textFingerprint += block.text;
-          len += block.text.length;
-        }
+        body += `${blockFingerprint(block)};`;
+        total += 1;
       }
-      return `${msg.senderId}|${String(len)}|${fnv1a(textFingerprint)}`;
+      return `${msg.senderId}|n=${String(total)}|${fnv1a(body)}`;
     }
     return "";
+  }
+
+  /**
+   * Stable per-block fingerprint covering all ContentBlock kinds. Two
+   * turns sharing the same text but different attachments or images
+   * must NOT collapse into a single task-context bucket — that would
+   * cause "summarize this" against different documents to aggregate as
+   * one false demand signal. F83 regression.
+   */
+  function blockFingerprint(block: InboundMessage["content"][number]): string {
+    switch (block.kind) {
+      case "text":
+        return `t:${String(block.text.length)}:${fnv1a(block.text)}`;
+      case "file":
+        return `f:${block.mimeType}:${fnv1a(`${block.url}|${block.name ?? ""}`)}`;
+      case "image":
+        return `i:${fnv1a(`${block.url}|${block.alt ?? ""}`)}`;
+      case "button":
+        return `b:${fnv1a(`${block.label}|${block.action}`)}`;
+      case "custom":
+        // CustomBlock.data is `unknown` — JSON.stringify is best-effort
+        // (cycles fall back to the type tag, preserving distinction
+        // between custom-block kinds even when payloads are unhashable).
+        try {
+          return `c:${block.type}:${fnv1a(JSON.stringify(block.data) ?? "")}`;
+        } catch {
+          return `c:${block.type}:unhashable`;
+        }
+      default: {
+        // Defensive: future block kinds still get a distinct bucket
+        // rather than silently sharing one.
+        const tag = (block as { readonly kind?: unknown }).kind;
+        return `?:${typeof tag === "string" ? tag : "unknown"}`;
+      }
+    }
   }
 
   function checkCapabilityGaps(
@@ -524,23 +558,21 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   }
 
   function messageIdentity(msg: InboundMessage): string {
-    // Per-message identity: senderId + timestamp + length + FULL-content
-    // hash. Truncating content to a prefix (as before) lets two distinct
-    // long messages with the same prefix collide and silently dedupe each
-    // other — see F51. Hashing the entire concatenated text avoids that.
-    // Both timestamp AND content are required: timestamp distinguishes
-    // distinct messages with identical content (different tool turns),
-    // content distinguishes distinct messages that happen to share a
+    // Per-message identity: senderId + timestamp + per-block fingerprint
+    // hash covering every ContentBlock kind. Truncating to text-only
+    // (as before) let two messages with the same text but different
+    // attachments collide as the same identity (F83). Both timestamp
+    // AND content are required: timestamp distinguishes distinct
+    // messages with identical content (different tool turns), content
+    // distinguishes distinct messages that happen to share a
     // millisecond timestamp.
-    let textFingerprint = "";
-    let len = 0;
+    let body = "";
+    let total = 0;
     for (const block of msg.content) {
-      if (block.kind === "text") {
-        textFingerprint += block.text;
-        len += block.text.length;
-      }
+      body += `${blockFingerprint(block)};`;
+      total += 1;
     }
-    return `${msg.senderId}|${String(msg.timestamp)}|${String(len)}|${fnv1a(textFingerprint)}`;
+    return `${msg.senderId}|${String(msg.timestamp)}|n=${String(total)}|${fnv1a(body)}`;
   }
 
   function hasAnyCompletedTool(state: SessionState): boolean {
@@ -788,7 +820,11 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // response the user never sees.
       const pending = detectPendingCorrections(state, request);
       const fp = requestFingerprint(ctx, request);
-      const taskCtx = taskContextFingerprint(request);
+      // No user-authored message → fall back to per-request fingerprint
+      // so unrelated autonomous/internal turns cannot collapse into a
+      // single capability-gap bucket via empty-string scoping. F82
+      // regression.
+      const taskCtx = taskContextFingerprint(request) || `internal:${fp}`;
       const response = await next(request);
       commitCorrections(state, pending);
       checkCapabilityGaps(state, extractResponseText(response), fp, taskCtx);
@@ -804,7 +840,11 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       const state = getOrCreate(ctx.session.sessionId);
       const pending = detectPendingCorrections(state, request);
       const fp = requestFingerprint(ctx, request);
-      const taskCtx = taskContextFingerprint(request);
+      // No user-authored message → fall back to per-request fingerprint
+      // so unrelated autonomous/internal turns cannot collapse into a
+      // single capability-gap bucket via empty-string scoping. F82
+      // regression.
+      const taskCtx = taskContextFingerprint(request) || `internal:${fp}`;
       const upstream = next(request);
       return (async function* relay() {
         let buffer = "";

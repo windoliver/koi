@@ -321,15 +321,19 @@ describe("createForgeDemandDetector", () => {
     const b = async (): Promise<ModelResponse> =>
       modelRes("I don't have a tool for parsing protobuf schemas");
 
+    // Stable user-authored task — windowText distinguishes the two
+    // unrelated gaps; the same task repeated does aggregate.
+    const ask = userMsg("help me with my project");
+
     // Distinct turnIds so retry-dedup does not collapse legitimate repeats.
     await handle.middleware.wrapModelCall?.(
       createMockTurnContext({ turnIndex: 0 }),
-      modelReq([]),
+      modelReq([ask]),
       a,
     );
     await handle.middleware.wrapModelCall?.(
       createMockTurnContext({ turnIndex: 1 }),
-      modelReq([]),
+      modelReq([ask]),
       b,
     );
     expect(signals.length).toBe(0);
@@ -337,7 +341,7 @@ describe("createForgeDemandDetector", () => {
     // The same gap repeated in a distinct turn *does* cross the threshold.
     await handle.middleware.wrapModelCall?.(
       createMockTurnContext({ turnIndex: 2 }),
-      modelReq([]),
+      modelReq([ask]),
       a,
     );
     expect(signals.length).toBe(1);
@@ -1757,5 +1761,77 @@ describe("createForgeDemandDetector", () => {
     const calls = newSignal.context.failedToolCalls;
     expect(calls.some((m) => m.includes("OLD-STREAK-ERROR"))).toBe(false);
     expect(calls.some((m) => m.includes("NEW-STREAK-ERROR"))).toBe(true);
+  });
+
+  it("F82: unrelated autonomous turns with no user message do not aggregate via empty task scope", async () => {
+    // Reviewer F82: when no user-authored message is present,
+    // taskContextFingerprint returned "" — every internal/autonomous
+    // turn shared the same empty bucket, so two unrelated internal
+    // refusals could trip threshold and emit a forged-demand signal.
+    // The fix falls back to a per-request fingerprint when no user
+    // message is present.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { capabilityGapOccurrences: 2 },
+        capabilityGapPatterns: [/I don'?t have a tool/],
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const refusal = "Sorry, I don't have a tool for that.";
+    // System-only transcripts (no user sender) — distinct turnIds.
+    const sysA: InboundMessage = {
+      senderId: "system:internal",
+      content: [{ kind: "text", text: "internal task A" }],
+      timestamp: 1,
+    };
+    const sysB: InboundMessage = {
+      senderId: "system:internal",
+      content: [{ kind: "text", text: "internal task B" }],
+      timestamp: 2,
+    };
+    const ctx1 = createMockTurnContext({ turnIndex: 11 });
+    const ctx2 = createMockTurnContext({ turnIndex: 12 });
+    await handle.middleware.wrapModelCall?.(ctx1, modelReq([sysA]), async () => modelRes(refusal));
+    await handle.middleware.wrapModelCall?.(ctx2, modelReq([sysB]), async () => modelRes(refusal));
+    expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(0);
+  });
+
+  it("F83: same prompt over different attachments does not aggregate as one task", async () => {
+    // Reviewer F83: messageIdentity / taskContextFingerprint hashed only
+    // text blocks. "summarize this" against different files would share
+    // the same task identity and aggregate generic refusals into one
+    // false-positive signal. The fix folds non-text blocks into both
+    // fingerprints.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { capabilityGapOccurrences: 2 },
+        capabilityGapPatterns: [/I don'?t have a tool/],
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const refusal = "I don't have a tool for that.";
+    const askWithFile = (url: string): InboundMessage => ({
+      senderId: "user",
+      content: [
+        { kind: "text", text: "summarize this" },
+        { kind: "file", url, mimeType: "application/pdf" },
+      ],
+      timestamp: 1,
+    });
+    const ctx1 = createMockTurnContext({ turnIndex: 1 });
+    const ctx2 = createMockTurnContext({ turnIndex: 2 });
+    await handle.middleware.wrapModelCall?.(
+      ctx1,
+      modelReq([askWithFile("file://a.pdf")]),
+      async () => modelRes(refusal),
+    );
+    await handle.middleware.wrapModelCall?.(
+      ctx2,
+      modelReq([askWithFile("file://b.pdf")]),
+      async () => modelRes(refusal),
+    );
+    expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(0);
   });
 });
