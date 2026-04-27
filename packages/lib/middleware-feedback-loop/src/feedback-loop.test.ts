@@ -382,13 +382,12 @@ describe("createFeedbackLoopMiddleware", () => {
       }
     });
 
-    it("F106: in-band { error, code: 'VALIDATION' } is NOT counted as a tool failure", async () => {
-      // Reviewer F106: many tools (read/write/edit/todo/browser) return
-      // `{ error, code: "VALIDATION" }` for malformed arguments without
-      // ever running their body. F103 broadened the in-band classifier
-      // and would have promoted these caller mistakes to tool-health
-      // failures, eventually quarantining a healthy tool. The classifier
-      // must exclude VALIDATION just like the throw-path does.
+    it("F108: in-band { error, code: 'VALIDATION' } is NEUTRAL — neither success nor failure", async () => {
+      // Reviewer F108: pre-execution VALIDATION rejects mean the tool
+      // body never ran. Counting them as recordSuccess inflates success
+      // rate / latency samples and can mask quarantine thresholds.
+      // Counting them as recordFailure quarantines a healthy tool over
+      // a caller mistake. Correct outcome: skip the tracker entirely.
       const sessionCtx = mockSessionCtx();
       const recordSuccess = mock((_toolId: string, _latencyMs: number) => {});
       const recordFailure = mock((_toolId: string, _latencyMs: number, _reason: string) => {});
@@ -413,9 +412,9 @@ describe("createFeedbackLoopMiddleware", () => {
         );
         const result = await mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next);
         expect(result?.output).toEqual({ error: "missing arg 'path'", code: "VALIDATION" });
-        // VALIDATION is not a tool-execution failure: count as success.
+        // NEUTRAL: tracker untouched — neither success nor failure.
         expect(recordFailure).not.toHaveBeenCalled();
-        expect(recordSuccess).toHaveBeenCalledTimes(1);
+        expect(recordSuccess).not.toHaveBeenCalled();
       } finally {
         spy.mockRestore();
       }

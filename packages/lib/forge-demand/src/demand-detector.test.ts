@@ -2475,33 +2475,44 @@ describe("createForgeDemandDetector", () => {
     expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(1);
   });
 
-  it("F106: in-band { error, code: 'VALIDATION' } is NOT counted as repeated_failure", async () => {
-    // Reviewer F106: many tools return `{ error, code: "VALIDATION" }`
-    // for caller/argument mistakes without ever running their body.
-    // The in-band classifier must mirror the throw-path's
-    // KoiRuntimeError(VALIDATION) skip — otherwise the same malformed
-    // request that the throw-path now ignores would still drive
-    // repeated_failure through the in-band path, demanding a
-    // replacement for a healthy tool.
+  it("F108: in-band VALIDATION is NEUTRAL — does not emit, does not reset a real failure streak", async () => {
+    // Reviewer F108: F106 routed VALIDATION through the success path,
+    // which cleared `consecutiveFailures` and `failedToolCalls`. A
+    // single malformed request between real runtime failures broke
+    // the repeated_failure streak and suppressed legitimate emission.
+    // Correct outcome: VALIDATION is neutral — no signal, no reset.
     const signals: ForgeDemandSignal[] = [];
     const handle = createForgeDemandDetector(
       makeConfig({
-        heuristics: { repeatedFailureCount: 1 },
+        heuristics: { repeatedFailureCount: 3 },
         onDemand: (s) => signals.push(s),
       }),
     );
     const validationFail = async (): Promise<ToolResponse> => ({
       output: { error: "missing arg 'path'", code: "VALIDATION" },
     });
-    for (let i = 0; i < 5; i += 1) {
-      await handle.middleware.wrapToolCall?.(ctx, toolReq("healthy"), validationFail);
-    }
-    expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(0);
-    // A real in-band runtime error still counts — guard is narrow.
     const runtimeFail = async (): Promise<ToolResponse> => ({
       output: { error: "subprocess crashed", code: "RUNTIME_ERROR" },
     });
+
+    // Five VALIDATION-only calls: no signal at all.
+    for (let i = 0; i < 5; i += 1) {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("healthy"), validationFail);
+    }
+    expect(signals.length).toBe(0);
+
+    // Now: 2 real failures, then a VALIDATION reject, then a 3rd real
+    // failure. If VALIDATION reset the streak this would emit nothing;
+    // because VALIDATION is neutral, count reaches 3 and emission fires.
     await handle.middleware.wrapToolCall?.(ctx, toolReq("healthy"), runtimeFail);
-    expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(1);
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("healthy"), runtimeFail);
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("healthy"), validationFail);
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("healthy"), runtimeFail);
+    const repeated = signals.find((s) => s.trigger.kind === "repeated_failure");
+    expect(repeated).toBeDefined();
+    if (repeated?.trigger.kind === "repeated_failure") {
+      expect(repeated.trigger.toolName).toBe("healthy");
+      expect(repeated.trigger.count).toBe(3);
+    }
   });
 });

@@ -98,13 +98,22 @@ function isInBandToolError(output: unknown): boolean {
   if (output === null || typeof output !== "object") return false;
   const o = output as Record<string, unknown>;
   if (typeof o.error !== "string" || typeof o.code !== "string") return false;
-  // Request-shape / policy rejections are not tool-execution failures.
-  // Many tools (read/write/edit/todo, browser, ...) return
-  // `{ error, code: "VALIDATION" }` for bad arguments without ever running
-  // their body. Counting these would poison health metrics and quarantine
-  // healthy tools whose only fault was a malformed request. F106 regression.
+  // VALIDATION is handled as NEUTRAL via isInBandValidationError. F108.
   if (o.code === "VALIDATION") return false;
   return true;
+}
+
+/**
+ * Pre-execution validation reject in `{ error, code: "VALIDATION" }` shape.
+ * The tool body never ran, so this is NEUTRAL: neither recordSuccess
+ * (which would inflate success rate / latency samples for a call that
+ * never executed) nor recordFailure (which would quarantine a healthy
+ * tool over a caller mistake). F108 regression.
+ */
+function isInBandValidationError(output: unknown): boolean {
+  if (output === null || typeof output !== "object") return false;
+  const o = output as Record<string, unknown>;
+  return typeof o.error === "string" && typeof o.code === "string" && o.code === "VALIDATION";
 }
 
 async function handleToolSuccess(
@@ -137,6 +146,12 @@ async function handleToolSuccess(
   }
 
   if (tracker !== undefined) {
+    // Pre-execution VALIDATION rejects: the tool body never ran.
+    // Skip both recordSuccess (would inflate success rate) and
+    // recordFailure (would quarantine a healthy tool). F108 regression.
+    if (isInBandValidationError(response.output)) {
+      return response;
+    }
     // Classify in-band `{ error, code }` payloads as failures so
     // health metrics, quarantine, and forge-demand stay consistent
     // for the same call. F103 regression.

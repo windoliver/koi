@@ -116,11 +116,8 @@ function isInBandToolError(output: unknown): boolean {
   const o = output as Record<string, unknown>;
   if (typeof o.error === "string" && typeof o.code === "string") {
     // Request-shape / policy rejections are not tool-execution failures.
-    // Many tools (read/write/edit/todo, browser, ...) return
-    // `{ error, code: "VALIDATION" }` for bad arguments without ever
-    // running their body. Counting these would drive replacement demand
-    // for healthy tools whose only fault was a malformed request. Mirror
-    // the throw-path's KoiRuntimeError(VALIDATION) skip. F106 regression.
+    // VALIDATION is handled separately as a NEUTRAL outcome (see
+    // isInBandValidationError) — neither failure nor success. F106/F108.
     if (o.code === "VALIDATION") return false;
     return true;
   }
@@ -130,6 +127,19 @@ function isInBandToolError(output: unknown): boolean {
   // can drive forge-demand toward provisioning a replacement. F104 regression.
   if (o.kind === "forge_tool_quarantined") return true;
   return false;
+}
+
+/**
+ * Detect a pre-execution validation reject in `{ error, code: "VALIDATION" }`
+ * shape. The tool body never ran, so this outcome is NEUTRAL: neither
+ * failure (would falsely demand a replacement) nor success (would clear
+ * a real failure streak and suppress repeated_failure on the next true
+ * runtime fault). F108 regression.
+ */
+function isInBandValidationError(output: unknown): boolean {
+  if (output === null || typeof output !== "object") return false;
+  const o = output as Record<string, unknown>;
+  return typeof o.error === "string" && typeof o.code === "string" && o.code === "VALIDATION";
 }
 
 /**
@@ -936,6 +946,13 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
         const response = await next(request);
         if (!isCurrentEpoch(sid, epoch)) return response;
         markToolCallCompleted(callEntry);
+        // NEUTRAL: pre-execution VALIDATION rejects neither succeeded
+        // nor failed at the tool boundary — the tool body never ran.
+        // Preserve any in-flight repeated_failure streak (do NOT reset)
+        // and skip latency accounting (no real call to measure). F108.
+        if (isInBandValidationError(response.output)) {
+          return response;
+        }
         if (isInBandToolError(response.output)) {
           const inBand = new Error((response.output as { readonly error: string }).error);
           const count = recordFailure(state, toolId, inBand);
