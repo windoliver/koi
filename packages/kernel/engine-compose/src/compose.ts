@@ -541,7 +541,7 @@ export async function runPermissionDecisionHooks(
   await Promise.all(
     middleware
       .filter((mw) => mw.onPermissionDecision !== undefined)
-      .map((mw) => mw.onPermissionDecision!(ctx, query, decision)),
+      .map((mw) => mw.onPermissionDecision?.(ctx, query, decision) ?? Promise.resolve()),
   );
 }
 
