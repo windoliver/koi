@@ -2402,4 +2402,73 @@ describe("createForgeDemandDetector", () => {
     // onSessionAttached threw twice — recorded both times.
     expect(errs.length).toBeGreaterThanOrEqual(2);
   });
+
+  it("F104: feedback-loop's forge_tool_quarantined payload is classified as a failure", async () => {
+    // Reviewer F104: feedback-loop short-circuits quarantined tool calls
+    // by returning `{ output: { kind: "forge_tool_quarantined", ... } }`
+    // without throwing. forge-demand previously routed this through the
+    // success path and zeroed consecutiveFailures — the very signal that
+    // should drive replacement provisioning never fired. Detector now
+    // treats the quarantine kind as an in-band failure too.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { repeatedFailureCount: 2 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const quarantined = async (): Promise<ToolResponse> => ({
+      output: {
+        kind: "forge_tool_quarantined",
+        toolId: "broken",
+        message: 'Tool "broken" is quarantined and cannot execute.',
+      },
+    });
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("broken"), quarantined);
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("broken"), quarantined);
+    const repeated = signals.find((s) => s.trigger.kind === "repeated_failure");
+    expect(repeated).toBeDefined();
+    if (repeated?.trigger.kind === "repeated_failure") {
+      expect(repeated.trigger.toolName).toBe("broken");
+      expect(repeated.trigger.count).toBe(2);
+    }
+  });
+
+  it("F105: pre-execution KoiRuntimeError VALIDATION is not counted as repeated_failure", async () => {
+    // Reviewer F105: validators/policy gates upstream of the tool throw
+    // KoiRuntimeError code "VALIDATION" before the tool runs. Counting
+    // these as tool failures demanded a replacement for a healthy tool —
+    // the bug was the request, not the tool. Detector now skips
+    // recordFailure for VALIDATION rejects.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { repeatedFailureCount: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const validatorReject = async (): Promise<ToolResponse> => {
+      throw KoiRuntimeError.from("VALIDATION", "argument 'path' missing", {
+        context: { source: "permissions" },
+      });
+    };
+    for (let i = 0; i < 3; i += 1) {
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, toolReq("healthy"), validatorReject);
+      } catch {
+        // expected
+      }
+    }
+    expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(0);
+    // And a real tool exception still counts — the guard is narrow.
+    const realFail = async (): Promise<ToolResponse> => {
+      throw new Error("real boom");
+    };
+    try {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("healthy"), realFail);
+    } catch {
+      // expected
+    }
+    expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(1);
+  });
 });

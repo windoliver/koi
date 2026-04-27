@@ -114,7 +114,13 @@ function extractResponseText(response: ModelResponse): string {
 function isInBandToolError(output: unknown): boolean {
   if (output === null || typeof output !== "object") return false;
   const o = output as Record<string, unknown>;
-  return typeof o.error === "string" && typeof o.code === "string";
+  if (typeof o.error === "string" && typeof o.code === "string") return true;
+  // feedback-loop's quarantine short-circuit returns
+  // `{ output: { kind: "forge_tool_quarantined", ... } }` instead of throwing.
+  // Treat this as a tool failure so the detector keeps faulting state and
+  // can drive forge-demand toward provisioning a replacement. F104 regression.
+  if (o.kind === "forge_tool_quarantined") return true;
+  return false;
 }
 
 /**
@@ -950,6 +956,16 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
             { failureCount: attempts, threshold: 1 },
           );
           checkLatencyDegradation(state, ctx.session, toolId);
+          throw e;
+        }
+        // Pre-execution validator/policy rejections (e.g. permissions or
+        // schema gates throwing KoiRuntimeError code "VALIDATION") mean the
+        // tool itself never ran. Counting them as repeated_failure would
+        // demand a replacement for a tool that is healthy — the bug is the
+        // request, not the tool. Drop the in-flight entry and re-raise
+        // without touching consecutive-failure accounting. F105 regression.
+        if (e instanceof KoiRuntimeError && e.code === "VALIDATION") {
+          removeToolCall(state, callEntry);
           throw e;
         }
         markToolCallCompleted(callEntry);
