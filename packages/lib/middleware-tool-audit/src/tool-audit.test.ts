@@ -1385,5 +1385,116 @@ describe("createToolAuditMiddleware", () => {
       expect(snapshot.tools.search).toBeDefined();
       expect(typeof snapshot.lastUpdatedAt).toBe("number");
     });
+
+    test("getSnapshot does not drain per-session counters mid-session — round 39 F1", async () => {
+      // Stateful store so persisted state survives across saves.
+      // let: stored snapshot mutated by save closure
+      let stored: ToolAuditSnapshot = { tools: {}, totalSessions: 0, lastUpdatedAt: 0 };
+      const store: ToolAuditStore = {
+        load: () => stored,
+        save: (snap) => {
+          stored = snap;
+        },
+      };
+      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+      const wrap = getWrapToolCall(mw);
+      await mw.onSessionStart?.(sessionCtx());
+
+      // Hold a tool call in-flight.
+      // let: resolver assigned inside Promise constructor
+      let release: () => void = (): void => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const inFlight = wrap(turnCtx(), toolReq("search"), async () => {
+        await gate;
+        return { output: "ok" };
+      });
+
+      // Poll the live snapshot multiple times during the in-flight call.
+      // Each call must observe the started call without draining the
+      // session-local record, which would zero counters before the call
+      // settles and lose its outcome on session end.
+      for (let i = 0; i < 5; i += 1) {
+        const snap = mw.getSnapshot();
+        expect(snap.tools.search?.callCount ?? 0).toBeGreaterThan(0);
+      }
+
+      release();
+      await inFlight;
+      await mw.onSessionEnd?.(sessionCtx());
+
+      // After session end the persisted snapshot should reflect the
+      // tool's success exactly once with non-zero latency. If
+      // getSnapshot had drained the local counters, totalLatencyMs and
+      // successCount would be zero here.
+      expect(stored.tools.search?.callCount).toBe(1);
+      expect(stored.tools.search?.successCount).toBe(1);
+      expect(stored.tools.search?.failureCount).toBe(0);
+    });
+  });
+
+  describe("late completion after drain timeout — round 39 F2", () => {
+    test("late tool failure persists final state and emits signals exactly once", async () => {
+      // let: stored snapshot mutated by save closure
+      let stored: ToolAuditSnapshot = { tools: {}, totalSessions: 0, lastUpdatedAt: 0 };
+      const store: ToolAuditStore = {
+        load: () => stored,
+        save: (snap) => {
+          stored = snap;
+        },
+      };
+      const onAuditResult = mock(() => {});
+      const mw = createToolAuditMiddleware(
+        defaultConfig({
+          store,
+          onAuditResult,
+          sessionEndDrainTimeoutMs: 10,
+          highFailureThreshold: 0.5,
+          minCallsForFailure: 1,
+        }),
+      );
+      const wrap = getWrapToolCall(mw);
+      await mw.onSessionStart?.(sessionCtx());
+
+      // let: assigned inside Promise constructor
+      let fail: (e: Error) => void = (): void => {};
+      const gate = new Promise<void>((_resolve, reject) => {
+        fail = reject;
+      });
+      const inFlight = wrap(turnCtx(), toolReq("flaky"), async () => {
+        await gate;
+        return { output: "unreachable" };
+      }).catch(() => {
+        // Swallow — wrapToolCall re-throws to mirror underlying tool.
+      });
+
+      // End session while the call is still pending; drain times out.
+      await mw.onSessionEnd?.(sessionCtx());
+      const callsAtTimeout = onAuditResult.mock.calls.length;
+
+      // Now make the call fail after teardown — late-fold path runs.
+      fail(new Error("boom"));
+      await inFlight;
+      // Drain the queued late persist by chaining onto a clean session.
+      await mw.onSessionStart?.(sessionCtx({ sessionId: "sess-2" }));
+      await mw.onSessionEnd?.(sessionCtx({ sessionId: "sess-2" }));
+
+      // Late failure must be durable.
+      expect(stored.tools.flaky?.callCount).toBe(1);
+      expect(stored.tools.flaky?.failureCount).toBe(1);
+
+      // Signals fired AFTER the late completion (more calls than at
+      // teardown) — late state changes must be observable, not silent.
+      expect(onAuditResult.mock.calls.length).toBeGreaterThan(callsAtTimeout);
+      const allSignals = onAuditResult.mock.calls.flatMap(
+        (c: readonly unknown[]) =>
+          (c[0] ?? []) as readonly { readonly signal: string; readonly toolName: string }[],
+      );
+      const highFailure = allSignals.find(
+        (s) => s.toolName === "flaky" && s.signal === "high_failure",
+      );
+      expect(highFailure).toBeDefined();
+    });
   });
 });

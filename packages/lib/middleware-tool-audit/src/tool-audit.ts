@@ -187,13 +187,63 @@ interface ToolAuditSessionState {
   dirty: boolean;
 }
 
+/** Pure additive merge of one local record into the global aggregate. */
+function mergeRecordInto(
+  global: Map<string, MutableToolRecord>,
+  name: string,
+  l: MutableToolRecord,
+): void {
+  const g = global.get(name);
+  if (g === undefined) {
+    global.set(name, { ...l });
+    return;
+  }
+  g.callCount += l.callCount;
+  g.successCount += l.successCount;
+  g.failureCount += l.failureCount;
+  g.totalLatencyMs += l.totalLatencyMs;
+  g.lastUsedAt = Math.max(g.lastUsedAt, l.lastUsedAt);
+  if (l.minLatencyMs !== Number.POSITIVE_INFINITY) {
+    g.minLatencyMs = Math.min(g.minLatencyMs, l.minLatencyMs);
+  }
+  g.maxLatencyMs = Math.max(g.maxLatencyMs, l.maxLatencyMs);
+}
+
+/**
+ * Non-destructive read-only variant for snapshot/observability paths.
+ * Folds local records into a caller-owned global map without mutating
+ * the source `local` map. Used by buildLiveSnapshot so getSnapshot
+ * reads cannot drain per-session counters mid-session
+ * (#review-round39-F1).
+ */
+function foldLocalIntoGlobalReadOnly(
+  global: Map<string, MutableToolRecord>,
+  local: Map<string, MutableToolRecord>,
+): void {
+  for (const [name, l] of local) {
+    if (
+      l.callCount === 0 &&
+      l.successCount === 0 &&
+      l.failureCount === 0 &&
+      l.totalLatencyMs === 0 &&
+      l.maxLatencyMs === 0 &&
+      l.lastUsedAt === 0
+    ) {
+      continue;
+    }
+    mergeRecordInto(global, name, l);
+  }
+}
+
 /**
  * Fold session-local counters into the shared aggregate, then ZERO the
  * local entries. Subsequent mutations to local records (e.g. late tool
  * completions after a session-end drain timeout) accumulate fresh
  * deltas that can be folded again — preventing late outcomes from being
  * orphaned (#review-round38-F1). Returns true if any local record had
- * non-zero counters to fold.
+ * non-zero counters to fold. DESTRUCTIVE — only call from teardown
+ * paths; observability reads must use foldLocalIntoGlobalReadOnly
+ * (#review-round39-F1).
  */
 function foldLocalIntoGlobal(
   global: Map<string, MutableToolRecord>,
@@ -442,13 +492,33 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   function queueLatePersist(): Promise<void> {
     const previous = savePromise;
     savePromise = previous.then(async () => {
+      // let: snapshot the closure committed; signals emit from it.
+      let committed: ToolAuditSnapshot | undefined;
       try {
-        const committed = await persistWithRetry();
+        committed = await persistWithRetry();
         lastCommittedSnapshot = committed;
         pendingFailedPersist = false;
       } catch (e: unknown) {
         pendingFailedPersist = true;
         onError?.(e);
+      }
+      // Emit signals for the late completion under the same guards as
+      // recordOnSessionEnd so a late tool outcome (e.g. delayed failure
+      // pushing a tool past the high_failure threshold) doesn't change
+      // durable state silently (#review-round39-F2).
+      if (
+        committed !== undefined &&
+        sessionStates.size === 0 &&
+        hydrated &&
+        !pendingFailedPersist &&
+        onAuditResult !== undefined
+      ) {
+        try {
+          const signals = computeLifecycleSignals(committed, validConfig);
+          if (signals.length > 0) onAuditResult(signals);
+        } catch (e: unknown) {
+          onError?.(e);
+        }
       }
     });
     return savePromise;
@@ -800,7 +870,7 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       merged.set(name, { ...rec });
     }
     for (const state of sessionStates.values()) {
-      foldLocalIntoGlobal(merged, state.localTools);
+      foldLocalIntoGlobalReadOnly(merged, state.localTools);
     }
     return buildSnapshot(merged, totalSessions, clock);
   }
