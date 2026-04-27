@@ -13843,13 +13843,15 @@ describe("Golden: @koi/temporal", () => {
 });
 
 describe("Golden: @koi/forge-demand", () => {
-  test("createForgeDemandDetector returns a handle with passive middleware (priority 455, no required hooks)", async () => {
+  test("createForgeDemandDetector returns a handle with passive middleware (priority 445, outer of feedback-loop)", async () => {
     const { createForgeDemandDetector, DEFAULT_FORGE_DEMAND_CONFIG } = await import(
       "@koi/forge-demand"
     );
     const handle = createForgeDemandDetector(DEFAULT_FORGE_DEMAND_CONFIG);
     expect(handle.middleware.name).toBe("forge-demand-detector");
-    expect(handle.middleware.priority).toBe(455);
+    // 445 is outer relative to feedback-loop (450) so the detector observes
+    // committed state — see demand-detector.ts priority comment.
+    expect(handle.middleware.priority).toBe(445);
     expect(typeof handle.middleware.wrapToolCall).toBe("function");
     expect(typeof handle.middleware.wrapModelCall).toBe("function");
     expect(typeof handle.getSignals).toBe("function");

@@ -164,12 +164,15 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     readonly emittedCorrectionIds: Set<string>;
     readonly scannedCorrectionIds: Set<string>;
     readonly recentGapResponseIds: Set<string>;
-    signalCounter: number;
     lastProcessedUserTimestamp: number;
     sessionEmitCount: number;
   };
 
   const sessions = new Map<SessionId, SessionState>();
+  // Handle-level counter so signal ids are unique across sessions —
+  // otherwise two concurrent tenants would both produce `demand-1` and
+  // `dismiss()` could clear the wrong session's signal.
+  let globalSignalCounter = 0;
 
   function newSessionState(): SessionState {
     return {
@@ -183,7 +186,6 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       emittedCorrectionIds: new Set(),
       scannedCorrectionIds: new Set(),
       recentGapResponseIds: new Set(),
-      signalCounter: 0,
       lastProcessedUserTimestamp: -1,
       sessionEmitCount: 0,
     };
@@ -217,9 +219,9 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     // compute, not detector wall-clock.
     if (state.sessionEmitCount >= config.budget.maxForgesPerSession) return;
 
-    state.signalCounter += 1;
+    globalSignalCounter += 1;
     const signal: ForgeDemandSignal = {
-      id: `demand-${String(state.signalCounter)}`,
+      id: `demand-${String(globalSignalCounter)}`,
       kind: "forge_demand",
       trigger,
       confidence,

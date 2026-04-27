@@ -972,6 +972,36 @@ describe("createForgeDemandDetector", () => {
     expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(1);
   });
 
+  it("emits globally unique signal ids across sessions so dismiss() targets the right one", async () => {
+    const handle = createForgeDemandDetector(
+      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
+    );
+    const ctxA = createMockTurnContext({ session: { sessionId: "sess-A" as never } });
+    const ctxB = createMockTurnContext({ session: { sessionId: "sess-B" as never } });
+
+    const failNext = async (): Promise<ToolResponse> => {
+      throw new Error("nope");
+    };
+
+    for (const ctx of [ctxA, ctxB]) {
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), failNext);
+      } catch {
+        // expected
+      }
+    }
+    const all = handle.getSignals();
+    expect(all.length).toBe(2);
+    const ids = new Set(all.map((s) => s.id));
+    expect(ids.size).toBe(2); // distinct ids — no `demand-1` collision
+
+    // Dismissing one id removes exactly one signal — never both.
+    const [first] = all;
+    if (first === undefined) throw new Error("no signal");
+    handle.dismiss(first.id);
+    expect(handle.getActiveSignalCount()).toBe(1);
+  });
+
   it("isolates state per session — failures and signals do not bleed across tenants", async () => {
     const signals: ForgeDemandSignal[] = [];
     const handle = createForgeDemandDetector(
