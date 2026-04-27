@@ -99,6 +99,7 @@ export function createProactiveToolsProvider(
 
       const toolConfig: ProactiveToolsConfig = {
         scheduler,
+        agentId: agent.pid.id,
         ...(config.defaultWakeMessage !== undefined
           ? { defaultWakeMessage: config.defaultWakeMessage }
           : {}),

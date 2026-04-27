@@ -8,13 +8,14 @@
 
 import type {
   EngineInput,
+  ScheduledTask,
   ScheduleId,
   SchedulerComponent,
   SchedulerStats,
   TaskId,
   TaskOptions,
 } from "@koi/core";
-import { scheduleId, taskId } from "@koi/core";
+import { agentId as agentIdBrand, scheduleId, taskId } from "@koi/core";
 
 export interface SubmitCall {
   readonly input: EngineInput;
@@ -35,6 +36,10 @@ export interface SchedulerStub {
   readonly scheduleCalls: readonly ScheduleCall[];
   readonly unscheduleCalls: readonly ScheduleId[];
   readonly cancelCalls: readonly TaskId[];
+  /** Mark a previously-submitted task as no longer live (simulates completion/purge). */
+  readonly retireTask: (id: TaskId | string) => void;
+  /** True iff the stub is currently reporting `id` as a live task. */
+  readonly isLive: (id: TaskId | string) => boolean;
 }
 
 export interface SchedulerStubOptions {
@@ -55,6 +60,10 @@ export function createSchedulerStub(options: SchedulerStubOptions = {}): Schedul
   const scheduleCalls: ScheduleCall[] = [];
   const unscheduleCalls: ScheduleId[] = [];
   const cancelCalls: TaskId[] = [];
+  // Tasks the stub is currently reporting as live. Submit adds, cancel
+  // and retireTask remove. query() reads from this set.
+  const liveTaskIds = new Set<string>();
+  const stubAgentId = agentIdBrand("stub-agent");
 
   const stats: SchedulerStats = {
     pending: 0,
@@ -73,11 +82,15 @@ export function createSchedulerStub(options: SchedulerStubOptions = {}): Schedul
       }
       submitCalls.push({ input, mode, options: opts });
       counter += 1;
-      return taskId(`task-${counter}`);
+      const id = taskId(`task-${counter}`);
+      liveTaskIds.add(id as string);
+      return id;
     },
     cancel(id): boolean {
       cancelCalls.push(id);
-      return options.cancelResult ?? true;
+      const removed = options.cancelResult ?? true;
+      if (removed) liveTaskIds.delete(id as string);
+      return removed;
     },
     schedule(expression, input, mode, opts): ScheduleId {
       if (options.scheduleError !== undefined) {
@@ -97,8 +110,22 @@ export function createSchedulerStub(options: SchedulerStubOptions = {}): Schedul
     resume(): boolean {
       return true;
     },
-    query(): readonly never[] {
-      return [];
+    query(): readonly ScheduledTask[] {
+      const out: ScheduledTask[] = [];
+      for (const id of liveTaskIds) {
+        out.push({
+          id: taskId(id),
+          agentId: stubAgentId,
+          input: { kind: "text", text: "" },
+          mode: "spawn",
+          priority: 0,
+          status: "pending",
+          createdAt: 0,
+          retries: 0,
+          maxRetries: 0,
+        });
+      }
+      return out;
     },
     stats(): SchedulerStats {
       return stats;
@@ -121,6 +148,12 @@ export function createSchedulerStub(options: SchedulerStubOptions = {}): Schedul
     },
     get cancelCalls(): readonly TaskId[] {
       return cancelCalls;
+    },
+    retireTask(id: TaskId | string): void {
+      liveTaskIds.delete(id as string);
+    },
+    isLive(id: TaskId | string): boolean {
+      return liveTaskIds.has(id as string);
     },
   };
 }

@@ -26,18 +26,20 @@
  * - No entry → submit and store the in-flight promise atomically before
  *   awaiting the scheduler.
  *
- * Entries persist until `cancel_sleep` clears them. We deliberately do **not**
- * expire on wall-clock time: a backlogged or paused scheduler can still fire
- * the original task after `wake_at_ms` has passed, so allowing a fresh
- * submission on the same key would risk duplicate wake-ups. If the agent
- * wants to re-use the key, it must cancel first.
+ * Entries persist until either (a) `cancel_sleep` clears them, or (b) the
+ * scheduler stops reporting the underlying task as live (status moves out of
+ * pending/running, or the task is absent because the backend purged it). The
+ * tool reconciles cached entries against `scheduler.query({ agentId })` at
+ * the start of every keyed call, so a backlogged scheduler that still shows
+ * the task as pending/running keeps the dedupe in force, and a scheduler
+ * swap or completion frees the slot for fresh registration.
  *
  * Durability gap: state is in-memory only. Cross-restart dedup needs the
  * underlying scheduler to honour idempotency keys at submit time, which
  * `@koi/scheduler` does not — tracked separately.
  */
 
-import type { JsonObject, Tool } from "@koi/core";
+import type { AgentId, JsonObject, SchedulerComponent, Tool } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { toJSONSchema, z } from "zod";
 import type { ProactiveToolsConfig } from "./types.js";
@@ -111,26 +113,46 @@ export function createSleepToolState(maxEntries?: number): SleepToolState {
 }
 
 /**
- * Grace buffer past `wake_at_ms` before a settled entry is treated as
- * "definitely fired" and eligible for reclaim. Sized as max(durationMs, 60s)
- * so a backlogged scheduler has at least the original sleep length, or one
- * minute, to deliver the wake after the nominal deadline. After this window
- * the original wake-up has either been delivered or is so far overdue that a
- * retry registering a fresh task is the better failure mode than letting the
- * dedupe map grow unbounded and eventually deny all new keys.
+ * Reconcile cached settled entries against the scheduler's live view.
+ *
+ * The scheduler is the source of truth: anything it still reports as
+ * `pending` or `running` is live; anything else (completed/failed/
+ * dead_lettered, or absent because it was purged or belonged to a swapped
+ * backend) is gone. Settled entries whose taskId is not in the live set are
+ * dropped, so retries with their idempotency_key register fresh against the
+ * current scheduler.
+ *
+ * Pending entries are never reconciled away — their submission may still be
+ * in-flight and the taskId is not yet known.
+ *
+ * This replaces wall-clock heuristics for two correctness reasons: a
+ * backlogged scheduler that delivers late won't trigger spurious reclaim,
+ * and a scheduler-instance swap (host wraps a fresh backend) self-heals
+ * because the new backend's query returns a different live set.
+ *
+ * Failure mode: if the query throws or rejects, we keep all entries.
+ * Reclaim is best-effort; preserving entries is the safe fallback (no
+ * duplicates, just delayed cap recovery until the next successful query).
  */
-const GRACE_FLOOR_MS = 60_000;
-
-/**
- * Reclaim settled entries whose wake time + grace buffer has elapsed. Pending
- * entries are never reclaimed — their submission may still be in-flight and
- * evicting them risks duplicates against the same key.
- */
-function reclaimFiredEntries(state: SleepToolState, nowMs: number): void {
+async function reconcileSleepEntries(
+  state: SleepToolState,
+  scheduler: SchedulerComponent,
+  agentId: AgentId,
+): Promise<void> {
+  let live: ReadonlySet<string>;
+  try {
+    const tasks = await scheduler.query({ agentId });
+    live = new Set(
+      tasks
+        .filter((t) => t.status === "pending" || t.status === "running")
+        .map((t) => String(t.id)),
+    );
+  } catch {
+    return;
+  }
   for (const [k, v] of state.idempotencyMap) {
     if (v.kind !== "settled") continue;
-    const grace = Math.max(v.record.durationMs, GRACE_FLOOR_MS);
-    if (v.record.wakeAtMs + grace <= nowMs) {
+    if (!live.has(v.record.taskId)) {
       state.idempotencyMap.delete(k);
     }
   }
@@ -141,9 +163,9 @@ function reclaimFiredEntries(state: SleepToolState, nowMs: number): void {
  * key never count against the cap — they replace, not grow. We refuse new
  * keys at the cap rather than FIFO-evicting live entries: evicting a still-
  * pending entry would let a retry with the same key submit a duplicate
- * wake-up. Callers should reclaim fired entries first via
- * `reclaimFiredEntries` so the cap only blocks when the map is genuinely
- * saturated with live (recent) sleeps.
+ * wake-up. Callers reconcile against the scheduler first so the cap only
+ * blocks when the map is genuinely saturated with live (scheduler-confirmed)
+ * sleeps.
  */
 function sleepCapReached(state: SleepToolState, key: string): boolean {
   if (state.idempotencyMap.has(key)) return false;
@@ -234,18 +256,21 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
       };
 
       // Path 2: idempotency_key supplied. Reserve atomically.
-      // Reclaim entries past wake_at_ms + grace before checking the cap.
-      // Without this, long-running processes accumulate fired entries until
-      // every new keyed sleep starts failing.
-      reclaimFiredEntries(state, now());
+      // Reconcile cached entries against the live scheduler view before any
+      // dedupe/cap check. This both bounds memory under steady load and
+      // heals the cache after a scheduler-instance swap. Skipped only when
+      // the caller didn't supply an agentId (standalone unit-style use).
+      if (config.agentId !== undefined) {
+        await reconcileSleepEntries(state, scheduler, config.agentId);
+      }
       if (sleepCapReached(state, idempotency_key)) {
         return {
           ok: false,
           error:
             `proactive sleep idempotency cap reached (${state.maxEntries} live keys). ` +
-            "All entries are pending or recently fired. Cancel a prior task with " +
-            "cancel_sleep (release_key:true), wait for the grace window to elapse, " +
-            "or omit idempotency_key to bypass the dedupe map.",
+            "All cached entries are pending or scheduler-confirmed live. Cancel " +
+            "a prior task with cancel_sleep (release_key:true) before registering " +
+            "more, or omit idempotency_key to bypass the dedupe map.",
         };
       }
       const existing = state.idempotencyMap.get(idempotency_key);

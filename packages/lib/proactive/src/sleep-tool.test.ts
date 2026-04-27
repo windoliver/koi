@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { JsonObject } from "@koi/core";
+import { agentId } from "@koi/core";
 import { createSleepTool, createSleepToolState } from "./sleep-tool.js";
 import { createSchedulerStub } from "./test-helpers.js";
 import { DEFAULT_MAX_SLEEP_MS, DEFAULT_WAKE_MESSAGE } from "./types.js";
@@ -186,7 +187,10 @@ describe("sleep tool", () => {
     expect(stub.submitCalls).toHaveLength(1);
   });
 
-  test("dedupes within the grace window — backlogged scheduler retries are safe", async () => {
+  test("without agentId, dedupes hold regardless of wall-clock time (no reconciliation)", async () => {
+    // Standalone callers that skip the provider get no agentId and therefore
+    // no scheduler-backed reconciliation. Dedupe is purely process-local and
+    // time-independent: cached entries persist until cancel_sleep clears them.
     const stub = createSchedulerStub();
     const state = createSleepToolState();
     // let justified: virtual clock advances between calls to simulate time passing
@@ -196,8 +200,6 @@ describe("sleep tool", () => {
     const first = (await exec(tool, { duration_ms: 5_000, idempotency_key: "k" })) as {
       task_id: string;
     };
-    // Just past wake time but well inside the 60s grace floor — a backlogged
-    // scheduler could still deliver the original wake-up.
     virtualNow += 6_000;
     const second = (await exec(tool, { duration_ms: 5_000, idempotency_key: "k" })) as {
       task_id: string;
@@ -258,20 +260,25 @@ describe("sleep tool", () => {
     expect(stub.submitCalls).toHaveLength(2);
   });
 
-  test("reclaims entries past wake_at_ms + grace so cap recovers under steady load", async () => {
+  test("reconciles cached entries against scheduler.query before cap check", async () => {
     const stub = createSchedulerStub();
     const state = createSleepToolState(2);
-    let nowMs = 1_000_000;
-    const tool = createSleepTool({ scheduler: stub.component, now: () => nowMs }, state);
+    const stubAgentId = agentId("agent-recon");
+    const tool = createSleepTool({ scheduler: stub.component, agentId: stubAgentId }, state);
 
-    await exec(tool, { duration_ms: 1_000, idempotency_key: "old-a" });
-    await exec(tool, { duration_ms: 1_000, idempotency_key: "old-b" });
+    const r1 = (await exec(tool, { duration_ms: 1_000, idempotency_key: "old-a" })) as {
+      task_id: string;
+    };
+    const r2 = (await exec(tool, { duration_ms: 1_000, idempotency_key: "old-b" })) as {
+      task_id: string;
+    };
     expect(state.idempotencyMap.size).toBe(2);
 
-    // Advance well past wake_at + grace floor (60s). Both timers are far
-    // enough overdue that further delivery would be a fault, not backlog —
-    // the entries are eligible for reclaim.
-    nowMs += 5 * 60_000;
+    // Scheduler reports both prior tasks as no longer live (completed/purged).
+    // The next keyed call must reconcile and free both slots so a fresh key
+    // succeeds against the cap.
+    stub.retireTask(r1.task_id);
+    stub.retireTask(r2.task_id);
 
     const fresh = (await exec(tool, { duration_ms: 5_000, idempotency_key: "new-c" })) as {
       ok: boolean;
@@ -281,6 +288,28 @@ describe("sleep tool", () => {
     expect(state.idempotencyMap.has("old-a")).toBe(false);
     expect(state.idempotencyMap.has("old-b")).toBe(false);
     expect(state.idempotencyMap.has("new-c")).toBe(true);
+  });
+
+  test("preserves dedupe entries while scheduler reports the task as still live", async () => {
+    const stub = createSchedulerStub();
+    const state = createSleepToolState();
+    const stubAgentId = agentId("agent-live");
+    const tool = createSleepTool({ scheduler: stub.component, agentId: stubAgentId }, state);
+
+    const r1 = (await exec(tool, { duration_ms: 5_000, idempotency_key: "k" })) as {
+      task_id: string;
+    };
+    expect(stub.isLive(r1.task_id)).toBe(true);
+
+    // Even if wall-clock time advances past wake_at_ms, the entry stays as
+    // long as the scheduler still reports it live (backlogged delivery).
+    const r2 = (await exec(tool, { duration_ms: 5_000, idempotency_key: "k" })) as {
+      task_id: string;
+      deduped?: boolean;
+    };
+    expect(r2.task_id).toBe(r1.task_id);
+    expect(r2.deduped).toBe(true);
+    expect(stub.submitCalls).toHaveLength(1);
   });
 
   test("at the cap, an existing key still dedupes (update, not new entry)", async () => {

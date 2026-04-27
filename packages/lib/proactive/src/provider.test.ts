@@ -108,9 +108,41 @@ describe("createProactiveToolsProvider", () => {
     expect(stub.submitCalls).toHaveLength(1);
   });
 
-  test("scheduler swap preserves dedupe state — durable backends behind fresh wrappers keep working", async () => {
+  test("scheduler swap heals via scheduler.query — stale cached IDs don't dedupe against the new backend", async () => {
     const stubA = createSchedulerStub();
     const stubB = createSchedulerStub();
+    const agent = makeAgent(stubA.component, "agent-x");
+    const provider = createProactiveToolsProvider();
+
+    const sleepKey = toolToken("sleep") as string;
+    const first = await provider.attach(agent);
+    const sleep1 = ("components" in first ? first.components : first).get(sleepKey) as {
+      execute: (a: object) => Promise<unknown>;
+    };
+    await sleep1.execute({ duration_ms: 5_000, idempotency_key: "k" });
+    expect(stubA.submitCalls).toHaveLength(1);
+
+    // Reattach against a different scheduler instance whose query() does NOT
+    // report the cached taskId as live (the backend was genuinely swapped).
+    // The reconciliation step must drop the stale entry and let the retry
+    // submit fresh, instead of returning a dedupe match against a task that
+    // no longer exists.
+    const replacedAgent = makeAgent(stubB.component, "agent-x");
+    const second = await provider.attach(replacedAgent);
+    const sleep2 = ("components" in second ? second.components : second).get(sleepKey) as {
+      execute: (a: object) => Promise<unknown>;
+    };
+    await sleep2.execute({ duration_ms: 5_000, idempotency_key: "k" });
+
+    expect(stubB.submitCalls).toHaveLength(1);
+  });
+
+  test("scheduler swap preserves dedupe when the new backend still reports the cached taskId as live", async () => {
+    // Models the wrapper-swap-with-shared-backend pattern: hosts often
+    // recreate the SchedulerComponent adapter while pointing at the same
+    // durable scheduler. The cached taskId is still valid there, query()
+    // confirms it, and we should NOT submit a duplicate.
+    const stubA = createSchedulerStub();
     const agent = makeAgent(stubA.component, "agent-x");
     const provider = createProactiveToolsProvider();
 
@@ -122,13 +154,16 @@ describe("createProactiveToolsProvider", () => {
     const r1 = (await sleep1.execute({ duration_ms: 5_000, idempotency_key: "k" })) as {
       task_id: string;
     };
-    expect(stubA.submitCalls).toHaveLength(1);
 
-    // Re-attach against a different scheduler instance. Hosts commonly wrap
-    // the same durable backend in a fresh adapter object (in-memory restart,
-    // test reassembly), so we preserve dedupe state and rely on the durable
-    // task ID still being valid. If the host swapped to a genuinely-fresh
-    // backend, they should tear down the agent first.
+    // Build a fresh stub that pretends to share the same durable backend by
+    // pre-registering the task as live. (In production this would be the
+    // same backend behind a new adapter wrapper.)
+    const stubB = createSchedulerStub();
+    // Submit a placeholder so stubB's query() returns a live task with the
+    // SAME id stubA produced. Both stubs use the same counter sequence.
+    stubB.component.submit({ kind: "text", text: "" }, "spawn", {});
+    expect(stubB.isLive(r1.task_id)).toBe(true);
+
     const replacedAgent = makeAgent(stubB.component, "agent-x");
     const second = await provider.attach(replacedAgent);
     const sleep2 = ("components" in second ? second.components : second).get(sleepKey) as {
@@ -139,10 +174,10 @@ describe("createProactiveToolsProvider", () => {
       deduped?: boolean;
     };
 
-    // No duplicate submission: dedupe matched the cached entry.
-    expect(stubB.submitCalls).toHaveLength(0);
     expect(r2.task_id).toBe(r1.task_id);
     expect(r2.deduped).toBe(true);
+    // Only the placeholder submit hit stubB; the dedupe path skipped re-submit.
+    expect(stubB.submitCalls).toHaveLength(1);
   });
 
   test("two agents with the same idempotency_key do NOT share state", async () => {
