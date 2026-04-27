@@ -341,6 +341,47 @@ describe("createFeedbackLoopMiddleware", () => {
       }
     });
 
+    it("F103: classifies in-band { error, code } responses as failures, not successes", async () => {
+      // Reviewer F103: tools that report failures via
+      // `{ output: { error, code } }` instead of throwing were
+      // routed through handleToolSuccess and recordSuccess, leaving
+      // quarantine/demotion dormant and disagreeing with forge-demand
+      // (which already classified that shape as a failure). Both
+      // systems must reach the same verdict for the same call.
+      const sessionCtx = mockSessionCtx();
+      const recordSuccess = mock((_toolId: string, _latencyMs: number) => {});
+      const recordFailure = mock((_toolId: string, _latencyMs: number, _reason: string) => {});
+      const fakeTracker: ToolHealthTracker = {
+        recordSuccess,
+        recordFailure,
+        getSnapshot: () => undefined,
+        getL0Snapshot: () => undefined,
+        checkAndQuarantine: async () => false,
+        checkAndDemote: async () => false,
+        isQuarantined: async () => false,
+        dispose: async () => {},
+      };
+      const spy = spyOn(toolHealthModule, "createToolHealthTracker").mockReturnValue(fakeTracker);
+      try {
+        const mw = createFeedbackLoopMiddleware({ forgeHealth: makeMinimalForgeHealth() });
+        await mw.onSessionStart?.(sessionCtx);
+        // Tool returns an in-band error payload.
+        const next = mock(
+          async (_req: ToolRequest): Promise<ToolResponse> => ({
+            output: { error: "permission denied", code: "EACCES" },
+          }),
+        );
+        const result = await mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next);
+        // Response is returned unchanged — feedback-loop is observational.
+        expect(result?.output).toEqual({ error: "permission denied", code: "EACCES" });
+        // But the tracker counted it as a FAILURE, not a success.
+        expect(recordSuccess).not.toHaveBeenCalled();
+        expect(recordFailure).toHaveBeenCalledTimes(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it("rejects tool call when toolValidators fail (pre-execution, no side effects)", async () => {
       const validator: ToolRequestValidator = {
         name: "arg-check",

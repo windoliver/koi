@@ -13963,17 +13963,23 @@ describe("Golden: @koi/forge-demand", () => {
     // than ship a write-only feature.
     const { createRuntime } = await import("../create-runtime.js");
     const { DEFAULT_FORGE_BUDGET } = await import("@koi/core");
+    // RuntimeForgeDemandConfig now requires onSessionAttached at the
+    // type level (F102), so these cases are cast through `unknown` to
+    // model an untyped/IPC caller bypassing TS checks. Runtime
+    // validation must still reject them.
     expect(() =>
       createRuntime({
-        forgeDemand: { budget: DEFAULT_FORGE_BUDGET },
+        forgeDemand: { budget: DEFAULT_FORGE_BUDGET } as unknown as NonNullable<
+          Parameters<typeof createRuntime>[0]
+        >["forgeDemand"],
       }),
     ).toThrow(/forgeDemand requires `config\.forgeDemand\.onSessionAttached`/);
-    // F101: onDemand alone is NOT sufficient — it has no dismiss
-    // capability, so signals it observes cannot be acknowledged and
-    // the same condition can re-emit after cooldown.
+    // F101: onDemand alone is NOT sufficient.
     expect(() =>
       createRuntime({
-        forgeDemand: { budget: DEFAULT_FORGE_BUDGET, onDemand: () => {} },
+        forgeDemand: { budget: DEFAULT_FORGE_BUDGET, onDemand: () => {} } as unknown as NonNullable<
+          Parameters<typeof createRuntime>[0]
+        >["forgeDemand"],
       }),
     ).toThrow(/forgeDemand requires `config\.forgeDemand\.onSessionAttached`/);
     // With onSessionAttached present, creation succeeds — the scoped

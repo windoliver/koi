@@ -85,6 +85,21 @@ function hasToolChecks(config: FeedbackLoopConfig): boolean {
   );
 }
 
+/**
+ * Detect the `{ error: string; code: string }` in-band failure shape
+ * many tools in this monorepo (read, write, edit, todo, etc.) use
+ * instead of throwing. Treating these as healthy successes would
+ * silently hide real failures from quarantine/demotion logic and
+ * also leave feedback-loop and forge-demand disagreeing about the
+ * outcome of the same call. Mirrors the same check in
+ * `@koi/forge-demand`. F103 regression.
+ */
+function isInBandToolError(output: unknown): boolean {
+  if (output === null || typeof output !== "object") return false;
+  const o = output as Record<string, unknown>;
+  return typeof o.error === "string" && typeof o.code === "string";
+}
+
 async function handleToolSuccess(
   toolId: string,
   response: ToolResponse,
@@ -115,7 +130,15 @@ async function handleToolSuccess(
   }
 
   if (tracker !== undefined) {
-    tracker.recordSuccess(toolId, latencyMs);
+    // Classify in-band `{ error, code }` payloads as failures so
+    // health metrics, quarantine, and forge-demand stay consistent
+    // for the same call. F103 regression.
+    if (isInBandToolError(response.output)) {
+      const errMsg = (response.output as { readonly error: string }).error;
+      tracker.recordFailure(toolId, latencyMs, errMsg);
+    } else {
+      tracker.recordSuccess(toolId, latencyMs);
+    }
     // Fire-and-forget: health I/O must not turn a successful tool call into a failure
     void tracker.checkAndQuarantine(toolId);
     void tracker.checkAndDemote(toolId);

@@ -451,7 +451,7 @@ export interface RuntimeConfig {
    * active detector. Omit this config to keep a preinstalled middleware
    * intact (the caller owns its handle out-of-band).
    */
-  readonly forgeDemand?: import("@koi/forge-demand").ForgeDemandConfig | undefined;
+  readonly forgeDemand?: RuntimeForgeDemandConfig | undefined;
 
   /**
    * Browser tool provider configuration. When provided, wires `@koi/tool-browser`
@@ -493,6 +493,27 @@ export interface RuntimeConfig {
    */
   readonly memoryFs?: MemoryStoreConfig | undefined;
 }
+
+/**
+ * Runtime-narrowed `ForgeDemandConfig`. The runtime intentionally does
+ * NOT expose a sessionId-keyed lookup (F67), and `onDemand` alone is
+ * insufficient because it has no dismiss capability — emitted signals
+ * stay in detector state until acknowledged, so the same condition
+ * can re-emit after cooldown and eventually consume the session forge
+ * budget. The scoped handle delivered to `onSessionAttached` is the
+ * only surface that supports both read and dismiss; making it
+ * required at the type level prevents callers from constructing a
+ * runtime config that the factory will then reject at startup.
+ * F102 regression.
+ */
+export type RuntimeForgeDemandConfig = Omit<
+  import("@koi/forge-demand").ForgeDemandConfig,
+  "onSessionAttached"
+> & {
+  readonly onSessionAttached: NonNullable<
+    import("@koi/forge-demand").ForgeDemandConfig["onSessionAttached"]
+  >;
+};
 
 /** Default stream timeout: 2 minutes for live API calls. */
 export const DEFAULT_STREAM_TIMEOUT_MS = 120_000 as const;
