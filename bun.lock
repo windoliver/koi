@@ -497,6 +497,13 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/nexus-client": {
+      "name": "@koi/nexus-client",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/outcome-evaluator": {
       "name": "@koi/outcome-evaluator",
       "version": "0.0.0",
@@ -1821,6 +1828,8 @@
     "@koi/model-registry": ["@koi/model-registry@workspace:packages/lib/model-registry"],
 
     "@koi/model-router": ["@koi/model-router@workspace:packages/lib/model-router"],
+
+    "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/lib/nexus-client"],
 
     "@koi/outcome-evaluator": ["@koi/outcome-evaluator@workspace:packages/lib/outcome-evaluator"],
 
