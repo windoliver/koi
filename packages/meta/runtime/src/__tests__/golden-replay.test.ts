@@ -13984,13 +13984,15 @@ describe("Golden: @koi/forge-demand", () => {
     expect(fl.healthHandle.getSnapshot("missing-session", "missing-tool")).toBeUndefined();
   });
 
-  test("RuntimeHandle.forgeDemand exposes forSessionId for runtime callers", async () => {
+  test("RuntimeHandle.forgeDemand exposes only the middleware (no sessionId-keyed lookup)", async () => {
+    // Regression for round-7 F67: a previous design exposed
+    // `forSessionId(sid)` on the runtime handle. That undid the L2
+    // detector's identity-based isolation — any in-process caller with
+    // a sessionId could read or dismiss another tenant's signals.
+    // The runtime now exposes only the middleware; scoped handles are
+    // delivered to legitimate session owners via
+    // `forgeDemand.onSessionAttached`.
     const { createRuntime } = await import("../create-runtime.js");
-    // Regression for round-5 F63: the prior surface only exposed
-    // `forSession(SessionContext)`, but normal runtime callers never
-    // see engine-issued SessionContext objects. The runtime now wraps
-    // the handle to provide a sessionId-keyed view backed by a capture
-    // middleware that records the legitimate SessionContext.
     const runtime = createRuntime({
       forgeDemand: {
         budget: {
@@ -14007,11 +14009,11 @@ describe("Golden: @koi/forge-demand", () => {
       },
     });
     expect(runtime.forgeDemand).toBeDefined();
-    expect(typeof runtime.forgeDemand?.forSessionId).toBe("function");
-    // Unobserved sessionId fails closed — never silently returns empty
-    // data (which would hide "session not yet active" from callers).
-    expect(() => runtime.forgeDemand?.forSessionId("never-seen")).toThrow(
-      /no SessionContext observed/,
+    expect(typeof runtime.forgeDemand?.middleware).toBe("object");
+    // No sessionId-keyed lookup — preserves the L2 identity-based
+    // isolation across the runtime boundary.
+    expect((runtime.forgeDemand as unknown as { forSessionId?: unknown }).forSessionId).toBe(
+      undefined,
     );
     await runtime.dispose();
   });
@@ -14053,32 +14055,77 @@ describe("Golden: @koi/forge-demand", () => {
     }
   });
 
-  test("session-capture middleware records SessionContext on wrapModelStream too", async () => {
-    // Regression for round-6 F65: capture middleware previously hooked
-    // only wrapToolCall and wrapModelCall, so stream-only sessions
-    // never populated sessionContextById and forSessionId() threw —
-    // signals were stuck until cooldown/session end. The capture
-    // middleware now also runs on wrapModelStream.
-    const { createRuntime } = await import("../create-runtime.js");
-    const runtime = createRuntime({
-      forgeDemand: {
-        budget: {
-          maxForgesPerSession: 5,
-          computeTimeBudgetMs: 120_000,
-          demandThreshold: 0.7,
-          cooldownMs: 1_000,
-        },
-        heuristics: {
-          repeatedFailureCount: 3,
-          capabilityGapOccurrences: 2,
-          latencyDegradationAvgMs: 5_000,
-        },
+  test("onSessionAttached fires once per session, including stream-only sessions", async () => {
+    // Combined regression for F65 (stream-only sessions must deliver
+    // scoped handles) and F67 (delivery is via callback, not lookup).
+    // Drive a single session through wrapModelStream only — no
+    // wrapToolCall, no wrapModelCall — and assert the callback fires
+    // exactly once with an unforgeable scoped handle.
+    const { createForgeDemandDetector } = await import("@koi/forge-demand");
+    const attached: Array<{ sid: string; scoped: { getActiveSignalCount: () => number } }> = [];
+    const handle = createForgeDemandDetector({
+      budget: {
+        maxForgesPerSession: 5,
+        computeTimeBudgetMs: 120_000,
+        demandThreshold: 0.7,
+        cooldownMs: 1_000,
+      },
+      heuristics: {
+        repeatedFailureCount: 3,
+        capabilityGapOccurrences: 2,
+        latencyDegradationAvgMs: 5_000,
+      },
+      onSessionAttached: (s, scoped) => {
+        attached.push({ sid: s.sessionId, scoped });
       },
     });
-    const captureMw = runtime.middleware.find((mw) => mw.name === "forge-demand-session-capture");
-    expect(captureMw).toBeDefined();
-    expect(typeof captureMw?.wrapModelStream).toBe("function");
-    await runtime.dispose();
+    const ctxSession = {
+      agentId: "stream-only",
+      sessionId: sessionId("stream-1"),
+      runId: runId("r-stream"),
+      metadata: {} as JsonObject,
+    };
+    const ctx: TurnContext = {
+      session: ctxSession,
+      turnIndex: 0,
+      turnId: `${runId("r-stream")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+    const stream = handle.middleware.wrapModelStream;
+    if (stream === undefined) throw new Error("wrapModelStream missing");
+    // Drain the stream so the wrap actually executes its lead-in code.
+    for await (const _ of stream(ctx, { messages: [], model: "test" }, async function* () {
+      yield { kind: "done", response: { content: "", model: "test" } };
+    })) {
+      // intentional
+    }
+    expect(attached.length).toBe(1);
+    expect(attached[0]?.sid).toBe(ctxSession.sessionId);
+    expect(typeof attached[0]?.scoped.getActiveSignalCount).toBe("function");
+    expect(attached[0]?.scoped.getActiveSignalCount()).toBe(0);
+  });
+
+  test("validateForgeDemandConfig rejects a single-arg getSnapshot", async () => {
+    // Regression for round-7 F68: validation previously accepted any
+    // object with a `getSnapshot` function. A legacy
+    // `getSnapshot(toolId)` swallows the second argument in JS,
+    // silently disabling performance_degradation. We now reject
+    // anything whose declared arity is < 2.
+    const { validateForgeDemandConfig } = await import("@koi/forge-demand");
+    const result = validateForgeDemandConfig({
+      budget: {
+        maxForgesPerSession: 5,
+        computeTimeBudgetMs: 120_000,
+        demandThreshold: 0.7,
+        cooldownMs: 1_000,
+      },
+      healthTracker: { getSnapshot: (_toolId: string) => undefined },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toMatch(/sessionId, toolId/);
+    }
   });
 
   test("auto-wiring honors a caller-preinstalled feedback-loop in config.middleware", async () => {

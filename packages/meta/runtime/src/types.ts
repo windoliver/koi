@@ -538,25 +538,23 @@ export interface RuntimeDebugInfo {
 // ---------------------------------------------------------------------------
 
 /**
- * Runtime-facing forge-demand handle. The L2 detector authorizes by
- * SessionContext object identity (engine-issued, not caller-supplied),
- * but normal runtime callers never see those objects. This wrapper
- * captures the legitimate SessionContext from the live middleware
- * chain and lets callers query by `sessionId` instead. The middleware
- * is re-exported for assembly inspection only — wiring is automatic.
+ * Runtime-facing forge-demand handle.
+ *
+ * The L2 detector authorizes session-scoped operations by SessionContext
+ * object identity (engine-issued, not caller-supplied) — see F61. The
+ * runtime intentionally does NOT expose a sessionId-keyed lookup like
+ * `forSessionId(sid)` here, because that would let any in-process caller
+ * with a sessionId read or dismiss another tenant's signals (F67).
+ * Instead, scoped handles are delivered to the legitimate session owner
+ * via the `forgeDemand.onSessionAttached` callback supplied at runtime
+ * configuration time. The owner stores its handle and acks/dismisses
+ * its own signals — no out-of-band lookup surface.
+ *
+ * The `middleware` field is exposed for assembly inspection only —
+ * wiring is automatic.
  */
 export interface RuntimeForgeDemandHandle {
   readonly middleware: import("@koi/core").KoiMiddleware;
-  /**
-   * Session-scoped view bound to a sessionId observed by the runtime.
-   * Throws when the sessionId has not yet been observed (no traffic
-   * for this session, or session already ended) — this fails closed
-   * rather than silently returning empty data, so callers do not
-   * confuse "not yet active" with "no signals".
-   */
-  readonly forSessionId: (
-    sessionId: string,
-  ) => import("@koi/forge-demand").SessionScopedForgeDemandHandle;
 }
 
 /** The assembled runtime returned by createRuntime. */

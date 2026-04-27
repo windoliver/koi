@@ -36,7 +36,12 @@ import {
   detectRepeatedFailure,
   detectUserCorrection,
 } from "./heuristics.js";
-import type { ForgeDemandConfig, ForgeDemandHandle, HeuristicThresholds } from "./types.js";
+import type {
+  ForgeDemandConfig,
+  ForgeDemandHandle,
+  HeuristicThresholds,
+  SessionScopedForgeDemandHandle,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -114,6 +119,15 @@ function safeInvoke<T>(cb: ((value: T) => void) | undefined, value: T): void {
     // Last-resort isolation: callback errors are swallowed here so the
     // wrapped call is never altered. Surface via console.error so they
     // stay visible without affecting agent-loop semantics.
+    console.error("[forge-demand] observer callback threw:", e);
+  }
+}
+
+function safeInvoke2<A, B>(cb: ((a: A, b: B) => void) | undefined, a: A, b: B): void {
+  if (cb === undefined) return;
+  try {
+    cb(a, b);
+  } catch (e: unknown) {
     console.error("[forge-demand] observer callback threw:", e);
   }
 }
@@ -199,6 +213,30 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   // i.e. real engine-issued contexts — and `forSession` rejects
   // anything else.
   const observedSessions = new WeakSet<SessionContext>();
+
+  function ensureObserved(session: SessionContext): void {
+    if (observedSessions.has(session)) return;
+    observedSessions.add(session);
+    // First sighting — deliver the unforgeable scoped handle to the
+    // legitimate session owner. We build the handle inline (forSession
+    // would re-check the WeakSet, but we've just added it so the check
+    // will pass). Errors in user callbacks must not break the wrapped
+    // call.
+    if (config.onSessionAttached !== undefined) {
+      const scoped: SessionScopedForgeDemandHandle = {
+        getSignals: (): readonly ForgeDemandSignal[] => {
+          const state = sessions.get(session.sessionId);
+          return state === undefined ? [] : state.signals.map(cloneSignal);
+        },
+        dismiss: (signalId: string): void => dismiss(session.sessionId, signalId),
+        getActiveSignalCount: (): number => {
+          const state = sessions.get(session.sessionId);
+          return state === undefined ? 0 : state.signals.length;
+        },
+      };
+      safeInvoke2(config.onSessionAttached, session, scoped);
+    }
+  }
   // Handle-level counter so signal ids are unique across sessions —
   // otherwise two concurrent tenants would both produce `demand-1` and
   // `dismiss()` could clear the wrong session's signal.
@@ -616,7 +654,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      observedSessions.add(ctx.session);
+      ensureObserved(ctx.session);
       const state = getOrCreate(ctx.session.sessionId);
       const { toolId } = request;
       const callEntry = recordToolCall(state, toolId);
@@ -675,7 +713,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      observedSessions.add(ctx.session);
+      ensureObserved(ctx.session);
       const state = getOrCreate(ctx.session.sessionId);
       // Detect corrections eagerly but defer emission — a transient
       // transport/validator failure must not consume forge budget for a
@@ -693,7 +731,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      observedSessions.add(ctx.session);
+      ensureObserved(ctx.session);
       const state = getOrCreate(ctx.session.sessionId);
       const pending = detectPendingCorrections(state, request);
       const fp = requestFingerprint(ctx, request);

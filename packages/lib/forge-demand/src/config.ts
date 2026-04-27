@@ -115,7 +115,17 @@ function validationError(message: string): KoiError {
 function isHealthTrackerLike(v: unknown): boolean {
   if (v === null || v === undefined || typeof v !== "object") return false;
   const obj = v as Record<string, unknown>;
-  return typeof obj.getSnapshot === "function";
+  if (typeof obj.getSnapshot !== "function") return false;
+  // The detector calls getSnapshot(sessionId, toolId). A legacy
+  // single-arg `getSnapshot(toolId)` (e.g. feedback-loop's raw
+  // ToolHealthTracker) silently swallows the second arg in JS,
+  // collapsing all sessions onto whichever toolId it sees first.
+  // Reject anything whose declared arity is < 2 so the mismatch
+  // surfaces at startup instead of as a permanent silent dormancy
+  // of `performance_degradation`. F68 regression.
+  const fn = obj.getSnapshot as { readonly length?: number };
+  if (typeof fn.length === "number" && fn.length < 2) return false;
+  return true;
 }
 
 function isRegExpArray(v: unknown): v is readonly RegExp[] {
@@ -159,7 +169,11 @@ export function validateForgeDemandConfig(raw: unknown): Result<ForgeDemandConfi
   if (c.healthTracker !== undefined && !isHealthTrackerLike(c.healthTracker)) {
     return {
       ok: false,
-      error: validationError("healthTracker must expose a 'getSnapshot' function"),
+      error: validationError(
+        "healthTracker.getSnapshot must accept (sessionId, toolId) — " +
+          "legacy single-argument trackers silently mis-key snapshots " +
+          "and disable performance_degradation",
+      ),
     };
   }
   if (c.onDemand !== undefined && typeof c.onDemand !== "function") {
@@ -167,6 +181,9 @@ export function validateForgeDemandConfig(raw: unknown): Result<ForgeDemandConfi
   }
   if (c.onDismiss !== undefined && typeof c.onDismiss !== "function") {
     return { ok: false, error: validationError("onDismiss must be a function") };
+  }
+  if (c.onSessionAttached !== undefined && typeof c.onSessionAttached !== "function") {
+    return { ok: false, error: validationError("onSessionAttached must be a function") };
   }
   if (c.clock !== undefined && typeof c.clock !== "function") {
     return { ok: false, error: validationError("clock must be a function") };
@@ -248,6 +265,11 @@ export function validateForgeDemandConfig(raw: unknown): Result<ForgeDemandConfi
     ...(c.onDemand !== undefined ? { onDemand: c.onDemand as ForgeDemandConfig["onDemand"] } : {}),
     ...(c.onDismiss !== undefined
       ? { onDismiss: c.onDismiss as ForgeDemandConfig["onDismiss"] }
+      : {}),
+    ...(c.onSessionAttached !== undefined
+      ? {
+          onSessionAttached: c.onSessionAttached as ForgeDemandConfig["onSessionAttached"],
+        }
       : {}),
     ...(c.clock !== undefined ? { clock: c.clock as ForgeDemandConfig["clock"] } : {}),
   };

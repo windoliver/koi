@@ -74,6 +74,19 @@ export interface ForgeDemandConfig {
   readonly onDemand?: ((signal: ForgeDemandSignal) => void) | undefined;
   /** Called when a signal is dismissed. */
   readonly onDismiss?: ((signalId: string) => void) | undefined;
+  /**
+   * Called once per session, the first time the detector observes
+   * traffic for that session. Receives the engine-issued
+   * `SessionContext` and an unforgeable session-scoped handle. This
+   * is the only delivery path for scoped handles to legitimate
+   * session owners — there is intentionally no sessionId-keyed
+   * lookup surface, so an in-process caller cannot forge a query
+   * with another tenant's id. Errors thrown from this callback are
+   * caught and logged; they do not interrupt the wrapped call.
+   */
+  readonly onSessionAttached?:
+    | ((session: SessionContext, scoped: SessionScopedForgeDemandHandle) => void)
+    | undefined;
   /** Injectable clock for testing. Default: Date.now. */
   readonly clock?: (() => number) | undefined;
   /** Maximum pending signals before oldest are evicted. Default: 10. */

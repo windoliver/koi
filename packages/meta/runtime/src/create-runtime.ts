@@ -19,7 +19,6 @@ import type {
   ModelResponse,
   RetrySignalReader,
   RichTrajectoryStep,
-  SessionContext,
   ToolDescriptor,
   ToolRequest,
   ToolResponse,
@@ -332,45 +331,14 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       }
       forgeDemandHandle = createForgeDemandDetector(finalForgeConfig);
     }
-    // Runtime-owned SessionContext capture so RuntimeHandle.forgeDemand
-    // can expose `forSessionId(sessionId)`. The L2 detector authorizes
-    // forSession() by SessionContext object identity (F61) — but normal
-    // runtime callers never see those engine-owned objects. The capture
-    // middleware records each (sessionId → SessionContext) pair as
-    // sessions flow through the chain, and the wrapper looks up the
-    // legitimate context for the caller.
-    const sessionContextById = new Map<string, SessionContext>();
-    const captureMiddleware: KoiMiddleware = {
-      name: "forge-demand-session-capture",
-      // 444 sits just outside forge-demand (445), so this captures
-      // the same SessionContext the detector observes a moment
-      // later in the chain.
-      priority: 444,
-      describeCapabilities: () => undefined,
-      wrapToolCall(ctx, request, next) {
-        sessionContextById.set(ctx.session.sessionId, ctx.session);
-        return next(request);
-      },
-      wrapModelCall(ctx, request, next) {
-        sessionContextById.set(ctx.session.sessionId, ctx.session);
-        return next(request);
-      },
-      // Stream-only sessions never enter wrapModelCall — without
-      // capturing here, forSessionId() throws for agents that use
-      // streaming responses exclusively. F65 regression.
-      wrapModelStream(ctx, request, next) {
-        sessionContextById.set(ctx.session.sessionId, ctx.session);
-        return next(request);
-      },
-      async onSessionEnd(ctx) {
-        sessionContextById.delete(ctx.sessionId);
-      },
-    };
+    // Scoped-handle delivery is via `config.forgeDemand.onSessionAttached`
+    // (the detector fires it once per legitimate SessionContext on first
+    // sighting). No sessionId-keyed lookup is exposed at the runtime
+    // boundary — F67 regression.
     const baseWithForgeDemand: readonly KoiMiddleware[] =
       forgeDemandHandle !== undefined
         ? [
             ...baseWithFeedbackLoop.filter((mw) => mw.name !== "forge-demand-detector"),
-            captureMiddleware,
             forgeDemandHandle.middleware,
           ]
         : baseWithFeedbackLoop;
@@ -810,22 +778,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       lspProvider,
       memoryStore,
       forgeDemand:
-        forgeDemandHandle !== undefined
-          ? {
-              middleware: forgeDemandHandle.middleware,
-              forSessionId: (sid: string) => {
-                const ctx = sessionContextById.get(sid);
-                if (ctx === undefined) {
-                  throw new Error(
-                    `forSessionId(${sid}) failed: no SessionContext observed for this id. ` +
-                      "The session has not yet sent traffic through the middleware " +
-                      "chain or was already ended.",
-                  );
-                }
-                return forgeDemandHandle.forSession(ctx);
-              },
-            }
-          : undefined,
+        forgeDemandHandle !== undefined ? { middleware: forgeDemandHandle.middleware } : undefined,
       createDecisionLedger: decisionLedgerFactory,
       dispose: async () => {
         // Unsubscribe approval sink to prevent leak on long-lived permission handles
