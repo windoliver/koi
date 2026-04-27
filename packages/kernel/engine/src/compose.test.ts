@@ -1476,10 +1476,12 @@ describe("createComposedCallHandlers streaming", () => {
     expect(rawModel).toHaveBeenCalled();
   });
 
-  test("synthesized modelStream fires wrapModelStream once and does NOT re-enter wrapModelCall (round 10)", async () => {
-    // Round 10 regression: synthetic stream must not double-fire model
-    // middleware. A middleware implementing both hooks should see exactly
-    // one of them fire per request through the synthesized stream path.
+  test("synthesized modelStream goes through composed modelChain so wrapModelCall middleware also fires (round 12)", async () => {
+    // Round 12 (high): synthetic stream now bridges through the composed
+    // modelChain. A middleware implementing both hooks sees both fire
+    // exactly once per request — this is the correct contract because
+    // wrapModelCall middleware would otherwise be silently bypassed for
+    // pure-call adapters routed through the synthesized stream path.
     const agent = await createStartedAgent();
     const callCount = { call: 0, stream: 0 };
     const mw: KoiMiddleware = {
@@ -1513,7 +1515,7 @@ describe("createComposedCallHandlers streaming", () => {
     }
 
     expect(callCount.stream).toBe(1);
-    expect(callCount.call).toBe(0);
+    expect(callCount.call).toBe(1);
     expect(rawModel).toHaveBeenCalledTimes(1);
   });
 
@@ -2019,7 +2021,12 @@ describe("recomposeChains", () => {
     expect(typeof chains.streamChain).toBe("function");
   });
 
-  test("returns toolChain + modelChain only when no stream terminal", () => {
+  test("synthesizes streamChain from modelChain when no stream terminal (round 12)", () => {
+    // Round 12: recomposeChains synthesizes a stream chain from the
+    // composed modelChain when the adapter has no native stream
+    // terminal. wrapModelStream middleware (e.g. tool-recovery) runs
+    // uniformly across all adapters AND wrapModelCall semantics are
+    // preserved because the synth bridges through modelChain.
     const sorted: readonly KoiMiddleware[] = [];
     const terminals = {
       modelHandler: async () => mockModelResponse(),
@@ -2030,7 +2037,8 @@ describe("recomposeChains", () => {
 
     expect(typeof chains.toolChain).toBe("function");
     expect(typeof chains.modelChain).toBe("function");
-    expect(chains.streamChain).toBeUndefined();
+    expect(chains.streamChain).toBeDefined();
+    expect(typeof chains.streamChain).toBe("function");
   });
 
   test("chains dispatch through middleware in correct order", async () => {

@@ -16,6 +16,7 @@ export {
   collectCapabilities,
   composeModelChain,
   composeModelStreamChain,
+  composeModelStreamChainCtx,
   composeToolChain,
   computeCapabilityBanner,
   injectCapabilities,

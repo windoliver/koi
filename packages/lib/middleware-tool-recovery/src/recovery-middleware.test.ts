@@ -399,10 +399,12 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
     expect(out.some((c) => c.kind === "thinking_delta")).toBe(true);
   });
 
-  test("recovers tool calls when upstream stream throws after a complete tool_call markup", async () => {
-    // Round 9: provider error after a fully-formed tool call must not
-    // discard the recovered call or leak raw markup. Recovery runs in
-    // finally on abnormal termination.
+  test("recovers tool calls when upstream stream throws after a complete tool_call markup (round 12)", async () => {
+    // Round 12 (high): a provider error after a fully-formed tool call
+    // must NOT abort the turn. Recovery synthesizes both the
+    // tool_call_* chunks AND a synthetic done so the engine actually
+    // executes the recovered call. Original error surfaces via
+    // response.metadata.recoveryError.
     const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("foo")];
     const next: ModelStreamHandler = async function* () {
@@ -424,10 +426,18 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
       caught = e;
     }
 
-    expect((caught as Error).message).toBe("connection reset");
+    // Error suppressed because recovery succeeded — runner can execute
+    // the recovered call instead of failing the turn.
+    expect(caught).toBeUndefined();
     // The tool_call_* chunks must be synthesized from the buffered text.
     const toolStarts = out.filter((c) => c.kind === "tool_call_start");
     expect(toolStarts.length).toBe(1);
+    // Synthetic done must close the stream and surface the original error.
+    const dones = out.filter((c) => c.kind === "done");
+    expect(dones.length).toBe(1);
+    const done = dones[0] as Extract<ModelChunk, { kind: "done" }>;
+    expect(done.response.metadata?.recoveryError).toBe("connection reset");
+    expect(done.response.metadata?.recovered).toBe(true);
     // Raw markup must not leak through as text_delta.
     const allText = out
       .filter((c): c is Extract<ModelChunk, { kind: "text_delta" }> => c.kind === "text_delta")

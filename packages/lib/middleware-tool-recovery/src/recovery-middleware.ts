@@ -150,10 +150,6 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     // let: flips true if the adapter emits a native tool call — recovery is
     // disabled and remaining chunks pass through unmodified.
     let bypass = false;
-    // let: tracks whether the upstream stream completed normally or threw
-    // before emitting `done`. Used by the finally block to flush pending
-    // chunks on partial-failure paths so degraded output isn't lost.
-    let completed = false;
 
     try {
       for await (const chunk of next(request)) {
@@ -164,6 +160,18 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
 
         if (chunk.kind === "tool_call_start") {
           bypass = true;
+          // In passthrough mode we deliberately withhold the trailing
+          // marker-prefix window from text_delta forwarding (so a marker
+          // split across chunks can still be detected). When the adapter
+          // emits a native tool_call_start we hand control back unchanged
+          // — but the withheld tail must still reach the consumer or
+          // assistant text immediately preceding the tool call gets
+          // silently truncated. #review-round12-F2.
+          if (mode === "passthrough" && bufferedText.length > flushedTextIndex) {
+            const tail = bufferedText.slice(flushedTextIndex);
+            flushedTextIndex = bufferedText.length;
+            yield { kind: "text_delta", delta: tail };
+          }
           for (const buf of pending) yield buf;
           pending = [];
           yield chunk;
@@ -214,8 +222,6 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
         // Done chunk: in passthrough mode, the upstream content is plain
         // text. Flush any remaining tail and pass done through. In buffer
         // mode, attempt recovery on the accumulated text.
-        completed = true;
-
         if (mode === "passthrough") {
           const tail = bufferedText.slice(flushedTextIndex);
           if (tail.length > 0) yield { kind: "text_delta", delta: tail };
@@ -246,31 +252,43 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
         yield { kind: "done", response: rewrittenResponse };
         return;
       }
-    } finally {
-      if (!completed && !bypass) {
-        if (mode === "passthrough") {
-          const tail = bufferedText.slice(flushedTextIndex);
-          if (tail.length > 0) yield { kind: "text_delta", delta: tail };
-        } else {
-          // Abnormal termination after we entered buffer mode: the model
-          // emitted tool-call markup but the stream errored before `done`.
-          // Replaying the raw buffered text would leak markup AND drop a
-          // potentially valid tool invocation. Try recovery first; only
-          // fall back to raw replay if recovery yields nothing parseable.
-          const recovered = runRecovery(ctx, bufferedText, tools, patterns, maxCalls, onEvent);
-          if (recovered !== undefined) {
-            for (const buf of pending) {
-              if (buf.kind !== "text_delta") yield buf;
-            }
-            if (recovered.cleanedText.length > 0) {
-              yield { kind: "text_delta", delta: recovered.cleanedText };
-            }
-            yield* synthesizeToolCallChunks(recovered.calls);
-          } else if (pending.length > 0) {
-            for (const buf of pending) yield buf;
+    } catch (upstreamError: unknown) {
+      // Stream errored before emitting `done`. If we entered buffer mode
+      // and recovery produces executable calls, synthesize a terminal
+      // done chunk so the engine actually runs those calls — emitting
+      // recovered tool_call_* chunks alone is not enough because the
+      // runner aborts the turn on any thrown stream. We surface the
+      // original error via response.metadata so callers can still
+      // observe the underlying failure. #review-round12-F3.
+      if (!bypass && mode === "buffer") {
+        const recovered = runRecovery(ctx, bufferedText, tools, patterns, maxCalls, onEvent);
+        if (recovered !== undefined && recovered.calls.length > 0) {
+          for (const buf of pending) {
+            if (buf.kind !== "text_delta") yield buf;
           }
+          if (recovered.cleanedText.length > 0) {
+            yield { kind: "text_delta", delta: recovered.cleanedText };
+          }
+          yield* synthesizeToolCallChunks(recovered.calls);
+          const errorMessage =
+            upstreamError instanceof Error ? upstreamError.message : String(upstreamError);
+          const syntheticResponse: ModelResponse = {
+            content: recovered.cleanedText,
+            model: "unknown",
+            metadata: { recoveryError: errorMessage, recovered: true },
+          };
+          yield { kind: "done", response: syntheticResponse };
+          return;
         }
       }
+      // No recovery possible — preserve any pending output, then rethrow.
+      if (mode === "passthrough") {
+        const tail = bufferedText.slice(flushedTextIndex);
+        if (tail.length > 0) yield { kind: "text_delta", delta: tail };
+      } else if (pending.length > 0) {
+        for (const buf of pending) yield buf;
+      }
+      throw upstreamError;
     }
   }
 
