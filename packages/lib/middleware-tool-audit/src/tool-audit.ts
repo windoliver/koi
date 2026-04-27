@@ -160,7 +160,39 @@ function createFallbackStore(): ToolAuditStore {
 interface ToolAuditSessionState {
   readonly sessionAvailableTools: Set<string>;
   readonly sessionUsedTools: Set<string>;
+  /**
+   * Per-session call/latency counters. Kept ISOLATED from the global
+   * `tools` aggregate until onSessionEnd so concurrent persists from
+   * other sessions cannot capture this session's in-flight work
+   * (started calls without outcomes, or work that may later abort).
+   * #review-round27-F2.
+   */
+  readonly localTools: Map<string, MutableToolRecord>;
   dirty: boolean;
+}
+
+/** Fold session-local counters into the shared aggregate. Sums counters,
+ * mins/maxes latency extremes, takes the larger lastUsedAt. */
+function foldLocalIntoGlobal(
+  global: Map<string, MutableToolRecord>,
+  local: Map<string, MutableToolRecord>,
+): void {
+  for (const [name, l] of local) {
+    const g = global.get(name);
+    if (g === undefined) {
+      global.set(name, { ...l });
+      continue;
+    }
+    g.callCount += l.callCount;
+    g.successCount += l.successCount;
+    g.failureCount += l.failureCount;
+    g.totalLatencyMs += l.totalLatencyMs;
+    g.lastUsedAt = Math.max(g.lastUsedAt, l.lastUsedAt);
+    if (l.minLatencyMs !== Number.POSITIVE_INFINITY) {
+      g.minLatencyMs = Math.min(g.minLatencyMs, l.minLatencyMs);
+    }
+    g.maxLatencyMs = Math.max(g.maxLatencyMs, l.maxLatencyMs);
+  }
 }
 
 const CAPABILITY_FRAGMENT: CapabilityFragment = {
@@ -254,8 +286,20 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     sessionStates.set(ctx.sessionId, {
       sessionAvailableTools: new Set<string>(),
       sessionUsedTools: new Set<string>(),
+      localTools: new Map<string, MutableToolRecord>(),
       dirty: false,
     });
+  }
+
+  function getOrCreateLocalRecord(
+    state: ToolAuditSessionState,
+    toolName: string,
+  ): MutableToolRecord {
+    const existing = state.localTools.get(toolName);
+    if (existing !== undefined) return existing;
+    const record = createEmptyRecord(toolName);
+    state.localTools.set(toolName, record);
+    return record;
   }
 
   function recordToolOutcome(
@@ -281,9 +325,16 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     next: ToolHandler,
   ): Promise<ToolResponse> {
     const { toolId } = request;
-    const record = getOrCreateRecord(toolId);
-    record.callCount += 1;
     const state = sessionStates.get(ctx.session.sessionId);
+    // Mutate session-local counters only — folded into global at session
+    // end. Persists from concurrent sessions cannot capture in-flight
+    // increments this way (#review-round27-F2). When state is missing
+    // (defensive: should not happen since wrapToolCall runs inside a
+    // session), fall back to the global aggregate to avoid losing the
+    // count entirely.
+    const record =
+      state !== undefined ? getOrCreateLocalRecord(state, toolId) : getOrCreateRecord(toolId);
+    record.callCount += 1;
     if (state) {
       state.sessionUsedTools.add(toolId);
       state.dirty = true;
@@ -333,6 +384,13 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   async function recordOnSessionEnd(ctx: SessionContext): Promise<void> {
     const state = sessionStates.get(ctx.sessionId);
     if (!state) return;
+
+    // Fold session-local tool counters into the shared aggregate now that
+    // every call this session made has either completed or aborted. Until
+    // this point the global `tools` map saw none of this session's
+    // increments, so persists from concurrent sessions could not
+    // accidentally commit our in-flight work (#review-round27-F2).
+    foldLocalIntoGlobal(tools, state.localTools);
 
     for (const toolName of state.sessionAvailableTools) {
       getOrCreateRecord(toolName).sessionsAvailable += 1;
@@ -513,7 +571,28 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     wrapModelStream,
     wrapToolCall,
     generateReport: (): readonly ToolAuditResult[] =>
-      computeLifecycleSignals(buildSnapshot(tools, totalSessions, clock), validConfig),
-    getSnapshot: (): ToolAuditSnapshot => buildSnapshot(tools, totalSessions, clock),
+      computeLifecycleSignals(buildLiveSnapshot(), validConfig),
+    getSnapshot: (): ToolAuditSnapshot => buildLiveSnapshot(),
   };
+
+  /**
+   * Snapshot view that includes BOTH the committed `tools` aggregate AND
+   * in-flight per-session local counters. Persistence intentionally does
+   * not use this — it only writes committed data (#review-round27-F2). But
+   * runtime observability (getSnapshot, generateReport) should reflect
+   * the full live picture so callers can see active work.
+   */
+  function buildLiveSnapshot(): ToolAuditSnapshot {
+    if (sessionStates.size === 0) {
+      return buildSnapshot(tools, totalSessions, clock);
+    }
+    const merged = new Map<string, MutableToolRecord>();
+    for (const [name, rec] of tools) {
+      merged.set(name, { ...rec });
+    }
+    for (const state of sessionStates.values()) {
+      foldLocalIntoGlobal(merged, state.localTools);
+    }
+    return buildSnapshot(merged, totalSessions, clock);
+  }
 }

@@ -378,18 +378,53 @@ describe("createToolAuditMiddleware", () => {
       await wrap(turnCtx(sessB), toolReq("read"), async () => ({ output: "ok" }));
 
       // A ends while B is still active — MUST persist now (not waiting
-      // for B). Snapshot contains BOTH tools because the in-memory map
-      // already has read recorded from B's wrap call above.
+      // for B). Snapshot contains ONLY A's committed work — B's `read`
+      // call lives in B's localTools and stays out of disk until B
+      // completes (#review-round27-F2 isolation guarantee).
       await mw.onSessionEnd?.(sessA);
       expect(saves.length).toBe(1);
       expect(saves[0]?.tools.search?.callCount).toBe(1);
-      expect(saves[0]?.tools.read?.callCount).toBe(1);
+      expect(saves[0]?.tools.read).toBeUndefined();
 
-      // B ends — persists a second time. (Mock load is stateless, so
-      // the merged snapshot's content depends on baseline tracking; we
-      // only assert the second save fires, proving non-deferral.)
+      // B ends — persists a second time, now including B's read.
       await mw.onSessionEnd?.(sessB);
       expect(saves.length).toBe(2);
+    });
+
+    test("persisted snapshot omits in-flight tool calls from still-active sessions — round 27 F2", async () => {
+      // wrapToolCall increments callCount at tool START. Without per-session
+      // isolation, ending session A while session B has an in-flight tool
+      // call would write B's started-but-not-completed call to disk; if the
+      // process then crashes before B finishes, that phantom call persists
+      // forever and skews lifecycle signals.
+      const { store, saves } = createMockStore();
+      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+      const wrap = getWrapToolCall(mw);
+
+      const sessA = sessionCtx({ sessionId: "sess-A" });
+      const sessB = sessionCtx({ sessionId: "sess-B" });
+      await mw.onSessionStart?.(sessA);
+      await mw.onSessionStart?.(sessB);
+
+      // A completes a tool; B starts one that never finishes.
+      await wrap(turnCtx(sessA), toolReq("search"), async () => ({ output: "ok" }));
+      // Simulate B's in-flight call: increment without awaiting completion.
+      // (Equivalent to wrapToolCall mid-execution.)
+      const bInFlight = wrap(turnCtx(sessB), toolReq("read"), async () => {
+        await new Promise(() => {}); // never resolves
+        return { output: "" };
+      });
+      // Yield once so the wrap's pre-call increment has a chance to land.
+      await new Promise((r) => setTimeout(r, 0));
+
+      // A ends — persisted snapshot must contain ONLY search, never B's read.
+      await mw.onSessionEnd?.(sessA);
+      expect(saves.length).toBe(1);
+      expect(saves[0]?.tools.search?.callCount).toBe(1);
+      expect(saves[0]?.tools.read).toBeUndefined();
+
+      // Avoid leaking the in-flight promise.
+      void bInFlight;
     });
 
     test("deferred signal emission is drained on the next completing session — round 26 F2", async () => {
