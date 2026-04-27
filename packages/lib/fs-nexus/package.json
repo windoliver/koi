@@ -24,6 +24,7 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/edit-match": "workspace:*",
-    "@koi/errors": "workspace:*"
+    "@koi/errors": "workspace:*",
+    "@koi/nexus-client": "workspace:*"
   }
 }

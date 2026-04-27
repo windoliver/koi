@@ -322,6 +322,7 @@
         "@koi/core": "workspace:*",
         "@koi/edit-match": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
       },
     },
     "packages/lib/fs-scoped": {
