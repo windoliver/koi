@@ -147,3 +147,11 @@ For the leaf token only:
 - **Cascade revocation**: revoking an ancestor invalidates all currently
   registered descendants and any descendants registered later (via the
   ancestor index maintained by the in-memory registry).
+
+## TS 6 Compatibility
+
+All internal `Buffer` variables and `randomBytes()`/`KeyObject.export()` return
+values are wrapped in `new Uint8Array(...)`. TypeScript 6 no longer treats
+`Buffer` as assignable to `Uint8Array<ArrayBufferLike>` or `ArrayBufferView`,
+so explicit wrapping is required for `timingSafeEqual`, `sign`/`verify`, and
+any public interface typed as `Uint8Array`.

@@ -6,8 +6,8 @@ import { signEd25519, verifyEd25519 } from "./ed25519.js";
 
 function newKeyPair(): { publicKey: Uint8Array; privateKey: Uint8Array; fingerprint: string } {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  const pubDer = publicKey.export({ format: "der", type: "spki" });
-  const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+  const pubDer = new Uint8Array(publicKey.export({ format: "der", type: "spki" }));
+  const privDer = new Uint8Array(privateKey.export({ format: "der", type: "pkcs8" }));
   const fingerprint = Buffer.from(pubDer).toString("base64");
   return { publicKey: pubDer, privateKey: privDer, fingerprint };
 }
