@@ -15,6 +15,27 @@ import { platform } from "node:os";
 import { detectFromBytes } from "@koi/file-type";
 
 // ---------------------------------------------------------------------------
+// OSC 52 payload guard
+// ---------------------------------------------------------------------------
+
+/**
+ * Safe upper bound for OSC 52 base64 payload size in bytes.
+ * Terminal-dependent; 100 KB is a conservative default that works across
+ * iTerm2, Ghostty, WezTerm, and Kitty. Callers must check before invoking
+ * renderer.copyToClipboardOSC52() — the renderer does not cap size internally.
+ */
+export const MAX_CLIPBOARD_BYTES = 100_000;
+
+/**
+ * Returns true if `text` encodes to a base64 payload within the safe OSC 52
+ * limit. Call this before renderer.copyToClipboardOSC52() to avoid emitting
+ * arbitrarily large sequences that degrade or hang terminals.
+ */
+export function isBelowOsc52Limit(text: string): boolean {
+  return Buffer.from(text).toString("base64").length <= MAX_CLIPBOARD_BYTES;
+}
+
+// ---------------------------------------------------------------------------
 // Clipboard image reading (#11) — platform-native APIs
 // ---------------------------------------------------------------------------
 

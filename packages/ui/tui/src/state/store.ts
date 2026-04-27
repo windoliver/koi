@@ -63,8 +63,12 @@ export function createStore(initialState: TuiState): TuiStore {
         listener();
       } catch (e: unknown) {
         // tui-single-writer-exception: listener exception — dispatching back to the
-        // store from inside notifySubscribers() would be circular. Stderr-only.
-        process.stderr.write(`[TuiStore] listener threw: ${String(e)}\n`);
+        // store from inside notifySubscribers() would be circular. Only emit when
+        // stderr is not a TTY (i.e. redirected/piped) to avoid interleaving raw
+        // bytes into the active terminal frame buffer (#1940).
+        if (!process.stderr.isTTY) {
+          process.stderr.write(`[TuiStore] listener threw: ${String(e)}\n`);
+        }
       }
     }
   }

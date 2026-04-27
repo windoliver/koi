@@ -50,6 +50,7 @@ import {
   StoreContext,
   useTuiStore,
 } from "./store-context.js";
+import { isBelowOsc52Limit } from "./utils/clipboard.js";
 
 // ---------------------------------------------------------------------------
 // Nav command routing
@@ -314,7 +315,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         // copy-on-select in MessageList.
         const sel = renderer.getSelection();
         const text = sel?.getSelectedText();
-        if (text && text.length > 0 && renderer.copyToClipboardOSC52(text)) {
+        if (text && text.length > 0 && isBelowOsc52Limit(text) && renderer.copyToClipboardOSC52(text)) {
           renderer.clearSelection();
           // clearSelection() doesn't emit a null selection event, so
           // MessageList's onSelectionEnd never fires. Dispatch resume_follow

@@ -62,11 +62,16 @@ async function checkFile(filePath: string, relativePath: string): Promise<readon
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? "";
-    // Exception marker may appear on the same line or within 3 preceding comment lines.
-    if (line.includes(EXCEPTION_MARKER)) continue;
-    if ((lines[i - 1] ?? "").includes(EXCEPTION_MARKER)) continue;
-    if ((lines[i - 2] ?? "").includes(EXCEPTION_MARKER)) continue;
-    if ((lines[i - 3] ?? "").includes(EXCEPTION_MARKER)) continue;
+    // Exception marker may appear on the same line or within 6 preceding lines
+    // (covers multi-line comment blocks plus an enclosing if-guard line).
+    let hasException = false;
+    for (let j = i; j >= Math.max(0, i - 6); j--) {
+      if ((lines[j] ?? "").includes(EXCEPTION_MARKER)) {
+        hasException = true;
+        break;
+      }
+    }
+    if (hasException) continue;
     if (isDevOnlyLine(lines, i)) continue;
 
     for (const { pattern, label } of HARD_PATTERNS) {
