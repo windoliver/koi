@@ -97,7 +97,14 @@ function hasToolChecks(config: FeedbackLoopConfig): boolean {
 function isInBandToolError(output: unknown): boolean {
   if (output === null || typeof output !== "object") return false;
   const o = output as Record<string, unknown>;
-  return typeof o.error === "string" && typeof o.code === "string";
+  if (typeof o.error !== "string" || typeof o.code !== "string") return false;
+  // Request-shape / policy rejections are not tool-execution failures.
+  // Many tools (read/write/edit/todo, browser, ...) return
+  // `{ error, code: "VALIDATION" }` for bad arguments without ever running
+  // their body. Counting these would poison health metrics and quarantine
+  // healthy tools whose only fault was a malformed request. F106 regression.
+  if (o.code === "VALIDATION") return false;
+  return true;
 }
 
 async function handleToolSuccess(

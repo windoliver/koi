@@ -382,6 +382,45 @@ describe("createFeedbackLoopMiddleware", () => {
       }
     });
 
+    it("F106: in-band { error, code: 'VALIDATION' } is NOT counted as a tool failure", async () => {
+      // Reviewer F106: many tools (read/write/edit/todo/browser) return
+      // `{ error, code: "VALIDATION" }` for malformed arguments without
+      // ever running their body. F103 broadened the in-band classifier
+      // and would have promoted these caller mistakes to tool-health
+      // failures, eventually quarantining a healthy tool. The classifier
+      // must exclude VALIDATION just like the throw-path does.
+      const sessionCtx = mockSessionCtx();
+      const recordSuccess = mock((_toolId: string, _latencyMs: number) => {});
+      const recordFailure = mock((_toolId: string, _latencyMs: number, _reason: string) => {});
+      const fakeTracker: ToolHealthTracker = {
+        recordSuccess,
+        recordFailure,
+        getSnapshot: () => undefined,
+        getL0Snapshot: () => undefined,
+        checkAndQuarantine: async () => false,
+        checkAndDemote: async () => false,
+        isQuarantined: async () => false,
+        dispose: async () => {},
+      };
+      const spy = spyOn(toolHealthModule, "createToolHealthTracker").mockReturnValue(fakeTracker);
+      try {
+        const mw = createFeedbackLoopMiddleware({ forgeHealth: makeMinimalForgeHealth() });
+        await mw.onSessionStart?.(sessionCtx);
+        const next = mock(
+          async (_req: ToolRequest): Promise<ToolResponse> => ({
+            output: { error: "missing arg 'path'", code: "VALIDATION" },
+          }),
+        );
+        const result = await mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next);
+        expect(result?.output).toEqual({ error: "missing arg 'path'", code: "VALIDATION" });
+        // VALIDATION is not a tool-execution failure: count as success.
+        expect(recordFailure).not.toHaveBeenCalled();
+        expect(recordSuccess).toHaveBeenCalledTimes(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it("rejects tool call when toolValidators fail (pre-execution, no side effects)", async () => {
       const validator: ToolRequestValidator = {
         name: "arg-check",

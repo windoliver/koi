@@ -642,9 +642,12 @@ describe("createForgeDemandDetector", () => {
         onDemand: (s) => signals.push(s),
       }),
     );
-    // Tool returns `{ error, code }` instead of throwing.
+    // Tool returns `{ error, code }` instead of throwing. Use a
+    // tool-execution code (NOT "VALIDATION") so the detector counts it
+    // — VALIDATION is reserved for caller/input mistakes that did not
+    // exercise the tool body. F106 regression covers that exclusion.
     const inBandFail = async (): Promise<ToolResponse> => ({
-      output: { error: "missing arg", code: "VALIDATION" },
+      output: { error: "subprocess crashed", code: "RUNTIME_ERROR" },
     });
     for (let i = 0; i < 3; i += 1) {
       await handle.middleware.wrapToolCall?.(ctx, toolReq("inband"), inBandFail);
@@ -2469,6 +2472,36 @@ describe("createForgeDemandDetector", () => {
     } catch {
       // expected
     }
+    expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(1);
+  });
+
+  it("F106: in-band { error, code: 'VALIDATION' } is NOT counted as repeated_failure", async () => {
+    // Reviewer F106: many tools return `{ error, code: "VALIDATION" }`
+    // for caller/argument mistakes without ever running their body.
+    // The in-band classifier must mirror the throw-path's
+    // KoiRuntimeError(VALIDATION) skip — otherwise the same malformed
+    // request that the throw-path now ignores would still drive
+    // repeated_failure through the in-band path, demanding a
+    // replacement for a healthy tool.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { repeatedFailureCount: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const validationFail = async (): Promise<ToolResponse> => ({
+      output: { error: "missing arg 'path'", code: "VALIDATION" },
+    });
+    for (let i = 0; i < 5; i += 1) {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("healthy"), validationFail);
+    }
+    expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(0);
+    // A real in-band runtime error still counts — guard is narrow.
+    const runtimeFail = async (): Promise<ToolResponse> => ({
+      output: { error: "subprocess crashed", code: "RUNTIME_ERROR" },
+    });
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("healthy"), runtimeFail);
     expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(1);
   });
 });

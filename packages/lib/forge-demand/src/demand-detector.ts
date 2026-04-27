@@ -114,7 +114,16 @@ function extractResponseText(response: ModelResponse): string {
 function isInBandToolError(output: unknown): boolean {
   if (output === null || typeof output !== "object") return false;
   const o = output as Record<string, unknown>;
-  if (typeof o.error === "string" && typeof o.code === "string") return true;
+  if (typeof o.error === "string" && typeof o.code === "string") {
+    // Request-shape / policy rejections are not tool-execution failures.
+    // Many tools (read/write/edit/todo, browser, ...) return
+    // `{ error, code: "VALIDATION" }` for bad arguments without ever
+    // running their body. Counting these would drive replacement demand
+    // for healthy tools whose only fault was a malformed request. Mirror
+    // the throw-path's KoiRuntimeError(VALIDATION) skip. F106 regression.
+    if (o.code === "VALIDATION") return false;
+    return true;
+  }
   // feedback-loop's quarantine short-circuit returns
   // `{ output: { kind: "forge_tool_quarantined", ... } }` instead of throwing.
   // Treat this as a tool failure so the detector keeps faulting state and
