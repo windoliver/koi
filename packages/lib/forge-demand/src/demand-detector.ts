@@ -169,16 +169,19 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     const key = triggerKey(trigger);
     if (isOnCooldown(key)) return;
 
-    // Forge-budget enforcement — both fields are checked here so the
-    // detector's contract matches its declared `ForgeBudget`. Without this,
-    // downstream consumers that trust the budget could keep receiving
-    // signals after the session cap was exhausted.
-    if (sessionStartedAt < 0) sessionStartedAt = clock();
-    if (sessionEmitCount >= config.budget.maxForgesPerSession) return;
-    if (clock() - sessionStartedAt >= config.budget.computeTimeBudgetMs) return;
-
+    // Confidence + cooldown gates run BEFORE budget bookkeeping so a
+    // sub-threshold probe never consumes the session budget window. The
+    // budget tracks signals actually emitted, not attempted.
     const confidence = computeDemandConfidence(trigger, thresholds.confidenceWeights, context);
     if (confidence < config.budget.demandThreshold) return;
+
+    // Budget enforcement — measured from the first ACTUAL emission so
+    // long-running sessions with only sub-threshold noise are not silently
+    // shut off before any signal fires.
+    if (sessionStartedAt >= 0 && clock() - sessionStartedAt >= config.budget.computeTimeBudgetMs) {
+      return;
+    }
+    if (sessionEmitCount >= config.budget.maxForgesPerSession) return;
 
     signalCounter += 1;
     const signal: ForgeDemandSignal = {
@@ -206,6 +209,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     signals.push(signal);
     cooldowns.set(key, clock());
     sessionEmitCount += 1;
+    if (sessionStartedAt < 0) sessionStartedAt = clock();
     safeInvoke(config.onDemand, signal);
   }
 
@@ -377,6 +381,11 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       next: ToolHandler,
     ): Promise<ToolResponse> {
       const { toolId } = request;
+      // Record EVERY attempt (success, throw, in-band error) for correction
+      // attribution. If we only logged successes, a user correction
+      // immediately after a failed tool call would be misattributed to the
+      // previous successful tool.
+      recordToolCall(toolId);
       try {
         const response = await next(request);
         // In-band errors must count as failures — many tools in this repo
@@ -396,7 +405,6 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
           return response;
         }
         consecutiveFailures.set(toolId, 0);
-        recordToolCall(toolId);
         checkLatencyDegradation(toolId);
         return response;
       } catch (e: unknown) {

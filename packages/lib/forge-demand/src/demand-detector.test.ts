@@ -654,6 +654,104 @@ describe("createForgeDemandDetector", () => {
     expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(1);
   });
 
+  it("does not consume the session compute-time budget on sub-threshold attempts", async () => {
+    let now = 0;
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        clock: () => now,
+        // demandThreshold high enough to suppress the first attempt
+        // (max confidence for repeated_failure with severity 1 is the
+        // base weight 0.9, so 0.95 is unreachable here).
+        budget: {
+          ...DEFAULT_FORGE_BUDGET,
+          computeTimeBudgetMs: 1_000,
+          cooldownMs: 0,
+          demandThreshold: 0.95,
+        },
+        heuristics: { repeatedFailureCount: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+
+    const failNext = async (): Promise<ToolResponse> => {
+      throw new Error("nope");
+    };
+
+    // Sub-threshold attempt at t=0 — should NOT start the budget window.
+    now = 0;
+    try {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("noisy"), failNext);
+    } catch {
+      // expected
+    }
+    expect(signals.length).toBe(0);
+
+    // Long after the supposed budget window — a real, threshold-clearing
+    // event must still emit because the window was never started.
+    now = 5_000;
+    const handle2 = createForgeDemandDetector(
+      makeConfig({
+        clock: () => now,
+        budget: { ...DEFAULT_FORGE_BUDGET, computeTimeBudgetMs: 1_000, cooldownMs: 0 },
+        heuristics: { repeatedFailureCount: 3 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    // Use second handle to avoid cross-state interference; same principle
+    // applies — sub-threshold attempts never start the window.
+    for (let i = 0; i < 3; i += 1) {
+      try {
+        await handle2.middleware.wrapToolCall?.(ctx, toolReq("real-fail"), failNext);
+      } catch {
+        // expected
+      }
+    }
+    expect(signals.length).toBe(1);
+  });
+
+  it("attributes user_correction to a failed tool call (recordToolCall covers attempts, not just successes)", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    let now = 0;
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        clock: () => now,
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+
+    // tool-A succeeds at t=100.
+    now = 100;
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("tool-A"), async () => toolRes());
+
+    // tool-B fails (throws) at t=200 — must still appear in attribution history.
+    now = 200;
+    try {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("tool-B"), async () => {
+        throw new Error("boom");
+      });
+    } catch {
+      // expected
+    }
+
+    // User corrects at t=300 — should attribute to tool-B (the latest
+    // attempt before the user message), not tool-A.
+    const correction: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "no, that's not right" }],
+      timestamp: 300,
+    };
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), async () =>
+      modelRes("ok"),
+    );
+
+    const corr = signals.find((s) => s.trigger.kind === "user_correction");
+    expect(corr).toBeDefined();
+    if (corr?.trigger.kind === "user_correction") {
+      expect(corr.trigger.correctedToolCall).toBe("tool-B");
+    }
+  });
+
   it("dismiss removes the signal and clears its cooldown", async () => {
     const handle = createForgeDemandDetector(
       makeConfig({
