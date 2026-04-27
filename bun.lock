@@ -1169,6 +1169,14 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/security/audit-sink-nexus": {
+      "name": "@koi/audit-sink-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+    },
     "packages/security/audit-sink-sqlite": {
       "name": "@koi/audit-sink-sqlite",
       "version": "0.0.0",
@@ -1687,6 +1695,8 @@
     "@koi/artifacts-s3": ["@koi/artifacts-s3@workspace:packages/lib/artifacts-s3"],
 
     "@koi/audit-sink-ndjson": ["@koi/audit-sink-ndjson@workspace:packages/security/audit-sink-ndjson"],
+
+    "@koi/audit-sink-nexus": ["@koi/audit-sink-nexus@workspace:packages/security/audit-sink-nexus"],
 
     "@koi/audit-sink-sqlite": ["@koi/audit-sink-sqlite@workspace:packages/security/audit-sink-sqlite"],
 
