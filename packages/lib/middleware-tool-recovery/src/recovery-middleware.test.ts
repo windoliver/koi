@@ -155,6 +155,30 @@ describe("createToolRecoveryMiddleware — recovery behavior", () => {
     expect(done.response.content).toBe("I'll check the weather.");
   });
 
+  test("recovers tool calls from done-only streams (no text_delta) — round 18 F1", async () => {
+    // Some adapters (or stream wrappers around non-streaming adapters)
+    // surface assistant text only via the terminal done.response.content
+    // chunk and emit no text_delta. Recovery must still parse markup
+    // from done.response.content rather than silently passing through.
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
+    const tools = [tool("get_weather")];
+    const text =
+      'I will check. <tool_call>{"name":"get_weather","arguments":{"city":"Paris"}}</tool_call>';
+    const doneOnlyStream: ModelStreamHandler = async function* () {
+      yield { kind: "done", response: modelResponse(text) };
+    };
+    const chunks = await collect(getStream(mw)(turnCtx(), { messages: [], tools }, doneOnlyStream));
+
+    const toolChunks = getToolCallChunks(chunks);
+    expect(toolChunks.length).toBe(3);
+    const start = toolChunks[0] as Extract<ModelChunk, { readonly kind: "tool_call_start" }>;
+    expect(start.toolName).toBe("get_weather");
+
+    const done = chunks[chunks.length - 1] as Extract<ModelChunk, { kind: "done" }>;
+    // Markup stripped; surrounding text preserved.
+    expect(done.response.content).toBe("I will check.");
+  });
+
   test("multiple tool calls produce one start/delta/end triplet each", async () => {
     const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("a"), tool("b")];

@@ -179,6 +179,28 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
         }
 
         if (chunk.kind === "done") {
+          // Some adapters emit no text_delta and surface assistant text
+          // only via the terminal done.response.content chunk. Without
+          // this fallback, recovery would skip those streams entirely
+          // (mode never leaves passthrough → bufferedText stays empty)
+          // and tool-call markup in `done.response.content` would never
+          // be parsed (#review-round18-F1). Treat the done payload as
+          // a synthetic terminal text_delta when nothing was streamed
+          // and the response carries content with a candidate marker.
+          if (
+            mode === "passthrough" &&
+            bufferedText.length === 0 &&
+            chunk.response.content.length > 0 &&
+            (markers.length === 0 || bufferedTextContainsAnyMarker(chunk.response.content))
+          ) {
+            bufferedText = chunk.response.content;
+            mode = "buffer";
+            // Stash a synthetic text_delta in `pending` so the buffer
+            // path's "non-text replay, drop raw text" semantics see a
+            // delta to drop. (We never replay it as text — the synth
+            // exists only to mirror the streamed-buffer code path.)
+            pending.push({ kind: "text_delta", delta: chunk.response.content });
+          }
           // Process below.
         } else if (chunk.kind === "text_delta") {
           bufferedText += chunk.delta;

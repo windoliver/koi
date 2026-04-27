@@ -285,6 +285,39 @@ describe("createToolAuditMiddleware", () => {
       expect(callback).toHaveBeenCalledTimes(1);
     });
 
+    test("onAuditResult is gated on overlapping sessions just like persistence — round 18 F2", async () => {
+      // computeLifecycleSignals over a snapshot built from the shared
+      // `tools` map can produce false high_failure / low_adoption
+      // signals during overlap windows because still-active sessions
+      // have call counts in the map without matching sessionsUsed
+      // updates yet. The callback must not fire until the active set
+      // is drained.
+      const callback = mock((_results: readonly unknown[]) => {});
+      const mw = createToolAuditMiddleware(
+        defaultConfig({
+          onAuditResult: callback,
+          highValueMinCalls: 1,
+          highValueSuccessThreshold: 0.9,
+        }),
+      );
+      const wrap = getWrapToolCall(mw);
+
+      const sessA = sessionCtx({ sessionId: "sess-A" });
+      const sessB = sessionCtx({ sessionId: "sess-B" });
+      await mw.onSessionStart?.(sessA);
+      await mw.onSessionStart?.(sessB);
+      await wrap(turnCtx(sessA), toolReq("search"), async () => ({ output: "ok" }));
+      await wrap(turnCtx(sessB), toolReq("read"), async () => ({ output: "ok" }));
+
+      // A ends while B is still active — callback MUST NOT fire.
+      await mw.onSessionEnd?.(sessA);
+      expect(callback).toHaveBeenCalledTimes(0);
+
+      // B ends — drains and fires once.
+      await mw.onSessionEnd?.(sessB);
+      expect(callback).toHaveBeenCalledTimes(1);
+    });
+
     test("throwing onAuditResult does not abort onSessionEnd or skip store.save (round 10)", async () => {
       // Round 10: observe-phase telemetry must never abort session
       // teardown — a throwing sink would otherwise reject onSessionEnd
