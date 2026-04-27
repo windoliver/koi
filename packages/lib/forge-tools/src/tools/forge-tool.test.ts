@@ -122,7 +122,14 @@ describe("forge_tool", () => {
 
   test("throws NO_CONTEXT when invoked outside any execution context", async () => {
     const tool = createForgeToolTool({ store });
-    await expect(tool.execute(validArgs)).rejects.toThrow(/NO_CONTEXT/);
+    let caught: unknown;
+    try {
+      await tool.execute(validArgs);
+    } catch (e: unknown) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    if (caught instanceof Error) expect(caught.message).toMatch(/NO_CONTEXT/);
   });
 
   test("descriptor is a primordial ToolDescriptor with JSON Schema input", () => {
