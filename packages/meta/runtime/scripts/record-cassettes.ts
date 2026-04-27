@@ -65,6 +65,13 @@ import {
 } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
+import {
+  createForgeInspectTool,
+  createForgeListTool,
+  createForgeMiddlewareTool,
+  createForgeToolTool,
+  createInMemoryForgeStore,
+} from "@koi/forge-tools";
 import { createLocalFileSystem } from "@koi/fs-local";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
@@ -558,6 +565,17 @@ const spawnToolsAll = createSpawnTools({
 });
 // createSpawnTools returns [agent_spawn]
 const [stAgentSpawn] = spawnToolsAll as [import("@koi/core").Tool];
+
+// ---------------------------------------------------------------------------
+// @koi/forge-tools — synthesize / list / inspect tools backed by an in-memory store.
+// Used by the `forge-synthesize` cassette + trajectory recording.
+// ---------------------------------------------------------------------------
+
+const forgeStore = createInMemoryForgeStore();
+const forgeToolTool = createForgeToolTool({ store: forgeStore });
+const forgeMiddlewareTool = createForgeMiddlewareTool({ store: forgeStore });
+const forgeListTool = createForgeListTool({ store: forgeStore });
+const forgeInspectTool = createForgeInspectTool({ store: forgeStore });
 
 // ---------------------------------------------------------------------------
 // Memory tools (backed by @koi/memory-tools with in-memory backend)
@@ -3458,6 +3476,48 @@ const queries: readonly QueryConfig[] = [
     modelName: SONNET_MODEL,
   },
 
+  // forge-synthesize: @koi/forge-tools — forge_tool synthesizes a draft tool,
+  //   forge_list confirms it appears in the store, forge_inspect retrieves the
+  //   artifact by brickId. Backed by an in-memory ForgeStore.
+  {
+    name: "forge-synthesize",
+    prompt:
+      "Use forge_tool to create a tool named 'add-numbers' that takes two numbers a and b and returns their sum. " +
+      "Then call forge_list to confirm it appears. " +
+      "Then call forge_inspect with the returned brickId to retrieve the artifact.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "forge-tool",
+        toolName: "forge_tool",
+        createTool: () => forgeToolTool,
+      }),
+      createSingleToolProvider({
+        name: "forge-middleware",
+        toolName: "forge_middleware",
+        createTool: () => forgeMiddlewareTool,
+      }),
+      createSingleToolProvider({
+        name: "forge-list",
+        toolName: "forge_list",
+        createTool: () => forgeListTool,
+      }),
+      createSingleToolProvider({
+        name: "forge-inspect",
+        toolName: "forge_inspect",
+        createTool: () => forgeInspectTool,
+      }),
+    ],
+    maxTurns: 4,
+    // Use Sonnet 4.6 — multi-tool sequences benefit from the more reliable
+    // function-call token emission, same rationale as spawn-tools.
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+  },
+
   // hook-redaction: agent hook on tool.succeeded with forwardRawPayload + default redaction.
   //   Parent calls get_credentials which returns a mix of secrets (apiKey, password)
   //   and a safe field (host). The @koi/hooks redaction pipeline masks secrets
@@ -4472,6 +4532,37 @@ await recordCassette(
   { model: SONNET_MODEL },
 );
 
+// forge-synthesize uses Sonnet 4.6 — same rationale as spawn-tools for
+// reliable multi-tool function-call token emission.
+await recordCassette(
+  "forge-synthesize",
+  () =>
+    sonnetAdapter.stream({
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [
+            {
+              kind: "text",
+              text:
+                "Use forge_tool to create a tool named 'add-numbers' that takes two numbers a and b and returns their sum. " +
+                "Then call forge_list to confirm it appears. " +
+                "Then call forge_inspect with the returned brickId to retrieve the artifact.",
+            },
+          ],
+        },
+      ],
+      tools: [
+        forgeToolTool.descriptor,
+        forgeMiddlewareTool.descriptor,
+        forgeListTool.descriptor,
+        forgeInspectTool.descriptor,
+      ],
+    }),
+  { model: SONNET_MODEL },
+);
+
 await recordCassette("memory-store", () =>
   modelAdapter.stream({
     messages: [
@@ -5090,6 +5181,7 @@ console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
 console.log("  fixtures/task-tools.cassette.json");
 console.log("  fixtures/spawn-tools.cassette.json");
+console.log("  fixtures/forge-synthesize.cassette.json");
 console.log("  fixtures/hook-redaction.cassette.json");
 console.log("  fixtures/todo-write.cassette.json");
 console.log("  fixtures/plan-mode.cassette.json");
