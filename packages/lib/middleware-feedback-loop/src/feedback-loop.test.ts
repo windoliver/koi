@@ -597,14 +597,69 @@ describe("createFeedbackLoopMiddleware", () => {
             output: { ok: true },
           }),
         );
-        await mw.wrapToolCall?.(forgedTurnCtx, mockToolRequest(), next);
+        // F115 hardens the boundary: an unobserved session no longer
+        // silently passes through (which would skip the quarantine
+        // gate). It throws a VALIDATION error so direct-consumer
+        // wiring bugs surface at the first call.
+        await expect(
+          mw.wrapToolCall?.(forgedTurnCtx, mockToolRequest(), next),
+        ).rejects.toMatchObject({ code: "VALIDATION" });
         // Tracker must NOT have been written to — fabricated context
         // is unobserved, so no fallback to raw sessionId.
         expect(recordSuccess).not.toHaveBeenCalled();
         expect(recordFailure).not.toHaveBeenCalled();
+        // The tool itself never ran.
+        expect(next).not.toHaveBeenCalled();
       } finally {
         spy.mockRestore();
       }
+    });
+
+    it("F115: wrapToolCall fails closed when tool checks are configured but onSessionStart was never called", async () => {
+      // Reviewer F115: F111 dropped the raw-sessionId fallback so an
+      // unobserved session would silently pass through wrapToolCall.
+      // For a host that composes feedback-loop directly and forgets
+      // to drive lifecycle hooks, that means: the quarantine gate is
+      // skipped (a quarantined tool would execute again) and no
+      // success/failure metrics ever land. The middleware must fail
+      // CLOSED instead — surface the wiring bug at the first call.
+      const fakeTracker: ToolHealthTracker = {
+        recordSuccess: () => {},
+        recordFailure: () => {},
+        getSnapshot: () => undefined,
+        getL0Snapshot: () => undefined,
+        checkAndQuarantine: async () => false,
+        checkAndDemote: async () => false,
+        isQuarantined: async () => true,
+        dispose: async () => {},
+      };
+      const spy = spyOn(toolHealthModule, "createToolHealthTracker").mockReturnValue(fakeTracker);
+      try {
+        const mw = createFeedbackLoopMiddleware({ forgeHealth: makeMinimalForgeHealth() });
+        // Skipped: await mw.onSessionStart?.(...).
+        const next = mock(async (_req: ToolRequest) => mockToolResponse());
+        await expect(
+          mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next),
+        ).rejects.toMatchObject({ code: "VALIDATION" });
+        // Tool never ran — the throw fired before quarantine check
+        // and before next().
+        expect(next).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("F115: wrapToolCall passes through when no tool checks are configured (no observation required)", async () => {
+      // Counterpart to the fail-closed test: when the host has not
+      // configured any tool-side checks, the unobserved-session guard
+      // must NOT fire. The whole hook short-circuits on hasToolChecks
+      // before reaching the observation gate.
+      const mw = createFeedbackLoopMiddleware({});
+      const response: ToolResponse = { output: "ok" };
+      const next = mock(async (_req: ToolRequest) => response);
+      const result = await mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next);
+      expect(result).toBe(response);
+      expect(next).toHaveBeenCalledTimes(1);
     });
   });
 });

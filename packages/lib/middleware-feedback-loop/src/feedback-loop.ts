@@ -349,9 +349,27 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
       // sessionId, and drive recordSuccess/recordFailure into that
       // tenant's live tracker bucket — quarantining a healthy tool
       // or skewing latency/error windows for a session it does not own.
-      // F100/F111 regression. Unobserved contexts: skip tracker entirely.
+      // F100/F111 regression.
+      //
+      // Tool checks are configured but the session was never observed
+      // via onSessionStart: fail closed loudly. Silently passing
+      // through would skip the quarantine gate (a quarantined tool
+      // would execute again) and drop health metrics, causing the
+      // tracker to never accumulate the data needed for future
+      // quarantine/demotion decisions. F115 regression. The engine
+      // and `@koi/runtime` already drive `onSessionStart`; this throw
+      // surfaces direct-consumer wiring bugs at the first call rather
+      // than letting them accumulate into corrupt health state.
       const sid = observedSessions.get(ctx.session);
-      const tracker = sid !== undefined ? trackers.get(sid) : undefined;
+      if (sid === undefined) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          "feedback-loop wrapToolCall received traffic for an unobserved session — " +
+            "the engine must call onSessionStart() before wrapToolCall() when tool checks " +
+            "(forgeHealth, toolValidators, or toolGates) are configured.",
+        );
+      }
+      const tracker = trackers.get(sid);
       if (tracker !== undefined && (await tracker.isQuarantined(request.toolId))) {
         const feedback: ForgeToolErrorFeedback = {
           kind: "forge_tool_quarantined",
