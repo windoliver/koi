@@ -237,7 +237,14 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   // middleware hooks (wrapToolCall / wrapModelCall / onSessionEnd) —
   // i.e. real engine-issued contexts — and `forSession` rejects
   // anything else.
-  const observedSessions = new WeakSet<SessionContext>();
+  // Map a SessionContext object to the sessionId it was FIRST seen with.
+  // forSession resolves state via this stored binding, not via the
+  // mutable `session.sessionId` field — a caller who legitimately
+  // observed one session cannot mutate its sessionId and obtain a
+  // handle for a different tenant. F89 regression. (WeakMap so
+  // long-running detectors do not retain SessionContext objects past
+  // their natural lifetime.)
+  const observedSessions = new WeakMap<SessionContext, SessionId>();
 
   function ensureObserved(session: SessionContext): void {
     if (observedSessions.has(session)) return;
@@ -249,7 +256,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     // circuits without re-firing the callback. If no callback is
     // configured, mark observed immediately. F72 regression.
     if (config.onSessionAttached === undefined) {
-      observedSessions.add(session);
+      observedSessions.set(session, session.sessionId);
       return;
     }
     // Capture sessionId at issuance and close over it. Resolving via
@@ -288,7 +295,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       delivered = false;
       console.error("[forge-demand] onSessionAttached threw, will retry on next traffic:", e);
     }
-    if (delivered) observedSessions.add(session);
+    if (delivered) observedSessions.set(session, sid);
   }
   // Handle-level counter so signal ids are unique across sessions —
   // otherwise two concurrent tenants would both produce `demand-1` and
@@ -1019,12 +1026,15 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   return {
     middleware,
     forSession: (session: SessionContext) => {
-      // Authorize by SessionContext object identity, not by sessionId
-      // string. A caller forging a literal `{ sessionId: <victim> }` to
-      // read another tenant's signals cannot reach here — only contexts
-      // that actually flowed through the detector's middleware hooks
-      // are admitted. F61 regression.
-      if (!observedSessions.has(session)) {
+      // Authorize by SessionContext object identity AND resolve the
+      // sessionId from the binding stored at first observation, NOT
+      // from the (mutable) `session.sessionId` field. A caller who
+      // legitimately observed one session cannot mutate that object's
+      // sessionId and obtain a handle for a different tenant — the
+      // bound id is the one we actually authorized for. F61/F89
+      // regression.
+      const sid = observedSessions.get(session);
+      if (sid === undefined) {
         throw new Error(
           "forSession requires a SessionContext that has been observed by " +
             "the detector middleware. Pass the SessionContext your runtime " +
@@ -1032,9 +1042,6 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
             "fabricated literal carrying only a sessionId.",
         );
       }
-      // Capture the sessionId at handle-issuance and close over it.
-      // See ensureObserved for the full rationale — F76 regression.
-      const sid = session.sessionId;
       // Capture the current session generation. If the session ends
       // before this handle is consumed, the generation advances and
       // every operation becomes a no-op — the new session that

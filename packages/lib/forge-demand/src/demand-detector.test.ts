@@ -2034,4 +2034,48 @@ describe("createForgeDemandDetector", () => {
     const freshHandle = handle.forSession(sessionB.session);
     expect(freshHandle.getActiveSignalCount()).toBe(1);
   });
+
+  it("F89: forSession resolves via the sessionId bound at observation, not the mutable session.sessionId", async () => {
+    // Reviewer F89: forSession only checked object membership, then
+    // read session.sessionId from the same mutable object. A caller
+    // who legitimately observed one session could mutate its
+    // sessionId and obtain a handle for a different tenant. The fix
+    // stores the sessionId observed at first sighting and resolves
+    // forSession against that binding.
+    const handle = createForgeDemandDetector(
+      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
+    );
+    // Tenant A — drive a signal.
+    const tenantA = createMockTurnContext({ turnIndex: 1 });
+    try {
+      await handle.middleware.wrapToolCall?.(tenantA, toolReq("flaky"), async () => {
+        throw new Error("A boom");
+      });
+    } catch {
+      // expected
+    }
+    // Tenant B — separate sessionId, drive its own signal.
+    const tenantBSid = "victim-session";
+    const tenantB = createMockTurnContext({ session: { sessionId: tenantBSid } as never });
+    try {
+      await handle.middleware.wrapToolCall?.(tenantB, toolReq("flaky"), async () => {
+        throw new Error("B boom");
+      });
+    } catch {
+      // expected
+    }
+    // The attack: tenantA's observed SessionContext has its sessionId
+    // mutated to tenantB's id. forSession on this object MUST NOT
+    // return tenantB's signals.
+    const originalSid = tenantA.session.sessionId;
+    (tenantA.session as { sessionId: string }).sessionId = tenantBSid;
+    expect(tenantA.session.sessionId).not.toBe(originalSid);
+    const scoped = handle.forSession(tenantA.session);
+    const signals = scoped.getSignals();
+    // The handle resolves to the BOUND id (tenantA's original) — so
+    // signals returned must be tenantA's, not tenantB's.
+    expect(signals.length).toBe(1);
+    expect(signals[0]?.context.failedToolCalls.some((m) => m.includes("A boom"))).toBe(true);
+    expect(signals[0]?.context.failedToolCalls.some((m) => m.includes("B boom"))).toBe(false);
+  });
 });
