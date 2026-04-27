@@ -26,6 +26,28 @@ import {
 import type { SoftDenyLog } from "./soft-deny-log.js";
 import type { TurnSoftDenyCounter } from "./turn-soft-deny-counter.js";
 
+// Audit hooks complete in <100 ms (local queue + disk flush). 30 s is generous
+// enough to cover transient I/O hiccups while still bounding runaway observers.
+const PERMISSION_DISPATCH_TIMEOUT_MS = 30_000;
+
+function dispatchWithTimeout(p: Promise<void> | void | undefined): Promise<void> {
+  if (p === undefined || !(p instanceof Promise)) return Promise.resolve();
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "permission-decision hook dispatch timed out — observer hook did not complete in 30 s",
+            ),
+          ),
+        PERMISSION_DISPATCH_TIMEOUT_MS,
+      ),
+    ),
+  ]);
+}
+
 export interface WrapToolCallDeps {
   readonly config: PermissionsMiddlewareConfig;
   readonly auditSink: AuditSink | undefined;
@@ -282,7 +304,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
       if (auditSink !== undefined) {
         auditDecision(ctx, resource, decision, durationMs, auditSink);
       }
-      await ctx.dispatchPermissionDecision?.(query, decision);
+      await dispatchWithTimeout(ctx.dispatchPermissionDecision?.(query, decision));
       ctx.reportDecision?.({
         phase: "execute",
         toolId: request.toolId,
@@ -319,7 +341,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
         if (auditSink !== undefined) {
           auditDecision(ctx, resource, finalDecision, durationMs, auditSink);
         }
-        await ctx.dispatchPermissionDecision?.(query, finalDecision);
+        await dispatchWithTimeout(ctx.dispatchPermissionDecision?.(query, finalDecision));
         ctx.reportDecision?.({
           phase: "execute",
           toolId: request.toolId,
@@ -436,7 +458,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
       // Pass a dispatch callback so each approval path fires the outcome
       // BEFORE calling next(request) — ensures recording even if the tool throws.
       return handleAskDecision(ctx, request, resource, grantKey, next, decision, async (d) => {
-        await ctx.dispatchPermissionDecision?.(query, d);
+        await dispatchWithTimeout(ctx.dispatchPermissionDecision?.(query, d));
       });
     }
 
