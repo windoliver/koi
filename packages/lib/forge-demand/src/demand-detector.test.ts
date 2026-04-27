@@ -1834,4 +1834,146 @@ describe("createForgeDemandDetector", () => {
     );
     expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(0);
   });
+
+  it("F84: cooldown does not suppress an unrelated task that shares the same refusal text", async () => {
+    // Reviewer F84: cooldown was keyed off triggerKey() which used only
+    // requiredCapability (windowText). Two tasks producing the same
+    // generic refusal would share the cooldown bucket — task B silenced
+    // until task A's cooldown expired. The fix passes the full
+    // (pattern,task,window) key as the cooldown key so each task has
+    // its own cooldown.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        // Active cooldown so suppression is observable across tasks.
+        budget: { ...DEFAULT_FORGE_BUDGET, cooldownMs: 60_000 },
+        heuristics: { capabilityGapOccurrences: 2 },
+        capabilityGapPatterns: [/I don'?t have a tool/],
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const refusal = "I don't have a tool for that.";
+    const askA = userMsg("task A: please render a chart");
+    const askB = userMsg("task B: please summarize an email");
+    // Drive task A to threshold → emits.
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 1 }),
+      modelReq([askA]),
+      async () => modelRes(refusal),
+    );
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 2 }),
+      modelReq([askA]),
+      async () => modelRes(refusal),
+    );
+    expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(1);
+    // Drive task B to threshold — must NOT be suppressed by A's cooldown.
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 3 }),
+      modelReq([askB]),
+      async () => modelRes(refusal),
+    );
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 4 }),
+      modelReq([askB]),
+      async () => modelRes(refusal),
+    );
+    expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(2);
+  });
+
+  it("F85: dismissing one capability-gap signal does not erase counters for unrelated tasks", async () => {
+    // Reviewer F85: resetTriggerState wiped every counter whose key
+    // ended with the dismissed signal's requiredCapability suffix —
+    // operator dismissing one signal silently erased in-progress
+    // evidence on a different task. The fix stores the exact bucket
+    // key per signal at emit time and clears only that bucket.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { capabilityGapOccurrences: 2 },
+        capabilityGapPatterns: [/I don'?t have a tool/],
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const refusal = "I don't have a tool for that.";
+    const askA = userMsg("task A: render a chart");
+    const askB = userMsg("task B: summarize an email");
+    // Use a stable ctx for the forSession query so its session has
+    // flowed through the middleware (object-identity authorization).
+    const queryCtx = createMockTurnContext({ turnIndex: 1 });
+    // Task A emits at threshold.
+    await handle.middleware.wrapModelCall?.(queryCtx, modelReq([askA]), async () =>
+      modelRes(refusal),
+    );
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 2 }),
+      modelReq([askA]),
+      async () => modelRes(refusal),
+    );
+    // Task B accumulates one count (sub-threshold).
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 3 }),
+      modelReq([askB]),
+      async () => modelRes(refusal),
+    );
+    const aSignal = handle.forSession(queryCtx.session).getSignals()[0];
+    expect(aSignal).toBeDefined();
+    if (aSignal === undefined) return;
+    handle.forSession(queryCtx.session).dismiss(aSignal.id);
+    // One more refusal on task B must still complete the threshold.
+    // Pre-fix this would have been suppressed because dismissal wiped
+    // task B's accumulated count along with task A's.
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 4 }),
+      modelReq([askB]),
+      async () => modelRes(refusal),
+    );
+    expect(
+      signals.filter((s) => s.trigger.kind === "capability_gap").length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it("F86: capabilityGapCounts is bounded across many distinct tasks", async () => {
+    // Reviewer F86: capabilityGapCounts grew without bound across long
+    // sessions with many unique asks. The fix caps the map at
+    // CAPABILITY_GAP_BUCKET_CAP (128). This test exercises the cap path
+    // by driving many distinct buckets through the detector and asserts
+    // detector remains functional (no error, fresh signals still
+    // possible) — exact internal sizes are intentionally not asserted
+    // since the cap is an implementation detail.
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { capabilityGapOccurrences: 2 },
+        capabilityGapPatterns: [/I don'?t have a tool/],
+      }),
+    );
+    const refusal = "I don't have a tool for that.";
+    const queryCtx = createMockTurnContext({ turnIndex: 0 });
+    await handle.middleware.wrapModelCall?.(
+      queryCtx,
+      modelReq([userMsg("unique-task-0")]),
+      async () => modelRes(refusal),
+    );
+    for (let i = 1; i < 250; i += 1) {
+      await handle.middleware.wrapModelCall?.(
+        createMockTurnContext({ turnIndex: i }),
+        modelReq([userMsg(`unique-task-${String(i)}`)]),
+        async () => modelRes(refusal),
+      );
+    }
+    // Detector still emits a fresh signal for a brand-new task that
+    // crosses threshold — proves the cap did not deadlock state.
+    const fresh = userMsg("fresh ask after the storm");
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 9001 }),
+      modelReq([fresh]),
+      async () => modelRes(refusal),
+    );
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 9002 }),
+      modelReq([fresh]),
+      async () => modelRes(refusal),
+    );
+    expect(handle.forSession(queryCtx.session).getActiveSignalCount()).toBeGreaterThan(0);
+  });
 });

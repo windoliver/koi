@@ -57,6 +57,12 @@ const RECENT_TOOL_CALL_HISTORY = 16;
 const RECENT_GAP_RESPONSE_CAP = 32;
 /** Max correction message identities retained per session. */
 const CORRECTION_ID_CAP = 256;
+/** Max distinct capability-gap buckets retained per session. */
+const CAPABILITY_GAP_BUCKET_CAP = 128;
+/** Max distinct unresolved-tool query buckets retained per session. */
+const NO_MATCHING_TOOL_BUCKET_CAP = 64;
+/** Max distinct toolIds retained in failure counters per session. */
+const FAILURE_TOOL_CAP = 64;
 
 const DEFAULT_THRESHOLDS: HeuristicThresholds = {
   repeatedFailureCount: 3,
@@ -190,6 +196,20 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     readonly emittedCorrectionIds: Set<string>;
     readonly scannedCorrectionIds: Set<string>;
     readonly recentGapResponseIds: Set<string>;
+    /**
+     * Per-signal cooldown bucket key. Stored at emit time so dismiss/
+     * resetTriggerState can clear ONLY the exact bucket that produced
+     * the signal — never another task that happens to share the same
+     * generic refusal text. F84/F85 regression.
+     */
+    readonly cooldownKeyBySignal: Map<string, string>;
+    /**
+     * Per-capability-gap signal: the full counter bucket key
+     * (`pattern|taskContext|windowText`). Used so dismiss clears ONLY
+     * that task's count, not every task whose refusal text happens to
+     * end with the same suffix. F85 regression.
+     */
+    readonly gapBucketBySignal: Map<string, string>;
     lastProcessedUserTimestamp: number;
     sessionEmitCount: number;
   };
@@ -263,9 +283,32 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       emittedCorrectionIds: new Set(),
       scannedCorrectionIds: new Set(),
       recentGapResponseIds: new Set(),
+      cooldownKeyBySignal: new Map(),
+      gapBucketBySignal: new Map(),
       lastProcessedUserTimestamp: -1,
       sessionEmitCount: 0,
     };
+  }
+
+  /**
+   * FIFO map insert with eviction. Bounds per-session counter maps so
+   * long-lived sessions with many unique tasks/tools cannot let detector
+   * state grow monotonically. JS Maps preserve insertion order, so the
+   * first key is the oldest and re-setting an existing key keeps its
+   * original position (re-insertion-order semantics intentionally not
+   * used here — capability gaps and tool failures naturally re-set on
+   * each occurrence, and treating that as freshness would let a hot
+   * key keep cold keys evicted indefinitely; insertion-order FIFO is
+   * sufficient and predictable). F86 regression.
+   */
+  function setBoundedMap<K, V>(map: Map<K, V>, key: K, value: V, cap: number): void {
+    map.set(key, value);
+    while (map.size > cap) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      if (oldest === key) break;
+      map.delete(oldest);
+    }
   }
 
   /**
@@ -298,8 +341,20 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     return clock() - lastEmitted < config.budget.cooldownMs;
   }
 
-  function emitSignal(state: SessionState, trigger: ForgeTrigger, context: DemandContext): boolean {
-    const key = triggerKey(trigger);
+  /**
+   * Emit a signal. `cooldownKey` overrides the default `triggerKey()`
+   * derivation: capability_gap callers must pass the FULL bucket key
+   * (`pattern|taskContext|windowText`) so cooldowns and dismissal are
+   * scoped to the same task that produced the count, never to every
+   * task that happens to share the same generic refusal text. F84/F85.
+   */
+  function emitSignal(
+    state: SessionState,
+    trigger: ForgeTrigger,
+    context: DemandContext,
+    cooldownKey?: string,
+  ): boolean {
+    const key = cooldownKey ?? triggerKey(trigger);
     if (isOnCooldown(state, key)) return false;
 
     // Confidence + cooldown gates run BEFORE budget bookkeeping so a
@@ -329,16 +384,22 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
 
     if (state.signals.length >= maxPending) {
       const evicted = state.signals.shift();
-      if (evicted !== undefined) state.cooldowns.delete(triggerKey(evicted.trigger));
+      if (evicted !== undefined) {
+        const evictedKey = state.cooldownKeyBySignal.get(evicted.id) ?? triggerKey(evicted.trigger);
+        state.cooldowns.delete(evictedKey);
+        state.cooldownKeyBySignal.delete(evicted.id);
+        state.gapBucketBySignal.delete(evicted.id);
+      }
     }
     state.signals.push(signal);
     state.cooldowns.set(key, clock());
+    state.cooldownKeyBySignal.set(signal.id, key);
     state.sessionEmitCount += 1;
     safeInvoke(config.onDemand, signal);
     return true;
   }
 
-  function resetTriggerState(state: SessionState, trigger: ForgeTrigger): void {
+  function resetTriggerState(state: SessionState, signalId: string, trigger: ForgeTrigger): void {
     switch (trigger.kind) {
       case "repeated_failure":
         state.consecutiveFailures.delete(trigger.toolName);
@@ -348,10 +409,13 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
         state.noMatchingToolCounts.delete(trigger.query);
         return;
       case "capability_gap": {
-        const suffix = `|${trigger.requiredCapability}`;
-        for (const k of state.capabilityGapCounts.keys()) {
-          if (k.endsWith(suffix)) state.capabilityGapCounts.delete(k);
-        }
+        // Clear ONLY the exact bucket that produced this signal.
+        // Suffix-matching by `|requiredCapability` (the prior approach)
+        // would wipe accumulated counts for every task whose refusal
+        // text shared that suffix — silently erasing in-progress
+        // evidence for unrelated tasks. F85 regression.
+        const bucket = state.gapBucketBySignal.get(signalId);
+        if (bucket !== undefined) state.capabilityGapCounts.delete(bucket);
         return;
       }
       default:
@@ -371,9 +435,12 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     if (idx === -1) return;
     const signal = state.signals[idx];
     if (signal !== undefined) {
-      state.cooldowns.delete(triggerKey(signal.trigger));
-      resetTriggerState(state, signal.trigger);
+      const cdKey = state.cooldownKeyBySignal.get(signalId) ?? triggerKey(signal.trigger);
+      state.cooldowns.delete(cdKey);
+      resetTriggerState(state, signalId, signal.trigger);
     }
+    state.cooldownKeyBySignal.delete(signalId);
+    state.gapBucketBySignal.delete(signalId);
     state.signals.splice(idx, 1);
     safeInvoke(config.onDismiss, signalId);
   }
@@ -505,15 +572,24 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // Scope the counter by task context (last user message identity)
       // so unrelated requests producing the same generic refusal do not
       // collapse into one bucket. F77 regression.
-      const key = `${pattern.source}|${taskContext}|${windowText}`;
-      const count = (state.capabilityGapCounts.get(key) ?? 0) + 1;
-      state.capabilityGapCounts.set(key, count);
+      const bucketKey = `${pattern.source}|${taskContext}|${windowText}`;
+      const count = (state.capabilityGapCounts.get(bucketKey) ?? 0) + 1;
+      setBoundedMap(state.capabilityGapCounts, bucketKey, count, CAPABILITY_GAP_BUCKET_CAP);
       if (count < thresholds.capabilityGapOccurrences) continue;
-      emitSignal(
+      // Pass the full bucket key as cooldownKey so suppression and
+      // dismissal scope to this exact (pattern,task,window) tuple,
+      // not to every task that happens to share the same refusal
+      // window. F84 regression.
+      const emitted = emitSignal(
         state,
         { kind: "capability_gap", requiredCapability: windowText },
         { failureCount: count, threshold: thresholds.capabilityGapOccurrences },
+        `cg:${bucketKey}`,
       );
+      if (emitted) {
+        const lastSignal = state.signals[state.signals.length - 1];
+        if (lastSignal !== undefined) state.gapBucketBySignal.set(lastSignal.id, bucketKey);
+      }
     }
   }
 
@@ -714,14 +790,14 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
 
   function recordFailure(state: SessionState, toolId: string, e: unknown): number {
     const count = (state.consecutiveFailures.get(toolId) ?? 0) + 1;
-    state.consecutiveFailures.set(toolId, count);
+    setBoundedMap(state.consecutiveFailures, toolId, count, FAILURE_TOOL_CAP);
     const key = `rf:${toolId}`;
     const calls = state.failedToolCalls.get(key) ?? [];
     calls.push(extractMessage(e));
     if (calls.length > MAX_FAILED_CALL_MESSAGES) {
       calls.splice(0, calls.length - MAX_FAILED_CALL_MESSAGES);
     }
-    state.failedToolCalls.set(key, calls);
+    setBoundedMap(state.failedToolCalls, key, calls, FAILURE_TOOL_CAP);
     return count;
   }
 
@@ -784,7 +860,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
           // be misattributed to a phantom tool. F62 regression.
           removeToolCall(state, callEntry);
           const attempts = (state.noMatchingToolCounts.get(toolId) ?? 0) + 1;
-          state.noMatchingToolCounts.set(toolId, attempts);
+          setBoundedMap(state.noMatchingToolCounts, toolId, attempts, NO_MATCHING_TOOL_BUCKET_CAP);
           emitSignal(
             state,
             { kind: "no_matching_tool", query: toolId, attempts },
