@@ -27,10 +27,13 @@ import type { InboundMessage } from "@koi/core";
  * latest-user-message provenance and steer tool selection.
  * #review-round15-F2 / #review-round16-F2 / #review-round17-F2.
  */
-export function extractLastUserText(messages: readonly InboundMessage[]): string {
+export function extractLastUserText(
+  messages: readonly InboundMessage[],
+  isUser: (senderId: string) => boolean = isUserSender,
+): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
-    if (msg === undefined || !isUserSender(msg.senderId)) continue;
+    if (msg === undefined || !isUser(msg.senderId)) continue;
 
     const text = msg.content
       .filter(

@@ -24,6 +24,15 @@ export interface ToolSelectorConfig {
   readonly minTools?: number;
   /** Custom query extractor. Default: `extractLastUserText`. */
   readonly extractQuery?: (messages: readonly InboundMessage[]) => string;
+  /**
+   * Predicate identifying which `senderId` values count as user-authored
+   * for the default `extractQuery`. Override when your channels emit
+   * sender IDs outside the bundled allowlist (`user`, `user-<n>`,
+   * `cli-user`, `cli-user-<n>`) — otherwise the selector silently
+   * skips filtering and re-exposes the full tool set
+   * (#review-round19-F1). Ignored when `extractQuery` is also supplied.
+   */
+  readonly isUserSender?: (senderId: string) => boolean;
   /** Optional error sink invoked when `selectTools` throws (fail-open path). */
   readonly onError?: (error: unknown) => void;
   /**
@@ -93,6 +102,9 @@ export function validateToolSelectorConfig(config: unknown): Result<ToolSelector
   }
   if (c.extractQuery !== undefined && typeof c.extractQuery !== "function") {
     return validationError("'extractQuery' must be a function");
+  }
+  if (c.isUserSender !== undefined && typeof c.isUserSender !== "function") {
+    return validationError("'isUserSender' must be a function");
   }
   if (c.onError !== undefined && typeof c.onError !== "function") {
     return validationError("'onError' must be a function");

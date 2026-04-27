@@ -82,6 +82,36 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  test("custom isUserSender predicate routes filtering for non-default sender IDs — round 19 F1", async () => {
+    // Deployments using non-default user sender IDs (e.g. test harnesses
+    // or custom channels) need a way to keep tool filtering enabled
+    // without rewriting the whole extractQuery.
+    const select = mock(async () => ["alpha"]);
+    const mw = createToolSelectorMiddleware({
+      selectTools: select,
+      minTools: 0,
+      isUserSender: (id) => id === "test-user",
+    });
+    const tools = [tool("alpha"), tool("beta")];
+    const next = mock<ModelHandler>(async (req) => {
+      expect(req.tools?.map((t) => t.name)).toEqual(["alpha"]);
+      return modelResponse();
+    });
+    // Message has non-default sender — default predicate would drop it.
+    await getWrap(mw)(
+      turnCtx(),
+      {
+        messages: [
+          { senderId: "test-user", content: [{ kind: "text", text: "do it" }], timestamp: 0 },
+        ],
+        tools,
+      },
+      next,
+    );
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
   test("deny-all turn (tools undefined) installs empty allowlist enforced at execution — round 16 F1", async () => {
     // Callers can disable tools for a turn by omitting `tools`. Without
     // an explicit empty allowlist, wrapToolCall would still execute any

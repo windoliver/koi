@@ -15,7 +15,7 @@
  * injection that emit a tool name the model was not actually shown.
  */
 
-import type { JsonObject, TurnId } from "@koi/core";
+import type { InboundMessage, JsonObject, TurnId } from "@koi/core";
 import type {
   CapabilityFragment,
   KoiMiddleware,
@@ -52,10 +52,21 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     alwaysInclude = [],
     maxTools = DEFAULT_MAX_TOOLS,
     minTools = DEFAULT_MIN_TOOLS,
-    extractQuery = extractLastUserText,
+    extractQuery: configExtractQuery,
+    isUserSender,
     onError,
     enforceFiltering = true,
   } = validated.value;
+  // When the caller doesn't supply a full extractQuery override but does
+  // pass a custom isUserSender predicate, weave the predicate into the
+  // bundled extractor so deployments with non-default sender IDs still
+  // get tool filtering instead of silently falling back to full tool
+  // exposure (#review-round19-F1).
+  const extractQuery: (messages: readonly InboundMessage[]) => string =
+    configExtractQuery ??
+    (isUserSender !== undefined
+      ? (messages): string => extractLastUserText(messages, isUserSender)
+      : extractLastUserText);
 
   // Per-turn allowlist captured by the model-call hook and consulted by
   // wrapToolCall. Cleared by onAfterTurn to avoid unbounded growth across
