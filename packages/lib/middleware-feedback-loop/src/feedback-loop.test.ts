@@ -684,5 +684,41 @@ describe("createFeedbackLoopMiddleware", () => {
       expect(result).toBe(response);
       expect(next).toHaveBeenCalledTimes(1);
     });
+
+    it("F118: a rebuilt SessionContext with the same sessionId+runId is admitted", async () => {
+      // Reviewer F118: F111 keyed admission on exact JS-object
+      // identity, hard-failing every tool call for hosts that proxy
+      // or rebuild SessionContext between calls. Fix: admission token
+      // is `sessionId|runId`; structurally-equivalent contexts are
+      // accepted. Object identity stays the security boundary for
+      // healthHandle (F99).
+      const fakeTracker: ToolHealthTracker = {
+        recordSuccess: () => {},
+        recordFailure: () => {},
+        getSnapshot: () => undefined,
+        getL0Snapshot: () => undefined,
+        checkAndQuarantine: async () => false,
+        checkAndDemote: async () => false,
+        isQuarantined: async () => false,
+        dispose: async () => {},
+      };
+      const spy = spyOn(toolHealthModule, "createToolHealthTracker").mockReturnValue(fakeTracker);
+      try {
+        const mw = createFeedbackLoopMiddleware({ forgeHealth: makeMinimalForgeHealth() });
+        const original = mockSessionCtx();
+        await mw.onSessionStart?.(original);
+        // Host rebuilds the SessionContext object with the same
+        // engine-issued ids (e.g. through a proxy).
+        const rebuilt: SessionContext = { ...original };
+        expect(rebuilt).not.toBe(original);
+        const next = mock(async (_req: ToolRequest) => mockToolResponse());
+        // Must NOT throw — token admission accepts the rebuilt context.
+        const result = await mw.wrapToolCall?.(mockTurnCtx(rebuilt), mockToolRequest(), next);
+        expect(result).toBeDefined();
+        expect(next).toHaveBeenCalledTimes(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 });

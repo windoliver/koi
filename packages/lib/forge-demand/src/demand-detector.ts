@@ -314,6 +314,28 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   const skippedWarned = new WeakSet<SessionContext>();
 
   /**
+   * Suppress concurrent re-fire of `onSessionAttached` while a previous
+   * async delivery is still in flight. Without this, a wrap* tick that
+   * runs before the in-flight promise resolves would call the callback
+   * a second time. F119 regression.
+   */
+  const deliveryInFlight = new WeakSet<SessionContext>();
+
+  /**
+   * Stable admission tokens — `sessionId|runId` strings. Populated
+   * when `onSessionStart` accepts a SessionContext, cleared when
+   * `onSessionEnd` releases it. wrap* hooks admit any SessionContext
+   * carrying a registered (sessionId, runId) tuple, NOT only the exact
+   * object originally passed to onSessionStart, so hosts that proxy or
+   * rebuild SessionContext between calls (with the same engine-issued
+   * sessionId+runId) are not hard-failed. F118. Object-identity stays
+   * the security boundary for `forSession()` (which exposes
+   * mutation/dismissal) — only the wrap* admission gate is widened.
+   */
+  const admittedTokens = new Set<string>();
+  const tokenFor = (s: SessionContext): string => `${s.sessionId}|${s.runId}`;
+
+  /**
    * Resolve the bound sessionId for an already-observed SessionContext.
    * All middleware reads/writes MUST resolve through this helper so a
    * later mutation of `session.sessionId` cannot redirect counters/
@@ -347,6 +369,9 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     if (!observedSessions.has(session)) {
       observedSessions.set(session, session.sessionId);
     }
+    // Stable admission token for wrap* hooks — see admittedTokens
+    // comment. F118.
+    admittedTokens.add(tokenFor(session));
     if (config.onSessionAttached === undefined) return;
     if (attachedDelivered.has(session)) return;
     // Capture sessionId at issuance and close over it. Resolving via
@@ -379,14 +404,43 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
         return state === undefined ? 0 : state.signals.length;
       },
     };
-    let delivered = true;
+    // Mark as attempting now so concurrent wrap* hooks during an in-
+    // flight async delivery do not double-fire the callback. F119.
+    if (deliveryInFlight.has(session)) return;
+    deliveryInFlight.add(session);
+    let result: unknown;
     try {
-      config.onSessionAttached(session, scoped);
+      result = config.onSessionAttached(session, scoped);
     } catch (e: unknown) {
-      delivered = false;
-      console.error("[forge-demand] onSessionAttached threw, will retry on next traffic:", e);
+      deliveryInFlight.delete(session);
+      console.error(
+        "[forge-demand] onSessionAttached threw synchronously, will retry on next traffic:",
+        e,
+      );
+      return;
     }
-    if (delivered) attachedDelivered.add(session);
+    // Async callbacks: only mark delivered after fulfillment so signals
+    // do not start emitting before the host actually has the scoped
+    // handle. A rejected promise keeps the session unready and is
+    // logged; the next wrap* tick will retry. F119 regression.
+    if (result instanceof Promise) {
+      result.then(
+        () => {
+          deliveryInFlight.delete(session);
+          attachedDelivered.add(session);
+        },
+        (e: unknown) => {
+          deliveryInFlight.delete(session);
+          console.error(
+            "[forge-demand] onSessionAttached rejected, will retry on next traffic:",
+            e,
+          );
+        },
+      );
+      return;
+    }
+    deliveryInFlight.delete(session);
+    attachedDelivered.add(session);
   }
 
   /**
@@ -995,13 +1049,20 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      // Trust gate: only sessions registered via the engine-controlled
-      // onSessionStart hook are observed. Unregistered contexts pass
-      // through with no detector state — never auto-bind here. F110.
-      // Warn ONCE per SessionContext instance so a host that forgets
-      // the lifecycle hook does not silently get a dormant detector
-      // (no signals, no errors, no metrics — just nothing). F117.
-      if (!observedSessions.has(ctx.session)) {
+      // Trust gate: admit any SessionContext whose `sessionId|runId`
+      // tuple was registered via the engine-controlled onSessionStart
+      // hook. Object identity is NOT required — hosts that proxy or
+      // rebuild SessionContext between calls (with the same engine-
+      // issued ids) are accepted. F118. The forSession() handle still
+      // requires object identity for mutation/dismissal (F110/F76);
+      // only the wrap* observation path is widened. Warn ONCE per
+      // SessionContext instance so a host that forgets the lifecycle
+      // hook does not silently get a dormant detector. F117.
+      // Object-identity admission wins first: it survives a later
+      // mutation of ctx.session.sessionId (F89/F90). Token admission
+      // is the fallback for hosts that proxy/rebuild SessionContext
+      // between calls (F118).
+      if (!observedSessions.has(ctx.session) && !admittedTokens.has(tokenFor(ctx.session))) {
         if (!skippedWarned.has(ctx.session)) {
           skippedWarned.add(ctx.session);
           console.error(
@@ -1011,6 +1072,12 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
           );
         }
         return next(request);
+      }
+      // Bind by object identity now (idempotent) so post-admission
+      // helpers like forSession and the bound-id resolver have an
+      // anchor for THIS exact SessionContext instance. F118.
+      if (!observedSessions.has(ctx.session)) {
+        observedSessions.set(ctx.session, ctx.session.sessionId);
       }
       // Retry onSessionAttached delivery for observed sessions whose
       // first delivery threw. Idempotent on the bind step. F98.
@@ -1107,8 +1174,12 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      // Trust gate: see wrapToolCall. F110/F117.
-      if (!observedSessions.has(ctx.session)) {
+      // Trust gate: see wrapToolCall. F110/F117/F118.
+      // Object-identity admission wins first: it survives a later
+      // mutation of ctx.session.sessionId (F89/F90). Token admission
+      // is the fallback for hosts that proxy/rebuild SessionContext
+      // between calls (F118).
+      if (!observedSessions.has(ctx.session) && !admittedTokens.has(tokenFor(ctx.session))) {
         if (!skippedWarned.has(ctx.session)) {
           skippedWarned.add(ctx.session);
           console.error(
@@ -1118,6 +1189,9 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
           );
         }
         return next(request);
+      }
+      if (!observedSessions.has(ctx.session)) {
+        observedSessions.set(ctx.session, ctx.session.sessionId);
       }
       // Retry onSessionAttached delivery if first attempt threw. F98.
       bindObserved(ctx.session);
@@ -1144,8 +1218,12 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      // Trust gate: see wrapToolCall. F110/F117.
-      if (!observedSessions.has(ctx.session)) {
+      // Trust gate: see wrapToolCall. F110/F117/F118.
+      // Object-identity admission wins first: it survives a later
+      // mutation of ctx.session.sessionId (F89/F90). Token admission
+      // is the fallback for hosts that proxy/rebuild SessionContext
+      // between calls (F118).
+      if (!observedSessions.has(ctx.session) && !admittedTokens.has(tokenFor(ctx.session))) {
         if (!skippedWarned.has(ctx.session)) {
           skippedWarned.add(ctx.session);
           console.error(
@@ -1155,6 +1233,9 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
           );
         }
         return next(request);
+      }
+      if (!observedSessions.has(ctx.session)) {
+        observedSessions.set(ctx.session, ctx.session.sessionId);
       }
       // Retry onSessionAttached delivery if first attempt threw. F98.
       bindObserved(ctx.session);
@@ -1217,6 +1298,11 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // entry. F91 regression.
       observedSessions.delete(ctx);
       attachedDelivered.delete(ctx);
+      deliveryInFlight.delete(ctx);
+      // Drop the stable admission token so the same sessionId+runId
+      // pair cannot be reused after teardown to slip back into the
+      // detector. F118.
+      admittedTokens.delete(tokenFor(ctx));
     },
 
     // The detector is a passive observer: we MUST NOT inject

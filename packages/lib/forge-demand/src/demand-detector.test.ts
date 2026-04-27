@@ -2770,4 +2770,102 @@ describe("createForgeDemandDetector", () => {
       console.error = originalErr;
     }
   });
+
+  it("F118: a rebuilt SessionContext with the same sessionId+runId is admitted (no hard fail)", async () => {
+    // Reviewer F118: F110 used WeakMap-by-object-identity admission,
+    // which hard-failed any host that proxies or rebuilds
+    // SessionContext between calls. Stable `sessionId|runId`
+    // admission tokens accept structurally-equivalent contexts so
+    // proxying / rebuilding works, while object identity remains the
+    // boundary for forSession() (mutation/dismissal API).
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { repeatedFailureCount: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const original = createMockTurnContext({
+      session: { sessionId: "shared-1" } as never,
+    });
+    await handle.middleware.onSessionStart?.(original.session);
+    // Host rebuilds a fresh SessionContext with the same engine-issued
+    // sessionId + runId (a proxy / serialization round-trip).
+    const rebuilt: typeof original = {
+      ...original,
+      session: { ...original.session },
+    };
+    expect(rebuilt.session).not.toBe(original.session);
+    expect(rebuilt.session.sessionId).toBe(original.session.sessionId);
+    expect(rebuilt.session.runId).toBe(original.session.runId);
+    // Detector admits the rebuilt context and emits the signal.
+    try {
+      await handle.middleware.wrapToolCall?.(rebuilt, toolReq("flaky"), async () => {
+        throw new Error("boom");
+      });
+    } catch {
+      // expected
+    }
+    expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(1);
+  });
+
+  it("F119: an async-rejecting onSessionAttached keeps the session unready and is logged", async () => {
+    // Reviewer F119: bindObserved called onSessionAttached without
+    // awaiting and immediately marked the session delivered unless a
+    // SYNCHRONOUS throw fired. An async callback that rejects later
+    // would slip through — signals would emit and burn forge-budget
+    // before the host actually had the scoped handle. Fix: async
+    // callbacks are awaited; rejection keeps the session unready and
+    // logs the error; pending wrap* calls retry on next traffic.
+    const swallowed: unknown[][] = [];
+    const originalErr = console.error;
+    console.error = (...a: unknown[]): void => {
+      swallowed.push(a);
+    };
+    try {
+      let attempt = 0;
+      let resolveSecond: (() => void) | undefined;
+      const handle = createForgeDemandDetector(
+        makeConfig({
+          heuristics: { repeatedFailureCount: 1 },
+          onSessionAttached: async (_s, _scoped) => {
+            attempt += 1;
+            if (attempt === 1) {
+              await Promise.resolve();
+              throw new Error("async-reject");
+            }
+            // Second attempt: resolve only when the test signals.
+            await new Promise<void>((r) => {
+              resolveSecond = r;
+            });
+          },
+        }),
+      );
+      await handle.middleware.onSessionStart?.(ctx.session);
+      // Wait microtasks so the async rejection lands.
+      await Promise.resolve();
+      await Promise.resolve();
+      // Session must NOT be ready — wrap* should pass through.
+      const failNext = async (): Promise<ToolResponse> => {
+        throw new Error("boom");
+      };
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, toolReq("flaky"), failNext);
+      } catch {
+        // expected (real next throws)
+      }
+      // No signal: session never reached ready state.
+      const earlySignals = handle.forSession(ctx.session).getSignals();
+      expect(earlySignals.length).toBe(0);
+      // Error was logged (async-reject branch).
+      expect(
+        swallowed.some((a) => a.some((x) => typeof x === "string" && x.includes("rejected"))),
+      ).toBe(true);
+      // Resolve the second delivery so we don't leak the timer.
+      resolveSecond?.();
+      await new Promise<void>((r) => setTimeout(r, 5));
+    } finally {
+      console.error = originalErr;
+    }
+  });
 });

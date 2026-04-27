@@ -203,6 +203,14 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
   // snapshots for guessed/known sessionIds — only for SessionContext
   // objects this middleware has actually observed. F99 regression.
   const observedSessions = new WeakMap<SessionContext, string>();
+  // Stable admission tokens — `sessionId|runId` strings registered at
+  // onSessionStart, dropped at onSessionEnd. wrapToolCall admits any
+  // SessionContext carrying a registered tuple so hosts that proxy or
+  // rebuild SessionContext between calls (with the same engine-issued
+  // sessionId+runId) are not hard-failed. F118. Object identity stays
+  // the security boundary for `healthHandle.getSnapshot` (F99).
+  const admittedTokens = new Set<string>();
+  const tokenFor = (s: SessionContext): string => `${s.sessionId}|${s.runId}`;
 
   const healthHandle: FeedbackLoopHealthHandle | undefined =
     config.forgeHealth !== undefined
@@ -234,6 +242,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
       // mutates that field after start cannot redirect tracker writes
       // into another session's bucket. F100 regression.
       observedSessions.set(ctx, ctx.sessionId);
+      admittedTokens.add(tokenFor(ctx));
       if (config.forgeHealth !== undefined) {
         trackers.set(ctx.sessionId, createToolHealthTracker(config.forgeHealth));
       }
@@ -251,6 +260,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
         await tracker.dispose();
       }
       observedSessions.delete(ctx);
+      admittedTokens.delete(tokenFor(ctx));
     },
 
     async wrapModelCall(
@@ -343,27 +353,44 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
         return next(request);
       }
 
-      // Resolve the tracker via the bound id ONLY. A fallback to
-      // `ctx.session.sessionId` would let an in-process caller skip
-      // onSessionStart, fabricate a TurnContext naming another tenant's
-      // sessionId, and drive recordSuccess/recordFailure into that
-      // tenant's live tracker bucket. F100/F111 regression.
+      // Admit by stable `sessionId|runId` token registered at
+      // onSessionStart. Hosts that proxy or rebuild SessionContext
+      // between calls (with the same engine-issued ids) are accepted —
+      // requiring exact JS-object identity would hard-fail every tool
+      // call for them. F118 widens admission. The cross-session
+      // tracker-poisoning concern (F100/F111) is unchanged: tracker
+      // resolution still keys on the bound `sessionId` field, which
+      // came from `onSessionStart` and is not influenced by a later
+      // mutation of `ctx.session.sessionId`.
       //
-      // Scope of the strict admission check: ONLY when `forgeHealth`
-      // is configured does cross-session poisoning matter — that is
-      // the path that owns per-session tracker buckets and could
-      // quarantine the wrong tenant's tools. `toolValidators` and
-      // `toolGates` are stateless / per-request, so requiring exact
-      // SessionContext object identity for them would break legitimate
-      // hosts that rebuild or proxy `TurnContext` between calls. F116.
-      const sid = observedSessions.get(ctx.session);
-      if (config.forgeHealth !== undefined && sid === undefined) {
+      // Scope: only when `forgeHealth` is configured does this admit
+      // gate matter — `toolValidators` and `toolGates` are stateless
+      // per-request and run on any context. F116.
+      // Object-identity admission wins first (F100 — survives a later
+      // mutation of ctx.session.sessionId), token-admission is the
+      // fallback for proxied/rebuilt contexts (F118).
+      const objectAdmitted = observedSessions.has(ctx.session);
+      const tokenAdmitted = objectAdmitted || admittedTokens.has(tokenFor(ctx.session));
+      if (config.forgeHealth !== undefined && !tokenAdmitted) {
         throw KoiRuntimeError.from(
           "VALIDATION",
           "feedback-loop wrapToolCall received traffic for an unobserved session — " +
             "the engine must call onSessionStart() before wrapToolCall() when " +
             "`forgeHealth` is configured (per-session tracker state requires admission).",
         );
+      }
+      // Resolve sid: object-identity admission gives the original
+      // bound id (mutation-proof); token admission falls through to
+      // the current sessionId (rebuilt-context case).
+      const sid = objectAdmitted
+        ? observedSessions.get(ctx.session)
+        : tokenAdmitted
+          ? ctx.session.sessionId
+          : undefined;
+      // Bind by object identity now (idempotent) so the read-side
+      // healthHandle path (F99) still resolves for this exact context.
+      if (tokenAdmitted && !observedSessions.has(ctx.session)) {
+        observedSessions.set(ctx.session, ctx.session.sessionId);
       }
       const tracker = sid !== undefined ? trackers.get(sid) : undefined;
       if (tracker !== undefined && (await tracker.isQuarantined(request.toolId))) {

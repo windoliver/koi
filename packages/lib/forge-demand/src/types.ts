@@ -104,7 +104,7 @@ export interface ForgeDemandConfig {
    * caught and logged; they do not interrupt the wrapped call.
    */
   readonly onSessionAttached?:
-    | ((session: SessionContext, scoped: SessionScopedForgeDemandHandle) => void)
+    | ((session: SessionContext, scoped: SessionScopedForgeDemandHandle) => void | Promise<void>)
     | undefined;
   /** Injectable clock for testing. Default: Date.now. */
   readonly clock?: (() => number) | undefined;
