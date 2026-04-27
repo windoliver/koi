@@ -406,20 +406,23 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   }
 
   /**
-   * Derive a task-context fingerprint from the FIRST user message in the
-   * request. Used to scope capability-gap counters so generic refusals
-   * ("I don't have a tool for that") to UNRELATED user requests do not
-   * aggregate into a single false-positive demand signal. Anchoring on
-   * the first user message — not the last — keeps refinement attempts
-   * within the same task ("compile rust" then "try a different way")
-   * sharing one bucket while distinct top-level asks land in separate
-   * buckets. F77 regression. Returns "" when no user message is present
-   * (in which case the bucket falls back to refusal-text-only —
-   * identical to pre-F77 behavior for that edge).
+   * Derive a task-context fingerprint from the CURRENT (most recent)
+   * user message in the request. Used to scope capability-gap counters
+   * so generic refusals ("I don't have a tool for that") to UNRELATED
+   * user turns do not aggregate into a single false-positive demand
+   * signal. Anchoring on the FIRST user message would be wrong in chat
+   * runtimes that replay the entire transcript — every later turn would
+   * share the original opener's identity and unrelated subsequent asks
+   * would still aggregate (F78). The active turn is the user's current
+   * top-level request: a literal repeat shares the bucket; any change
+   * to the user's wording starts a fresh bucket. F77/F78 regression.
+   * Returns "" when no user message is present (the bucket falls back
+   * to refusal-text-only — identical to pre-F77 behavior for that edge).
    */
   function taskContextFingerprint(request: ModelRequest): string {
-    for (const msg of request.messages) {
-      if (msg.senderId === "user") return messageIdentity(msg);
+    for (let i = request.messages.length - 1; i >= 0; i -= 1) {
+      const msg = request.messages[i];
+      if (msg !== undefined && msg.senderId === "user") return messageIdentity(msg);
     }
     return "";
   }

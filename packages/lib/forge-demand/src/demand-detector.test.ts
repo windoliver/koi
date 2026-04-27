@@ -1052,7 +1052,7 @@ describe("createForgeDemandDetector", () => {
     expect(signals.length).toBe(0);
   });
 
-  it("does not collapse long-transcript refinements that share a prefix > 512 chars", async () => {
+  it("does not collapse long-transcript repeats of the same ask that share a prefix > 512 chars", async () => {
     const signals: ForgeDemandSignal[] = [];
     const handle = createForgeDemandDetector(
       makeConfig({
@@ -1073,22 +1073,20 @@ describe("createForgeDemandDetector", () => {
       content: [{ kind: "text", text: `${longPrefix} compile rust` }],
       timestamp: 100,
     };
-    const refinement: InboundMessage = {
-      senderId: "user",
-      content: [{ kind: "text", text: `${longPrefix} try a different way` }],
-      timestamp: 200,
-    };
-    // Two attempts in the same turn that share a > 512-char prefix in
-    // both messages and responses — must NOT collapse via prefix-only
-    // dedup. Window-bucket logic still groups them as the same gap, so
-    // the count should reach the threshold and emit one signal.
-    await handle.middleware.wrapModelCall?.(ctx, modelReq([u]), respA);
-    await handle.middleware.wrapModelCall?.(ctx, modelReq([u, refinement]), respB);
+    // Same final user message (the ask) repeated, but distinct message
+    // stacks so per-response dedup does not short-circuit. Window-bucket
+    // logic groups them as the same gap on the same task; the count
+    // should reach the threshold and emit one signal. Guards against
+    // prefix-only dedup collisions that previously masked repeated calls.
+    const ctxA = createMockTurnContext({ turnIndex: 1 });
+    const ctxB = createMockTurnContext({ turnIndex: 2 });
+    await handle.middleware.wrapModelCall?.(ctxA, modelReq([u]), respA);
+    await handle.middleware.wrapModelCall?.(ctxB, modelReq([u]), respB);
 
     expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(1);
   });
 
-  it("counts capability-gap occurrences across distinct refinement attempts in one turn", async () => {
+  it("aggregates capability-gap occurrences when the user repeats the same ask across turns", async () => {
     const signals: ForgeDemandSignal[] = [];
     const handle = createForgeDemandDetector(
       makeConfig({
@@ -1105,16 +1103,14 @@ describe("createForgeDemandDetector", () => {
       content: [{ kind: "text", text: "compile rust" }],
       timestamp: 100,
     };
-    // Two distinct attempts within the SAME turn (different message stack
-    // — refinement adds an assistant turn between them) must accumulate
-    // toward the threshold rather than collapsing as retries.
-    await handle.middleware.wrapModelCall?.(ctx, modelReq([u]), sameResp);
-    const refinement: InboundMessage = {
-      senderId: "user",
-      content: [{ kind: "text", text: "try a different approach" }],
-      timestamp: 200,
-    };
-    await handle.middleware.wrapModelCall?.(ctx, modelReq([u, refinement]), sameResp);
+    // Two model calls with the SAME current user ask but distinct turn
+    // ids must accumulate toward the threshold — task scoping (last
+    // user message identity) groups identical asks; dedup is keyed on
+    // turn fingerprint so distinct turns are not collapsed as retries.
+    const ctxA = createMockTurnContext({ turnIndex: 1 });
+    const ctxB = createMockTurnContext({ turnIndex: 2 });
+    await handle.middleware.wrapModelCall?.(ctxA, modelReq([u]), sameResp);
+    await handle.middleware.wrapModelCall?.(ctxB, modelReq([u]), sameResp);
 
     expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(1);
   });
@@ -1634,5 +1630,49 @@ describe("createForgeDemandDetector", () => {
     // The same ask repeated DOES still aggregate to threshold.
     await handle.middleware.wrapModelCall?.(ctx3, modelReq([askA]), async () => modelRes(refusal));
     expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(1);
+  });
+
+  it("F78: unrelated later asks in a long conversation do not aggregate via shared opener", async () => {
+    // Reviewer F78: a chat runtime replays the full transcript on each
+    // turn, so anchoring task context on the FIRST user message would
+    // make every later turn share the original opener's identity and
+    // unrelated subsequent asks would still aggregate. The fix anchors
+    // on the CURRENT (last) user message; this test guards that path
+    // against regression to first-message scoping.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { capabilityGapOccurrences: 2 },
+        capabilityGapPatterns: [/I don'?t have a tool/],
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const refusal = "Sorry, I don't have a tool for that.";
+    const opener: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "hi, can we work on something today?" }],
+      timestamp: 1,
+    };
+    const askA: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "first ask: please render a chart" }],
+      timestamp: 2,
+    };
+    const askB: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "later ask: please summarize an email" }],
+      timestamp: 3,
+    };
+    const ctx1 = createMockTurnContext({ turnIndex: 1 });
+    const ctx2 = createMockTurnContext({ turnIndex: 2 });
+    // Each later turn replays the opener — if the bucket keyed off the
+    // first user message, both would aggregate falsely.
+    await handle.middleware.wrapModelCall?.(ctx1, modelReq([opener, askA]), async () =>
+      modelRes(refusal),
+    );
+    await handle.middleware.wrapModelCall?.(ctx2, modelReq([opener, askB]), async () =>
+      modelRes(refusal),
+    );
+    expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(0);
   });
 });

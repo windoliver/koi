@@ -99,6 +99,13 @@ export function createDefaultForgeDemandConfig(
     ...(overrides?.onSessionAttached !== undefined && {
       onSessionAttached: overrides.onSessionAttached,
     }),
+    // Preserve the legacy-arity opt-in flag — without this, callers who
+    // pass `acceptLegacySingleArgHealthTracker: true` through this
+    // helper would silently lose the flag and validation would reject
+    // their otherwise-valid length-1 tracker at startup. F79 regression.
+    ...(overrides?.acceptLegacySingleArgHealthTracker !== undefined && {
+      acceptLegacySingleArgHealthTracker: overrides.acceptLegacySingleArgHealthTracker,
+    }),
     ...(overrides?.clock !== undefined && { clock: overrides.clock }),
   };
 }
