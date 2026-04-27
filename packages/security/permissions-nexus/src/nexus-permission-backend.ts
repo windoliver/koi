@@ -51,33 +51,6 @@ export function createNexusPermissionBackend(
     throw new Error("unexpected NFS read response shape");
   }
 
-  async function writeCurrentPolicy(): Promise<void> {
-    const policy = config.getCurrentPolicy();
-    const policyWrite = await config.transport.call("write", {
-      path: `${policyPath}/policy.json`,
-      content: JSON.stringify(policy),
-    });
-    if (!policyWrite.ok) {
-      throw new Error(`Failed to write policy: ${policyWrite.error.message}`, {
-        cause: policyWrite.error,
-      });
-    }
-    const newVersion = lastSeenVersion + 1;
-    const versionWrite = await config.transport.call("write", {
-      path: `${policyPath}/version.json`,
-      content: JSON.stringify({
-        version: newVersion,
-        updatedAt: Date.now(),
-      } satisfies NexusVersionTag),
-    });
-    if (!versionWrite.ok) {
-      throw new Error(`Failed to write version tag: ${versionWrite.error.message}`, {
-        cause: versionWrite.error,
-      });
-    }
-    lastSeenVersion = newVersion;
-  }
-
   async function initializePolicy(): Promise<void> {
     const versionResult = await config.transport.call<unknown>("read", {
       path: `${policyPath}/version.json`,
