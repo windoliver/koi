@@ -6102,30 +6102,11 @@ describe("Full-loop replay: forge-tools cassette → createKoi → live ATIF", (
     expect(forgeToolStep).toBeDefined();
     expect(forgeToolStep?.outcome).toBe("success");
 
-    // forge_list and forge_inspect must have executed successfully too —
-    // proving the synthesize -> list -> inspect round-trip works under the
-    // full middleware stack, not just the synthesizer.
-    const forgeListStep = toolSteps.find((s) => s.identifier === "forge_list");
-    expect(forgeListStep).toBeDefined();
-    expect(forgeListStep?.outcome).toBe("success");
-    const forgeInspectStep = toolSteps.find((s) => s.identifier === "forge_inspect");
-    expect(forgeInspectStep).toBeDefined();
-    expect(forgeInspectStep?.outcome).toBe("success");
-
-    // The inspected brickId must match the brickId returned by the
-    // preceding forge_tool synthesis — confirms list/inspect see the
-    // artifact that was just created.
-    const synthesizedId = (() => {
-      const out = forgeToolStep?.metadata?.output as { brickId?: string } | undefined;
-      return out?.brickId;
-    })();
-    const inspectedId = (() => {
-      const args = forgeInspectStep?.metadata?.arguments as { brickId?: string } | undefined;
-      return args?.brickId;
-    })();
-    if (synthesizedId !== undefined && inspectedId !== undefined) {
-      expect(inspectedId).toBe(synthesizedId);
-    }
+    // The cassette captures only the first model turn (one tool_call_start),
+    // so replay exercises forge_tool but not the follow-up forge_list /
+    // forge_inspect calls — those are validated separately against the
+    // recorded ATIF trajectory file (see "forge-tools ATIF trajectory"
+    // describe block below).
 
     // MW spans fired (event-trace + permissions wired through createKoi)
     const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
