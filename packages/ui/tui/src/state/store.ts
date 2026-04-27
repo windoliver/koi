@@ -62,13 +62,16 @@ export function createStore(initialState: TuiState): TuiStore {
       try {
         listener();
       } catch (e: unknown) {
-        // tui-single-writer-exception: listener exception — direct dispatch from
-        // notifySubscribers() is safe (schedules via microtask, not synchronous
-        // re-entry). Surface via add_error so the TUI shows it, and also write
-        // to stderr for CI/log contexts. Stderr ≠ stdout: it does not touch the
-        // renderer's frame buffer (#1940).
-        process.stderr.write(`[TuiStore] listener threw: ${String(e)}\n`);
-        // Surface in TUI as an error block — dispatch is queued asynchronously.
+        // tui-single-writer-exception: stderr only when not a TTY — in interactive
+        // sessions the renderer controls stdout+stderr; write there would interleave
+        // with rendered frames. CI / piped contexts (non-TTY) always see the log.
+        if (!process.stderr.isTTY) {
+          process.stderr.write(`[TuiStore] listener threw: ${String(e)}\n`);
+        }
+        // Surface in TUI as an error block. applyState(reduce(snapshot, ...)) is
+        // safe here: `snapshot` is a `let` closure — it holds the current state at
+        // microtask execution time, not a stale capture. applyState intentionally
+        // skips scheduleNotify() to avoid re-notifying the throwing listener (#1940).
         queueMicrotask(() => {
           applyState(
             reduce(snapshot, {

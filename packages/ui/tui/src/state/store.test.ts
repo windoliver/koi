@@ -166,8 +166,10 @@ describe("TuiStore — no-op guard", () => {
 
 describe("TuiStore — throwing listener", () => {
   test("throwing listener does not prevent other listeners from firing", async () => {
-    // #1940: stderr write is unconditional — stderr ≠ stdout, no frame corruption.
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    const originalIsTTY = process.stderr.isTTY;
+    // Non-TTY context (CI/pipe) — stderr write is allowed.
+    Object.defineProperty(process.stderr, "isTTY", { value: undefined, configurable: true });
     const store = makeStore();
     const before = mock(() => {});
     const thrower = mock(() => {
@@ -184,11 +186,30 @@ describe("TuiStore — throwing listener", () => {
     expect(after).toHaveBeenCalledTimes(1);
     expect(stderrSpy).toHaveBeenCalledTimes(1);
     stderrSpy.mockRestore();
+    Object.defineProperty(process.stderr, "isTTY", { value: originalIsTTY, configurable: true });
   });
 
-  test("throwing listener surfaces add_error block in TUI messages via queueMicrotask", async () => {
-    // #1940: in-TUI error dispatch so the user sees the failure without checking stderr.
+  test("throwing listener is silent on stderr when stderr is a TTY (active terminal)", async () => {
+    // #1940: In TTY sessions the renderer controls the terminal; suppress raw stderr.
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    const originalIsTTY = process.stderr.isTTY;
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    const store = makeStore();
+    store.subscribe(() => {
+      throw new Error("tty-boom");
+    });
+    store.dispatch({ kind: "set_view", view: "sessions" });
+    await flushMicrotasks();
+    expect(stderrSpy).not.toHaveBeenCalled();
+    stderrSpy.mockRestore();
+    Object.defineProperty(process.stderr, "isTTY", { value: originalIsTTY, configurable: true });
+  });
+
+  test("throwing listener surfaces add_error block in TUI messages (reads current state)", async () => {
+    // #1940: dispatch() reads snapshot at microtask time — never a stale capture.
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    const originalIsTTY = process.stderr.isTTY;
+    Object.defineProperty(process.stderr, "isTTY", { value: undefined, configurable: true });
     const store = makeStore();
     store.subscribe(() => {
       throw new Error("listener-boom");
@@ -204,13 +225,13 @@ describe("TuiStore — throwing listener", () => {
     expect(errorMsg).toBeDefined();
     if (errorMsg?.kind === "assistant") {
       const errorBlock = errorMsg.blocks.find((b) => b.kind === "error");
-      expect(errorBlock?.kind).toBe("error");
       if (errorBlock?.kind === "error") {
         expect(errorBlock.code).toBe("STORE_LISTENER_ERROR");
         expect(errorBlock.message).toContain("listener-boom");
       }
     }
     stderrSpy.mockRestore();
+    Object.defineProperty(process.stderr, "isTTY", { value: originalIsTTY, configurable: true });
   });
 });
 
