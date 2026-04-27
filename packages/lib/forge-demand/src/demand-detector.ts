@@ -218,14 +218,22 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       observedSessions.add(session);
       return;
     }
+    // Capture sessionId at issuance and close over it. Resolving via
+    // `session.sessionId` on every call would let a later mutation of
+    // the SessionContext's sessionId field redirect a previously-issued
+    // handle to a different tenant's state — the object-identity
+    // authorization check (F61) guards admission, but post-admission
+    // resolution must use the id we actually authorized for. F76
+    // regression.
+    const sid = session.sessionId;
     const scoped: SessionScopedForgeDemandHandle = {
       getSignals: (): readonly ForgeDemandSignal[] => {
-        const state = sessions.get(session.sessionId);
+        const state = sessions.get(sid);
         return state === undefined ? [] : state.signals.map(cloneSignal);
       },
-      dismiss: (signalId: string): void => dismiss(session.sessionId, signalId),
+      dismiss: (signalId: string): void => dismiss(sid, signalId),
       getActiveSignalCount: (): number => {
-        const state = sessions.get(session.sessionId);
+        const state = sessions.get(sid);
         return state === undefined ? 0 : state.signals.length;
       },
     };
@@ -397,10 +405,30 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     }
   }
 
+  /**
+   * Derive a task-context fingerprint from the FIRST user message in the
+   * request. Used to scope capability-gap counters so generic refusals
+   * ("I don't have a tool for that") to UNRELATED user requests do not
+   * aggregate into a single false-positive demand signal. Anchoring on
+   * the first user message — not the last — keeps refinement attempts
+   * within the same task ("compile rust" then "try a different way")
+   * sharing one bucket while distinct top-level asks land in separate
+   * buckets. F77 regression. Returns "" when no user message is present
+   * (in which case the bucket falls back to refusal-text-only —
+   * identical to pre-F77 behavior for that edge).
+   */
+  function taskContextFingerprint(request: ModelRequest): string {
+    for (const msg of request.messages) {
+      if (msg.senderId === "user") return messageIdentity(msg);
+    }
+    return "";
+  }
+
   function checkCapabilityGaps(
     state: SessionState,
     responseText: string,
     fingerprint: string,
+    taskContext: string,
   ): void {
     if (patterns.length === 0 || responseText.length === 0) return;
     // Hash the full response — earlier 128-char prefix would let two long
@@ -422,7 +450,10 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
         .toLowerCase()
         .replace(/\s+/g, " ")
         .trim();
-      const key = `${pattern.source}|${windowText}`;
+      // Scope the counter by task context (last user message identity)
+      // so unrelated requests producing the same generic refusal do not
+      // collapse into one bucket. F77 regression.
+      const key = `${pattern.source}|${taskContext}|${windowText}`;
       const count = (state.capabilityGapCounts.get(key) ?? 0) + 1;
       state.capabilityGapCounts.set(key, count);
       if (count < thresholds.capabilityGapOccurrences) continue;
@@ -732,9 +763,10 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // response the user never sees.
       const pending = detectPendingCorrections(state, request);
       const fp = requestFingerprint(ctx, request);
+      const taskCtx = taskContextFingerprint(request);
       const response = await next(request);
       commitCorrections(state, pending);
-      checkCapabilityGaps(state, extractResponseText(response), fp);
+      checkCapabilityGaps(state, extractResponseText(response), fp, taskCtx);
       return response;
     },
 
@@ -747,6 +779,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       const state = getOrCreate(ctx.session.sessionId);
       const pending = detectPendingCorrections(state, request);
       const fp = requestFingerprint(ctx, request);
+      const taskCtx = taskContextFingerprint(request);
       const upstream = next(request);
       return (async function* relay() {
         let buffer = "";
@@ -767,7 +800,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
             // only on whether the provider used streaming. F71
             // regression.
             commitCorrections(state, pending);
-            if (text.length > 0) checkCapabilityGaps(state, text, fp);
+            if (text.length > 0) checkCapabilityGaps(state, text, fp, taskCtx);
           }
           yield chunk;
         }
@@ -827,14 +860,17 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
             "fabricated literal carrying only a sessionId.",
         );
       }
+      // Capture the sessionId at handle-issuance and close over it.
+      // See ensureObserved for the full rationale — F76 regression.
+      const sid = session.sessionId;
       return {
         getSignals: (): readonly ForgeDemandSignal[] => {
-          const state = sessions.get(session.sessionId);
+          const state = sessions.get(sid);
           return state === undefined ? [] : state.signals.map(cloneSignal);
         },
-        dismiss: (signalId: string): void => dismiss(session.sessionId, signalId),
+        dismiss: (signalId: string): void => dismiss(sid, signalId),
         getActiveSignalCount: (): number => {
-          const state = sessions.get(session.sessionId);
+          const state = sessions.get(sid);
           return state === undefined ? 0 : state.signals.length;
         },
       };

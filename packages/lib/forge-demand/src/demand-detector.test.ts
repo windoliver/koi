@@ -1563,4 +1563,76 @@ describe("createForgeDemandDetector", () => {
     await handle.middleware.wrapModelCall?.(ctx, modelReq([u1, u2]), async () => modelRes("ok"));
     expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(0);
   });
+
+  it("F76: scoped handle stays bound to original sessionId after context mutation", async () => {
+    // Reviewer F76: scoped handles authorize by SessionContext object
+    // identity but resolved state via `session.sessionId` on every call.
+    // If the underlying field is mutated post-issuance, the same handle
+    // object would silently start operating on another tenant's state.
+    // The fix captures sessionId at issuance and closes over it.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { repeatedFailureCount: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const mutableCtx: TurnContext = createMockTurnContext();
+    const originalSessionId = mutableCtx.session.sessionId;
+    // Generate a signal for the original session.
+    try {
+      await handle.middleware.wrapToolCall?.(mutableCtx, toolReq("a"), async () => {
+        throw new Error("boom");
+      });
+    } catch {
+      // expected
+    }
+    const scoped = handle.forSession(mutableCtx.session);
+    expect(scoped.getActiveSignalCount()).toBe(1);
+    // Mutate the sessionId field. Whether or not the runtime would ever
+    // do this, the handle MUST NOT redirect to a different bucket.
+    (mutableCtx.session as { sessionId: string }).sessionId = "victim-session";
+    expect(mutableCtx.session.sessionId).not.toBe(originalSessionId);
+    expect(scoped.getActiveSignalCount()).toBe(1);
+    expect(scoped.getSignals().length).toBe(1);
+  });
+
+  it("F77: capability-gap counters do not aggregate across unrelated user requests", async () => {
+    // Reviewer F77: keying capability-gap counts solely off the refusal
+    // window meant a model that emits the same generic phrase for two
+    // entirely unrelated user asks (e.g. "make a chart" and "summarize
+    // this email") would be reported as a single high-confidence demand
+    // signal. The fix scopes the counter by last-user-message identity
+    // so only repeated refusals to the same task contribute.
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { capabilityGapOccurrences: 2 },
+        capabilityGapPatterns: [/I don'?t have a tool/],
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const refusal = "Sorry, I don't have a tool for that.";
+    const askA: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "make me a chart of last quarter sales" }],
+      timestamp: 1,
+    };
+    const askB: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "summarize the attached email thread" }],
+      timestamp: 2,
+    };
+    // Distinct turns share the session but have different turnIds so the
+    // per-response dedup short-circuit does not hide the bucket-key check.
+    const ctx1 = createMockTurnContext({ turnIndex: 1 });
+    const ctx2 = createMockTurnContext({ turnIndex: 2 });
+    const ctx3 = createMockTurnContext({ turnIndex: 3 });
+    await handle.middleware.wrapModelCall?.(ctx1, modelReq([askA]), async () => modelRes(refusal));
+    await handle.middleware.wrapModelCall?.(ctx2, modelReq([askB]), async () => modelRes(refusal));
+    expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(0);
+    // The same ask repeated DOES still aggregate to threshold.
+    await handle.middleware.wrapModelCall?.(ctx3, modelReq([askA]), async () => modelRes(refusal));
+    expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(1);
+  });
 });
