@@ -24,7 +24,13 @@ import {
   matchesBrickQuery,
   sortBricks,
 } from "@koi/validation";
-import { conflict, invariantViolation, notFound, recomputeBrickIdFromArtifact } from "./shared.js";
+import {
+  canonicalize,
+  conflict,
+  invariantViolation,
+  notFound,
+  recomputeBrickIdFromArtifact,
+} from "./shared.js";
 
 const TERMINAL_LIFECYCLES: ReadonlySet<BrickLifecycle> = new Set<BrickLifecycle>([
   "failed",
@@ -48,10 +54,12 @@ function isIdentityEqual(a: BrickArtifact, b: BrickArtifact): boolean {
   if (a.version !== b.version) return false;
   if (a.scope !== b.scope) return false;
   if (a.kind === "tool" && b.kind === "tool") {
+    // Use the same canonical representation as the identity hash so equivalent
+    // schemas with different key insertion order are treated as equal.
     return (
       a.implementation === b.implementation &&
-      JSON.stringify(a.inputSchema) === JSON.stringify(b.inputSchema) &&
-      JSON.stringify(a.outputSchema ?? null) === JSON.stringify(b.outputSchema ?? null)
+      canonicalize(a.inputSchema) === canonicalize(b.inputSchema) &&
+      canonicalize(a.outputSchema ?? null) === canonicalize(b.outputSchema ?? null)
     );
   }
   if (a.kind === "middleware" && b.kind === "middleware") {
@@ -67,8 +75,9 @@ function isIdentityEqual(a: BrickArtifact, b: BrickArtifact): boolean {
     return a.manifestYaml === b.manifestYaml;
   }
   // composite or unknown — be conservative: structural identity comparison
-  // after stripping mutable runtime metadata.
-  return JSON.stringify(stripMutable(a)) === JSON.stringify(stripMutable(b));
+  // after stripping mutable runtime metadata. Canonicalize so key order
+  // differences do not cause spurious mismatches.
+  return canonicalize(stripMutable(a)) === canonicalize(stripMutable(b));
 }
 
 const MUTABLE_KEYS: ReadonlySet<string> = new Set([
@@ -116,10 +125,22 @@ export function createInMemoryForgeStore(): ForgeStore {
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
     // Defense-in-depth: verify the caller-supplied BrickId matches the
     // canonical identity hash of the artifact's identity-bearing fields.
-    // Rejects tampered or mis-keyed inserts before they corrupt the map.
-    // Skipped for kinds with no identity-content extractor (opaque pass-through).
-    const expectedId = recomputeBrickIdFromArtifact(brick);
-    if (expectedId !== undefined && expectedId !== brick.id) {
+    // Rejects tampered, mis-keyed, or unsupported-kind inserts before they
+    // can corrupt the map.
+    let expectedId: BrickId;
+    try {
+      expectedId = recomputeBrickIdFromArtifact(brick);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return {
+        ok: false,
+        error: invariantViolation(`Cannot validate BrickId on save: ${message}`, {
+          brickId: brick.id,
+          kind: brick.kind,
+        }),
+      };
+    }
+    if (expectedId !== brick.id) {
       return {
         ok: false,
         error: invariantViolation(
@@ -152,7 +173,9 @@ export function createInMemoryForgeStore(): ForgeStore {
       // Identity match, non-terminal lifecycle → idempotent success, do not overwrite metadata.
       return { ok: true, value: undefined };
     }
-    const stored: BrickArtifact = { ...brick, storeVersion: 1 };
+    // Deep-clone on ingress so callers cannot mutate stored state through
+    // shared references on nested objects (provenance, schemas, tags, etc.).
+    const stored: BrickArtifact = { ...structuredClone(brick), storeVersion: 1 };
     bricks.set(brick.id, stored);
     notifier.notify({ kind: "saved", brickId: brick.id, scope: brick.scope });
     return { ok: true, value: undefined };
@@ -161,7 +184,8 @@ export function createInMemoryForgeStore(): ForgeStore {
   const load = async (id: BrickId): Promise<Result<BrickArtifact, KoiError>> => {
     const brick = bricks.get(id);
     if (brick === undefined) return { ok: false, error: notFoundError(id) };
-    return { ok: true, value: brick };
+    // Deep-clone on egress so callers cannot mutate stored state.
+    return { ok: true, value: structuredClone(brick) };
   };
 
   const search = async (query: ForgeQuery): Promise<Result<readonly BrickArtifact[], KoiError>> => {
@@ -171,7 +195,8 @@ export function createInMemoryForgeStore(): ForgeStore {
     }
     const sorted = sortBricks(filtered, query, { nowMs: Date.now() });
     const limited = query.limit !== undefined ? sorted.slice(0, query.limit) : sorted;
-    return { ok: true, value: limited };
+    // Deep-clone on egress so callers cannot mutate stored state.
+    return { ok: true, value: limited.map((b) => structuredClone(b)) };
   };
 
   const searchSummaries = async (
@@ -221,7 +246,12 @@ export function createInMemoryForgeStore(): ForgeStore {
       return { ok: true, value: undefined };
     }
     const applied = applyBrickUpdate(existing, updates);
-    const versioned: BrickArtifact = { ...applied, storeVersion: currentVersion + 1 };
+    // Deep-clone so the stored record cannot be mutated through references
+    // that survived applyBrickUpdate (e.g. arrays/objects from `updates`).
+    const versioned: BrickArtifact = {
+      ...structuredClone(applied),
+      storeVersion: currentVersion + 1,
+    };
     bricks.set(id, versioned);
     notifier.notify({ kind: "updated", brickId: id, scope: versioned.scope });
     return { ok: true, value: undefined };

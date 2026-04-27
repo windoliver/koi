@@ -51,7 +51,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** Stable JSON encoding with object keys sorted lexicographically. */
-function canonicalize(value: unknown): string {
+export function canonicalize(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
   if (!isPlainObject(value)) return JSON.stringify(value);
   const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
@@ -62,10 +62,10 @@ function canonicalize(value: unknown): string {
  * Extract the kind-specific identity content from a persisted BrickArtifact,
  * mirroring exactly what the synthesizer passed to `computeIdentityBrickId`.
  *
- * Returns `undefined` for kinds whose identity content is not defined here
- * (e.g. `composite`) — callers should treat this as "skip validation, opaque".
+ * Throws for kinds whose identity content is not defined here. The store must
+ * reject these rather than silently bypass content-address validation.
  */
-function extractIdentityContent(brick: BrickArtifact): JsonObject | undefined {
+export function extractIdentityContent(brick: BrickArtifact): JsonObject {
   if (brick.kind === "tool") {
     return {
       implementation: brick.implementation,
@@ -82,22 +82,25 @@ function extractIdentityContent(brick: BrickArtifact): JsonObject | undefined {
   if (brick.kind === "agent") {
     return { manifestYaml: brick.manifestYaml };
   }
-  return undefined;
+  throw new Error(
+    `forge-tools: unsupported brick kind for content-addressed storage: ${brick.kind}`,
+  );
 }
 
 /**
  * Recompute the canonical identity BrickId from a persisted artifact's
  * identity-bearing fields plus its owning agent (read from provenance).
  *
- * Returns `undefined` when the kind has no defined identity-content extractor
- * or when provenance.metadata.agentId is missing — caller should skip
- * validation in those cases (defensive: opaque kinds are passed through).
+ * Throws on unsupported kinds or when `provenance.metadata.agentId` is
+ * missing/empty. Callers (the store) must convert the throw into a
+ * typed Result error.
  */
-export function recomputeBrickIdFromArtifact(brick: BrickArtifact): BrickId | undefined {
+export function recomputeBrickIdFromArtifact(brick: BrickArtifact): BrickId {
   const content = extractIdentityContent(brick);
-  if (content === undefined) return undefined;
   const ownerAgentId = brick.provenance.metadata.agentId;
-  if (typeof ownerAgentId !== "string" || ownerAgentId.length === 0) return undefined;
+  if (typeof ownerAgentId !== "string" || ownerAgentId.length === 0) {
+    throw new Error("forge-tools: provenance.metadata.agentId missing or empty");
+  }
   return computeIdentityBrickId({
     kind: brick.kind,
     name: brick.name,
