@@ -21,7 +21,9 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core/middleware";
+import { KoiRuntimeError } from "@koi/errors";
 import type { ToolAuditConfig } from "./config.js";
+import { validateToolAuditConfig } from "./config.js";
 import { computeLifecycleSignals } from "./signals.js";
 import type {
   ToolAuditMiddleware,
@@ -168,9 +170,19 @@ const CAPABILITY_FRAGMENT: CapabilityFragment = {
 
 /** Creates tool audit middleware that tracks usage and emits lifecycle signals. */
 export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMiddleware {
-  const store = config.store ?? createFallbackStore();
-  const clock = config.clock ?? Date.now;
-  const { onAuditResult, onError } = config;
+  // Fail fast at construction on malformed config — selector + recovery
+  // factories already do this. Without it, bad clock / store / callback
+  // values pass into hot paths (buildSnapshot, recordOnSessionStart,
+  // onSessionEnd) and fail mid-traffic instead of at startup
+  // (#review-round24-F2).
+  const validated = validateToolAuditConfig(config);
+  if (!validated.ok) {
+    throw KoiRuntimeError.from(validated.error.code, validated.error.message);
+  }
+  const validConfig = validated.value;
+  const store = validConfig.store ?? createFallbackStore();
+  const clock = validConfig.clock ?? Date.now;
+  const { onAuditResult, onError } = validConfig;
 
   const tools = new Map<string, MutableToolRecord>();
   const sessionStates = new Map<SessionId, ToolAuditSessionState>();
@@ -346,6 +358,17 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     }
     pendingPersist = false;
 
+    // Defer signal emission AND persistence until hydration succeeds.
+    // Without this guard, a transient store outage produced false
+    // unused / low_adoption / high_failure signals from in-memory
+    // counters that hadn't been merged with historical disk state
+    // yet — driving downstream paging or auto-disable on
+    // outage-local data (#review-round24-F1). Deltas recorded
+    // during the outage are NOT lost: they live in `tools` /
+    // `totalSessions` and merge with the disk snapshot on the next
+    // successful load (mergeSnapshotIntoMemory in onSessionStart).
+    if (!hydrated) return;
+
     const snapshot = buildSnapshot(tools, totalSessions, clock);
 
     if (onAuditResult !== undefined) {
@@ -354,20 +377,12 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       // store.save below, leaving the snapshot unpersisted. Route any
       // callback failure through onError and continue with persistence.
       try {
-        const signals = computeLifecycleSignals(snapshot, config);
+        const signals = computeLifecycleSignals(snapshot, validConfig);
         if (signals.length > 0) onAuditResult(signals);
       } catch (e: unknown) {
         onError?.(e);
       }
     }
-
-    // Defer persistence until hydration succeeds so we don't overwrite
-    // disk history with a memory-only partial snapshot. The deltas
-    // recorded during the outage are NOT lost: they live in `tools` /
-    // `totalSessions` and will be merged with the disk snapshot on the
-    // next successful load (see mergeSnapshotIntoMemory in
-    // recordOnSessionStart).
-    if (!hydrated) return;
 
     // Serialize saves so two concurrent session ends in this process can't
     // race each other. Across PROCESSES sharing one ToolAuditStore, we
@@ -489,7 +504,7 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     wrapModelStream,
     wrapToolCall,
     generateReport: (): readonly ToolAuditResult[] =>
-      computeLifecycleSignals(buildSnapshot(tools, totalSessions, clock), config),
+      computeLifecycleSignals(buildSnapshot(tools, totalSessions, clock), validConfig),
     getSnapshot: (): ToolAuditSnapshot => buildSnapshot(tools, totalSessions, clock),
   };
 }

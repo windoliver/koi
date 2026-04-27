@@ -32,13 +32,17 @@ function tokenize(query: string): readonly string[] {
  * Splits the query into terms (length > 2) and scores each tool by counting
  * how many terms appear in `${name} ${description}`. Returns tool names sorted
  * by descending score; tools with score 0 are dropped. When the query has no
- * scoreable terms, every tool name is returned in input order.
+ * scoreable terms (terse prompts like "ls" / "rm" / "go"), returns the EMPTY
+ * list — the selector treats this as "no scoreable selection" and the
+ * middleware's enforceFiltering path then fails closed to alwaysInclude.
+ * Returning every tool name was a silent trust-boundary bypass for short
+ * queries (#review-round24-F3).
  */
 export function createKeywordSelectTools(): SelectToolsFn {
   return async (query, tools) => {
     const terms = tokenize(query);
     if (terms.length === 0) {
-      return tools.map((t) => t.name);
+      return [];
     }
 
     const scored = tools.map((tool) => {

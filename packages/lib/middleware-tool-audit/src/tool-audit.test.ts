@@ -115,6 +115,15 @@ describe("createToolAuditMiddleware", () => {
     expect(result?.description).toContain("Tool usage tracking");
   });
 
+  test("throws KoiRuntimeError on invalid config — round 24 F2", async () => {
+    const { KoiRuntimeError } = await import("@koi/errors");
+    expect(() => createToolAuditMiddleware({ clock: true } as never)).toThrow(KoiRuntimeError);
+    expect(() => createToolAuditMiddleware({ store: {} } as never)).toThrow(KoiRuntimeError);
+    expect(() => createToolAuditMiddleware({ onAuditResult: 42 } as never)).toThrow(
+      KoiRuntimeError,
+    );
+  });
+
   describe("wrapToolCall", () => {
     test("records success: counter increments and latency tracked", async () => {
       // let: simulates time passing during tool execution
@@ -781,6 +790,35 @@ describe("createToolAuditMiddleware", () => {
       expect(persisted?.tools.search?.callCount).toBe(7);
       expect(persisted?.totalSessions).toBe(4);
       expect(persisted?.tools.search?.sessionsUsed).toBe(4);
+    });
+
+    test("does not emit lifecycle signals before initial hydration succeeds — round 24 F1", async () => {
+      // A transient store outage produced false unused / low_adoption /
+      // high_failure signals from outage-local in-memory counters, even
+      // while persistence was correctly deferred. Both paths must be
+      // gated on hydration.
+      const onAuditResult = mock((_s: readonly unknown[]) => {});
+      const store: ToolAuditStore = {
+        load: () => {
+          throw new Error("load failed");
+        },
+        save: () => {},
+      };
+      const mw = createToolAuditMiddleware(
+        defaultConfig({
+          store,
+          onAuditResult,
+          highValueMinCalls: 1,
+          highValueSuccessThreshold: 0.9,
+        }),
+      );
+      const wrapTool = getWrapToolCall(mw);
+
+      await mw.onSessionStart?.(sessionCtx());
+      await wrapTool(turnCtx(), toolReq("search"), async () => ({ output: "ok" }));
+      await mw.onSessionEnd?.(sessionCtx());
+
+      expect(onAuditResult).toHaveBeenCalledTimes(0);
     });
 
     test("does not persist a fresh snapshot before initial hydration succeeds", async () => {

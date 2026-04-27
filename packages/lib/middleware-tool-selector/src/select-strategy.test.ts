@@ -29,12 +29,16 @@ describe("createKeywordSelectTools", () => {
     expect(result).toEqual([]);
   });
 
-  test("returns all tool names in input order when query has no scoreable terms", async () => {
+  test("returns empty when query has no scoreable terms — round 24 F3", async () => {
+    // Round 24 (medium): widening to every tool on terse queries
+    // ("ls", "rm", "go") silently re-exposed the full tool set
+    // under enforceFiltering. Empty result lets the middleware fall
+    // back to alwaysInclude rather than authorizing everything.
     const select = createKeywordSelectTools();
     const tools = [tool("a", "x"), tool("b", "y")];
     // Terms must be > 2 chars; "a b c" filters to nothing scoreable.
     const result = await select("a b c", tools);
-    expect(result).toEqual(["a", "b"]);
+    expect(result).toEqual([]);
   });
 
   test("matching is case-insensitive", async () => {
