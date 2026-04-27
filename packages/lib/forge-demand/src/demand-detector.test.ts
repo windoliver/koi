@@ -2950,4 +2950,42 @@ describe("createForgeDemandDetector", () => {
     // No repeated_failure yet — counter is at 1, threshold default 3.
     expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(0);
   });
+
+  it("F122: re-admission of a SessionContext object after teardown via rebuilt alias clears stale token state", async () => {
+    // Reviewer F122: when teardown arrives through a rebuilt alias,
+    // the original SessionContext keeps a stale `originalTokenByCtx`
+    // entry pointing at the now-revoked token. A subsequent
+    // onSessionStart on the same object must overwrite that stale
+    // mapping; otherwise wrap* keeps reading the dead token from the
+    // WeakMap and rejects every call with "unobserved session".
+    const handle = createForgeDemandDetector(makeConfig({}));
+    const original = createMockTurnContext({
+      session: { sessionId: "reuse-me" } as never,
+    });
+    await handle.middleware.onSessionStart?.(original.session);
+    await handle.middleware.onSessionEnd?.({ ...original.session });
+    // Re-admit on the SAME object — must succeed cleanly.
+    await handle.middleware.onSessionStart?.(original.session);
+    const swallowed: unknown[] = [];
+    const origErr = console.error;
+    console.error = (...a: unknown[]): void => {
+      swallowed.push(a);
+    };
+    try {
+      await handle.middleware.wrapToolCall?.(original, toolReq("any"), async () => toolRes());
+    } finally {
+      console.error = origErr;
+    }
+    // No "unobserved session" warning — re-admission worked.
+    expect(
+      swallowed.some((a) =>
+        Array.isArray(a)
+          ? a.some(
+              (x) =>
+                typeof x === "string" && x.includes("skipping detector for unobserved session"),
+            )
+          : false,
+      ),
+    ).toBe(false);
+  });
 });

@@ -250,15 +250,31 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
       // this binding, NOT through ctx.session.sessionId — a host that
       // mutates that field after start cannot redirect tracker writes
       // into another session's bucket. F100 regression.
-      observedSessions.set(ctx, ctx.sessionId);
-      const token = tokenFor(ctx);
-      // Capture the token AT admission time so teardown revokes the
-      // same one even if sessionId/runId mutate later. F120.
-      if (!originalTokenByCtx.has(ctx)) {
-        originalTokenByCtx.set(ctx, token);
+      // F122: clear any stale per-ctx admission state from a prior
+      // logical session that was torn down via a rebuilt-context
+      // alias. Without this, wrap* would prefer the dead token in
+      // `originalTokenByCtx` over the freshly-admitted one and
+      // hard-reject every tool call on the reused object.
+      const previousToken = originalTokenByCtx.get(ctx);
+      if (previousToken !== undefined && !admittedTokens.has(previousToken)) {
+        originalTokenByCtx.delete(ctx);
+        observedSessions.delete(ctx);
       }
-      admittedTokens.add(token);
-      sidByToken.set(token, ctx.sessionId);
+      if (!observedSessions.has(ctx)) {
+        observedSessions.set(ctx, ctx.sessionId);
+      }
+      // Capture the token AT admission time so teardown revokes the
+      // same one even if sessionId/runId mutate later. F120. Only set
+      // when no live admission exists for THIS SessionContext object:
+      // a second onSessionStart on an already-admitted object after a
+      // sessionId/runId mutation must NOT rebrand the admission to a
+      // different tenant (F90).
+      if (originalTokenByCtx.get(ctx) === undefined) {
+        const token = tokenFor(ctx);
+        originalTokenByCtx.set(ctx, token);
+        admittedTokens.add(token);
+        sidByToken.set(token, ctx.sessionId);
+      }
       if (config.forgeHealth !== undefined) {
         trackers.set(ctx.sessionId, createToolHealthTracker(config.forgeHealth));
       }

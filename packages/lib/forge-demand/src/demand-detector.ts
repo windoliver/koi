@@ -381,19 +381,39 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     // onSessionEnd would no-op, and detector state/epoch would leak.
     // The binding is the cleanup-authorization key; the separate
     // `attachedDelivered` set drives callback retry. F98 regression.
+    // F122: a session object that was previously admitted, then torn
+    // down via a rebuilt-context alias, retains a stale entry in
+    // `originalTokenByCtx` (and possibly `attachedDelivered`). If the
+    // host reuses this object for a NEW logical session, those stale
+    // entries would be checked first by wrap* / isSessionReady and
+    // either reject valid traffic (the stored token is no longer in
+    // admittedTokens) or short-circuit onSessionAttached delivery.
+    // Clear them whenever the captured token is no longer admitted.
+    const previousToken = originalTokenByCtx.get(session);
+    if (previousToken !== undefined && !admittedTokens.has(previousToken)) {
+      originalTokenByCtx.delete(session);
+      attachedDelivered.delete(session);
+      deliveryInFlight.delete(session);
+      observedSessions.delete(session);
+    }
     if (!observedSessions.has(session)) {
       observedSessions.set(session, session.sessionId);
     }
     // Stable admission token for wrap* hooks — see admittedTokens
     // comment. F118. Capture the token AT ADMISSION TIME so teardown
     // can revoke the same token regardless of later sessionId/runId
-    // mutation (F120).
-    const token = tokenFor(session);
-    if (!originalTokenByCtx.has(session)) {
+    // mutation (F120). Only set when no live admission exists for THIS
+    // SessionContext object: a re-admission of a previously-cleared
+    // session captures a fresh token; an already-admitted session
+    // keeps its original token so a post-admission mutation of
+    // sessionId/runId cannot rebrand the admission to a different
+    // tenant (F90).
+    if (originalTokenByCtx.get(session) === undefined) {
+      const token = tokenFor(session);
       originalTokenByCtx.set(session, token);
+      admittedTokens.add(token);
+      sidByToken.set(token, session.sessionId);
     }
-    admittedTokens.add(token);
-    sidByToken.set(token, session.sessionId);
     if (config.onSessionAttached === undefined) return;
     if (attachedDelivered.has(session)) return;
     // Capture sessionId at issuance and close over it. Resolving via

@@ -725,6 +725,40 @@ describe("createFeedbackLoopMiddleware", () => {
       }
     });
 
+    it("F122: re-admission of a SessionContext object after teardown via rebuilt alias clears stale token state", async () => {
+      // Reviewer F122: when teardown arrives through a rebuilt alias,
+      // the original SessionContext keeps a stale `originalTokenByCtx`
+      // entry pointing at the now-revoked token. A subsequent
+      // onSessionStart on the same object must overwrite that stale
+      // mapping; otherwise wrap* keeps reading the dead token from
+      // the WeakMap and rejects every call as unobserved.
+      const fakeTracker: ToolHealthTracker = {
+        recordSuccess: () => {},
+        recordFailure: () => {},
+        getSnapshot: () => undefined,
+        getL0Snapshot: () => undefined,
+        checkAndQuarantine: async () => false,
+        checkAndDemote: async () => false,
+        isQuarantined: async () => false,
+        dispose: async () => {},
+      };
+      const spy = spyOn(toolHealthModule, "createToolHealthTracker").mockReturnValue(fakeTracker);
+      try {
+        const mw = createFeedbackLoopMiddleware({ forgeHealth: makeMinimalForgeHealth() });
+        const original = mockSessionCtx();
+        await mw.onSessionStart?.(original);
+        await mw.onSessionEnd?.({ ...original });
+        // Re-admit on the SAME object — must succeed cleanly.
+        await mw.onSessionStart?.(original);
+        const next = mock(async (_req: ToolRequest) => mockToolResponse());
+        const result = await mw.wrapToolCall?.(mockTurnCtx(original), mockToolRequest(), next);
+        expect(result).toBeDefined();
+        expect(next).toHaveBeenCalledTimes(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it("F118: a rebuilt SessionContext with the same sessionId+runId is admitted", async () => {
       // Reviewer F118: F111 keyed admission on exact JS-object
       // identity, hard-failing every tool call for hosts that proxy
