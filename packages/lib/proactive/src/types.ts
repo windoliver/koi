@@ -24,7 +24,19 @@ export interface ProactiveToolsConfig {
   readonly now?: () => number;
 }
 
-export interface ProactiveToolsProviderConfig extends ProactiveToolsConfig {
+/**
+ * Provider config — `scheduler` is intentionally omitted because the provider
+ * resolves the SCHEDULER component from each attaching agent at attach time
+ * (per-agent isolation). Tests and direct callers that want to bypass attach
+ * should use `createProactiveTools(config)` and pass a SchedulerComponent.
+ */
+export interface ProactiveToolsProviderConfig {
+  /** Default text dispatched on wake when the caller does not supply one. */
+  readonly defaultWakeMessage?: string;
+  /** Maximum sleep duration accepted by the `sleep` tool. Defaults to 24 h. */
+  readonly maxSleepMs?: number;
+  /** Optional clock for deterministic testing. Defaults to `Date.now`. */
+  readonly now?: () => number;
   /** Assembly priority. Defaults to COMPONENT_PRIORITY.BUNDLED. */
   readonly priority?: number;
 }

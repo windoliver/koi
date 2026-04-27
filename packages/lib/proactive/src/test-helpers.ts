@@ -34,6 +34,7 @@ export interface SchedulerStub {
   readonly submitCalls: readonly SubmitCall[];
   readonly scheduleCalls: readonly ScheduleCall[];
   readonly unscheduleCalls: readonly ScheduleId[];
+  readonly cancelCalls: readonly TaskId[];
 }
 
 export interface SchedulerStubOptions {
@@ -43,6 +44,8 @@ export interface SchedulerStubOptions {
   readonly scheduleError?: Error;
   /** Boolean returned by unschedule. Defaults to true. */
   readonly unscheduleResult?: boolean;
+  /** Boolean returned by cancel. Defaults to true. */
+  readonly cancelResult?: boolean;
 }
 
 export function createSchedulerStub(options: SchedulerStubOptions = {}): SchedulerStub {
@@ -51,6 +54,7 @@ export function createSchedulerStub(options: SchedulerStubOptions = {}): Schedul
   const submitCalls: SubmitCall[] = [];
   const scheduleCalls: ScheduleCall[] = [];
   const unscheduleCalls: ScheduleId[] = [];
+  const cancelCalls: TaskId[] = [];
 
   const stats: SchedulerStats = {
     pending: 0,
@@ -71,8 +75,9 @@ export function createSchedulerStub(options: SchedulerStubOptions = {}): Schedul
       counter += 1;
       return taskId(`task-${counter}`);
     },
-    cancel(): boolean {
-      return true;
+    cancel(id): boolean {
+      cancelCalls.push(id);
+      return options.cancelResult ?? true;
     },
     schedule(expression, input, mode, opts): ScheduleId {
       if (options.scheduleError !== undefined) {
@@ -113,6 +118,9 @@ export function createSchedulerStub(options: SchedulerStubOptions = {}): Schedul
     },
     get unscheduleCalls(): readonly ScheduleId[] {
       return unscheduleCalls;
+    },
+    get cancelCalls(): readonly TaskId[] {
+      return cancelCalls;
     },
   };
 }

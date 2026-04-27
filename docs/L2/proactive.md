@@ -55,7 +55,13 @@ interface ProactiveToolsConfig {
   readonly maxSleepMs?: number;
 }
 
-interface ProactiveToolsProviderConfig extends ProactiveToolsConfig {
+interface ProactiveToolsProviderConfig {
+  /** Default text dispatched on wake when the caller does not supply one. */
+  readonly defaultWakeMessage?: string;
+  /** Maximum sleep duration accepted by the `sleep` tool. Defaults to 24 h. */
+  readonly maxSleepMs?: number;
+  /** Optional clock for deterministic testing. Defaults to `Date.now`. */
+  readonly now?: () => number;
   /** Assembly priority. Defaults to COMPONENT_PRIORITY.BUNDLED. */
   readonly priority?: number;
 }
@@ -66,7 +72,8 @@ interface ProactiveToolsProviderConfig extends ProactiveToolsConfig {
 | Tool | Inputs | Returns |
 |------|--------|---------|
 | `sleep` | `duration_ms` (1..maxSleepMs), `wake_message?` | `{ ok: true, task_id, wake_at_ms }` |
-| `schedule_cron` | `expression`, `wake_message?`, `timezone?` | `{ ok: true, schedule_id }` |
+| `cancel_sleep` | `task_id` | `{ ok: true, removed }` |
+| `schedule_cron` | `expression`, `wake_message?`, `timezone?`, `idempotency_key?` | `{ ok: true, schedule_id, deduped? }` |
 | `cancel_schedule` | `schedule_id` | `{ ok: true, removed }` |
 
 Listing existing schedules is intentionally **not** exposed: the L0
@@ -90,11 +97,35 @@ Registers a cron expression with the scheduler. The expression is parsed synchro
 by the scheduler (`croner`); invalid expressions surface as `{ ok: false, error: "..." }`.
 Each fire delivers a fresh `EngineInput` of kind `"text"` containing `wake_message`.
 
+### `cancel_sleep`
+
+Calls `SchedulerComponent.cancel(taskId)` to withdraw a pending wake-up before it
+fires. Lets a later turn invalidate a sleep that has been superseded (the work the
+agent was waiting on completed early, was retried via another path, etc.). Returns
+`{ removed: false }` if the task already fired or never existed (idempotent).
+
 ### `cancel_schedule`
 
 Calls `SchedulerComponent.unschedule(scheduleId)`. Returns the scheduler's boolean
 removal flag inside `{ ok: true, removed }`. Unknown IDs return `removed: false`
 (idempotent — safe to retry).
+
+### Cron idempotency (`idempotency_key`)
+
+`schedule_cron` accepts an optional caller-supplied `idempotency_key`. The provider
+remembers `key → schedule_id` for the lifetime of the tool set. A second call with
+the same key returns the original `schedule_id` plus `deduped: true` without ever
+hitting the scheduler — making retries inside one agent session safe even if the
+first call's response was lost.
+
+`cancel_schedule` clears any matching idempotency entry on a successful unschedule
+so a future call with the same key registers a fresh schedule.
+
+**Known limitation:** durable cross-restart dedup requires the underlying scheduler
+to honour idempotency keys at the schedule layer. The current `@koi/scheduler` does
+not — a process restart followed by a model retry can still produce a duplicate.
+Closing that gap is an L0/L2 contract change tracked separately and deliberately
+not faked at the tool layer here.
 
 ## Key Design Decisions
 
@@ -105,11 +136,25 @@ This package introduces zero new contracts. Every public concept (`SchedulerComp
 expressed via the existing scheduler surface, the right move is to widen the scheduler
 contract — not to bury bespoke state inside `@koi/proactive`.
 
-### Tools are stateless
+### Per-agent scheduler resolution
 
-`createProactiveTools` returns four `Tool` objects whose `execute` closures capture
-only the injected `SchedulerComponent` and config. There is no in-memory queue,
-no timers, no event listeners. Restart safety = scheduler restart safety.
+`createProactiveToolsProvider` does **not** capture a `SchedulerComponent` at
+construction. Instead its `attach(agent)` looks up `agent.component(SCHEDULER)`
+and builds a fresh tool set for that agent. This means a single provider can
+be safely shared across many agents: each gets a closure pinned to its own
+scheduler. If the agent has no `SCHEDULER` component, attach returns a `skipped`
+entry rather than installing tools that would fail at call time.
+
+The lower-level `createProactiveTools(config)` factory still requires an explicit
+`SchedulerComponent` — it's the embedding point for tests and for hosts that
+prefer to do their own wiring.
+
+### Tools are mostly stateless
+
+`sleep`, `cancel_sleep`, and `cancel_schedule` capture only the injected
+`SchedulerComponent` and config. `schedule_cron` and `cancel_schedule` share an
+in-memory `Map<idempotency_key, schedule_id>` for retry-safe registration (see
+"Cron idempotency" below). That map is the only mutable state in this package.
 
 ### Wake message is text, not a structured envelope
 

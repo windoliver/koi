@@ -3,11 +3,12 @@ import { createProactiveTools } from "./create-proactive-tools.js";
 import { createSchedulerStub } from "./test-helpers.js";
 
 describe("createProactiveTools", () => {
-  test("returns sleep, schedule_cron, cancel_schedule in that order", () => {
+  test("returns sleep, cancel_sleep, schedule_cron, cancel_schedule in that order", () => {
     const stub = createSchedulerStub();
     const tools = createProactiveTools({ scheduler: stub.component });
     expect(tools.map((t) => t.descriptor.name)).toEqual([
       "sleep",
+      "cancel_sleep",
       "schedule_cron",
       "cancel_schedule",
     ]);

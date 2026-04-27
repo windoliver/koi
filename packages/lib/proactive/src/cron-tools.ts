@@ -4,11 +4,20 @@
  * Each tool is a thin wrapper over a single SchedulerComponent method. Errors
  * surface as `{ ok: false, error }` rather than throwing.
  *
+ * In-memory idempotency: when the caller supplies `idempotency_key`, the
+ * provider remembers `key → schedule_id` and returns the existing id on
+ * re-submit. This makes retries inside one agent session safe (the common
+ * failure mode after an ambiguous tool ACK). Durable cross-restart dedup
+ * requires the underlying scheduler to honour idempotency keys at the
+ * schedule layer — the current `@koi/scheduler` implementation does not, so
+ * a restart followed by a retry can still create a duplicate. That gap is
+ * an L0/L2 contract change tracked separately and deliberately not papered
+ * over here.
+ *
  * Listing existing schedules is intentionally not exposed here: the L0
  * `SchedulerComponent` interface does not currently surface a per-agent
  * `querySchedules`. Adding one belongs in a focused L0 PR, not buried inside
- * a thin tool package. Until then, the host (e.g. `@koi/runtime`) is the
- * place to provide a listing surface if one is needed.
+ * a thin tool package.
  */
 
 import type { JsonObject, Tool } from "@koi/core";
@@ -32,9 +41,32 @@ const scheduleCronSchema = z.object({
     .min(1)
     .optional()
     .describe('IANA timezone for the cron expression (e.g. "America/Los_Angeles").'),
+  idempotency_key: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Stable caller-supplied key. Re-using the same key with the same expression is a no-op " +
+        "(the existing schedule_id is returned), so retrying after an ambiguous failure cannot " +
+        "create duplicate recurring schedules. Strongly recommended for any cron the agent " +
+        "might re-issue.",
+    ),
 });
 
-export function createScheduleCronTool(config: ProactiveToolsConfig): Tool {
+/**
+ * Per-tool-instance state shared between schedule_cron and cancel_schedule.
+ * Lets cancel_schedule clear an idempotency mapping once its schedule is gone.
+ */
+export interface CronToolState {
+  /** idempotency_key → schedule_id (string form) */
+  readonly idempotencyMap: Map<string, string>;
+}
+
+export function createCronToolState(): CronToolState {
+  return { idempotencyMap: new Map<string, string>() };
+}
+
+export function createScheduleCronTool(config: ProactiveToolsConfig, state: CronToolState): Tool {
   const { scheduler } = config;
   const defaultMessage = config.defaultWakeMessage ?? DEFAULT_WAKE_MESSAGE;
 
@@ -55,16 +87,29 @@ export function createScheduleCronTool(config: ProactiveToolsConfig): Tool {
       if (!parsed.success) {
         return { ok: false, error: parsed.error.message };
       }
-      const { expression, wake_message, timezone } = parsed.data;
+      const { expression, wake_message, timezone, idempotency_key } = parsed.data;
       const message = wake_message ?? defaultMessage;
+
+      if (idempotency_key !== undefined) {
+        const existing = state.idempotencyMap.get(idempotency_key);
+        if (existing !== undefined) {
+          return { ok: true, schedule_id: existing, deduped: true };
+        }
+      }
+
+      const options = timezone !== undefined ? { timezone } : undefined;
       try {
         const id = await scheduler.schedule(
           expression,
           { kind: "text", text: message },
           "dispatch",
-          timezone !== undefined ? { timezone } : undefined,
+          options,
         );
-        return { ok: true, schedule_id: String(id) };
+        const idStr = String(id);
+        if (idempotency_key !== undefined) {
+          state.idempotencyMap.set(idempotency_key, idStr);
+        }
+        return { ok: true, schedule_id: idStr };
       } catch (e: unknown) {
         return {
           ok: false,
@@ -83,7 +128,7 @@ const cancelScheduleSchema = z.object({
   schedule_id: z.string().min(1).describe("Schedule identifier returned by schedule_cron."),
 });
 
-export function createCancelScheduleTool(config: ProactiveToolsConfig): Tool {
+export function createCancelScheduleTool(config: ProactiveToolsConfig, state: CronToolState): Tool {
   const { scheduler } = config;
   return {
     descriptor: {
@@ -101,8 +146,16 @@ export function createCancelScheduleTool(config: ProactiveToolsConfig): Tool {
       if (!parsed.success) {
         return { ok: false, error: parsed.error.message };
       }
+      const idStr = parsed.data.schedule_id;
       try {
-        const removed = await scheduler.unschedule(scheduleId(parsed.data.schedule_id));
+        const removed = await scheduler.unschedule(scheduleId(idStr));
+        // Clear any idempotency_key entry that pointed at this schedule so a
+        // future schedule_cron with the same key can register a fresh one.
+        if (removed) {
+          for (const [k, v] of state.idempotencyMap) {
+            if (v === idStr) state.idempotencyMap.delete(k);
+          }
+        }
         return { ok: true, removed };
       } catch (e: unknown) {
         return {
