@@ -359,6 +359,55 @@ describe("createToolAuditMiddleware", () => {
       expect(saves.length).toBe(1);
     });
 
+    test("late tool completion after drain timeout is folded and persisted — round 38 F1", async () => {
+      // Round 37's timeout dropped late outcomes permanently: the eventual
+      // settler mutated an orphaned local record on the deleted session.
+      // Round 38 routes late completions through a late-fold path that
+      // updates the global aggregate and queues a follow-up persist.
+      // Stateful store (mock load reflects last save) so the late persist's
+      // baseline-delta merge sees the prior write.
+      let stored: ToolAuditSnapshot = { tools: {}, totalSessions: 0, lastUpdatedAt: 0 };
+      const saves: ToolAuditSnapshot[] = [];
+      const store: ToolAuditStore = {
+        load: () => stored,
+        save: (s) => {
+          stored = s;
+          saves.push(s);
+        },
+      };
+      const onError = mock((_e: unknown) => {});
+      const mw = createToolAuditMiddleware(
+        defaultConfig({ store, onError, sessionEndDrainTimeoutMs: 50 }),
+      );
+      const wrap = getWrapToolCall(mw);
+
+      let resolveTool: ((v: { output: string }) => void) | undefined;
+      const toolPromise = new Promise<{ output: string }>((r) => {
+        resolveTool = r;
+      });
+
+      await mw.onSessionStart?.(sessionCtx());
+      const callPromise = wrap(turnCtx(), toolReq("search"), () => toolPromise);
+
+      // Session ends; tool still in flight → drain times out, partial
+      // state persists.
+      await mw.onSessionEnd?.(sessionCtx());
+      expect(saves.length).toBe(1);
+      expect(saves[0]?.tools.search?.callCount).toBe(1);
+      expect(saves[0]?.tools.search?.successCount).toBe(0);
+
+      // Now the tool completes — its outcome must reach disk.
+      resolveTool?.({ output: "ok" });
+      await callPromise;
+      // Wait a tick for the queued late persist to drain.
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(saves.length).toBeGreaterThanOrEqual(2);
+      const last = saves[saves.length - 1];
+      expect(last?.tools.search?.callCount).toBe(1);
+      expect(last?.tools.search?.successCount).toBe(1);
+    });
+
     test("hung tool call does not wedge session end past drain timeout — round 37 F1", async () => {
       // Round 36 introduced an unbounded await; round 37 caps it so a
       // hung dependency cannot block teardown forever. On timeout the

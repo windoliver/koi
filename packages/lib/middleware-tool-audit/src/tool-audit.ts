@@ -158,8 +158,16 @@ function createFallbackStore(): ToolAuditStore {
 
 /** Per-session mutable state for tool audit tracking. */
 interface ToolAuditSessionState {
+  readonly sessionId: SessionId;
   readonly sessionAvailableTools: Set<string>;
   readonly sessionUsedTools: Set<string>;
+  /**
+   * True after onSessionEnd has folded what it could and timed out
+   * waiting for in-flight calls. Late completions hit the late-fold
+   * path which folds their delta into the global aggregate and queues
+   * a follow-up persist (#review-round38-F1).
+   */
+  cleanedUp: boolean;
   /**
    * Per-session call/latency counters. Kept ISOLATED from the global
    * `tools` aggregate until onSessionEnd so concurrent persists from
@@ -179,28 +187,53 @@ interface ToolAuditSessionState {
   dirty: boolean;
 }
 
-/** Fold session-local counters into the shared aggregate. Sums counters,
- * mins/maxes latency extremes, takes the larger lastUsedAt. */
+/**
+ * Fold session-local counters into the shared aggregate, then ZERO the
+ * local entries. Subsequent mutations to local records (e.g. late tool
+ * completions after a session-end drain timeout) accumulate fresh
+ * deltas that can be folded again — preventing late outcomes from being
+ * orphaned (#review-round38-F1). Returns true if any local record had
+ * non-zero counters to fold.
+ */
 function foldLocalIntoGlobal(
   global: Map<string, MutableToolRecord>,
   local: Map<string, MutableToolRecord>,
-): void {
+): boolean {
+  let folded = false;
   for (const [name, l] of local) {
+    const hasDelta =
+      l.callCount > 0 ||
+      l.successCount > 0 ||
+      l.failureCount > 0 ||
+      l.totalLatencyMs > 0 ||
+      l.maxLatencyMs > 0 ||
+      l.lastUsedAt > 0;
+    if (!hasDelta) continue;
+    folded = true;
     const g = global.get(name);
     if (g === undefined) {
       global.set(name, { ...l });
-      continue;
+    } else {
+      g.callCount += l.callCount;
+      g.successCount += l.successCount;
+      g.failureCount += l.failureCount;
+      g.totalLatencyMs += l.totalLatencyMs;
+      g.lastUsedAt = Math.max(g.lastUsedAt, l.lastUsedAt);
+      if (l.minLatencyMs !== Number.POSITIVE_INFINITY) {
+        g.minLatencyMs = Math.min(g.minLatencyMs, l.minLatencyMs);
+      }
+      g.maxLatencyMs = Math.max(g.maxLatencyMs, l.maxLatencyMs);
     }
-    g.callCount += l.callCount;
-    g.successCount += l.successCount;
-    g.failureCount += l.failureCount;
-    g.totalLatencyMs += l.totalLatencyMs;
-    g.lastUsedAt = Math.max(g.lastUsedAt, l.lastUsedAt);
-    if (l.minLatencyMs !== Number.POSITIVE_INFINITY) {
-      g.minLatencyMs = Math.min(g.minLatencyMs, l.minLatencyMs);
-    }
-    g.maxLatencyMs = Math.max(g.maxLatencyMs, l.maxLatencyMs);
+    // Zero local so future mutations accumulate as a fresh delta.
+    l.callCount = 0;
+    l.successCount = 0;
+    l.failureCount = 0;
+    l.totalLatencyMs = 0;
+    l.minLatencyMs = Number.POSITIVE_INFINITY;
+    l.maxLatencyMs = 0;
+    l.lastUsedAt = 0;
   }
+  return folded;
 }
 
 const CAPABILITY_FRAGMENT: CapabilityFragment = {
@@ -308,10 +341,12 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
 
     totalSessions += 1;
     sessionStates.set(ctx.sessionId, {
+      sessionId: ctx.sessionId,
       sessionAvailableTools: new Set<string>(),
       sessionUsedTools: new Set<string>(),
       localTools: new Map<string, MutableToolRecord>(),
       inFlight: new Set<Promise<void>>(),
+      cleanedUp: false,
       dirty: false,
     });
   }
@@ -387,9 +422,36 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       recordToolOutcome(record, endTime - start, endTime, false);
       throw e;
     } finally {
-      if (state) state.inFlight.delete(settled);
+      if (state) {
+        state.inFlight.delete(settled);
+        // Late completion after a session-end drain timeout: fold this
+        // call's delta into the global aggregate and queue a persist so
+        // the late outcome is durable instead of stranded on a deleted
+        // session's local record (#review-round38-F1). When the last
+        // in-flight settles, drop the session state entirely.
+        if (state.cleanedUp) {
+          foldLocalIntoGlobal(tools, state.localTools);
+          if (state.inFlight.size === 0) sessionStates.delete(state.sessionId);
+          void queueLatePersist();
+        }
+      }
       settle();
     }
+  }
+
+  function queueLatePersist(): Promise<void> {
+    const previous = savePromise;
+    savePromise = previous.then(async () => {
+      try {
+        const committed = await persistWithRetry();
+        lastCommittedSnapshot = committed;
+        pendingFailedPersist = false;
+      } catch (e: unknown) {
+        pendingFailedPersist = true;
+        onError?.(e);
+      }
+    });
+    return savePromise;
   }
 
   function recordAvailableTools(ctx: TurnContext, request: ModelRequest): void {
@@ -466,7 +528,17 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       getOrCreateRecord(toolName).sessionsUsed += 1;
     }
 
-    sessionStates.delete(ctx.sessionId);
+    // Defer cleanup if drain timed out with in-flight calls still
+    // pending. Marking cleanedUp routes any late completion through the
+    // late-fold path (wrapToolCall finally), which folds the new delta
+    // into global and queues a follow-up persist instead of stranding
+    // the outcome on a deleted session's local record
+    // (#review-round38-F1).
+    if (state.inFlight.size > 0) {
+      state.cleanedUp = true;
+    } else {
+      sessionStates.delete(ctx.sessionId);
+    }
 
     // Skip when this session contributed nothing AND no earlier
     // concurrent session left a deferred signal flush for us to drain

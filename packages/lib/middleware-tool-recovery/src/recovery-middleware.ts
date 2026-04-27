@@ -169,6 +169,11 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     // let: byte index in bufferedText up to which text has already been
     // forwarded as text_delta chunks. Anything past this is unflushed.
     let flushedTextIndex = 0;
+    // let: text that has already been yielded to the consumer in passthrough
+    // mode and trimmed off bufferedText to bound memory on long generations
+    // (#review-round38-F2). Reconstructs the full response.content if the
+    // stream later switches to buffer mode and recovery rewrites the done.
+    let streamedPrefix = "";
     // let: switches to "buffer" mode the first time any pattern marker is
     // detected. Once active, all subsequent chunks are held until `done`.
     let mode: "passthrough" | "buffer" = allPatternsHaveMarkers ? "passthrough" : "buffer";
@@ -255,6 +260,15 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
               flushedTextIndex = safeEnd;
               if (safeText.length > 0) yield { kind: "text_delta", delta: safeText };
             }
+            // Trim flushed prefix so bufferedText stays a rolling marker
+            // window rather than the entire response. Without this, long
+            // plain-text generations grow memory linearly AND each
+            // marker check rescans the full history (#review-round38-F2).
+            if (flushedTextIndex > 0) {
+              streamedPrefix += bufferedText.slice(0, flushedTextIndex);
+              bufferedText = bufferedText.slice(flushedTextIndex);
+              flushedTextIndex = 0;
+            }
             continue;
           }
           // mode === "buffer"
@@ -300,7 +314,7 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
               }
               yield* synthesizeToolCallChunks(recovered.calls);
               const syntheticResponse: ModelResponse = {
-                content: recovered.cleanedText,
+                content: streamedPrefix + recovered.cleanedText,
                 model: "unknown",
                 metadata: { recoveryError: chunk.message, recovered: true },
               };
@@ -355,9 +369,14 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
           yield { kind: "text_delta", delta: recovered.cleanedText };
         }
         yield* synthesizeToolCallChunks(recovered.calls);
+        // Preserve any passthrough-streamed prefix that was trimmed off
+        // bufferedText for memory bounding (#review-round38-F2). The
+        // user-visible streamed transcript already saw the prefix; this
+        // restores it in response.content for downstream middleware that
+        // reads the full done payload.
         const rewrittenResponse: ModelResponse = {
           ...chunk.response,
-          content: recovered.cleanedText,
+          content: streamedPrefix + recovered.cleanedText,
         };
         yield { kind: "done", response: rewrittenResponse };
         return;
@@ -391,7 +410,7 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
           const errorMessage =
             upstreamError instanceof Error ? upstreamError.message : String(upstreamError);
           const syntheticResponse: ModelResponse = {
-            content: recovered.cleanedText,
+            content: streamedPrefix + recovered.cleanedText,
             model: "unknown",
             metadata: { recoveryError: errorMessage, recovered: true },
           };
