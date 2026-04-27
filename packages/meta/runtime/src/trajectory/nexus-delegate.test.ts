@@ -278,6 +278,54 @@ describe("createNexusAtifDelegate", () => {
     await expect(delegate.delete("some-doc")).rejects.toThrow("Access denied");
   });
 
+  test("write and append do not require deleting a legacy document", async () => {
+    const writeOnlyTransport = createStubTransport({
+      errorInjector(method) {
+        if (method === "delete") {
+          return {
+            ok: false,
+            error: { code: "PERMISSION", message: "Access denied", retryable: false },
+          };
+        }
+        return undefined;
+      },
+    });
+    const delegate = createNexusAtifDelegate({ transport: writeOnlyTransport });
+
+    await delegate.write("write-only", DOC);
+    if (delegate.appendSteps === undefined) throw new Error("appendSteps missing");
+
+    const baseStep = DOC.steps[0];
+    if (baseStep === undefined) throw new Error("missing fixture step");
+
+    const timestamp = new Date(Date.parse(baseStep.timestamp) + 1).toISOString();
+    const nextStep = {
+      ...baseStep,
+      step_id: 1,
+      timestamp,
+      message: "second",
+    };
+    const document = {
+      schema_version: "ATIF-v1.6" as const,
+      session_id: DOC.session_id,
+      agent: DOC.agent,
+    };
+
+    await delegate.appendSteps("write-only", {
+      document,
+      startIndex: 1,
+      steps: [nextStep],
+      stepCount: 2,
+      nextStepIndex: 2,
+      lastTimestampMs: Date.parse(timestamp),
+      sizeBytes: JSON.stringify({ ...document, steps: [...DOC.steps, nextStep] }).length,
+    });
+
+    const result = await delegate.read("write-only");
+    expect(result?.steps).toHaveLength(2);
+    expect(result?.steps[1]?.message).toBe("second");
+  });
+
   test("throws on EXTERNAL error (not swallowed as undefined)", async () => {
     const externalTransport = createStubTransport({
       errorInjector(method) {

@@ -79,6 +79,7 @@ import {
 } from "../skills-mcp-bridge.js";
 import { createAtifDocumentStore } from "../trajectory/atif-store.js";
 import { createFsAtifDelegate } from "../trajectory/fs-delegate.js";
+import { metadataFilenameToDocId } from "../trajectory/path-encoding.js";
 
 const FIXTURES = `${import.meta.dirname}/../../fixtures`;
 const MODEL = "google/gemini-2.0-flash-001";
@@ -6937,25 +6938,25 @@ describe("Approval trajectory capture (e2e)", () => {
     await new Promise((r) => setTimeout(r, 300));
 
     // Read trajectory from the store — createRuntime uses a per-stream docId
-    // like "stream-<uuid>", so we need to find it
+    // like "stream-<uuid>", so find it from the chunk metadata file.
     const { readdirSync } = await import("node:fs");
-    const files = readdirSync(trajDir).filter((f: string) => f.endsWith(".json"));
-    expect(files.length).toBeGreaterThan(0);
+    const docIds = readdirSync(trajDir)
+      .map((f: string) => metadataFilenameToDocId(f))
+      .filter((docId): docId is string => docId !== undefined);
+    expect(docIds.length).toBeGreaterThan(0);
 
-    const { readFileSync } = await import("node:fs");
-    const raw = readFileSync(`${trajDir}/${files[0]}`, "utf-8");
-    const doc = JSON.parse(raw) as { readonly steps?: readonly Record<string, unknown>[] };
-    const steps = doc.steps ?? [];
+    const store = runtime.trajectoryStore;
+    if (store === undefined) throw new Error("store should exist");
+    const steps = await store.getDocument(docIds[0] ?? "");
 
-    // ATIF JSON uses different keys: step_id (stepIndex), source, outcome, extra (metadata)
     const approvalSteps = steps.filter((s) => s.source === "user");
     expect(approvalSteps.length).toBeGreaterThan(0);
 
-    const step = approvalSteps[0] as Record<string, unknown>;
-    // step_id must be assigned (not the placeholder -1)
-    expect(step.step_id).toBeGreaterThanOrEqual(0);
-    expect(step.outcome).toBe("success");
-    expect((step.extra as Record<string, unknown>)?.approvalDecision).toBe("allow");
+    const step = approvalSteps[0];
+    // stepIndex must be assigned (not the placeholder -1)
+    expect(step?.stepIndex).toBeGreaterThanOrEqual(0);
+    expect(step?.outcome).toBe("success");
+    expect(step?.metadata?.approvalDecision).toBe("allow");
   });
 });
 

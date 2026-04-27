@@ -246,7 +246,15 @@ export function createNexusAtifDelegate(config: NexusTrajectoryConfig): AtifDocu
       await writeContent(stepChunkPath(docId, firstStep.step_id), JSON.stringify(doc.steps));
     }
     await writeContent(metadataPath(docId), JSON.stringify(state));
-    await deletePath(docPath(docId));
+    await cleanupLegacyDocument(docId);
+  }
+
+  async function cleanupLegacyDocument(docId: string): Promise<void> {
+    try {
+      await deletePath(docPath(docId));
+    } catch {
+      // Chunked metadata takes precedence on reads; legacy removal is cleanup only.
+    }
   }
 
   return {
@@ -301,7 +309,7 @@ export function createNexusAtifDelegate(config: NexusTrajectoryConfig): AtifDocu
       }
       const { startIndex: _startIndex, steps: _steps, ...state } = batch;
       await writeContent(metadataPath(docId), JSON.stringify(state));
-      await deletePath(docPath(docId));
+      await cleanupLegacyDocument(docId);
     },
   };
 }
