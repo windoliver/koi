@@ -13,11 +13,12 @@ import type { ForgeBudget, ForgeDemandSignal, KoiMiddleware, ToolHealthSnapshot 
 /**
  * Read-only health interface consumed by the demand detector.
  * The caller (L3 wiring) injects this — `@koi/forge-demand` never imports
- * from `@koi/middleware-feedback-loop` directly.
+ * from `@koi/middleware-feedback-loop` directly. Method name + return shape
+ * mirror `ToolHealthTracker` from feedback-loop so the tracker can be passed
+ * directly without an adapter.
  */
 export interface FeedbackLoopHealthHandle {
-  readonly getHealthSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
-  readonly isQuarantined: (toolId: string) => boolean;
+  readonly getSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
 }
 
 // ---------------------------------------------------------------------------

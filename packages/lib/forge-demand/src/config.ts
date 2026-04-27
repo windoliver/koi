@@ -99,7 +99,7 @@ function validationError(message: string): KoiError {
 function isHealthTrackerLike(v: unknown): boolean {
   if (v === null || v === undefined || typeof v !== "object") return false;
   const obj = v as Record<string, unknown>;
-  return typeof obj.getHealthSnapshot === "function" && typeof obj.isQuarantined === "function";
+  return typeof obj.getSnapshot === "function";
 }
 
 function isRegExpArray(v: unknown): v is readonly RegExp[] {
@@ -134,9 +134,7 @@ export function validateForgeDemandConfig(raw: unknown): Result<ForgeDemandConfi
   if (c.healthTracker !== undefined && !isHealthTrackerLike(c.healthTracker)) {
     return {
       ok: false,
-      error: validationError(
-        "healthTracker must have 'getHealthSnapshot' and 'isQuarantined' functions",
-      ),
+      error: validationError("healthTracker must expose a 'getSnapshot' function"),
     };
   }
   if (c.onDemand !== undefined && typeof c.onDemand !== "function") {

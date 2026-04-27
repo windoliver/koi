@@ -205,6 +205,58 @@ describe("createForgeDemandDetector", () => {
     expect(a).toBe(b);
   });
 
+  it("isolates throwing onDemand/onDismiss callbacks from the wrapped tool call", async () => {
+    const originalErr = console.error;
+    const swallowed: unknown[] = [];
+    console.error = (...args: unknown[]): void => {
+      swallowed.push(args);
+    };
+    try {
+      const handle = createForgeDemandDetector(
+        makeConfig({
+          heuristics: { repeatedFailureCount: 1 },
+          onDemand: () => {
+            throw new Error("observer boom");
+          },
+          onDismiss: () => {
+            throw new Error("dismiss boom");
+          },
+        }),
+      );
+
+      const okNext = async (): Promise<ToolResponse> => toolRes();
+      const failNext = async (): Promise<ToolResponse> => {
+        throw new Error("tool failed");
+      };
+
+      // Failure path: tool throws → observer throws → original error must
+      // propagate unchanged, never the observer's "observer boom".
+      let caught: unknown;
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, toolReq("obs"), failNext);
+      } catch (e: unknown) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toBe("tool failed");
+
+      // Success path: a later successful call must NOT be turned into a failure
+      // by an observer firing on a *prior* signal.
+      const ok = await handle.middleware.wrapToolCall?.(ctx, toolReq("ok"), okNext);
+      expect(ok).toEqual(toolRes());
+
+      // Dismiss path: throwing onDismiss must not bubble out.
+      const [first] = handle.getSignals();
+      if (first !== undefined) {
+        expect(() => handle.dismiss(first.id)).not.toThrow();
+      }
+
+      expect(swallowed.length).toBeGreaterThan(0);
+    } finally {
+      console.error = originalErr;
+    }
+  });
+
   it("dismiss removes the signal and clears its cooldown", async () => {
     const handle = createForgeDemandDetector(
       makeConfig({

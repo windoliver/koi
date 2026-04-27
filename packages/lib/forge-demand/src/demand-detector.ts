@@ -26,7 +26,6 @@ import { computeDemandConfidence, DEFAULT_CONFIDENCE_WEIGHTS } from "./confidenc
 import {
   DEFAULT_CAPABILITY_GAP_PATTERNS,
   DEFAULT_USER_CORRECTION_PATTERNS,
-  detectCapabilityGap,
   detectLatencyDegradation,
   detectRepeatedFailure,
   detectUserCorrection,
@@ -72,6 +71,25 @@ function extractResponseText(response: ModelResponse): string {
   return typeof response.content === "string" ? response.content : "";
 }
 
+/**
+ * Invoke an observer callback without letting it alter control flow.
+ *
+ * The detector is documented as a passive observer — a throwing `onDemand`
+ * or `onDismiss` must not turn a successful tool/model call into a failure
+ * or mask the real error in the catch path.
+ */
+function safeInvoke<T>(cb: ((value: T) => void) | undefined, value: T): void {
+  if (cb === undefined) return;
+  try {
+    cb(value);
+  } catch (e: unknown) {
+    // Last-resort isolation: callback errors are swallowed here so the
+    // wrapped call is never altered. Surface via console.error so they
+    // stay visible without affecting agent-loop semantics.
+    console.error("[forge-demand] observer callback threw:", e);
+  }
+}
+
 function mergeThresholds(overrides: Partial<HeuristicThresholds> | undefined): HeuristicThresholds {
   return {
     ...DEFAULT_THRESHOLDS,
@@ -107,6 +125,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   const consecutiveFailures = new Map<string, number>();
   const failedToolCalls = new Map<string, string[]>();
   const capabilityGapCounts = new Map<string, number>();
+  const noMatchingToolCounts = new Map<string, number>();
   // `let` justified: mutable counters scoped to this closure. Reset on session end.
   let signalCounter = 0;
   let lastToolCallId = "";
@@ -145,7 +164,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     }
     signals.push(signal);
     cooldowns.set(key, clock());
-    config.onDemand?.(signal);
+    safeInvoke(config.onDemand, signal);
   }
 
   function dismiss(signalId: string): void {
@@ -156,12 +175,12 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       cooldowns.delete(triggerKey(signal.trigger));
     }
     signals.splice(idx, 1);
-    config.onDismiss?.(signalId);
+    safeInvoke(config.onDismiss, signalId);
   }
 
   function checkLatencyDegradation(toolId: string): void {
     if (config.healthTracker === undefined) return;
-    const snapshot = config.healthTracker.getHealthSnapshot(toolId);
+    const snapshot = config.healthTracker.getSnapshot(toolId);
     const trigger = detectLatencyDegradation(toolId, snapshot, thresholds.latencyDegradationP95Ms);
     if (trigger !== undefined) {
       emitSignal(trigger, {
@@ -171,30 +190,20 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     }
   }
 
-  function updateGapCounts(responseText: string): void {
-    for (const pattern of patterns) {
-      if (pattern.test(responseText)) {
-        const key = pattern.source;
-        capabilityGapCounts.set(key, (capabilityGapCounts.get(key) ?? 0) + 1);
-      }
-    }
-  }
-
   function checkCapabilityGaps(responseText: string): void {
     if (patterns.length === 0 || responseText.length === 0) return;
-    updateGapCounts(responseText);
-    const trigger = detectCapabilityGap(
-      responseText,
-      patterns,
-      capabilityGapCounts,
-      thresholds.capabilityGapOccurrences,
-    );
-    if (trigger === undefined) return;
-    const gapKey = trigger.kind === "capability_gap" ? trigger.requiredCapability : "";
-    emitSignal(trigger, {
-      failureCount: capabilityGapCounts.get(gapKey) ?? 1,
-      threshold: thresholds.capabilityGapOccurrences,
-    });
+    for (const pattern of patterns) {
+      const match = pattern.exec(responseText);
+      if (match === null) continue;
+      const key = pattern.source;
+      const count = (capabilityGapCounts.get(key) ?? 0) + 1;
+      capabilityGapCounts.set(key, count);
+      if (count < thresholds.capabilityGapOccurrences) continue;
+      emitSignal(
+        { kind: "capability_gap", requiredCapability: match[0] },
+        { failureCount: count, threshold: thresholds.capabilityGapOccurrences },
+      );
+    }
   }
 
   function checkUserCorrections(request: ModelRequest): void {
@@ -246,9 +255,14 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
         return response;
       } catch (e: unknown) {
         if (e instanceof KoiRuntimeError && e.code === "NOT_FOUND") {
+          // Per-query attempt counter — confidence scales with severity so
+          // repeated misses can clear the threshold even after a cooldown.
+          // Threshold is 1 so a single miss can fire (the tool is known absent).
+          const attempts = (noMatchingToolCounts.get(toolId) ?? 0) + 1;
+          noMatchingToolCounts.set(toolId, attempts);
           emitSignal(
-            { kind: "no_matching_tool", query: toolId, attempts: 1 },
-            { failureCount: 1, threshold: thresholds.repeatedFailureCount },
+            { kind: "no_matching_tool", query: toolId, attempts },
+            { failureCount: attempts, threshold: 1 },
           );
           checkLatencyDegradation(toolId);
           throw e;
@@ -280,6 +294,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       consecutiveFailures.clear();
       failedToolCalls.clear();
       capabilityGapCounts.clear();
+      noMatchingToolCounts.clear();
       cooldowns.clear();
       signals.length = 0;
       signalCounter = 0;
