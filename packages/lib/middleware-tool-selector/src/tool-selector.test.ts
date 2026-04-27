@@ -1,11 +1,12 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { InboundMessage, ToolDescriptor, TurnContext } from "@koi/core";
-import { runId, sessionId, turnId } from "@koi/core";
+import { runId, sessionId, toolCallId, turnId } from "@koi/core";
 import type {
   KoiMiddleware,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
 } from "@koi/core/middleware";
 import { KoiRuntimeError } from "@koi/errors";
 import { createTagSelectTools } from "./select-strategy.js";
@@ -80,6 +81,81 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     await getWrap(mw)(turnCtx(), { messages: [userMsg("hi")] }, next);
     expect(select).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  test("multiple model calls in a turn track per-invocation snapshots; later calls do not authorize earlier tool calls — round 20 F1", async () => {
+    // Two model calls in the same turn produce different allowlists.
+    // wrapModelStream binds each tool_call_start callId to its own
+    // snapshot so wrapToolCall validates against the EXACT tool set
+    // the model saw when it generated that call.
+    const tools1 = [tool("alpha"), tool("beta"), tool("gamma")];
+    const tools2 = [tool("alpha"), tool("beta"), tool("gamma")];
+    let nthCall = 0;
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => {
+        nthCall += 1;
+        // First call: only alpha. Second call: only gamma.
+        return nthCall === 1 ? ["alpha"] : ["gamma"];
+      },
+      minTools: 0,
+    });
+    const wrapStream = mw.wrapModelStream;
+    if (!wrapStream) throw new Error("wrapModelStream missing");
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const ctx = turnCtx();
+
+    const callId1 = toolCallId("call-1");
+    const callId2 = toolCallId("call-2");
+    // First model call advertises [alpha, beta, gamma], filters to [alpha].
+    const stream1: ModelStreamHandler = async function* () {
+      yield { kind: "tool_call_start", toolName: "alpha", callId: callId1 };
+      yield { kind: "tool_call_end", callId: callId1 };
+      yield { kind: "done", response: modelResponse() };
+    };
+    for await (const _ of wrapStream(
+      ctx,
+      { messages: [userMsg("first")], tools: tools1 },
+      stream1,
+    )) {
+      // drain
+    }
+
+    // Second model call advertises same tools, filters to [gamma].
+    const stream2: ModelStreamHandler = async function* () {
+      yield { kind: "tool_call_start", toolName: "gamma", callId: callId2 };
+      yield { kind: "tool_call_end", callId: callId2 };
+      yield { kind: "done", response: modelResponse() };
+    };
+    for await (const _ of wrapStream(
+      ctx,
+      { messages: [userMsg("second")], tools: tools2 },
+      stream2,
+    )) {
+      // drain
+    }
+
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "ok" }),
+    );
+
+    // call-1 was bound to snapshot {alpha}. alpha must succeed; gamma must
+    // be rejected even though gamma was authorized in the LATER call.
+    await expect(
+      wrapTool(ctx, { toolId: "alpha", input: {}, callId: callId1 }, toolNext as never),
+    ).resolves.toEqual({ output: "ok" });
+    await expect(
+      wrapTool(ctx, { toolId: "gamma", input: {}, callId: callId1 }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
+
+    // call-2 was bound to snapshot {gamma}. gamma must succeed; alpha must
+    // be rejected even though alpha was authorized in the EARLIER call.
+    await expect(
+      wrapTool(ctx, { toolId: "gamma", input: {}, callId: callId2 }, toolNext as never),
+    ).resolves.toEqual({ output: "ok" });
+    await expect(
+      wrapTool(ctx, { toolId: "alpha", input: {}, callId: callId2 }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
   });
 
   test("custom isUserSender predicate routes filtering for non-default sender IDs — round 19 F1", async () => {
