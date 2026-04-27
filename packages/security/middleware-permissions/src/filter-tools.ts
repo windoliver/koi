@@ -146,7 +146,12 @@ export function createFilterTools(deps: FilterToolsDeps): {
         if (auditSink !== undefined) {
           auditFilterDecision(ctx, tool.name, finalDecision, auditSink, clock);
         }
-        await ctx.dispatchPermissionDecision?.(query, finalDecision);
+        // Fire-and-forget: filter-time dispatch is observability-only; execution-time
+        // wrapToolCall is the fail-closed gate. Awaiting per tool would add O(n) flush
+        // latency on every planning pass for large tool registries.
+        void Promise.resolve(ctx.dispatchPermissionDecision?.(query, finalDecision)).catch(
+          () => {},
+        );
       };
 
       if (decision.effect === "deny") {

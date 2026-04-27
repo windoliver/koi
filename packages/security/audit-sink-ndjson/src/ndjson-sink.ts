@@ -309,6 +309,9 @@ export function createNdjsonAuditSink(
 
   return {
     log(entry: AuditEntry): Promise<void> {
+      if (closedFlag) {
+        return Promise.reject(new Error("audit NDJSON sink is closed — log rejected"));
+      }
       if (startupError !== undefined) {
         return Promise.reject(
           new Error("audit NDJSON sink failed to initialize — cannot accept writes", {
@@ -338,6 +341,9 @@ export function createNdjsonAuditSink(
     },
 
     flush(): Promise<void> {
+      if (closedFlag) {
+        return Promise.reject(new Error("audit NDJSON sink is closed — flush rejected"));
+      }
       if (startupError !== undefined) {
         return Promise.reject(
           new Error("audit NDJSON sink failed to initialize — flush rejected", {
