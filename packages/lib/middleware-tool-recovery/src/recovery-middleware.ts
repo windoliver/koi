@@ -184,9 +184,24 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     // multiple model invocations within the same turn
     // (#review-round21-F3). Random hex segment + monotonic clock.
     const invocationNonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    // let: most recent usage observed on the upstream stream. Captured
+    // from `usage` chunks AND from any `usage` field on a terminal
+    // `error` chunk. Used to preserve token accounting on synthesized
+    // recovery `done` responses so downstream cost / budget middleware
+    // does not record recovered turns as zero-spend
+    // (#review-round40-F1).
+    let lastUsage: ModelResponse["usage"] | undefined;
 
     try {
       for await (const chunk of next(request)) {
+        if (chunk.kind === "usage") {
+          lastUsage = { inputTokens: chunk.inputTokens, outputTokens: chunk.outputTokens };
+        } else if (chunk.kind === "error" && chunk.usage !== undefined) {
+          lastUsage = {
+            inputTokens: chunk.usage.inputTokens,
+            outputTokens: chunk.usage.outputTokens,
+          };
+        }
         if (bypass) {
           yield chunk;
           continue;
@@ -313,9 +328,14 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
                 yield { kind: "text_delta", delta: recovered.cleanedText };
               }
               yield* synthesizeToolCallChunks(recovered.calls);
+              // Preserve provider model + accumulated usage so downstream
+              // cost / budget / reporting middleware records recovered
+              // turns against the real provider, not as zero-spend
+              // anonymous calls (#review-round40-F1).
               const syntheticResponse: ModelResponse = {
                 content: streamedPrefix + recovered.cleanedText,
-                model: "unknown",
+                model: request.model ?? "unknown",
+                ...(lastUsage !== undefined ? { usage: lastUsage } : {}),
                 metadata: { recoveryError: chunk.message, recovered: true },
               };
               yield { kind: "done", response: syntheticResponse };
@@ -409,9 +429,14 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
           yield* synthesizeToolCallChunks(recovered.calls);
           const errorMessage =
             upstreamError instanceof Error ? upstreamError.message : String(upstreamError);
+          // Preserve provider model + accumulated usage so downstream
+          // cost / budget / reporting middleware records recovered turns
+          // against the real provider, not as zero-spend anonymous calls
+          // (#review-round40-F1).
           const syntheticResponse: ModelResponse = {
             content: streamedPrefix + recovered.cleanedText,
-            model: "unknown",
+            model: request.model ?? "unknown",
+            ...(lastUsage !== undefined ? { usage: lastUsage } : {}),
             metadata: { recoveryError: errorMessage, recovered: true },
           };
           yield { kind: "done", response: syntheticResponse };

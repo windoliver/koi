@@ -682,6 +682,58 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
     expect(done.response.metadata?.recoveryError).toBe("connection reset");
   });
 
+  test("recovered stream-error preserves provider model + usage on synthesized done — round 40 F1", async () => {
+    // Both stream-error recovery branches (terminal `error` chunk AND
+    // thrown stream) must preserve the originating provider model name
+    // and any usage seen on the upstream stream. Otherwise downstream
+    // cost / budget / reporting middleware records recovered turns as
+    // zero-spend anonymous calls — exactly on degraded paths.
+    const mw = createToolRecoveryMiddleware({
+      patterns: ["hermes"],
+      recoverOnStreamError: true,
+    });
+    const tools = [tool("foo")];
+
+    // Branch 1: terminal `error` chunk carrying its own usage.
+    const errBranch: ModelStreamHandler = async function* () {
+      yield {
+        kind: "text_delta",
+        delta: '<tool_call>{"name":"foo","arguments":{"x":1}}</tool_call>',
+      };
+      yield {
+        kind: "error",
+        message: "stream interrupted",
+        usage: { inputTokens: 100, outputTokens: 7 },
+      };
+    };
+    const errOut = await collect(
+      getStream(mw)(turnCtx(), { messages: [], tools, model: "openai/gpt-4o" }, errBranch),
+    );
+    const errDone = errOut.find((c) => c.kind === "done");
+    expect(errDone).toBeDefined();
+    if (errDone?.kind !== "done") throw new Error("expected done");
+    expect(errDone.response.model).toBe("openai/gpt-4o");
+    expect(errDone.response.usage).toEqual({ inputTokens: 100, outputTokens: 7 });
+
+    // Branch 2: stream throws after a `usage` chunk.
+    const throwBranch: ModelStreamHandler = async function* () {
+      yield {
+        kind: "text_delta",
+        delta: '<tool_call>{"name":"foo","arguments":{"x":1}}</tool_call>',
+      };
+      yield { kind: "usage", inputTokens: 200, outputTokens: 11 };
+      throw new Error("connection reset");
+    };
+    const throwOut = await collect(
+      getStream(mw)(turnCtx(), { messages: [], tools, model: "anthropic/claude" }, throwBranch),
+    );
+    const throwDone = throwOut.find((c) => c.kind === "done");
+    expect(throwDone).toBeDefined();
+    if (throwDone?.kind !== "done") throw new Error("expected done");
+    expect(throwDone.response.model).toBe("anthropic/claude");
+    expect(throwDone.response.usage).toEqual({ inputTokens: 200, outputTokens: 11 });
+  });
+
   test("thinking_delta and usage chunks are preserved across the buffer", async () => {
     const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("foo")];
