@@ -14,6 +14,7 @@ export function mapNamespaceMode(mode: NamespaceMode | undefined): NexusNamespac
 }
 
 export function mapScopeToNexus(scope: DelegationScope): NexusDelegateScope {
+  // scope_prefix not mapped: DelegationScope carries no namespace prefix concept
   return {
     allowed_operations: scope.permissions.allow ?? [],
     remove_grants: scope.permissions.deny ?? [],
