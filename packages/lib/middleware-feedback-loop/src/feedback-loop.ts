@@ -441,11 +441,12 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
       // when the gate above already let traffic through unobserved
       // (no-forgeHealth path).
       const sid = tokenAdmitted ? sidByToken.get(admissionToken) : undefined;
-      // Bind by object identity now (idempotent) so the read-side
-      // healthHandle path (F99) still resolves for this exact context.
-      if (tokenAdmitted && !observedSessions.has(ctx.session)) {
-        observedSessions.set(ctx.session, ctx.session.sessionId);
-      }
+      // F123: do NOT promote token-admitted (rebuilt/proxied) contexts
+      // into the privileged `observedSessions` map — that would let a
+      // caller holding a live `sessionId|runId` token call
+      // `healthHandle.getSnapshot()` for another tenant's tracker.
+      // observedSessions is populated ONLY from onSessionStart
+      // (engine-issued object identity); wrap traffic does not promote.
       const tracker = sid !== undefined ? trackers.get(sid) : undefined;
       if (tracker !== undefined && (await tracker.isQuarantined(request.toolId))) {
         const feedback: ForgeToolErrorFeedback = {

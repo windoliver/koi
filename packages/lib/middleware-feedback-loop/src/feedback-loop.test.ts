@@ -759,6 +759,50 @@ describe("createFeedbackLoopMiddleware", () => {
       }
     });
 
+    it("F123: a token-admitted rebuilt SessionContext cannot escalate to healthHandle.getSnapshot", async () => {
+      // Reviewer F123: prior wrap* path silently added every token-
+      // admitted ctx into the privileged `observedSessions` map. Once
+      // there, `healthHandle.getSnapshot(rebuilt, ...)` would treat
+      // the rebuilt object as engine-issued and return per-session
+      // tracker state, leaking quarantine/health snapshots across
+      // tenants. Fix: observedSessions is populated only from
+      // onSessionStart (object identity); wrap admission uses a
+      // separate token table and does NOT promote into observedSessions.
+      const sentinel = mock(() => undefined);
+      const fakeTracker: ToolHealthTracker = {
+        recordSuccess: () => {},
+        recordFailure: () => {},
+        getSnapshot: () => undefined,
+        getL0Snapshot: sentinel,
+        checkAndQuarantine: async () => false,
+        checkAndDemote: async () => false,
+        isQuarantined: async () => false,
+        dispose: async () => {},
+      };
+      const spy = spyOn(toolHealthModule, "createToolHealthTracker").mockReturnValue(fakeTracker);
+      try {
+        const mw = createFeedbackLoopMiddleware({ forgeHealth: makeMinimalForgeHealth() });
+        const original = mockSessionCtx();
+        await mw.onSessionStart?.(original);
+        const rebuilt: SessionContext = { ...original };
+        const next = mock(async (_req: ToolRequest) => mockToolResponse());
+        // Token-admitted traffic on the rebuilt object passes through.
+        const result = await mw.wrapToolCall?.(mockTurnCtx(rebuilt), mockToolRequest(), next);
+        expect(result).toBeDefined();
+        sentinel.mockClear();
+        // Engine-issued ctx reaches the tracker.
+        mw.healthHandle?.getSnapshot(original, "any-tool");
+        expect(sentinel).toHaveBeenCalledTimes(1);
+        sentinel.mockClear();
+        // Rebuilt ctx must NOT — observedSessions was not promoted.
+        const out = mw.healthHandle?.getSnapshot(rebuilt, "any-tool");
+        expect(out).toBeUndefined();
+        expect(sentinel).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it("F118: a rebuilt SessionContext with the same sessionId+runId is admitted", async () => {
       // Reviewer F118: F111 keyed admission on exact JS-object
       // identity, hard-failing every tool call for hosts that proxy

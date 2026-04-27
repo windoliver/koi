@@ -351,6 +351,16 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   const sidByToken = new Map<string, SessionId>();
 
   /**
+   * Per-sid readiness flag — true once `onSessionAttached` has actually
+   * delivered the scoped handle (or the config has no callback). The
+   * wrap* hooks gate detection on this so a token-admitted rebuilt
+   * SessionContext is not promoted into the privileged
+   * `observedSessions` map (which authorizes `forSession()`/dismissal).
+   * F123 regression.
+   */
+  const readySids = new Set<SessionId>();
+
+  /**
    * Resolve the bound sessionId for an already-observed SessionContext.
    * All middleware reads/writes MUST resolve through this helper so a
    * later mutation of `session.sessionId` cannot redirect counters/
@@ -414,7 +424,10 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       admittedTokens.add(token);
       sidByToken.set(token, session.sessionId);
     }
-    if (config.onSessionAttached === undefined) return;
+    if (config.onSessionAttached === undefined) {
+      readySids.add(session.sessionId);
+      return;
+    }
     if (attachedDelivered.has(session)) return;
     // Capture sessionId at issuance and close over it. Resolving via
     // `session.sessionId` on every call would let a later mutation of
@@ -470,6 +483,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
         () => {
           deliveryInFlight.delete(session);
           attachedDelivered.add(session);
+          readySids.add(sid);
         },
         (e: unknown) => {
           deliveryInFlight.delete(session);
@@ -483,24 +497,14 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     }
     deliveryInFlight.delete(session);
     attachedDelivered.add(session);
+    readySids.add(sid);
   }
 
-  /**
-   * Detector logic runs only when the session is fully ready: observed
-   * (registered via onSessionStart) AND, if `onSessionAttached` is
-   * configured, that callback has successfully delivered the scoped
-   * handle. Without this gate, a permanently-throwing callback would
-   * leave the host with no reference to the scoped handle while signals
-   * still accumulate, cooldowns advance, and `maxForgesPerSession`
-   * burns — producing an undismissable backlog. While not ready, wrap*
-   * hooks pass traffic through unchanged and counters do not advance.
-   * F112 regression.
-   */
-  function isSessionReady(session: SessionContext): boolean {
-    if (!observedSessions.has(session)) return false;
-    if (config.onSessionAttached === undefined) return true;
-    return attachedDelivered.has(session);
-  }
+  // Detector readiness is gated by the per-sid `readySids` set: the
+  // wrap* hooks check `readySids.has(sid)` before running detection so
+  // a permanently-throwing onSessionAttached cannot accumulate signals
+  // before the host has the scoped handle (F112), and a token-admitted
+  // (rebuilt) ctx is not required to live in `observedSessions` (F123).
   // Handle-level counter so signal ids are unique across sessions —
   // otherwise two concurrent tenants would both produce `demand-1` and
   // `dismiss()` could clear the wrong session's signal.
@@ -1116,21 +1120,27 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
         }
         return next(request);
       }
-      // Bind by object identity now (idempotent) so post-admission
-      // helpers like forSession and the bound-id resolver have an
-      // anchor for THIS exact SessionContext instance. F118.
-      if (!observedSessions.has(ctx.session)) {
-        observedSessions.set(ctx.session, ctx.session.sessionId);
+      // F123: do NOT promote token-admitted (rebuilt/proxied) contexts
+      // into the privileged `observedSessions` map — that would let a
+      // caller holding a live token call `forSession()` /
+      // `dismiss()` against another tenant's signals. Only retry
+      // onSessionAttached delivery for the engine-issued ctx (already
+      // present in observedSessions via onSessionStart). F98.
+      const isEngineIssued = observedSessions.has(ctx.session);
+      if (isEngineIssued) {
+        bindObserved(ctx.session);
       }
-      // Retry onSessionAttached delivery for observed sessions whose
-      // first delivery threw. Idempotent on the bind step. F98.
-      bindObserved(ctx.session);
+      // Resolve sid from the admission token so detector logic still
+      // runs for rebuilt contexts (F118) without touching the
+      // privileged identity map.
+      const sid =
+        sidByToken.get(admissionToken) ??
+        (isEngineIssued ? boundIdFor(ctx.session) : ctx.session.sessionId);
       // Until the scoped handle is delivered, the host has no way to
       // dismiss accumulated signals — pass through silently. F112.
-      if (!isSessionReady(ctx.session)) {
+      if (!readySids.has(sid)) {
         return next(request);
       }
-      const sid = boundIdFor(ctx.session);
       // Capture the session epoch BEFORE awaiting downstream work so
       // a late completion that crosses an onSessionEnd does not
       // mutate a detached state object or fire onDemand against a
@@ -1234,16 +1244,19 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
         }
         return next(request);
       }
-      if (!observedSessions.has(ctx.session)) {
-        observedSessions.set(ctx.session, ctx.session.sessionId);
+      // F123: see wrapToolCall — token-admitted contexts must NOT be
+      // promoted into observedSessions (which authorizes forSession).
+      const isEngineIssued = observedSessions.has(ctx.session);
+      if (isEngineIssued) {
+        bindObserved(ctx.session);
       }
-      // Retry onSessionAttached delivery if first attempt threw. F98.
-      bindObserved(ctx.session);
+      const sid =
+        sidByToken.get(admissionToken) ??
+        (isEngineIssued ? boundIdFor(ctx.session) : ctx.session.sessionId);
       // Pass through until scoped-handle delivery succeeds. F112.
-      if (!isSessionReady(ctx.session)) {
+      if (!readySids.has(sid)) {
         return next(request);
       }
-      const sid = boundIdFor(ctx.session);
       // Capture epoch pre-await — see wrapToolCall comment. F95 regression.
       const epoch = getOrCreateEpoch(sid);
       const state = getOrCreate(sid);
@@ -1279,16 +1292,19 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
         }
         return next(request);
       }
-      if (!observedSessions.has(ctx.session)) {
-        observedSessions.set(ctx.session, ctx.session.sessionId);
+      // F123: see wrapToolCall — token-admitted contexts must NOT be
+      // promoted into observedSessions (which authorizes forSession).
+      const isEngineIssued = observedSessions.has(ctx.session);
+      if (isEngineIssued) {
+        bindObserved(ctx.session);
       }
-      // Retry onSessionAttached delivery if first attempt threw. F98.
-      bindObserved(ctx.session);
+      const sid =
+        sidByToken.get(admissionToken) ??
+        (isEngineIssued ? boundIdFor(ctx.session) : ctx.session.sessionId);
       // Pass through until scoped-handle delivery succeeds. F112.
-      if (!isSessionReady(ctx.session)) {
+      if (!readySids.has(sid)) {
         return next(request);
       }
-      const sid = boundIdFor(ctx.session);
       // Capture epoch pre-await. A long-running stream that crosses
       // onSessionEnd must not commit corrections or capability-gap
       // counts against detached state. F95 regression.
@@ -1345,6 +1361,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
         resolvedToken !== undefined ? sidByToken.get(resolvedToken) : observedSessions.get(ctx);
       if (sid === undefined) return;
       sessions.delete(sid);
+      readySids.delete(sid);
       // Drop the session epoch — every previously issued scoped
       // handle captured a reference to that epoch object, so they
       // become no-ops via identity mismatch. A future session reusing

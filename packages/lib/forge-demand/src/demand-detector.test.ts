@@ -2988,4 +2988,39 @@ describe("createForgeDemandDetector", () => {
       ),
     ).toBe(false);
   });
+
+  it("F123: a token-admitted rebuilt SessionContext cannot escalate to forSession()", async () => {
+    // Reviewer F123: prior wrap* path silently added every token-
+    // admitted ctx into the privileged `observedSessions` map. Once
+    // there, `forSession(rebuilt)` would treat the rebuilt object as
+    // engine-issued and grant signal read/dismiss against another
+    // tenant's bucket. Fix: observedSessions is populated only from
+    // onSessionStart (object identity); wrap admission uses the
+    // separate token table and does NOT promote into observedSessions.
+    const handle = createForgeDemandDetector(
+      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
+    );
+    const original = createMockTurnContext({
+      session: { sessionId: "tenant-a" } as never,
+    });
+    await handle.middleware.onSessionStart?.(original.session);
+    const rebuilt: typeof original = {
+      ...original,
+      session: { ...original.session },
+    };
+    expect(rebuilt.session).not.toBe(original.session);
+    try {
+      await handle.middleware.wrapToolCall?.(rebuilt, toolReq("flaky"), async () => {
+        throw new Error("boom");
+      });
+    } catch {
+      // expected
+    }
+    // forSession on the original (engine-issued) ctx returns the
+    // tenant's signals as designed.
+    expect(handle.forSession(original.session).getActiveSignalCount()).toBe(1);
+    // forSession on the rebuilt ctx must throw — the rebuilt object
+    // was NOT promoted into the privileged identity map by wrap*.
+    expect(() => handle.forSession(rebuilt.session)).toThrow(/observed by the detector/);
+  });
 });
