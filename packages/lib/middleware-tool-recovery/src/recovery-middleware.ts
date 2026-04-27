@@ -24,7 +24,6 @@ import type {
   CapabilityFragment,
   KoiMiddleware,
   ModelChunk,
-  ModelHandler,
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
@@ -258,50 +257,17 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
     }
   }
 
-  async function wrapModelCallImpl(
-    ctx: TurnContext,
-    request: ModelRequest,
-    next: ModelHandler,
-  ): Promise<ModelResponse> {
-    const tools = request.tools;
-    if (tools === undefined || tools.length === 0) return next(request);
-
-    const response = await next(request);
-    // Skip recovery if a prior middleware already populated the trusted
-    // recovery channel (idempotent re-entry).
-    if (response.metadata?.__koi_recovered_tool_calls !== undefined) return response;
-
-    const recovered = runRecovery(ctx, response.content, tools, patterns, maxCalls, onEvent);
-    if (recovered === undefined) return response;
-
-    return {
-      ...response,
-      content: recovered.cleanedText,
-      // Trusted-recovery channel for the engine's synthesizeStream fallback:
-      // namespaced key + sentinel signature so generic `metadata.toolCalls`
-      // (used by adapters/middleware for diagnostics) cannot be misread as
-      // an execution directive. The engine validates `__koi: "recovered-
-      // tool-calls"` before promoting `calls` into tool_call_* chunks.
-      metadata: {
-        ...response.metadata,
-        __koi_recovered_tool_calls: {
-          __koi: "recovered-tool-calls",
-          calls: recovered.calls.map((c) => ({
-            toolName: c.toolName,
-            callId: c.callId,
-            input: c.input,
-          })),
-        },
-      },
-    };
-  }
-
   return {
     name: "koi:tool-recovery",
     priority: TOOL_RECOVERY_PRIORITY,
     phase: "resolve",
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
-    wrapModelCall: wrapModelCallImpl,
+    // Streaming-only: the engine consumes tool calls from `tool_call_end`
+    // events on the model stream. The wrapModelCall hook is intentionally
+    // absent — execution from generic `ModelResponse.metadata` would be a
+    // forge-able trust channel (any middleware/adapter could synthesize
+    // recovered calls). Adapters that lack a native modelStream must be
+    // wrapped by the engine's stream fallback for recovery to apply.
     wrapModelStream: wrapModelStreamImpl,
   };
 }

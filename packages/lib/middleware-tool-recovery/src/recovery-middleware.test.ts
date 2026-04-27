@@ -86,10 +86,12 @@ describe("createToolRecoveryMiddleware — defaults & metadata", () => {
     expect(cap?.description).not.toContain("json-fence");
   });
 
-  test("exposes both wrapModelCall and wrapModelStream", () => {
+  test("exposes only wrapModelStream — wrapModelCall is intentionally absent", () => {
     const mw = createToolRecoveryMiddleware();
-    expect(mw.wrapModelCall).toBeDefined();
     expect(mw.wrapModelStream).toBeDefined();
+    // Generic ModelResponse.metadata is not a trusted execution channel,
+    // so recovery refuses to operate on the non-streaming path.
+    expect(mw.wrapModelCall).toBeUndefined();
   });
 
   test("throws KoiRuntimeError when config is invalid", () => {
@@ -255,65 +257,6 @@ describe("createToolRecoveryMiddleware — recovery behavior", () => {
     expect(starts.length).toBe(1);
     expect((starts[0] as Extract<ModelChunk, { kind: "tool_call_start" }>).toolName).toBe("good");
     expect(events.some((e) => e.kind === "rejected" && e.toolName === "bad")).toBe(true);
-  });
-});
-
-describe("createToolRecoveryMiddleware — non-streaming wrapModelCall", () => {
-  function getCall(mw: KoiMiddleware): NonNullable<KoiMiddleware["wrapModelCall"]> {
-    const w = mw.wrapModelCall;
-    if (!w) throw new Error("wrapModelCall missing");
-    return w;
-  }
-
-  test("emits namespaced sentinel envelope and strips markup from content", async () => {
-    const mw = createToolRecoveryMiddleware();
-    const tools = [tool("foo")];
-    const text = 'thinking. <tool_call>{"name":"foo","arguments":{"k":1}}</tool_call> done.';
-    const out = await getCall(mw)(turnCtx(), { messages: [], tools }, async () =>
-      modelResponse(text),
-    );
-    expect(out.content).not.toContain("<tool_call>");
-
-    // Trusted channel: namespaced key + sentinel marker. Generic
-    // `metadata.toolCalls` MUST NOT be set — that key is reserved for
-    // adapter/middleware diagnostics and is not an execution channel.
-    expect(out.metadata?.toolCalls).toBeUndefined();
-    const env = out.metadata?.__koi_recovered_tool_calls as {
-      readonly __koi: string;
-      readonly calls: ReadonlyArray<{
-        readonly toolName: string;
-        readonly callId: string;
-        readonly input: { readonly k: number };
-      }>;
-    };
-    expect(env.__koi).toBe("recovered-tool-calls");
-    expect(env.calls.length).toBe(1);
-    expect(env.calls[0]?.toolName).toBe("foo");
-    expect(env.calls[0]?.input.k).toBe(1);
-    expect(env.calls[0]?.callId).toMatch(/^recovery-/);
-  });
-
-  test("does not re-recover when prior middleware already set the sentinel envelope", async () => {
-    const mw = createToolRecoveryMiddleware();
-    const tools = [tool("foo")];
-    const existing = {
-      __koi: "recovered-tool-calls",
-      calls: [{ toolName: "foo", callId: "prior-1", input: {} }],
-    };
-    const out = await getCall(mw)(turnCtx(), { messages: [], tools }, async () =>
-      modelResponse('<tool_call>{"name":"foo","arguments":{}}</tool_call>', {
-        metadata: { __koi_recovered_tool_calls: existing },
-      }),
-    );
-    expect(out.metadata?.__koi_recovered_tool_calls).toBe(existing);
-  });
-
-  test("passes through when no tools are advertised", async () => {
-    const mw = createToolRecoveryMiddleware();
-    const text = '<tool_call>{"name":"foo","arguments":{}}</tool_call>';
-    const out = await getCall(mw)(turnCtx(), { messages: [] }, async () => modelResponse(text));
-    expect(out.content).toBe(text);
-    expect(out.metadata?.__koi_recovered_tool_calls).toBeUndefined();
   });
 });
 

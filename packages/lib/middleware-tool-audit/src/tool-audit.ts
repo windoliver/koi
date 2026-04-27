@@ -330,19 +330,96 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     // recordOnSessionStart).
     if (!hydrated) return;
 
-    // Serialize saves: each call awaits the prior save's settlement before
-    // invoking store.save. Prevents two concurrent session ends from racing
-    // and letting a stale snapshot land after a newer one. The chain
-    // recovers from individual failures (per-call try/catch).
+    // Serialize saves so two concurrent session ends in this process can't
+    // race each other. Across PROCESSES sharing one ToolAuditStore, we
+    // additionally re-load before saving and merge any new disk state into
+    // the snapshot we're about to write — converting the raw load/save
+    // contract into an at-least-once read-modify-write. This narrows
+    // (though does not eliminate, absent CAS at the store layer) the
+    // multi-writer lost-update window. Stores that need stronger
+    // guarantees should provide their own versioned save.
     const previous = savePromise;
     savePromise = previous.then(async () => {
       try {
-        await store.save(snapshot);
+        const merged = await loadAndMergeForSave(snapshot);
+        await store.save(merged);
       } catch (e: unknown) {
         onError?.(e);
       }
     });
     await savePromise;
+  }
+
+  async function loadAndMergeForSave(
+    pendingSnapshot: ToolAuditSnapshot,
+  ): Promise<ToolAuditSnapshot> {
+    // Re-read disk so we can detect concurrent writes from other writers.
+    // If load throws, fall back to the in-memory snapshot — better than
+    // skipping the save entirely.
+    let onDisk: ToolAuditSnapshot | undefined;
+    try {
+      onDisk = await store.load();
+    } catch (e: unknown) {
+      onError?.(e);
+      return pendingSnapshot;
+    }
+
+    // Always max-merge against disk. Cumulative counters are
+    // monotonic-non-decreasing (callCount/successCount/failureCount/
+    // sessions*), so taking the max of (in-memory, on-disk) preserves any
+    // delta another writer landed since our last hydration/save without
+    // losing our own. We can't gate on `lastUpdatedAt` because the pending
+    // snapshot's timestamp is generated at save time and almost always
+    // exceeds the on-disk timestamp — even when another writer's
+    // higher-count delta is present. The max-merge is idempotent: when no
+    // other writer ran, disk values equal in-memory and the result is a
+    // no-op.
+    const mergedTools: Record<string, ToolUsageRecord> = {};
+    const allNames = new Set<string>([
+      ...Object.keys(pendingSnapshot.tools),
+      ...Object.keys(onDisk.tools),
+    ]);
+    for (const name of allNames) {
+      const a = pendingSnapshot.tools[name];
+      const b = onDisk.tools[name];
+      if (a === undefined && b !== undefined) {
+        mergedTools[name] = b;
+        continue;
+      }
+      if (b === undefined && a !== undefined) {
+        mergedTools[name] = a;
+        continue;
+      }
+      if (a === undefined || b === undefined) continue;
+      const callCount = Math.max(a.callCount, b.callCount);
+      const successCount = Math.max(a.successCount, b.successCount);
+      const failureCount = Math.max(a.failureCount, b.failureCount);
+      const totalLatencyMs = Math.max(a.totalLatencyMs, b.totalLatencyMs);
+      mergedTools[name] = {
+        toolName: name,
+        callCount,
+        successCount,
+        failureCount,
+        lastUsedAt: Math.max(a.lastUsedAt, b.lastUsedAt),
+        avgLatencyMs: callCount > 0 ? totalLatencyMs / callCount : 0,
+        minLatencyMs:
+          a.minLatencyMs === 0
+            ? b.minLatencyMs
+            : b.minLatencyMs === 0
+              ? a.minLatencyMs
+              : Math.min(a.minLatencyMs, b.minLatencyMs),
+        maxLatencyMs: Math.max(a.maxLatencyMs, b.maxLatencyMs),
+        totalLatencyMs,
+        sessionsAvailable: Math.max(a.sessionsAvailable, b.sessionsAvailable),
+        sessionsUsed: Math.max(a.sessionsUsed, b.sessionsUsed),
+      };
+    }
+
+    return {
+      tools: mergedTools,
+      totalSessions: Math.max(pendingSnapshot.totalSessions, onDisk.totalSessions),
+      lastUpdatedAt: Math.max(pendingSnapshot.lastUpdatedAt, onDisk.lastUpdatedAt),
+    };
   }
 
   return {

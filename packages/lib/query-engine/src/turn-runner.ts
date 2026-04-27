@@ -1113,36 +1113,13 @@ async function* synthesizeStream(
   if (response.content) {
     yield { kind: "text_delta", delta: response.content };
   }
-  // Trusted recovery channel: tool-recovery middleware (and ONLY tool-recovery
-  // middleware) sets `metadata.__koi_recovered_tool_calls` with a sentinel
-  // signature `__koi: "recovered-tool-calls"`. Generic `metadata.toolCalls`
-  // is NOT a trusted execution channel — provider adapters, unrelated
-  // middleware, and serialization layers may use that key for diagnostics.
-  // Promote ONLY the namespaced sentinel into structured tool_call_* chunks.
-  const recoveredEnvelope = response.metadata?.__koi_recovered_tool_calls;
-  if (
-    typeof recoveredEnvelope === "object" &&
-    recoveredEnvelope !== null &&
-    !Array.isArray(recoveredEnvelope)
-  ) {
-    const env = recoveredEnvelope as {
-      readonly __koi?: unknown;
-      readonly calls?: unknown;
-    };
-    if (env.__koi === "recovered-tool-calls" && Array.isArray(env.calls)) {
-      for (const call of env.calls) {
-        if (typeof call !== "object" || call === null) continue;
-        const toolName = (call as { readonly toolName?: unknown }).toolName;
-        const rawCallId = (call as { readonly callId?: unknown }).callId;
-        const input = (call as { readonly input?: unknown }).input;
-        if (typeof toolName !== "string" || typeof rawCallId !== "string") continue;
-        const callId = rawCallId as ToolCallId;
-        yield { kind: "tool_call_start", toolName, callId };
-        yield { kind: "tool_call_delta", callId, delta: JSON.stringify(input ?? {}) };
-        yield { kind: "tool_call_end", callId };
-      }
-    }
-  }
+  // Note: synthesizeStream does NOT promote any response-metadata field
+  // into executable tool_call_* chunks. ModelResponse.metadata is a
+  // generic, caller-controlled bag — letting it drive tool execution is
+  // a trust-boundary failure (any middleware or compromised adapter
+  // could forge it). Middleware that needs to inject recovered calls
+  // (e.g. @koi/middleware-tool-recovery) must run on the streaming path
+  // (`wrapModelStream`) and emit real tool_call_* chunks itself.
   yield {
     kind: "done",
     response,

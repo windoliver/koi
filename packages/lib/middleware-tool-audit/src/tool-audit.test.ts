@@ -359,6 +359,65 @@ describe("createToolAuditMiddleware", () => {
       expect(errorCallback).toHaveBeenCalledTimes(1);
     });
 
+    test("re-loads disk before save and merges another writer's deltas instead of overwriting them", async () => {
+      // Simulate a second writer (another process) updating the store
+      // in between this writer's hydrate and save. Without merge, our save
+      // would clobber their callCount; with merge, both contributions
+      // are preserved (max-merge for cumulative counters).
+      // let: lastUpdatedAt grows on each external write to mimic disk state.
+      let diskState: ToolAuditSnapshot = {
+        tools: {
+          search: {
+            toolName: "search",
+            callCount: 1,
+            successCount: 1,
+            failureCount: 0,
+            lastUsedAt: 0,
+            avgLatencyMs: 0,
+            minLatencyMs: 0,
+            maxLatencyMs: 0,
+            totalLatencyMs: 0,
+            sessionsAvailable: 1,
+            sessionsUsed: 1,
+          },
+        },
+        totalSessions: 1,
+        lastUpdatedAt: 100,
+      };
+      const store: ToolAuditStore = {
+        load: () => diskState,
+        save: (s) => {
+          diskState = s;
+        },
+      };
+      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+      const wrap = getWrapToolCall(mw);
+
+      // We hydrate, then another writer lands a much higher call count.
+      await mw.onSessionStart?.(sessionCtx());
+      diskState = {
+        ...diskState,
+        tools: {
+          search: {
+            ...diskState.tools.search!,
+            callCount: 999,
+            successCount: 999,
+            sessionsUsed: 50,
+          },
+        },
+        totalSessions: 50,
+        lastUpdatedAt: 200, // newer than ours
+      };
+
+      await wrap(turnCtx(), toolReq("search"), async () => ({ output: "ok" }));
+      await mw.onSessionEnd?.(sessionCtx());
+
+      // Persisted snapshot must include the other writer's larger counts —
+      // not silently roll them back to our hydrated baseline + delta.
+      expect(diskState.tools.search?.callCount).toBeGreaterThanOrEqual(999);
+      expect(diskState.totalSessions).toBeGreaterThanOrEqual(50);
+    });
+
     test("serializes concurrent saves so a slow earlier save cannot overwrite a faster later save", async () => {
       // Two onSessionEnd calls fire concurrently. The first save deliberately
       // takes longer than the second. Without serialization, the slow save
