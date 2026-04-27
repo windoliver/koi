@@ -259,9 +259,13 @@ describe("createForgeDemandDetector", () => {
 
   it("does not re-fire user_correction when transcript history is replayed on retry", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(makeConfig({ onDemand: (s) => signals.push(s) }));
+    let now = 10;
+    const handle = createForgeDemandDetector(
+      makeConfig({ clock: () => now, onDemand: (s) => signals.push(s) }),
+    );
 
     const okNext = async (): Promise<ToolResponse> => toolRes();
+    now = 50;
     await handle.middleware.wrapToolCall?.(ctx, toolReq("any-tool"), okNext);
 
     const correction: InboundMessage = {
@@ -326,16 +330,19 @@ describe("createForgeDemandDetector", () => {
 
   it("preserves user_correction across a failed model call replayed on retry", async () => {
     const signals: ForgeDemandSignal[] = [];
+    let now = 10;
     // Active cooldown — the correction must fire once and NOT be dropped on
     // retry because the watermark advanced before the failed model call.
     const handle = createForgeDemandDetector(
       makeConfig({
+        clock: () => now,
         budget: { ...DEFAULT_FORGE_BUDGET, cooldownMs: 60_000 },
         onDemand: (s) => signals.push(s),
       }),
     );
 
     const okNext = async (): Promise<ToolResponse> => toolRes();
+    now = 50;
     await handle.middleware.wrapToolCall?.(ctx, toolReq("any-tool"), okNext);
 
     const correction: InboundMessage = {
@@ -632,9 +639,13 @@ describe("createForgeDemandDetector", () => {
 
   it("emits user_correction once and survives both replay and a no-replay model failure (cooldownMs=0)", async () => {
     const signals: ForgeDemandSignal[] = [];
+    let now = 10;
     // cooldownMs=0 — dedupe must come from the per-message timestamp set,
     // NOT from cooldown.
-    const handle = createForgeDemandDetector(makeConfig({ onDemand: (s) => signals.push(s) }));
+    const handle = createForgeDemandDetector(
+      makeConfig({ clock: () => now, onDemand: (s) => signals.push(s) }),
+    );
+    now = 50;
     await handle.middleware.wrapToolCall?.(ctx, toolReq("any"), async () => toolRes());
     const correction: InboundMessage = {
       senderId: "user",
