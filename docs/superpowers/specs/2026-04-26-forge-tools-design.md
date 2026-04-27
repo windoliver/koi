@@ -42,7 +42,7 @@ No dep on `@koi/engine`, no dep on peer L2 packages.
 
 ## Tool surface
 
-All four are factory functions returning a `Tool` matching the L0 `Tool` contract. Each takes `{ store: ForgeStore }` via constructor injection.
+All four are factory functions returning a `Tool` matching the L0 `Tool` contract. Each takes `{ store: ForgeStore; caller: CallerContext }` via constructor injection, where `CallerContext = { agentId: string; zoneId: string | null }` resolved from the agent loop's `ExecutionContext` at tool-build time. Caller context drives the visibility model described under *Trust + scope enforcement*.
 
 ### `forge_tool`
 
@@ -91,17 +91,49 @@ Concrete implementation of L0's `ForgeStore` interface. Ports v1's `createInMemo
 
 Implements: `save`, `load`, `search`, `searchSummaries`, `remove`, `update`, `exists`, `watch`, `dispose`. Skips optional `promote` / `promoteAndUpdate` / `lineage` (out of primordial scope).
 
-Behavior:
+### Content-addressed identity vs mutable metadata
 
-- `save(brick)`: recompute `BrickId` from content via `@koi/hash`. If mismatch → `KoiError "INVARIANT_VIOLATION"`. If id already present → `KoiError "CONFLICT"`. Otherwise insert with `storeVersion: 1` and notify watchers (`StoreChangeEvent { kind: "saved" }`).
+`BrickId = sha256(canonical(<identity-fields>))`. Identity fields are the *content* of the brick — fields that, if changed, mean it is a different brick:
+
+- `kind`, `name`, `description`, `scope`, `provenance`, `version`, plus kind-discriminated content: `implementation` + `inputSchema` + `outputSchema` (tool/middleware/channel), `content` (skill), `manifestYaml` (agent), `steps` + `exposedInput` + `exposedOutput` (composite).
+
+Hash excludes mutable runtime metadata: `lifecycle`, `policy`, `usageCount`, `tags`, `lastVerifiedAt`, `fitness`, `trailStrength`, `driftContext`, `collectiveMemory`, `trigger`, `namespace`, `trustTier`, `storeVersion`, `signature`. These overlap exactly with the L0 `BrickUpdate` field set — `update()` is therefore by-construction restricted to non-identity fields and `BrickId` cannot drift from content. A `_AssertHashFieldsDisjointFromUpdate` compile-time check in `shared.ts` enforces this:
+
+```ts
+type _AssertNoHashedFieldInUpdate =
+  Exclude<keyof BrickUpdate, "expectedVersion"> & HashedFieldNames extends never
+    ? true : never;
+```
+
+If a future PR adds a hashed field to `BrickUpdate` (or vice versa) the build breaks before behavior diverges.
+
+### Behavior
+
+- `save(brick)`: recompute `BrickId` from identity fields via `@koi/hash`. If recomputed id mismatches `brick.id` → `KoiError "INVARIANT_VIOLATION"`. If id already present **and stored content is structurally identical** → return success (idempotent — handles retry-after-timeout). If id already present **but content differs** → `KoiError "INVARIANT_VIOLATION"` (this is a sha256 collision or tampering, not a real conflict). Otherwise insert with `storeVersion: 1` and notify (`StoreChangeEvent { kind: "saved" }`).
 - `load(id)`: returns artifact or `KoiError "NOT_FOUND"`.
-- `search(query)`: filter via `matchesBrickQuery`, sort via `sortBricks`, slice by `query.limit`.
-- `update(id, updates)`: optimistic locking via `expectedVersion`. Mismatch → `CONFLICT`. Apply via `applyBrickUpdate`, increment `storeVersion`, notify (`updated`). Empty update is a no-op success.
+- `search(query)`: filter via `matchesBrickQuery`, sort via `sortBricks`, slice by `query.limit`. **Caller scope is enforced here** — see Trust + scope below.
+- `update(id, updates)`: optimistic locking via `expectedVersion`. Mismatch → `CONFLICT`. Apply via `applyBrickUpdate`, increment `storeVersion`, notify (`updated`). Empty update is a no-op success. (`BrickUpdate` only contains non-hashed fields by L0 contract.)
 - `remove(id)`: deletes; notifies (`removed`). Missing → `NOT_FOUND`.
 - `watch(listener)`: backed by `createMemoryStoreChangeNotifier`. Returns unsubscribe.
 - `dispose()`: clears notifier subscriptions.
 
 No eviction, no persistence across restarts. Pure `Map<BrickId, BrickArtifact>`.
+
+### Trust + scope enforcement (visibility model)
+
+`forge_list` and `forge_inspect` return artifacts that an agent can *see*. Without a visibility check, any agent calling these tools could enumerate every artifact in a shared store, including implementation source from other agents/zones.
+
+Each `create*Tool` factory takes a required `caller: { agentId: string; zoneId: string | null }` resolved from the agent loop's `ExecutionContext` at tool-build time. The store applies a visibility predicate:
+
+- `scope: "agent"` artifact → visible only when `provenance.metadata.agentId === caller.agentId`.
+- `scope: "zone"` artifact → visible only when `caller.zoneId === artifact.scope.zoneId` (or both null).
+- `scope: "global"` artifact → visible to everyone.
+
+`forge_list`: scope filter intersected with visibility predicate; out-of-scope hits are dropped silently (do not leak existence).
+`forge_inspect`: visibility predicate evaluated; failure → `KoiError "NOT_FOUND"` (do not leak existence with `FORBIDDEN`).
+`forge_tool` / `forge_middleware`: caller scope must be ≥ requested artifact scope (agent < zone < global). Privilege-escalation attempt → `KoiError "FORBIDDEN"`.
+
+Same predicate used for `search` and `searchSummaries` projections — store applies it once, tools never re-implement.
 
 ## File layout
 
@@ -141,10 +173,10 @@ Total: ~400 LOC source + ~225 LOC tests.
 Unit (colocated `*.test.ts`):
 
 1. **memory-store**: round-trip save/load/search/remove; content-integrity rejection on tampered artifact (mutated content with stale id); version conflict on stale `expectedVersion`; watcher fires on save/update/remove with correct `kind`; empty-update no-op; `searchSummaries` projection equivalent to `search` + map.
-2. **forge_tool**: valid input → `ToolArtifact` persisted with `kind: "tool"`, `lifecycle: "synthesizing"`, `id` matches recomputed content hash; invalid input → `INVALID_INPUT`; descriptor returned by `tool.descriptor` satisfies `ToolDescriptor`; double-synthesize same content → `CONFLICT`.
+2. **forge_tool**: valid input → `ToolArtifact` persisted with `kind: "tool"`, `lifecycle: "synthesizing"`, `id` matches recomputed content hash; invalid input → `INVALID_INPUT`; descriptor returned by `tool.descriptor` satisfies `ToolDescriptor`; double-synthesize same content (retry case) → idempotent success returning the same `brickId`; cross-scope synthesize (agent caller requesting `scope: "global"`) → `FORBIDDEN`.
 3. **forge_middleware**: same as forge_tool but for `ImplementationArtifact` with `kind: "middleware"`.
-4. **forge_list**: filter by kind/scope/lifecycle; empty store → empty array; respects `limit` and hard cap (200).
-5. **forge_inspect**: returns artifact for known id; returns `NOT_FOUND` for unknown id.
+4. **forge_list**: filter by kind/scope/lifecycle; empty store → empty array; respects `limit` and hard cap (200); visibility — agent-scope brick from another agent is omitted silently; zone-scope brick from another zone is omitted silently; global-scope brick visible to all.
+5. **forge_inspect**: returns artifact for known visible id; returns `NOT_FOUND` for unknown id; returns `NOT_FOUND` (not `FORBIDDEN`) for known-but-not-visible id (existence non-leak).
 
 ≥80% line/function/statement coverage (CI threshold).
 
