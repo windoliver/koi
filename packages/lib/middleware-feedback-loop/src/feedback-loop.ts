@@ -347,29 +347,25 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
       // `ctx.session.sessionId` would let an in-process caller skip
       // onSessionStart, fabricate a TurnContext naming another tenant's
       // sessionId, and drive recordSuccess/recordFailure into that
-      // tenant's live tracker bucket — quarantining a healthy tool
-      // or skewing latency/error windows for a session it does not own.
-      // F100/F111 regression.
+      // tenant's live tracker bucket. F100/F111 regression.
       //
-      // Tool checks are configured but the session was never observed
-      // via onSessionStart: fail closed loudly. Silently passing
-      // through would skip the quarantine gate (a quarantined tool
-      // would execute again) and drop health metrics, causing the
-      // tracker to never accumulate the data needed for future
-      // quarantine/demotion decisions. F115 regression. The engine
-      // and `@koi/runtime` already drive `onSessionStart`; this throw
-      // surfaces direct-consumer wiring bugs at the first call rather
-      // than letting them accumulate into corrupt health state.
+      // Scope of the strict admission check: ONLY when `forgeHealth`
+      // is configured does cross-session poisoning matter — that is
+      // the path that owns per-session tracker buckets and could
+      // quarantine the wrong tenant's tools. `toolValidators` and
+      // `toolGates` are stateless / per-request, so requiring exact
+      // SessionContext object identity for them would break legitimate
+      // hosts that rebuild or proxy `TurnContext` between calls. F116.
       const sid = observedSessions.get(ctx.session);
-      if (sid === undefined) {
+      if (config.forgeHealth !== undefined && sid === undefined) {
         throw KoiRuntimeError.from(
           "VALIDATION",
           "feedback-loop wrapToolCall received traffic for an unobserved session — " +
-            "the engine must call onSessionStart() before wrapToolCall() when tool checks " +
-            "(forgeHealth, toolValidators, or toolGates) are configured.",
+            "the engine must call onSessionStart() before wrapToolCall() when " +
+            "`forgeHealth` is configured (per-session tracker state requires admission).",
         );
       }
-      const tracker = trackers.get(sid);
+      const tracker = sid !== undefined ? trackers.get(sid) : undefined;
       if (tracker !== undefined && (await tracker.isQuarantined(request.toolId))) {
         const feedback: ForgeToolErrorFeedback = {
           kind: "forge_tool_quarantined",

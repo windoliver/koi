@@ -302,6 +302,18 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   const attachedDelivered = new WeakSet<SessionContext>();
 
   /**
+   * Track which unobserved SessionContext instances have already
+   * triggered a "skipped — onSessionStart not called" warning so the
+   * detector does not spam logs on every wrap* tick. F117. Loud
+   * once-per-context warning surfaces the failure mode that the
+   * detector goes silently dormant when the engine's lifecycle hooks
+   * are not driven (forge-demand is intentionally passive — without a
+   * loud signal, hosts could ship a misconfiguration and never notice
+   * that auto-forge simply never triggers in production).
+   */
+  const skippedWarned = new WeakSet<SessionContext>();
+
+  /**
    * Resolve the bound sessionId for an already-observed SessionContext.
    * All middleware reads/writes MUST resolve through this helper so a
    * later mutation of `session.sessionId` cannot redirect counters/
@@ -986,7 +998,18 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // Trust gate: only sessions registered via the engine-controlled
       // onSessionStart hook are observed. Unregistered contexts pass
       // through with no detector state — never auto-bind here. F110.
+      // Warn ONCE per SessionContext instance so a host that forgets
+      // the lifecycle hook does not silently get a dormant detector
+      // (no signals, no errors, no metrics — just nothing). F117.
       if (!observedSessions.has(ctx.session)) {
+        if (!skippedWarned.has(ctx.session)) {
+          skippedWarned.add(ctx.session);
+          console.error(
+            "[forge-demand] wrapToolCall: skipping detector for unobserved session " +
+              `"${ctx.session.sessionId}" — call onSessionStart() before driving traffic. ` +
+              "Detector is dormant for this session; signals will not fire.",
+          );
+        }
         return next(request);
       }
       // Retry onSessionAttached delivery for observed sessions whose
@@ -1084,8 +1107,16 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      // Trust gate: see wrapToolCall. F110.
+      // Trust gate: see wrapToolCall. F110/F117.
       if (!observedSessions.has(ctx.session)) {
+        if (!skippedWarned.has(ctx.session)) {
+          skippedWarned.add(ctx.session);
+          console.error(
+            "[forge-demand] wrapModelCall: skipping detector for unobserved session " +
+              `"${ctx.session.sessionId}" — call onSessionStart() before driving traffic. ` +
+              "Detector is dormant for this session; signals will not fire.",
+          );
+        }
         return next(request);
       }
       // Retry onSessionAttached delivery if first attempt threw. F98.
@@ -1113,8 +1144,16 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      // Trust gate: see wrapToolCall. F110.
+      // Trust gate: see wrapToolCall. F110/F117.
       if (!observedSessions.has(ctx.session)) {
+        if (!skippedWarned.has(ctx.session)) {
+          skippedWarned.add(ctx.session);
+          console.error(
+            "[forge-demand] wrapModelStream: skipping detector for unobserved session " +
+              `"${ctx.session.sessionId}" — call onSessionStart() before driving traffic. ` +
+              "Detector is dormant for this session; signals will not fire.",
+          );
+        }
         return next(request);
       }
       // Retry onSessionAttached delivery if first attempt threw. F98.

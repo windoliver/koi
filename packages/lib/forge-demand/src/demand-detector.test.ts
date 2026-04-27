@@ -2725,4 +2725,49 @@ describe("createForgeDemandDetector", () => {
     );
     expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(0);
   });
+
+  it("F117: wrap* logs once per unobserved SessionContext so a dormant detector is loud", async () => {
+    // Reviewer F117: forge-demand is intentionally passive. With the
+    // F110 trust gate, an unobserved session silently passes through —
+    // a host that wires the middleware but forgets onSessionStart
+    // ships a configuration where auto-forge simply never triggers,
+    // with no visible error. Fix: warn once per SessionContext on the
+    // first skip across each wrap* hook so dormant mode is detectable
+    // in production logs without spamming on every tool call.
+    const swallowed: unknown[][] = [];
+    const originalErr = console.error;
+    console.error = (...a: unknown[]): void => {
+      swallowed.push(a);
+    };
+    try {
+      const handle = createForgeDemandDetector(makeConfig({}));
+      const stranded = createMockTurnContext({
+        session: { sessionId: "stranded-session" } as never,
+      });
+      // Drive 3 tool calls + 2 model calls without onSessionStart.
+      // The detector must short-circuit (no signals) but log exactly
+      // ONCE per hook on the first skip — not 5 times.
+      const okTool = async (): Promise<ToolResponse> => toolRes();
+      const okModel = async (): Promise<ModelResponse> => modelRes("ok");
+      for (let i = 0; i < 3; i += 1) {
+        await handle.middleware.wrapToolCall?.(stranded, toolReq("any"), okTool);
+      }
+      for (let i = 0; i < 2; i += 1) {
+        await handle.middleware.wrapModelCall?.(stranded, modelReq([]), okModel);
+      }
+      // Exactly one warning fired across all skipped traffic for this
+      // SessionContext (the WeakSet dedupes after the first hit).
+      const warnings = swallowed.filter((args) =>
+        args.some(
+          (a) => typeof a === "string" && a.includes("skipping detector for unobserved session"),
+        ),
+      );
+      expect(warnings.length).toBe(1);
+      expect(
+        warnings[0]?.some((a) => typeof a === "string" && a.includes("stranded-session")),
+      ).toBe(true);
+    } finally {
+      console.error = originalErr;
+    }
+  });
 });

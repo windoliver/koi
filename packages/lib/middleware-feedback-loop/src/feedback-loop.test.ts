@@ -649,6 +649,29 @@ describe("createFeedbackLoopMiddleware", () => {
       }
     });
 
+    it("F116: wrapToolCall does NOT require observation for stateless toolValidators / toolGates paths", async () => {
+      // Reviewer F116: F115's broad observation requirement broke
+      // hosts that only configure stateless tool-side checks
+      // (toolValidators / toolGates have no per-session state).
+      // Object-identity admission is genuinely needed only for
+      // forgeHealth (per-session tracker buckets — F111). Validators
+      // and gates run on any context.
+      const validator: ToolRequestValidator = {
+        name: "any-context",
+        validate(_request: ToolRequest): ValidationResult {
+          return { valid: true };
+        },
+      };
+      const mw = createFeedbackLoopMiddleware({ toolValidators: [validator] });
+      // No onSessionStart — the unobserved session must NOT trip the
+      // strict admission throw because forgeHealth is not configured.
+      const response: ToolResponse = { output: "ok" };
+      const next = mock(async (_req: ToolRequest) => response);
+      const result = await mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next);
+      expect(result).toBe(response);
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
     it("F115: wrapToolCall passes through when no tool checks are configured (no observation required)", async () => {
       // Counterpart to the fail-closed test: when the host has not
       // configured any tool-side checks, the unobserved-session guard
