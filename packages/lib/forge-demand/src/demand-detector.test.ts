@@ -320,12 +320,25 @@ describe("createForgeDemandDetector", () => {
     const b = async (): Promise<ModelResponse> =>
       modelRes("I don't have a tool for parsing protobuf schemas");
 
-    await handle.middleware.wrapModelCall?.(ctx, modelReq([]), a);
-    await handle.middleware.wrapModelCall?.(ctx, modelReq([]), b);
+    // Distinct turnIds so retry-dedup does not collapse legitimate repeats.
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 0 }),
+      modelReq([]),
+      a,
+    );
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 1 }),
+      modelReq([]),
+      b,
+    );
     expect(signals.length).toBe(0);
 
-    // The same gap repeated *does* cross the threshold.
-    await handle.middleware.wrapModelCall?.(ctx, modelReq([]), a);
+    // The same gap repeated in a distinct turn *does* cross the threshold.
+    await handle.middleware.wrapModelCall?.(
+      createMockTurnContext({ turnIndex: 2 }),
+      modelReq([]),
+      a,
+    );
     expect(signals.length).toBe(1);
   });
 
@@ -915,6 +928,97 @@ describe("createForgeDemandDetector", () => {
     expect(signals.some((s) => s.trigger.kind === "capability_gap")).toBe(true);
     // All chunks were relayed to the caller untouched.
     expect(collected.length).toBe(3);
+  });
+
+  it("middleware priority places it OUTSIDE feedback-loop (450) so it observes only committed state", () => {
+    const handle = createForgeDemandDetector(makeConfig());
+    // Lower priority = outer onion layer in the koi engine compose order.
+    // forge-demand must be outer relative to feedback-loop (450) so that
+    // capability-gap and latency checks fire only on post-validation,
+    // post-health-recording state.
+    expect(handle.middleware.priority).toBeDefined();
+    if (handle.middleware.priority !== undefined) {
+      expect(handle.middleware.priority).toBeLessThan(450);
+    }
+  });
+
+  it("does not double-count capability-gap on retry of the same request/response", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { capabilityGapOccurrences: 2 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+
+    const userTurn: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "compile this rust code" }],
+      timestamp: 100,
+    };
+    const sameResp = async (): Promise<ModelResponse> =>
+      modelRes("I don't have a tool for compiling rust code");
+
+    // Same turnId = retries within one turn must dedup.
+    const ctxA = createMockTurnContext({ turnIndex: 0 });
+    await handle.middleware.wrapModelCall?.(ctxA, modelReq([userTurn]), sameResp);
+    await handle.middleware.wrapModelCall?.(ctxA, modelReq([userTurn]), sameResp);
+    expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(0);
+
+    // A NEW turn (distinct turnId via different turnIndex) with the same
+    // response text DOES count.
+    const ctxB = createMockTurnContext({ turnIndex: 1 });
+    await handle.middleware.wrapModelCall?.(ctxB, modelReq([userTurn]), sameResp);
+    expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(1);
+  });
+
+  it("isolates state per session — failures and signals do not bleed across tenants", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { repeatedFailureCount: 3 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+
+    const ctxA = createMockTurnContext({ session: { sessionId: "session-A" as never } });
+    const ctxB = createMockTurnContext({ session: { sessionId: "session-B" as never } });
+
+    const failNext = async (): Promise<ToolResponse> => {
+      throw new Error("nope");
+    };
+
+    // Session A accumulates 2 failures (sub-threshold).
+    for (let i = 0; i < 2; i += 1) {
+      try {
+        await handle.middleware.wrapToolCall?.(ctxA, toolReq("shared-tool"), failNext);
+      } catch {
+        // expected
+      }
+    }
+    // Session B has its own counter — a single failure here must NOT inherit
+    // session A's accumulated count and trip the threshold of 3.
+    try {
+      await handle.middleware.wrapToolCall?.(ctxB, toolReq("shared-tool"), failNext);
+    } catch {
+      // expected
+    }
+    expect(signals.length).toBe(0);
+
+    // Ending session A clears ONLY A's state — session B's counter survives.
+    await handle.middleware.onSessionEnd?.(ctxA.session);
+    try {
+      await handle.middleware.wrapToolCall?.(ctxB, toolReq("shared-tool"), failNext);
+    } catch {
+      // expected
+    }
+    try {
+      await handle.middleware.wrapToolCall?.(ctxB, toolReq("shared-tool"), failNext);
+    } catch {
+      // expected
+    }
+    // Session B reaches threshold (3 failures): emits one signal.
+    expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(1);
   });
 
   it("dedupes user corrections by content identity, not raw timestamp", async () => {

@@ -247,14 +247,30 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         : baseWithGovernance;
 
     // Install forge-demand detector when config.forgeDemand is provided and not already
-    // present. Priority 455 — sits next to feedback-loop so it can observe the same
-    // tool/model traffic without duplicating health-tracking concerns.
+    // present. Priority 445 — outer relative to feedback-loop (450) so the detector
+    // observes only AFTER feedback-loop has updated tool-health and run validators/retry.
+    // This prevents stale latency snapshots and rejected-attempt capability-gap noise.
+    //
+    // Note: `performance_degradation` triggers require the caller to inject a
+    // `healthTracker` handle on `config.forgeDemand`. Feedback-loop's tracker is
+    // session-scoped and not exposed as a static handle today, so latency
+    // detection is opt-in via `config.forgeDemand.healthTracker` only — without
+    // it the detector still emits the other three trigger kinds (repeated
+    // failure, capability gap, user correction). Auto-wiring is tracked as
+    // follow-up; until then `performance_degradation` is dormant in the
+    // default runtime path.
     const hasForgeDemand = new Set(baseWithFeedbackLoop.map((mw) => mw.name)).has(
       "forge-demand-detector",
     );
-    const baseWithForgeDemand: readonly KoiMiddleware[] =
+    // Build the handle once and surface it on RuntimeHandle so callers can
+    // dismiss signals and inspect pending state.
+    const forgeDemandHandle =
       config.forgeDemand !== undefined && !hasForgeDemand
-        ? [...baseWithFeedbackLoop, createForgeDemandDetector(config.forgeDemand).middleware]
+        ? createForgeDemandDetector(config.forgeDemand)
+        : undefined;
+    const baseWithForgeDemand: readonly KoiMiddleware[] =
+      forgeDemandHandle !== undefined
+        ? [...baseWithFeedbackLoop, forgeDemandHandle.middleware]
         : baseWithFeedbackLoop;
 
     // Install exfiltration guard by default when: (1) not explicitly disabled,
@@ -691,6 +707,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       browserProvider,
       lspProvider,
       memoryStore,
+      forgeDemand: forgeDemandHandle,
       createDecisionLedger: decisionLedgerFactory,
       dispose: async () => {
         // Unsubscribe approval sink to prevent leak on long-lived permission handles

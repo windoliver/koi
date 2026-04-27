@@ -678,6 +678,15 @@ export interface RuntimeHandle {
    */
   readonly memoryStore?: MemoryStore | undefined;
 
+  /**
+   * Forge-demand handle. Only populated when `config.forgeDemand` is provided.
+   * Exposes `getSignals()`, `dismiss(id)`, and `getActiveSignalCount()` so
+   * runtime callers can inspect pending demand signals and acknowledge them
+   * — without this, signals would re-fire after cooldown expiry and consume
+   * the per-session forge budget until session end.
+   */
+  readonly forgeDemand?: import("@koi/forge-demand").ForgeDemandHandle | undefined;
+
   /** Dispose all resources. */
   readonly dispose: () => Promise<void>;
 }

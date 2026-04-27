@@ -18,6 +18,8 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  SessionContext,
+  SessionId,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -45,6 +47,8 @@ const MAX_FAILED_CALL_MESSAGES = 10;
 const GAP_CONTEXT_WINDOW = 120;
 /** Max successful tool calls retained for user-correction attribution. */
 const RECENT_TOOL_CALL_HISTORY = 16;
+/** Max (request, response) ids retained for capability-gap retry dedup. */
+const RECENT_GAP_RESPONSE_CAP = 32;
 
 const DEFAULT_THRESHOLDS: HeuristicThresholds = {
   repeatedFailureCount: 3,
@@ -140,116 +144,116 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   const correctionPatterns = config.userCorrectionPatterns ?? DEFAULT_USER_CORRECTION_PATTERNS;
   const thresholds = mergeThresholds(config.heuristics);
 
-  // Mutable state — encapsulated within the closure.
-  const signals: ForgeDemandSignal[] = [];
-  const cooldowns = new Map<string, number>();
-  const consecutiveFailures = new Map<string, number>();
-  const failedToolCalls = new Map<string, string[]>();
-  const capabilityGapCounts = new Map<string, number>();
-  const noMatchingToolCounts = new Map<string, number>();
-  // Bounded log of recent tool calls. Entries are accessed by stable
-  // object reference (returned from recordToolCall) — never by array
-  // index — so eviction of older entries cannot stale-out an in-flight
-  // call's completion update. Each entry tracks `startedAt` and
-  // `completedAt` so user-correction attribution can require the tool
-  // outcome to exist BEFORE the user message.
-  // `completedAt = -1` means the call is still in flight.
+  // Per-session mutable state. Sharing this across sessions would let one
+  // tenant's failures bleed into another's cooldowns/signals/budget, so
+  // the runtime keys every counter by `ctx.session.sessionId` and
+  // `onSessionEnd(ctx)` clears only that session's entry.
   type RecentToolCall = {
     readonly toolId: string;
     readonly startedAt: number;
     completedAt: number;
   };
-  const recentToolCalls: RecentToolCall[] = [];
-  // Stable identity strings for user messages already emitted. Identity
-  // combines senderId, timestamp, and a content fingerprint so two
-  // distinct corrections that happen to share a millisecond timestamp
-  // (replay/import paths can collide) do not silently dedupe each other.
-  const emittedCorrectionIds = new Set<string>();
-  // Stable identity strings already SCANNED (regardless of whether they
-  // emitted). Distinct from `emittedCorrectionIds` so a message replayed
-  // before any tool ran cannot resurrect later — once a message is
-  // scanned it is never re-scanned even if attribution failed.
-  const scannedCorrectionIds = new Set<string>();
-  // `let` justified: mutable counters scoped to this closure. Reset on session end.
-  let signalCounter = 0;
-  // Highest user-message timestamp already scanned for corrections.
-  // Prevents replayed transcript history from re-firing on retry paths.
-  let lastProcessedUserTimestamp = -1;
-  // Forge-budget bookkeeping — count-based only. Wall-clock budgets live
-  // on the forge pipeline, not here.
-  let sessionEmitCount = 0;
+  type SessionState = {
+    readonly signals: ForgeDemandSignal[];
+    readonly cooldowns: Map<string, number>;
+    readonly consecutiveFailures: Map<string, number>;
+    readonly failedToolCalls: Map<string, string[]>;
+    readonly capabilityGapCounts: Map<string, number>;
+    readonly noMatchingToolCounts: Map<string, number>;
+    readonly recentToolCalls: RecentToolCall[];
+    readonly emittedCorrectionIds: Set<string>;
+    readonly scannedCorrectionIds: Set<string>;
+    readonly recentGapResponseIds: Set<string>;
+    signalCounter: number;
+    lastProcessedUserTimestamp: number;
+    sessionEmitCount: number;
+  };
 
-  function isOnCooldown(key: string): boolean {
-    const lastEmitted = cooldowns.get(key);
+  const sessions = new Map<SessionId, SessionState>();
+
+  function newSessionState(): SessionState {
+    return {
+      signals: [],
+      cooldowns: new Map(),
+      consecutiveFailures: new Map(),
+      failedToolCalls: new Map(),
+      capabilityGapCounts: new Map(),
+      noMatchingToolCounts: new Map(),
+      recentToolCalls: [],
+      emittedCorrectionIds: new Set(),
+      scannedCorrectionIds: new Set(),
+      recentGapResponseIds: new Set(),
+      signalCounter: 0,
+      lastProcessedUserTimestamp: -1,
+      sessionEmitCount: 0,
+    };
+  }
+
+  function getOrCreate(sessionId: SessionId): SessionState {
+    let state = sessions.get(sessionId);
+    if (state === undefined) {
+      state = newSessionState();
+      sessions.set(sessionId, state);
+    }
+    return state;
+  }
+
+  function isOnCooldown(state: SessionState, key: string): boolean {
+    const lastEmitted = state.cooldowns.get(key);
     if (lastEmitted === undefined) return false;
     return clock() - lastEmitted < config.budget.cooldownMs;
   }
 
-  function emitSignal(trigger: ForgeTrigger, context: DemandContext): void {
+  function emitSignal(state: SessionState, trigger: ForgeTrigger, context: DemandContext): void {
     const key = triggerKey(trigger);
-    if (isOnCooldown(key)) return;
+    if (isOnCooldown(state, key)) return;
 
     // Confidence + cooldown gates run BEFORE budget bookkeeping so a
-    // sub-threshold probe never consumes the session budget window. The
-    // budget tracks signals actually emitted, not attempted.
+    // sub-threshold probe never consumes the session budget window.
     const confidence = computeDemandConfidence(trigger, thresholds.confidenceWeights, context);
     if (confidence < config.budget.demandThreshold) return;
 
-    // The detector only enforces the count-based session cap. It does
-    // NOT enforce `computeTimeBudgetMs` — that is forge-pipeline compute,
-    // not detector wall-clock. Gating emission on wall-clock since the
-    // first signal would silently shut the detector off on long idle
-    // sessions even when no forge work consumed any compute.
-    if (sessionEmitCount >= config.budget.maxForgesPerSession) return;
+    // Count-based session cap only. computeTimeBudgetMs is forge-pipeline
+    // compute, not detector wall-clock.
+    if (state.sessionEmitCount >= config.budget.maxForgesPerSession) return;
 
-    signalCounter += 1;
+    state.signalCounter += 1;
     const signal: ForgeDemandSignal = {
-      id: `demand-${String(signalCounter)}`,
+      id: `demand-${String(state.signalCounter)}`,
       kind: "forge_demand",
       trigger,
       confidence,
-      // Slice keeps the demand pipeline simple — concrete brick-kind selection
-      // is the responsibility of the consumer (auto-forge middleware).
       suggestedBrickKind: "tool",
       context: {
         failureCount: context.failureCount,
-        failedToolCalls: failedToolCalls.get(key) ?? [],
+        failedToolCalls: state.failedToolCalls.get(key) ?? [],
       },
       emittedAt: clock(),
     };
 
-    if (signals.length >= maxPending) {
-      // Drop the oldest and clear its cooldown together — otherwise the
-      // queue rolls over silently while still suppressing identical
-      // detections for the remainder of the cooldown window.
-      const evicted = signals.shift();
-      if (evicted !== undefined) cooldowns.delete(triggerKey(evicted.trigger));
+    if (state.signals.length >= maxPending) {
+      const evicted = state.signals.shift();
+      if (evicted !== undefined) state.cooldowns.delete(triggerKey(evicted.trigger));
     }
-    signals.push(signal);
-    cooldowns.set(key, clock());
-    sessionEmitCount += 1;
+    state.signals.push(signal);
+    state.cooldowns.set(key, clock());
+    state.sessionEmitCount += 1;
     safeInvoke(config.onDemand, signal);
   }
 
-  function resetTriggerState(trigger: ForgeTrigger): void {
-    // Clear the per-trigger counters so dismissal is a real acknowledgement.
-    // Without this, the next matching event re-fires immediately because the
-    // accumulator is still at or above threshold.
+  function resetTriggerState(state: SessionState, trigger: ForgeTrigger): void {
     switch (trigger.kind) {
       case "repeated_failure":
-        consecutiveFailures.delete(trigger.toolName);
-        failedToolCalls.delete(`rf:${trigger.toolName}`);
+        state.consecutiveFailures.delete(trigger.toolName);
+        state.failedToolCalls.delete(`rf:${trigger.toolName}`);
         return;
       case "no_matching_tool":
-        noMatchingToolCounts.delete(trigger.query);
+        state.noMatchingToolCounts.delete(trigger.query);
         return;
       case "capability_gap": {
-        // requiredCapability carries the windowed bucket text; the bucket
-        // key is `${pattern.source}|${requiredCapability}`. Clear every
-        // pattern key matching this window text.
         const suffix = `|${trigger.requiredCapability}`;
-        for (const k of capabilityGapCounts.keys()) {
-          if (k.endsWith(suffix)) capabilityGapCounts.delete(k);
+        for (const k of state.capabilityGapCounts.keys()) {
+          if (k.endsWith(suffix)) state.capabilityGapCounts.delete(k);
         }
         return;
       }
@@ -258,44 +262,57 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     }
   }
 
+  /**
+   * Dismiss a signal by id. Searches across all active sessions because
+   * the handle is shared by all callers and signal ids are unique only
+   * within a session — but cross-session collision is acceptable since
+   * the first match wins and the consumer typically holds only signals
+   * they were notified about.
+   */
   function dismiss(signalId: string): void {
-    const idx = signals.findIndex((s) => s.id === signalId);
-    if (idx === -1) return;
-    const signal = signals[idx];
-    if (signal !== undefined) {
-      cooldowns.delete(triggerKey(signal.trigger));
-      resetTriggerState(signal.trigger);
+    for (const state of sessions.values()) {
+      const idx = state.signals.findIndex((s) => s.id === signalId);
+      if (idx === -1) continue;
+      const signal = state.signals[idx];
+      if (signal !== undefined) {
+        state.cooldowns.delete(triggerKey(signal.trigger));
+        resetTriggerState(state, signal.trigger);
+      }
+      state.signals.splice(idx, 1);
+      safeInvoke(config.onDismiss, signalId);
+      return;
     }
-    signals.splice(idx, 1);
-    safeInvoke(config.onDismiss, signalId);
   }
 
-  function checkLatencyDegradation(toolId: string): void {
+  function checkLatencyDegradation(state: SessionState, toolId: string): void {
     if (config.healthTracker === undefined) return;
     const snapshot = config.healthTracker.getSnapshot(toolId);
     const trigger = detectLatencyDegradation(toolId, snapshot, thresholds.latencyDegradationAvgMs);
     if (trigger !== undefined) {
-      emitSignal(trigger, {
+      emitSignal(state, trigger, {
         failureCount: snapshot?.metrics.avgLatencyMs ?? 0,
         threshold: thresholds.latencyDegradationAvgMs,
       });
     }
   }
 
-  function checkCapabilityGaps(responseText: string): void {
+  function checkCapabilityGaps(
+    state: SessionState,
+    responseText: string,
+    fingerprint: string,
+  ): void {
     if (patterns.length === 0 || responseText.length === 0) return;
+    const responseId = `${fingerprint}|${responseText.slice(0, 128)}`;
+    if (state.recentGapResponseIds.has(responseId)) return;
+    state.recentGapResponseIds.add(responseId);
+    if (state.recentGapResponseIds.size > RECENT_GAP_RESPONSE_CAP) {
+      const oldest = state.recentGapResponseIds.values().next().value;
+      if (oldest !== undefined) state.recentGapResponseIds.delete(oldest);
+    }
     for (const pattern of patterns) {
-      // Defensive: reset stateful flags so a `g`/`y` regex cannot make
-      // detection depend on prior calls (validator already rejects these,
-      // but createForgeDemandDetector also accepts direct construction).
       pattern.lastIndex = 0;
       const match = pattern.exec(responseText);
       if (match === null) continue;
-      // Bucket by the local context around the match (a normalized window
-      // of the surrounding sentence) rather than just the regex pattern.
-      // This stops unrelated capability gaps that share a phrasing template
-      // ("I don't have a tool for X" / "...for Y") from accumulating into
-      // a single forge signal while still letting genuine repeats add up.
       const matchStart = match.index;
       const windowText = responseText
         .slice(matchStart, matchStart + GAP_CONTEXT_WINDOW)
@@ -303,14 +320,11 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
         .replace(/\s+/g, " ")
         .trim();
       const key = `${pattern.source}|${windowText}`;
-      const count = (capabilityGapCounts.get(key) ?? 0) + 1;
-      capabilityGapCounts.set(key, count);
+      const count = (state.capabilityGapCounts.get(key) ?? 0) + 1;
+      state.capabilityGapCounts.set(key, count);
       if (count < thresholds.capabilityGapOccurrences) continue;
-      // Carry the windowed context as `requiredCapability` so the cooldown
-      // key (built from `requiredCapability` in `triggerKey`) distinguishes
-      // gaps that share a phrasing prefix. The bucket key and the cooldown
-      // key are then aligned end-to-end.
       emitSignal(
+        state,
         { kind: "capability_gap", requiredCapability: windowText },
         { failureCount: count, threshold: thresholds.capabilityGapOccurrences },
       );
@@ -326,6 +340,25 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
    *   - duplicate the correction signal (emit fired before next throws,
    *     then retry re-scans the same transcript and emits again).
    */
+  function requestFingerprint(ctx: TurnContext, request: ModelRequest): string {
+    // Per-call identity used to dedup capability-gap counts across
+    // retries/replays. Anchors on `turnId` so retries WITHIN a turn share
+    // identity, while a new turn is treated as a fresh observation. Adds
+    // last-user-message identity as a secondary discriminator so a single
+    // turn issuing multiple model calls (refinement loops) doesn't collapse
+    // them into one bucket. Falls back to message count for the rare case
+    // of empty/system-only requests in tests.
+    let secondary = `len:${String(request.messages.length)}`;
+    for (let i = request.messages.length - 1; i >= 0; i -= 1) {
+      const msg = request.messages[i];
+      if (msg !== undefined && msg.senderId === "user") {
+        secondary = messageIdentity(msg);
+        break;
+      }
+    }
+    return `${String(ctx.turnId)}|${secondary}`;
+  }
+
   function messageIdentity(msg: InboundMessage): string {
     // Collision-resistant message identity: senderId + timestamp +
     // fingerprint of content. Two distinct corrections that share a
@@ -345,79 +378,72 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     return `${msg.senderId}|${String(msg.timestamp)}|${String(len)}|${head}`;
   }
 
-  function scanUserCorrections(request: ModelRequest): void {
+  function hasAnyCompletedTool(state: SessionState): boolean {
+    for (const call of state.recentToolCalls) {
+      if (call.completedAt >= 0) return true;
+    }
+    return false;
+  }
+
+  function scanUserCorrections(state: SessionState, request: ModelRequest): void {
     if (correctionPatterns.length === 0) return;
     for (const msg of request.messages) {
       if (msg.senderId !== "user") continue;
-      // Two-tier dedupe keyed on stable message identity, not raw timestamp:
-      //   - scannedCorrectionIds: this message has already been evaluated.
-      //     Don't re-scan, even if no signal emitted last time (otherwise
-      //     a replayed pre-tool correction could fire late against a newer
-      //     tool that completed after).
-      //   - emittedCorrectionIds: this message has already produced an
-      //     emission. Belt-and-suspenders against any scenario where the
-      //     scanned set is reset but emissions persist.
       const id = messageIdentity(msg);
-      if (scannedCorrectionIds.has(id)) continue;
-      if (emittedCorrectionIds.has(id)) continue;
-      scannedCorrectionIds.add(id);
-      if (msg.timestamp > lastProcessedUserTimestamp) {
-        lastProcessedUserTimestamp = msg.timestamp;
+      if (state.emittedCorrectionIds.has(id)) continue;
+      if (state.scannedCorrectionIds.has(id)) continue;
+      const toolsCompletedAtScan = hasAnyCompletedTool(state);
+      if (!toolsCompletedAtScan) {
+        state.scannedCorrectionIds.add(id);
+        continue;
       }
-      const correctedToolId = resolveCorrectedToolId(msg.timestamp);
+      if (msg.timestamp > state.lastProcessedUserTimestamp) {
+        state.lastProcessedUserTimestamp = msg.timestamp;
+      }
+      const correctedToolId = resolveCorrectedToolId(state, msg.timestamp);
       if (correctedToolId === "") continue;
       let matched = false;
       for (const block of msg.content) {
         if (block.kind !== "text") continue;
         const trigger = detectUserCorrection(block.text, correctionPatterns, correctedToolId);
         if (trigger !== undefined) {
-          emitSignal(trigger, { failureCount: 1, threshold: 1 });
+          emitSignal(state, trigger, { failureCount: 1, threshold: 1 });
           matched = true;
         }
       }
-      if (matched) emittedCorrectionIds.add(id);
+      if (matched) state.emittedCorrectionIds.add(id);
     }
   }
 
-  function resolveCorrectedToolId(userMessageTimestamp: number): string {
-    // Prefer the latest tool whose completion preceded the user's message —
-    // the user can only react to a tool whose outcome they have seen. This
-    // requires `clock()` and `msg.timestamp` to share a timebase (callers
-    // using a driveable clock in tests must mint message timestamps from
-    // the same source). Falls back to "any completed call" only when no
-    // ordering can be established.
-    for (let i = recentToolCalls.length - 1; i >= 0; i -= 1) {
-      const call = recentToolCalls[i];
+  function resolveCorrectedToolId(state: SessionState, userMessageTimestamp: number): string {
+    for (let i = state.recentToolCalls.length - 1; i >= 0; i -= 1) {
+      const call = state.recentToolCalls[i];
       if (call !== undefined && call.completedAt >= 0 && call.completedAt <= userMessageTimestamp) {
         return call.toolId;
       }
     }
-    // Fall back to the latest completed call only when the message has no
-    // usable timestamp (`0`) — i.e. the caller has opted out of ordering.
-    // A real timestamp older than every recorded completion means the user
-    // could not have been reacting to any of these tools, so we return ""
-    // rather than misattribute (see "Replayed historical user corrections").
     if (userMessageTimestamp !== 0) return "";
-    for (let i = recentToolCalls.length - 1; i >= 0; i -= 1) {
-      const call = recentToolCalls[i];
+    for (let i = state.recentToolCalls.length - 1; i >= 0; i -= 1) {
+      const call = state.recentToolCalls[i];
       if (call !== undefined && call.completedAt >= 0) return call.toolId;
     }
     return "";
   }
 
-  function recordToolCall(toolId: string): RecentToolCall {
+  function recordToolCall(state: SessionState, toolId: string): RecentToolCall {
     const entry: RecentToolCall = { toolId, startedAt: clock(), completedAt: -1 };
-    recentToolCalls.push(entry);
-    // Evict from the front, but only completed entries — never drop an
-    // in-flight call whose completion would then update a stale or
-    // missing entry. If the head is still in flight, leave it; the array
-    // can grow modestly past the soft cap without correctness loss.
-    while (
-      recentToolCalls.length > RECENT_TOOL_CALL_HISTORY &&
-      recentToolCalls[0] !== undefined &&
-      recentToolCalls[0].completedAt >= 0
-    ) {
-      recentToolCalls.shift();
+    state.recentToolCalls.push(entry);
+    while (state.recentToolCalls.length > RECENT_TOOL_CALL_HISTORY) {
+      let evictIdx = -1;
+      for (let i = 0; i < state.recentToolCalls.length; i += 1) {
+        const c = state.recentToolCalls[i];
+        if (c !== undefined && c.completedAt >= 0) {
+          evictIdx = i;
+          break;
+        }
+      }
+      if (evictIdx === -1) evictIdx = 0;
+      state.recentToolCalls.splice(evictIdx, 1);
     }
     return entry;
   }
@@ -426,16 +452,16 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     entry.completedAt = clock();
   }
 
-  function recordFailure(toolId: string, e: unknown): number {
-    const count = (consecutiveFailures.get(toolId) ?? 0) + 1;
-    consecutiveFailures.set(toolId, count);
+  function recordFailure(state: SessionState, toolId: string, e: unknown): number {
+    const count = (state.consecutiveFailures.get(toolId) ?? 0) + 1;
+    state.consecutiveFailures.set(toolId, count);
     const key = `rf:${toolId}`;
-    const calls = failedToolCalls.get(key) ?? [];
+    const calls = state.failedToolCalls.get(key) ?? [];
     calls.push(extractMessage(e));
     if (calls.length > MAX_FAILED_CALL_MESSAGES) {
       calls.splice(0, calls.length - MAX_FAILED_CALL_MESSAGES);
     }
-    failedToolCalls.set(key, calls);
+    state.failedToolCalls.set(key, calls);
     return count;
   }
 
@@ -445,94 +471,92 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
 
   const middleware: KoiMiddleware = {
     name: "forge-demand-detector",
-    priority: 455,
+    // Outer layer relative to feedback-loop (priority 450) — lower priority
+    // runs first / wraps later layers. This ordering matters:
+    //   - Latency check: feedback-loop records tool-health AFTER `next()`,
+    //     so the detector must observe AFTER feedback-loop has committed
+    //     the latest call's metrics to read a non-stale snapshot.
+    //   - Capability-gap check: feedback-loop runs validators + `runWithRetry`
+    //     around model calls. If the detector ran inside, it would emit
+    //     signals from rejected attempts the user never sees and burn the
+    //     session forge budget on noise.
+    priority: 445,
 
     async wrapToolCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
+      const state = getOrCreate(ctx.session.sessionId);
       const { toolId } = request;
-      // Record EVERY attempt (success, throw, in-band error) for correction
-      // attribution. completedAt is filled in once the call finishes so a
-      // long-running tool cannot be attributed a correction it could not
-      // yet have prompted.
-      const callEntry = recordToolCall(toolId);
+      const callEntry = recordToolCall(state, toolId);
       try {
         const response = await next(request);
         markToolCallCompleted(callEntry);
-        // In-band errors must count as failures — many tools in this repo
-        // return `{ error, code }` instead of throwing. Without this branch
-        // repeated user-visible failures never reach `repeated_failure`.
         if (isInBandToolError(response.output)) {
           const inBand = new Error((response.output as { readonly error: string }).error);
-          const count = recordFailure(toolId, inBand);
+          const count = recordFailure(state, toolId, inBand);
           const repeated = detectRepeatedFailure(toolId, count, thresholds.repeatedFailureCount);
           if (repeated !== undefined) {
-            emitSignal(repeated, {
+            emitSignal(state, repeated, {
               failureCount: count,
               threshold: thresholds.repeatedFailureCount,
             });
           }
-          checkLatencyDegradation(toolId);
+          checkLatencyDegradation(state, toolId);
           return response;
         }
-        consecutiveFailures.set(toolId, 0);
-        checkLatencyDegradation(toolId);
+        state.consecutiveFailures.set(toolId, 0);
+        checkLatencyDegradation(state, toolId);
         return response;
       } catch (e: unknown) {
         markToolCallCompleted(callEntry);
         if (e instanceof KoiRuntimeError && e.code === "NOT_FOUND") {
-          // Per-query attempt counter — confidence scales with severity so
-          // repeated misses can clear the threshold even after a cooldown.
-          // Threshold is 1 so a single miss can fire (the tool is known absent).
-          const attempts = (noMatchingToolCounts.get(toolId) ?? 0) + 1;
-          noMatchingToolCounts.set(toolId, attempts);
+          const attempts = (state.noMatchingToolCounts.get(toolId) ?? 0) + 1;
+          state.noMatchingToolCounts.set(toolId, attempts);
           emitSignal(
+            state,
             { kind: "no_matching_tool", query: toolId, attempts },
             { failureCount: attempts, threshold: 1 },
           );
-          checkLatencyDegradation(toolId);
+          checkLatencyDegradation(state, toolId);
           throw e;
         }
 
-        const count = recordFailure(toolId, e);
+        const count = recordFailure(state, toolId, e);
         const repeated = detectRepeatedFailure(toolId, count, thresholds.repeatedFailureCount);
         if (repeated !== undefined) {
-          emitSignal(repeated, { failureCount: count, threshold: thresholds.repeatedFailureCount });
+          emitSignal(state, repeated, {
+            failureCount: count,
+            threshold: thresholds.repeatedFailureCount,
+          });
         }
-        checkLatencyDegradation(toolId);
+        checkLatencyDegradation(state, toolId);
         throw e;
       }
     },
 
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      // Emit corrections synchronously and dedupe by stable message identity.
-      // This survives both transcript replay (retry) and a model-call
-      // failure with no replay — neither path can lose or duplicate the
-      // correction signal.
-      scanUserCorrections(request);
+      const state = getOrCreate(ctx.session.sessionId);
+      scanUserCorrections(state, request);
+      const fp = requestFingerprint(ctx, request);
       const response = await next(request);
-      checkCapabilityGaps(extractResponseText(response));
+      checkCapabilityGaps(state, extractResponseText(response), fp);
       return response;
     },
 
     wrapModelStream(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      // Streaming path mirrors wrapModelCall: scan user corrections before
-      // dispatch (so retries still fire correctly), then assemble streamed
-      // text deltas into a single buffer for capability-gap detection on
-      // stream completion. Without this, two of the three text-driven
-      // triggers (capability_gap, user_correction) silently disappear on
-      // any runtime that uses streaming adapters.
-      scanUserCorrections(request);
+      const state = getOrCreate(ctx.session.sessionId);
+      scanUserCorrections(state, request);
+      const fp = requestFingerprint(ctx, request);
       const upstream = next(request);
       return (async function* relay() {
         let buffer = "";
@@ -545,45 +569,42 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
           }
           yield chunk;
         }
-        // Prefer the canonical response text when the adapter provides it
-        // via the `done` chunk; fall back to assembled deltas for adapters
-        // that emit text-only streams without a terminal response.
         const text =
           finalResponse !== undefined ? extractResponseText(finalResponse) || buffer : buffer;
-        if (text.length > 0) checkCapabilityGaps(text);
+        if (text.length > 0) checkCapabilityGaps(state, text, fp);
       })();
     },
 
-    async onSessionEnd(): Promise<void> {
-      // Reset session-scoped state to avoid cross-session leakage.
-      consecutiveFailures.clear();
-      failedToolCalls.clear();
-      capabilityGapCounts.clear();
-      noMatchingToolCounts.clear();
-      cooldowns.clear();
-      signals.length = 0;
-      signalCounter = 0;
-      recentToolCalls.length = 0;
-      emittedCorrectionIds.clear();
-      scannedCorrectionIds.clear();
-      lastProcessedUserTimestamp = -1;
-      sessionEmitCount = 0;
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      // Drop only this session's state — never touch other live sessions.
+      sessions.delete(ctx.sessionId);
     },
 
-    describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
-      if (signals.length === 0) return undefined;
-      const plural = signals.length === 1 ? "" : "s";
+    describeCapabilities(ctx: TurnContext): CapabilityFragment | undefined {
+      const state = sessions.get(ctx.session.sessionId);
+      if (state === undefined || state.signals.length === 0) return undefined;
+      const plural = state.signals.length === 1 ? "" : "s";
       return {
         label: "forge-demand",
-        description: `Forge demand: ${String(signals.length)} capability gap${plural} detected`,
+        description: `Forge demand: ${String(state.signals.length)} capability gap${plural} detected`,
       };
     },
   };
 
+  function getAllSignals(): readonly ForgeDemandSignal[] {
+    const all: ForgeDemandSignal[] = [];
+    for (const state of sessions.values()) all.push(...state.signals);
+    return all;
+  }
+
   return {
     middleware,
-    getSignals: (): readonly ForgeDemandSignal[] => [...signals],
+    getSignals: (): readonly ForgeDemandSignal[] => getAllSignals(),
     dismiss,
-    getActiveSignalCount: (): number => signals.length,
+    getActiveSignalCount: (): number => {
+      let total = 0;
+      for (const state of sessions.values()) total += state.signals.length;
+      return total;
+    },
   };
 }
