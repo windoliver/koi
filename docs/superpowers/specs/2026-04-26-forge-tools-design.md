@@ -42,7 +42,9 @@ No dep on `@koi/engine`, no dep on peer L2 packages.
 
 ## Tool surface
 
-All four are factory functions returning a `Tool` matching the L0 `Tool` contract. Each takes `{ store: ForgeStore; caller: CallerContext }` via constructor injection, where `CallerContext = { agentId: string; allowGlobal: boolean }` resolved from the agent loop's `ToolExecutionContext.session.agentId` at tool-build time (`allowGlobal` defaults to false unless the caller's capability provisioning sets `forge.allowGlobal: true`). See *Trust + scope enforcement* below.
+All four are factory functions returning a `Tool` matching the L0 `Tool` contract. Each takes `{ store: ForgeStore }` via constructor injection. **Caller identity is resolved inside `execute()`**, not at construction — `ToolExecutionContext` is only available during execution via the engine's AsyncLocalStorage (`packages/kernel/engine/src/koi.ts` exposes `getCurrentToolExecutionContext()`). The tool reads `ctx.session.agentId` and any `forge.allowGlobal` capability flag at the start of every invocation. Baking auth state into the tool instance at provider `attach()` time would either be stale (no session yet) or unsafe (one tool reused across sessions).
+
+See *Trust + scope enforcement* below for the visibility predicate.
 
 ### `forge_tool`
 
@@ -111,7 +113,7 @@ If a future PR adds a hashed field to `BrickUpdate` (or vice versa) the build br
 
 ### Behavior
 
-- `save(brick)`: recompute `BrickId` from identity fields via `@koi/hash`. If recomputed id mismatches `brick.id` → `KoiError "INVARIANT_VIOLATION"`. If id already present **and stored content is structurally identical** → return success (idempotent — handles retry-after-timeout). If id already present **but content differs** → `KoiError "INVARIANT_VIOLATION"` (this is a sha256 collision or tampering, not a real conflict). Otherwise insert with `storeVersion: 1` and notify (`StoreChangeEvent { kind: "saved" }`).
+- `save(brick)`: recompute `BrickId` from identity fields via `@koi/hash`. If recomputed id mismatches `brick.id` → `KoiError "INVARIANT_VIOLATION"`. If id already present → check **identity-field equality only** (kind/name/description/version/kind-discriminated content) against the stored record. Identity match → return success without overwriting (idempotent retry; original `provenance`, `lifecycle`, `usageCount`, etc. are preserved — first save wins for metadata). Identity mismatch on the same id → `KoiError "INVARIANT_VIOLATION"` (sha256 collision or tampering). Otherwise insert with `storeVersion: 1` and notify (`StoreChangeEvent { kind: "saved" }`).
 - `load(id)`: returns artifact or `KoiError "NOT_FOUND"`.
 - `search(query)`: filter via `matchesBrickQuery`, sort via `sortBricks`, slice by `query.limit`. **Caller scope is enforced here** — see Trust + scope below.
 - `update(id, updates)`: optimistic locking via `expectedVersion`. Mismatch → `CONFLICT`. Apply via `applyBrickUpdate`, increment `storeVersion`, notify (`updated`). Empty update is a no-op success. (`BrickUpdate` only contains non-hashed fields by L0 contract.)
@@ -125,21 +127,32 @@ No eviction, no persistence across restarts. Pure `Map<BrickId, BrickArtifact>`.
 
 `forge_list` and `forge_inspect` return artifacts that an agent can *see*. Without a visibility check, any agent calling these tools could enumerate every artifact in a shared store, including implementation source from other agents.
 
-**Scope vocabulary in this PR is binary** — `agent` (private to the originating agent) and `global` (visible to all). The L0 enum `ForgeScope = "agent" | "zone" | "global"` allows `zone`, but neither `BrickArtifact` nor `ToolExecutionContext` / `SessionContext` / `ForgeRunMetadata` currently carries a `zoneId` field, so zone isolation cannot be enforced today. Treating `zone` as `global` would silently leak; treating it as `agent` would silently hide. Instead, **`forge_tool` / `forge_middleware` reject `scope: "zone"` synthesis with `INVALID_INPUT`** until a zone identifier lands in core, and `forge_list` / `forge_inspect` treat any pre-existing `zone`-scoped artifact as `agent`-scoped (most restrictive — fail closed).
+**All three L0 scopes (`agent`/`zone`/`global`) remain first-class.** `zone` is already used by `inherited-component-provider` (children inherit zone-scoped tools from a parent) and `forge-scope-assertion`. This PR does not regress those semantics:
 
-Each `create*Tool` factory takes a required `caller: { agentId: string }` resolved from the agent loop's `ToolExecutionContext.session.agentId` at tool-build time. Visibility predicate:
-
-- `scope: "agent"` artifact → visible only when `provenance.metadata.agentId === caller.agentId`.
+- `scope: "agent"` artifact → enforceable visibility (originating agent only) using `provenance.metadata.agentId`.
+- `scope: "zone"` artifact → **inheritance-shaped, not isolation-shaped, in this PR**. `forge_list` and `forge_inspect` treat zone-scoped artifacts as visible to any caller, mirroring `inherited-component-provider`'s behavior — once a real `zoneId` exists in core, isolation will be added without changing call sites.
 - `scope: "global"` artifact → visible to everyone.
-- `scope: "zone"` artifact (legacy/external) → treated as `agent`-scoped (fail closed).
 
-`forge_list`: scope filter intersected with visibility predicate; out-of-scope hits dropped silently (do not leak existence).
-`forge_inspect`: visibility predicate evaluated; failure → `KoiError "NOT_FOUND"` (do not leak existence with `FORBIDDEN`).
-`forge_tool` / `forge_middleware`: any caller may synthesize `agent`-scoped (own agent only). `global`-scoped synthesis requires the caller's `ToolExecutionContext` to carry a `forge.allowGlobal: true` capability flag; without it → `KoiError "FORBIDDEN"`. (Capability provisioning is out of scope; for now only test/runtime fixtures set it.)
+Visibility predicate inside `execute()` (caller resolved live from `getCurrentToolExecutionContext()`):
 
-The store applies the predicate once for `search` and `searchSummaries`; tools never re-implement filtering.
+| Artifact scope | Visibility |
+|---|---|
+| `agent` | `artifact.provenance.metadata.agentId === ctx.session.agentId` |
+| `zone` | always (matches inherited-component-provider — pending real zoneId) |
+| `global` | always |
 
-A follow-up issue tracks adding a real `zoneId` to `ForgeScope` / `ForgeRunMetadata` / `SessionContext` so zone isolation can be promoted from "fail closed" to first-class.
+`forge_list`: scope filter intersected with predicate; agent-scoped artifacts owned by another agent dropped silently (do not leak existence).
+`forge_inspect`: predicate failure → `KoiError "NOT_FOUND"` (do not leak existence with `FORBIDDEN`).
+
+**Synthesis authorization** (also resolved live in `execute()`):
+
+- `scope: "agent"` synthesis: any caller, written under their own `agentId` (provenance is filled in by the tool, not by the caller).
+- `scope: "zone"` synthesis: any caller. Zone tools are visible to peers in the same conceptual zone today via inheritance; once `zoneId` lands, only callers in the same zone may write.
+- `scope: "global"` synthesis: requires the caller's `ToolExecutionContext` to carry a `forge.allowGlobal: true` capability. Without it → `KoiError "FORBIDDEN"`.
+
+The store applies the visibility predicate once for `search` and `searchSummaries`; tools never re-implement filtering.
+
+A follow-up issue tracks adding a real `zoneId` to `ForgeScope` / `ForgeRunMetadata` / `SessionContext` so zone visibility can be promoted from "always visible" to first-class isolation.
 
 ## File layout
 
@@ -179,9 +192,9 @@ Total: ~400 LOC source + ~225 LOC tests.
 Unit (colocated `*.test.ts`):
 
 1. **memory-store**: round-trip save/load/search/remove; content-integrity rejection on tampered artifact (mutated content with stale id); version conflict on stale `expectedVersion`; watcher fires on save/update/remove with correct `kind`; empty-update no-op; `searchSummaries` projection equivalent to `search` + map.
-2. **forge_tool**: valid input → `ToolArtifact` persisted with `kind: "tool"`, `lifecycle: "draft"`, `id` matches recomputed content hash; invalid input → `INVALID_INPUT`; `scope: "zone"` request → `INVALID_INPUT` (zone unsupported until core gains zoneId); descriptor returned by `tool.descriptor` satisfies `ToolDescriptor`; double-synthesize same content (retry case) → idempotent success returning the same `brickId`; agent caller without `allowGlobal` requesting `scope: "global"` → `FORBIDDEN`.
+2. **forge_tool**: valid input → `ToolArtifact` persisted with `kind: "tool"`, `lifecycle: "draft"`, `id` matches recomputed content hash; invalid input → `INVALID_INPUT`; descriptor returned by `tool.descriptor` satisfies `ToolDescriptor`; double-synthesize same content (retry case, possibly with different provenance metadata) → idempotent success returning the same `brickId`, original metadata preserved; caller without `allowGlobal` requesting `scope: "global"` → `FORBIDDEN`; caller resolved from `getCurrentToolExecutionContext()` not from constructor injection (test verifies tool built outside any session and only succeeds inside `runWithToolExecutionContext`).
 3. **forge_middleware**: same as forge_tool but for `ImplementationArtifact` with `kind: "middleware"`.
-4. **forge_list**: filter by kind/scope/lifecycle; empty store → empty array; respects `limit` and hard cap (200); visibility — agent-scope brick from another agent omitted silently; legacy zone-scope brick treated as agent-scope (omitted silently from non-owners); global-scope brick visible to all.
+4. **forge_list**: filter by kind/scope/lifecycle; empty store → empty array; respects `limit` and hard cap (200); visibility — agent-scope brick from another agent omitted silently; zone-scope brick visible to all (inheritance-shaped); global-scope brick visible to all.
 5. **forge_inspect**: returns artifact for known visible id; returns `NOT_FOUND` for unknown id; returns `NOT_FOUND` (not `FORBIDDEN`) for known-but-not-visible id (existence non-leak).
 
 ≥80% line/function/statement coverage (CI threshold).
@@ -208,7 +221,7 @@ Per CLAUDE.md, every new L2 PR must be wired into `@koi/runtime` with golden-que
 ## Out-of-scope follow-ups (not this PR)
 
 - `isForgeEvent` in `@koi/forge-types` accepts shallow nested payloads (raised by review against #2061). File a follow-up issue to either tighten nested validation or rename to a documented envelope-only check. Tracked separately.
-- Real `zoneId` field on `ForgeScope` / `ForgeRunMetadata` / `SessionContext` so zone isolation can be enforced first-class instead of "fail closed".
+- Real `zoneId` field on `ForgeArtifact` / `ForgeRunMetadata` / `SessionContext` so zone isolation can be enforced first-class instead of inheritance-shaped (today zone artifacts are visible to all callers, matching `inherited-component-provider`).
 - ForgePipeline + verifier emit `ForgeArtifact`/`ForgeEvent` once verified; only then do we observe lifecycle promotion `draft → verifying → active`.
 
 ## v1 references
