@@ -148,6 +148,15 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
         }
       }
 
+      // Forwarded to the scheduler so any implementation that honours
+      // `TaskOptions.idempotencyKey` durably (cross-restart) can also dedupe
+      // there. The current `@koi/scheduler` ignores the field; the in-memory
+      // map below remains the same-process safety net regardless.
+      const submitOptions = {
+        delayMs: duration_ms,
+        idempotencyKey: idempotency_key,
+      };
+
       // Path 2: idempotency_key supplied. Reserve atomically.
       const existing = state.idempotencyMap.get(idempotency_key);
       if (existing !== undefined) {
@@ -180,9 +189,7 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
       // SchedulerComponent.submit returns TaskId | Promise<TaskId> and may
       // throw synchronously; Promise.try captures both shapes uniformly.
       const submission = Promise.try(() =>
-        scheduler.submit({ kind: "text", text: message }, "dispatch", {
-          delayMs: duration_ms,
-        }),
+        scheduler.submit({ kind: "text", text: message }, "dispatch", submitOptions),
       ).then((id): SleepRecord => {
         const rec: SleepRecord = {
           taskId: String(id),

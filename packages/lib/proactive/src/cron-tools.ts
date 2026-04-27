@@ -118,17 +118,17 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
       }
       const { expression, wake_message, timezone, idempotency_key } = parsed.data;
       const message = wake_message ?? defaultMessage;
-      const options = timezone !== undefined ? { timezone } : undefined;
       const fingerprint = { expression, wakeMessage: message, timezone };
 
       // Path 1: caller did not opt in to idempotency. Submit unconditionally.
       if (idempotency_key === undefined) {
+        const noKeyOptions = timezone !== undefined ? { timezone } : undefined;
         try {
           const id = await scheduler.schedule(
             expression,
             { kind: "text", text: message },
             "dispatch",
-            options,
+            noKeyOptions,
           );
           return { ok: true, schedule_id: String(id) };
         } catch (e: unknown) {
@@ -138,6 +138,15 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
           };
         }
       }
+
+      // Forward idempotency_key so any scheduler that honours
+      // TaskOptions.idempotencyKey durably can dedupe there too. The current
+      // `@koi/scheduler` ignores the field; the in-memory map below remains
+      // the same-process safety net regardless.
+      const scheduleOptions = {
+        ...(timezone !== undefined ? { timezone } : {}),
+        idempotencyKey: idempotency_key,
+      };
 
       // Path 2: idempotency_key supplied. Reserve atomically.
       const existing = state.idempotencyMap.get(idempotency_key);
@@ -170,7 +179,12 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
       // scheduler.schedule may throw synchronously on invalid expressions;
       // Promise.try captures both sync and async failures uniformly.
       const submission = Promise.try(() =>
-        scheduler.schedule(expression, { kind: "text", text: message }, "dispatch", options),
+        scheduler.schedule(
+          expression,
+          { kind: "text", text: message },
+          "dispatch",
+          scheduleOptions,
+        ),
       ).then((id): CronRecord => {
         const rec: CronRecord = {
           scheduleId: String(id),
@@ -233,15 +247,14 @@ export function createCancelScheduleTool(config: ProactiveToolsConfig, state: Cr
       const idStr = parsed.data.schedule_id;
       try {
         const removed = await scheduler.unschedule(scheduleId(idStr));
-        // Clear any idempotency_key entry that pointed at this schedule so a
-        // future schedule_cron with the same key can register a fresh one.
-        if (removed) {
-          for (const [k, v] of state.idempotencyMap) {
-            // Only settled entries have a known scheduleId. A pending entry
-            // can't match because we only learn the id after schedule resolves.
-            if (v.kind === "settled" && v.record.scheduleId === idStr) {
-              state.idempotencyMap.delete(k);
-            }
+        // Clear any matching idempotency entry regardless of `removed` so the
+        // key is freed for re-use even when the schedule was already cleared
+        // (e.g., scheduler restart, manual delete, or already unscheduled).
+        for (const [k, v] of state.idempotencyMap) {
+          // Only settled entries have a known scheduleId. A pending entry
+          // can't match because we only learn the id after schedule resolves.
+          if (v.kind === "settled" && v.record.scheduleId === idStr) {
+            state.idempotencyMap.delete(k);
           }
         }
         return { ok: true, removed };

@@ -50,6 +50,28 @@ describe("cancel_sleep tool", () => {
     expect(stub.cancelCalls).toHaveLength(0);
   });
 
+  test("clears matching sleep idempotency entry even when scheduler returns removed:false", async () => {
+    // Simulates the post-fire case: scheduler.cancel returns false for an
+    // already-fired task, but the agent still needs the idempotency_key freed
+    // so it can re-use the same key for fresh work.
+    const stub = createSchedulerStub({ cancelResult: false });
+    const state = createSleepToolState();
+    state.idempotencyMap.set("k", {
+      kind: "settled",
+      record: {
+        taskId: "task-fired",
+        wakeAtMs: Date.now() - 60_000,
+        durationMs: 60_000,
+        wakeMessage: "wake",
+      },
+    });
+    const tool = createCancelSleepTool({ scheduler: stub.component }, state);
+
+    await exec(tool, { task_id: "task-fired" });
+
+    expect(state.idempotencyMap.has("k")).toBe(false);
+  });
+
   test("clears matching sleep idempotency entry on successful cancel", async () => {
     const stub = createSchedulerStub();
     const state = createSleepToolState();

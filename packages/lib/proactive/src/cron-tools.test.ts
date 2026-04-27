@@ -134,6 +134,24 @@ describe("schedule_cron tool", () => {
     expect(stub.scheduleCalls).toHaveLength(1);
   });
 
+  test("forwards idempotency_key as TaskOptions.idempotencyKey to scheduler.schedule", async () => {
+    const stub = createSchedulerStub();
+    const state = createCronToolState();
+    const tool = createScheduleCronTool({ scheduler: stub.component }, state);
+
+    await exec(tool, {
+      expression: "0 9 * * *",
+      timezone: "UTC",
+      idempotency_key: "k",
+    });
+
+    const opts = stub.scheduleCalls[0]?.options as
+      | { timezone?: string; idempotencyKey?: string }
+      | undefined;
+    expect(opts?.idempotencyKey).toBe("k");
+    expect(opts?.timezone).toBe("UTC");
+  });
+
   test("concurrent same-key calls share one registration", async () => {
     const stub = createSchedulerStub();
     const state = createCronToolState();

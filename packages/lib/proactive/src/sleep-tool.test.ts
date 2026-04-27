@@ -225,6 +225,17 @@ describe("sleep tool", () => {
     expect(b?.task_id).toBe(c?.task_id);
   });
 
+  test("forwards idempotency_key as TaskOptions.idempotencyKey to scheduler.submit", async () => {
+    const stub = createSchedulerStub();
+    const state = createSleepToolState();
+    const tool = createSleepTool({ scheduler: stub.component }, state);
+
+    await exec(tool, { duration_ms: 5_000, idempotency_key: "k" });
+
+    expect(stub.submitCalls[0]?.options?.idempotencyKey).toBe("k");
+    expect(stub.submitCalls[0]?.options?.delayMs).toBe(5_000);
+  });
+
   test("failed pending submission frees the key for retry", async () => {
     const stub = createSchedulerStub({ submitError: new Error("transient") });
     const state = createSleepToolState();
