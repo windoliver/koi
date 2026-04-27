@@ -238,14 +238,23 @@ export function createInMemoryForgeStore(): ForgeStore {
         ),
       };
     }
-    // No-op detection: after stripping control fields, an empty patch produces
-    // no change. Skip storeVersion bump and watcher notify so idempotent
-    // retries don't appear as updates.
-    const effectiveKeys = Object.keys(updates).filter((k) => k !== "expectedVersion");
-    if (effectiveKeys.length === 0) {
+    const baseApplied = applyBrickUpdate(existing, updates);
+    // applyBrickUpdate (in @koi/validation) does not currently apply
+    // `trigger`, `namespace`, or `trustTier`. Apply them here so the
+    // store's update contract matches the full BrickUpdate surface.
+    const applied: BrickArtifact = {
+      ...baseApplied,
+      ...(updates.trigger !== undefined ? { trigger: updates.trigger } : {}),
+      ...(updates.namespace !== undefined ? { namespace: updates.namespace } : {}),
+      ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
+    };
+    // Semantic no-op detection: compare canonical encoding of data fields.
+    // If the patch produced no field-level change (or the patch contained
+    // only control keys like `expectedVersion`), skip storeVersion bump and
+    // watcher notify so idempotent retries do not manufacture false writes.
+    if (canonicalize(applied) === canonicalize(existing)) {
       return { ok: true, value: undefined };
     }
-    const applied = applyBrickUpdate(existing, updates);
     // Deep-clone so the stored record cannot be mutated through references
     // that survived applyBrickUpdate (e.g. arrays/objects from `updates`).
     const versioned: BrickArtifact = {

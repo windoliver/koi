@@ -82,6 +82,14 @@ export function extractIdentityContent(brick: BrickArtifact): JsonObject {
   if (brick.kind === "agent") {
     return { manifestYaml: brick.manifestYaml };
   }
+  if (brick.kind === "composite") {
+    return {
+      steps: brick.steps,
+      exposedInput: brick.exposedInput,
+      exposedOutput: brick.exposedOutput,
+      outputKind: brick.outputKind,
+    };
+  }
   throw new Error(
     `forge-tools: unsupported brick kind for content-addressed storage: ${brick.kind}`,
   );
