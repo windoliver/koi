@@ -231,12 +231,23 @@ export interface ForgeToolInput {
   readonly scope?: ForgeScope | undefined;
 }
 
-/** Output contract for forge tools. */
-export interface ForgeToolResult {
-  readonly ok: boolean;
-  readonly artifact?: ForgeArtifact | undefined;
-  readonly error?: string | undefined;
-}
+/**
+ * Output contract for forge tools. Discriminated on `ok` so success and
+ * failure cannot coexist: a successful result must carry an `artifact` and
+ * cannot carry an `error`; a failed result must carry an `error` and cannot
+ * carry an `artifact`.
+ */
+export type ForgeToolResult =
+  | {
+      readonly ok: true;
+      readonly artifact: ForgeArtifact;
+      readonly error?: never;
+    }
+  | {
+      readonly ok: false;
+      readonly error: string;
+      readonly artifact?: never;
+    };
 
 /** Configuration contract for the demand-detection middleware. */
 export interface ForgeMiddlewareConfig {

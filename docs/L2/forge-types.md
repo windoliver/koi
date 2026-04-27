@@ -173,11 +173,9 @@ interface ForgeToolInput {
   readonly scope?: ForgeScope | undefined;
 }
 
-interface ForgeToolResult {
-  readonly ok: boolean;
-  readonly artifact?: ForgeArtifact | undefined;
-  readonly error?: string | undefined;
-}
+type ForgeToolResult =
+  | { readonly ok: true; readonly artifact: ForgeArtifact; readonly error?: never }
+  | { readonly ok: false; readonly error: string; readonly artifact?: never };
 
 interface ForgeMiddlewareConfig {
   readonly enabled: boolean;

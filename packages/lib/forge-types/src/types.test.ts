@@ -669,6 +669,19 @@ describe("@koi/forge-types — tool/middleware contracts", () => {
     expect(result.error).toBe("synthesis failed");
   });
 
+  test("ForgeToolResult disallows contradictory states at compile time", () => {
+    // @ts-expect-error — ok: true requires artifact
+    const _missingArtifact: ForgeToolResult = { ok: true };
+    // @ts-expect-error — ok: false requires error
+    const _missingError: ForgeToolResult = { ok: false };
+    // @ts-expect-error — ok: true cannot carry an error (artifact slot is `never`)
+    const _trueWithError: ForgeToolResult = { ok: true, error: "x" };
+    // @ts-expect-error — ok: false cannot carry an artifact (artifact slot is `never`)
+    const _falseWithArtifact: ForgeToolResult = { ok: false, error: "x", artifact: {} };
+    // Reference unused locals so noUnusedLocals doesn't fire.
+    expect([_missingArtifact, _missingError, _trueWithError, _falseWithArtifact]).toHaveLength(4);
+  });
+
   test("ForgeMiddlewareConfig satisfies shape", () => {
     const cfg: ForgeMiddlewareConfig = {
       enabled: true,
