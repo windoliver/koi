@@ -768,6 +768,7 @@
         "@koi/engine": "workspace:*",
         "@koi/event-trace": "workspace:*",
         "@koi/file-type": "workspace:*",
+        "@koi/forge-tools": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
         "@koi/governance-approval-tiers": "workspace:*",

@@ -239,6 +239,16 @@ export function resolveCaller(): CallerContext {
 //   INVARIANT_VIOLATION → INTERNAL
 // ---------------------------------------------------------------------------
 
+/**
+ * Format a Zod issue path as a dotted string. Defensive against symbol keys
+ * (Zod v4's `path` is `PropertyKey[]`; `Array.join` throws on symbols).
+ */
+export function formatIssuePath(path: ReadonlyArray<PropertyKey>): string {
+  return path
+    .map((p) => (typeof p === "symbol" ? (p.description ?? p.toString()) : String(p)))
+    .join(".");
+}
+
 export function invalidInput(message: string, context?: JsonObject): KoiError {
   return {
     code: "VALIDATION",

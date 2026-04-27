@@ -8,7 +8,7 @@
 import type { BrickArtifact, ForgeStore, JsonObject, KoiError, Result, Tool } from "@koi/core";
 import { brickId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { toJSONSchema, z } from "zod";
-import { invalidInput, notFound, resolveCaller } from "../shared.js";
+import { formatIssuePath, invalidInput, notFound, resolveCaller } from "../shared.js";
 
 const schema = z.object({
   brickId: z.string().regex(/^sha256:[0-9a-f]{64}$/),
@@ -52,7 +52,7 @@ export function createForgeInspectTool(deps: ForgeInspectDeps): Tool {
         const failure: Result<ForgeInspectOk, KoiError> = {
           ok: false,
           error: invalidInput("forge_inspect: invalid input", {
-            issues: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
+            issues: parsed.error.issues.map((i) => `${formatIssuePath(i.path)}: ${i.message}`),
           }),
         };
         return failure;

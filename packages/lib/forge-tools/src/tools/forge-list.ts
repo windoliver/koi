@@ -18,7 +18,7 @@ import type {
 import { DEFAULT_SANDBOXED_POLICY, searchSummariesWithFallback } from "@koi/core";
 import { sortBricks } from "@koi/validation";
 import { toJSONSchema, z } from "zod";
-import { invalidInput, resolveCaller } from "../shared.js";
+import { formatIssuePath, invalidInput, resolveCaller } from "../shared.js";
 
 const HARD_CAP = 200;
 const DEFAULT_LIMIT = 50;
@@ -82,7 +82,7 @@ export function createForgeListTool(deps: ForgeListDeps): Tool {
         const failure: Result<ForgeListOk, KoiError> = {
           ok: false,
           error: invalidInput("forge_list: invalid input", {
-            issues: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
+            issues: parsed.error.issues.map((i) => `${formatIssuePath(i.path)}: ${i.message}`),
           }),
         };
         return failure;

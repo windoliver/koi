@@ -3,7 +3,12 @@ import type { BrickKind, ForgeScope } from "@koi/core";
 import { runId, sessionId } from "@koi/core";
 import type { ToolExecutionContext } from "@koi/execution-context";
 import { runWithExecutionContext } from "@koi/execution-context";
-import { computeIdentityBrickId, type IdentityInputs, resolveCaller } from "./shared.js";
+import {
+  computeIdentityBrickId,
+  formatIssuePath,
+  type IdentityInputs,
+  resolveCaller,
+} from "./shared.js";
 
 const baseTool: IdentityInputs = {
   kind: "tool" satisfies BrickKind,
@@ -63,5 +68,26 @@ describe("resolveCaller", () => {
 
   test("throws NO_CONTEXT when called outside any context", () => {
     expect(() => resolveCaller()).toThrow(/NO_CONTEXT/);
+  });
+});
+
+describe("formatIssuePath", () => {
+  test("formats string and number keys with dot separator", () => {
+    expect(formatIssuePath(["a", 0, "b"])).toBe("a.0.b");
+  });
+
+  test("does not throw on symbol keys (Solid-store proxy leak guard)", () => {
+    const sym = Symbol("solid-proxy");
+    expect(() => formatIssuePath(["a", sym, "b"])).not.toThrow();
+    expect(formatIssuePath(["a", sym, "b"])).toBe("a.solid-proxy.b");
+  });
+
+  test("falls back to toString for symbols without description", () => {
+    const sym = Symbol();
+    expect(formatIssuePath([sym])).toBe("Symbol()");
+  });
+
+  test("returns empty string for empty path", () => {
+    expect(formatIssuePath([])).toBe("");
   });
 });

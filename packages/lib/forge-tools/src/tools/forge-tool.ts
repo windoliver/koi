@@ -21,6 +21,7 @@ import {
   computeIdentityBrickId,
   FORGE_INPUT_LIMITS,
   forbidden,
+  formatIssuePath,
   invalidInput,
   resolveCaller,
   validateFieldSize,
@@ -110,7 +111,7 @@ export function createForgeToolTool(deps: ForgeToolDeps): Tool {
         const failure: Result<ForgeToolOk, KoiError> = {
           ok: false,
           error: invalidInput("forge_tool: invalid input", {
-            issues: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
+            issues: parsed.error.issues.map((i) => `${formatIssuePath(i.path)}: ${i.message}`),
           }),
         };
         return failure;

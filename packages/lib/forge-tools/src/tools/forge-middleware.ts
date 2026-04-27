@@ -23,6 +23,7 @@ import {
   computeIdentityBrickId,
   FORGE_INPUT_LIMITS,
   forbidden,
+  formatIssuePath,
   invalidInput,
   resolveCaller,
   validateFieldSize,
@@ -111,7 +112,7 @@ export function createForgeMiddlewareTool(deps: ForgeMiddlewareDeps): Tool {
         const failure: Result<ForgeMiddlewareOk, KoiError> = {
           ok: false,
           error: invalidInput("forge_middleware: invalid input", {
-            issues: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
+            issues: parsed.error.issues.map((i) => `${formatIssuePath(i.path)}: ${i.message}`),
           }),
         };
         return failure;
