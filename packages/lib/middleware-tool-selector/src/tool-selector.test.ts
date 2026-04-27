@@ -322,13 +322,17 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     ).rejects.toBeInstanceOf(KoiRuntimeError);
   });
 
-  test("passes through trusted adapter tool calls without callId — round 29 F2", async () => {
+  test("passes through trusted adapter tool calls without callId — round 29 F2 (round 43 F1: opt-in)", async () => {
     // Adapters / internal orchestration that invoke callHandlers.toolCall
     // directly (no model callId) are inside the trust boundary; the
-    // selector enforces against MODEL-originated tool execution only.
+    // selector can pass them through when the caller opts in via
+    // missingCallIdPolicy: "trust". Default is fail-closed because
+    // dropping callId is otherwise a trivial selector bypass
+    // (#review-round43-F1).
     const mw = createToolSelectorMiddleware({
       selectTools: async () => ["safe"],
       minTools: 0,
+      missingCallIdPolicy: "trust",
     });
     const wrapStream = mw.wrapModelStream;
     if (!wrapStream) throw new Error("wrapModelStream missing");
@@ -352,6 +356,45 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
       wrapTool(ctx, { toolId: "anything", input: {} }, toolNext as never),
     ).resolves.toEqual({ output: "ok" });
     expect(toolNext).toHaveBeenCalled();
+  });
+
+  test("missing callId fails closed by default when snapshots exist — round 43 F1", async () => {
+    // A model-originated tool call that drops its callId would
+    // otherwise re-expose every tool with no audit signal. Default
+    // missingCallIdPolicy: "fail-closed" rejects the call when the
+    // selector observed at least one model call this turn.
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => ["safe"],
+      minTools: 0,
+    });
+    const wrapStream = mw.wrapModelStream;
+    if (!wrapStream) throw new Error("wrapModelStream missing");
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const ctx = turnCtx();
+    const tools = [tool("safe"), tool("dangerous")];
+    const stream: ModelStreamHandler = async function* () {
+      yield { kind: "done", response: modelResponse() };
+    };
+    for await (const _ of wrapStream(ctx, { messages: [userMsg("go")], tools }, stream)) {
+      // drain — establishes a snapshot for this turn
+    }
+
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "ok" }),
+    );
+    // No callId on a turn that has snapshots → reject by default.
+    await expect(
+      wrapTool(ctx, { toolId: "dangerous", input: {} }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
+    expect(toolNext).not.toHaveBeenCalled();
+
+    // Sanity: a turn with no snapshots still passes through (selector
+    // never ran, nothing to enforce against).
+    const freshCtx = turnCtx({ turnIndex: 99 });
+    await expect(
+      wrapTool(freshCtx, { toolId: "anything", input: {} }, toolNext as never),
+    ).resolves.toEqual({ output: "ok" });
   });
 
   test("custom isUserSender predicate routes filtering for non-default sender IDs — round 19 F1", async () => {

@@ -58,6 +58,18 @@ export interface ToolSelectorConfig {
    * for multimodal turns (#review-round35-F1).
    */
   readonly multimodalPolicy?: "fail-closed" | "pass-through";
+  /**
+   * Policy for tool calls that arrive without a `callId` while the
+   * selector observed at least one model call this turn (i.e. a
+   * snapshot exists). Default `"fail-closed"`: missing-callId requests
+   * are rejected because dropping the callId is a trivial selector-
+   * bypass — the same turn can have a filtered snapshot, yet a
+   * `callId`-less request would re-expose every tool with no audit
+   * signal (#review-round43-F1). Set `"trust"` to opt back into the
+   * round-29 trust-adapter behavior — only safe when no model-origin
+   * caller can reach this middleware without supplying a callId.
+   */
+  readonly missingCallIdPolicy?: "fail-closed" | "trust";
 }
 
 /** Default cap on `selectTools` results — prevents runaway tool counts on large agents. */
@@ -129,6 +141,13 @@ export function validateToolSelectorConfig(config: unknown): Result<ToolSelector
     c.multimodalPolicy !== "pass-through"
   ) {
     return validationError("'multimodalPolicy' must be 'fail-closed' or 'pass-through'");
+  }
+  if (
+    c.missingCallIdPolicy !== undefined &&
+    c.missingCallIdPolicy !== "fail-closed" &&
+    c.missingCallIdPolicy !== "trust"
+  ) {
+    return validationError("'missingCallIdPolicy' must be 'fail-closed' or 'trust'");
   }
 
   return { ok: true, value: c as unknown as ToolSelectorConfig };

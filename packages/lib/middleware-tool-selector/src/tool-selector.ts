@@ -57,6 +57,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     onError,
     enforceFiltering = true,
     multimodalPolicy = "fail-closed",
+    missingCallIdPolicy = "fail-closed",
   } = validated.value;
   // When the caller doesn't supply a full extractQuery override but does
   // pass a custom isUserSender predicate, weave the predicate into the
@@ -297,12 +298,25 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       //      a matching tool_call_start did not come from the model
       //      stream this selector observed. Fail closed
       //      (#review-round21-F2).
-      //   3. callId absent → trusted adapter / internal orchestration
-      //      path (e.g. callHandlers.toolCall called directly). Models
-      //      always supply a callId, so the absence indicates a
-      //      non-model origin that the selector was never meant to
-      //      gate (#review-round29-F2). Pass through.
-      if (request.callId === undefined) return next(request);
+      //   3. callId absent — selector default is fail-closed when a
+      //      snapshot exists for this turn, because dropping the
+      //      callId is a trivial bypass that re-exposes every tool
+      //      with no audit signal (#review-round43-F1). When no
+      //      snapshot exists (selector never ran for this turn) we
+      //      pass through unconditionally — there is nothing to
+      //      enforce against. Callers whose adapter cannot supply a
+      //      callId for legitimate non-model origins must opt in via
+      //      missingCallIdPolicy: "trust".
+      if (request.callId === undefined) {
+        const snapshots = turnSnapshots.get(ctx.turnId);
+        if (snapshots === undefined || missingCallIdPolicy === "trust") {
+          return next(request);
+        }
+        throw KoiRuntimeError.from(
+          "PERMISSION",
+          `Tool "${request.toolId}" was invoked without a callId on a turn with active koi:tool-selector snapshots. Set missingCallIdPolicy: "trust" to allow callId-less invocations from trusted internal callers, or enforceFiltering: false to disable.`,
+        );
+      }
       const allowed = callAllowlists.get(ctx.turnId)?.get(request.callId);
       if (allowed !== undefined) {
         if (allowed.has(request.toolId)) return next(request);
