@@ -42,7 +42,7 @@ No dep on `@koi/engine`, no dep on peer L2 packages.
 
 ## Tool surface
 
-All four are factory functions returning a `Tool` matching the L0 `Tool` contract. Each takes `{ store: ForgeStore }` via constructor injection. **Caller identity is resolved inside `execute()`**, not at construction — `ToolExecutionContext` is only available during execution via the engine's AsyncLocalStorage (`packages/kernel/engine/src/koi.ts` exposes `getCurrentToolExecutionContext()`). The tool reads `ctx.session.agentId` and any `forge.allowGlobal` capability flag at the start of every invocation. Baking auth state into the tool instance at provider `attach()` time would either be stale (no session yet) or unsafe (one tool reused across sessions).
+All four are factory functions returning a `Tool` matching the L0 `Tool` contract. Each takes `{ store: ForgeStore }` via constructor injection. **Caller identity is resolved inside `execute()`**, not at construction — `ToolExecutionContext` is only available during execution via `getExecutionContext()` from `@koi/execution-context`. The tool reads `ctx.session.agentId` at the start of every invocation. Baking auth state into the tool instance at provider `attach()` time would either be stale (no session yet) or unsafe (one tool reused across sessions).
 
 See *Trust + scope enforcement* below for the visibility predicate.
 
@@ -145,7 +145,7 @@ No eviction, no persistence across restarts. Pure `Map<BrickId, BrickArtifact>`.
 
 This means **no zone-scoped artifact will exist in any v2 store as a result of this PR**. There is therefore no cross-tenant zone leak introduced here — the trust gap a future zone producer would face is documented as the follow-up issue below. If/when another L2 package later begins persisting zone-scoped bricks before `zoneId` lands, that package owns the zone-isolation question for its own consumers; this PR does not pre-empt that decision but also does not amplify it.
 
-Visibility predicate inside `execute()` (caller resolved live from `getCurrentToolExecutionContext()`):
+Visibility predicate inside `execute()` (caller resolved live from `getExecutionContext()`):
 
 | Artifact scope | Visibility via forge tools |
 |---|---|
@@ -153,21 +153,23 @@ Visibility predicate inside `execute()` (caller resolved live from `getCurrentTo
 | `zone` | hidden (pending zoneId) |
 | `global` | always |
 
-`forge_list`: visibility must be enforced **before** the caller-facing `limit` is applied, otherwise another agent's private bricks consuming the first N slots would silently truncate visible results. Because the in-memory store has no native cursor or visibility-aware filter and L0's `ForgeQuery` cannot express "owned by agent X", the tool scans **to exhaustion** and stops as soon as it has accumulated `callerLimit` visible summaries:
+`forge_list`: visibility is pushed into the store query layer using L0's existing `ForgeQuery.createdBy` field (matches `provenance.metadata.agentId` per L0 docs). Two store calls — owned-agent results and public global results — then merged and limited:
 
-1. Tool calls `store.searchSummaries({ ...callerQuery, limit: undefined })` (or `searchSummariesWithFallback`) — store returns the full ordered result set.
-2. Iterate in store order; apply visibility predicate; collect.
-3. Stop once the visible buffer reaches `callerLimit`, or the iterator drains.
-4. Return the buffer (≤ `callerLimit` visible summaries).
+1. Build owned-agent query: `{ ...callerQuery, scope: "agent", createdBy: ctx.session.agentId }`.
+2. Build global query: `{ ...callerQuery, scope: "global" }`. (Caller-supplied `scope` filter narrows; if caller specified `scope: "agent"` the global query is skipped, and vice versa.)
+3. Issue both via `searchSummariesWithFallback`, each with `limit: callerLimit`.
+4. Merge, re-sort per `query.orderBy` (default `fitness`), slice to `callerLimit`.
 
-**Deployment prerequisite:** the in-memory store ships per-process (one `Map<BrickId, BrickArtifact>` per agent process), wired by `@koi/runtime`'s `createKoi` so each agent owns its own store. Per-process scope means visibility-driven full-scan is bounded by the *single agent's own* synthesis count — peer-tenant pollution cannot inflate the scan because peers do not share the Map. **Sharing a single in-memory store across multiple agent processes is unsupported in this PR**; CI doc-gate enforces this prerequisite is documented in `docs/L2/forge-tools.md` (Wiring section). When a shared on-disk store lands, it must add a visibility-aware index (`provenance.metadata.agentId` + `scope`) at the L0 query level — `forge-tools` will switch to that path without changing tool semantics.
+This is bounded `O(callerLimit)` regardless of how many other tenants the store holds. No exhaustive scan, no caller-driven DoS.
+
+`scope: "zone"` is omitted from both queries (visibility predicate hides zone artifacts entirely; see Trust + scope above). When a tenant-aware shared store lands, the same query path works unchanged — the L0 contract carries the visibility intent already.
 `forge_inspect`: tool calls `store.load(brickId)`, then applies the visibility predicate to the returned artifact. Predicate failure → `KoiError "NOT_FOUND"` (same code as a missing id; existence non-leak). The store's `load()` is unconditional by design (it is an L0 contract and other trusted runtime paths — e.g. `inherited-component-provider` — depend on unconditional reads); enforcement lives in the LLM-facing tool wrapper. The tool **must not return** the raw `BrickArtifact` without running the predicate.
 
 **Synthesis authorization** (also resolved live in `execute()`):
 
 - `scope: "agent"` synthesis: any caller; `provenance.metadata.agentId` is filled in by the tool from `ctx.session.agentId`, not by the caller.
 - `scope: "zone"` synthesis: rejected (see above).
-- `scope: "global"` synthesis: requires the caller's `ToolExecutionContext` to carry a `forge.allowGlobal: true` capability. Without it → `KoiError "FORBIDDEN"`.
+- `scope: "global"` synthesis: rejected in this PR with `KoiError "FORBIDDEN"`. The capability plumbing required to authorize global publish (an `allowGlobal` flag on `SessionContext` or a similar carrier) does not exist in current L0/L1 contracts (`SessionContext` carries only session/agent identity, no capabilities). Adding it is a cross-cutting change that exceeds primordial scope. Until that lands, only `scope: "agent"` synthesis is supported, which keeps the tenant boundary trivially enforceable.
 
 ### Trust boundary
 
@@ -221,9 +223,9 @@ Total: ~400 LOC source + ~225 LOC tests.
 Unit (colocated `*.test.ts`):
 
 1. **memory-store**: round-trip save/load/search/remove; content-integrity rejection on tampered artifact (mutated content with stale id); version conflict on stale `expectedVersion`; watcher fires on save/update/remove with correct `kind`; empty-update no-op; `searchSummaries` projection equivalent to `search` + map; **idempotent save when stored lifecycle is `draft`/`verifying`/`active`**; **CONFLICT when stored lifecycle is `failed`/`deprecated`/`quarantined`** (failed-redrive recovery test); scope-update rejection (`update({ scope: ... })` → `INVARIANT_VIOLATION`).
-2. **forge_tool**: valid input → `ToolArtifact` persisted with `kind: "tool"`, `lifecycle: "draft"`, `id` matches recomputed content hash including `ownerAgentId` for **every scope including `global`**; invalid input → `INVALID_INPUT`; `scope: "zone"` → `INVALID_INPUT`; descriptor satisfies `ToolDescriptor`; double-synthesize same content same agent (retry, possibly different provenance timestamp/invocationId) → idempotent success returning the same `brickId`, original metadata preserved; **two different agents synthesizing byte-identical agent-scoped content produce two different `brickId`s, each visible only to its owner** (cross-tenant aliasing test); **two different agents synthesizing byte-identical `global` content also produce two different `brickId`s** (per-publisher global lineage test); caller without `allowGlobal` requesting `scope: "global"` → `FORBIDDEN`; caller resolved from `getCurrentToolExecutionContext()` not from constructor injection (tool built outside any session, succeeds only inside `runWithToolExecutionContext`).
+2. **forge_tool**: valid input → `ToolArtifact` persisted with `kind: "tool"`, `lifecycle: "draft"`, `id` matches recomputed content hash including `ownerAgentId`; invalid input → `INVALID_INPUT`; `scope: "zone"` → `INVALID_INPUT`; `scope: "global"` → `FORBIDDEN` (capability plumbing not yet available); descriptor satisfies `ToolDescriptor`; double-synthesize same content same agent (retry, possibly different provenance timestamp/invocationId) → idempotent success returning the same `brickId`, original metadata preserved; **two different agents synthesizing byte-identical agent-scoped content produce two different `brickId`s, each visible only to its owner** (cross-tenant aliasing test); caller resolved from `getExecutionContext()` (`@koi/execution-context`) not from constructor injection — tool built outside any session, succeeds only inside an active execution context.
 3. **forge_middleware**: same as forge_tool but for `ImplementationArtifact` with `kind: "middleware"`.
-4. **forge_list**: filter by kind/scope/lifecycle; empty store → empty array; respects `limit` and hard cap (200); visibility — agent-scope brick from another agent omitted silently (in-process test injects two `agentId`s into the per-process store to simulate); zone-scope brick omitted entirely; global-scope brick visible to all; explicit `scope: "zone"` filter → empty array; **starvation resistance — 200 peer-agent-private bricks followed by `callerLimit` global bricks; caller (different agent) receives all `callerLimit` visible global summaries**.
+4. **forge_list**: filter by kind/scope/lifecycle; empty store → empty array; respects `limit` and hard cap (200); visibility — agent-scope brick from another agent never appears in results (filtered server-side via `createdBy`); zone-scope brick never appears (filtered out by tool); global-scope brick visible to all; explicit `scope: "zone"` filter → empty array; **bounded query test — store contains 1000 peer-agent-private bricks; assert that the two issued `searchSummaries` queries each request only `limit: callerLimit` rows (no full-scan) and the caller still receives all visible matches** (uses spy on `searchSummaries` to verify call args).
 5. **forge_inspect**: returns artifact for known visible id; returns `NOT_FOUND` for unknown id; returns `NOT_FOUND` (not `FORBIDDEN`) for a known agent-scoped id owned by a different agent (existence non-leak); returns `NOT_FOUND` for any zone-scoped id (zone hidden in this PR); test exercises the by-id path explicitly to confirm the tool wrapper applies the predicate after `store.load()` rather than relying on `search` filtering.
 
 ≥80% line/function/statement coverage (CI threshold).
