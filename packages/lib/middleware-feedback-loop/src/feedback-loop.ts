@@ -1,6 +1,7 @@
 import type {
   CapabilityFragment,
   KoiMiddleware,
+  ToolHealthSnapshot as L0ToolHealthSnapshot,
   ModelHandler,
   ModelRequest,
   ModelResponse,
@@ -23,6 +24,22 @@ import { runWithRetry } from "./retry.js";
 import type { ToolHealthTracker } from "./tool-health.js";
 import { createToolHealthTracker } from "./tool-health.js";
 import type { ForgeToolErrorFeedback } from "./types.js";
+
+/**
+ * Read-only handle exposing per-session tool-health snapshots in the
+ * L0 (`@koi/core`) shape so cross-package consumers (e.g. `@koi/forge-demand`)
+ * can wire latency-degradation detection without importing feedback-loop
+ * or owning the trackers map. Returns L0's `ToolHealthSnapshot` —
+ * `metrics.avgLatencyMs` is computed from the rolling ring entries.
+ */
+export interface FeedbackLoopHealthHandle {
+  readonly getSnapshot: (sessionId: string, toolId: string) => L0ToolHealthSnapshot | undefined;
+}
+
+/** Middleware return type extended with a per-session health-snapshot handle. */
+export type FeedbackLoopMiddleware = KoiMiddleware & {
+  readonly healthHandle: FeedbackLoopHealthHandle;
+};
 
 const VALIDATION_DEFAULT_MAX_ATTEMPTS = 3;
 const TRANSPORT_DEFAULT_MAX_ATTEMPTS = 2;
@@ -113,12 +130,18 @@ function handleToolError(
  * - Tool calls: checks quarantine status, records health metrics, runs tool gates.
  * - Session lifecycle: creates/disposes a ToolHealthTracker when forgeHealth is configured.
  */
-export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMiddleware {
+export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): FeedbackLoopMiddleware {
   // Per-session tracker map: keyed by sessionId to isolate concurrent sessions
   const trackers = new Map<string, ToolHealthTracker>();
 
+  const healthHandle: FeedbackLoopHealthHandle = {
+    getSnapshot: (sessionId: string, toolId: string): L0ToolHealthSnapshot | undefined =>
+      trackers.get(sessionId)?.getL0Snapshot(toolId),
+  };
+
   return {
     name: "feedback-loop",
+    healthHandle,
     priority: 450,
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {

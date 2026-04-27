@@ -28,6 +28,7 @@ import type {
 import { extractMessage, KoiRuntimeError } from "@koi/errors";
 import type { DemandContext } from "./confidence.js";
 import { computeDemandConfidence, DEFAULT_CONFIDENCE_WEIGHTS } from "./confidence.js";
+import { validateForgeDemandConfig } from "./config.js";
 import {
   DEFAULT_CAPABILITY_GAP_PATTERNS,
   DEFAULT_USER_CORRECTION_PATTERNS,
@@ -138,8 +139,26 @@ function mergeThresholds(overrides: Partial<HeuristicThresholds> | undefined): H
  * Returns a `ForgeDemandHandle` bundling the middleware and the signal
  * query API. The middleware is passive — it never mutates requests or
  * responses; consumers query `getSignals()` and `dismiss()` externally.
+ *
+ * Throws synchronously when `config` is malformed (missing/invalid budget,
+ * negative thresholds, etc.). Validation runs at factory time so an
+ * untyped JS caller or deserialized-config caller fails fast at startup
+ * instead of crashing on the first tool/model event with a `Cannot read
+ * properties of undefined` from a missing `budget.cooldownMs`.
  */
-export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDemandHandle {
+export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDemandHandle {
+  const validated = validateForgeDemandConfig(rawConfig);
+  if (!validated.ok) {
+    throw new Error(
+      `Invalid forgeDemand config: ${validated.error.message}` +
+        (validated.error.context !== undefined
+          ? ` (${JSON.stringify(validated.error.context)})`
+          : ""),
+    );
+  }
+  // Use the validated/normalized object so all downstream reads
+  // (budget fields, default-merged heuristics) come from the safe shape.
+  const config = validated.value;
   const clock = config.clock ?? Date.now;
   const maxPending = config.maxPendingSignals ?? DEFAULT_MAX_PENDING_SIGNALS;
   const patterns = config.capabilityGapPatterns ?? DEFAULT_CAPABILITY_GAP_PATTERNS;

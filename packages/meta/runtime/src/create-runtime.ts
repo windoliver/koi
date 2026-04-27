@@ -241,9 +241,13 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // Install feedback-loop middleware when config.feedbackLoop is provided and not already
     // present. Priority 450 — above model-level validators (100-300), below audit (300) boundary.
     const hasFeedbackLoop = new Set(baseWithGovernance.map((mw) => mw.name)).has("feedback-loop");
-    const baseWithFeedbackLoop: readonly KoiMiddleware[] =
+    const feedbackLoopMiddleware =
       config.feedbackLoop !== undefined && !hasFeedbackLoop
-        ? [...baseWithGovernance, createFeedbackLoopMiddleware(config.feedbackLoop)]
+        ? createFeedbackLoopMiddleware(config.feedbackLoop)
+        : undefined;
+    const baseWithFeedbackLoop: readonly KoiMiddleware[] =
+      feedbackLoopMiddleware !== undefined
+        ? [...baseWithGovernance, feedbackLoopMiddleware]
         : baseWithGovernance;
 
     // Install forge-demand detector when config.forgeDemand is provided and not already
@@ -251,23 +255,12 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // observes only AFTER feedback-loop has updated tool-health and run validators/retry.
     // This prevents stale latency snapshots and rejected-attempt capability-gap noise.
     //
-    // Note: `performance_degradation` triggers require the caller to inject a
-    // `healthTracker` handle on `config.forgeDemand`. Feedback-loop's tracker is
-    // session-scoped and not exposed as a static handle today, so latency
-    // detection is opt-in via `config.forgeDemand.healthTracker` only — without
-    // it the detector still emits the other three trigger kinds (repeated
-    // failure, capability gap, user correction). Auto-wiring is tracked as
-    // follow-up; until then `performance_degradation` is dormant in the
-    // default runtime path.
-    // Build the runtime-owned handle when forgeDemand config is provided.
-    // The caller's config is validated up-front so a partial/untyped object
-    // surfaces as a startup error rather than a `Cannot read properties of
-    // undefined` later when a tool/model call hits an unset budget field.
-    // If the caller ALSO preinstalled their own `forge-demand-detector`
-    // middleware in config.middleware, the runtime version replaces it
-    // (filtered out below) so `RuntimeHandle.forgeDemand` always points
-    // at the active detector — preinstalled middleware without config
-    // is left untouched (caller owns the handle out-of-band).
+    // `performance_degradation` requires a (sessionId, toolId)-shaped health
+    // handle. When feedback-loop is also installed, auto-wire its
+    // `healthHandle` into forge-demand unless the caller passed an explicit
+    // healthTracker. Without auto-wiring, latency detection stays dormant
+    // and we warn loudly so callers do not mistake "no signal" for
+    // "no degradation".
     let forgeDemandHandle: ReturnType<typeof createForgeDemandDetector> | undefined;
     if (config.forgeDemand !== undefined) {
       const validated = validateForgeDemandConfig(config.forgeDemand);
@@ -279,19 +272,25 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
               : ""),
         );
       }
-      // Loud warning when latency detection is silently dormant — the
-      // detector advertises four trigger kinds, but `performance_degradation`
-      // only fires when a `healthTracker` handle is supplied. Without this
-      // log, callers can mistake "no signal" for "no degradation".
-      if (validated.value.healthTracker === undefined) {
+      const baseForgeConfig = validated.value;
+      const autoHealthHandle =
+        baseForgeConfig.healthTracker === undefined && feedbackLoopMiddleware !== undefined
+          ? feedbackLoopMiddleware.healthHandle
+          : undefined;
+      const finalForgeConfig =
+        autoHealthHandle !== undefined
+          ? { ...baseForgeConfig, healthTracker: autoHealthHandle }
+          : baseForgeConfig;
+      if (finalForgeConfig.healthTracker === undefined) {
         console.warn(
           "[forge-demand] performance_degradation trigger is dormant: " +
-            "config.forgeDemand.healthTracker not provided. " +
-            "Pass a ToolHealthTracker (e.g. from @koi/middleware-feedback-loop) " +
-            "or accept that latency-based forge demand will not fire.",
+            "no healthTracker on config.forgeDemand and no feedback-loop " +
+            "middleware to auto-wire. Either install feedback-loop with " +
+            "forgeHealth, or supply a custom { getSnapshot(sessionId, toolId) } " +
+            "handle on config.forgeDemand.healthTracker.",
         );
       }
-      forgeDemandHandle = createForgeDemandDetector(validated.value);
+      forgeDemandHandle = createForgeDemandDetector(finalForgeConfig);
     }
     const baseWithForgeDemand: readonly KoiMiddleware[] =
       forgeDemandHandle !== undefined

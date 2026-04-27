@@ -13940,4 +13940,33 @@ describe("Golden: @koi/forge-demand", () => {
       }),
     ).toThrow(/Invalid forgeDemand config/);
   });
+
+  test("createForgeDemandDetector validates config at the factory boundary", async () => {
+    // Standalone L2 consumers (not going through createRuntime) must also
+    // fail fast on malformed config — otherwise the host crashes on the
+    // first tool/model event with a missing-property error.
+    const { createForgeDemandDetector } = await import("@koi/forge-demand");
+    expect(() =>
+      createForgeDemandDetector({ budget: null } as unknown as Parameters<
+        typeof createForgeDemandDetector
+      >[0]),
+    ).toThrow(/Invalid forgeDemand config/);
+  });
+
+  test("createRuntime auto-wires feedback-loop's L0 health handle into forge-demand", async () => {
+    // Regression for round-3 F59: previously the runtime told callers to
+    // pass feedback-loop's `ToolHealthTracker` directly as `healthTracker`,
+    // but its `getSnapshot(toolId)` is signature-incompatible with the
+    // forge-demand `getSnapshot(sessionId, toolId)` contract — silently
+    // breaking `performance_degradation`. The runtime now auto-wires
+    // feedback-loop's `healthHandle` (which returns L0-shaped snapshots)
+    // when both configs are present and no explicit handle was given.
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const fl = createFeedbackLoopMiddleware({});
+    expect(typeof fl.healthHandle).toBe("object");
+    expect(typeof fl.healthHandle.getSnapshot).toBe("function");
+    // Unknown session/tool returns undefined rather than throwing —
+    // forge-demand's detector treats undefined as "no degradation signal".
+    expect(fl.healthHandle.getSnapshot("missing-session", "missing-tool")).toBeUndefined();
+  });
 });
