@@ -58,6 +58,7 @@ function userMsg(text: string): InboundMessage {
 }
 
 const ctx: TurnContext = createMockTurnContext();
+const defaultSid = ctx.session.sessionId;
 
 // ---------------------------------------------------------------------------
 // Tests — issue spec
@@ -87,7 +88,7 @@ describe("createForgeDemandDetector", () => {
 
     expect(signals.length).toBe(1);
     expect(signals[0]?.trigger.kind).toBe("repeated_failure");
-    expect(handle.getActiveSignalCount()).toBe(1);
+    expect(handle.getActiveSignalCount(defaultSid)).toBe(1);
   });
 
   it("detects user correction patterns via wrapModelCall", async () => {
@@ -160,7 +161,7 @@ describe("createForgeDemandDetector", () => {
       }
     }
 
-    const [signal] = handle.getSignals();
+    const [signal] = handle.getSignals(defaultSid);
     expect(signal).toBeDefined();
     if (signal === undefined) return;
 
@@ -197,7 +198,7 @@ describe("createForgeDemandDetector", () => {
           // expected
         }
       }
-      return handle.getSignals()[0]?.confidence;
+      return handle.getSignals(defaultSid)[0]?.confidence;
     }
 
     const a = await firstSignalConfidence();
@@ -247,9 +248,9 @@ describe("createForgeDemandDetector", () => {
       expect(ok).toEqual(toolRes());
 
       // Dismiss path: throwing onDismiss must not bubble out.
-      const [first] = handle.getSignals();
+      const [first] = handle.getSignals(defaultSid);
       if (first !== undefined) {
-        expect(() => handle.dismiss(first.id)).not.toThrow();
+        expect(() => handle.dismiss(defaultSid, first.id)).not.toThrow();
       }
 
       expect(swallowed.length).toBeGreaterThan(0);
@@ -481,7 +482,7 @@ describe("createForgeDemandDetector", () => {
         // expected
       }
     }
-    expect(handle.getActiveSignalCount()).toBe(2);
+    expect(handle.getActiveSignalCount(defaultSid)).toBe(2);
 
     try {
       await handle.middleware.wrapToolCall?.(ctx, toolReq("tool-A"), failNext);
@@ -490,7 +491,7 @@ describe("createForgeDemandDetector", () => {
     }
     // tool-A re-emitted (its cooldown was cleared on eviction) → queue evicts B.
     const ids = handle
-      .getSignals()
+      .getSignals(defaultSid)
       .map((s) => (s.trigger.kind === "repeated_failure" ? s.trigger.toolName : ""));
     expect(ids).toContain("tool-A");
   });
@@ -510,11 +511,11 @@ describe("createForgeDemandDetector", () => {
         // expected
       }
     }
-    const [first] = handle.getSignals();
+    const [first] = handle.getSignals(defaultSid);
     expect(first).toBeDefined();
     if (first === undefined) return;
 
-    handle.dismiss(first.id);
+    handle.dismiss(defaultSid, first.id);
 
     // One more failure must NOT re-emit — counter was reset by dismiss.
     try {
@@ -522,7 +523,7 @@ describe("createForgeDemandDetector", () => {
     } catch {
       // expected
     }
-    expect(handle.getActiveSignalCount()).toBe(0);
+    expect(handle.getActiveSignalCount(defaultSid)).toBe(0);
   });
 
   it("does not collapse user_correction cooldown across different tools", async () => {
@@ -881,12 +882,12 @@ describe("createForgeDemandDetector", () => {
     } catch {
       // expected
     }
-    const [first] = handle.getSignals();
+    const [first] = handle.getSignals(defaultSid);
     expect(first).toBeDefined();
     if (first === undefined) return;
 
-    handle.dismiss(first.id);
-    expect(handle.getActiveSignalCount()).toBe(0);
+    handle.dismiss(defaultSid, first.id);
+    expect(handle.getActiveSignalCount(defaultSid)).toBe(0);
   });
 
   it("wrapModelStream scans corrections and runs capability-gap on assembled deltas", async () => {
@@ -978,7 +979,7 @@ describe("createForgeDemandDetector", () => {
     expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(1);
   });
 
-  it("runs capability-gap detection even when wrapModelStream aborts mid-stream", async () => {
+  it("does not commit capability-gap signals when wrapModelStream aborts mid-stream", async () => {
     const signals: ForgeDemandSignal[] = [];
     const handle = createForgeDemandDetector(
       makeConfig({
@@ -987,7 +988,9 @@ describe("createForgeDemandDetector", () => {
       }),
     );
 
-    // Stream emits a refusal then throws — capability_gap must still fire.
+    // Stream emits partial refusal text then throws — uncommitted output
+    // must not consume forge budget or fire signals (mirrors wrapModelCall's
+    // post-success contract — a partial response can flip-flop on retry).
     const streamNext = (): AsyncIterable<ModelChunk> =>
       (async function* () {
         yield { kind: "text_delta", delta: "I don't have a tool for compiling rust code" };
@@ -996,15 +999,16 @@ describe("createForgeDemandDetector", () => {
 
     const stream = handle.middleware.wrapModelStream?.(ctx, modelReq([]), streamNext);
     if (stream === undefined) throw new Error("wrapModelStream not implemented");
-    await expect(
-      (async () => {
-        for await (const _c of stream) {
-          // drain
-        }
-      })(),
-    ).rejects.toThrow("transport boom mid-stream");
-
-    expect(signals.some((s) => s.trigger.kind === "capability_gap")).toBe(true);
+    let threw = false;
+    try {
+      for await (const _c of stream) {
+        // drain
+      }
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(signals.some((s) => s.trigger.kind === "capability_gap")).toBe(false);
   });
 
   it("emits globally unique signal ids across sessions so dismiss() targets the right one", async () => {
@@ -1018,23 +1022,32 @@ describe("createForgeDemandDetector", () => {
       throw new Error("nope");
     };
 
-    for (const ctx of [ctxA, ctxB]) {
+    for (const c of [ctxA, ctxB]) {
       try {
-        await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), failNext);
+        await handle.middleware.wrapToolCall?.(c, toolReq("t"), failNext);
       } catch {
         // expected
       }
     }
-    const all = handle.getSignals();
-    expect(all.length).toBe(2);
-    const ids = new Set(all.map((s) => s.id));
-    expect(ids.size).toBe(2); // distinct ids — no `demand-1` collision
+    const aSignals = handle.getSignals(ctxA.session.sessionId);
+    const bSignals = handle.getSignals(ctxB.session.sessionId);
+    expect(aSignals.length).toBe(1);
+    expect(bSignals.length).toBe(1);
+    // Distinct ids — no `demand-1` collision across sessions.
+    expect(aSignals[0]?.id).not.toBe(bSignals[0]?.id);
 
-    // Dismissing one id removes exactly one signal — never both.
-    const [first] = all;
-    if (first === undefined) throw new Error("no signal");
-    handle.dismiss(first.id);
-    expect(handle.getActiveSignalCount()).toBe(1);
+    // Dismiss in session A — must NOT clear B's signal even if id were known.
+    const aId = aSignals[0]?.id;
+    if (aId === undefined) throw new Error("no a signal");
+    handle.dismiss(ctxA.session.sessionId, aId);
+    expect(handle.getActiveSignalCount(ctxA.session.sessionId)).toBe(0);
+    expect(handle.getActiveSignalCount(ctxB.session.sessionId)).toBe(1);
+
+    // Cross-session dismiss with B's id from A's session must NOT touch B.
+    const bId = bSignals[0]?.id;
+    if (bId === undefined) throw new Error("no b signal");
+    handle.dismiss(ctxA.session.sessionId, bId);
+    expect(handle.getActiveSignalCount(ctxB.session.sessionId)).toBe(1);
   });
 
   it("isolates state per session — failures and signals do not bleed across tenants", async () => {

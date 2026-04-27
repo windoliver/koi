@@ -13856,7 +13856,9 @@ describe("Golden: @koi/forge-demand", () => {
     expect(typeof handle.middleware.wrapModelCall).toBe("function");
     expect(typeof handle.getSignals).toBe("function");
     expect(typeof handle.dismiss).toBe("function");
-    expect(handle.getActiveSignalCount()).toBe(0);
+    // Inspection requires a sessionId — the handle never aggregates across
+    // sessions. An unknown id returns the empty list.
+    expect(handle.getActiveSignalCount(sessionId("probe"))).toBe(0);
   });
 
   test("repeated tool failures emit a deterministic, deduplicated forge demand signal", async () => {
@@ -13908,7 +13910,7 @@ describe("Golden: @koi/forge-demand", () => {
 
     // 4 failures → threshold (3) crossed → 1 signal emitted; cooldown dedupes the 4th.
     expect(signals.length).toBe(1);
-    const pending = handle.getSignals();
+    const pending = handle.getSignals(ctx.session.sessionId);
     expect(pending.length).toBe(1);
     const first = pending[0];
     expect(first?.trigger.kind).toBe("repeated_failure");

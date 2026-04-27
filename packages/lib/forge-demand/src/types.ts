@@ -4,7 +4,13 @@
  * L2 package: depends on @koi/core (L0) + L0u utilities only.
  */
 
-import type { ForgeBudget, ForgeDemandSignal, KoiMiddleware, ToolHealthSnapshot } from "@koi/core";
+import type {
+  ForgeBudget,
+  ForgeDemandSignal,
+  KoiMiddleware,
+  SessionId,
+  ToolHealthSnapshot,
+} from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Health handle — read-only interface injected by caller (L2→L2 isolation)
@@ -74,10 +80,24 @@ export interface ForgeDemandConfig {
 // Handle returned by factory
 // ---------------------------------------------------------------------------
 
-/** Handle returned by the demand detector factory. */
+/**
+ * Handle returned by the demand detector factory.
+ *
+ * Inspection and dismissal are scoped to a `sessionId`. Signals contain
+ * tenant-private context (failure messages, correction text) so the
+ * detector never aggregates across sessions — callers must pass the
+ * `ctx.session.sessionId` they are operating on.
+ */
 export interface ForgeDemandHandle {
   readonly middleware: KoiMiddleware;
-  readonly getSignals: () => readonly ForgeDemandSignal[];
-  readonly dismiss: (signalId: string) => void;
-  readonly getActiveSignalCount: () => number;
+  /** Pending signals for one session, in emission order. */
+  readonly getSignals: (sessionId: SessionId) => readonly ForgeDemandSignal[];
+  /**
+   * Dismiss a signal by id within `sessionId`. No-op if the id does not
+   * exist in that session — callers cannot affect other sessions' state
+   * even with a known id.
+   */
+  readonly dismiss: (sessionId: SessionId, signalId: string) => void;
+  /** Pending signal count for one session. */
+  readonly getActiveSignalCount: (sessionId: SessionId) => number;
 }

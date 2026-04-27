@@ -265,25 +265,22 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   }
 
   /**
-   * Dismiss a signal by id. Searches across all active sessions because
-   * the handle is shared by all callers and signal ids are unique only
-   * within a session — but cross-session collision is acceptable since
-   * the first match wins and the consumer typically holds only signals
-   * they were notified about.
+   * Dismiss a signal by id within a specific session. Cross-session
+   * dismissal is forbidden so one tenant cannot acknowledge or clear
+   * another tenant's demand state even with knowledge of an id.
    */
-  function dismiss(signalId: string): void {
-    for (const state of sessions.values()) {
-      const idx = state.signals.findIndex((s) => s.id === signalId);
-      if (idx === -1) continue;
-      const signal = state.signals[idx];
-      if (signal !== undefined) {
-        state.cooldowns.delete(triggerKey(signal.trigger));
-        resetTriggerState(state, signal.trigger);
-      }
-      state.signals.splice(idx, 1);
-      safeInvoke(config.onDismiss, signalId);
-      return;
+  function dismiss(sessionId: SessionId, signalId: string): void {
+    const state = sessions.get(sessionId);
+    if (state === undefined) return;
+    const idx = state.signals.findIndex((s) => s.id === signalId);
+    if (idx === -1) return;
+    const signal = state.signals[idx];
+    if (signal !== undefined) {
+      state.cooldowns.delete(triggerKey(signal.trigger));
+      resetTriggerState(state, signal.trigger);
     }
+    state.signals.splice(idx, 1);
+    safeInvoke(config.onDismiss, signalId);
   }
 
   function checkLatencyDegradation(state: SessionState, toolId: string): void {
@@ -594,28 +591,25 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
         let buffer = "";
         let finalResponse: ModelResponse | undefined;
         let streamCompleted = false;
-        try {
-          for await (const chunk of upstream) {
-            if (chunk.kind === "text_delta") {
-              buffer += chunk.delta;
-            } else if (chunk.kind === "done") {
-              finalResponse = chunk.response;
-            }
-            yield chunk;
+        for await (const chunk of upstream) {
+          if (chunk.kind === "text_delta") {
+            buffer += chunk.delta;
+          } else if (chunk.kind === "done") {
+            finalResponse = chunk.response;
           }
-          streamCompleted = true;
-        } finally {
-          // Capability-gap detection runs even when the stream aborts or
-          // the consumer stops early — a partial refusal like "I don't
-          // have a tool…" is still a real demand signal. Buffer-only
-          // fallback is used when no `done` chunk arrived.
-          const text =
-            finalResponse !== undefined ? extractResponseText(finalResponse) || buffer : buffer;
+          yield chunk;
+        }
+        streamCompleted = true;
+        // Aborted streams (consumer stops early, transport throws, no
+        // `done` chunk) MUST NOT consume capability-gap budget — partial
+        // text is uncommitted output and can flip-flop on retry. The
+        // detector mirrors wrapModelCall's "observe only committed state"
+        // contract: capability-gap and corrections both gate on a clean
+        // stream completion (`done` chunk delivered).
+        if (streamCompleted && finalResponse !== undefined) {
+          const text = extractResponseText(finalResponse) || buffer;
           if (text.length > 0) checkCapabilityGaps(state, text, fp);
-          // User corrections only commit on a clean stream completion,
-          // for the same reason wrapModelCall defers them: a failed
-          // stream produced no committed model interaction.
-          if (streamCompleted) commitCorrections(state, pending);
+          commitCorrections(state, pending);
         }
       })();
     },
@@ -636,20 +630,16 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     },
   };
 
-  function getAllSignals(): readonly ForgeDemandSignal[] {
-    const all: ForgeDemandSignal[] = [];
-    for (const state of sessions.values()) all.push(...state.signals);
-    return all;
-  }
-
   return {
     middleware,
-    getSignals: (): readonly ForgeDemandSignal[] => getAllSignals(),
+    getSignals: (sessionId: SessionId): readonly ForgeDemandSignal[] => {
+      const state = sessions.get(sessionId);
+      return state === undefined ? [] : [...state.signals];
+    },
     dismiss,
-    getActiveSignalCount: (): number => {
-      let total = 0;
-      for (const state of sessions.values()) total += state.signals.length;
-      return total;
+    getActiveSignalCount: (sessionId: SessionId): number => {
+      const state = sessions.get(sessionId);
+      return state === undefined ? 0 : state.signals.length;
     },
   };
 }
