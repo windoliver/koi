@@ -193,6 +193,7 @@ async function* wrapStream(
     pumpError: undefined,
     consumerClosed: false,
     queue: [],
+    queueHead: 0,
     waker: null,
   };
 
@@ -219,12 +220,13 @@ async function* wrapStream(
 
   try {
     while (true) {
-      while (state.queue.length > 0) {
-        const ev = state.queue.shift();
+      while (hasQueuedEvents(state)) {
+        const ev = dequeue(state);
         if (ev === undefined) break;
         yield ev;
         if (ev.kind === "done") return;
       }
+      compactQueue(state);
       if (state.pumpDone) {
         if (state.pumpError !== undefined) throw state.pumpError;
         return;
@@ -297,6 +299,7 @@ interface WrapperState {
    */
   consumerClosed: boolean;
   readonly queue: EngineEvent[];
+  queueHead: number;
   waker: (() => void) | null;
 }
 
@@ -620,6 +623,30 @@ function isAbortError(err: unknown): boolean {
 function enqueue(state: WrapperState, ev: EngineEvent): void {
   state.queue.push(ev);
   wake(state);
+}
+
+function hasQueuedEvents(state: WrapperState): boolean {
+  return state.queueHead < state.queue.length;
+}
+
+function dequeue(state: WrapperState): EngineEvent | undefined {
+  if (!hasQueuedEvents(state)) return undefined;
+  const ev = state.queue[state.queueHead];
+  state.queueHead += 1;
+  if (state.queueHead > 1024 && state.queueHead * 2 >= state.queue.length) {
+    compactQueue(state);
+  }
+  return ev;
+}
+
+function compactQueue(state: WrapperState): void {
+  if (state.queueHead === 0) return;
+  if (state.queueHead >= state.queue.length) {
+    state.queue.length = 0;
+  } else {
+    state.queue.splice(0, state.queueHead);
+  }
+  state.queueHead = 0;
 }
 
 function wake(state: WrapperState): void {

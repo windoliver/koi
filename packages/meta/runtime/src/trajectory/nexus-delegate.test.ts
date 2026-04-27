@@ -52,11 +52,8 @@ function createStubTransport(options?: StubTransportOptions): NexusTransport {
 
     if (method === "glob") {
       const pattern = params.pattern as string;
-      // Simple glob: basePath/*.atif.json → match files under that prefix
-      const prefix = pattern.replace("/*.atif.json", "/");
-      const matches = [...files.keys()].filter(
-        (k) => k.startsWith(prefix) && k.endsWith(".atif.json"),
-      );
+      const matcher = globPatternToRegExp(pattern);
+      const matches = [...files.keys()].filter((k) => matcher.test(k));
       return { ok: true, value: matches as T };
     }
 
@@ -87,6 +84,11 @@ function createStubTransport(options?: StubTransportOptions): NexusTransport {
     submitAuthCode: () => {},
     close: () => {},
   };
+}
+
+function globPatternToRegExp(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*");
+  return new RegExp(`^${escaped}$`);
 }
 
 // ---------------------------------------------------------------------------
@@ -221,13 +223,14 @@ describe("createNexusAtifDelegate", () => {
   });
 
   test("retries write on RATE_LIMIT error", async () => {
-    // let: tracks call count to fail first attempt
-    let writeCallCount = 0;
+    const writePaths: string[] = [];
+    let stepChunkWriteCount = 0;
     const rateLimitTransport = createStubTransport({
-      errorInjector(method) {
+      errorInjector(method, params) {
         if (method === "write") {
-          writeCallCount++;
-          if (writeCallCount === 1) {
+          const path = params.path as string;
+          writePaths.push(path);
+          if (path.includes(".atif.steps.") && stepChunkWriteCount++ === 0) {
             return {
               ok: false,
               error: { code: "RATE_LIMIT", message: "Too many requests", retryable: true },
@@ -238,9 +241,9 @@ describe("createNexusAtifDelegate", () => {
       },
     });
     const delegate = createNexusAtifDelegate({ transport: rateLimitTransport });
-    // Should succeed on retry (second attempt)
     await delegate.write("rate-limited", DOC);
-    expect(writeCallCount).toBe(2);
+    expect(writePaths.filter((path) => path.includes(".atif.steps."))).toHaveLength(2);
+    expect(writePaths.filter((path) => path.endsWith(".atif.meta.json"))).toHaveLength(1);
   });
 
   test("throws on auth/permission error (not swallowed as undefined)", async () => {

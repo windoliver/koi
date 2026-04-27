@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import type { EngineAdapter, EngineEvent, EngineInput, KoiMiddleware } from "@koi/core";
+import type {
+  Agent,
+  EngineAdapter,
+  EngineEvent,
+  EngineInput,
+  FileSystemBackend,
+  KoiMiddleware,
+} from "@koi/core";
+import { sessionId } from "@koi/core";
 import { createRuntime } from "./create-runtime.js";
 import { PHASE1_MIDDLEWARE_NAMES } from "./stubs/stub-middleware.js";
+import { DEFAULT_ACTIVITY_MAX_DURATION_MS } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,6 +41,19 @@ function createFakeMiddleware(name: string): KoiMiddleware {
     wrapModelCall: async (_ctx, request, next) => next(request),
     wrapToolCall: async (_ctx, request, next) => next(request),
     describeCapabilities: () => undefined,
+  };
+}
+
+function createFakeAgent(): Agent {
+  return {
+    pid: "test" as never,
+    manifest: { name: "test", version: "0.0.0", model: { name: "test" }, objectives: [] },
+    state: "assembling" as never,
+    component: () => undefined,
+    has: () => false,
+    hasAll: () => false,
+    query: () => new Map(),
+    components: () => new Map(),
   };
 }
 
@@ -174,6 +196,58 @@ describe("createRuntime", () => {
     await runtime.dispose();
     expect(channelDisconnected).toBe(true);
     expect(adapterDisposed).toBe(true);
+  });
+
+  test("threads RuntimeConfig.sessionId into middleware TurnContext", async () => {
+    let observedSessionId: string | undefined;
+    const middleware: KoiMiddleware = {
+      name: "session-spy",
+      phase: "resolve",
+      priority: 500,
+      describeCapabilities: () => undefined,
+      wrapModelCall: async (ctx, request, next) => {
+        observedSessionId = ctx.session.sessionId as string;
+        return next(request);
+      },
+    };
+    const adapterWithTerminals: EngineAdapter = {
+      engineId: "session-spy-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: async () => ({ content: "ok", model: "test" }),
+      },
+      stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        return (async function* () {
+          await input.callHandlers?.modelCall({ messages: [], model: "test" });
+          yield {
+            kind: "done" as const,
+            output: {
+              content: [],
+              stopReason: "completed" as const,
+              metrics: {
+                totalTokens: 0,
+                inputTokens: 0,
+                outputTokens: 0,
+                turns: 0,
+                durationMs: 0,
+              },
+            },
+          };
+        })();
+      },
+    };
+
+    const runtime = createRuntime({
+      adapter: adapterWithTerminals,
+      middleware: [middleware],
+      sessionId: "fixed-session",
+    });
+
+    for await (const _event of runtime.adapter.stream({ kind: "text", text: "test" })) {
+      // drain
+    }
+
+    expect(observedSessionId).toBe("fixed-session");
   });
 
   test("wraps adapter with stream timeout enforcement", async () => {
@@ -372,6 +446,35 @@ describe("createRuntime", () => {
     expect(receivedSignal).toBeDefined();
   });
 
+  test("empty activityTimeout uses the 4h activity max-duration default", async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const delays: number[] = [];
+    type SetTimeoutArgs = Parameters<typeof globalThis.setTimeout>;
+    globalThis.setTimeout = ((
+      handler: SetTimeoutArgs[0],
+      timeout?: SetTimeoutArgs[1],
+      ...args: unknown[]
+    ) => {
+      if (typeof timeout === "number") delays.push(timeout);
+      return originalSetTimeout(handler, timeout, ...(args as []));
+    }) as typeof globalThis.setTimeout;
+
+    try {
+      const runtime = createRuntime({
+        adapter: createFakeAdapter("activity-default-spy"),
+        activityTimeout: {},
+      });
+
+      for await (const _event of runtime.adapter.stream({ kind: "text", text: "x" })) {
+        break;
+      }
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+
+    expect(delays).toContain(DEFAULT_ACTIVITY_MAX_DURATION_MS);
+  });
+
   test("stream timeout composes with caller signal", async () => {
     let receivedSignal: AbortSignal | undefined;
 
@@ -434,6 +537,66 @@ describe("createRuntime", () => {
     await expect(runtime.dispose()).rejects.toThrow("channel disconnect failed");
     // Adapter must still have been disposed despite channel failure
     expect(adapterDisposed).toBe(true);
+  });
+
+  test("dispose closes runtime-owned checkpoint snapshot store", async () => {
+    const runtime = createRuntime({
+      checkpoint: { blobDir: `/tmp/koi-runtime-checkpoint-${Date.now()}` },
+    });
+    const checkpoint = runtime.checkpoint;
+    expect(checkpoint).toBeDefined();
+
+    await runtime.dispose();
+
+    await expect(checkpoint?.resetSession(sessionId("after-dispose"))).rejects.toThrow(
+      "store is closed",
+    );
+  });
+
+  test("dispose skips filesystem backend already detached through provider", async () => {
+    let disposeCalls = 0;
+    const backend: FileSystemBackend = {
+      name: "counting",
+      read: () => ({ ok: true, value: { content: "", path: "x", size: 0 } }),
+      write: () => ({ ok: true, value: { path: "x", bytesWritten: 0 } }),
+      edit: () => ({ ok: true, value: { path: "x", hunksApplied: 0 } }),
+      list: () => ({ ok: true, value: { entries: [], truncated: false } }),
+      search: () => ({ ok: true, value: { matches: [], truncated: false } }),
+      dispose: () => {
+        disposeCalls += 1;
+        if (disposeCalls > 1) throw new Error("filesystem disposed twice");
+      },
+    };
+    const runtime = createRuntime({ filesystem: backend });
+
+    await runtime.filesystemProvider?.attach(createFakeAgent());
+    await runtime.filesystemProvider?.detach?.(createFakeAgent());
+    await runtime.dispose();
+
+    expect(disposeCalls).toBe(1);
+  });
+
+  test("filesystem provider detach skips backend already disposed by runtime", async () => {
+    let disposeCalls = 0;
+    const backend: FileSystemBackend = {
+      name: "counting",
+      read: () => ({ ok: true, value: { content: "", path: "x", size: 0 } }),
+      write: () => ({ ok: true, value: { path: "x", bytesWritten: 0 } }),
+      edit: () => ({ ok: true, value: { path: "x", hunksApplied: 0 } }),
+      list: () => ({ ok: true, value: { entries: [], truncated: false } }),
+      search: () => ({ ok: true, value: { matches: [], truncated: false } }),
+      dispose: () => {
+        disposeCalls += 1;
+        if (disposeCalls > 1) throw new Error("filesystem disposed twice");
+      },
+    };
+    const runtime = createRuntime({ filesystem: backend });
+
+    await runtime.filesystemProvider?.attach(createFakeAgent());
+    await runtime.dispose();
+    await runtime.filesystemProvider?.detach?.(createFakeAgent());
+
+    expect(disposeCalls).toBe(1);
   });
 
   test("dispose surfaces both errors when channel and adapter fail", async () => {

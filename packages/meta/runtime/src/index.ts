@@ -88,9 +88,18 @@ export { createStubChannel } from "./stubs/stub-channel.js";
 export { createStubMiddleware, PHASE1_MIDDLEWARE_NAMES } from "./stubs/stub-middleware.js";
 export type { AtifExportOptions } from "./trajectory/atif-mapper.js";
 export { mapAtifToRichTrajectory, mapRichTrajectoryToAtif } from "./trajectory/atif-mapper.js";
-export type { AtifDocumentDelegate, AtifDocumentStoreConfig } from "./trajectory/atif-store.js";
+export type {
+  AtifDocumentAppendBatch,
+  AtifDocumentAppendState,
+  AtifDocumentDelegate,
+  AtifDocumentHeader,
+  AtifDocumentStoreConfig,
+} from "./trajectory/atif-store.js";
 // Trajectory (ATIF store)
-export { createAtifDocumentStore } from "./trajectory/atif-store.js";
+export {
+  createAtifAppendStateFromDocument,
+  createAtifDocumentStore,
+} from "./trajectory/atif-store.js";
 export type { AtifDocument } from "./trajectory/atif-types.js";
 export { createFsAtifDelegate } from "./trajectory/fs-delegate.js";
 export type { NexusTrajectoryConfig } from "./trajectory/nexus-delegate.js";
