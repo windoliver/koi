@@ -44,19 +44,22 @@ const forgeDemandConfigInputSchema = z.object({
 // Defaults
 // ---------------------------------------------------------------------------
 
-const DEFAULT_HEURISTIC_THRESHOLDS: HeuristicThresholds = {
+// Frozen at module load so accidental mutation by any consumer
+// (the `readonly` types are erased at runtime) cannot leak into later
+// `createDefaultForgeDemandConfig()` callers.
+const DEFAULT_HEURISTIC_THRESHOLDS: HeuristicThresholds = Object.freeze({
   repeatedFailureCount: 3,
   capabilityGapOccurrences: 2,
   latencyDegradationAvgMs: 5_000,
-  confidenceWeights: DEFAULT_CONFIDENCE_WEIGHTS,
-} as const;
+  confidenceWeights: Object.freeze({ ...DEFAULT_CONFIDENCE_WEIGHTS }),
+});
 
-/** Default forge demand configuration (budget + heuristics). */
-export const DEFAULT_FORGE_DEMAND_CONFIG: ForgeDemandConfig = {
-  budget: DEFAULT_FORGE_BUDGET,
+/** Default forge demand configuration (budget + heuristics). Immutable. */
+export const DEFAULT_FORGE_DEMAND_CONFIG: ForgeDemandConfig = Object.freeze({
+  budget: Object.freeze({ ...DEFAULT_FORGE_BUDGET }),
   heuristics: DEFAULT_HEURISTIC_THRESHOLDS,
   maxPendingSignals: 10,
-} as const;
+});
 
 /** Re-exported default thresholds for tests/external consumers. */
 export { DEFAULT_HEURISTIC_THRESHOLDS };
@@ -65,22 +68,35 @@ export { DEFAULT_HEURISTIC_THRESHOLDS };
 // Factory
 // ---------------------------------------------------------------------------
 
-/** Create a default `ForgeDemandConfig` with optional overrides. */
+/**
+ * Create a default `ForgeDemandConfig` with optional overrides. Always
+ * returns a freshly cloned object — callers may mutate the result without
+ * leaking changes into later calls.
+ */
 export function createDefaultForgeDemandConfig(
   overrides?: Partial<ForgeDemandConfig>,
 ): ForgeDemandConfig {
-  if (overrides === undefined) return DEFAULT_FORGE_DEMAND_CONFIG;
   return {
-    ...DEFAULT_FORGE_DEMAND_CONFIG,
-    ...overrides,
-    budget:
-      overrides.budget !== undefined
-        ? { ...DEFAULT_FORGE_BUDGET, ...overrides.budget }
-        : DEFAULT_FORGE_BUDGET,
-    heuristics:
-      overrides.heuristics !== undefined
-        ? { ...DEFAULT_HEURISTIC_THRESHOLDS, ...overrides.heuristics }
-        : DEFAULT_HEURISTIC_THRESHOLDS,
+    budget: { ...DEFAULT_FORGE_BUDGET, ...overrides?.budget },
+    heuristics: {
+      ...DEFAULT_HEURISTIC_THRESHOLDS,
+      ...overrides?.heuristics,
+      confidenceWeights: {
+        ...DEFAULT_CONFIDENCE_WEIGHTS,
+        ...overrides?.heuristics?.confidenceWeights,
+      },
+    },
+    maxPendingSignals: overrides?.maxPendingSignals ?? 10,
+    ...(overrides?.healthTracker !== undefined && { healthTracker: overrides.healthTracker }),
+    ...(overrides?.capabilityGapPatterns !== undefined && {
+      capabilityGapPatterns: overrides.capabilityGapPatterns,
+    }),
+    ...(overrides?.userCorrectionPatterns !== undefined && {
+      userCorrectionPatterns: overrides.userCorrectionPatterns,
+    }),
+    ...(overrides?.onDemand !== undefined && { onDemand: overrides.onDemand }),
+    ...(overrides?.onDismiss !== undefined && { onDismiss: overrides.onDismiss }),
+    ...(overrides?.clock !== undefined && { clock: overrides.clock }),
   };
 }
 

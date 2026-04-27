@@ -573,7 +573,7 @@ describe("createForgeDemandDetector", () => {
     expect(signals.length).toBe(2);
   });
 
-  it("enforces computeTimeBudgetMs by stopping emissions past the budget window", async () => {
+  it("does not suppress later signals on idle wall-clock alone (computeTimeBudgetMs is forge-pipeline scope, not detector)", async () => {
     let now = 0;
     const signals: ForgeDemandSignal[] = [];
     const handle = createForgeDemandDetector(
@@ -596,13 +596,15 @@ describe("createForgeDemandDetector", () => {
     }
     expect(signals.length).toBe(1);
 
-    now = 5_000; // way past computeTimeBudgetMs
+    // Idle for 5s — well past computeTimeBudgetMs. The detector must keep
+    // emitting because actual forge compute happens elsewhere.
+    now = 5_000;
     try {
       await handle.middleware.wrapToolCall?.(ctx, toolReq("b"), failNext);
     } catch {
       // expected
     }
-    expect(signals.length).toBe(1);
+    expect(signals.length).toBe(2);
   });
 
   it("treats in-band tool errors ({error, code}) as failures, not successes", async () => {
@@ -806,6 +808,30 @@ describe("createForgeDemandDetector", () => {
       // attribution must be tool-A.
       expect(corr.trigger.correctedToolCall).toBe("tool-A");
     }
+  });
+
+  it("createDefaultForgeDemandConfig returns a fresh, isolated config object on every call", async () => {
+    const { createDefaultForgeDemandConfig, DEFAULT_FORGE_DEMAND_CONFIG } = await import(
+      "./config.js"
+    );
+
+    const a = createDefaultForgeDemandConfig();
+    // Mutate the returned config — must NOT leak to defaults or to the next call.
+    (a.budget as { maxForgesPerSession: number }).maxForgesPerSession = 99;
+    (a.heuristics as { repeatedFailureCount: number }).repeatedFailureCount = 99;
+
+    const b = createDefaultForgeDemandConfig();
+    expect(b.budget.maxForgesPerSession).toBe(5);
+    expect(b.heuristics).toBeDefined();
+    if (b.heuristics !== undefined) {
+      expect(b.heuristics.repeatedFailureCount).toBe(3);
+    }
+
+    // The frozen DEFAULT_FORGE_DEMAND_CONFIG export itself is immutable.
+    expect(() => {
+      (DEFAULT_FORGE_DEMAND_CONFIG.budget as { maxForgesPerSession: number }).maxForgesPerSession =
+        42;
+    }).toThrow();
   });
 
   it("dismiss removes the signal and clears its cooldown", async () => {

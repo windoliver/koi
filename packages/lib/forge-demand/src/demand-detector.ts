@@ -164,9 +164,8 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   // Highest user-message timestamp already scanned for corrections.
   // Prevents replayed transcript history from re-firing on retry paths.
   let lastProcessedUserTimestamp = -1;
-  // Forge-budget bookkeeping. Initialized lazily on first emission so the
-  // session window starts when the detector actually sees traffic.
-  let sessionStartedAt = -1;
+  // Forge-budget bookkeeping — count-based only. Wall-clock budgets live
+  // on the forge pipeline, not here.
   let sessionEmitCount = 0;
 
   function isOnCooldown(key: string): boolean {
@@ -185,12 +184,11 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     const confidence = computeDemandConfidence(trigger, thresholds.confidenceWeights, context);
     if (confidence < config.budget.demandThreshold) return;
 
-    // Budget enforcement — measured from the first ACTUAL emission so
-    // long-running sessions with only sub-threshold noise are not silently
-    // shut off before any signal fires.
-    if (sessionStartedAt >= 0 && clock() - sessionStartedAt >= config.budget.computeTimeBudgetMs) {
-      return;
-    }
+    // The detector only enforces the count-based session cap. It does
+    // NOT enforce `computeTimeBudgetMs` — that is forge-pipeline compute,
+    // not detector wall-clock. Gating emission on wall-clock since the
+    // first signal would silently shut the detector off on long idle
+    // sessions even when no forge work consumed any compute.
     if (sessionEmitCount >= config.budget.maxForgesPerSession) return;
 
     signalCounter += 1;
@@ -219,7 +217,6 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     signals.push(signal);
     cooldowns.set(key, clock());
     sessionEmitCount += 1;
-    if (sessionStartedAt < 0) sessionStartedAt = clock();
     safeInvoke(config.onDemand, signal);
   }
 
@@ -482,7 +479,6 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       recentToolCalls.length = 0;
       emittedCorrectionTimestamps.clear();
       lastProcessedUserTimestamp = -1;
-      sessionStartedAt = -1;
       sessionEmitCount = 0;
     },
 
