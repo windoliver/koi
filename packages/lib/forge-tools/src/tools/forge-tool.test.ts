@@ -132,6 +132,49 @@ describe("forge_tool", () => {
     if (caught instanceof Error) expect(caught.message).toMatch(/NO_CONTEXT/);
   });
 
+  test("symbol-keyed proxy args do not crash the validation formatter (Solid-store regression)", async () => {
+    // The TUI surfaced TOOL_EXECUTION_ERROR when args were a Solid-store
+    // proxy: Reflect.ownKeys leaked Symbol(solid-proxy) / Symbol(store-node)
+    // into z.record's key validation, producing issues whose `path` contained
+    // a Symbol. The previous formatter called Array.join which throws
+    // "Cannot convert a symbol to a string". This test reproduces that
+    // shape directly: a proxy whose ownKeys include both string and Symbol
+    // keys, attached to a `z.record(z.string(), z.unknown())` field.
+    const proxiedSchema = new Proxy(
+      {
+        type: "object",
+        properties: { n: { type: "number" } },
+        required: ["n"],
+      } as Record<string | symbol, unknown>,
+      {
+        ownKeys(target): ArrayLike<string | symbol> {
+          return [...Reflect.ownKeys(target), Symbol("solid-proxy"), Symbol("store-node")];
+        },
+        getOwnPropertyDescriptor(target, key): PropertyDescriptor | undefined {
+          if (typeof key === "symbol") {
+            return { configurable: true, enumerable: true, value: undefined, writable: true };
+          }
+          return Object.getOwnPropertyDescriptor(target, key);
+        },
+      },
+    );
+    const tool = createForgeToolTool({ store });
+    const args: JsonObject = {
+      ...validArgs,
+      inputSchema: proxiedSchema as unknown as JsonObject,
+    };
+    let result: unknown;
+    let threw: unknown;
+    try {
+      result = await runWithExecutionContext(makeContext("agent-S"), () => tool.execute(args));
+    } catch (e) {
+      threw = e;
+    }
+    // Must not throw — the symbol-aware formatter handles the path safely.
+    expect(threw).toBeUndefined();
+    expect(result).toBeDefined();
+  });
+
   test("descriptor is a primordial ToolDescriptor with JSON Schema input", () => {
     const tool = createForgeToolTool({ store });
     expect(tool.descriptor.name).toBe("forge_tool");
