@@ -1301,7 +1301,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // 2. TUI state setup (P2-A: show TUI immediately, before runtime assembly)
   // ---------------------------------------------------------------------------
 
-  const store = createStore(createInitialState(modelName));
+  // Holder so the CLI can route critical-subscriber failures through the
+  // shared shutdown() that aborts active streams + background tasks before
+  // exit (#1940). createTuiApp installs a default fatal handler that runs
+  // handle.stop(); this CLI wraps it with the broader shutdown sequence.
+  const fatalRouter: { shutdown?: (code: number, reason?: string) => Promise<void> } = {};
+  const store = createStore(createInitialState(modelName), {
+    onFatal: (err) => {
+      // createTuiApp.start() installs its own handler that overrides this
+      // one for the lifetime of the run, so a fatal arriving while the TUI
+      // is mounted goes straight to handle.stop(). This branch only fires
+      // before/after createTuiApp's lifecycle window.
+      if (fatalRouter.shutdown) {
+        void fatalRouter.shutdown(1, `fatal: ${err.message}`);
+        return;
+      }
+      // tui-single-writer-exception: emergency log before exit, no live renderer.
+      process.stderr.write(`[tui] fatal before app handle: ${String(err)}\n`);
+      process.exit(1);
+    },
+  });
 
   // Current-model middleware: holds a mutable box that the model-picker
   // modal mutates via TuiRoot's `onModelSwitch` callback. Rewrites
@@ -2471,7 +2490,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     return handle;
   });
 
-  // let: set once after createTuiApp resolves, read in shutdown
+  // let: set once after createTuiApp resolves, read in shutdown.
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
   // let: per-submit abort controller, replaced on each new stream
   let activeController: AbortController | null = null;
@@ -3500,6 +3519,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       process.exit(exitCode);
     }
   };
+  // Wire fatal store-listener path through the full shutdown sequence so
+  // active streams / background tasks are aborted before exit (#1940).
+  fatalRouter.shutdown = shutdown;
 
   // ---------------------------------------------------------------------------
   // 4b. Upgrade SIGUSR1 to the FULL graceful-shutdown handler (#1906 R10/R11)
@@ -5511,6 +5533,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   process.once("SIGTERM", onProcessSigterm);
   process.once("SIGHUP", onProcessSighup);
   // SIGUSR1 is already armed from section 4b (#1906) — no install here.
+  // Note: process-global uncaughtException/unhandledRejection handlers are
+  // intentionally NOT installed here. They would alter the host-process
+  // contract for embedded callers (other CLIs, tests, library consumers) by
+  // routing unrelated rejections/exceptions into TUI shutdown. If global
+  // catch-all teardown is needed, the standalone CLI entrypoint owns it.
 
   // Register stdin close listener and set tuiRunning BEFORE start() so
   // PTY teardown during startup is not missed. tuiRunning is cleared in

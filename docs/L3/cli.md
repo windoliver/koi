@@ -6,6 +6,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **TUI single-writer policy enforcement (#1940)**: `@koi/tui` now forbids direct `process.stdout.write` / `console.log` while the renderer owns the terminal — both corrupt frame composition. CLI integration: `tui-command.ts` does not need code changes for this (no direct stdout writes from CLI-side rendering paths), but the new `scripts/check-tui-single-writer.ts` CI gate runs alongside `bun run test` / `bun run lint` and hard-fails the workflow on policy violations. Clipboard writes (Ctrl+C selection copy, message-list copy) flow through `renderer.copyToClipboardOSC52()` instead of raw OSC 52 escape sequences. See `docs/L2/tui.md` for the full policy + exception-marker rules. No new CLI dependencies introduced.
+
 - **Doc-wiring sync for lib review fixes (#2063)**: refreshed CLI-facing notes for
   integrated `@koi/spawn-tools`, `@koi/tool-exec`, `@koi/tools-bash`, and
   `@koi/tools-web`. CLI wiring is unchanged, but the documented runtime behavior

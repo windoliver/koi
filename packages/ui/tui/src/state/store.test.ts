@@ -166,7 +166,10 @@ describe("TuiStore — no-op guard", () => {
 
 describe("TuiStore — throwing listener", () => {
   test("throwing listener does not prevent other listeners from firing", async () => {
-    const consoleSpy = spyOn(console, "error").mockImplementation(() => {});
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    const originalIsTTY = process.stderr.isTTY;
+    // Non-TTY context (CI/pipe) — stderr write is allowed.
+    Object.defineProperty(process.stderr, "isTTY", { value: undefined, configurable: true });
     const store = makeStore();
     const before = mock(() => {});
     const thrower = mock(() => {
@@ -181,8 +184,80 @@ describe("TuiStore — throwing listener", () => {
     expect(before).toHaveBeenCalledTimes(1);
     expect(thrower).toHaveBeenCalledTimes(1);
     expect(after).toHaveBeenCalledTimes(1);
-    expect(consoleSpy).toHaveBeenCalledTimes(1);
-    consoleSpy.mockRestore();
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    stderrSpy.mockRestore();
+    Object.defineProperty(process.stderr, "isTTY", { value: originalIsTTY, configurable: true });
+  });
+
+  test("throwing listener is silent on stderr when stderr is a TTY (active terminal)", async () => {
+    // #1940: In TTY sessions the renderer controls the terminal; suppress raw stderr.
+    // A second listener remains so the fatal-shutdown path is not taken.
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    const originalIsTTY = process.stderr.isTTY;
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    const store = makeStore();
+    store.subscribe(() => {
+      throw new Error("tty-boom");
+    });
+    store.subscribe(() => {});
+    store.dispatch({ kind: "set_view", view: "sessions" });
+    await flushMicrotasks();
+    expect(stderrSpy).not.toHaveBeenCalled();
+    stderrSpy.mockRestore();
+    Object.defineProperty(process.stderr, "isTTY", { value: originalIsTTY, configurable: true });
+  });
+
+  test("throwing listener surfaces add_error block in TUI messages (TTY: visible, not silent)", async () => {
+    // #1940: dispatch() notifies remaining subscribers so the renderer re-renders.
+    // A second listener remains as the renderer stand-in so add_error has a target.
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    const originalIsTTY = process.stderr.isTTY;
+    Object.defineProperty(process.stderr, "isTTY", { value: undefined, configurable: true });
+    const store = makeStore();
+    store.subscribe(() => {
+      throw new Error("listener-boom");
+    });
+    store.subscribe(() => {});
+    store.dispatch({ kind: "set_view", view: "sessions" });
+    await flushMicrotasks(); // notifySubscribers: listener throws, queueMicrotask(dispatch)
+    await flushMicrotasks(); // dispatch(add_error): state updated with error block
+    const messages = store.getState().messages;
+    const errorMsg = messages.find(
+      (m) => m.kind === "assistant" && m.blocks.some((b) => b.kind === "error"),
+    );
+    expect(errorMsg).toBeDefined();
+    if (errorMsg?.kind === "assistant") {
+      const errorBlock = errorMsg.blocks.find((b) => b.kind === "error");
+      if (errorBlock?.kind === "error") {
+        expect(errorBlock.code).toBe("STORE_LISTENER_ERROR");
+        expect(errorBlock.message).toContain("listener-boom");
+      }
+    }
+    stderrSpy.mockRestore();
+    Object.defineProperty(process.stderr, "isTTY", { value: originalIsTTY, configurable: true });
+  });
+
+  test("throwing listener is quarantined — subsequent dispatches do not re-invoke it", async () => {
+    // #1940: listener is removed after first throw; no error-block flooding.
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    const originalIsTTY = process.stderr.isTTY;
+    Object.defineProperty(process.stderr, "isTTY", { value: undefined, configurable: true });
+    // Sole subscriber: provide onFatal so the fatal path doesn't terminate the test runner.
+    const store = createStore(createInitialState(), { onFatal: () => {} });
+    const thrower = mock(() => {
+      throw new Error("once");
+    });
+    store.subscribe(thrower);
+    store.dispatch({ kind: "set_view", view: "sessions" });
+    await flushMicrotasks(); // listener invoked and quarantined
+    await flushMicrotasks(); // fatal path
+    expect(thrower).toHaveBeenCalledTimes(1); // only called once
+    // Second dispatch must not re-invoke the quarantined listener.
+    store.dispatch({ kind: "set_view", view: "help" });
+    await flushMicrotasks();
+    expect(thrower).toHaveBeenCalledTimes(1); // still only once
+    stderrSpy.mockRestore();
+    Object.defineProperty(process.stderr, "isTTY", { value: originalIsTTY, configurable: true });
   });
 });
 
@@ -330,5 +405,81 @@ describe("TuiStore — streamDelta", () => {
     store.streamDelta("hi", "text");
     await flushMicrotasks();
     expect(listener).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Listener failure / fatal-shutdown contract (#1940)
+// ---------------------------------------------------------------------------
+
+describe("TuiStore — listener failures", () => {
+  test("quarantines a throwing listener and surfaces add_error to remaining subscribers", async () => {
+    const stderrSpy = spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      const store = createStore(createInitialState());
+      const bad = mock(() => {
+        throw new Error("boom");
+      });
+      const good = mock(() => {});
+      store.subscribe(bad);
+      store.subscribe(good);
+
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      await flushMicrotasks();
+      await flushMicrotasks();
+
+      // The throwing listener was removed and the good listener still fires.
+      expect(good).toHaveBeenCalled();
+      // An error block was dispatched into the transcript.
+      const lastMsg = store.getState().messages.at(-1);
+      expect(lastMsg?.kind).toBe("assistant");
+      if (lastMsg?.kind === "assistant") {
+        expect(lastMsg.blocks.some((b) => b.kind === "error")).toBe(true);
+      }
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  test("invokes onFatal when a critical subscriber throws (renderer-health contract)", async () => {
+    const stderrSpy = spyOn(process.stderr, "write").mockReturnValue(true);
+    const onFatal = mock((_e: Error) => {});
+    try {
+      const store = createStore(createInitialState(), { onFatal });
+      const bad = mock(() => {
+        throw new Error("renderer dead");
+      });
+      store.subscribe(bad, { critical: true });
+
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      await flushMicrotasks();
+
+      expect(onFatal).toHaveBeenCalledTimes(1);
+      const arg = onFatal.mock.calls[0]?.[0];
+      expect(arg).toBeInstanceOf(Error);
+      expect((arg as Error).message).toBe("renderer dead");
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  test("non-critical subscriber failure does NOT trigger fatal teardown", async () => {
+    const stderrSpy = spyOn(process.stderr, "write").mockReturnValue(true);
+    const onFatal = mock((_e: Error) => {});
+    try {
+      const store = createStore(createInitialState(), { onFatal });
+      const bad = mock(() => {
+        throw new Error("view-sync workaround failed");
+      });
+      // No `critical: true` — sole subscriber but renderer-health unaffected.
+      store.subscribe(bad);
+
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      await flushMicrotasks();
+
+      expect(onFatal).not.toHaveBeenCalled();
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 });

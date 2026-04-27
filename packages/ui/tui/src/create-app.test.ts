@@ -393,3 +393,162 @@ describe("createTuiApp — renderer.destroy() disposes Solid root", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Critical store subscriber → fatal teardown wiring (#1940)
+// ---------------------------------------------------------------------------
+
+describe("createTuiApp — fatal critical-subscriber teardown", () => {
+  test("critical subscriber failure triggers handle.stop() and chains to caller-supplied onFatal", async () => {
+    const renderer = await makeTestRenderer();
+    const stderrSpy = spyOn(process.stderr, "write").mockReturnValue(true);
+    const callerOnFatal = mock((_e: Error) => {});
+    try {
+      const store = createStore(createInitialState(), { onFatal: callerOnFatal });
+      const permissionBridge = createPermissionBridge({ store });
+      const result = createTuiApp({
+        store,
+        permissionBridge,
+        onCommand: mock(() => {}),
+        onSessionSelect: mock(() => {}),
+        onSubmit: mock(() => {}),
+        onInterrupt: mock(() => {}),
+        renderer,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const handle = result.value;
+      const stopSpy = spyOn(handle, "stop");
+
+      await handle.start();
+
+      // Register a critical subscriber that throws on the next dispatch.
+      const bad = mock(() => {
+        throw new Error("renderer dead");
+      });
+      store.subscribe(bad, { critical: true });
+
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      // Allow microtask + handle.stop's async chain to settle.
+      await new Promise<void>((r) => setTimeout(r, 50));
+
+      // createTuiApp's installed handler ran handle.stop() and chained to the
+      // caller-supplied onFatal — both the renderer teardown and the broader
+      // fatal callback fire (#1940).
+      expect(stopSpy).toHaveBeenCalled();
+      expect(callerOnFatal).toHaveBeenCalledTimes(1);
+      expect(callerOnFatal.mock.calls[0]?.[0]?.message).toBe("renderer dead");
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  test("failed start() unwinds the fatal handler so a retry against the same store is not poisoned", async () => {
+    const stderrSpy = spyOn(process.stderr, "write").mockReturnValue(true);
+    const callerOnFatal = mock((_e: Error) => {});
+    try {
+      const store = createStore(createInitialState(), { onFatal: callerOnFatal });
+      const baseConfig = {
+        store,
+        permissionBridge: createPermissionBridge({ store }),
+        onCommand: mock(() => {}),
+        onSessionSelect: mock(() => {}),
+        onSubmit: mock(() => {}),
+        onInterrupt: mock(() => {}),
+      };
+
+      // First start fails: inject a renderer whose `once("destroy", ...)`
+      // throws during the mount step in start(). This forces start() to
+      // reject without ever reaching `started = true` or running stop().
+      const failingRenderer = await makeTestRenderer();
+      const originalOnce = failingRenderer.once.bind(failingRenderer);
+      let armed = true;
+      // biome-ignore lint/suspicious/noExplicitAny: test-only event-emitter override
+      (failingRenderer as any).once = (event: string, listener: unknown): unknown => {
+        if (armed && event === "destroy") {
+          armed = false;
+          throw new Error("once boom");
+        }
+        // biome-ignore lint/suspicious/noExplicitAny: forwarding to original
+        return originalOnce(event as any, listener as any);
+      };
+
+      const failed = createTuiApp({ ...baseConfig, renderer: failingRenderer });
+      expect(failed.ok).toBe(true);
+      if (!failed.ok) return;
+      await expect(failed.value.start()).rejects.toThrow();
+
+      // Retry against the same store with a healthy renderer.
+      const goodRenderer = await makeTestRenderer();
+      const second = createTuiApp({ ...baseConfig, renderer: goodRenderer });
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      await second.value.start();
+      const secondStopSpy = spyOn(second.value, "stop");
+
+      const bad = mock(() => {
+        throw new Error("after-retry fail");
+      });
+      store.subscribe(bad, { critical: true });
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      await new Promise<void>((r) => setTimeout(r, 50));
+
+      // Critical failure must reach exactly the live handle and the caller's
+      // onFatal — the failed start's stale closure must not eat the event.
+      expect(secondStopSpy).toHaveBeenCalled();
+      expect(callerOnFatal).toHaveBeenCalledTimes(1);
+      expect(callerOnFatal.mock.calls[0]?.[0]?.message).toBe("after-retry fail");
+      await second.value.stop();
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  test("stop() restores the previous fatal handler so a later run is unaffected", async () => {
+    const renderer1 = await makeTestRenderer();
+    const renderer2 = await makeTestRenderer();
+    const stderrSpy = spyOn(process.stderr, "write").mockReturnValue(true);
+    const callerOnFatal = mock((_e: Error) => {});
+    try {
+      const store = createStore(createInitialState(), { onFatal: callerOnFatal });
+      const baseConfig = {
+        store,
+        permissionBridge: createPermissionBridge({ store }),
+        onCommand: mock(() => {}),
+        onSessionSelect: mock(() => {}),
+        onSubmit: mock(() => {}),
+        onInterrupt: mock(() => {}),
+      };
+
+      const first = createTuiApp({ ...baseConfig, renderer: renderer1 });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      await first.value.start();
+      await first.value.stop();
+
+      // After stop(), the disposed handle's fatal closure must NOT fire.
+      // Trigger a critical failure with no live app — caller's onFatal runs
+      // (the previous handler restored on stop), not first.value.stop().
+      const second = createTuiApp({ ...baseConfig, renderer: renderer2 });
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      await second.value.start();
+      const secondStopSpy = spyOn(second.value, "stop");
+      const firstStopSpy = spyOn(first.value, "stop");
+
+      const bad = mock(() => {
+        throw new Error("second-run fail");
+      });
+      store.subscribe(bad, { critical: true });
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      await new Promise<void>((r) => setTimeout(r, 50));
+
+      // Second handle stops; first handle's stale closure does not.
+      expect(secondStopSpy).toHaveBeenCalled();
+      expect(firstStopSpy).not.toHaveBeenCalled();
+      await second.value.stop();
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+});
