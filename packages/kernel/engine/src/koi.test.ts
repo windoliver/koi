@@ -2164,7 +2164,10 @@ describe("createKoi streaming terminal wiring", () => {
     expect(typeof adapter.capturedInput?.callHandlers?.modelStream).toBe("function");
   });
 
-  test("adapter without modelStream terminal gets no callHandlers.modelStream", async () => {
+  test("adapter without modelStream terminal gets a synthesized callHandlers.modelStream", async () => {
+    // Round 9: stream pipeline is unified — pure-call adapters get a
+    // synthesized stream so wrapModelStream middleware (e.g. tool-recovery)
+    // runs on every adapter, not just streaming-native ones.
     const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
     const adapter = cooperatingAdapter(modelTerminal, [{ kind: "done", output: doneOutput() }]);
 
@@ -2177,7 +2180,8 @@ describe("createKoi streaming terminal wiring", () => {
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
 
     expect(adapter.capturedInput).toBeDefined();
-    expect(adapter.capturedInput?.callHandlers?.modelStream).toBeUndefined();
+    expect(adapter.capturedInput?.callHandlers?.modelStream).toBeDefined();
+    expect(typeof adapter.capturedInput?.callHandlers?.modelStream).toBe("function");
   });
 
   test("adapter can consume callHandlers.modelStream to stream", async () => {

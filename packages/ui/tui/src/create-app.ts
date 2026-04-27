@@ -267,6 +267,13 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
   let stdinResurrectionHandle:
     | { readonly disarm: () => void; readonly close: () => void }
     | undefined;
+  // Restores the store's previous fatal handler when stop() runs, so a
+  // subsequent createTuiApp() invocation against the same store does not
+  // see a stale closure pointing at this disposed handle (#1940).
+  let restoreFatalHandler: (() => void) | undefined;
+  // `let`: re-entrancy guard so a critical-subscriber failure during stop()
+  // does not recursively trigger another stop().
+  let fatalShutdownActive = false;
   // Captured reference to the renderer.once("destroy") handler so stop()
   // can unregister it before calling renderer.destroy(). Without this,
   // destroy's synchronous "destroy" event would fire the handler during
@@ -283,6 +290,33 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
       if (started) return; // already running
       if (closing) return; // stop() was called — handle is permanently closed
       if (startPromise !== null) return startPromise; // concurrent call — share init
+
+      // Wire fatal-listener teardown (#1940). Installed AFTER the concurrency
+      // guard so concurrent start() calls do not stack multiple wrappers; the
+      // unwind below restores the handler if start() fails so a failed start
+      // does not leak a stale closure into the shared store.
+      restoreFatalHandler = store.setFatalHandler((prev) => (err) => {
+        if (fatalShutdownActive) return;
+        fatalShutdownActive = true;
+        // tui-single-writer-exception: renderer is about to be torn down.
+        try {
+          process.stderr.write(`[createTuiApp] critical subscriber failed: ${err.message}\n`);
+        } catch {
+          /* stderr unwritable — proceed to teardown anyway */
+        }
+        // Stop renderer first so subsequent caller teardown runs against a
+        // dead UI. handle.stop() is idempotent — safe if `prev` also stops it.
+        handle
+          .stop()
+          .catch(() => {})
+          .finally(() => {
+            try {
+              prev(err);
+            } catch {
+              /* prev failures must not mask teardown */
+            }
+          });
+      });
 
       // Capture the current stop generation. If stop() is called while we are
       // awaiting renderer creation, the generation increments and we self-abort
@@ -518,6 +552,22 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
       startPromise = p;
       try {
         await p;
+        // The IIFE may have aborted (closing/stopGeneration changed) without
+        // committing `started`. Treat that as a non-success and unwind the
+        // fatal handler — stop() will not run for a never-mounted handle.
+        if (!started) {
+          restoreFatalHandler?.();
+          restoreFatalHandler = undefined;
+          fatalShutdownActive = false;
+        }
+      } catch (e) {
+        // Renderer creation / render() failed. Unwind fatal handler so a
+        // retry against the same store is not poisoned by a stale closure
+        // bound to this disposed handle (#1940).
+        restoreFatalHandler?.();
+        restoreFatalHandler = undefined;
+        fatalShutdownActive = false;
+        throw e;
       } finally {
         // Clear the in-flight promise so a failed start can be retried and
         // stop() can detect that startup has fully settled.
@@ -564,6 +614,12 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
 
       cleanupResize?.();
       cleanupResize = undefined;
+
+      // Restore the previous fatal handler so a later createTuiApp() against
+      // the same store does not invoke this disposed instance's stop().
+      restoreFatalHandler?.();
+      restoreFatalHandler = undefined;
+      fatalShutdownActive = false;
 
       // Dispose the Solid reactive root (releases store subscriptions, keyboard
       // hooks, etc.). We captured the dispose function during start() by
@@ -618,9 +674,10 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           const hasRawModeMarker = e instanceof Error && /setRawMode|errno: 2/.test(e.message);
           const isStdinRawModeError = hasRawModeMarker && (hasErrnoCode || errno === undefined);
           if (!isStdinRawModeError) {
-            // Log unexpected renderer teardown failures so they surface in
-            // crash reports without tripping the non-throwing stop() contract.
-            console.error("createTuiApp.stop: renderer.destroy() threw", e);
+            // tui-single-writer-exception: renderer is being destroyed — no active
+            // renderer owns the terminal at this point, so stderr write is safe
+            // regardless of TTY state. Cannot dispatch to store (#1940).
+            process.stderr.write(`[tui] stop: renderer.destroy() threw: ${String(e)}\n`);
           }
         }
       }
