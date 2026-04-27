@@ -508,6 +508,9 @@
         "@koi/tools-core": "workspace:*",
         "zod": "4.3.6",
       },
+      "devDependencies": {
+        "@koi/scheduler": "workspace:*",
+      },
     },
     "packages/lib/query-engine": {
       "name": "@koi/query-engine",
