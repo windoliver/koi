@@ -216,18 +216,10 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
               ? chainFollowerStmt.get(max_id, config.agentId)
               : chainFollowerStmt.get(max_id);
           if (hasChainFollower !== null) continue;
-          // agent_id can be NULL for single-agent/legacy rows. SQLite `= NULL`
-          // never matches — use IS NULL branch so retention works without agentId config.
-          if (agent_id === null) {
-            db.prepare("DELETE FROM audit_log WHERE agent_id IS NULL AND session_id = ?").run(
-              session_id,
-            );
-          } else {
-            db.prepare("DELETE FROM audit_log WHERE agent_id = ? AND session_id = ?").run(
-              agent_id,
-              session_id,
-            );
-          }
+          db.prepare("DELETE FROM audit_log WHERE agent_id = ? AND session_id = ?").run(
+            agent_id,
+            session_id,
+          );
         }
       })();
     } catch (e: unknown) {
