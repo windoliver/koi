@@ -792,6 +792,49 @@ describe("createToolAuditMiddleware", () => {
       expect(persisted?.tools.search?.sessionsUsed).toBe(4);
     });
 
+    test("persists merged outage state on a later otherwise-clean session — round 25 F1", async () => {
+      // After a load failure, deltas accumulate in memory. When a later
+      // session hydrates successfully, the merge must mark a pending
+      // persist so the next onSessionEnd flushes — even if that session
+      // recorded no model/tool work. Otherwise a process restart drops
+      // the recovered audit history.
+      let callIndex = 0;
+      const diskSnapshot: ToolAuditSnapshot = {
+        tools: {},
+        totalSessions: 0,
+        lastUpdatedAt: 0,
+      };
+      const savedSnapshots: ToolAuditSnapshot[] = [];
+      const store: ToolAuditStore = {
+        load: () => {
+          callIndex += 1;
+          if (callIndex === 1) throw new Error("transient");
+          return diskSnapshot;
+        },
+        save: (s) => {
+          savedSnapshots.push(s);
+        },
+      };
+      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+      const wrap = getWrapToolCall(mw);
+
+      // Outage session: load fails, but a tool call increments in-memory state.
+      await mw.onSessionStart?.(sessionCtx({ sessionId: "outage" }));
+      await wrap(turnCtx(sessionCtx({ sessionId: "outage" })), toolReq("search"), async () => ({
+        output: "ok",
+      }));
+      await mw.onSessionEnd?.(sessionCtx({ sessionId: "outage" }));
+      expect(savedSnapshots.length).toBe(0);
+
+      // Recovery session: hydrates successfully, but does NO work.
+      // The merge of outage deltas must still trigger a persist on end.
+      await mw.onSessionStart?.(sessionCtx({ sessionId: "recovery" }));
+      await mw.onSessionEnd?.(sessionCtx({ sessionId: "recovery" }));
+
+      expect(savedSnapshots.length).toBe(1);
+      expect(savedSnapshots[0]?.tools.search?.callCount).toBe(1);
+    });
+
     test("does not emit lifecycle signals before initial hydration succeeds — round 24 F1", async () => {
       // A transient store outage produced false unused / low_adoption /
       // high_failure signals from outage-local in-memory counters, even

@@ -229,12 +229,19 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
           // was unreachable, instead of silently overwriting them when the
           // store recovers. For the cold-start case (no in-memory state),
           // merge degenerates to a copy of the disk snapshot.
+          const hadOutageDeltas = tools.size > 0 || totalSessions > 0;
           mergeSnapshotIntoMemory(tools, snapshot);
           totalSessions += snapshot.totalSessions;
           // Baseline = what's on disk now. Saves compute their delta
           // against this so concurrent writers' increments survive.
           baselineSnapshot = snapshot;
           hydrated = true;
+          // Outage-era deltas (recorded before this successful load) must
+          // be persisted even if the next session is otherwise clean. Without
+          // this flag, the next onSessionEnd's `if (!state.dirty && !pendingPersist) return;`
+          // would skip save and a process restart would drop the recovered
+          // history. #review-round25-F1.
+          if (hadOutageDeltas) pendingPersist = true;
         }
       } catch (e: unknown) {
         // Drop the rejected promise so the next session retries the load.

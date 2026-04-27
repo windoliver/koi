@@ -103,7 +103,24 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
   const patternEntries = cfg.patterns ?? DEFAULT_PATTERN_NAMES;
   const patterns: readonly ToolCallPattern[] = resolvePatterns(patternEntries);
   const maxCalls = cfg.maxToolCallsPerResponse ?? DEFAULT_MAX_TOOL_CALLS;
-  const onEvent = cfg.onRecoveryEvent;
+  // Wrap the user-supplied telemetry sink so a throwing observer cannot
+  // abort recoverToolCalls and turn an otherwise valid recovered tool
+  // call into a user-visible model-stream failure (worse: in the catch
+  // path of wrapModelStreamImpl recovery is retried with the same
+  // unguarded callback, compounding the failure). Telemetry is
+  // best-effort; failures route nowhere because this middleware does not
+  // own an onError sink. #review-round25-F2.
+  const rawOnEvent = cfg.onRecoveryEvent;
+  const onEvent: ((event: RecoveryEvent) => void) | undefined =
+    rawOnEvent === undefined
+      ? undefined
+      : (event): void => {
+          try {
+            rawOnEvent(event);
+          } catch {
+            // best-effort telemetry; intentionally swallowed
+          }
+        };
 
   const patternNames = patterns.map((p) => p.name).join(", ");
   const capabilityFragment: CapabilityFragment = {

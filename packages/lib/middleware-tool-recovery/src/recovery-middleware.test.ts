@@ -470,6 +470,79 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
     expect(allText).not.toContain("<tool_call>");
   });
 
+  test("throwing onRecoveryEvent does not abort recovery on the done path — round 25 F2", async () => {
+    // Telemetry sinks must be best-effort: a throwing observer used to
+    // escape recoverToolCalls and turn an otherwise valid recovered call
+    // into a user-visible model-stream failure.
+    const mw = createToolRecoveryMiddleware({
+      patterns: ["hermes"],
+      onRecoveryEvent: () => {
+        throw new Error("telemetry sink failure");
+      },
+    });
+    const tools = [tool("foo")];
+    const text = '<tool_call>{"name":"foo","arguments":{"x":1}}</tool_call>';
+
+    const out: ModelChunk[] = [];
+    let caught: unknown;
+    try {
+      for await (const c of getStream(mw)(
+        turnCtx(),
+        { messages: [], tools },
+        streamFromText(text),
+      )) {
+        out.push(c);
+      }
+    } catch (e: unknown) {
+      caught = e;
+    }
+
+    expect(caught).toBeUndefined();
+    const starts = out.filter((c) => c.kind === "tool_call_start");
+    expect(starts.length).toBe(1);
+    const dones = out.filter((c) => c.kind === "done");
+    expect(dones.length).toBe(1);
+  });
+
+  test("throwing onRecoveryEvent does not abort recovery on the stream-error path — round 25 F2", async () => {
+    // Same guarantee as above, but on the catch-path retry inside
+    // wrapModelStreamImpl. A telemetry failure on the second invocation
+    // must not promote to a stream failure.
+    const mw = createToolRecoveryMiddleware({
+      patterns: ["hermes"],
+      onRecoveryEvent: () => {
+        throw new Error("telemetry sink failure");
+      },
+    });
+    const tools = [tool("foo")];
+    const next: ModelStreamHandler = async function* () {
+      yield {
+        kind: "text_delta",
+        delta: '<tool_call>{"name":"foo","arguments":{"x":1}}</tool_call>',
+      };
+      throw new Error("connection reset");
+    };
+
+    const out: ModelChunk[] = [];
+    let caught: unknown;
+    try {
+      for await (const c of getStream(mw)(turnCtx(), { messages: [], tools }, next)) {
+        out.push(c);
+      }
+    } catch (e: unknown) {
+      caught = e;
+    }
+
+    // Recovery succeeded → original error suppressed; synthetic done emitted.
+    expect(caught).toBeUndefined();
+    const starts = out.filter((c) => c.kind === "tool_call_start");
+    expect(starts.length).toBe(1);
+    const dones = out.filter((c) => c.kind === "done");
+    expect(dones.length).toBe(1);
+    const done = dones[0] as Extract<ModelChunk, { kind: "done" }>;
+    expect(done.response.metadata?.recoveryError).toBe("connection reset");
+  });
+
   test("thinking_delta and usage chunks are preserved across the buffer", async () => {
     const mw = createToolRecoveryMiddleware({ patterns: ["hermes", "llama31"] });
     const tools = [tool("foo")];
