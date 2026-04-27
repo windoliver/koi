@@ -252,3 +252,60 @@ describe("createInMemoryForgeStore — basic CRUD", () => {
     }
   });
 });
+
+describe("memory-store: save semantics", () => {
+  let store: ReturnType<typeof createInMemoryForgeStore>;
+
+  beforeEach(() => {
+    store = createInMemoryForgeStore();
+  });
+
+  test("idempotent retry when stored lifecycle is draft", async () => {
+    const brick = makeToolBrick();
+    const first = await store.save(brick);
+    expect(first.ok).toBe(true);
+    const second = await store.save(brick);
+    expect(second.ok).toBe(true);
+    const loaded = await store.load(brick.id);
+    if (loaded.ok) expect(loaded.value.storeVersion).toBe(1);
+  });
+
+  test("CONFLICT when stored lifecycle is failed (terminal)", async () => {
+    const brick = makeToolBrick();
+    await store.save(brick);
+    await store.update(brick.id, { lifecycle: "failed" });
+    const r = await store.save(brick);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("CONFLICT");
+      expect(r.error.context).toMatchObject({ existingBrickId: brick.id, lifecycle: "failed" });
+    }
+  });
+
+  test("CONFLICT when stored lifecycle is deprecated", async () => {
+    const brick = makeToolBrick();
+    await store.save(brick);
+    await store.update(brick.id, { lifecycle: "deprecated" });
+    const r = await store.save(brick);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("CONFLICT");
+  });
+
+  test("CONFLICT when stored lifecycle is quarantined", async () => {
+    const brick = makeToolBrick();
+    await store.save(brick);
+    await store.update(brick.id, { lifecycle: "quarantined" });
+    const r = await store.save(brick);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("CONFLICT");
+  });
+
+  test("INTERNAL (id collision / tampering) when same id has different identity content", async () => {
+    const brick = makeToolBrick();
+    await store.save(brick);
+    const tampered: typeof brick = { ...brick, name: "different-name" };
+    const r = await store.save(tampered);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("INTERNAL");
+  });
+});
