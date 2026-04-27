@@ -1027,6 +1027,25 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
   // window where the engine accepts new auditable work after the first write failure.
   const guardedMw: KoiMiddleware = {
     ...mw,
+    onSessionStart: async (ctx) => {
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — cannot record session_start event", {
+          cause: poisonError,
+        });
+      }
+      await mw.onSessionStart?.(ctx);
+      await mw.flush().catch((flushErr: unknown) => {
+        if (poisonError === undefined) {
+          poisonError = flushErr;
+        }
+      });
+      if (poisonError !== undefined) {
+        throw new Error(
+          "audit sink flush failed after session_start — cannot proceed without durable audit record",
+          { cause: poisonError },
+        );
+      }
+    },
     onBeforeTurn: async (ctx: TurnContext) => {
       if (poisonError !== undefined) {
         throw new Error(
@@ -1042,7 +1061,18 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
           cause: poisonError,
         });
       }
-      return mw.onSessionEnd?.(ctx);
+      await mw.onSessionEnd?.(ctx);
+      await mw.flush().catch((flushErr: unknown) => {
+        if (poisonError === undefined) {
+          poisonError = flushErr;
+        }
+      });
+      if (poisonError !== undefined) {
+        throw new Error(
+          "audit sink flush failed after session_end — audit record may be incomplete",
+          { cause: poisonError },
+        );
+      }
     },
     onPermissionDecision: async (ctx, query, decision) => {
       if (poisonError !== undefined) {

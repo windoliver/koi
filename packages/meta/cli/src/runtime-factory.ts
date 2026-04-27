@@ -2496,6 +2496,25 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       );
       const guardedAuditMw: KoiMiddleware = {
         ...auditMw,
+        onSessionStart: async (ctx) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record session_start event", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          await auditMw.onSessionStart?.(ctx);
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after session_start — cannot proceed without durable audit record",
+              { cause: ndjsonPoisonError },
+            );
+          }
+        },
         onBeforeTurn: async (ctx) => {
           if (ndjsonPoisonError !== undefined) {
             throw new Error(
@@ -2511,7 +2530,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: ndjsonPoisonError,
             });
           }
-          return auditMw.onSessionEnd?.(ctx);
+          await auditMw.onSessionEnd?.(ctx);
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after session_end — audit record may be incomplete",
+              { cause: ndjsonPoisonError },
+            );
+          }
         },
         onPermissionDecision: async (ctx, query, decision) => {
           if (ndjsonPoisonError !== undefined) {
@@ -2768,6 +2798,25 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       );
       const guardedSqliteAuditMw: KoiMiddleware = {
         ...sqliteAuditMw,
+        onSessionStart: async (ctx) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record session_start event", {
+              cause: sqlitePoisonError,
+            });
+          }
+          await sqliteAuditMw.onSessionStart?.(ctx);
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after session_start — cannot proceed without durable audit record",
+              { cause: sqlitePoisonError },
+            );
+          }
+        },
         onBeforeTurn: async (ctx) => {
           if (sqlitePoisonError !== undefined) {
             throw new Error(
@@ -2783,7 +2832,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               cause: sqlitePoisonError,
             });
           }
-          return sqliteAuditMw.onSessionEnd?.(ctx);
+          await sqliteAuditMw.onSessionEnd?.(ctx);
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after session_end — audit record may be incomplete",
+              { cause: sqlitePoisonError },
+            );
+          }
         },
         onPermissionDecision: async (ctx, query, decision) => {
           if (sqlitePoisonError !== undefined) {
