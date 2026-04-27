@@ -129,7 +129,11 @@ The worker is terminated immediately after the script completes, errors, or time
 
 ### Tool call budget
 
-The host tracks `toolCallCount` and rejects calls beyond `maxToolCalls` (default 50) with an error that propagates into the script as a thrown `Error`.
+The host tracks `toolCallCount` and fails the whole script when a call would
+exceed `maxToolCalls` (default 50). Budget exhaustion is host-authoritative:
+even if the worker script catches the rejected `tools.*` promise, the final
+`ScriptResult` is `ok: false` with `"Tool call budget exceeded"`. This matches
+the existing fail-closed handling for concurrent tool-call violations.
 
 ### callTool middleware integration
 

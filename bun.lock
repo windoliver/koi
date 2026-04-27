@@ -298,6 +298,13 @@
       "name": "@koi/file-type",
       "version": "0.0.0",
     },
+    "packages/lib/forge-types": {
+      "name": "@koi/forge-types",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/fs-local": {
       "name": "@koi/fs-local",
       "version": "0.0.0",
@@ -368,6 +375,15 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/long-running": {
+      "name": "@koi/long-running",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
       },
     },
     "packages/lib/loop": {
@@ -890,6 +906,7 @@
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
         "@koi/ipc-local": "workspace:*",
+        "@koi/long-running": "workspace:*",
         "@koi/loop": "workspace:*",
         "@koi/lsp": "workspace:*",
         "@koi/mcp": "workspace:*",
@@ -1713,6 +1730,8 @@
 
     "@koi/file-type": ["@koi/file-type@workspace:packages/lib/file-type"],
 
+    "@koi/forge-types": ["@koi/forge-types@workspace:packages/lib/forge-types"],
+
     "@koi/fs-local": ["@koi/fs-local@workspace:packages/lib/fs-local"],
 
     "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/lib/fs-nexus"],
@@ -1746,6 +1765,8 @@
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 
     "@koi/ipc-local": ["@koi/ipc-local@workspace:packages/lib/ipc-local"],
+
+    "@koi/long-running": ["@koi/long-running@workspace:packages/lib/long-running"],
 
     "@koi/loop": ["@koi/loop@workspace:packages/lib/loop"],
 

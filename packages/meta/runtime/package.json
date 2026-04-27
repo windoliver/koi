@@ -43,6 +43,7 @@
     "@koi/governance-security": "workspace:*",
     "@koi/hook-prompt": "workspace:*",
     "@koi/hooks": "workspace:*",
+    "@koi/long-running": "workspace:*",
     "@koi/loop": "workspace:*",
     "@koi/mcp": "workspace:*",
     "@koi/mcp-server": "workspace:*",
