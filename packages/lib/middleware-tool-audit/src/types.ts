@@ -5,27 +5,31 @@
 import type { KoiMiddleware } from "@koi/core/middleware";
 
 /**
- * External persistence interface — snapshot-based load/save.
- * In-memory fallback used when no store is provided.
+ * External persistence interface — snapshot-based load/save with optional
+ * compare-and-swap (CAS) write for multi-writer correctness.
  *
- * Concurrency contract (#review-round15-F3): the snapshot load/save
- * shape gives no compare-and-swap or version semantics, so this
- * interface is safe ONLY under SINGLE-WRITER usage. The middleware
- * serializes saves within one process AND re-loads + merges before
- * each save to narrow the multi-writer lost-update window, but
- * nothing prevents two processes that read the same baseline from
- * later overwriting one another. Deployments that share an audit
- * store across writers (multi-process / multi-host) must implement
- * their own transactional store (e.g. database row with version
- * column, file lock, ETag-based object store) and reject stale
- * writes inside `save`. Until a versioned `save` contract is added
- * to this interface, multi-writer deployments using the bundled
- * file-backed store can drop session counts and tool counters under
- * contention.
+ * Concurrency contract (#review-round28-F1): plain `save` is
+ * last-writer-wins and is safe only under single-writer usage. For
+ * multi-writer deployments (multiple processes / hosts sharing the
+ * audit store), provide `saveIfVersion` — a conditional write that
+ * commits only if the persisted snapshot still has the expected
+ * version, returning `{ ok: false, current }` on conflict so the
+ * middleware can re-merge against the newer baseline and retry.
+ * `version` on the loaded snapshot lets the middleware track the
+ * baseline it merged against; bump it on every successful write. The
+ * middleware uses `saveIfVersion` when present and falls back to
+ * `save` otherwise.
  */
 export interface ToolAuditStore {
   readonly load: () => ToolAuditSnapshot | Promise<ToolAuditSnapshot>;
   readonly save: (snapshot: ToolAuditSnapshot) => void | Promise<void>;
+  readonly saveIfVersion?: (
+    snapshot: ToolAuditSnapshot,
+    expectedVersion: number,
+  ) =>
+    | { readonly ok: true }
+    | { readonly ok: false; readonly current: ToolAuditSnapshot }
+    | Promise<{ readonly ok: true } | { readonly ok: false; readonly current: ToolAuditSnapshot }>;
 }
 
 /** Serializable audit state — safe to persist to disk/DB. */
@@ -33,6 +37,12 @@ export interface ToolAuditSnapshot {
   readonly tools: Readonly<Record<string, ToolUsageRecord>>;
   readonly totalSessions: number;
   readonly lastUpdatedAt: number;
+  /**
+   * Optional monotonic version for CAS writes via `saveIfVersion`.
+   * Undefined for stores that don't implement versioned writes; the
+   * middleware treats that as single-writer mode.
+   */
+  readonly version?: number;
 }
 
 /** Per-tool cumulative usage statistics. */

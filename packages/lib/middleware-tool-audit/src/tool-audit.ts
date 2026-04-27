@@ -455,23 +455,82 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     // race each other. Across PROCESSES sharing one ToolAuditStore, we
     // additionally re-load before saving and merge any new disk state into
     // the snapshot we're about to write — converting the raw load/save
-    // contract into an at-least-once read-modify-write. This narrows
-    // (though does not eliminate, absent CAS at the store layer) the
-    // multi-writer lost-update window. Stores that need stronger
-    // guarantees should provide their own versioned save.
+    // contract into an at-least-once read-modify-write. When the store
+    // implements `saveIfVersion` (CAS) we retry on conflict by re-merging
+    // against the current disk snapshot and bumping the version, which
+    // closes the multi-writer lost-update window (#review-round28-F1).
+    // Stores without saveIfVersion fall back to plain save and remain
+    // safe under single-writer usage only.
     const previous = savePromise;
     savePromise = previous.then(async () => {
       try {
-        const merged = await loadAndMergeForSave(snapshot);
-        await store.save(merged);
-        // Successful save — advance the baseline so the next save's
-        // delta is computed against what's now on disk.
-        baselineSnapshot = merged;
+        await persistWithRetry(snapshot);
       } catch (e: unknown) {
         onError?.(e);
       }
     });
     await savePromise;
+  }
+
+  /**
+   * Persist with optional CAS retry. On conflict, fold the rival writer's
+   * delta into the in-memory `tools` map so our pending snapshot reflects
+   * BOTH our work and theirs, then retry. Capped to avoid pathological
+   * livelock under heavy contention.
+   */
+  async function persistWithRetry(snapshot: ToolAuditSnapshot): Promise<void> {
+    if (store.saveIfVersion === undefined) {
+      const merged = await loadAndMergeForSave(snapshot);
+      await store.save(merged);
+      baselineSnapshot = merged;
+      return;
+    }
+    const maxAttempts = 8;
+    // let: working snapshot for the retry loop
+    let pending = snapshot;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const merged = await loadAndMergeForSave(pending);
+      const expectedVersion = baselineSnapshot.version ?? 0;
+      const next: ToolAuditSnapshot = { ...merged, version: expectedVersion + 1 };
+      const result = await store.saveIfVersion(next, expectedVersion);
+      if (result.ok) {
+        baselineSnapshot = next;
+        return;
+      }
+      adoptNewBaseline(result.current);
+      pending = buildSnapshot(tools, totalSessions, clock);
+    }
+    throw new Error(
+      `tool-audit: saveIfVersion conflict not resolved after ${String(maxAttempts)} attempts`,
+    );
+  }
+
+  /**
+   * Adopt a freshly-observed disk snapshot as the new baseline, folding
+   * the per-record delta (newBaseline − oldBaseline) into the in-memory
+   * aggregate so our uncommitted local work is preserved relative to the
+   * new baseline. Called on saveIfVersion conflict to incorporate the
+   * rival writer's contribution before retrying.
+   */
+  function adoptNewBaseline(newBaseline: ToolAuditSnapshot): void {
+    for (const [name, newRec] of Object.entries(newBaseline.tools)) {
+      const oldRec = baselineSnapshot.tools[name];
+      const inMem = tools.get(name) ?? createEmptyRecord(name);
+      inMem.callCount += newRec.callCount - (oldRec?.callCount ?? 0);
+      inMem.successCount += newRec.successCount - (oldRec?.successCount ?? 0);
+      inMem.failureCount += newRec.failureCount - (oldRec?.failureCount ?? 0);
+      inMem.totalLatencyMs += newRec.totalLatencyMs - (oldRec?.totalLatencyMs ?? 0);
+      inMem.sessionsAvailable += newRec.sessionsAvailable - (oldRec?.sessionsAvailable ?? 0);
+      inMem.sessionsUsed += newRec.sessionsUsed - (oldRec?.sessionsUsed ?? 0);
+      inMem.lastUsedAt = Math.max(inMem.lastUsedAt, newRec.lastUsedAt);
+      if (newRec.minLatencyMs > 0) {
+        inMem.minLatencyMs = Math.min(inMem.minLatencyMs, newRec.minLatencyMs);
+      }
+      inMem.maxLatencyMs = Math.max(inMem.maxLatencyMs, newRec.maxLatencyMs);
+      tools.set(name, inMem);
+    }
+    totalSessions += newBaseline.totalSessions - baselineSnapshot.totalSessions;
+    baselineSnapshot = newBaseline;
   }
 
   function applyDelta(
@@ -570,8 +629,21 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     wrapModelCall,
     wrapModelStream,
     wrapToolCall,
-    generateReport: (): readonly ToolAuditResult[] =>
-      computeLifecycleSignals(buildLiveSnapshot(), validConfig),
+    // Lifecycle signals must come from COMMITTED + HYDRATED state only.
+    // The session-end path defers signal emission until overlap clears
+    // and hydration succeeds because in-flight session counters without
+    // finalized sessionsAvailable/sessionsUsed and outage-local in-memory
+    // state produce false high_failure / low_adoption / unused signals
+    // (#review-round24-F1, #review-round17-F1, #review-round18-F2). The
+    // on-demand generateReport path must respect the same guards or
+    // callers can page / auto-disable on bogus signals during overlap or
+    // pre-hydration windows (#review-round28-F2). Returns [] when not
+    // safe to compute; callers wanting raw live stats should use
+    // getSnapshot.
+    generateReport: (): readonly ToolAuditResult[] => {
+      if (!hydrated || sessionStates.size > 0) return [];
+      return computeLifecycleSignals(buildSnapshot(tools, totalSessions, clock), validConfig);
+    },
     getSnapshot: (): ToolAuditSnapshot => buildLiveSnapshot(),
   };
 
@@ -579,8 +651,9 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
    * Snapshot view that includes BOTH the committed `tools` aggregate AND
    * in-flight per-session local counters. Persistence intentionally does
    * not use this — it only writes committed data (#review-round27-F2). But
-   * runtime observability (getSnapshot, generateReport) should reflect
-   * the full live picture so callers can see active work.
+   * runtime observability (getSnapshot) should reflect the full live
+   * picture so callers can see active work. NOT used for lifecycle
+   * signals — see generateReport for the committed-only signal path.
    */
   function buildLiveSnapshot(): ToolAuditSnapshot {
     if (sessionStates.size === 0) {

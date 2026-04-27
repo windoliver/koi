@@ -359,6 +359,73 @@ describe("createToolAuditMiddleware", () => {
       expect(saves.length).toBe(1);
     });
 
+    test("uses saveIfVersion CAS and retries on conflict — round 28 F1", async () => {
+      // Multi-writer correctness: when the store advances disk between
+      // our read and write (another runtime committed first), saveIfVersion
+      // returns ok=false; we must adopt the new baseline, re-merge our
+      // delta, and retry — preserving BOTH writers' increments.
+      let diskVersion = 0;
+      let diskSnapshot: ToolAuditSnapshot = {
+        tools: {},
+        totalSessions: 0,
+        lastUpdatedAt: 0,
+        version: diskVersion,
+      };
+      // let: simulates the OTHER writer landing one update mid-flight
+      let conflictsToInject = 1;
+      const store: ToolAuditStore = {
+        load: () => diskSnapshot,
+        save: () => {
+          throw new Error("plain save should not be called when saveIfVersion is provided");
+        },
+        saveIfVersion: (snap, expected) => {
+          if (expected !== diskVersion) {
+            return { ok: false, current: diskSnapshot };
+          }
+          if (conflictsToInject > 0) {
+            // Another writer commits first: bump disk to a never-before-seen
+            // baseline that the caller must re-merge against.
+            conflictsToInject -= 1;
+            diskVersion += 1;
+            diskSnapshot = {
+              tools: {
+                rival: {
+                  toolName: "rival",
+                  callCount: 7,
+                  successCount: 7,
+                  failureCount: 0,
+                  lastUsedAt: 50,
+                  avgLatencyMs: 1,
+                  minLatencyMs: 1,
+                  maxLatencyMs: 1,
+                  totalLatencyMs: 7,
+                  sessionsAvailable: 1,
+                  sessionsUsed: 1,
+                },
+              },
+              totalSessions: 1,
+              lastUpdatedAt: 50,
+              version: diskVersion,
+            };
+            return { ok: false, current: diskSnapshot };
+          }
+          diskVersion += 1;
+          diskSnapshot = { ...snap, version: diskVersion };
+          return { ok: true };
+        },
+      };
+      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+      const wrap = getWrapToolCall(mw);
+
+      await mw.onSessionStart?.(sessionCtx());
+      await wrap(turnCtx(), toolReq("search"), async () => ({ output: "ok" }));
+      await mw.onSessionEnd?.(sessionCtx());
+
+      // Final disk state must contain BOTH writers' work — neither lost.
+      expect(diskSnapshot.tools.search?.callCount).toBe(1);
+      expect(diskSnapshot.tools.rival?.callCount).toBe(7);
+    });
+
     test("persists immediately on session end even while OTHER sessions remain active — round 26 F2", async () => {
       // Round 26 (high): persistence used to defer until sessionStates was
       // empty. A long-lived or stuck session blocked all completed-session
@@ -975,10 +1042,37 @@ describe("createToolAuditMiddleware", () => {
 
       await wrap(turnCtx(), toolReq("search"), async () => ({ output: "ok" }));
       await wrap(turnCtx(), toolReq("search"), async () => ({ output: "ok" }));
+      // generateReport defers signals while sessions are active or before
+      // hydration (#review-round28-F2); end the session before asserting.
+      await mw.onSessionEnd?.(sessionCtx());
 
       const report = mw.generateReport();
       const highValue = report.find((r) => r.toolName === "search" && r.signal === "high_value");
       expect(highValue).toBeDefined();
+    });
+
+    test("returns empty while sessions are active — round 28 F2", async () => {
+      const mw = createToolAuditMiddleware(
+        defaultConfig({ highValueMinCalls: 1, highValueSuccessThreshold: 0.9 }),
+      );
+      const wrap = getWrapToolCall(mw);
+
+      await mw.onSessionStart?.(sessionCtx());
+      await wrap(turnCtx(), toolReq("search"), async () => ({ output: "ok" }));
+      // Session still open — signals must NOT fire.
+      expect(mw.generateReport()).toEqual([]);
+    });
+
+    test("returns empty before initial hydration succeeds — round 28 F2", async () => {
+      const store: ToolAuditStore = {
+        load: () => {
+          throw new Error("load failed");
+        },
+        save: () => {},
+      };
+      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+      // Never started a session, never hydrated → no signals.
+      expect(mw.generateReport()).toEqual([]);
     });
   });
 
