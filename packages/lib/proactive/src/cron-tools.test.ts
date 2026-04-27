@@ -134,6 +134,44 @@ describe("schedule_cron tool", () => {
     expect(stub.scheduleCalls).toHaveLength(1);
   });
 
+  test("concurrent same-key calls share one registration", async () => {
+    const stub = createSchedulerStub();
+    const state = createCronToolState();
+    const tool = createScheduleCronTool({ scheduler: stub.component }, state);
+
+    const [a, b, c] = (await Promise.all([
+      exec(tool, { expression: "0 9 * * *", idempotency_key: "k" }),
+      exec(tool, { expression: "0 9 * * *", idempotency_key: "k" }),
+      exec(tool, { expression: "0 9 * * *", idempotency_key: "k" }),
+    ])) as { ok: boolean; schedule_id: string }[];
+
+    expect(stub.scheduleCalls).toHaveLength(1);
+    expect(a?.schedule_id).toBe(b?.schedule_id);
+    expect(b?.schedule_id).toBe(c?.schedule_id);
+  });
+
+  test("failed pending registration frees the key for retry", async () => {
+    const failing = createSchedulerStub({ scheduleError: new Error("invalid cron") });
+    const state = createCronToolState();
+    const failTool = createScheduleCronTool({ scheduler: failing.component }, state);
+
+    const failed = (await exec(failTool, {
+      expression: "0 9 * * *",
+      idempotency_key: "k",
+    })) as { ok: boolean };
+    expect(failed.ok).toBe(false);
+
+    const ok = createSchedulerStub();
+    const okTool = createScheduleCronTool({ scheduler: ok.component }, state);
+    const retried = (await exec(okTool, {
+      expression: "0 9 * * *",
+      idempotency_key: "k",
+    })) as { ok: boolean };
+
+    expect(retried.ok).toBe(true);
+    expect(ok.scheduleCalls).toHaveLength(1);
+  });
+
   test("distinct idempotency_keys produce distinct schedules", async () => {
     const stub = createSchedulerStub();
     const state = createCronToolState();

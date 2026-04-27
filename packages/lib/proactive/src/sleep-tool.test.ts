@@ -186,17 +186,63 @@ describe("sleep tool", () => {
     expect(stub.submitCalls).toHaveLength(1);
   });
 
-  test("expired idempotency entry is replaced by a fresh submission", async () => {
+  test("entries persist across wake_at_ms — wall-clock expiry would risk duplicates", async () => {
     const stub = createSchedulerStub();
     const state = createSleepToolState();
-    // let justified: virtual clock advances between calls to simulate the wake passing
+    // let justified: virtual clock advances between calls to simulate time passing
     let virtualNow = 1_000_000;
     const tool = createSleepTool({ scheduler: stub.component, now: () => virtualNow }, state);
 
-    await exec(tool, { duration_ms: 5_000, idempotency_key: "k" });
-    virtualNow += 6_000; // wake time has passed
-    await exec(tool, { duration_ms: 5_000, idempotency_key: "k" });
+    const first = (await exec(tool, { duration_ms: 5_000, idempotency_key: "k" })) as {
+      task_id: string;
+    };
+    virtualNow += 6_000; // wake time has passed but no completion signal received
+    const second = (await exec(tool, { duration_ms: 5_000, idempotency_key: "k" })) as {
+      task_id: string;
+      deduped?: boolean;
+    };
 
-    expect(stub.submitCalls).toHaveLength(2);
+    // The package never expires entries on time alone — a backlogged scheduler
+    // could still deliver the original. The second call must dedupe.
+    expect(second.task_id).toBe(first.task_id);
+    expect(second.deduped).toBe(true);
+    expect(stub.submitCalls).toHaveLength(1);
+  });
+
+  test("concurrent same-key calls share one submission", async () => {
+    const stub = createSchedulerStub();
+    const state = createSleepToolState();
+    const tool = createSleepTool({ scheduler: stub.component }, state);
+
+    const [a, b, c] = (await Promise.all([
+      exec(tool, { duration_ms: 5_000, idempotency_key: "k" }),
+      exec(tool, { duration_ms: 5_000, idempotency_key: "k" }),
+      exec(tool, { duration_ms: 5_000, idempotency_key: "k" }),
+    ])) as { ok: boolean; task_id: string }[];
+
+    expect(stub.submitCalls).toHaveLength(1);
+    expect(a?.task_id).toBe(b?.task_id);
+    expect(b?.task_id).toBe(c?.task_id);
+  });
+
+  test("failed pending submission frees the key for retry", async () => {
+    const stub = createSchedulerStub({ submitError: new Error("transient") });
+    const state = createSleepToolState();
+    const tool = createSleepTool({ scheduler: stub.component }, state);
+
+    const failed = (await exec(tool, { duration_ms: 5_000, idempotency_key: "k" })) as {
+      ok: boolean;
+    };
+    expect(failed.ok).toBe(false);
+
+    const okStub = createSchedulerStub();
+    const retryTool = createSleepTool({ scheduler: okStub.component }, state);
+    const retried = (await exec(retryTool, {
+      duration_ms: 5_000,
+      idempotency_key: "k",
+    })) as { ok: boolean };
+
+    expect(retried.ok).toBe(true);
+    expect(okStub.submitCalls).toHaveLength(1);
   });
 });

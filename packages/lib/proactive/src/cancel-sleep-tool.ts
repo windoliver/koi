@@ -48,7 +48,12 @@ export function createCancelSleepTool(config: ProactiveToolsConfig, state: Sleep
         const removed = await scheduler.cancel(taskId(idStr));
         if (removed) {
           for (const [k, v] of state.idempotencyMap) {
-            if (v.taskId === idStr) state.idempotencyMap.delete(k);
+            // Only settled entries have a known taskId. A pending entry can't
+            // match this taskId because we only learn the id after submit
+            // resolves — at which point it transitions to settled.
+            if (v.kind === "settled" && v.record.taskId === idStr) {
+              state.idempotencyMap.delete(k);
+            }
           }
         }
         return { ok: true, removed };

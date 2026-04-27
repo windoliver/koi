@@ -54,10 +54,13 @@ describe("cancel_sleep tool", () => {
     const stub = createSchedulerStub();
     const state = createSleepToolState();
     state.idempotencyMap.set("k", {
-      taskId: "task-9",
-      wakeAtMs: Date.now() + 60_000,
-      durationMs: 60_000,
-      wakeMessage: "wake",
+      kind: "settled",
+      record: {
+        taskId: "task-9",
+        wakeAtMs: Date.now() + 60_000,
+        durationMs: 60_000,
+        wakeMessage: "wake",
+      },
     });
     const tool = createCancelSleepTool({ scheduler: stub.component }, state);
 

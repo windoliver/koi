@@ -1,16 +1,30 @@
 /**
  * `sleep` tool — schedules a delayed self-dispatch and returns wake metadata.
  *
- * In-memory idempotency: when the caller supplies `idempotency_key`, the tool
- * returns the same `task_id`/`wake_at_ms` on a retry with matching fields and
- * fails closed on collisions (same key, different `duration_ms` or
- * `wake_message`). Entries expire when the wake time has passed — the
- * scheduler has already delivered (or dropped) the task, so the same key may
- * legitimately register a fresh sleep afterwards.
+ * Idempotency model
+ * -----------------
+ * When the caller supplies `idempotency_key`, the tool stores an entry keyed
+ * by that string. The entry first lives as an *in-flight* `Promise` of the
+ * eventual record so concurrent same-key callers all observe the same
+ * submission rather than racing past the map check. After the scheduler call
+ * resolves, the entry is replaced by the settled record.
  *
- * As with cron idempotency, this is in-memory only — durable cross-restart
- * dedup needs the underlying scheduler to honour idempotency keys at submit
- * time, which the current `@koi/scheduler` does not.
+ * - Match (settled record + matching fingerprint) → return original task_id
+ *   plus `deduped: true`. Scheduler is **not** called.
+ * - Match (in-flight) → await the same submission and inherit its result.
+ * - Mismatch (settled record + different fingerprint) → fail closed.
+ * - No entry → submit and store the in-flight promise atomically before
+ *   awaiting the scheduler.
+ *
+ * Entries persist until `cancel_sleep` clears them. We deliberately do **not**
+ * expire on wall-clock time: a backlogged or paused scheduler can still fire
+ * the original task after `wake_at_ms` has passed, so allowing a fresh
+ * submission on the same key would risk duplicate wake-ups. If the agent
+ * wants to re-use the key, it must cancel first.
+ *
+ * Durability gap: state is in-memory only. Cross-restart dedup needs the
+ * underlying scheduler to honour idempotency keys at submit time, which
+ * `@koi/scheduler` does not — tracked separately.
  */
 
 import type { JsonObject, Tool } from "@koi/core";
@@ -36,7 +50,8 @@ const schema = z.object({
     .describe(
       "Stable caller-supplied key. Re-using the same key with the same duration and wake " +
         "message returns the original task_id (deduped:true). Mismatched fields fail closed " +
-        "with an error rather than silently registering a duplicate wake-up.",
+        "with an error rather than silently registering a duplicate wake-up. Entry persists " +
+        "until cancel_sleep is called.",
     ),
 });
 
@@ -47,12 +62,20 @@ interface SleepRecord {
   readonly wakeMessage: string;
 }
 
+/**
+ * Map entry — either an in-flight submission (for atomic reservation against
+ * concurrent same-key calls) or the settled record once the scheduler returns.
+ */
+type SleepEntry =
+  | { readonly kind: "pending"; readonly promise: Promise<SleepRecord> }
+  | { readonly kind: "settled"; readonly record: SleepRecord };
+
 export interface SleepToolState {
-  readonly idempotencyMap: Map<string, SleepRecord>;
+  readonly idempotencyMap: Map<string, SleepEntry>;
 }
 
 export function createSleepToolState(): SleepToolState {
-  return { idempotencyMap: new Map<string, SleepRecord>() };
+  return { idempotencyMap: new Map<string, SleepEntry>() };
 }
 
 function recordMatches(
@@ -60,6 +83,16 @@ function recordMatches(
   fingerprint: { readonly durationMs: number; readonly wakeMessage: string },
 ): boolean {
   return rec.durationMs === fingerprint.durationMs && rec.wakeMessage === fingerprint.wakeMessage;
+}
+
+function buildCollisionResult(key: string): { readonly ok: false; readonly error: string } {
+  return {
+    ok: false,
+    error:
+      `idempotency_key '${key}' already registered for a different sleep ` +
+      "(duration_ms or wake_message differs). Use a distinct key, or cancel the " +
+      "pending task first.",
+  };
 }
 
 export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolState): Tool {
@@ -96,48 +129,85 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
       }
 
       const message = wake_message ?? defaultMessage;
-      const submittedAt = now();
+      const fingerprint = { durationMs: duration_ms, wakeMessage: message };
 
-      if (idempotency_key !== undefined) {
-        const existing = state.idempotencyMap.get(idempotency_key);
-        if (existing !== undefined && existing.wakeAtMs > submittedAt) {
-          if (!recordMatches(existing, { durationMs: duration_ms, wakeMessage: message })) {
-            return {
-              ok: false,
-              error:
-                `idempotency_key '${idempotency_key}' already registered for a different sleep ` +
-                "(duration_ms or wake_message differs). Use a distinct key, or cancel the " +
-                "pending task first.",
-            };
+      // Path 1: caller did not opt in to idempotency. Submit unconditionally.
+      if (idempotency_key === undefined) {
+        const submittedAt = now();
+        const wakeAt = submittedAt + duration_ms;
+        try {
+          const id = await scheduler.submit({ kind: "text", text: message }, "dispatch", {
+            delayMs: duration_ms,
+          });
+          return { ok: true, task_id: String(id), wake_at_ms: wakeAt };
+        } catch (e: unknown) {
+          return {
+            ok: false,
+            error: e instanceof Error ? e.message : "Failed to submit sleep task",
+          };
+        }
+      }
+
+      // Path 2: idempotency_key supplied. Reserve atomically.
+      const existing = state.idempotencyMap.get(idempotency_key);
+      if (existing !== undefined) {
+        try {
+          const rec = existing.kind === "settled" ? existing.record : await existing.promise;
+          if (!recordMatches(rec, fingerprint)) {
+            return buildCollisionResult(idempotency_key);
           }
           return {
             ok: true,
-            task_id: existing.taskId,
-            wake_at_ms: existing.wakeAtMs,
+            task_id: rec.taskId,
+            wake_at_ms: rec.wakeAtMs,
             deduped: true,
           };
+        } catch (e: unknown) {
+          // The in-flight submission this key was tracking failed. Surface that
+          // failure to this caller too — they should retry (which now finds an
+          // empty slot since the rejected pending entry was deleted below).
+          return {
+            ok: false,
+            error: e instanceof Error ? e.message : "Failed to submit sleep task",
+          };
         }
-        // Existing entry has expired — remove it so the new submission below
-        // creates a fresh task and the map stays bounded.
-        if (existing !== undefined) state.idempotencyMap.delete(idempotency_key);
       }
 
+      const submittedAt = now();
       const wakeAt = submittedAt + duration_ms;
+      // Reserve before awaiting. Concurrent same-key callers will see this
+      // pending entry on their map.get and await the same promise.
+      // SchedulerComponent.submit returns TaskId | Promise<TaskId> and may
+      // throw synchronously; Promise.try captures both shapes uniformly.
+      const submission = Promise.try(() =>
+        scheduler.submit({ kind: "text", text: message }, "dispatch", {
+          delayMs: duration_ms,
+        }),
+      ).then((id): SleepRecord => {
+        const rec: SleepRecord = {
+          taskId: String(id),
+          wakeAtMs: wakeAt,
+          durationMs: duration_ms,
+          wakeMessage: message,
+        };
+        state.idempotencyMap.set(idempotency_key, { kind: "settled", record: rec });
+        return rec;
+      });
+      // Catch the rejection so we can drop the failed reservation. We also
+      // re-throw so the awaiting promise propagates to concurrent callers.
+      const trackedSubmission = submission.catch((err: unknown): never => {
+        state.idempotencyMap.delete(idempotency_key);
+        throw err;
+      });
+
+      state.idempotencyMap.set(idempotency_key, {
+        kind: "pending",
+        promise: trackedSubmission,
+      });
 
       try {
-        const taskIdValue = await scheduler.submit({ kind: "text", text: message }, "dispatch", {
-          delayMs: duration_ms,
-        });
-        const idStr = String(taskIdValue);
-        if (idempotency_key !== undefined) {
-          state.idempotencyMap.set(idempotency_key, {
-            taskId: idStr,
-            wakeAtMs: wakeAt,
-            durationMs: duration_ms,
-            wakeMessage: message,
-          });
-        }
-        return { ok: true, task_id: idStr, wake_at_ms: wakeAt };
+        const rec = await trackedSubmission;
+        return { ok: true, task_id: rec.taskId, wake_at_ms: rec.wakeAtMs };
       } catch (e: unknown) {
         return {
           ok: false,

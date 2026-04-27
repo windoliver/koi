@@ -67,16 +67,24 @@ interface CronRecord {
 }
 
 /**
+ * Map entry — either an in-flight registration (for atomic reservation against
+ * concurrent same-key calls) or the settled record once the scheduler returns.
+ */
+type CronEntry =
+  | { readonly kind: "pending"; readonly promise: Promise<CronRecord> }
+  | { readonly kind: "settled"; readonly record: CronRecord };
+
+/**
  * Per-tool-instance state shared between schedule_cron and cancel_schedule.
  * Lets cancel_schedule clear an idempotency mapping once its schedule is gone.
  */
 export interface CronToolState {
-  /** idempotency_key → CronRecord (fingerprint + scheduler-issued id) */
-  readonly idempotencyMap: Map<string, CronRecord>;
+  /** idempotency_key → CronEntry */
+  readonly idempotencyMap: Map<string, CronEntry>;
 }
 
 export function createCronToolState(): CronToolState {
-  return { idempotencyMap: new Map<string, CronRecord>() };
+  return { idempotencyMap: new Map<string, CronEntry>() };
 }
 
 function recordsMatch(rec: CronRecord, other: Omit<CronRecord, "scheduleId">): boolean {
@@ -110,11 +118,33 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
       }
       const { expression, wake_message, timezone, idempotency_key } = parsed.data;
       const message = wake_message ?? defaultMessage;
+      const options = timezone !== undefined ? { timezone } : undefined;
+      const fingerprint = { expression, wakeMessage: message, timezone };
 
-      if (idempotency_key !== undefined) {
-        const existing = state.idempotencyMap.get(idempotency_key);
-        if (existing !== undefined) {
-          if (!recordsMatch(existing, { expression, wakeMessage: message, timezone })) {
+      // Path 1: caller did not opt in to idempotency. Submit unconditionally.
+      if (idempotency_key === undefined) {
+        try {
+          const id = await scheduler.schedule(
+            expression,
+            { kind: "text", text: message },
+            "dispatch",
+            options,
+          );
+          return { ok: true, schedule_id: String(id) };
+        } catch (e: unknown) {
+          return {
+            ok: false,
+            error: e instanceof Error ? e.message : "Failed to register cron schedule",
+          };
+        }
+      }
+
+      // Path 2: idempotency_key supplied. Reserve atomically.
+      const existing = state.idempotencyMap.get(idempotency_key);
+      if (existing !== undefined) {
+        try {
+          const rec = existing.kind === "settled" ? existing.record : await existing.promise;
+          if (!recordsMatch(rec, fingerprint)) {
             return {
               ok: false,
               error:
@@ -123,28 +153,47 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
                 "the existing schedule first.",
             };
           }
-          return { ok: true, schedule_id: existing.scheduleId, deduped: true };
+          return { ok: true, schedule_id: rec.scheduleId, deduped: true };
+        } catch (e: unknown) {
+          // The in-flight registration this key was tracking failed. The
+          // pending entry has already been deleted (see catch handler below)
+          // so a retry now finds an empty slot — surface the original error.
+          return {
+            ok: false,
+            error: e instanceof Error ? e.message : "Failed to register cron schedule",
+          };
         }
       }
 
-      const options = timezone !== undefined ? { timezone } : undefined;
-      try {
-        const id = await scheduler.schedule(
+      // Reserve before awaiting. Concurrent same-key callers will see this
+      // pending entry on their map.get and await the same promise.
+      // scheduler.schedule may throw synchronously on invalid expressions;
+      // Promise.try captures both sync and async failures uniformly.
+      const submission = Promise.try(() =>
+        scheduler.schedule(expression, { kind: "text", text: message }, "dispatch", options),
+      ).then((id): CronRecord => {
+        const rec: CronRecord = {
+          scheduleId: String(id),
           expression,
-          { kind: "text", text: message },
-          "dispatch",
-          options,
-        );
-        const idStr = String(id);
-        if (idempotency_key !== undefined) {
-          state.idempotencyMap.set(idempotency_key, {
-            scheduleId: idStr,
-            expression,
-            wakeMessage: message,
-            timezone,
-          });
-        }
-        return { ok: true, schedule_id: idStr };
+          wakeMessage: message,
+          timezone,
+        };
+        state.idempotencyMap.set(idempotency_key, { kind: "settled", record: rec });
+        return rec;
+      });
+      const trackedSubmission = submission.catch((err: unknown): never => {
+        state.idempotencyMap.delete(idempotency_key);
+        throw err;
+      });
+
+      state.idempotencyMap.set(idempotency_key, {
+        kind: "pending",
+        promise: trackedSubmission,
+      });
+
+      try {
+        const rec = await trackedSubmission;
+        return { ok: true, schedule_id: rec.scheduleId };
       } catch (e: unknown) {
         return {
           ok: false,
@@ -188,7 +237,11 @@ export function createCancelScheduleTool(config: ProactiveToolsConfig, state: Cr
         // future schedule_cron with the same key can register a fresh one.
         if (removed) {
           for (const [k, v] of state.idempotencyMap) {
-            if (v.scheduleId === idStr) state.idempotencyMap.delete(k);
+            // Only settled entries have a known scheduleId. A pending entry
+            // can't match because we only learn the id after schedule resolves.
+            if (v.kind === "settled" && v.record.scheduleId === idStr) {
+              state.idempotencyMap.delete(k);
+            }
           }
         }
         return { ok: true, removed };

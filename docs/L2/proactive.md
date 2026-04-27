@@ -113,8 +113,10 @@ removal flag inside `{ ok: true, removed }`. Unknown IDs return `removed: false`
 ### Idempotency (`idempotency_key`)
 
 Both `sleep` and `schedule_cron` accept an optional caller-supplied
-`idempotency_key`. The package keeps an in-memory map keyed by that string, and
-each entry stores a fingerprint of the original request:
+`idempotency_key`. The package keeps an in-memory map keyed by that string. Each
+entry first lives as an *in-flight* `Promise` (atomic reservation against
+concurrent same-key calls) and is replaced by a settled record once the
+scheduler returns. Settled records carry a fingerprint of the original request:
 
 | Tool | Fingerprint fields |
 |------|--------------------|
@@ -123,16 +125,19 @@ each entry stores a fingerprint of the original request:
 
 Replay rules (apply per tool):
 
-- **Match** — replay returns the original `task_id` / `schedule_id` plus
-  `deduped: true`. The scheduler is **not** called.
-- **Mismatch** — replay returns `{ ok: false, error: "...already registered..." }`.
-  The original task/schedule is preserved; the second request fails closed
-  rather than silently registering duplicate or wrong work.
-- **Expired** (sleep only) — once `wake_at_ms` has passed, the entry is dropped
-  and the next call with the same key is treated as a fresh submission.
+- **Settled match** — replay returns the original `task_id` / `schedule_id`
+  plus `deduped: true`. The scheduler is **not** called.
+- **In-flight** — concurrent callers await the same submission and inherit
+  its result. Exactly one scheduler call per key.
+- **Settled mismatch** — replay returns `{ ok: false, error: "...already registered..." }`.
+  The original task/schedule is preserved; the second request fails closed.
+- **Failed submission** — the rejected pending entry is removed so a retry
+  with the same key starts fresh.
 
-`cancel_sleep` and `cancel_schedule` each clear any matching idempotency entry
-on a successful cancel so the key may be re-used afterwards.
+Entries persist until the matching `cancel_sleep` / `cancel_schedule` clears
+them. We deliberately **do not** expire on wall-clock time: a backlogged or
+paused scheduler may still deliver the original task after `wake_at_ms` has
+passed, and silently dropping the entry would risk duplicate wake-ups.
 
 **Known durability gap:** the map is in-memory. Durable cross-restart dedup
 requires the underlying scheduler to honour idempotency keys at submit/schedule
