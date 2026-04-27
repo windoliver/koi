@@ -1528,6 +1528,43 @@ describe("createComposedCallHandlers streaming", () => {
     expect(JSON.parse(delta.delta)).toEqual({ a: 1, b: 2 });
   });
 
+  test("synthesized modelStream emits thinking_delta from richContent thinking blocks — round 46 F2", async () => {
+    // Non-streaming adapters can return thinking blocks in
+    // richContent; synth must surface them as thinking_delta chunks
+    // so chunk-consuming middleware (e.g. transcript / debug) sees
+    // them on the same stream contract as native streamers.
+    const agent = await createStartedAgent();
+    const rawModel = mock(() =>
+      Promise.resolve({
+        content: "hi",
+        model: "test-model",
+        richContent: [
+          { kind: "thinking" as const, text: "let me reason about this" },
+          { kind: "text" as const, text: "hi" },
+        ],
+      } satisfies ModelResponse),
+    );
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+
+    const handlers = createComposedCallHandlers(
+      [],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    const stream = handlers.modelStream;
+    if (stream === undefined) throw new Error("expected synthesized modelStream");
+    const chunks = [];
+    for await (const c of stream({ messages: [] })) chunks.push(c);
+
+    const thinking = chunks.find((c) => c.kind === "thinking_delta");
+    expect(thinking).toBeDefined();
+    if (thinking?.kind !== "thinking_delta") throw new Error("bad chunk");
+    expect(thinking.delta).toBe("let me reason about this");
+  });
+
   test("synthesized modelStream fires dual-hook middleware exactly once via wrapModelStream (round 14)", async () => {
     // Round 13 (critical): a single logical request must traverse only
     // one composed model chain. Dual-hook middleware (implements both

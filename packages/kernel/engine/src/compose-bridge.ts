@@ -120,23 +120,28 @@ export function createTerminalHandlers(
       if (response.content.length > 0) {
         yield { kind: "text_delta", delta: response.content };
       }
-      // Convert structured tool-call blocks from response.richContent
-      // into tool_call_* chunks so consumeModelStream actually executes
-      // them. Non-streaming adapters (e.g. @koi/model-openai-compat's
-      // complete() path) report tool calls via richContent instead of
-      // streamed chunks; without this synthesis the calls would
-      // silently drop because consumeModelStream only executes from
-      // streamed events, not from done.response (#review-round45-F1).
+      // Convert structured blocks from response.richContent into
+      // matching stream chunks so non-streaming adapters surface the
+      // same observable signals as native streamers. Without this,
+      // consumeModelStream — which executes tool calls solely from
+      // streamed tool_call_* events — drops calls reported via
+      // richContent (#review-round45-F1), and downstream chunk
+      // consumers miss thinking blocks (#review-round46-F2).
       if (response.richContent !== undefined) {
         for (const block of response.richContent) {
-          if (block.kind !== "tool_call") continue;
-          yield { kind: "tool_call_start", toolName: block.name, callId: block.id };
-          yield {
-            kind: "tool_call_delta",
-            callId: block.id,
-            delta: JSON.stringify(block.arguments),
-          };
-          yield { kind: "tool_call_end", callId: block.id };
+          if (block.kind === "tool_call") {
+            yield { kind: "tool_call_start", toolName: block.name, callId: block.id };
+            yield {
+              kind: "tool_call_delta",
+              callId: block.id,
+              delta: JSON.stringify(block.arguments),
+            };
+            yield { kind: "tool_call_end", callId: block.id };
+          } else if (block.kind === "thinking") {
+            yield { kind: "thinking_delta", delta: block.text };
+          }
+          // text blocks are intentionally not re-emitted: response.content
+          // is the authoritative aggregate and was already streamed above.
         }
       }
       yield { kind: "done", response };
