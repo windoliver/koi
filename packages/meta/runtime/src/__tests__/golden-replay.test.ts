@@ -14023,9 +14023,15 @@ describe("Golden: @koi/forge-demand", () => {
     });
     expect(typeof flWithHealth.healthHandle).toBe("object");
     expect(typeof flWithHealth.healthHandle?.getSnapshot).toBe("function");
-    expect(
-      flWithHealth.healthHandle?.getSnapshot("missing-session", "missing-tool"),
-    ).toBeUndefined();
+    // The handle is now SessionContext-scoped (F99). An unobserved
+    // SessionContext returns undefined — no enumeration-by-string.
+    const fakeCtx = {
+      sessionId: "missing-session",
+      agentId: "x",
+      runId: "y",
+      metadata: {},
+    } as never;
+    expect(flWithHealth.healthHandle?.getSnapshot(fakeCtx, "missing-tool")).toBeUndefined();
   });
 
   test("RuntimeHandle.forgeDemand exposes only the middleware (no sessionId-keyed lookup)", async () => {

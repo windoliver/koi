@@ -33,7 +33,18 @@ import type { ForgeToolErrorFeedback } from "./types.js";
  * `metrics.avgLatencyMs` is computed from the rolling ring entries.
  */
 export interface FeedbackLoopHealthHandle {
-  readonly getSnapshot: (sessionId: string, toolId: string) => L0ToolHealthSnapshot | undefined;
+  /**
+   * Read a tool-health snapshot scoped to a SessionContext that the
+   * underlying middleware has actually observed. Object-identity
+   * resolution prevents an in-process consumer from enumerating
+   * snapshots for arbitrary sessionIds — only sessions whose
+   * `onSessionStart` ran through THIS middleware are visible. F99
+   * regression.
+   */
+  readonly getSnapshot: (
+    session: SessionContext,
+    toolId: string,
+  ) => L0ToolHealthSnapshot | undefined;
 }
 
 /**
@@ -141,16 +152,24 @@ function handleToolError(
 export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): FeedbackLoopMiddleware {
   // Per-session tracker map: keyed by sessionId to isolate concurrent sessions
   const trackers = new Map<string, ToolHealthTracker>();
+  // SessionContext → sessionId binding established at onSessionStart.
+  // The exposed healthHandle resolves snapshots through this binding so
+  // an in-process consumer who obtained the handle cannot enumerate
+  // snapshots for guessed/known sessionIds — only for SessionContext
+  // objects this middleware has actually observed. F99 regression.
+  const observedSessions = new WeakMap<SessionContext, string>();
 
-  // Only attach healthHandle when forgeHealth is configured. Without
-  // forgeHealth, no per-session trackers are ever created, so any
-  // handle here would always return undefined and silently dormant
-  // performance_degradation in auto-wiring callers (F70).
   const healthHandle: FeedbackLoopHealthHandle | undefined =
     config.forgeHealth !== undefined
       ? {
-          getSnapshot: (sessionId: string, toolId: string): L0ToolHealthSnapshot | undefined =>
-            trackers.get(sessionId)?.getL0Snapshot(toolId),
+          getSnapshot: (
+            session: SessionContext,
+            toolId: string,
+          ): L0ToolHealthSnapshot | undefined => {
+            const sid = observedSessions.get(session);
+            if (sid === undefined) return undefined;
+            return trackers.get(sid)?.getL0Snapshot(toolId);
+          },
         }
       : undefined;
 
@@ -167,6 +186,10 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
       if (config.forgeHealth !== undefined) {
         trackers.set(ctx.sessionId, createToolHealthTracker(config.forgeHealth));
       }
+      // Record the SessionContext binding so the exposed healthHandle
+      // can resolve snapshot reads only for sessions this middleware
+      // has actually observed.
+      observedSessions.set(ctx, ctx.sessionId);
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
@@ -175,6 +198,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
         trackers.delete(ctx.sessionId);
         await tracker.dispose();
       }
+      observedSessions.delete(ctx);
     },
 
     async wrapModelCall(

@@ -411,5 +411,29 @@ describe("createFeedbackLoopMiddleware", () => {
       // onSessionEnd should call dispose on the tracker without throwing
       await expect(mw.onSessionEnd?.(sessionCtx)).resolves.toBeUndefined();
     });
+
+    it("F99: healthHandle.getSnapshot only resolves observed SessionContext objects", async () => {
+      // Reviewer F99: the prior handle accepted a raw sessionId, so
+      // any in-process consumer with the middleware could enumerate
+      // snapshots for guessed/known ids — a cross-tenant inspection
+      // surface. The fix requires SessionContext object identity:
+      // only sessions observed via onSessionStart are visible.
+      const realCtx = mockSessionCtx();
+      await mw.onSessionStart?.(realCtx);
+      // Forged context carrying the same sessionId — must NOT resolve.
+      const forged = {
+        sessionId: realCtx.sessionId,
+        agentId: "attacker",
+        runId: "fake",
+        metadata: {},
+      } as never;
+      expect(mw.healthHandle?.getSnapshot(forged, "any-tool")).toBeUndefined();
+      // The real ctx is admitted (snapshot for an unrecorded tool is
+      // undefined, but the lookup itself is permitted).
+      expect(mw.healthHandle?.getSnapshot(realCtx, "any-tool")).toBeUndefined();
+      // After onSessionEnd, even the real ctx no longer resolves.
+      await mw.onSessionEnd?.(realCtx);
+      expect(mw.healthHandle?.getSnapshot(realCtx, "any-tool")).toBeUndefined();
+    });
   });
 });

@@ -49,7 +49,13 @@ describe("validateForgeDemandConfig", () => {
       getSnapshot: (_toolId: string) => undefined,
     };
     const cfg = createDefaultForgeDemandConfig({
-      healthTracker: legacyTracker,
+      // Cast through `unknown` — the modern interface requires
+      // (SessionContext, toolId), but this opt-in test exists to
+      // exercise the legacy single-arg shape that the validation
+      // hatch is designed to accept.
+      healthTracker: legacyTracker as unknown as NonNullable<
+        Parameters<typeof createDefaultForgeDemandConfig>[0]
+      >["healthTracker"],
       acceptLegacySingleArgHealthTracker: true,
     });
     expect(cfg.acceptLegacySingleArgHealthTracker).toBe(true);

@@ -9,7 +9,6 @@ import type {
   ForgeDemandSignal,
   KoiMiddleware,
   SessionContext,
-  SessionId,
   ToolHealthSnapshot,
 } from "@koi/core";
 
@@ -28,7 +27,15 @@ import type {
  * directly.
  */
 export interface FeedbackLoopHealthHandle {
-  readonly getSnapshot: (sessionId: SessionId, toolId: string) => ToolHealthSnapshot | undefined;
+  /**
+   * Read a tool-health snapshot. Takes a `SessionContext` (not a raw
+   * sessionId) so implementations can apply object-identity isolation:
+   * an in-process consumer that obtained the handle cannot enumerate
+   * snapshots for arbitrary sessionIds — only for SessionContext
+   * objects the handle has actually observed (e.g. via the engine
+   * lifecycle hooks of the underlying middleware). F99 regression.
+   */
+  readonly getSnapshot: (session: SessionContext, toolId: string) => ToolHealthSnapshot | undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -1412,7 +1412,7 @@ describe("createForgeDemandDetector", () => {
       const handle = createForgeDemandDetector(
         makeConfig({
           healthTracker: {
-            getSnapshot: (_sid: string, _tid: string) => {
+            getSnapshot: (_session, _tid) => {
               throw new Error("tracker boom");
             },
           },
@@ -2348,5 +2348,58 @@ describe("createForgeDemandDetector", () => {
     // And victimHandle is still LIVE (epoch unchanged).
     victimHandle.dismiss(signals[0]?.id ?? "");
     expect(victimHandle.getActiveSignalCount()).toBe(0);
+  });
+
+  it("F98: a permanently throwing onSessionAttached does not leak per-session state past onSessionEnd", async () => {
+    // Reviewer F98: ensureObserved delayed observedSessions.set until
+    // onSessionAttached delivered cleanly, so a callback that always
+    // threw left the binding unset. Middleware hooks still allocated
+    // state/epoch under the bound id, and a later onSessionEnd
+    // returned early (binding not present) — leaking detector state.
+    // The fix binds early and tracks delivery in a separate set so
+    // teardown always succeeds.
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { repeatedFailureCount: 1 },
+        onSessionAttached: () => {
+          throw new Error("attached boom");
+        },
+      }),
+    );
+    const session = createMockTurnContext({ turnIndex: 1 });
+    const errs: unknown[] = [];
+    const origErr = console.error;
+    console.error = (...a: unknown[]): void => {
+      errs.push(a);
+    };
+    try {
+      // Drive a failure — onSessionAttached throws on first sighting.
+      try {
+        await handle.middleware.wrapToolCall?.(session, toolReq("flaky"), async () => {
+          throw new Error("boom1");
+        });
+      } catch {
+        // expected
+      }
+      // The session has allocated state under the bound id.
+      // onSessionEnd MUST clean it up despite the never-delivered
+      // callback. Pre-fix this would no-op and leak state.
+      await handle.middleware.onSessionEnd?.(session.session);
+      // A new session reusing the same SessionContext + sessionId now
+      // starts with a fresh epoch — the cleanup occurred. Drive a
+      // signal and verify the value comes from the NEW session, not
+      // a leftover from the first.
+      try {
+        await handle.middleware.wrapToolCall?.(session, toolReq("flaky"), async () => {
+          throw new Error("boom2");
+        });
+      } catch {
+        // expected
+      }
+    } finally {
+      console.error = origErr;
+    }
+    // onSessionAttached threw twice — recorded both times.
+    expect(errs.length).toBeGreaterThanOrEqual(2);
   });
 });

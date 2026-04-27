@@ -264,6 +264,17 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   // long-running detectors do not retain SessionContext objects past
   // their natural lifetime.)
   const observedSessions = new WeakMap<SessionContext, SessionId>();
+  /**
+   * Set of SessionContexts whose `onSessionAttached` callback has
+   * delivered cleanly. Separated from `observedSessions` so the binding
+   * (used for cleanup authorization in onSessionEnd) is established
+   * eagerly while the callback retry loop continues until delivery
+   * succeeds. Without this split, a callback that throws every time
+   * would leave state allocated under the bound sid but
+   * observedSessions unset — onSessionEnd would no-op and the per-
+   * session state/epoch would leak. F98 regression.
+   */
+  const attachedDelivered = new WeakSet<SessionContext>();
 
   /**
    * Resolve the bound sessionId for an already-observed SessionContext.
@@ -279,18 +290,18 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   }
 
   function ensureObserved(session: SessionContext): void {
-    if (observedSessions.has(session)) return;
-    // First sighting — deliver the unforgeable scoped handle to the
-    // legitimate session owner BEFORE marking the session observed,
-    // so a transient callback failure does not permanently strand
-    // the session: the next call retries delivery. Once the callback
-    // returns cleanly, mark observed so subsequent traffic short-
-    // circuits without re-firing the callback. If no callback is
-    // configured, mark observed immediately. F72 regression.
-    if (config.onSessionAttached === undefined) {
+    // Bind the SessionContext to its sessionId BEFORE attempting
+    // callback delivery so per-session state allocated by middleware
+    // hooks always has a teardown path. Without this, a permanently
+    // throwing onSessionAttached would leave observedSessions unset,
+    // onSessionEnd would no-op, and detector state/epoch would leak.
+    // The binding is the cleanup-authorization key; the separate
+    // `attachedDelivered` set drives callback retry. F98 regression.
+    if (!observedSessions.has(session)) {
       observedSessions.set(session, session.sessionId);
-      return;
     }
+    if (config.onSessionAttached === undefined) return;
+    if (attachedDelivered.has(session)) return;
     // Capture sessionId at issuance and close over it. Resolving via
     // `session.sessionId` on every call would let a later mutation of
     // the SessionContext's sessionId field redirect a previously-issued
@@ -328,7 +339,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       delivered = false;
       console.error("[forge-demand] onSessionAttached threw, will retry on next traffic:", e);
     }
-    if (delivered) observedSessions.set(session, sid);
+    if (delivered) attachedDelivered.add(session);
   }
   // Handle-level counter so signal ids are unique across sessions —
   // otherwise two concurrent tenants would both produce `demand-1` and
@@ -511,7 +522,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
 
   function checkLatencyDegradation(
     state: SessionState,
-    sessionId: SessionId,
+    session: SessionContext,
     toolId: string,
   ): void {
     if (config.healthTracker === undefined) return;
@@ -522,7 +533,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     // call and log. F74 regression.
     let snapshot: ReturnType<NonNullable<typeof config.healthTracker>["getSnapshot"]>;
     try {
-      snapshot = config.healthTracker.getSnapshot(sessionId, toolId);
+      snapshot = config.healthTracker.getSnapshot(session, toolId);
     } catch (e: unknown) {
       console.error("[forge-demand] healthTracker.getSnapshot threw:", e);
       return;
@@ -920,12 +931,12 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
               threshold: thresholds.repeatedFailureCount,
             });
           }
-          checkLatencyDegradation(state, sid, toolId);
+          checkLatencyDegradation(state, ctx.session, toolId);
           return response;
         }
         state.consecutiveFailures.set(toolId, 0);
         state.failedToolCalls.delete(`rf:${toolId}`);
-        checkLatencyDegradation(state, sid, toolId);
+        checkLatencyDegradation(state, ctx.session, toolId);
         return response;
       } catch (e: unknown) {
         if (!isCurrentEpoch(sid, epoch)) throw e;
@@ -938,7 +949,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
             { kind: "no_matching_tool", query: toolId, attempts },
             { failureCount: attempts, threshold: 1 },
           );
-          checkLatencyDegradation(state, sid, toolId);
+          checkLatencyDegradation(state, ctx.session, toolId);
           throw e;
         }
         markToolCallCompleted(callEntry);
@@ -951,7 +962,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
             threshold: thresholds.repeatedFailureCount,
           });
         }
-        checkLatencyDegradation(state, sid, toolId);
+        checkLatencyDegradation(state, ctx.session, toolId);
         throw e;
       }
     },
@@ -1036,6 +1047,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // re-fire onSessionAttached, not short-circuit on the stale
       // entry. F91 regression.
       observedSessions.delete(ctx);
+      attachedDelivered.delete(ctx);
     },
 
     // The detector is a passive observer: we MUST NOT inject
