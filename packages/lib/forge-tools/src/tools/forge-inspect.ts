@@ -23,8 +23,14 @@ export interface ForgeInspectOk {
 }
 
 function isVisible(b: BrickArtifact, callerAgentId: string): boolean {
-  if (b.scope === "global") return true;
+  // Global bricks are publicly readable only when their lifecycle is active.
+  // draft / verifying / failed / deprecated / quarantined globals must stay
+  // hidden so partially integrated or revoked content is not exposed to
+  // every agent in the process.
+  if (b.scope === "global") return b.lifecycle === "active";
   if (b.scope === "zone") return false;
+  // Agent-scoped bricks are visible only to their owner, regardless of
+  // lifecycle (the owner needs to read their own drafts).
   return b.provenance.metadata.agentId === callerAgentId;
 }
 

@@ -92,13 +92,15 @@ function notFoundError(id: BrickId): KoiError {
 }
 
 function toSummary(brick: BrickArtifact): BrickSummary {
+  // Clone nested arrays so callers cannot mutate stored state through the
+  // summary's `tags` / `trigger` references.
   return {
     id: brick.id,
     kind: brick.kind,
     name: brick.name,
     description: brick.description,
-    tags: brick.tags,
-    ...(brick.trigger !== undefined ? { trigger: brick.trigger } : {}),
+    tags: [...brick.tags],
+    ...(brick.trigger !== undefined ? { trigger: [...brick.trigger] } : {}),
   };
 }
 
@@ -314,8 +316,23 @@ export function createInMemoryForgeStore(): ForgeStore {
       };
     }
     // Lifecycle transitions follow VALID_LIFECYCLE_TRANSITIONS — reject any
-    // illegal jump (e.g. draft -> active, failed -> active).
+    // illegal jump (e.g. draft -> active, failed -> active). Additionally,
+    // transitions out of any terminal lifecycle (failed, deprecated,
+    // quarantined) are rejected even when the core graph allows them
+    // (quarantined -> draft) — content-addressed redrive must synthesize a
+    // new version, not resurrect the same id. This matches save()'s
+    // terminal-lifecycle redrive guard.
     if (updates.lifecycle !== undefined && updates.lifecycle !== existing.lifecycle) {
+      if (isTerminalLifecycle(existing.lifecycle)) {
+        return {
+          ok: false,
+          error: conflict(
+            id,
+            `Brick is in terminal lifecycle ${existing.lifecycle}; bump version to redrive`,
+            { brickId: id, lifecycle: existing.lifecycle, attempted: updates.lifecycle },
+          ),
+        };
+      }
       const allowed = VALID_LIFECYCLE_TRANSITIONS[existing.lifecycle];
       if (!allowed.includes(updates.lifecycle)) {
         return {

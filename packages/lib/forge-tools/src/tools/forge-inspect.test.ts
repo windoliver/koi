@@ -50,6 +50,7 @@ async function injectBrick(opts: {
   readonly ownerAgentId: string;
   readonly scope: ForgeScope;
   readonly name?: string;
+  readonly promoteToActive?: boolean;
 }): Promise<BrickId> {
   const name = opts.name ?? "injected";
   const implementation = `return ${JSON.stringify(name)};`;
@@ -106,6 +107,12 @@ async function injectBrick(opts: {
   };
   const saved = await store.save(artifact);
   if (!saved.ok) throw new Error(`inject failed: ${JSON.stringify(saved.error)}`);
+  if (opts.promoteToActive === true) {
+    const v = await store.update(id, { lifecycle: "verifying" });
+    if (!v.ok) throw new Error(`promote step 1 failed: ${JSON.stringify(v.error)}`);
+    const a = await store.update(id, { lifecycle: "active" });
+    if (!a.ok) throw new Error(`promote step 2 failed: ${JSON.stringify(a.error)}`);
+  }
   return id;
 }
 
@@ -160,8 +167,13 @@ describe("forge_inspect", () => {
     expect(err.error.code).toBe("NOT_FOUND");
   });
 
-  test("returns global-scoped brick to any caller", async () => {
-    const gid = await injectBrick({ ownerAgentId: "agent-B", scope: "global", name: "g" });
+  test("returns active global-scoped brick to any caller", async () => {
+    const gid = await injectBrick({
+      ownerAgentId: "agent-B",
+      scope: "global",
+      name: "g",
+      promoteToActive: true,
+    });
     const tool = createForgeInspectTool({ store });
     const r = await runWithExecutionContext(makeContext("agent-A"), () =>
       tool.execute({ brickId: gid }),

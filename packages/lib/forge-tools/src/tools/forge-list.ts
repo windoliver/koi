@@ -87,11 +87,25 @@ export function createForgeListTool(deps: ForgeListDeps): Tool {
       const wantAgent = input.scope === undefined || input.scope === "agent";
       const wantGlobal = input.scope === undefined || input.scope === "global";
 
+      // Global queries see only `active` bricks — drafts and terminal-
+      // lifecycle globals must not leak to peer agents. If the caller
+      // requested a non-active lifecycle for globals, return empty rather
+      // than expose hidden state.
+      const globalLifecycleHidden =
+        wantGlobal && input.lifecycle !== undefined && input.lifecycle !== "active";
+
       // Single-scope path: delegate to the store's summary search (which
       // skips the full-artifact deep-clone) since no cross-scope ranking
       // is needed. This avoids materializing heavy implementation/files
       // /schema bytes that would be discarded by the summary projection.
       if (wantAgent !== wantGlobal) {
+        if (!wantAgent && globalLifecycleHidden) {
+          const success: Result<ForgeListOk, KoiError> = {
+            ok: true,
+            value: { summaries: [] },
+          };
+          return success;
+        }
         const query: ForgeQuery = wantAgent
           ? {
               ...(input.kind !== undefined ? { kind: input.kind } : {}),
@@ -102,7 +116,8 @@ export function createForgeListTool(deps: ForgeListDeps): Tool {
             }
           : {
               ...(input.kind !== undefined ? { kind: input.kind } : {}),
-              ...(input.lifecycle !== undefined ? { lifecycle: input.lifecycle } : {}),
+              // Force lifecycle: "active" for globals.
+              lifecycle: "active",
               scope: "global",
               limit: callerLimit,
             };
@@ -130,13 +145,17 @@ export function createForgeListTool(deps: ForgeListDeps): Tool {
           createdBy: caller.agentId,
           limit: callerLimit,
         },
-        {
+      ];
+      // Globals are public only when active. Skip the global query entirely
+      // if the caller requested a non-active lifecycle.
+      if (!globalLifecycleHidden) {
+        queries.push({
           ...(input.kind !== undefined ? { kind: input.kind } : {}),
-          ...(input.lifecycle !== undefined ? { lifecycle: input.lifecycle } : {}),
+          lifecycle: "active",
           scope: "global",
           limit: callerLimit,
-        },
-      ];
+        });
+      }
       const responses = await Promise.all(queries.map((q) => deps.store.search(q)));
       for (const r of responses) {
         if (!r.ok) {
