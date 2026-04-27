@@ -230,4 +230,37 @@ describe("createProactiveToolsProvider", () => {
     expect(stubA.submitCalls[0]?.options?.delayMs).toBe(100);
     expect(stubB.submitCalls[0]?.options?.delayMs).toBe(200);
   });
+
+  test("cron state resets on every attach — reattach against fresh backend never returns stale deduped:true", async () => {
+    const stubA = createSchedulerStub();
+    const agent = makeAgent(stubA.component, "agent-cron");
+    const provider = createProactiveToolsProvider();
+
+    const cronKey = toolToken("schedule_cron") as string;
+    const first = await provider.attach(agent);
+    const cron1 = ("components" in first ? first.components : first).get(cronKey) as {
+      execute: (a: object) => Promise<unknown>;
+    };
+    await cron1.execute({ expression: "0 9 * * *", idempotency_key: "k" });
+    expect(stubA.scheduleCalls).toHaveLength(1);
+
+    // Reattach against a different scheduler. SchedulerComponent has no
+    // querySchedules so we can't reconcile cron entries against the new
+    // backend; instead the provider creates fresh cron state per attach,
+    // forcing a real registration on stubB rather than serving a stale
+    // deduped:true cached from stubA.
+    const stubB = createSchedulerStub();
+    const replacedAgent = makeAgent(stubB.component, "agent-cron");
+    const second = await provider.attach(replacedAgent);
+    const cron2 = ("components" in second ? second.components : second).get(cronKey) as {
+      execute: (a: object) => Promise<unknown>;
+    };
+    const r2 = (await cron2.execute({
+      expression: "0 9 * * *",
+      idempotency_key: "k",
+    })) as { schedule_id: string; deduped?: boolean };
+
+    expect(stubB.scheduleCalls).toHaveLength(1);
+    expect(r2.deduped).toBeUndefined();
+  });
 });

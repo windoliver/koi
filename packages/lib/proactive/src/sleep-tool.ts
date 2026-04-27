@@ -58,10 +58,9 @@ const schema = z.object({
   idempotency_key: z
     .string()
     .min(1)
-    // Forwarded as TaskOptions.idempotencyKey. The Temporal scheduler builds
-    // a stable task ID from `${agentId}:${mode}:${key}` and rejects keys
-    // containing ':'. Reject up front so we surface a clear error rather
-    // than letting the scheduler throw a delimiter-collision message.
+    // ':' is reserved for downstream stable-ID delimiters; reject up front so
+    // any future durable forwarding doesn't surface a delimiter-collision
+    // message instead of a clear schema error.
     .refine((s) => !s.includes(":"), "idempotency_key must not contain ':'")
     .optional()
     .describe(
@@ -246,14 +245,14 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
         }
       }
 
-      // Forwarded to the scheduler so any implementation that honours
-      // `TaskOptions.idempotencyKey` durably (cross-restart) can also dedupe
-      // there. The current `@koi/scheduler` ignores the field; the in-memory
-      // map below remains the same-process safety net regardless.
-      const submitOptions = {
-        delayMs: duration_ms,
-        idempotencyKey: idempotency_key,
-      };
+      // We deliberately do NOT forward idempotency_key to the durable
+      // scheduler. The Temporal backend builds a stable workflow ID from the
+      // key and will reject same-key retries while the cancelled workflow is
+      // still shutting down ("already started"), which would break the
+      // documented "cancel old, register new" flow. Process-local dedupe via
+      // `state.idempotencyMap` is the contract this tool advertises; durable
+      // cross-restart dedup is out of scope for Phase 1.
+      const submitOptions = { delayMs: duration_ms };
 
       // Path 2: idempotency_key supplied. Reserve atomically.
       // Reconcile cached entries against the live scheduler view before any

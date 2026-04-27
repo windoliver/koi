@@ -10,11 +10,19 @@
  *
  * Idempotency state lifetime
  * --------------------------
- * The cron and sleep idempotency maps are created **once per provider** and
- * keyed by `agent.pid` so each attached agent gets its own slot but the slot
- * survives across reattach (e.g. transient failure, agent reassembly between
- * turns). If the maps were created per-attach, a retry after reattach would
- * miss the prior reservation and register a duplicate.
+ * Sleep state is provider-scoped and keyed by `agent.pid.id` — it survives
+ * reattach within the same process so a retry with the same idempotency_key
+ * reuses the prior reservation. Stale entries are reconciled against the
+ * scheduler's live view via `scheduler.query` on each call.
+ *
+ * Cron state is created **fresh on every attach**. `SchedulerComponent` has
+ * no `querySchedules`, so we cannot reconcile cron entries against a live
+ * backend. Persisting cron state across attaches would either return stale
+ * `deduped:true` (after a real backend swap) or double-register (after a
+ * wrapper swap on a shared backend). Re-creating cron state per attach
+ * sidesteps both: same-attach retries dedupe; cross-attach retries register
+ * fresh against the current backend, which is the safe direction. Cron is
+ * typically registered once per agent so this rarely matters in practice.
  */
 
 import type { Agent, AttachResult, ComponentProvider, SkippedComponent, Tool } from "@koi/core";
@@ -29,48 +37,31 @@ import {
 import { createSleepTool, createSleepToolState, type SleepToolState } from "./sleep-tool.js";
 import type { ProactiveToolsConfig, ProactiveToolsProviderConfig } from "./types.js";
 
-interface AgentStateSlot {
-  readonly cron: CronToolState;
-  readonly sleep: SleepToolState;
-}
-
 export function createProactiveToolsProvider(
   config: ProactiveToolsProviderConfig = {},
 ): ComponentProvider {
   const priority = config.priority ?? COMPONENT_PRIORITY.BUNDLED;
-  // State lives at provider scope, keyed by stable agent identity (pid).
-  // This survives reattach within the same process so a retry with the
-  // same idempotency_key reuses the prior reservation.
-  //
-  // We deliberately do NOT key the slot by scheduler instance identity:
-  // hosts often wrap the same durable backend in a fresh adapter object
-  // (in-memory restart, test reassembly) where the underlying task IDs
-  // remain valid. Resetting state on every wrapper swap would let a
-  // legitimate retry register a duplicate against the still-live durable
-  // record. Preserving state means a swap to a genuinely-fresh backend
-  // may dedupe to a stale ID; that surfaces as cancel returning
-  // removed:false (handled) or a wake delivery against an ID the new
-  // backend never saw. Both failure modes are addressable by the host
-  // tearing down the agent on hard scheduler resets.
-  const slots = new Map<string, AgentStateSlot>();
+  // Sleep state is provider-scoped per agent (see file header).
+  const sleepSlots = new Map<string, SleepToolState>();
 
-  function getSlot(pid: string): AgentStateSlot {
-    const existing = slots.get(pid);
+  function getSleepState(pid: string): SleepToolState {
+    const existing = sleepSlots.get(pid);
     if (existing !== undefined) return existing;
-    const fresh: AgentStateSlot = {
-      cron: createCronToolState(),
-      sleep: createSleepToolState(),
-    };
-    slots.set(pid, fresh);
+    const fresh = createSleepToolState();
+    sleepSlots.set(pid, fresh);
     return fresh;
   }
 
-  function buildTools(toolConfig: ProactiveToolsConfig, slot: AgentStateSlot): readonly Tool[] {
+  function buildTools(
+    toolConfig: ProactiveToolsConfig,
+    sleepState: SleepToolState,
+    cronState: CronToolState,
+  ): readonly Tool[] {
     return [
-      createSleepTool(toolConfig, slot.sleep),
-      createCancelSleepTool(toolConfig, slot.sleep),
-      createScheduleCronTool(toolConfig, slot.cron),
-      createCancelScheduleTool(toolConfig, slot.cron),
+      createSleepTool(toolConfig, sleepState),
+      createCancelSleepTool(toolConfig, sleepState),
+      createScheduleCronTool(toolConfig, cronState),
+      createCancelScheduleTool(toolConfig, cronState),
     ];
   }
 
@@ -112,8 +103,12 @@ export function createProactiveToolsProvider(
       // the whole ProcessId would yield "[object Object]" and collapse every
       // agent into a single shared slot, leaking idempotency state across
       // agents and silently dropping wake-ups.
-      const slot = getSlot(String(agent.pid.id));
-      const tools = buildTools(toolConfig, slot);
+      const sleepState = getSleepState(String(agent.pid.id));
+      // Cron state is intentionally per-attach (see file header). Late
+      // submissions from a previous attach land on the prior, now-detached
+      // state object and have no observable effect on the new attach.
+      const cronState = createCronToolState();
+      const tools = buildTools(toolConfig, sleepState, cronState);
       const entries: (readonly [string, Tool])[] = tools.map(
         (t) => [toolToken(t.descriptor.name) as string, t] as const,
       );

@@ -98,6 +98,20 @@ const DEFAULT_MAX_IDEMPOTENCY_ENTRIES = 1024;
 /**
  * Per-tool-instance state shared between schedule_cron and cancel_schedule.
  * Lets cancel_schedule clear an idempotency mapping once its schedule is gone.
+ *
+ * Lifetime: the provider creates a fresh `CronToolState` on every `attach`
+ * rather than persisting one per-agent. This is the conservative answer to
+ * a real correctness gap: `SchedulerComponent` has no `querySchedules`, so
+ * we cannot reconcile cached schedule_ids against a live backend. If we
+ * preserved state across attaches we would either (a) return stale
+ * `deduped:true` after a backend swap, or (b) clear cache on object-identity
+ * change and double-register against a wrapper swap that shares a durable
+ * backend. Fresh state per attach trades cross-attach dedupe (a rare path
+ * for cron — typically registered once per agent) for safety against both
+ * failure modes. Late `.then()` writes from a previous attach land on a
+ * detached state object and have no observable effect.
+ *
+ * Same-attach retries still dedupe correctly, which is the primary use case.
  */
 export interface CronToolState {
   /** idempotency_key → CronEntry */

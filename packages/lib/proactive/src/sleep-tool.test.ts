@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { JsonObject } from "@koi/core";
 import { agentId } from "@koi/core";
+import { createCancelSleepTool } from "./cancel-sleep-tool.js";
 import { createSleepTool, createSleepToolState } from "./sleep-tool.js";
 import { createSchedulerStub } from "./test-helpers.js";
 import { DEFAULT_MAX_SLEEP_MS, DEFAULT_WAKE_MESSAGE } from "./types.js";
@@ -227,14 +228,19 @@ describe("sleep tool", () => {
     expect(b?.task_id).toBe(c?.task_id);
   });
 
-  test("forwards idempotency_key as TaskOptions.idempotencyKey to scheduler.submit", async () => {
+  test("does NOT forward idempotency_key to scheduler.submit (process-local dedupe only)", async () => {
+    // Forwarding to a durable backend (Temporal) would let the backend build
+    // a stable workflow ID from the key and reject same-key retries after
+    // cancel with "already started" while the prior workflow is shutting
+    // down. The cancel→retry-same-key flow this tool advertises only works
+    // when dedupe is purely process-local.
     const stub = createSchedulerStub();
     const state = createSleepToolState();
     const tool = createSleepTool({ scheduler: stub.component }, state);
 
     await exec(tool, { duration_ms: 5_000, idempotency_key: "k" });
 
-    expect(stub.submitCalls[0]?.options?.idempotencyKey).toBe("k");
+    expect(stub.submitCalls[0]?.options?.idempotencyKey).toBeUndefined();
     expect(stub.submitCalls[0]?.options?.delayMs).toBe(5_000);
   });
 
@@ -364,5 +370,33 @@ describe("sleep tool", () => {
 
     expect(retried.ok).toBe(true);
     expect(okStub.submitCalls).toHaveLength(1);
+  });
+
+  test("cancel + retry with the same idempotency_key submits a fresh task without forwarding the key", async () => {
+    // Regression: forwarding idempotency_key to scheduler.submit made the
+    // Temporal backend reject same-key retries with "already started" while
+    // the cancelled workflow was shutting down. Verify (a) the scheduler
+    // never sees the key, (b) cancel+retry-same-key registers a new task.
+    const stub = createSchedulerStub();
+    const state = createSleepToolState();
+    const sleep = createSleepTool({ scheduler: stub.component }, state);
+    const cancel = createCancelSleepTool({ scheduler: stub.component }, state);
+
+    const first = (await exec(sleep, { duration_ms: 5_000, idempotency_key: "k" })) as {
+      task_id: string;
+    };
+    await cancel.execute({ task_id: first.task_id, release_key: true });
+
+    const retried = (await exec(sleep, { duration_ms: 5_000, idempotency_key: "k" })) as {
+      ok: boolean;
+      task_id: string;
+    };
+
+    expect(retried.ok).toBe(true);
+    expect(retried.task_id).not.toBe(first.task_id);
+    expect(stub.submitCalls).toHaveLength(2);
+    for (const call of stub.submitCalls) {
+      expect(call.options?.idempotencyKey).toBeUndefined();
+    }
   });
 });

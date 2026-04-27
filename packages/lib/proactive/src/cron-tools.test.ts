@@ -359,4 +359,15 @@ describe("cancel_schedule tool", () => {
     expect(reissued.deduped).toBeUndefined();
     expect(stub.scheduleCalls).toHaveLength(2);
   });
+
+  test("does NOT forward idempotency_key into scheduler.schedule options", async () => {
+    // Temporal rejects every TaskOption on schedule(); forwarding would make
+    // every keyed schedule_cron call hard-fail under the durable scheduler.
+    const stub = createSchedulerStub();
+    const tool = createScheduleCronTool({ scheduler: stub.component }, createCronToolState());
+
+    await tool.execute({ expression: "0 9 * * *", idempotency_key: "k" });
+
+    expect(stub.scheduleCalls[0]?.options?.idempotencyKey).toBeUndefined();
+  });
 });
