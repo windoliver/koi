@@ -112,14 +112,25 @@ export function createCronToolState(maxEntries?: number): CronToolState {
   };
 }
 
-function setBoundedCron(state: CronToolState, key: string, value: CronEntry): void {
-  if (state.idempotencyMap.has(key)) {
-    state.idempotencyMap.delete(key);
-  } else if (state.idempotencyMap.size >= state.maxEntries) {
-    const oldest = state.idempotencyMap.keys().next().value;
-    if (oldest !== undefined) state.idempotencyMap.delete(oldest);
-  }
+/**
+ * Insert/update without evicting existing entries. Cron schedules stay live
+ * until explicitly cancelled, so silently FIFO-evicting an old key while its
+ * underlying schedule is still firing would let a retry with that key
+ * register a duplicate recurring schedule. Instead, the caller must observe
+ * the cap via {@link cronCapReached} and surface a clear error to the agent.
+ */
+function setCronEntry(state: CronToolState, key: string, value: CronEntry): void {
   state.idempotencyMap.set(key, value);
+}
+
+/**
+ * Reports whether registering a fresh `key` would exceed the cap. Updates of
+ * an already-tracked key are always allowed (the entry just transitions
+ * pending → settled or settled → settled).
+ */
+function cronCapReached(state: CronToolState, key: string): boolean {
+  if (state.idempotencyMap.has(key)) return false;
+  return state.idempotencyMap.size >= state.maxEntries;
 }
 
 function recordsMatch(rec: CronRecord, other: Omit<CronRecord, "scheduleId">): boolean {
@@ -185,6 +196,20 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
       const scheduleOptions = timezone !== undefined ? { timezone } : undefined;
 
       // Path 2: idempotency_key supplied. Reserve atomically.
+      // Cron entries cannot be evicted while live — a duplicate-firing
+      // recurring schedule is a far worse failure mode than refusing to
+      // register a new key. Surface the cap as an explicit error so the
+      // agent can cancel an existing schedule before registering more.
+      if (cronCapReached(state, idempotency_key)) {
+        return {
+          ok: false,
+          error:
+            `proactive cron idempotency cap reached (${state.maxEntries} active keys). ` +
+            "Cancel an existing schedule via cancel_schedule before registering more, " +
+            "or omit idempotency_key to bypass the dedupe map.",
+        };
+      }
+
       const existing = state.idempotencyMap.get(idempotency_key);
       if (existing !== undefined) {
         try {
@@ -232,7 +257,7 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
             wakeMessage: message,
             timezone,
           };
-          setBoundedCron(state, idempotency_key, { kind: "settled", record: rec });
+          setCronEntry(state, idempotency_key, { kind: "settled", record: rec });
           return rec;
         });
       const trackedSubmission = submission.catch((err: unknown): never => {
@@ -240,7 +265,7 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
         throw err;
       });
 
-      setBoundedCron(state, idempotency_key, {
+      setCronEntry(state, idempotency_key, {
         kind: "pending",
         promise: trackedSubmission,
       });

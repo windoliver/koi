@@ -152,6 +152,43 @@ describe("schedule_cron tool", () => {
     expect(opts?.timezone).toBe("UTC");
   });
 
+  test("rejects new idempotency_key when cron cap is reached (no live-schedule eviction)", async () => {
+    const stub = createSchedulerStub();
+    const state = createCronToolState(2);
+    const tool = createScheduleCronTool({ scheduler: stub.component }, state);
+
+    await exec(tool, { expression: "0 9 * * *", idempotency_key: "a" });
+    await exec(tool, { expression: "0 9 * * *", idempotency_key: "b" });
+
+    const overflow = (await exec(tool, {
+      expression: "0 9 * * *",
+      idempotency_key: "c",
+    })) as { ok: boolean; error: string };
+
+    expect(overflow.ok).toBe(false);
+    expect(overflow.error).toContain("cap reached");
+    expect(stub.scheduleCalls).toHaveLength(2);
+    // Both prior keys must remain mapped — duplicates would let a retry
+    // register a second live recurring schedule.
+    expect(state.idempotencyMap.has("a")).toBe(true);
+    expect(state.idempotencyMap.has("b")).toBe(true);
+  });
+
+  test("at the cap, an existing key still dedupes (update, not new entry)", async () => {
+    const stub = createSchedulerStub();
+    const state = createCronToolState(1);
+    const tool = createScheduleCronTool({ scheduler: stub.component }, state);
+
+    await exec(tool, { expression: "0 9 * * *", idempotency_key: "a" });
+    const replay = (await exec(tool, {
+      expression: "0 9 * * *",
+      idempotency_key: "a",
+    })) as { ok: boolean; deduped?: boolean };
+
+    expect(replay.ok).toBe(true);
+    expect(replay.deduped).toBe(true);
+  });
+
   test("rejects idempotency_key containing ':' (Temporal stable-id delimiter)", async () => {
     const stub = createSchedulerStub();
     const state = createCronToolState();

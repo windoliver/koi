@@ -32,6 +32,13 @@ import type { ProactiveToolsConfig, ProactiveToolsProviderConfig } from "./types
 interface AgentStateSlot {
   readonly cron: CronToolState;
   readonly sleep: SleepToolState;
+  /**
+   * The SchedulerComponent instance this slot's task_id / schedule_id values
+   * came from. If a later attach observes a different scheduler instance for
+   * the same agent (in-memory scheduler restart, failover, test reassembly),
+   * the cached IDs no longer refer to anything live and must be discarded.
+   */
+  readonly scheduler: object;
 }
 
 export function createProactiveToolsProvider(
@@ -40,15 +47,22 @@ export function createProactiveToolsProvider(
   const priority = config.priority ?? COMPONENT_PRIORITY.BUNDLED;
   // State lives at provider scope, keyed by stable agent identity (pid).
   // This survives reattach within the same process so a retry with the
-  // same idempotency_key reuses the prior reservation.
+  // same idempotency_key reuses the prior reservation. The slot also
+  // remembers which scheduler instance owned the cached IDs so we can
+  // invalidate on scheduler replacement (non-durable scheduler restart,
+  // failover, test reassembly).
   const slots = new Map<string, AgentStateSlot>();
 
-  function getSlot(pid: string): AgentStateSlot {
+  function getSlot(pid: string, scheduler: object): AgentStateSlot {
     const existing = slots.get(pid);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined && existing.scheduler === scheduler) return existing;
+    // No slot, or scheduler instance changed — start fresh. Reusing stale
+    // entries against a different scheduler would silently dedupe to IDs
+    // the new scheduler does not know about.
     const fresh: AgentStateSlot = {
       cron: createCronToolState(),
       sleep: createSleepToolState(),
+      scheduler,
     };
     slots.set(pid, fresh);
     return fresh;
@@ -100,7 +114,7 @@ export function createProactiveToolsProvider(
       // the whole ProcessId would yield "[object Object]" and collapse every
       // agent into a single shared slot, leaking idempotency state across
       // agents and silently dropping wake-ups.
-      const slot = getSlot(String(agent.pid.id));
+      const slot = getSlot(String(agent.pid.id), scheduler as unknown as object);
       const tools = buildTools(toolConfig, slot);
       const entries: (readonly [string, Tool])[] = tools.map(
         (t) => [toolToken(t.descriptor.name) as string, t] as const,
