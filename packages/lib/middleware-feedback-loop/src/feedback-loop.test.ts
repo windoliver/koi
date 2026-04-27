@@ -685,6 +685,46 @@ describe("createFeedbackLoopMiddleware", () => {
       expect(next).toHaveBeenCalledTimes(1);
     });
 
+    it("F120: onSessionEnd accepts a rebuilt SessionContext and disposes the tracker", async () => {
+      // Reviewer F120: F118 widened wrap* admission to rebuilt
+      // SessionContexts via stable sessionId+runId tokens, but
+      // onSessionEnd still required the original JS object. Tracker
+      // would never dispose for hosts that proxy/rebuild contexts,
+      // leaking quarantine/health state across logical sessions.
+      const dispose = mock(async () => {});
+      const fakeTracker: ToolHealthTracker = {
+        recordSuccess: () => {},
+        recordFailure: () => {},
+        getSnapshot: () => undefined,
+        getL0Snapshot: () => undefined,
+        checkAndQuarantine: async () => false,
+        checkAndDemote: async () => false,
+        isQuarantined: async () => false,
+        dispose,
+      };
+      const spy = spyOn(toolHealthModule, "createToolHealthTracker").mockReturnValue(fakeTracker);
+      try {
+        const mw = createFeedbackLoopMiddleware({ forgeHealth: makeMinimalForgeHealth() });
+        const original = mockSessionCtx();
+        await mw.onSessionStart?.(original);
+        // Tear down via a REBUILT SessionContext with the same token.
+        const rebuilt: SessionContext = { ...original };
+        await mw.onSessionEnd?.(rebuilt);
+        // Tracker disposed exactly once via the rebuilt-context path.
+        expect(dispose).toHaveBeenCalledTimes(1);
+        // Subsequent traffic on the original object now fails the
+        // strict admission gate (token revoked) — proves the original
+        // token was actually removed, not just shadowed.
+        const next = mock(async (_req: ToolRequest) => mockToolResponse());
+        await expect(
+          mw.wrapToolCall?.(mockTurnCtx(original), mockToolRequest(), next),
+        ).rejects.toMatchObject({ code: "VALIDATION" });
+        expect(next).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it("F118: a rebuilt SessionContext with the same sessionId+runId is admitted", async () => {
       // Reviewer F118: F111 keyed admission on exact JS-object
       // identity, hard-failing every tool call for hosts that proxy

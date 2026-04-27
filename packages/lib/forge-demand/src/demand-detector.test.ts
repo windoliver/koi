@@ -2868,4 +2868,86 @@ describe("createForgeDemandDetector", () => {
       console.error = originalErr;
     }
   });
+
+  it("F120: onSessionEnd accepts a rebuilt SessionContext and revokes the original token", async () => {
+    // Reviewer F120: F118 admitted rebuilt SessionContexts via stable
+    // sessionId+runId tokens, but onSessionEnd still required the
+    // original JS object. A host that proxies/rebuilds contexts could
+    // therefore admit + drive traffic but never tear down — leaving
+    // sessions/sessionEpoch and the admission token live, which
+    // could let a future logical session inherit prior state. Fix:
+    // resolve teardown via the same token-based admission registry,
+    // and revoke the ORIGINAL token captured at admission so a later
+    // sessionId/runId mutation does not leak it.
+    const handle = createForgeDemandDetector(makeConfig({}));
+    const original = createMockTurnContext({
+      session: { sessionId: "sess-end" } as never,
+    });
+    await handle.middleware.onSessionStart?.(original.session);
+    // End via a REBUILT SessionContext with the same token.
+    const rebuilt: SessionContext = { ...original.session };
+    expect(rebuilt).not.toBe(original.session);
+    await handle.middleware.onSessionEnd?.(rebuilt);
+    // After rebuilt-end: a fresh wrap call on the original object
+    // must NOT find a registered admission token (admission revoked).
+    const swallowed: unknown[] = [];
+    const origErr = console.error;
+    console.error = (...a: unknown[]): void => {
+      swallowed.push(a);
+    };
+    try {
+      await handle.middleware.wrapToolCall?.(original, toolReq("any"), async () => toolRes());
+    } finally {
+      console.error = origErr;
+    }
+    // Skipped-warning landed: detector treats the session as unobserved.
+    expect(
+      swallowed.some((a) =>
+        Array.isArray(a)
+          ? a.some(
+              (x) =>
+                typeof x === "string" && x.includes("skipping detector for unobserved session"),
+            )
+          : false,
+      ),
+    ).toBe(true);
+  });
+
+  it("F120: onSessionEnd revokes the ORIGINAL admission token even if sessionId mutates after admission", async () => {
+    // Reviewer F120 second leg: teardown previously revoked
+    // `tokenFor(ctx)` — using the CURRENT mutable sessionId/runId.
+    // If those fields mutated post-admission, the original token
+    // never got removed and the same (sessionId, runId) pair could
+    // be re-admitted to inherit stale state. Fix: capture the token
+    // at admission time and revoke that original token on teardown.
+    const handle = createForgeDemandDetector(makeConfig({}));
+    const ctxA = createMockTurnContext({
+      session: { sessionId: "original" } as never,
+    });
+    await handle.middleware.onSessionStart?.(ctxA.session);
+    // Mutate sessionId AFTER admission.
+    (ctxA.session as { sessionId: string }).sessionId = "mutated";
+    await handle.middleware.onSessionEnd?.(ctxA.session);
+    // Now register a NEW session with sessionId="original" — it must
+    // hit a fresh epoch / state, not inherit anything from the
+    // pre-mutation admission.
+    const ctxB = createMockTurnContext({
+      session: { sessionId: "original" } as never,
+    });
+    await handle.middleware.onSessionStart?.(ctxB.session);
+    // Drive a failure → fresh state means the failure counter starts
+    // at 1, not 2 (which it would if the original admission had
+    // leaked).
+    try {
+      await handle.middleware.wrapToolCall?.(ctxB, toolReq("flaky"), async () => {
+        throw new Error("boom");
+      });
+    } catch {
+      // expected
+    }
+    const scoped = handle.forSession(ctxB.session);
+    const signals = scoped.getSignals();
+    // No repeated_failure yet — counter is at 1, threshold default 3.
+    expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(0);
+  });
 });

@@ -211,6 +211,15 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
   // the security boundary for `healthHandle.getSnapshot` (F99).
   const admittedTokens = new Set<string>();
   const tokenFor = (s: SessionContext): string => `${s.sessionId}|${s.runId}`;
+  // Map ctx → original token at admission time so teardown can revoke
+  // the SAME token even if `ctx.session.sessionId`/`runId` is mutated
+  // after admission (would otherwise leak the original token). F120.
+  const originalTokenByCtx = new WeakMap<SessionContext, string>();
+  // Map admission token → bound sessionId so onSessionEnd can resolve
+  // tracker cleanup from a rebuilt SessionContext (different JS
+  // object, same admission token). Without this, teardown on a
+  // rebuilt context would no-op and leak tracker state. F120.
+  const sidByToken = new Map<string, string>();
 
   const healthHandle: FeedbackLoopHealthHandle | undefined =
     config.forgeHealth !== undefined
@@ -242,17 +251,43 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
       // mutates that field after start cannot redirect tracker writes
       // into another session's bucket. F100 regression.
       observedSessions.set(ctx, ctx.sessionId);
-      admittedTokens.add(tokenFor(ctx));
+      const token = tokenFor(ctx);
+      // Capture the token AT admission time so teardown revokes the
+      // same one even if sessionId/runId mutate later. F120.
+      if (!originalTokenByCtx.has(ctx)) {
+        originalTokenByCtx.set(ctx, token);
+      }
+      admittedTokens.add(token);
+      sidByToken.set(token, ctx.sessionId);
       if (config.forgeHealth !== undefined) {
         trackers.set(ctx.sessionId, createToolHealthTracker(config.forgeHealth));
       }
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
-      // Resolve teardown via the bound id ONLY. A fabricated context
-      // (or one whose sessionId was mutated post-start) cannot dispose
-      // another tenant's tracker. F100 regression.
-      const sid = observedSessions.get(ctx);
+      // Resolve teardown via the SAME admission token that admission
+      // used. Three sources, in priority order:
+      //   1. Token captured at admission time on THIS exact
+      //      SessionContext object (F120) — survives later mutation.
+      //   2. `tokenFor(ctx)` if it is still in admittedTokens —
+      //      handles a rebuilt SessionContext object.
+      //   3. Legacy WeakMap binding (F100) for older callers.
+      // A fabricated context (or one whose sessionId was mutated
+      // post-start) cannot dispose another tenant's tracker because
+      // (1) wins for legitimately-admitted contexts and (2)/(3)
+      // require the attacker to know the engine-issued runId.
+      const originalToken = originalTokenByCtx.get(ctx);
+      let resolvedToken: string | undefined;
+      if (originalToken !== undefined && admittedTokens.has(originalToken)) {
+        resolvedToken = originalToken;
+      } else {
+        const currentToken = tokenFor(ctx);
+        if (admittedTokens.has(currentToken)) {
+          resolvedToken = currentToken;
+        }
+      }
+      const sid =
+        resolvedToken !== undefined ? sidByToken.get(resolvedToken) : observedSessions.get(ctx);
       if (sid === undefined) return;
       const tracker = trackers.get(sid);
       if (tracker !== undefined) {
@@ -260,7 +295,11 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
         await tracker.dispose();
       }
       observedSessions.delete(ctx);
-      admittedTokens.delete(tokenFor(ctx));
+      originalTokenByCtx.delete(ctx);
+      if (resolvedToken !== undefined) {
+        admittedTokens.delete(resolvedToken);
+        sidByToken.delete(resolvedToken);
+      }
     },
 
     async wrapModelCall(
@@ -366,11 +405,14 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
       // Scope: only when `forgeHealth` is configured does this admit
       // gate matter — `toolValidators` and `toolGates` are stateless
       // per-request and run on any context. F116.
-      // Object-identity admission wins first (F100 — survives a later
-      // mutation of ctx.session.sessionId), token-admission is the
-      // fallback for proxied/rebuilt contexts (F118).
-      const objectAdmitted = observedSessions.has(ctx.session);
-      const tokenAdmitted = objectAdmitted || admittedTokens.has(tokenFor(ctx.session));
+      // Trust is sourced from `admittedTokens` only, so onSessionEnd
+      // actually revokes access (F120). Use the ORIGINAL token (set
+      // at admission time) for sessions admitted via this exact JS
+      // object — that survives later mutation of sessionId/runId
+      // (F100). Otherwise fall back to the current token to admit a
+      // proxied / rebuilt SessionContext (F118).
+      const admissionToken = originalTokenByCtx.get(ctx.session) ?? tokenFor(ctx.session);
+      const tokenAdmitted = admittedTokens.has(admissionToken);
       if (config.forgeHealth !== undefined && !tokenAdmitted) {
         throw KoiRuntimeError.from(
           "VALIDATION",
@@ -379,14 +421,10 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
             "`forgeHealth` is configured (per-session tracker state requires admission).",
         );
       }
-      // Resolve sid: object-identity admission gives the original
-      // bound id (mutation-proof); token admission falls through to
-      // the current sessionId (rebuilt-context case).
-      const sid = objectAdmitted
-        ? observedSessions.get(ctx.session)
-        : tokenAdmitted
-          ? ctx.session.sessionId
-          : undefined;
+      // Resolve sid via the admitted token (mutation-proof). Empty
+      // when the gate above already let traffic through unobserved
+      // (no-forgeHealth path).
+      const sid = tokenAdmitted ? sidByToken.get(admissionToken) : undefined;
       // Bind by object identity now (idempotent) so the read-side
       // healthHandle path (F99) still resolves for this exact context.
       if (tokenAdmitted && !observedSessions.has(ctx.session)) {

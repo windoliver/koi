@@ -334,6 +334,21 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
    */
   const admittedTokens = new Set<string>();
   const tokenFor = (s: SessionContext): string => `${s.sessionId}|${s.runId}`;
+  /**
+   * Map a SessionContext object to the token under which it was
+   * originally admitted, so teardown revokes the SAME token even if a
+   * caller mutates `ctx.session.sessionId`/`runId` after admission
+   * (which would change `tokenFor(ctx)` and leak the original token).
+   * F120.
+   */
+  const originalTokenByCtx = new WeakMap<SessionContext, string>();
+  /**
+   * Map admission token → originally-bound sessionId so onSessionEnd
+   * can resolve cleanup from a rebuilt SessionContext (different JS
+   * object, same token). Without this, teardown on a proxied/rebuilt
+   * context would no-op and leave `sessions`/`sessionEpoch` live. F120.
+   */
+  const sidByToken = new Map<string, SessionId>();
 
   /**
    * Resolve the bound sessionId for an already-observed SessionContext.
@@ -370,8 +385,15 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       observedSessions.set(session, session.sessionId);
     }
     // Stable admission token for wrap* hooks — see admittedTokens
-    // comment. F118.
-    admittedTokens.add(tokenFor(session));
+    // comment. F118. Capture the token AT ADMISSION TIME so teardown
+    // can revoke the same token regardless of later sessionId/runId
+    // mutation (F120).
+    const token = tokenFor(session);
+    if (!originalTokenByCtx.has(session)) {
+      originalTokenByCtx.set(session, token);
+    }
+    admittedTokens.add(token);
+    sidByToken.set(token, session.sessionId);
     if (config.onSessionAttached === undefined) return;
     if (attachedDelivered.has(session)) return;
     // Capture sessionId at issuance and close over it. Resolving via
@@ -1062,7 +1084,8 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // mutation of ctx.session.sessionId (F89/F90). Token admission
       // is the fallback for hosts that proxy/rebuild SessionContext
       // between calls (F118).
-      if (!observedSessions.has(ctx.session) && !admittedTokens.has(tokenFor(ctx.session))) {
+      const admissionToken = originalTokenByCtx.get(ctx.session) ?? tokenFor(ctx.session);
+      if (!admittedTokens.has(admissionToken)) {
         if (!skippedWarned.has(ctx.session)) {
           skippedWarned.add(ctx.session);
           console.error(
@@ -1179,7 +1202,8 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // mutation of ctx.session.sessionId (F89/F90). Token admission
       // is the fallback for hosts that proxy/rebuild SessionContext
       // between calls (F118).
-      if (!observedSessions.has(ctx.session) && !admittedTokens.has(tokenFor(ctx.session))) {
+      const admissionToken = originalTokenByCtx.get(ctx.session) ?? tokenFor(ctx.session);
+      if (!admittedTokens.has(admissionToken)) {
         if (!skippedWarned.has(ctx.session)) {
           skippedWarned.add(ctx.session);
           console.error(
@@ -1223,7 +1247,8 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // mutation of ctx.session.sessionId (F89/F90). Token admission
       // is the fallback for hosts that proxy/rebuild SessionContext
       // between calls (F118).
-      if (!observedSessions.has(ctx.session) && !admittedTokens.has(tokenFor(ctx.session))) {
+      const admissionToken = originalTokenByCtx.get(ctx.session) ?? tokenFor(ctx.session);
+      if (!admittedTokens.has(admissionToken)) {
         if (!skippedWarned.has(ctx.session)) {
           skippedWarned.add(ctx.session);
           console.error(
@@ -1273,16 +1298,31 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
-      // Resolve teardown via the bound id ONLY — never trust a raw
-      // `ctx.sessionId` for an unobserved context. A caller in
-      // possession of the middleware object could otherwise invoke
-      // `onSessionEnd({ sessionId: victim, ... })` with a fabricated
-      // SessionContext and revoke another tenant's scoped handles /
-      // drop their pending signals + cooldowns, bypassing the
-      // object-identity protections on forSession. F97 regression.
-      // F90: also guards against a previously-observed ctx whose
-      // sessionId was mutated post-binding.
-      const sid = observedSessions.get(ctx);
+      // Resolve teardown via the SAME admission token that admission
+      // used. Three sources, in priority order:
+      //   1. The token captured at admission time on THIS exact
+      //      SessionContext object (F120) — survives later mutation
+      //      of `ctx.session.sessionId`/`runId`.
+      //   2. The current `tokenFor(ctx)` if the admission set still
+      //      contains it — covers a rebuilt SessionContext object
+      //      whose sessionId+runId match a live admission (F120).
+      //   3. Fallback to the legacy WeakMap binding (F97) if neither
+      //      token resolution path matches.
+      // Without (1), a caller in possession of the middleware could
+      // forge `{ sessionId: victim, ... }` and revoke another tenant's
+      // state. F97 regression.
+      const originalToken = originalTokenByCtx.get(ctx);
+      let resolvedToken: string | undefined;
+      if (originalToken !== undefined && admittedTokens.has(originalToken)) {
+        resolvedToken = originalToken;
+      } else {
+        const currentToken = tokenFor(ctx);
+        if (admittedTokens.has(currentToken)) {
+          resolvedToken = currentToken;
+        }
+      }
+      const sid =
+        resolvedToken !== undefined ? sidByToken.get(resolvedToken) : observedSessions.get(ctx);
       if (sid === undefined) return;
       sessions.delete(sid);
       // Drop the session epoch — every previously issued scoped
@@ -1299,10 +1339,15 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       observedSessions.delete(ctx);
       attachedDelivered.delete(ctx);
       deliveryInFlight.delete(ctx);
-      // Drop the stable admission token so the same sessionId+runId
-      // pair cannot be reused after teardown to slip back into the
-      // detector. F118.
-      admittedTokens.delete(tokenFor(ctx));
+      originalTokenByCtx.delete(ctx);
+      // Drop the stable admission token under the SAME key admission
+      // used (F120). Using `tokenFor(ctx)` here would leak the
+      // original token if `ctx.session.sessionId` was mutated after
+      // admission.
+      if (resolvedToken !== undefined) {
+        admittedTokens.delete(resolvedToken);
+        sidByToken.delete(resolvedToken);
+      }
     },
 
     // The detector is a passive observer: we MUST NOT inject
