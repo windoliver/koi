@@ -748,8 +748,14 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
             // the commit-point — once seen, the model output is committed
             // regardless of how the consumer drains the iterator.
             const text = extractResponseText(chunk.response) || buffer;
-            if (text.length > 0) checkCapabilityGaps(state, text, fp);
+            // Match wrapModelCall ordering: commit corrections first,
+            // then capability gaps. Different orderings here would let
+            // the same conversation drop a different signal under
+            // tight maxForgesPerSession / cooldown budgets depending
+            // only on whether the provider used streaming. F71
+            // regression.
             commitCorrections(state, pending);
+            if (text.length > 0) checkCapabilityGaps(state, text, fp);
           }
           yield chunk;
         }

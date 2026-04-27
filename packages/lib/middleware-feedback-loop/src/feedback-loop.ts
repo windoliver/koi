@@ -36,9 +36,17 @@ export interface FeedbackLoopHealthHandle {
   readonly getSnapshot: (sessionId: string, toolId: string) => L0ToolHealthSnapshot | undefined;
 }
 
-/** Middleware return type extended with a per-session health-snapshot handle. */
+/**
+ * Middleware return type extended with an optional per-session
+ * health-snapshot handle. The handle is present only when
+ * `config.forgeHealth` was supplied — without that, the tracker map is
+ * never populated and `getSnapshot` would always return `undefined`,
+ * which would silently dormant `performance_degradation` in any
+ * cross-package consumer that auto-wires by handle presence (F70).
+ * Absent vs present is the liveness signal.
+ */
 export type FeedbackLoopMiddleware = KoiMiddleware & {
-  readonly healthHandle: FeedbackLoopHealthHandle;
+  readonly healthHandle?: FeedbackLoopHealthHandle | undefined;
 };
 
 const VALIDATION_DEFAULT_MAX_ATTEMPTS = 3;
@@ -134,14 +142,21 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
   // Per-session tracker map: keyed by sessionId to isolate concurrent sessions
   const trackers = new Map<string, ToolHealthTracker>();
 
-  const healthHandle: FeedbackLoopHealthHandle = {
-    getSnapshot: (sessionId: string, toolId: string): L0ToolHealthSnapshot | undefined =>
-      trackers.get(sessionId)?.getL0Snapshot(toolId),
-  };
+  // Only attach healthHandle when forgeHealth is configured. Without
+  // forgeHealth, no per-session trackers are ever created, so any
+  // handle here would always return undefined and silently dormant
+  // performance_degradation in auto-wiring callers (F70).
+  const healthHandle: FeedbackLoopHealthHandle | undefined =
+    config.forgeHealth !== undefined
+      ? {
+          getSnapshot: (sessionId: string, toolId: string): L0ToolHealthSnapshot | undefined =>
+            trackers.get(sessionId)?.getL0Snapshot(toolId),
+        }
+      : undefined;
 
   return {
     name: "feedback-loop",
-    healthHandle,
+    ...(healthHandle !== undefined ? { healthHandle } : {}),
     priority: 450,
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {

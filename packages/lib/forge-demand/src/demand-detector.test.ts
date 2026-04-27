@@ -1345,6 +1345,58 @@ describe("createForgeDemandDetector", () => {
     expect(() => handle.forSession(forged)).toThrow(/observed by the detector/);
   });
 
+  it("emits identical signal sets via wrapModelCall and wrapModelStream under tight budgets", async () => {
+    // Regression for F71 (round 9) — the two paths previously committed
+    // user_correction and capability_gap in opposite orders. With
+    // maxForgesPerSession: 1 and a single demand-threshold pass, the
+    // same conversation could retain a DIFFERENT signal depending only
+    // on whether the provider used streaming.
+    function makeDetector(): ForgeDemandConfig & { signals: ForgeDemandSignal[] } {
+      const signals: ForgeDemandSignal[] = [];
+      return {
+        budget: {
+          maxForgesPerSession: 1,
+          computeTimeBudgetMs: 120_000,
+          demandThreshold: 0.5,
+          cooldownMs: 0,
+        },
+        heuristics: { capabilityGapOccurrences: 1, repeatedFailureCount: 99 },
+        onDemand: (s) => signals.push(s),
+        signals,
+      };
+    }
+    const correction = userMsg("no, that's not right");
+    // Set up state: one prior tool call (so user_correction can attribute).
+    async function runNonStream(): Promise<readonly string[]> {
+      const cfg = makeDetector();
+      const handle = createForgeDemandDetector(cfg);
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), async () => toolRes());
+      await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), async () =>
+        modelRes("I don't have a tool for that"),
+      );
+      return cfg.signals.map((s) => s.trigger.kind);
+    }
+    async function runStream(): Promise<readonly string[]> {
+      const cfg = makeDetector();
+      const handle = createForgeDemandDetector(cfg);
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), async () => toolRes());
+      const stream = handle.middleware.wrapModelStream;
+      if (stream === undefined) throw new Error("wrapModelStream missing");
+      for await (const _ of stream(ctx, modelReq([correction]), async function* () {
+        yield {
+          kind: "done",
+          response: modelRes("I don't have a tool for that"),
+        } as ModelChunk;
+      })) {
+        // drain
+      }
+      return cfg.signals.map((s) => s.trigger.kind);
+    }
+    const a = await runNonStream();
+    const b = await runStream();
+    expect(b).toEqual(a);
+  });
+
   it("createDefaultForgeDemandConfig preserves onSessionAttached through to the detector", async () => {
     // Regression for F69 (round 8) — the default-config factory dropped
     // onSessionAttached, so any caller using the documented

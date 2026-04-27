@@ -13976,12 +13976,29 @@ describe("Golden: @koi/forge-demand", () => {
     // feedback-loop's `healthHandle` (which returns L0-shaped snapshots)
     // when both configs are present and no explicit handle was given.
     const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
-    const fl = createFeedbackLoopMiddleware({});
-    expect(typeof fl.healthHandle).toBe("object");
-    expect(typeof fl.healthHandle.getSnapshot).toBe("function");
-    // Unknown session/tool returns undefined rather than throwing —
-    // forge-demand's detector treats undefined as "no degradation signal".
-    expect(fl.healthHandle.getSnapshot("missing-session", "missing-tool")).toBeUndefined();
+    // Without forgeHealth, the tracker map is never populated — so the
+    // middleware intentionally omits healthHandle. Absent-vs-present is
+    // the liveness signal auto-wiring depends on (F70).
+    const flNoHealth = createFeedbackLoopMiddleware({});
+    expect(flNoHealth.healthHandle).toBeUndefined();
+    // With forgeHealth configured, the typed handle is exposed.
+    const flWithHealth = createFeedbackLoopMiddleware({
+      forgeHealth: {
+        quarantineThreshold: 0.5,
+        windowSize: 10,
+        forgeStore: {
+          load: async () => ({ ok: false, error: { code: "NOT_FOUND" } }) as never,
+          save: async () => ({ ok: true, value: undefined }) as never,
+        } as never,
+        snapshotChainStore: {} as never,
+        resolveBrickId: () => undefined,
+      },
+    });
+    expect(typeof flWithHealth.healthHandle).toBe("object");
+    expect(typeof flWithHealth.healthHandle?.getSnapshot).toBe("function");
+    expect(
+      flWithHealth.healthHandle?.getSnapshot("missing-session", "missing-tool"),
+    ).toBeUndefined();
   });
 
   test("RuntimeHandle.forgeDemand exposes only the middleware (no sessionId-keyed lookup)", async () => {
