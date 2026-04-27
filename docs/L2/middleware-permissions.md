@@ -1020,6 +1020,10 @@ if (decision.effect === "ask") {
 
 **Coverage:** persistent always-allow, session always-allow, cache hit, coalesced inflight allow, fresh approval (allow/modify/always-allow), and all deny paths.
 
+### Dispatch durability + concurrency (#1992)
+
+`dispatchPermissionDecision` is invoked fire-and-forget on the hot path so a slow audit hook never blocks tool execution; durability is provided by the post-execution flush already required by the audit middleware. To prevent a wedged hook from leaking work indefinitely, every dispatch is wrapped in a **30 s timeout** that is cleared and `unref`'d as soon as the hook settles (no event-loop pinning, no spurious timeout after success). Multiple registered `onPermissionDecision` hooks now run **concurrently** (`Promise.allSettled`) instead of serially, so a single slow observer cannot delay siblings — each still has its own 30 s deadline. Filter-time (`filter-tools.ts`) and deny-path dispatches use the same primitive.
+
 ---
 
 ## UI-only `callId` channel (#1759)

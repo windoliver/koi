@@ -120,12 +120,10 @@ async function readArchiveEntries(archiveDir: string): Promise<readonly AuditEnt
 
   // Only ingest .ndjson files — stray .DS_Store, editor temps, or partial copies
   // must not cause a corruption error that takes the entire audit trail offline.
-  // Sort by content-derived first-entry timestamp (primary) so ordering is correct
-  // across format versions and rollbacks. Sequence number (secondary) breaks ties
-  // within a single process run; filename (tertiary) is the last resort.
-  // Reading timestamps for every archive is slightly slower than relying on the
-  // seq prefix alone, but correctness under mixed-version directories requires it:
-  // seq numbers restart on each process and are not comparable across rollbacks.
+  // Sort by monotonic sequence number (primary) for files with the seq-uuid.ndjson
+  // format — this preserves write order regardless of clock skew or NTP corrections.
+  // Content timestamp is used as secondary only for legacy archives without a seq
+  // prefix (seq === 0). Filename is the final tiebreaker.
   const ndjsonFiles = files.filter((f) => f.endsWith(".ndjson"));
 
   type WithKey = {
@@ -136,13 +134,15 @@ async function readArchiveEntries(archiveDir: string): Promise<readonly AuditEnt
   const withKeys = await Promise.all(
     ndjsonFiles.map(async (name): Promise<WithKey> => {
       const seq = parseArchiveSeq(name);
-      const ts = await readFirstEntryTimestamp(join(archiveDir, name));
-      return { name, seq, ts: ts ?? 0 };
+      // Read timestamp only for legacy archives (seq === 0) where the seq prefix
+      // is unavailable for establishing write order.
+      const ts = seq === 0 ? ((await readFirstEntryTimestamp(join(archiveDir, name))) ?? 0) : 0;
+      return { name, seq, ts };
     }),
   );
   withKeys.sort((a, b) => {
-    if (a.ts !== b.ts) return a.ts - b.ts;
     if (a.seq !== b.seq) return a.seq - b.seq;
+    if (a.ts !== b.ts) return a.ts - b.ts;
     return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
   });
 
