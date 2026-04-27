@@ -167,13 +167,16 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       //     here would make multimodal turns silently lose nearly all
       //     tools (#review-round31-F1). Pass through unchanged — the
       //     model gets the full advertised set as if filtering were
-      //     skipped.
+      //     skipped. ONLY applies when using the bundled extractor:
+      //     a custom extractQuery returning "" is an explicit deny
+      //     signal from the caller and must fail closed
+      //     (#review-round33-F2).
       // (b) No recognized user message at all (untrusted provenance:
       //     unrecognized sender shape, assistant-only transcript). Under
       //     enforceFiltering, fail closed to alwaysInclude so a forged
       //     transcript can't authorize the full tool set
       //     (#review-round23-F2).
-      if (detectUserMessage(request.messages)) {
+      if (configExtractQuery === undefined && detectUserMessage(request.messages)) {
         // Bind to the full advertised set under enforceFiltering so
         // tool_call_start callIds get an explicit snapshot (otherwise
         // wrapToolCall's "callId present but unbound" path would reject

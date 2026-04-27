@@ -241,6 +241,15 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   // save because other sessions were still active. The tail (last session
   // to end while sessionStates is empty) drains it (#review-round17-F1).
   let pendingPersist = false;
+  // let: set when persistWithRetry threw — a transient store outage may
+  // strand committed in-memory counters indefinitely if subsequent clean
+  // sessions skip the save path. Forces every onSessionEnd to retry the
+  // write until it succeeds (#review-round33-F1).
+  let pendingFailedPersist = false;
+  // let: snapshot from the most recent SUCCESSFUL persistWithRetry. Used
+  // by generateReport so on-demand callers cannot page or auto-disable
+  // on uncommitted in-memory state (#review-round33-F3).
+  let lastCommittedSnapshot: ToolAuditSnapshot = EMPTY_SNAPSHOT;
 
   function getOrCreateRecord(toolName: string): MutableToolRecord {
     const existing = tools.get(toolName);
@@ -402,8 +411,11 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     sessionStates.delete(ctx.sessionId);
 
     // Skip when this session contributed nothing AND no earlier
-    // concurrent session left a deferred signal flush for us to drain.
-    if (!state.dirty && !pendingPersist) return;
+    // concurrent session left a deferred signal flush for us to drain
+    // AND no prior persist failed (#review-round33-F1: a stranded
+    // failed-save would otherwise wait indefinitely for the next dirty
+    // session).
+    if (!state.dirty && !pendingPersist && !pendingFailedPersist) return;
 
     // Defer persistence AND signal emission until hydration succeeds.
     // Without this guard, a transient store outage produced false
@@ -437,7 +449,12 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     savePromise = previous.then(async () => {
       try {
         committedSnapshot = await persistWithRetry();
+        lastCommittedSnapshot = committedSnapshot;
+        pendingFailedPersist = false;
       } catch (e: unknown) {
+        // Persist failed → keep the flag so the next session retries
+        // even if it is otherwise clean (#review-round33-F1).
+        pendingFailedPersist = true;
         onError?.(e);
       }
     });
@@ -624,12 +641,14 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     // (#review-round24-F1, #review-round17-F1, #review-round18-F2). The
     // on-demand generateReport path must respect the same guards or
     // callers can page / auto-disable on bogus signals during overlap or
-    // pre-hydration windows (#review-round28-F2). Returns [] when not
-    // safe to compute; callers wanting raw live stats should use
-    // getSnapshot.
+    // pre-hydration windows (#review-round28-F2). Always derived from
+    // lastCommittedSnapshot (the most recent SUCCESSFUL persist) so a
+    // pending or failed save cannot surface signals from state that
+    // never reached disk (#review-round33-F3). Returns [] when not safe
+    // to compute; callers wanting raw live stats should use getSnapshot.
     generateReport: (): readonly ToolAuditResult[] => {
-      if (!hydrated || sessionStates.size > 0) return [];
-      return computeLifecycleSignals(buildSnapshot(tools, totalSessions, clock), validConfig);
+      if (!hydrated || sessionStates.size > 0 || pendingFailedPersist) return [];
+      return computeLifecycleSignals(lastCommittedSnapshot, validConfig);
     },
     getSnapshot: (): ToolAuditSnapshot => buildLiveSnapshot(),
   };

@@ -359,6 +359,48 @@ describe("createToolAuditMiddleware", () => {
       expect(saves.length).toBe(1);
     });
 
+    test("retries a failed persist on the next session end even when otherwise clean — round 33 F1", async () => {
+      // A transient store outage at session-end could strand committed
+      // counters in memory: pendingPersist was cleared, the dirty flag
+      // resets per session, and the early-return prevented retries on
+      // subsequent clean sessions. Now pendingFailedPersist forces every
+      // session end to retry until the write succeeds.
+      let failNext = true;
+      const saves: ToolAuditSnapshot[] = [];
+      // let: stateful disk so the second save's load reflects accumulated state
+      let stored: ToolAuditSnapshot = { tools: {}, totalSessions: 0, lastUpdatedAt: 0 };
+      const store: ToolAuditStore = {
+        load: () => stored,
+        save: (s) => {
+          if (failNext) {
+            failNext = false;
+            throw new Error("transient");
+          }
+          saves.push(s);
+          stored = s;
+        },
+      };
+      const onError = mock((_e: unknown) => {});
+      const mw = createToolAuditMiddleware(defaultConfig({ store, onError }));
+      const wrap = getWrapToolCall(mw);
+
+      // Session A: tool call, then save fails.
+      await mw.onSessionStart?.(sessionCtx({ sessionId: "A" }));
+      await wrap(turnCtx(sessionCtx({ sessionId: "A" })), toolReq("search"), async () => ({
+        output: "ok",
+      }));
+      await mw.onSessionEnd?.(sessionCtx({ sessionId: "A" }));
+      expect(saves.length).toBe(0);
+      expect(onError).toHaveBeenCalledTimes(1);
+
+      // Session B: clean (no model or tool work). Must still retry the
+      // failed write — round-33 contract.
+      await mw.onSessionStart?.(sessionCtx({ sessionId: "B" }));
+      await mw.onSessionEnd?.(sessionCtx({ sessionId: "B" }));
+      expect(saves.length).toBe(1);
+      expect(saves[0]?.tools.search?.callCount).toBe(1);
+    });
+
     test("overlapping session ends with CAS rebase do not roll back rival increments — round 30 F1", async () => {
       // Round-29 built the snapshot at queue time, so a save earlier in
       // the chain that ran adoptNewBaseline could leave a later queued

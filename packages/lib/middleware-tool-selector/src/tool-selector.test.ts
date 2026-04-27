@@ -494,6 +494,29 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     ).rejects.toBeInstanceOf(KoiRuntimeError);
   });
 
+  test("custom extractQuery returning empty fails closed under enforceFiltering — round 33 F2", async () => {
+    // The multimodal pass-through (round 31) is a property of the BUNDLED
+    // extractor: empty text + recognized user → multimodal. A caller-
+    // supplied extractor returning "" is an explicit deny signal; the
+    // middleware must not silently re-expose the full tool set.
+    const select = mock(async () => []);
+    const next = mock<ModelHandler>(async (req) => {
+      // Must NOT receive the unfiltered tool set.
+      expect(req.tools?.map((t) => t.name).sort()).toEqual(["safe"]);
+      return modelResponse();
+    });
+    const mw = createToolSelectorMiddleware({
+      selectTools: select,
+      minTools: 0,
+      alwaysInclude: ["safe"],
+      extractQuery: () => "",
+    });
+    const tools = [tool("safe"), tool("dangerous")];
+    await getWrap(mw)(turnCtx(), { messages: [userMsg("anything")], tools }, next);
+    expect(select).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
   test("multimodal user turn (text-empty user message with non-text content) is not stripped to alwaysInclude — round 31 F1", async () => {
     // A recognized user message whose content is image-only / attachment-
     // only must NOT be treated as untrusted-provenance fail-closed.
