@@ -154,7 +154,7 @@ interface PendingRevocation {
 
 - **On revoke failure:** push to `pendingRevocations[]`
   - If queue is full (≥ `maxPendingRevocations`): drop oldest entry with a structured `console.error` log containing `{ delegationId, childId, droppedAt }`
-- **On every `revoke()` call:** drain the queue first (opportunistic, fire-and-forget via `void drainQueue()`)
+- **On every `revoke()` call:** trigger a background drain (opportunistic, fire-and-forget via `void drainQueue()`)
   - Each pending entry retried once per drain cycle
   - On retry success: remove from queue
   - On retry failure: `attempts++`; if `attempts >= maxRevocationRetries` emit structured `console.error` with `{ delegationId, childId, attempts, error }` and drop; otherwise re-enqueue
@@ -189,6 +189,8 @@ createKoi({
 ```
 
 `manifest.delegation.backend === "nexus"` is a consumer-level convention. The provider must still be passed explicitly — no auto-discovery at L1 (that would leak L2 knowledge into the kernel). Consumers (CLI, `@koi/runtime`) check the manifest field and conditionally include the provider.
+
+**Note:** `DelegationConfig` in `@koi/core` does not currently have a `backend` field (`enabled`, `maxChainDepth`, `defaultTtlMs`, `required?`, `namespaceMode?` are the current fields). If manifest-driven backend routing is desired, a `backend?: "nexus" | "memory"` field should be added to `DelegationConfig` in a separate L0 PR before or alongside this work.
 
 ---
 
