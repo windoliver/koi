@@ -1139,7 +1139,8 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
         throw new Error("audit sink poisoned — refusing model stream", { cause: poisonError });
       }
       const inner = mw.wrapModelStream ? mw.wrapModelStream(ctx, request, next) : next(request);
-      // Capture stream error so flush always runs on both success and failure paths.
+      // Capture stream error so flush always runs on both success and failure paths,
+      // including early-cancel (generator .return()) from the consumer breaking out.
       let streamError: unknown;
       let streamThrew = false;
       try {
@@ -1154,13 +1155,15 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       } catch (e: unknown) {
         streamError = e;
         streamThrew = true;
+      } finally {
+        // finally runs on normal completion AND early-cancel — no throw here (noUnsafeFinally).
+        await mw.flush().catch((flushErr: unknown) => {
+          if (poisonError === undefined) {
+            poisonError = flushErr;
+          }
+        });
       }
-      // Force-flush on all paths — audit records a model_stream entry even on failure.
-      await mw.flush().catch((flushErr: unknown) => {
-        if (poisonError === undefined) {
-          poisonError = flushErr;
-        }
-      });
+      // Reached only on normal completion (not early-cancel).
       if (poisonError !== undefined) {
         throw new Error("audit sink write failed after stream — turn aborted", {
           cause: poisonError,

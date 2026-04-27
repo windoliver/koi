@@ -104,6 +104,8 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
 
   // Mutable buffer — never exposed
   const buffer: AuditEntry[] = [];
+  // let: set once on first background prune failure; gates subsequent log/flush.
+  let pruneError: unknown;
 
   function pruneOldEntries(): void {
     if (!config.retention) return;
@@ -270,14 +272,15 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
   }
 
   // Pruning setup — run immediately on creation, then on interval.
-  // safePrune catches all errors so the interval callback cannot crash the host process.
+  // safePrune poisons the sink on failure so callers see structured rejection rather than
+  // silent storage growth from indefinitely non-enforced retention.
   function safePrune(): void {
     try {
       pruneOldEntries();
     } catch (e: unknown) {
-      // Retention policy is silently non-enforced when pruning fails — surface the error
-      // so operators can detect storage growth before it becomes a capacity incident.
-      console.error("[audit-sink-sqlite] retention prune failed:", e);
+      if (pruneError === undefined) {
+        pruneError = e;
+      }
     }
   }
 
@@ -295,6 +298,11 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
 
   return {
     async log(entry: AuditEntry): Promise<void> {
+      if (pruneError !== undefined) {
+        throw new Error("audit SQLite sink poisoned by background retention prune failure", {
+          cause: pruneError,
+        });
+      }
       buffer.push(entry);
       if (buffer.length >= maxBufferSize) {
         flushBuffer();
@@ -302,6 +310,11 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
     },
 
     async flush(): Promise<void> {
+      if (pruneError !== undefined) {
+        throw new Error("audit SQLite sink poisoned by background retention prune failure", {
+          cause: pruneError,
+        });
+      }
       flushBuffer();
     },
 

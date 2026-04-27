@@ -2620,12 +2620,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           } catch (e: unknown) {
             streamError = e;
             streamThrew = true;
+          } finally {
+            await auditMw.flush().catch((flushErr: unknown) => {
+              if (ndjsonPoisonError === undefined) {
+                ndjsonPoisonError = flushErr;
+              }
+            });
           }
-          await auditMw.flush().catch((flushErr: unknown) => {
-            if (ndjsonPoisonError === undefined) {
-              ndjsonPoisonError = flushErr;
-            }
-          });
           if (ndjsonPoisonError !== undefined) {
             throw new Error("audit sink write failed after stream — turn aborted", {
               cause: ndjsonPoisonError,
@@ -2891,12 +2892,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           } catch (e: unknown) {
             streamError = e;
             streamThrew = true;
+          } finally {
+            await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+              if (sqlitePoisonError === undefined) {
+                sqlitePoisonError = flushErr;
+              }
+            });
           }
-          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
-            if (sqlitePoisonError === undefined) {
-              sqlitePoisonError = flushErr;
-            }
-          });
           if (sqlitePoisonError !== undefined) {
             throw new Error("audit sink write failed after stream — turn aborted", {
               cause: sqlitePoisonError,
