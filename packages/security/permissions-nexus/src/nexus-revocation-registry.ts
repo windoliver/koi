@@ -30,9 +30,12 @@ export function createNexusRevocationRegistry(
     }
     try {
       const data = JSON.parse(result.value) as { readonly revoked: unknown };
-      return data.revoked === true; // strict boolean check — anything else fails closed
+      // Only return false for an explicitly validated not-revoked tombstone.
+      // Schema drift, string coercions, missing fields → fail closed (return true = revoked).
+      if (data.revoked === false) return false;
+      return true;
     } catch {
-      return true; // Malformed = fail-closed
+      return true; // Malformed JSON = fail-closed
     }
   };
 
@@ -51,6 +54,15 @@ export function createNexusRevocationRegistry(
   };
 
   const revoke = async (id: DelegationId, cascade: boolean): Promise<void> => {
+    if (cascade) {
+      // cascade=true has all-or-nothing semantics (target + all descendants).
+      // Throw before any side effects to avoid partial state where target is revoked
+      // but descendants remain active. Callers must revoke each descendant individually.
+      throw new Error(
+        `NexusRevocationRegistry: cascade=true is not supported. ` +
+          `Revoke each descendant explicitly or use an in-memory registry for cascade.`,
+      );
+    }
     const safePath = validateDelegationIdPath(id);
     const result = await config.transport.call("write", {
       path: `${policyPath}/revocations/${safePath}.json`,
@@ -60,15 +72,6 @@ export function createNexusRevocationRegistry(
       throw new Error(`Failed to persist revocation for grant ${id}: ${result.error.message}`, {
         cause: result.error,
       });
-    }
-    if (cascade) {
-      // Cascade requires traversing the delegation chain, which the Nexus registry
-      // cannot do without an index. The target is already persisted above.
-      // Callers must revoke each descendant individually.
-      throw new Error(
-        `NexusRevocationRegistry: cascade=true is not supported. ` +
-          `Revoke each descendant explicitly or use an in-memory registry for cascade.`,
-      );
     }
   };
 

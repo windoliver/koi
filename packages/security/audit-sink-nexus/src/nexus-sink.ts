@@ -140,21 +140,31 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
     }
 
     const files = extractListFiles(listResult.value);
-    const entries: AuditEntry[] = [];
+    const readEntries: Array<{ readonly entry: AuditEntry; readonly path: string }> = [];
     for (const file of files) {
       const readResult = await config.transport.call<unknown>("read", { path: file.path });
       if (readResult.ok) {
         try {
-          entries.push(JSON.parse(extractContent(readResult.value)) as AuditEntry);
+          readEntries.push({
+            entry: JSON.parse(extractContent(readResult.value)) as AuditEntry,
+            path: file.path,
+          });
         } catch {
           // Skip malformed individual entries — log at caller's discretion
         }
       }
     }
 
-    return entries.sort((a, b) =>
-      a.timestamp !== b.timestamp ? a.timestamp - b.timestamp : a.turnIndex - b.turnIndex,
-    );
+    return readEntries
+      .sort(
+        (a, b) =>
+          a.entry.timestamp !== b.entry.timestamp
+            ? a.entry.timestamp - b.entry.timestamp
+            : a.entry.turnIndex !== b.entry.turnIndex
+              ? a.entry.turnIndex - b.entry.turnIndex
+              : a.path.localeCompare(b.path), // path includes sinkId+seq for stable tiebreak
+      )
+      .map((re) => re.entry);
   };
 
   return { log, flush, query };

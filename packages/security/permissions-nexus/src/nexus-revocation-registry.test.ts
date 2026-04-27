@@ -44,9 +44,7 @@ describe("createNexusRevocationRegistry", () => {
 
   test("isRevoked returns true when record has revoked: true", async () => {
     const registry = createNexusRevocationRegistry({
-      transport: makeTransport(async () =>
-        okResult(JSON.stringify({ revoked: true, cascade: false })),
-      ),
+      transport: makeTransport(async () => okResult(JSON.stringify({ revoked: true }))),
     });
     const result = await registry.isRevoked(delegationId("grant-1"));
     expect(result).toBe(true);
@@ -54,12 +52,26 @@ describe("createNexusRevocationRegistry", () => {
 
   test("isRevoked returns false when record has revoked: false", async () => {
     const registry = createNexusRevocationRegistry({
-      transport: makeTransport(async () =>
-        okResult(JSON.stringify({ revoked: false, cascade: false })),
-      ),
+      transport: makeTransport(async () => okResult(JSON.stringify({ revoked: false }))),
     });
     const result = await registry.isRevoked(delegationId("grant-1"));
     expect(result).toBe(false);
+  });
+
+  test("isRevoked returns true (fail-closed) on schema drift — string revoked value", async () => {
+    const registry = createNexusRevocationRegistry({
+      transport: makeTransport(async () => okResult(JSON.stringify({ revoked: "true" }))),
+    });
+    const result = await registry.isRevoked(delegationId("grant-1"));
+    expect(result).toBe(true);
+  });
+
+  test("isRevoked returns true (fail-closed) when revocation record missing revoked field", async () => {
+    const registry = createNexusRevocationRegistry({
+      transport: makeTransport(async () => okResult(JSON.stringify({}))),
+    });
+    const result = await registry.isRevoked(delegationId("grant-1"));
+    expect(result).toBe(true);
   });
 
   test("isRevoked returns true (fail-closed) on TIMEOUT error", async () => {
@@ -102,7 +114,7 @@ describe("createNexusRevocationRegistry", () => {
     expect(map.get(id3)).toBe(false); // NOT_FOUND = not revoked
   });
 
-  test("revoke(cascade=true) persists target then throws — target is revoked even though cascade is unsupported", async () => {
+  test("revoke(cascade=true) throws before any write — all-or-nothing cascade semantics", async () => {
     const calls: Array<{ method: string; params: CallArgs }> = [];
     const registry = createNexusRevocationRegistry({
       transport: makeTransport(async (method, params) => {
@@ -115,15 +127,8 @@ describe("createNexusRevocationRegistry", () => {
       /cascade=true is not supported/,
     );
 
-    // Target write must have happened before the cascade throw
-    const writeCalls = calls.filter((c) => c.method === "write");
-    expect(writeCalls).toHaveLength(1);
-    const write = writeCalls[0];
-    expect(write).toBeDefined();
-    if (write !== undefined) {
-      expect(write.params.path).toBe("koi/permissions/revocations/grant-abc.json");
-      expect(JSON.parse(write.params.content ?? "{}")).toEqual({ revoked: true });
-    }
+    // No write must have happened — throw before side effects preserves atomic contract
+    expect(calls.filter((c) => c.method === "write")).toHaveLength(0);
   });
 
   test("revoke(cascade=false) writes { revoked: true } to correct path", async () => {
