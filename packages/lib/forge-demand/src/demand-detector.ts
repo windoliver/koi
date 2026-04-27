@@ -46,7 +46,7 @@ const RECENT_TOOL_CALL_HISTORY = 16;
 const DEFAULT_THRESHOLDS: HeuristicThresholds = {
   repeatedFailureCount: 3,
   capabilityGapOccurrences: 2,
-  latencyDegradationP95Ms: 5_000,
+  latencyDegradationAvgMs: 5_000,
   confidenceWeights: DEFAULT_CONFIDENCE_WEIGHTS,
 } as const;
 
@@ -75,6 +75,18 @@ function triggerKey(trigger: ForgeTrigger): string {
 
 function extractResponseText(response: ModelResponse): string {
   return typeof response.content === "string" ? response.content : "";
+}
+
+/**
+ * Detect the `{ error: string; code: string }` in-band failure shape used by
+ * many tools in this monorepo (read, write, edit, todo, etc.) instead of
+ * throwing. Treating these as successes would silently hide real repeated
+ * failures from the demand detector.
+ */
+function isInBandToolError(output: unknown): boolean {
+  if (output === null || typeof output !== "object") return false;
+  const o = output as Record<string, unknown>;
+  return typeof o.error === "string" && typeof o.code === "string";
 }
 
 /**
@@ -239,11 +251,11 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   function checkLatencyDegradation(toolId: string): void {
     if (config.healthTracker === undefined) return;
     const snapshot = config.healthTracker.getSnapshot(toolId);
-    const trigger = detectLatencyDegradation(toolId, snapshot, thresholds.latencyDegradationP95Ms);
+    const trigger = detectLatencyDegradation(toolId, snapshot, thresholds.latencyDegradationAvgMs);
     if (trigger !== undefined) {
       emitSignal(trigger, {
         failureCount: snapshot?.metrics.avgLatencyMs ?? 0,
-        threshold: thresholds.latencyDegradationP95Ms,
+        threshold: thresholds.latencyDegradationAvgMs,
       });
     }
   }
@@ -284,38 +296,38 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   }
 
   /**
-   * Scan request.messages for user corrections and return the new high-water
-   * timestamp. The caller commits the watermark only after the wrapped model
-   * call succeeds — otherwise a transient model failure followed by a retry
-   * with the same transcript would silently drop the correction signal.
+   * Scan request.messages for user corrections WITHOUT emitting yet. Returns
+   * the new high-water timestamp + the buffered triggers. The caller emits
+   * and commits the watermark only after the wrapped model call succeeds
+   * so a transient model failure + retry cannot:
+   *   - drop the correction signal (watermark advanced before next), or
+   *   - duplicate the correction signal (emit fired before next throws,
+   *     then retry re-scans the same transcript and emits again).
    */
-  function checkUserCorrections(request: ModelRequest): number {
+  function scanUserCorrections(request: ModelRequest): {
+    readonly highWater: number;
+    readonly triggers: readonly ForgeTrigger[];
+  } {
     if (correctionPatterns.length === 0 || recentToolCalls.length === 0) {
-      return lastProcessedUserTimestamp;
+      return { highWater: lastProcessedUserTimestamp, triggers: [] };
     }
-    // Only inspect user-authored messages newer than the last one we've
-    // already scanned. This prevents replayed transcript history (e.g. on
-    // retry paths) from re-firing the same correction repeatedly, and
-    // avoids treating assistant text as a user correction.
     let highWater = lastProcessedUserTimestamp;
+    const triggers: ForgeTrigger[] = [];
     for (const msg of request.messages) {
       if (msg.senderId !== "user") continue;
       if (msg.timestamp <= lastProcessedUserTimestamp) continue;
       if (msg.timestamp > highWater) highWater = msg.timestamp;
       // Attribute the correction to the most recent tool call that ran
       // BEFORE this user message — not the session-global last tool call.
-      // This handles multi-tool turns correctly.
       const correctedToolId = resolveCorrectedToolId(msg.timestamp);
       if (correctedToolId === "") continue;
       for (const block of msg.content) {
         if (block.kind !== "text") continue;
         const trigger = detectUserCorrection(block.text, correctionPatterns, correctedToolId);
-        if (trigger !== undefined) {
-          emitSignal(trigger, { failureCount: 1, threshold: 1 });
-        }
+        if (trigger !== undefined) triggers.push(trigger);
       }
     }
-    return highWater;
+    return { highWater, triggers };
   }
 
   function resolveCorrectedToolId(userMessageTimestamp: number): string {
@@ -367,6 +379,22 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       const { toolId } = request;
       try {
         const response = await next(request);
+        // In-band errors must count as failures — many tools in this repo
+        // return `{ error, code }` instead of throwing. Without this branch
+        // repeated user-visible failures never reach `repeated_failure`.
+        if (isInBandToolError(response.output)) {
+          const inBand = new Error((response.output as { readonly error: string }).error);
+          const count = recordFailure(toolId, inBand);
+          const repeated = detectRepeatedFailure(toolId, count, thresholds.repeatedFailureCount);
+          if (repeated !== undefined) {
+            emitSignal(repeated, {
+              failureCount: count,
+              threshold: thresholds.repeatedFailureCount,
+            });
+          }
+          checkLatencyDegradation(toolId);
+          return response;
+        }
         consecutiveFailures.set(toolId, 0);
         recordToolCall(toolId);
         checkLatencyDegradation(toolId);
@@ -401,12 +429,15 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      const nextWatermark = checkUserCorrections(request);
+      const { highWater, triggers } = scanUserCorrections(request);
       const response = await next(request);
-      // Commit the user-correction watermark only after a successful model
-      // call. If `next` throws and the runtime retries the same transcript,
-      // the same user message is re-scanned (cooldowns then dedupe it).
-      lastProcessedUserTimestamp = nextWatermark;
+      // Commit the watermark + emit corrections only after the model call
+      // succeeds. This makes correction emission idempotent across retries
+      // independently of cooldown configuration.
+      lastProcessedUserTimestamp = highWater;
+      for (const trigger of triggers) {
+        emitSignal(trigger, { failureCount: 1, threshold: 1 });
+      }
       checkCapabilityGaps(extractResponseText(response));
       return response;
     },

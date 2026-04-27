@@ -91,11 +91,11 @@ export function detectCapabilityGap(
 export function detectLatencyDegradation(
   toolId: string,
   healthSnapshot: ToolHealthSnapshot | undefined,
-  p95ThresholdMs: number,
+  avgThresholdMs: number,
 ): ForgeTrigger | undefined {
   if (healthSnapshot === undefined) return undefined;
   if (healthSnapshot.metrics.usageCount === 0) return undefined;
-  if (healthSnapshot.metrics.avgLatencyMs <= p95ThresholdMs) return undefined;
+  if (healthSnapshot.metrics.avgLatencyMs <= avgThresholdMs) return undefined;
   return {
     kind: "performance_degradation",
     toolName: toolId,

@@ -605,6 +605,55 @@ describe("createForgeDemandDetector", () => {
     expect(signals.length).toBe(1);
   });
 
+  it("treats in-band tool errors ({error, code}) as failures, not successes", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { repeatedFailureCount: 3 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    // Tool returns `{ error, code }` instead of throwing.
+    const inBandFail = async (): Promise<ToolResponse> => ({
+      output: { error: "missing arg", code: "VALIDATION" },
+    });
+    for (let i = 0; i < 3; i += 1) {
+      await handle.middleware.wrapToolCall?.(ctx, toolReq("inband"), inBandFail);
+    }
+    const repeated = signals.find((s) => s.trigger.kind === "repeated_failure");
+    expect(repeated).toBeDefined();
+    if (repeated?.trigger.kind === "repeated_failure") {
+      expect(repeated.trigger.toolName).toBe("inband");
+      expect(repeated.trigger.count).toBe(3);
+    }
+  });
+
+  it("does not duplicate user_correction across model retries even with cooldownMs=0", async () => {
+    const signals: ForgeDemandSignal[] = [];
+    // cooldown=0 (the default makeConfig budget) — without idempotent
+    // emission this would produce duplicate corrections on retry.
+    const handle = createForgeDemandDetector(makeConfig({ onDemand: (s) => signals.push(s) }));
+    await handle.middleware.wrapToolCall?.(ctx, toolReq("any"), async () => toolRes());
+    const correction: InboundMessage = {
+      senderId: "user",
+      content: [{ kind: "text", text: "no, that's not right" }],
+      timestamp: 1000,
+    };
+    const failModel = async (): Promise<ModelResponse> => {
+      throw new Error("transport boom");
+    };
+    try {
+      await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), failModel);
+    } catch {
+      // expected
+    }
+    expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(0);
+
+    const okModel = async (): Promise<ModelResponse> => modelRes("ok");
+    await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), okModel);
+    expect(signals.filter((s) => s.trigger.kind === "user_correction").length).toBe(1);
+  });
+
   it("dismiss removes the signal and clears its cooldown", async () => {
     const handle = createForgeDemandDetector(
       makeConfig({

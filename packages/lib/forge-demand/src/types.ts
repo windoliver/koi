@@ -39,7 +39,7 @@ export interface HeuristicThresholds {
   /** Capability gap occurrences before triggering. Default: 2. */
   readonly capabilityGapOccurrences: number;
   /** Average latency threshold for degradation detection (ms). Default: 5000. */
-  readonly latencyDegradationP95Ms: number;
+  readonly latencyDegradationAvgMs: number;
   /** Confidence weight distribution. */
   readonly confidenceWeights: ConfidenceWeights;
 }

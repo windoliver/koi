@@ -13870,7 +13870,7 @@ describe("Golden: @koi/forge-demand", () => {
       heuristics: {
         repeatedFailureCount: 3,
         capabilityGapOccurrences: 2,
-        latencyDegradationP95Ms: 5_000,
+        latencyDegradationAvgMs: 5_000,
       },
       onDemand: (s) => signals.push(s),
       clock: () => 1_000_000,

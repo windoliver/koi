@@ -125,7 +125,7 @@ Default patterns match phrases like:
 Checks health snapshot metrics against a p95 threshold (default: 5000ms).
 
 ```typescript
-detectLatencyDegradation(toolId, healthSnapshot, p95ThresholdMs)
+detectLatencyDegradation(toolId, healthSnapshot, avgThresholdMs)
 // → { kind: "performance_degradation", toolName, metric } | undefined
 ```
 
@@ -220,7 +220,7 @@ Creates a config with sensible defaults, optionally merged with overrides.
 | `capabilityGapPatterns` | `RegExp[]` | 5 built-in patterns | Patterns matching capability gap responses |
 | `heuristics.repeatedFailureCount` | `number` | `3` | Consecutive failures before triggering |
 | `heuristics.capabilityGapOccurrences` | `number` | `2` | Gap pattern matches before triggering |
-| `heuristics.latencyDegradationP95Ms` | `number` | `5_000` | Latency threshold (ms) |
+| `heuristics.latencyDegradationAvgMs` | `number` | `5_000` | Latency threshold (ms) |
 | `maxPendingSignals` | `number` | `10` | Bounded signal queue size |
 | `onDemand` | `(signal) => void` | `undefined` | Callback when signal emitted |
 | `onDismiss` | `(id) => void` | `undefined` | Callback when signal dismissed |

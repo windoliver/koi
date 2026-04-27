@@ -30,7 +30,7 @@ const confidenceWeightsSchema = z.object({
 const heuristicThresholdsSchema = z.object({
   repeatedFailureCount: z.number().int().positive().optional(),
   capabilityGapOccurrences: z.number().int().positive().optional(),
-  latencyDegradationP95Ms: z.number().int().positive().optional(),
+  latencyDegradationAvgMs: z.number().int().positive().optional(),
   confidenceWeights: confidenceWeightsSchema.optional(),
 });
 
@@ -47,7 +47,7 @@ const forgeDemandConfigInputSchema = z.object({
 const DEFAULT_HEURISTIC_THRESHOLDS: HeuristicThresholds = {
   repeatedFailureCount: 3,
   capabilityGapOccurrences: 2,
-  latencyDegradationP95Ms: 5_000,
+  latencyDegradationAvgMs: 5_000,
   confidenceWeights: DEFAULT_CONFIDENCE_WEIGHTS,
 } as const;
 
@@ -196,8 +196,8 @@ export function validateForgeDemandConfig(raw: unknown): Result<ForgeDemandConfi
     capabilityGapOccurrences:
       p.heuristics?.capabilityGapOccurrences ??
       DEFAULT_HEURISTIC_THRESHOLDS.capabilityGapOccurrences,
-    latencyDegradationP95Ms:
-      p.heuristics?.latencyDegradationP95Ms ?? DEFAULT_HEURISTIC_THRESHOLDS.latencyDegradationP95Ms,
+    latencyDegradationAvgMs:
+      p.heuristics?.latencyDegradationAvgMs ?? DEFAULT_HEURISTIC_THRESHOLDS.latencyDegradationAvgMs,
     confidenceWeights: {
       repeatedFailure:
         p.heuristics?.confidenceWeights?.repeatedFailure ??
