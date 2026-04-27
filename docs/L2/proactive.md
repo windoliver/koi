@@ -71,7 +71,7 @@ interface ProactiveToolsProviderConfig {
 
 | Tool | Inputs | Returns |
 |------|--------|---------|
-| `sleep` | `duration_ms` (1..maxSleepMs), `wake_message?` | `{ ok: true, task_id, wake_at_ms }` |
+| `sleep` | `duration_ms` (1..maxSleepMs), `wake_message?`, `idempotency_key?` | `{ ok: true, task_id, wake_at_ms, deduped? }` |
 | `cancel_sleep` | `task_id` | `{ ok: true, removed }` |
 | `schedule_cron` | `expression`, `wake_message?`, `timezone?`, `idempotency_key?` | `{ ok: true, schedule_id, deduped? }` |
 | `cancel_schedule` | `schedule_id` | `{ ok: true, removed }` |
@@ -110,22 +110,35 @@ Calls `SchedulerComponent.unschedule(scheduleId)`. Returns the scheduler's boole
 removal flag inside `{ ok: true, removed }`. Unknown IDs return `removed: false`
 (idempotent — safe to retry).
 
-### Cron idempotency (`idempotency_key`)
+### Idempotency (`idempotency_key`)
 
-`schedule_cron` accepts an optional caller-supplied `idempotency_key`. The provider
-remembers `key → schedule_id` for the lifetime of the tool set. A second call with
-the same key returns the original `schedule_id` plus `deduped: true` without ever
-hitting the scheduler — making retries inside one agent session safe even if the
-first call's response was lost.
+Both `sleep` and `schedule_cron` accept an optional caller-supplied
+`idempotency_key`. The package keeps an in-memory map keyed by that string, and
+each entry stores a fingerprint of the original request:
 
-`cancel_schedule` clears any matching idempotency entry on a successful unschedule
-so a future call with the same key registers a fresh schedule.
+| Tool | Fingerprint fields |
+|------|--------------------|
+| `sleep` | `duration_ms`, resolved `wake_message` |
+| `schedule_cron` | `expression`, resolved `wake_message`, `timezone` |
 
-**Known limitation:** durable cross-restart dedup requires the underlying scheduler
-to honour idempotency keys at the schedule layer. The current `@koi/scheduler` does
-not — a process restart followed by a model retry can still produce a duplicate.
-Closing that gap is an L0/L2 contract change tracked separately and deliberately
-not faked at the tool layer here.
+Replay rules (apply per tool):
+
+- **Match** — replay returns the original `task_id` / `schedule_id` plus
+  `deduped: true`. The scheduler is **not** called.
+- **Mismatch** — replay returns `{ ok: false, error: "...already registered..." }`.
+  The original task/schedule is preserved; the second request fails closed
+  rather than silently registering duplicate or wrong work.
+- **Expired** (sleep only) — once `wake_at_ms` has passed, the entry is dropped
+  and the next call with the same key is treated as a fresh submission.
+
+`cancel_sleep` and `cancel_schedule` each clear any matching idempotency entry
+on a successful cancel so the key may be re-used afterwards.
+
+**Known durability gap:** the map is in-memory. Durable cross-restart dedup
+requires the underlying scheduler to honour idempotency keys at submit/schedule
+time, which the current `@koi/scheduler` does not. After a restart, a model
+retry can still produce a duplicate. Closing that is an L0/L2 contract change
+tracked separately — we deliberately do not fake durability here.
 
 ## Key Design Decisions
 

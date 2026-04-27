@@ -54,16 +54,37 @@ const scheduleCronSchema = z.object({
 });
 
 /**
+ * Cached registration record. We keep enough fingerprint data to detect
+ * idempotency-key collisions where the caller reuses a key for distinct work
+ * (different expression, wake message, or timezone). Mismatches fail closed —
+ * we never silently return a stale schedule_id.
+ */
+interface CronRecord {
+  readonly scheduleId: string;
+  readonly expression: string;
+  readonly wakeMessage: string;
+  readonly timezone: string | undefined;
+}
+
+/**
  * Per-tool-instance state shared between schedule_cron and cancel_schedule.
  * Lets cancel_schedule clear an idempotency mapping once its schedule is gone.
  */
 export interface CronToolState {
-  /** idempotency_key → schedule_id (string form) */
-  readonly idempotencyMap: Map<string, string>;
+  /** idempotency_key → CronRecord (fingerprint + scheduler-issued id) */
+  readonly idempotencyMap: Map<string, CronRecord>;
 }
 
 export function createCronToolState(): CronToolState {
-  return { idempotencyMap: new Map<string, string>() };
+  return { idempotencyMap: new Map<string, CronRecord>() };
+}
+
+function recordsMatch(rec: CronRecord, other: Omit<CronRecord, "scheduleId">): boolean {
+  return (
+    rec.expression === other.expression &&
+    rec.wakeMessage === other.wakeMessage &&
+    rec.timezone === other.timezone
+  );
 }
 
 export function createScheduleCronTool(config: ProactiveToolsConfig, state: CronToolState): Tool {
@@ -93,7 +114,16 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
       if (idempotency_key !== undefined) {
         const existing = state.idempotencyMap.get(idempotency_key);
         if (existing !== undefined) {
-          return { ok: true, schedule_id: existing, deduped: true };
+          if (!recordsMatch(existing, { expression, wakeMessage: message, timezone })) {
+            return {
+              ok: false,
+              error:
+                `idempotency_key '${idempotency_key}' already registered for a different cron ` +
+                "(expression, wake_message, or timezone differ). Use a distinct key, or cancel " +
+                "the existing schedule first.",
+            };
+          }
+          return { ok: true, schedule_id: existing.scheduleId, deduped: true };
         }
       }
 
@@ -107,7 +137,12 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
         );
         const idStr = String(id);
         if (idempotency_key !== undefined) {
-          state.idempotencyMap.set(idempotency_key, idStr);
+          state.idempotencyMap.set(idempotency_key, {
+            scheduleId: idStr,
+            expression,
+            wakeMessage: message,
+            timezone,
+          });
         }
         return { ok: true, schedule_id: idStr };
       } catch (e: unknown) {
@@ -153,7 +188,7 @@ export function createCancelScheduleTool(config: ProactiveToolsConfig, state: Cr
         // future schedule_cron with the same key can register a fresh one.
         if (removed) {
           for (const [k, v] of state.idempotencyMap) {
-            if (v === idStr) state.idempotencyMap.delete(k);
+            if (v.scheduleId === idStr) state.idempotencyMap.delete(k);
           }
         }
         return { ok: true, removed };

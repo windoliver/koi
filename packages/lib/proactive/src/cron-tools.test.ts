@@ -98,6 +98,42 @@ describe("schedule_cron tool", () => {
     expect(stub.scheduleCalls).toHaveLength(1);
   });
 
+  test("idempotency_key collision with different expression fails closed", async () => {
+    const stub = createSchedulerStub();
+    const state = createCronToolState();
+    const tool = createScheduleCronTool({ scheduler: stub.component }, state);
+
+    await exec(tool, { expression: "0 9 * * 1-5", idempotency_key: "k" });
+    const collided = (await exec(tool, {
+      expression: "0 10 * * 1-5",
+      idempotency_key: "k",
+    })) as { ok: boolean; error: string };
+
+    expect(collided.ok).toBe(false);
+    expect(collided.error).toContain("already registered");
+    expect(stub.scheduleCalls).toHaveLength(1);
+  });
+
+  test("idempotency_key collision with different timezone fails closed", async () => {
+    const stub = createSchedulerStub();
+    const state = createCronToolState();
+    const tool = createScheduleCronTool({ scheduler: stub.component }, state);
+
+    await exec(tool, {
+      expression: "0 9 * * *",
+      timezone: "America/Los_Angeles",
+      idempotency_key: "k",
+    });
+    const collided = (await exec(tool, {
+      expression: "0 9 * * *",
+      timezone: "America/New_York",
+      idempotency_key: "k",
+    })) as { ok: boolean };
+
+    expect(collided.ok).toBe(false);
+    expect(stub.scheduleCalls).toHaveLength(1);
+  });
+
   test("distinct idempotency_keys produce distinct schedules", async () => {
     const stub = createSchedulerStub();
     const state = createCronToolState();

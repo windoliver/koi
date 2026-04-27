@@ -9,17 +9,19 @@ import {
   createCronToolState,
   createScheduleCronTool,
 } from "./cron-tools.js";
-import { createSleepTool } from "./sleep-tool.js";
+import { createSleepTool, createSleepToolState } from "./sleep-tool.js";
 import type { ProactiveToolsConfig } from "./types.js";
 
 export function createProactiveTools(config: ProactiveToolsConfig): readonly Tool[] {
-  // Cron idempotency state is shared between schedule_cron (writes) and
-  // cancel_schedule (clears entries on successful unschedule). The map lives
-  // for the lifetime of the tool set — typically one agent assembly.
+  // State maps live for the lifetime of the tool set (typically one agent
+  // assembly). schedule_cron + cancel_schedule share the cron map; sleep +
+  // cancel_sleep share the sleep map. See cron-tools.ts and sleep-tool.ts
+  // for the idempotency semantics they enforce.
   const cronState = createCronToolState();
+  const sleepState = createSleepToolState();
   return [
-    createSleepTool(config),
-    createCancelSleepTool(config),
+    createSleepTool(config, sleepState),
+    createCancelSleepTool(config, sleepState),
     createScheduleCronTool(config, cronState),
     createCancelScheduleTool(config, cronState),
   ];

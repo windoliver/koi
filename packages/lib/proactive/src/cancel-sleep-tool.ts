@@ -5,11 +5,16 @@
  * superseded (e.g. the work the agent was waiting on completed early).
  * Returns `{ removed: false }` if the task already fired or never existed —
  * idempotent, safe to retry.
+ *
+ * On a successful cancellation we also clear any sleep idempotency entry
+ * pointing at this task so a future `sleep` call may re-use the same key
+ * for fresh work.
  */
 
 import type { JsonObject, Tool } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY, taskId } from "@koi/core";
 import { toJSONSchema, z } from "zod";
+import type { SleepToolState } from "./sleep-tool.js";
 import type { ProactiveToolsConfig } from "./types.js";
 
 const schema = z.object({
@@ -19,7 +24,7 @@ const schema = z.object({
     .describe("Task identifier returned by the `sleep` tool's `task_id` field."),
 });
 
-export function createCancelSleepTool(config: ProactiveToolsConfig): Tool {
+export function createCancelSleepTool(config: ProactiveToolsConfig, state: SleepToolState): Tool {
   const { scheduler } = config;
   return {
     descriptor: {
@@ -38,8 +43,14 @@ export function createCancelSleepTool(config: ProactiveToolsConfig): Tool {
       if (!parsed.success) {
         return { ok: false, error: parsed.error.message };
       }
+      const idStr = parsed.data.task_id;
       try {
-        const removed = await scheduler.cancel(taskId(parsed.data.task_id));
+        const removed = await scheduler.cancel(taskId(idStr));
+        if (removed) {
+          for (const [k, v] of state.idempotencyMap) {
+            if (v.taskId === idStr) state.idempotencyMap.delete(k);
+          }
+        }
         return { ok: true, removed };
       } catch (e: unknown) {
         return {
