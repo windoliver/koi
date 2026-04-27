@@ -178,7 +178,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
 
   // Per-session mutable state. Sharing this across sessions would let one
   // tenant's failures bleed into another's cooldowns/signals/budget, so
-  // the runtime keys every counter by `ctx.session.sessionId` and
+  // the runtime keys every counter by the session id bound at first
   // `onSessionEnd(ctx)` clears only that session's entry.
   type RecentToolCall = {
     readonly toolId: string;
@@ -245,6 +245,19 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
   // long-running detectors do not retain SessionContext objects past
   // their natural lifetime.)
   const observedSessions = new WeakMap<SessionContext, SessionId>();
+
+  /**
+   * Resolve the bound sessionId for an already-observed SessionContext.
+   * All middleware reads/writes MUST resolve through this helper so a
+   * later mutation of `session.sessionId` cannot redirect counters/
+   * signals into a different tenant's bucket. Falls back to the
+   * current field only when the session has not yet been observed —
+   * this is invoked AFTER ensureObserved, so the binding is present
+   * for every middleware path. F90 regression.
+   */
+  function boundIdFor(session: SessionContext): SessionId {
+    return observedSessions.get(session) ?? session.sessionId;
+  }
 
   function ensureObserved(session: SessionContext): void {
     if (observedSessions.has(session)) return;
@@ -855,7 +868,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       next: ToolHandler,
     ): Promise<ToolResponse> {
       ensureObserved(ctx.session);
-      const state = getOrCreate(ctx.session.sessionId);
+      const state = getOrCreate(boundIdFor(ctx.session));
       const { toolId } = request;
       const callEntry = recordToolCall(state, toolId);
       try {
@@ -871,7 +884,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
               threshold: thresholds.repeatedFailureCount,
             });
           }
-          checkLatencyDegradation(state, ctx.session.sessionId, toolId);
+          checkLatencyDegradation(state, boundIdFor(ctx.session), toolId);
           return response;
         }
         state.consecutiveFailures.set(toolId, 0);
@@ -882,7 +895,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
         // alongside the fresh failureCount, misleading downstream
         // auto-forge / debugging context. F81 regression.
         state.failedToolCalls.delete(`rf:${toolId}`);
-        checkLatencyDegradation(state, ctx.session.sessionId, toolId);
+        checkLatencyDegradation(state, boundIdFor(ctx.session), toolId);
         return response;
       } catch (e: unknown) {
         if (e instanceof KoiRuntimeError && e.code === "NOT_FOUND") {
@@ -897,7 +910,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
             { kind: "no_matching_tool", query: toolId, attempts },
             { failureCount: attempts, threshold: 1 },
           );
-          checkLatencyDegradation(state, ctx.session.sessionId, toolId);
+          checkLatencyDegradation(state, boundIdFor(ctx.session), toolId);
           throw e;
         }
         markToolCallCompleted(callEntry);
@@ -910,7 +923,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
             threshold: thresholds.repeatedFailureCount,
           });
         }
-        checkLatencyDegradation(state, ctx.session.sessionId, toolId);
+        checkLatencyDegradation(state, boundIdFor(ctx.session), toolId);
         throw e;
       }
     },
@@ -921,7 +934,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       next: ModelHandler,
     ): Promise<ModelResponse> {
       ensureObserved(ctx.session);
-      const state = getOrCreate(ctx.session.sessionId);
+      const state = getOrCreate(boundIdFor(ctx.session));
       // Detect corrections eagerly but defer emission — a transient
       // transport/validator failure must not consume forge budget for a
       // response the user never sees.
@@ -944,7 +957,7 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
       ensureObserved(ctx.session);
-      const state = getOrCreate(ctx.session.sessionId);
+      const state = getOrCreate(boundIdFor(ctx.session));
       const pending = detectPendingCorrections(state, request);
       const fp = requestFingerprint(ctx, request);
       // No user-authored message → fall back to per-request fingerprint
@@ -983,13 +996,17 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
-      // Drop only this session's state — never touch other live sessions.
-      sessions.delete(ctx.sessionId);
+      // Resolve teardown via the bound id so a mutated sessionId
+      // field cannot misdirect cleanup into a different tenant's
+      // bucket — that would leave the original bucket orphaned and
+      // also clear an unrelated tenant's signals. F90 regression.
+      const sid = boundIdFor(ctx);
+      sessions.delete(sid);
       // Bump generation so any previously issued scoped handles are
       // revoked: if a future session reuses this sessionId, those
       // stale closures will not be able to read or dismiss its
       // signals. F88 regression.
-      sessionGenerations.set(ctx.sessionId, currentGeneration(ctx.sessionId) + 1);
+      sessionGenerations.set(sid, currentGeneration(sid) + 1);
     },
 
     // The detector is a passive observer: we MUST NOT inject

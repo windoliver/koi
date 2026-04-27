@@ -2078,4 +2078,63 @@ describe("createForgeDemandDetector", () => {
     expect(signals[0]?.context.failedToolCalls.some((m) => m.includes("A boom"))).toBe(true);
     expect(signals[0]?.context.failedToolCalls.some((m) => m.includes("B boom"))).toBe(false);
   });
+
+  it("F90: middleware writes resolve via the bound id so a mutated SessionContext cannot leak into another tenant", async () => {
+    // Reviewer F90: middleware reads/writes still resolved through
+    // ctx.session.sessionId on every hook. If an observed
+    // SessionContext was mutated to carry another tenant's id,
+    // subsequent failures would be recorded under the new id while
+    // the scoped handle still pointed at the original — opening a
+    // cross-session corruption path. The fix routes every detector
+    // path through the bound id captured at first observation.
+    const handle = createForgeDemandDetector(
+      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
+    );
+    const tenantA = createMockTurnContext({ turnIndex: 1 });
+    const originalAId = tenantA.session.sessionId;
+    // First observation binds tenantA.session ↔ originalAId.
+    try {
+      await handle.middleware.wrapToolCall?.(tenantA, toolReq("flaky"), async () => {
+        throw new Error("A first");
+      });
+    } catch {
+      // expected
+    }
+    // Mutate the sessionId BEFORE the next hook fires. A subsequent
+    // failure must still record into tenantA's bucket, not into a
+    // bucket named after the new (victim) id.
+    (tenantA.session as { sessionId: string }).sessionId = "victim-session";
+    try {
+      await handle.middleware.wrapToolCall?.(tenantA, toolReq("flaky"), async () => {
+        throw new Error("A second");
+      });
+    } catch {
+      // expected
+    }
+    // The handle (bound to originalAId) sees both failures.
+    const scoped = handle.forSession(tenantA.session);
+    const signals = scoped.getSignals();
+    expect(signals.length).toBeGreaterThanOrEqual(1);
+    const allFailures = signals.flatMap((s) => s.context.failedToolCalls);
+    expect(allFailures.some((m) => m.includes("A first"))).toBe(true);
+    expect(allFailures.some((m) => m.includes("A second"))).toBe(true);
+    // A fresh, distinct observation of "victim-session" gets its own
+    // bucket — tenantA's mutation never wrote into it.
+    const victimCtx = createMockTurnContext({ session: { sessionId: "victim-session" } as never });
+    try {
+      await handle.middleware.wrapToolCall?.(victimCtx, toolReq("flaky"), async () => {
+        throw new Error("V first");
+      });
+    } catch {
+      // expected
+    }
+    const victimSignals = handle.forSession(victimCtx.session).getSignals();
+    expect(victimSignals.length).toBe(1);
+    expect(victimSignals[0]?.context.failedToolCalls.some((m) => m.includes("A "))).toBe(false);
+    // And teardown of tenantA also resolves to the bound id, leaving
+    // the victim bucket untouched.
+    await handle.middleware.onSessionEnd?.(tenantA.session);
+    expect(handle.forSession(victimCtx.session).getActiveSignalCount()).toBe(1);
+    expect(originalAId).not.toBe("victim-session"); // sanity
+  });
 });
