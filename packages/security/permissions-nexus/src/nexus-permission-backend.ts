@@ -61,7 +61,17 @@ export function createNexusPermissionBackend(
     });
 
     if (!versionResult.ok) {
-      // NOT_FOUND or any error: run local-only; poller retries on interval.
+      if (versionResult.error.code === "NOT_FOUND") {
+        // Fresh Nexus store: no version.json found. Running on local policy only.
+        // This node will NOT sync permissions with other nodes until version.json
+        // is created externally. Bootstrap Nexus with a seeded policy.json + version.json
+        // to enable cross-node sync. The poller will pick it up once seeded.
+        console.warn(
+          "[permissions-nexus] version.json missing — running on local policy. " +
+            "Bootstrap Nexus to enable cross-node permission sync.",
+        );
+      }
+      // Any error: run local-only; poller retries on interval.
       // Do NOT write to Nexus here — concurrent nodes starting simultaneously
       // would race with no CAS guarantee, risking policy divergence.
       return;
@@ -75,7 +85,16 @@ export function createNexusPermissionBackend(
     try {
       const tag = JSON.parse(extractString(versionResult.value)) as NexusVersionTag;
       const policy: unknown = JSON.parse(extractString(policyResult.value));
-      localBackend = config.rebuildBackend(policy);
+      const rebuiltBackend = config.rebuildBackend(policy);
+      if (
+        rebuiltBackend.supportsDefaultDenyMarker !== config.localBackend.supportsDefaultDenyMarker
+      ) {
+        console.warn(
+          "[permissions-nexus] rebuilt backend supportsDefaultDenyMarker mismatch on startup — skipping policy activation",
+        );
+        return;
+      }
+      localBackend = rebuiltBackend;
       lastSeenVersion = tag.version;
     } catch {
       console.warn("[permissions-nexus] malformed Nexus policy on startup, using local rules");
@@ -114,9 +133,18 @@ export function createNexusPermissionBackend(
 
     try {
       const policy: unknown = JSON.parse(extractString(policyResult.value));
+      const rebuiltBackend = config.rebuildBackend(policy);
       // Re-check version monotonicity after async fetch — another poll may have applied newer
       if (tag.version > lastSeenVersion) {
-        localBackend = config.rebuildBackend(policy);
+        if (
+          rebuiltBackend.supportsDefaultDenyMarker !== config.localBackend.supportsDefaultDenyMarker
+        ) {
+          console.warn(
+            "[permissions-nexus] rebuilt backend supportsDefaultDenyMarker mismatch during sync — skipping policy update",
+          );
+          return;
+        }
+        localBackend = rebuiltBackend;
         lastSeenVersion = tag.version;
       }
     } catch {

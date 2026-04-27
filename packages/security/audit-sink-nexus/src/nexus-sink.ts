@@ -23,11 +23,13 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
   let timer: ReturnType<typeof setInterval> | undefined;
   let flushPromise: Promise<void> | undefined;
   let entrySeq = 0;
+  // Per-sink unique ID so concurrent sink instances (different processes) don't share paths
+  const sinkId = Math.random().toString(36).slice(2, 8);
 
   function computePath(entry: AuditEntry): string {
     const safeSession = entry.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
     const seq = entrySeq++;
-    return `${basePath}/${safeSession}/${entry.timestamp}-${entry.turnIndex}-${entry.kind}-${seq}.json`;
+    return `${basePath}/${safeSession}/${entry.timestamp}-${entry.turnIndex}-${entry.kind}-${sinkId}-${seq}.json`;
   }
 
   async function writeEntry(transport: NexusTransport, buffered: BufferEntry): Promise<void> {
