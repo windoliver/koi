@@ -108,6 +108,14 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
   // dropping the front entries evicts the oldest turns.
   const MAX_RETAINED_TURNS = 64;
   const MAX_EVICTED_TOMBSTONES = 1024;
+  // Per-turn caps. A pathological turn that retries / replans many
+  // times, or emits hundreds of tool calls before ending, would
+  // otherwise grow turnSnapshots[turnId] / callAllowlists[turnId]
+  // without bound until onAfterTurn (which the engine does not fire
+  // reliably) — poisoning the runtime even with the cross-turn cap
+  // in place (#review-round49-F2).
+  const MAX_SNAPSHOTS_PER_TURN = 256;
+  const MAX_CALL_BINDINGS_PER_TURN = 1024;
 
   function evictOldTurns(currentTurnId: TurnId): void {
     while (turnSnapshots.size > MAX_RETAINED_TURNS) {
@@ -142,6 +150,16 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       m = new Map<string, ReadonlySet<string>>();
       callAllowlists.set(turnId, m);
     }
+    // Cap per-turn callId bindings. Map iteration order is insertion
+    // order, so dropping the front evicts the oldest bindings first
+    // — a tool call arriving against an evicted binding falls through
+    // to the snapshot-based fallback (or fails closed if the turn
+    // itself was tombstoned) (#review-round49-F2).
+    while (m.size >= MAX_CALL_BINDINGS_PER_TURN) {
+      const oldest = m.keys().next().value;
+      if (oldest === undefined) break;
+      m.delete(oldest);
+    }
     m.set(callId, snapshot);
   }
 
@@ -156,6 +174,14 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       evictOldTurns(turnId);
     } else {
       list.push(allowed);
+      // Cap per-turn snapshot history. A pathological turn that
+      // re-prompts / replans many times would otherwise grow this
+      // array without bound (#review-round49-F2). Drop the oldest
+      // snapshot when over the cap; callers only use the array for
+      // presence-checking, so older entries are safe to discard.
+      if (list.length > MAX_SNAPSHOTS_PER_TURN) {
+        list.splice(0, list.length - MAX_SNAPSHOTS_PER_TURN);
+      }
     }
   }
 
