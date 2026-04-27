@@ -15,7 +15,7 @@ import type {
   Result,
   Tool,
 } from "@koi/core";
-import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, searchSummariesWithFallback } from "@koi/core";
 import { sortBricks } from "@koi/validation";
 import { toJSONSchema, z } from "zod";
 import { invalidInput, resolveCaller } from "../shared.js";
@@ -87,29 +87,56 @@ export function createForgeListTool(deps: ForgeListDeps): Tool {
       const wantAgent = input.scope === undefined || input.scope === "agent";
       const wantGlobal = input.scope === undefined || input.scope === "global";
 
-      const queries: ForgeQuery[] = [];
-      if (wantAgent) {
-        queries.push({
+      // Single-scope path: delegate to the store's summary search (which
+      // skips the full-artifact deep-clone) since no cross-scope ranking
+      // is needed. This avoids materializing heavy implementation/files
+      // /schema bytes that would be discarded by the summary projection.
+      if (wantAgent !== wantGlobal) {
+        const query: ForgeQuery = wantAgent
+          ? {
+              ...(input.kind !== undefined ? { kind: input.kind } : {}),
+              ...(input.lifecycle !== undefined ? { lifecycle: input.lifecycle } : {}),
+              scope: "agent",
+              createdBy: caller.agentId,
+              limit: callerLimit,
+            }
+          : {
+              ...(input.kind !== undefined ? { kind: input.kind } : {}),
+              ...(input.lifecycle !== undefined ? { lifecycle: input.lifecycle } : {}),
+              scope: "global",
+              limit: callerLimit,
+            };
+        const r = await searchSummariesWithFallback(deps.store, query);
+        if (!r.ok) {
+          const failure: Result<ForgeListOk, KoiError> = { ok: false, error: r.error };
+          return failure;
+        }
+        const success: Result<ForgeListOk, KoiError> = {
+          ok: true,
+          value: { summaries: r.value },
+        };
+        return success;
+      }
+
+      // Mixed-scope path: globally rank across both queries using full
+      // artifacts (which carry ranking keys like createdAt/fitness). The
+      // store deep-clones the per-scope slice, but each slice is bounded
+      // by callerLimit so total work is O(callerLimit), not O(total bricks).
+      const queries: ForgeQuery[] = [
+        {
           ...(input.kind !== undefined ? { kind: input.kind } : {}),
           ...(input.lifecycle !== undefined ? { lifecycle: input.lifecycle } : {}),
           scope: "agent",
           createdBy: caller.agentId,
           limit: callerLimit,
-        });
-      }
-      if (wantGlobal) {
-        queries.push({
+        },
+        {
           ...(input.kind !== undefined ? { kind: input.kind } : {}),
           ...(input.lifecycle !== undefined ? { lifecycle: input.lifecycle } : {}),
           scope: "global",
           limit: callerLimit,
-        });
-      }
-
-      // Use full search (not summaries) so we have ranking-bearing fields
-      // (createdAt, fitness, trailStrength) to rank globally across scopes
-      // before truncation. Without this, top-N from one scope can crowd out
-      // higher-ranked items from the other.
+        },
+      ];
       const responses = await Promise.all(queries.map((q) => deps.store.search(q)));
       for (const r of responses) {
         if (!r.ok) {

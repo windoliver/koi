@@ -148,6 +148,66 @@ export function recomputeBrickIdFromArtifact(brick: BrickArtifact): BrickId {
 }
 
 // ---------------------------------------------------------------------------
+// Input quotas (byte caps applied before hashing/persisting)
+// ---------------------------------------------------------------------------
+
+/** Hard byte limits for forge synthesis inputs to prevent unbounded payloads. */
+export const FORGE_INPUT_LIMITS = {
+  /** Max bytes for `name`. */
+  name: 256,
+  /** Max bytes for `description`. */
+  description: 4096,
+  /** Max bytes for `version`. */
+  version: 64,
+  /** Max bytes for `implementation` (function-body string). */
+  implementation: 65_536,
+  /** Max bytes for canonical-encoded `inputSchema` / `outputSchema`. */
+  schema: 16_384,
+} as const;
+
+/**
+ * Validate a string field against its byte limit (UTF-8). Returns a KoiError
+ * suitable for synthesizer return on failure, or `undefined` on success.
+ */
+export function validateFieldSize(
+  field: string,
+  value: string,
+  limit: number,
+): KoiError | undefined {
+  const bytes = new TextEncoder().encode(value).byteLength;
+  if (bytes > limit) {
+    return invalidInput(`forge-tools: ${field} exceeds ${limit}-byte limit (got ${bytes})`, {
+      field,
+      bytes,
+      limit,
+    });
+  }
+  return undefined;
+}
+
+/**
+ * Validate the canonical-encoded byte size of a JSON-shaped value (typically
+ * an `inputSchema` or `outputSchema`). Reuses the canonicalization that the
+ * identity hash uses so the size limit matches what is actually persisted
+ * and hashed.
+ */
+export function validateSchemaSize(
+  field: string,
+  value: unknown,
+  limit: number,
+): KoiError | undefined {
+  const encoded = canonicalize(value);
+  const bytes = new TextEncoder().encode(encoded).byteLength;
+  if (bytes > limit) {
+    return invalidInput(
+      `forge-tools: ${field} exceeds ${limit}-byte canonical-encoded limit (got ${bytes})`,
+      { field, bytes, limit },
+    );
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Caller resolution
 // ---------------------------------------------------------------------------
 

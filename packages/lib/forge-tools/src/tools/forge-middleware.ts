@@ -16,10 +16,17 @@ import type {
   Result,
   Tool,
 } from "@koi/core";
-import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { getExecutionContext } from "@koi/execution-context";
 import { toJSONSchema, z } from "zod";
-import { computeIdentityBrickId, forbidden, invalidInput, resolveCaller } from "../shared.js";
+import {
+  computeIdentityBrickId,
+  FORGE_INPUT_LIMITS,
+  forbidden,
+  invalidInput,
+  resolveCaller,
+  validateFieldSize,
+} from "../shared.js";
 
 const FORGE_BUILDER_ID = "@koi/forge-tools" as const;
 const FORGE_BUILD_TYPE = "https://koi.dev/forge-tools/v1" as const;
@@ -92,7 +99,11 @@ export function createForgeMiddlewareTool(deps: ForgeMiddlewareDeps): Tool {
       origin: "primordial",
     },
     origin: "primordial",
-    policy: DEFAULT_UNSANDBOXED_POLICY,
+    // The forge_middleware tool itself is a metadata-write into ForgeStore;
+    // it does not execute the synthesized middleware. Keep the tool sandboxed.
+    // Only the persisted ImplementationArtifact below carries the unsandboxed
+    // policy required for middleware bricks at runtime.
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (args: JsonObject): Promise<unknown> => {
       const startedAt = Date.now();
       const parsed = schema.safeParse(args);
@@ -106,6 +117,19 @@ export function createForgeMiddlewareTool(deps: ForgeMiddlewareDeps): Tool {
         return failure;
       }
       const input = parsed.data;
+      const sizeError =
+        validateFieldSize("name", input.name, FORGE_INPUT_LIMITS.name) ??
+        validateFieldSize("description", input.description, FORGE_INPUT_LIMITS.description) ??
+        validateFieldSize("version", input.version, FORGE_INPUT_LIMITS.version) ??
+        validateFieldSize(
+          "implementation",
+          input.implementation,
+          FORGE_INPUT_LIMITS.implementation,
+        );
+      if (sizeError !== undefined) {
+        const failure: Result<ForgeMiddlewareOk, KoiError> = { ok: false, error: sizeError };
+        return failure;
+      }
       if (input.scope === "zone") {
         const failure: Result<ForgeMiddlewareOk, KoiError> = {
           ok: false,

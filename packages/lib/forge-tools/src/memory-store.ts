@@ -32,6 +32,13 @@ import {
   recomputeBrickIdFromArtifact,
 } from "./shared.js";
 
+/**
+ * Hard cap on stored bricks per store instance. Prevents unique-version spam
+ * from filling per-process memory. The cap is intentionally loose for tests
+ * and in-process use; real persistence backends should set their own quotas.
+ */
+const MAX_STORED_BRICKS = 10_000;
+
 const TERMINAL_LIFECYCLES: ReadonlySet<BrickLifecycle> = new Set<BrickLifecycle>([
   "failed",
   "deprecated",
@@ -205,6 +212,16 @@ export function createInMemoryForgeStore(): ForgeStore {
       // Identity match, non-terminal lifecycle → idempotent success, do not overwrite metadata.
       return { ok: true, value: undefined };
     }
+    if (bricks.size >= MAX_STORED_BRICKS) {
+      return {
+        ok: false,
+        error: conflict(
+          brick.id,
+          `forge store at capacity (${MAX_STORED_BRICKS} bricks); cannot accept new artifact`,
+          { brickId: brick.id, capacity: MAX_STORED_BRICKS },
+        ),
+      };
+    }
     // Deep-clone on ingress so callers cannot mutate stored state through
     // shared references on nested objects (provenance, schemas, tags, etc.).
     const stored: BrickArtifact = { ...structuredClone(brick), storeVersion: 1 };
@@ -237,9 +254,16 @@ export function createInMemoryForgeStore(): ForgeStore {
   const searchSummaries = async (
     query: ForgeQuery,
   ): Promise<Result<readonly BrickSummary[], KoiError>> => {
-    const result = await search(query);
-    if (!result.ok) return result;
-    return { ok: true, value: result.value.map(toSummary) };
+    // Project to summary directly, skipping the full-artifact deep-clone.
+    // toSummary builds a fresh object from scalar fields, so callers cannot
+    // mutate stored state through it — making the clone unnecessary.
+    const filtered: BrickArtifact[] = [];
+    for (const brick of candidateBricks(query)) {
+      if (matchesBrickQuery(brick, query)) filtered.push(brick);
+    }
+    const sorted = sortBricks(filtered, query, { nowMs: Date.now() });
+    const limited = query.limit !== undefined ? sorted.slice(0, query.limit) : sorted;
+    return { ok: true, value: limited.map(toSummary) };
   };
 
   const remove = async (id: BrickId): Promise<Result<void, KoiError>> => {

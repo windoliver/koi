@@ -17,7 +17,15 @@ import type {
 import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { getExecutionContext } from "@koi/execution-context";
 import { toJSONSchema, z } from "zod";
-import { computeIdentityBrickId, forbidden, invalidInput, resolveCaller } from "../shared.js";
+import {
+  computeIdentityBrickId,
+  FORGE_INPUT_LIMITS,
+  forbidden,
+  invalidInput,
+  resolveCaller,
+  validateFieldSize,
+  validateSchemaSize,
+} from "../shared.js";
 
 const FORGE_BUILDER_ID = "@koi/forge-tools" as const;
 const FORGE_BUILD_TYPE = "https://koi.dev/forge-tools/v1" as const;
@@ -108,6 +116,23 @@ export function createForgeToolTool(deps: ForgeToolDeps): Tool {
         return failure;
       }
       const input = parsed.data;
+      const sizeError =
+        validateFieldSize("name", input.name, FORGE_INPUT_LIMITS.name) ??
+        validateFieldSize("description", input.description, FORGE_INPUT_LIMITS.description) ??
+        validateFieldSize("version", input.version, FORGE_INPUT_LIMITS.version) ??
+        validateFieldSize(
+          "implementation",
+          input.implementation,
+          FORGE_INPUT_LIMITS.implementation,
+        ) ??
+        validateSchemaSize("inputSchema", input.inputSchema, FORGE_INPUT_LIMITS.schema) ??
+        (input.outputSchema !== undefined
+          ? validateSchemaSize("outputSchema", input.outputSchema, FORGE_INPUT_LIMITS.schema)
+          : undefined);
+      if (sizeError !== undefined) {
+        const failure: Result<ForgeToolOk, KoiError> = { ok: false, error: sizeError };
+        return failure;
+      }
       if (input.scope === "zone") {
         const failure: Result<ForgeToolOk, KoiError> = {
           ok: false,
