@@ -537,7 +537,11 @@ export async function runStopGate(
 /**
  * Dispatch a permission decision to all middleware implementing `onPermissionDecision`.
  * Called by the permissions middleware via `ctx.dispatchPermissionDecision`.
- * Fire-and-forget from the caller's perspective — errors are swallowed here.
+ *
+ * Fire-and-forget from the caller's perspective — errors are swallowed per the public
+ * middleware contract. Audit durability is enforced by the post-execution force-flush in
+ * wrapToolCall/wrapModelCall, which drains both the permission-decision and tool-call
+ * records atomically before returning the tool result to the caller.
  */
 export async function runPermissionDecisionHooks(
   middleware: readonly KoiMiddleware[],

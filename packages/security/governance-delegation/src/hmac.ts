@@ -11,12 +11,12 @@ export function signHmac(token: CapabilityToken, secret: Uint8Array): string {
 export function verifyHmac(token: CapabilityToken, secret: Uint8Array): boolean {
   if (token.proof.kind !== "hmac-sha256") return false;
   const expected = createHmac("sha256", secret).update(serializeForSigning(token)).digest();
-  let actual: Buffer;
+  let actual: Uint8Array;
   try {
-    actual = Buffer.from(token.proof.digest, "base64");
+    actual = new Uint8Array(Buffer.from(token.proof.digest, "base64"));
   } catch {
     return false;
   }
   if (expected.length !== actual.length) return false;
-  return timingSafeEqual(expected, actual);
+  return timingSafeEqual(new Uint8Array(expected), actual);
 }

@@ -1,0 +1,25 @@
+{
+  "name": "@koi/long-running",
+  "description": "Long-running harness — multi-turn agent lifecycle with soft checkpointing, pause/resume, and crash recovery",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*",
+    "@koi/validation": "workspace:*"
+  },
+  "koi": {}
+}

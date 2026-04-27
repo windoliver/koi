@@ -295,6 +295,31 @@ describe("createBashTool — cancellation and timeout", () => {
     expect(result.exitCode).not.toBe(0);
   });
 
+  test("rejects invalid timeoutMs before spawning", async () => {
+    const result = (await tool.execute(
+      { command: "echo should-not-run", timeoutMs: Number.NaN },
+      {},
+    )) as Record<string, unknown>;
+
+    expect(result.error).toMatch(/timeoutMs/i);
+    expect(result.exitCode).toBeUndefined();
+  });
+
+  test("clamps timeoutMs to the policy maximum", async () => {
+    const clampedTool = createBashTool({ policy: { maxTimeoutMs: 100 } });
+    const startTime = Date.now();
+
+    const result = (await clampedTool.execute(
+      { command: "sleep 2", timeoutMs: 1_000 },
+      {},
+    )) as Record<string, unknown>;
+
+    const elapsed = Date.now() - startTime;
+    expect(elapsed).toBeLessThan(750);
+    expect(result.timedOut).toBe(true);
+    expect(result.exitCode).not.toBe(0);
+  });
+
   test("pre-aborted signal prevents spawn", async () => {
     const controller = new AbortController();
     controller.abort();
@@ -390,6 +415,14 @@ describe("createBashTool — tool descriptor", () => {
   test("input schema requires command field", () => {
     const schema = createBashTool().descriptor.inputSchema;
     expect((schema as Record<string, unknown>).required).toContain("command");
+  });
+
+  test("timeoutMs schema exposes the policy minimum and maximum", () => {
+    const schema = createBashTool({ policy: { maxTimeoutMs: 1234 } }).descriptor
+      .inputSchema as Record<string, unknown>;
+    const properties = schema.properties as Record<string, Record<string, unknown>>;
+    expect(properties.timeoutMs?.minimum).toBe(1);
+    expect(properties.timeoutMs?.maximum).toBe(1234);
   });
 });
 

@@ -1,0 +1,361 @@
+import { describe, expect, it } from "bun:test";
+import type {
+  ContentReplacement,
+  HarnessSnapshot,
+  HarnessSnapshotStore,
+  KoiError,
+  PendingFrame,
+  RecoveryPlan,
+  Result,
+  SessionPersistence,
+  SessionRecord,
+  SessionStatus,
+  SnapshotNode,
+} from "@koi/core";
+import { agentId, harnessId, nodeId } from "@koi/core";
+import { shouldSoftCheckpoint } from "../checkpoint-policy.js";
+import { createLongRunningHarness } from "../harness.js";
+
+const ok = <T>(value: T): Result<T, KoiError> => ({ ok: true, value });
+
+function makeStore(): HarnessSnapshotStore {
+  const nodes: SnapshotNode<HarnessSnapshot>[] = [];
+  let counter = 0;
+  return {
+    put: (chain, data, parentIds, metadata) => {
+      counter += 1;
+      const node: SnapshotNode<HarnessSnapshot> = {
+        nodeId: nodeId(`n-${counter}`),
+        chainId: chain,
+        parentIds,
+        contentHash: String(counter),
+        data,
+        createdAt: Date.now(),
+        metadata: metadata ?? {},
+      };
+      nodes.push(node);
+      return ok<SnapshotNode<HarnessSnapshot> | undefined>(node);
+    },
+    get: (id) => {
+      const found = nodes.find((n) => n.nodeId === id);
+      return found
+        ? ok(found)
+        : { ok: false, error: { code: "NOT_FOUND", message: "node missing", retryable: false } };
+    },
+    head: (_chain) =>
+      ok<SnapshotNode<HarnessSnapshot> | undefined>(
+        nodes.length > 0 ? nodes[nodes.length - 1] : undefined,
+      ),
+    list: (_chain) => ok([...nodes].reverse() as readonly SnapshotNode<HarnessSnapshot>[]),
+    ancestors: () => ok([] as readonly SnapshotNode<HarnessSnapshot>[]),
+    fork: (sourceNodeId, _newChainId, label) => ok({ parentNodeId: sourceNodeId, label }),
+    prune: () => ok(0),
+    close: () => undefined,
+  };
+}
+
+function makePersistence(): SessionPersistence {
+  const sessions = new Map<string, SessionRecord>();
+  return {
+    saveSession: (record) => {
+      sessions.set(record.sessionId, record);
+      return ok<void>(undefined);
+    },
+    loadSession: (id) => {
+      const rec = sessions.get(id);
+      return rec
+        ? ok(rec)
+        : {
+            ok: false,
+            error: { code: "NOT_FOUND", message: "session missing", retryable: false },
+          };
+    },
+    removeSession: (id) => {
+      sessions.delete(id);
+      return ok<void>(undefined);
+    },
+    listSessions: () => ok([...sessions.values()] as readonly SessionRecord[]),
+    savePendingFrame: () => ok<void>(undefined),
+    loadPendingFrames: () => ok([] as readonly PendingFrame[]),
+    clearPendingFrames: () => ok<void>(undefined),
+    removePendingFrame: () => ok<void>(undefined),
+    setSessionStatus: (id, status: SessionStatus) => {
+      const rec = sessions.get(id);
+      if (rec) sessions.set(id, { ...rec, status });
+      return ok<void>(undefined);
+    },
+    saveContentReplacement: () => ok<void>(undefined),
+    loadContentReplacements: () => ok([] as readonly ContentReplacement[]),
+    recover: () =>
+      ok({
+        sessions: [...sessions.values()],
+        pendingFrames: new Map(),
+        skipped: [],
+      } as RecoveryPlan),
+    close: () => undefined,
+  };
+}
+
+const baseConfig = () => ({
+  harnessId: harnessId("h-1"),
+  agentId: agentId("a-1"),
+  harnessStore: makeStore(),
+  sessionPersistence: makePersistence(),
+  // pause() now requires saveState so the suspended snapshot can be
+  // resumed; provide a no-op for tests that don't exercise replay.
+  saveState: async (): Promise<unknown> => ({ kind: "test-state" }),
+  // quiesceEngine is required at construction; tests don't run a
+  // real engine, so a trivial drain-ack is sufficient.
+  quiesceEngine: async (): Promise<void> => undefined,
+});
+
+describe("shouldSoftCheckpoint", () => {
+  it("returns false for turn 0 or non-multiples", () => {
+    expect(shouldSoftCheckpoint(0, 5)).toBe(false);
+    expect(shouldSoftCheckpoint(1, 5)).toBe(false);
+    expect(shouldSoftCheckpoint(4, 5)).toBe(false);
+  });
+  it("returns true on every interval boundary", () => {
+    expect(shouldSoftCheckpoint(5, 5)).toBe(true);
+    expect(shouldSoftCheckpoint(10, 5)).toBe(true);
+  });
+  it("returns false for non-positive interval", () => {
+    expect(shouldSoftCheckpoint(5, 0)).toBe(false);
+    expect(shouldSoftCheckpoint(5, -1)).toBe(false);
+  });
+});
+
+describe("createLongRunningHarness", () => {
+  it("rejects invalid config", () => {
+    const r = createLongRunningHarness({
+      harnessId: harnessId(""),
+      agentId: agentId("a"),
+      harnessStore: makeStore(),
+      sessionPersistence: makePersistence(),
+      saveState: async () => undefined,
+      quiesceEngine: async () => undefined,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("VALIDATION");
+  });
+
+  it("start() activates and returns a lease + sessionId", async () => {
+    const r = createLongRunningHarness(baseConfig());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const started = await r.value.start();
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    expect(started.value.lease.sessionId).toBe(started.value.sessionId);
+    expect(r.value.status().phase).toBe("active");
+  });
+
+  it("start() twice returns CONFLICT", async () => {
+    const r = createLongRunningHarness(baseConfig());
+    if (!r.ok) throw new Error("create failed");
+    const first = await r.value.start();
+    expect(first.ok).toBe(true);
+    const second = await r.value.start();
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.error.code).toBe("CONFLICT");
+  });
+
+  it("pause() with valid lease publishes suspended", async () => {
+    const r = createLongRunningHarness(baseConfig());
+    if (!r.ok) throw new Error("create failed");
+    const started = await r.value.start();
+    if (!started.ok) throw new Error("start failed");
+    const sessionResult = {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    };
+    const paused = await r.value.pause(started.value.lease, sessionResult);
+    expect(paused.ok).toBe(true);
+    expect(r.value.status().phase).toBe("suspended");
+  });
+
+  it("pause() with revoked lease returns STALE_REF", async () => {
+    const r = createLongRunningHarness(baseConfig());
+    if (!r.ok) throw new Error("create failed");
+    const started = await r.value.start();
+    if (!started.ok) throw new Error("start failed");
+    const sessionResult = {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    };
+    const first = await r.value.pause(started.value.lease, sessionResult);
+    expect(first.ok).toBe(true);
+    const stale = await r.value.pause(started.value.lease, sessionResult);
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.error.code).toBe("STALE_REF");
+  });
+
+  it("resume() after pause re-activates", async () => {
+    const cfg = baseConfig();
+    const r = createLongRunningHarness(cfg);
+    if (!r.ok) throw new Error("create failed");
+    const started = await r.value.start();
+    if (!started.ok) throw new Error("start failed");
+    await r.value.pause(started.value.lease, {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    });
+    const resumed = await r.value.resume();
+    expect(resumed.ok).toBe(true);
+    expect(r.value.status().phase).toBe("active");
+  });
+
+  it("dispose() is idempotent", async () => {
+    const r = createLongRunningHarness(baseConfig());
+    if (!r.ok) throw new Error("create failed");
+    const started = await r.value.start();
+    if (!started.ok) throw new Error("start failed");
+    const first = await r.value.dispose(started.value.lease);
+    expect(first.ok).toBe(true);
+    const second = await r.value.dispose();
+    expect(second.ok).toBe(true);
+  });
+
+  it("retryable failTask keeps phase active", async () => {
+    const r = createLongRunningHarness(baseConfig());
+    if (!r.ok) throw new Error("create failed");
+    const started = await r.value.start();
+    if (!started.ok) throw new Error("start failed");
+    const res = await r.value.failTask(started.value.lease, "t1", {
+      code: "TIMEOUT",
+      message: "transient",
+      retryable: true,
+    });
+    expect(res.ok).toBe(true);
+    expect(r.value.status().phase).toBe("active");
+  });
+
+  it("non-retryable failTask publishes failed", async () => {
+    const r = createLongRunningHarness(baseConfig());
+    if (!r.ok) throw new Error("create failed");
+    const started = await r.value.start();
+    if (!started.ok) throw new Error("start failed");
+    const res = await r.value.failTask(started.value.lease, "t1", {
+      code: "VALIDATION",
+      message: "bad input",
+      retryable: false,
+    });
+    expect(res.ok).toBe(true);
+    expect(r.value.status().phase).toBe("failed");
+  });
+
+  it("stale onBeforeTurn from paused session cannot wedge active drain gate", async () => {
+    const r = createLongRunningHarness(baseConfig());
+    if (!r.ok) throw new Error("create failed");
+    const started = await r.value.start();
+    if (!started.ok) throw new Error("start failed");
+    const mw = r.value.createMiddleware();
+    const staleCtx = {
+      session: { sessionId: started.value.sessionId },
+      turnId: "turn-stale",
+    } as Parameters<NonNullable<typeof mw.onBeforeTurn>>[0];
+    // Pause the session. After this, the prior session id is no longer
+    // the active one — a late onBeforeTurn from it must be ignored.
+    await r.value.pause(started.value.lease, {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    });
+    await mw.onBeforeTurn?.(staleCtx);
+    // Resume and immediately try to dispose — if the stale start had
+    // wedged the drain gate, dispose would burn the abort timeout.
+    const resumed = await r.value.resume();
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) return;
+    const t0 = Date.now();
+    const disposed = await r.value.dispose(resumed.value.lease);
+    expect(disposed.ok).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  it("orphan turn from prior session does not wedge later session's drain", async () => {
+    // Use a short abortTimeoutMs: the prior session's pause itself
+    // will see its own orphan in the drain set (legitimate behavior),
+    // so we let it time out quickly, then verify the resumed session
+    // is unaffected.
+    const r = createLongRunningHarness({ ...baseConfig(), abortTimeoutMs: 50 });
+    if (!r.ok) throw new Error("create failed");
+    const started = await r.value.start();
+    if (!started.ok) throw new Error("start failed");
+    const mw = r.value.createMiddleware();
+    const sessionACtx = {
+      session: { sessionId: started.value.sessionId },
+      turnId: "turn-A-orphan",
+    } as Parameters<NonNullable<typeof mw.onBeforeTurn>>[0];
+    // Real onBeforeTurn under session A — registers a turn-in-flight
+    // entry under A's bucket.
+    await mw.onBeforeTurn?.(sessionACtx);
+    // Pause/resume before A's onAfterTurn runs. A's bucket is now
+    // orphaned but session-scoped, so it must not affect session B.
+    await r.value.pause(started.value.lease, {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    });
+    const resumed = await r.value.resume();
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) return;
+    const t0 = Date.now();
+    const disposed = await r.value.dispose(resumed.value.lease);
+    expect(disposed.ok).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  it("createMiddleware advances soft checkpoint cadence", async () => {
+    const cfg = { ...baseConfig(), softCheckpointInterval: 2 };
+    const r = createLongRunningHarness(cfg);
+    if (!r.ok) throw new Error("create failed");
+    const started = await r.value.start();
+    if (!started.ok) throw new Error("start failed");
+    const mw = r.value.createMiddleware();
+    // Hooks are now session-scoped: a turn context must carry the
+    // active session id, otherwise the callback no-ops to prevent
+    // stale-callback contamination across pause/resume cycles.
+    const fakeCtx = {
+      session: { sessionId: started.value.sessionId },
+    } as Parameters<NonNullable<typeof mw.onAfterTurn>>[0];
+    await mw.onBeforeTurn?.(fakeCtx);
+    await mw.onAfterTurn?.(fakeCtx);
+    await mw.onBeforeTurn?.(fakeCtx);
+    await mw.onAfterTurn?.(fakeCtx);
+    expect(r.value.status().metrics.totalTurns).toBe(2);
+  });
+});

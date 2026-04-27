@@ -89,3 +89,7 @@ All provider verifiers accept `rawBodyBytes?: Uint8Array` for byte-exact HMAC wh
 **Dispatcher cancellation** — `WebhookDispatcher` receives an `AbortSignal` that fires when `maxDispatchMs` expires. Dispatchers should honour it for cooperative timeout handling.
 
 **Idempotency** — four-phase protocol: `tryBegin` (reserve) → `renew` (heartbeat) → `commit`/`abort` (settle). Dedup keys are scoped by `provider + account` so the same event ID from two tenants dispatches both.
+
+The idempotency renewal regression test uses a generous processing TTL so it
+asserts the heartbeat contract without depending on sub-20 ms scheduler timing
+under CI load.

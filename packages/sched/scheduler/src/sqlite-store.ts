@@ -380,7 +380,7 @@ export function createSqliteScheduleStore(db: Database): ScheduleStore {
 
 export interface RunStoreFilter {
   readonly agentId?: AgentId | undefined;
-  readonly status?: "completed" | "failed" | undefined;
+  readonly status?: "completed" | "failed" | "dead_letter" | undefined;
   readonly since?: number | undefined;
   readonly limit?: number | undefined;
 }

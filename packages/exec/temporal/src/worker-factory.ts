@@ -18,10 +18,10 @@ export interface WorkerLike {
   readonly shutdown: () => void;
 }
 
-export interface TemporalConfig {
+export interface WorkerConfig {
+  readonly taskQueue: string;
   readonly url?: string | undefined;
   readonly namespace?: string | undefined;
-  readonly taskQueue: string;
   readonly maxCachedWorkflows?: number | undefined;
 }
 
@@ -37,20 +37,28 @@ export interface WorkerCreateParams {
 export interface WorkerAndConnection {
   readonly worker: WorkerLike;
   readonly connection: NativeConnectionLike;
+  /**
+   * Optional explicit readiness promise. If provided, `createTemporalWorker` awaits it
+   * (with a 10-second timeout) before returning the handle. Production factories should
+   * resolve this after the first successful poll or connection establishment.
+   */
+  readonly readyPromise?: Promise<void> | undefined;
 }
 
 export interface WorkerHandle {
   readonly worker: WorkerLike;
   readonly connection: NativeConnectionLike;
   /**
-   * Start the worker and track its run promise so dispose() can drain before
-   * closing the connection. Equivalent to worker.run() but drain-aware.
+   * Resolves when the worker run loop completes, rejects on unexpected crashes.
+   * Populated once run() or dispose() is called (whichever comes first).
+   */
+  readonly runPromise: Promise<void>;
+  /**
+   * Start the worker run loop. Idempotent — calling multiple times returns the same promise.
    */
   readonly run: () => Promise<void>;
   /**
-   * Gracefully shut down: signal stop, wait for drain, then close connection.
-   * Safe to call before or after run() — if run() was never called, shutdown
-   * is signalled and connection closed immediately.
+   * Gracefully shut down: signal stop, await drain, then close connection.
    */
   readonly dispose: () => Promise<void>;
 }
@@ -60,7 +68,6 @@ export interface WorkerHandle {
 // ---------------------------------------------------------------------------
 
 async function defaultCreateWorker(params: WorkerCreateParams): Promise<WorkerAndConnection> {
-  // Dynamic import keeps @temporalio/worker out of the module graph for test environments
   const { Worker, NativeConnection } = await import("@temporalio/worker");
 
   const connection = await NativeConnection.connect({ address: params.serverUrl });
@@ -75,7 +82,6 @@ async function defaultCreateWorker(params: WorkerCreateParams): Promise<WorkerAn
     });
     return { worker, connection };
   } catch (e: unknown) {
-    // Close the gRPC connection to avoid leaking it on worker creation failure.
     await connection.close();
     throw e;
   }
@@ -86,14 +92,14 @@ async function defaultCreateWorker(params: WorkerCreateParams): Promise<WorkerAn
 // ---------------------------------------------------------------------------
 
 export async function createTemporalWorker(
-  config: TemporalConfig,
+  config: WorkerConfig,
   activities: Record<string, (...args: readonly unknown[]) => unknown>,
   workflowsPath: string,
   createWorkerFn: (
     params: WorkerCreateParams,
   ) => Promise<WorkerAndConnection> = defaultCreateWorker,
 ): Promise<WorkerHandle> {
-  const { worker, connection } = await createWorkerFn({
+  const { worker, connection, readyPromise } = await createWorkerFn({
     serverUrl: config.url ?? "localhost:7233",
     namespace: config.namespace ?? "default",
     taskQueue: config.taskQueue,
@@ -102,18 +108,53 @@ export async function createTemporalWorker(
     activities,
   });
 
-  // Tracks the promise returned by worker.run() so dispose() can drain.
-  // wrappedWorker intercepts run() so any call path — handle.run() or
-  // handle.worker.run() — always records runPromise.
-  let runPromise: Promise<void> | undefined;
+  // Deferred run: the actual worker.run() is lazy — started on first call to
+  // handle.run(), handle.worker.run(), or handle.dispose(). runPromise is always
+  // a defined Promise<void> on the handle; it resolves/rejects once the run loop settles.
+  let runStarted = false;
+  let runResolve!: () => void;
+  let runReject!: (err: unknown) => void;
+  const runPromise = new Promise<void>((res, rej) => {
+    runResolve = res;
+    runReject = rej;
+  });
+
+  function startRun(): Promise<void> {
+    if (!runStarted) {
+      runStarted = true;
+      worker.run().then(runResolve, runReject);
+    }
+    return runPromise;
+  }
+
+  // If the factory provides an explicit readiness signal, await it with a timeout
+  // so the caller only receives a handle once the worker is actually polling.
+  if (readyPromise !== undefined) {
+    const STARTUP_TIMEOUT_MS = 10_000;
+    let startupError: unknown;
+    await Promise.race([
+      readyPromise,
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("[temporal-worker] worker readiness timed out after 10s")),
+          STARTUP_TIMEOUT_MS,
+        ),
+      ),
+      startRun().then(() => {
+        throw new Error("[temporal-worker] run loop exited unexpectedly during startup");
+      }),
+    ]).catch((err: unknown) => {
+      startupError = err;
+    });
+    if (startupError !== undefined) {
+      worker.shutdown();
+      await connection.close().catch(() => {});
+      throw new Error("[temporal-worker] worker failed during startup", { cause: startupError });
+    }
+  }
 
   const wrappedWorker: WorkerLike = {
-    run(): Promise<void> {
-      if (runPromise === undefined) {
-        runPromise = worker.run();
-      }
-      return runPromise;
-    },
+    run: startRun,
     shutdown(): void {
       worker.shutdown();
     },
@@ -122,23 +163,19 @@ export async function createTemporalWorker(
   return {
     worker: wrappedWorker,
     connection,
+    runPromise,
 
     run(): Promise<void> {
-      return wrappedWorker.run();
+      return startRun();
     },
 
     async dispose(): Promise<void> {
-      if (runPromise === undefined) {
-        // Worker is INITIALIZED and holds a ref-count on the connection.
-        // NativeConnection.close() throws "Cannot close connection while Workers
-        // hold a reference" until the worker reaches STOPPED state. Start it
-        // now so shutdown() can transition it out of INITIALIZED and release
-        // the reference before we close the transport.
-        runPromise = worker.run();
-      }
+      // Ensure the run loop is started so shutdown() can transition the worker
+      // to STOPPED and release the NativeConnection reference.
+      startRun();
       wrappedWorker.shutdown();
       await runPromise.catch(() => {
-        // Swallow — shutting down intentionally; errors surfaced to run() caller.
+        // Swallow — shutting down intentionally; errors surfaced via runPromise.
       });
       await connection.close();
     },
