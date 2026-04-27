@@ -1,62 +1,47 @@
-import { describe, expect, mock, test } from "bun:test";
-import { copyToClipboard, MAX_CLIPBOARD_BYTES } from "./clipboard.js";
+/**
+ * Clipboard utilities tests.
+ *
+ * OSC 52 text copy (copyToClipboard) was removed in #1940 — TUI components
+ * now call renderer.copyToClipboardOSC52() directly so the sequence flows
+ * through the renderer's output path instead of bypassing it via direct
+ * process.stdout.write. Size guards moved to isBelowOsc52Limit().
+ */
 
-describe("copyToClipboard", () => {
-  test("returns false when stdout is not a TTY", () => {
-    const original = process.stdout.isTTY;
-    try {
-      Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
-      expect(copyToClipboard("hello")).toBe(false);
-    } finally {
-      Object.defineProperty(process.stdout, "isTTY", { value: original, configurable: true });
-    }
-  });
+import { describe, expect, test } from "bun:test";
+import { isBelowOsc52Limit, MAX_CLIPBOARD_BYTES, readClipboardImage } from "./clipboard.js";
 
-  test("writes correct OSC 52 escape sequence with base64 payload", () => {
-    const original = process.stdout.isTTY;
-    const writeFn = mock((_chunk: string | Uint8Array) => true);
-    const originalWrite = process.stdout.write;
-    try {
-      Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
-      // Replace write — cast through unknown to satisfy TS overload signature
-      process.stdout.write = writeFn as unknown as typeof process.stdout.write;
-
-      const result = copyToClipboard("hello");
-
-      expect(result).toBe(true);
-      expect(writeFn).toHaveBeenCalledTimes(1);
-
-      const expected = Buffer.from("hello").toString("base64");
-      expect(writeFn.mock.calls[0]?.[0]).toBe(`\x1b]52;c;${expected}\x07`);
-    } finally {
-      Object.defineProperty(process.stdout, "isTTY", { value: original, configurable: true });
-      process.stdout.write = originalWrite;
-    }
-  });
-
-  test("empty string produces valid OSC 52 sequence", () => {
-    const original = process.stdout.isTTY;
-    const writeFn = mock((_chunk: string | Uint8Array) => true);
-    const originalWrite = process.stdout.write;
-    try {
-      Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
-      process.stdout.write = writeFn as unknown as typeof process.stdout.write;
-
-      const result = copyToClipboard("");
-
-      expect(result).toBe(true);
-
-      const emptyBase64 = Buffer.from("").toString("base64");
-      expect(writeFn.mock.calls[0]?.[0]).toBe(`\x1b]52;c;${emptyBase64}\x07`);
-    } finally {
-      Object.defineProperty(process.stdout, "isTTY", { value: original, configurable: true });
-      process.stdout.write = originalWrite;
-    }
+describe("MAX_CLIPBOARD_BYTES", () => {
+  test("is 100_000", () => {
+    expect(MAX_CLIPBOARD_BYTES).toBe(100_000);
   });
 });
 
-describe("MAX_CLIPBOARD_BYTES", () => {
-  test("is 100000", () => {
-    expect(MAX_CLIPBOARD_BYTES).toBe(100_000);
+describe("isBelowOsc52Limit", () => {
+  test("returns true for empty string", () => {
+    expect(isBelowOsc52Limit("")).toBe(true);
+  });
+
+  test("returns true for short text", () => {
+    expect(isBelowOsc52Limit("hello")).toBe(true);
+  });
+
+  test("returns false for text whose base64 exceeds MAX_CLIPBOARD_BYTES", () => {
+    // base64 expands ~4/3; generate raw bytes that will exceed the limit.
+    const oversize = "x".repeat(MAX_CLIPBOARD_BYTES);
+    expect(isBelowOsc52Limit(oversize)).toBe(false);
+  });
+
+  test("returns true for text right at the limit boundary", () => {
+    // 3 raw bytes → 4 base64 chars. MAX_CLIPBOARD_BYTES / (4/3) ≈ 75000 raw bytes.
+    const atLimit = "x".repeat(Math.floor((MAX_CLIPBOARD_BYTES * 3) / 4));
+    expect(isBelowOsc52Limit(atLimit)).toBe(true);
+  });
+});
+
+describe("readClipboardImage", () => {
+  test("returns null on unsupported platform when tool is missing", async () => {
+    // Always catches errors and returns null — safe to call without platform tools.
+    const result = await readClipboardImage();
+    expect(result).toBeNull();
   });
 });

@@ -67,6 +67,7 @@ import {
   createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
+import { createHttpTransport } from "@koi/nexus-client";
 import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import {
@@ -1301,7 +1302,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // 2. TUI state setup (P2-A: show TUI immediately, before runtime assembly)
   // ---------------------------------------------------------------------------
 
-  const store = createStore(createInitialState(modelName));
+  // Holder so the CLI can route critical-subscriber failures through the
+  // shared shutdown() that aborts active streams + background tasks before
+  // exit (#1940). createTuiApp installs a default fatal handler that runs
+  // handle.stop(); this CLI wraps it with the broader shutdown sequence.
+  const fatalRouter: { shutdown?: (code: number, reason?: string) => Promise<void> } = {};
+  const store = createStore(createInitialState(modelName), {
+    onFatal: (err) => {
+      // createTuiApp.start() installs its own handler that overrides this
+      // one for the lifetime of the run, so a fatal arriving while the TUI
+      // is mounted goes straight to handle.stop(). This branch only fires
+      // before/after createTuiApp's lifecycle window.
+      if (fatalRouter.shutdown) {
+        void fatalRouter.shutdown(1, `fatal: ${err.message}`);
+        return;
+      }
+      // tui-single-writer-exception: emergency log before exit, no live renderer.
+      process.stderr.write(`[tui] fatal before app handle: ${String(err)}\n`);
+      process.exit(1);
+    },
+  });
 
   // Current-model middleware: holds a mutable box that the model-picker
   // modal mutates via TuiRoot's `onModelSwitch` callback. Rewrites
@@ -1639,6 +1659,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The `dispose()` on this backend closes the bridge subprocess and unsubscribes.
   let resolvedFilesystemBackend: import("@koi/core").FileSystemBackend | undefined;
 
+  // let: set when nexus local-bridge transport resolves; passed to runtime for
+  // permission policy sync and audit trail. Undefined for local-only sessions.
+  let nexusFilesystemTransport: import("@koi/nexus-client").NexusTransport | undefined;
+
   // Single OAuthChannel — shared by nexus and MCP. Created unconditionally so
   // nav:mcp-auth and MCP onAuthNeeded always have a renderer regardless of whether
   // a nexus filesystem is configured. submitAuthCode is forwarded to the nexus
@@ -1676,6 +1700,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
       });
       tuiAuthInterceptor = createAuthInterceptor(transport);
+      // Store for createKoiRuntime — permissions + audit nexus wiring
+      nexusFilesystemTransport = transport as unknown as import("@koi/nexus-client").NexusTransport;
+    } else if (manifestFilesystemConfig?.backend === "nexus") {
+      // HTTP nexus backend: create a lightweight HTTP transport for permissions/audit.
+      // resolveFileSystemAsync only returns transport for local-bridge; HTTP transport
+      // is created internally inside createNexusFileSystem and not exposed. We build
+      // a separate one here — same URL/apiKey, owned by the runtime for lifetime.
+      const opts = manifestFilesystemConfig.options;
+      if (typeof opts?.url === "string") {
+        nexusFilesystemTransport = createHttpTransport({
+          url: opts.url,
+          apiKey: typeof opts.apiKey === "string" ? opts.apiKey : undefined,
+        });
+      }
     }
   }
 
@@ -2030,6 +2068,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // compensating ops through the right backend. Omitted when undefined —
     // factory falls back to the default local backend rooted at cwd.
     ...(resolvedFilesystemBackend !== undefined ? { filesystem: resolvedFilesystemBackend } : {}),
+    // Nexus transport (when a local-bridge resolved above) enables permission
+    // policy sync and nexus audit trail alongside NDJSON/SQLite sinks.
+    ...(nexusFilesystemTransport !== undefined ? { nexusTransport: nexusFilesystemTransport } : {}),
     // @koi/artifacts tools — wired when the advisory lock was acquired at
     // boot. When construction failed (concurrent TUI, FS issue) the array
     // is empty and the artifact_* tools are simply absent from the agent.
@@ -2142,6 +2183,44 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       : manifestAudit?.violations !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
         ? { violationSqlitePath: manifestAudit.violations }
         : {}),
+    // KOI_AUDIT_NDJSON_MAX_BYTES=<n> enables size-based NDJSON log rotation.
+    // KOI_AUDIT_NDJSON_DAILY=1 enables daily UTC rotation.
+    ...(() => {
+      const rawBytes = process.env.KOI_AUDIT_NDJSON_MAX_BYTES;
+      const maxBytes = rawBytes !== undefined ? Number(rawBytes) : undefined;
+      if (
+        rawBytes !== undefined &&
+        (maxBytes === undefined || !Number.isFinite(maxBytes) || maxBytes <= 0)
+      ) {
+        console.warn(
+          `[koi] KOI_AUDIT_NDJSON_MAX_BYTES="${rawBytes}" is not a positive number — NDJSON size rotation disabled`,
+        );
+      }
+      const daily = process.env.KOI_AUDIT_NDJSON_DAILY === "1";
+      const validMaxBytes = maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes > 0;
+      if (validMaxBytes || daily) {
+        return {
+          auditNdjsonRotation: {
+            ...(validMaxBytes ? { maxSizeBytes: maxBytes } : {}),
+            ...(daily ? { daily: true as const } : {}),
+          },
+        };
+      }
+      return {};
+    })(),
+    // KOI_AUDIT_SQLITE_RETENTION_DAYS is not supported in the CLI audit path because
+    // the CLI always writes signed (hash-chained) audit entries, which are incompatible
+    // with session-granular pruning. Warn and ignore instead of aborting at boot.
+    ...(() => {
+      const rawDays = process.env.KOI_AUDIT_SQLITE_RETENTION_DAYS;
+      if (rawDays !== undefined) {
+        console.warn(
+          "[koi] KOI_AUDIT_SQLITE_RETENTION_DAYS is not supported in the CLI audit path " +
+            "(signed/hash-chained logs cannot be pruned). The setting is ignored.",
+        );
+      }
+      return {};
+    })(),
     // Per-sink manifest provenance: only pass the source path for sinks that
     // actually came from the manifest (not from operator env vars). This lets
     // createKoiRuntime run a final containment check immediately before each
@@ -2433,7 +2512,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     return handle;
   });
 
-  // let: set once after createTuiApp resolves, read in shutdown
+  // let: set once after createTuiApp resolves, read in shutdown.
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
   // let: per-submit abort controller, replaced on each new stream
   let activeController: AbortController | null = null;
@@ -3462,6 +3541,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       process.exit(exitCode);
     }
   };
+  // Wire fatal store-listener path through the full shutdown sequence so
+  // active streams / background tasks are aborted before exit (#1940).
+  fatalRouter.shutdown = shutdown;
 
   // ---------------------------------------------------------------------------
   // 4b. Upgrade SIGUSR1 to the FULL graceful-shutdown handler (#1906 R10/R11)
@@ -5473,6 +5555,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   process.once("SIGTERM", onProcessSigterm);
   process.once("SIGHUP", onProcessSighup);
   // SIGUSR1 is already armed from section 4b (#1906) — no install here.
+  // Note: process-global uncaughtException/unhandledRejection handlers are
+  // intentionally NOT installed here. They would alter the host-process
+  // contract for embedded callers (other CLIs, tests, library consumers) by
+  // routing unrelated rejections/exceptions into TUI shutdown. If global
+  // catch-all teardown is needed, the standalone CLI entrypoint owns it.
 
   // Register stdin close listener and set tuiRunning BEFORE start() so
   // PTY teardown during startup is not missed. tuiRunning is cleared in

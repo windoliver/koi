@@ -1113,6 +1113,13 @@ async function* synthesizeStream(
   if (response.content) {
     yield { kind: "text_delta", delta: response.content };
   }
+  // Note: synthesizeStream does NOT promote any response-metadata field
+  // into executable tool_call_* chunks. ModelResponse.metadata is a
+  // generic, caller-controlled bag — letting it drive tool execution is
+  // a trust-boundary failure (any middleware or compromised adapter
+  // could forge it). Middleware that needs to inject recovered calls
+  // (e.g. @koi/middleware-tool-recovery) must run on the streaming path
+  // (`wrapModelStream`) and emit real tool_call_* chunks itself.
   yield {
     kind: "done",
     response,

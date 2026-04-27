@@ -565,3 +565,14 @@ L2  @koi/middleware-tool-audit ◄───────────────�
 ```
 
 **Dev-only dependency** (`@koi/test-utils`) is used in tests but is not a runtime import.
+
+
+## Recent durability hardening (rounds 39-48)
+
+- **Round 39 F1** — `getSnapshot()` now uses a non-destructive read-only fold so polling the snapshot mid-session does not drain per-session counters.
+- **Round 39 F2** — `queueLatePersist()` recomputes lifecycle signals after late-completion persists so threshold transitions caused by late tool outcomes are surfaced.
+- **Round 41 F1** — Late-completion persists honor the same pre-hydration gate as `recordOnSessionEnd`; an outage during startup cannot overwrite historical state.
+- **Round 42 F1** — Timed-out sessions no longer pin `sessionStates`; a hung tool dependency cannot poison overlap detection or silence later signals/reports.
+- **Round 44 F2** — `loadAndMergeForSave` propagates `store.load()` failures so a transient read error never produces an ungrounded write.
+- **Round 48 F3** — A new `pendingLateSignals` flag drains a deferred late-completion signal on the next clean session-end when overlap suppressed the original emission.
+

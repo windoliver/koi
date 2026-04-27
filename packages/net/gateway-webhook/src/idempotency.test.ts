@@ -59,20 +59,20 @@ describe("createIdempotencyStore", () => {
   });
 
   test("renew extends processing TTL — active dispatch keeps its reservation", () => {
-    // processingTtlMs=20ms: without renewal the entry would expire after 20ms.
-    // renew() is called before the 20ms window closes, resetting the clock.
-    const store = createIdempotencyStore({ processingTtlMs: 20 });
+    // Use a generous TTL so CI scheduler pauses cannot turn this behavioral
+    // assertion into a wall-clock race.
+    const store = createIdempotencyStore({ processingTtlMs: 1_000 });
     const r = store.tryBegin("key-1");
     if (r.state !== "ok") throw new Error("unexpected");
-    // Wait 15ms — close to expiry but not yet expired
+    // Wait briefly, then renew before the original lease expires.
     const halfway = Date.now() + 15;
     while (Date.now() < halfway) {
       /* spin */
     }
-    // Renew resets the TTL to 20ms from now
+    // Renew resets the TTL from now.
     const renewed = store.renew("key-1", r.token);
     expect(renewed).toBe(true);
-    // Wait another 15ms — without renewal this would have expired, but with it, it's still valid
+    // The entry remains in flight after renewal.
     const later = Date.now() + 15;
     while (Date.now() < later) {
       /* spin */

@@ -247,10 +247,11 @@ export async function executeScript(config: ScriptConfig): Promise<ScriptResult>
         toolCallCount++;
 
         if (toolCallCount > maxToolCalls) {
-          postToWorker({
-            kind: "result",
-            id: msg.id,
+          settle({
             ok: false,
+            result: null,
+            toolCallCount,
+            durationMs: Date.now() - start,
             error: "Tool call budget exceeded",
           });
           return;

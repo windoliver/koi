@@ -66,7 +66,7 @@ export interface WrapToolCallDeps {
     grantKey: string,
     next: ToolHandler,
     decision: PermissionDecision & { readonly effect: "ask" },
-    dispatchApprovalOutcome?: (d: PermissionDecision) => void,
+    dispatchApprovalOutcome?: (d: PermissionDecision) => void | Promise<void>,
   ) => Promise<ToolResponse>;
   /** Pre-built spec registry (from createSpecRegistry). */
   readonly specRegistry: ReadonlyMap<string, CommandSpec>;
@@ -282,7 +282,6 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
       if (auditSink !== undefined) {
         auditDecision(ctx, resource, decision, durationMs, auditSink);
       }
-      // Allow/ask: fire-and-forget dispatch here.
       void ctx.dispatchPermissionDecision?.(query, decision);
       ctx.reportDecision?.({
         phase: "execute",
@@ -316,7 +315,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
         reason: `${decision.reason} (${suffix})`,
       });
 
-      const emitDenyAudit = (finalDecision: DenyDecision): void => {
+      const emitDenyAudit = async (finalDecision: DenyDecision): Promise<void> => {
         if (auditSink !== undefined) {
           auditDecision(ctx, resource, finalDecision, durationMs, auditSink);
         }
@@ -350,7 +349,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
             softness: "hard",
             origin: "soft-conversion",
           });
-          emitDenyAudit(hardened);
+          await emitDenyAudit(hardened);
           throw new KoiRuntimeError({
             code: "PERMISSION",
             message: hardened.reason,
@@ -377,7 +376,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
             softness: "hard",
             origin: "soft-conversion",
           });
-          emitDenyAudit(hardened);
+          await emitDenyAudit(hardened);
           throw new KoiRuntimeError({
             code: "PERMISSION",
             message: hardened.reason,
@@ -394,7 +393,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
           turnIndex: ctx.turnIndex,
           queryKey: cacheKey,
         });
-        emitDenyAudit(decision);
+        await emitDenyAudit(decision);
         // Trust-boundary: output contains only toolId, never decision.reason.
         // `blockedByHook: true` is the canonical downstream marker honored
         // by event-trace, middleware-report, and session-transcript to
@@ -425,7 +424,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
         softness: "hard",
         origin: "native",
       });
-      emitDenyAudit(decision);
+      await emitDenyAudit(decision);
       throw new KoiRuntimeError({
         code: "PERMISSION",
         message: decision.reason,
@@ -436,8 +435,10 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
     if (decision.effect === "ask") {
       // Pass a dispatch callback so each approval path fires the outcome
       // BEFORE calling next(request) — ensures recording even if the tool throws.
-      return handleAskDecision(ctx, request, resource, grantKey, next, decision, (d) => {
-        void ctx.dispatchPermissionDecision?.(query, d);
+      // Awaited here (not fire-and-forget): ask approvals can persist reusable
+      // grants and execute the tool; we want the audit record durable first.
+      return handleAskDecision(ctx, request, resource, grantKey, next, decision, async (d) => {
+        await ctx.dispatchPermissionDecision?.(query, d);
       });
     }
 

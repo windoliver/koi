@@ -43,14 +43,70 @@ export interface TuiStore {
    * batcher, so each delta can render immediately.
    */
   readonly streamDelta: (delta: string, blockKind: "text" | "thinking") => void;
-  /** Subscribe to state changes. Returns an unsubscribe function. */
-  readonly subscribe: (listener: StateListener) => () => void;
+  /**
+   * Subscribe to state changes. Returns an unsubscribe function.
+   *
+   * Pass `{ critical: true }` for the renderer-health subscriber whose
+   * failure must trigger fatal teardown (#1940). Non-critical subscribers
+   * are quarantined on throw without escalating; their failure is surfaced
+   * as an in-band error block.
+   */
+  readonly subscribe: (
+    listener: StateListener,
+    options?: { readonly critical?: boolean },
+  ) => () => void;
+  /**
+   * Install a fatal handler invoked when a critical subscriber throws. The
+   * factory receives the currently-installed handler so the new handler can
+   * chain (e.g. perform local teardown then delegate to caller-supplied
+   * shutdown). Returns a cleanup that restores the previous handler.
+   * Used by createTuiApp to wire fatal → handle.stop() while still respecting
+   * a CLI-supplied broader shutdown.
+   */
+  readonly setFatalHandler: (
+    factory: (prev: (e: Error) => void) => (e: Error) => void,
+  ) => () => void;
+}
+
+/** Options for createStore. */
+export interface CreateStoreOptions {
+  /**
+   * Invoked when a subscriber registered with `{ critical: true }` throws.
+   * The app owns orderly shutdown (renderer.destroy, stdin restore) and
+   * should call its TuiAppHandle.stop() here. Default behavior: log to
+   * stderr and return — does not crash the host process. Active-TUI
+   * consumers (e.g. the CLI) MUST supply their own handler to avoid a
+   * silent dead UI; embedded/library consumers may rely on the default.
+   */
+  readonly onFatal?: (e: Error) => void;
 }
 
 /** Create a TuiStore backed by SolidJS fine-grained reactive store. */
-export function createStore(initialState: TuiState): TuiStore {
+export function createStore(initialState: TuiState, options: CreateStoreOptions = {}): TuiStore {
   const [state, setState] = createSolidStore(initialState);
   const listeners = new Set<StateListener>();
+  // Subset of `listeners` flagged critical: their failure escalates to the
+  // fatal teardown path. Renderer-health subscribers should opt in via
+  // subscribe(fn, { critical: true }).
+  const criticalListeners = new Set<StateListener>();
+  const defaultFatal = (err: Error): void => {
+    // Default: log loudly but DO NOT crash the host process. Consumers that
+    // own an active TUI (createTuiApp) install their own handler via
+    // setFatalHandler() so renderer.destroy + stdin restore can run.
+    // Crashing here would terminate any embedded host whose critical
+    // subscriber happened to throw.
+    // tui-single-writer-exception: renderer presumed dead; raw stderr ok.
+    try {
+      process.stderr.write(
+        `[TuiStore] critical subscriber failed without fatal handler: ${err.message}\n`,
+      );
+    } catch {
+      /* stderr unwritable — best effort */
+    }
+  };
+  // `let`: replaced via setFatalHandler() so app-lifecycle owners can install
+  // teardown without coordinating at createStore() time.
+  let onFatal: (e: Error) => void = options.onFatal ?? defaultFatal;
 
   // `let` justified: snapshot for reducer input (reconcile needs the raw state)
   let snapshot: TuiState = initialState;
@@ -62,7 +118,41 @@ export function createStore(initialState: TuiState): TuiStore {
       try {
         listener();
       } catch (e: unknown) {
-        console.error("TuiStore listener threw:", e);
+        // Quarantine the offending listener immediately so re-dispatch below does
+        // not re-enter it (no infinite loop, no duplicate error blocks).
+        const wasCritical = criticalListeners.delete(listener);
+        listeners.delete(listener);
+        const msg = `[TuiStore] listener threw: ${String(e)}\n`;
+        if (wasCritical) {
+          // Renderer-health subscriber died — escalate to fatal teardown.
+          // tui-single-writer-exception: renderer is presumed dead; safe to
+          // write raw stderr (no competing single writer remains). Wrapped in
+          // try/catch because stderr can already be closed during embedded
+          // teardown — fatal handoff must run regardless of logging success.
+          try {
+            process.stderr.write(`${msg}[TuiStore] critical subscriber lost.\n`);
+          } catch {
+            /* stderr unwritable — fall through to onFatal */
+          }
+          const err = e instanceof Error ? e : new Error(String(e));
+          onFatal(err);
+          return;
+        }
+        // tui-single-writer-exception: stderr only when not a TTY — in interactive
+        // sessions the remaining renderer controls stdout+stderr; write there
+        // would interleave with rendered frames. CI / piped contexts always log.
+        if (!process.stderr.isTTY) {
+          process.stderr.write(msg);
+        }
+        // Surface in TUI via normal dispatch — notifies remaining subscribers so
+        // the error block is rendered. Safe from re-entry: bad listener is gone.
+        queueMicrotask(() => {
+          dispatch({
+            kind: "add_error",
+            code: "STORE_LISTENER_ERROR",
+            message: `Store listener threw: ${e instanceof Error ? e.message : String(e)}`,
+          });
+        });
       }
     }
   }
@@ -105,10 +195,17 @@ export function createStore(initialState: TuiState): TuiStore {
     return state;
   }
 
-  function subscribe(listener: StateListener): () => void {
+  function subscribe(
+    listener: StateListener,
+    subOptions?: { readonly critical?: boolean },
+  ): () => void {
     listeners.add(listener);
+    if (subOptions?.critical === true) {
+      criticalListeners.add(listener);
+    }
     return () => {
       listeners.delete(listener);
+      criticalListeners.delete(listener);
     };
   }
 
@@ -174,5 +271,15 @@ export function createStore(initialState: TuiState): TuiStore {
     scheduleNotify();
   }
 
-  return { getState, dispatch, dispatchBatch, streamDelta, subscribe };
+  function setFatalHandler(fn: (prev: (e: Error) => void) => (e: Error) => void): () => void {
+    const previous = onFatal;
+    const installed = fn(previous);
+    onFatal = installed;
+    return () => {
+      // Only restore if no other override has stacked on top.
+      if (onFatal === installed) onFatal = previous;
+    };
+  }
+
+  return { getState, dispatch, dispatchBatch, streamDelta, subscribe, setFatalHandler };
 }

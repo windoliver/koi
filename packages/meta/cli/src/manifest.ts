@@ -411,13 +411,18 @@ export async function loadManifestConfig(
     };
   }
 
-  const modelName = (model as Record<string, unknown>).name;
-  if (typeof modelName !== "string" || modelName.trim().length === 0) {
+  const rawModelName = (model as Record<string, unknown>).name;
+  if (typeof rawModelName !== "string" || rawModelName.trim().length === 0) {
     return {
       ok: false,
       error: "manifest.model.name is required and must be a non-empty string",
     };
   }
+  // Strip known provider prefixes (e.g. "openrouter:anthropic/claude-haiku-4.5" →
+  // "anthropic/claude-haiku-4.5"). The TUI status bar shows "provider:model" as a
+  // display string; when users copy that into a manifest, the prefix must be removed
+  // before it reaches the API, since the provider is determined by the API key.
+  const modelName = rawModelName.trim().replace(/^(openrouter|openai):/, "");
 
   const instructions = raw.instructions;
   if (instructions !== undefined && typeof instructions !== "string") {

@@ -14121,3 +14121,347 @@ describe("Golden: @koi/temporal", () => {
     expect(snap.capacity).toBe(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/permissions-nexus (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/permissions-nexus", () => {
+  test("local-first: check() passes through to local backend when Nexus is down", async () => {
+    const { createNexusPermissionBackend } = await import("@koi/permissions-nexus");
+
+    const nexusDown: import("@koi/nexus-client").NexusTransport = {
+      call: (async () => ({
+        ok: false,
+        error: { code: "TIMEOUT" as const, message: "nexus unreachable", retryable: true },
+      })) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const local: import("@koi/core").PermissionBackend = {
+      check: () => ({ effect: "allow" as const }),
+      dispose: () => {},
+      supportsDefaultDenyMarker: true as const,
+    };
+
+    const backend = createNexusPermissionBackend({
+      transport: nexusDown,
+      localBackend: local,
+
+      rebuildBackend: () => local,
+      syncIntervalMs: 0,
+    });
+
+    const decision = await Promise.resolve(
+      backend.check({ principal: "agent", action: "execute", resource: "tool:bash" }),
+    );
+    expect(decision.effect).toBe("allow");
+    backend.dispose();
+  });
+
+  test("sync: rebuilt backend is used after Nexus returns updated policy", async () => {
+    const { createNexusPermissionBackend } = await import("@koi/permissions-nexus");
+
+    const policy = [{ pattern: "*", effect: "allow" }];
+    let rebuildCalledWith: unknown = null;
+
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (method: string, params: Record<string, unknown>) => {
+        const path = (params as { path: string }).path;
+        if (method === "read" && path.endsWith("version.json")) {
+          return { ok: true, value: JSON.stringify({ version: 1, updatedAt: Date.now() }) };
+        }
+        if (method === "read" && path.endsWith("policy.json")) {
+          return { ok: true, value: JSON.stringify(policy) };
+        }
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const denying: import("@koi/core").PermissionBackend = {
+      check: () => ({ effect: "deny" as const, reason: "local deny" }),
+      supportsDefaultDenyMarker: true as const,
+    };
+
+    const allowing: import("@koi/core").PermissionBackend = {
+      check: () => ({ effect: "allow" as const }),
+      supportsDefaultDenyMarker: true as const,
+    };
+
+    const backend = createNexusPermissionBackend({
+      transport,
+      localBackend: denying,
+
+      rebuildBackend: (p) => {
+        rebuildCalledWith = p;
+        return allowing;
+      },
+      syncIntervalMs: 0,
+    });
+
+    await new Promise<void>((r) => setTimeout(r, 0)); // flush init microtasks
+    expect(rebuildCalledWith).toEqual(policy);
+    const decision = await Promise.resolve(
+      backend.check({ principal: "agent", action: "execute", resource: "tool:bash" }),
+    );
+    expect(decision.effect).toBe("allow");
+    backend.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/long-running (#1386)
+//
+// Standalone golden queries that exercise the long-running harness lifecycle
+// against in-memory stubs. CI-safe — no LLM, no network.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/long-running — harness lifecycle", () => {
+  test("long-running-soft-checkpoint-cadence — boundary turns trigger only on multiples", async () => {
+    const { shouldSoftCheckpoint } = await import("@koi/long-running");
+    expect(shouldSoftCheckpoint(0, 5)).toBe(false);
+    expect(shouldSoftCheckpoint(4, 5)).toBe(false);
+    expect(shouldSoftCheckpoint(5, 5)).toBe(true);
+    expect(shouldSoftCheckpoint(10, 5)).toBe(true);
+    expect(shouldSoftCheckpoint(7, 0)).toBe(false);
+  });
+
+  test("long-running-start-pause-resume — phase transitions and lease revocation", async () => {
+    const { createLongRunningHarness, EMPTY_TASK_BOARD } = await import("@koi/long-running");
+    const { agentId, harnessId, nodeId } = await import("@koi/core");
+
+    const nodes: Array<{
+      readonly nodeId: ReturnType<typeof nodeId>;
+      readonly chainId: unknown;
+      readonly parentIds: readonly ReturnType<typeof nodeId>[];
+      readonly contentHash: string;
+      readonly data: { readonly phase: string };
+      readonly createdAt: number;
+      readonly metadata: Record<string, unknown>;
+    }> = [];
+    let counter = 0;
+
+    const harnessStore = {
+      put: (
+        chain: unknown,
+        data: unknown,
+        parentIds: readonly unknown[],
+        metadata?: Record<string, unknown>,
+      ) => {
+        counter += 1;
+        const node = {
+          nodeId: nodeId(`n-${counter}`),
+          chainId: chain,
+          parentIds: parentIds as readonly ReturnType<typeof nodeId>[],
+          contentHash: String(counter),
+          data: data as { readonly phase: string },
+          createdAt: Date.now(),
+          metadata: metadata ?? {},
+        };
+        nodes.push(node);
+        return { ok: true as const, value: node };
+      },
+      get: (id: unknown) => {
+        const found = nodes.find((n) => n.nodeId === id);
+        return found
+          ? { ok: true as const, value: found }
+          : {
+              ok: false as const,
+              error: { code: "NOT_FOUND" as const, message: "x", retryable: false },
+            };
+      },
+      head: () => ({
+        ok: true as const,
+        value: nodes.length > 0 ? nodes[nodes.length - 1] : undefined,
+      }),
+      list: () => ({ ok: true as const, value: [...nodes].reverse() }),
+      ancestors: () => ({ ok: true as const, value: [] }),
+      fork: (sourceNodeId: unknown, _newChainId: unknown, label: string) => ({
+        ok: true as const,
+        value: { parentNodeId: sourceNodeId, label },
+      }),
+      prune: () => ({ ok: true as const, value: 0 }),
+      close: () => undefined,
+    };
+
+    // Store full session records so resume() can find lastEngineState
+    // written by pause()'s saveState capture.
+    const sessions = new Map<string, Record<string, unknown>>();
+    const persistence = {
+      saveSession: (rec: { sessionId: string }) => {
+        sessions.set(rec.sessionId, { ...rec });
+        return { ok: true as const, value: undefined };
+      },
+      loadSession: (id: string) => {
+        const r = sessions.get(id);
+        return r
+          ? { ok: true as const, value: { ...r, sessionId: id } }
+          : {
+              ok: false as const,
+              error: { code: "NOT_FOUND" as const, message: "x", retryable: false },
+            };
+      },
+      removeSession: (id: string) => {
+        sessions.delete(id);
+        return { ok: true as const, value: undefined };
+      },
+      listSessions: () => ({ ok: true as const, value: [] }),
+      savePendingFrame: () => ({ ok: true as const, value: undefined }),
+      loadPendingFrames: () => ({ ok: true as const, value: [] }),
+      clearPendingFrames: () => ({ ok: true as const, value: undefined }),
+      removePendingFrame: () => ({ ok: true as const, value: undefined }),
+      setSessionStatus: (id: string, status: string) => {
+        const r = sessions.get(id);
+        if (r) sessions.set(id, { ...r, status });
+        return { ok: true as const, value: undefined };
+      },
+      saveContentReplacement: () => ({ ok: true as const, value: undefined }),
+      loadContentReplacements: () => ({ ok: true as const, value: [] }),
+      recover: () => ({
+        ok: true as const,
+        value: { sessions: [], pendingFrames: new Map(), skipped: [] },
+      }),
+      close: () => undefined,
+    };
+
+    const result = createLongRunningHarness({
+      harnessId: harnessId("g-h"),
+      agentId: agentId("g-a"),
+      // biome-ignore lint/suspicious/noExplicitAny: see above
+      harnessStore: harnessStore as any,
+      // biome-ignore lint/suspicious/noExplicitAny: see above
+      sessionPersistence: persistence as any,
+      // pause() requires saveState so the suspended snapshot can be
+      // resumed; provide a no-op for the golden-replay path.
+      saveState: async () => ({ kind: "g-state" }),
+      // quiesceEngine is required at construction; trivial ack here.
+      quiesceEngine: async () => undefined,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const harness = result.value;
+
+    const started = await harness.start();
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    expect(harness.status().phase).toBe("active");
+
+    const paused = await harness.pause(started.value.lease, {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    });
+    expect(paused.ok).toBe(true);
+    expect(harness.status().phase).toBe("suspended");
+
+    // Stale lease rejected
+    const stale = await harness.pause(started.value.lease, {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    });
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.error.code).toBe("STALE_REF");
+
+    const resumed = await harness.resume();
+    expect(resumed.ok).toBe(true);
+    expect(harness.status().phase).toBe("active");
+
+    expect(EMPTY_TASK_BOARD.items).toHaveLength(0);
+  });
+});
+
+// L2 golden queries: @koi/audit-sink-nexus (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/audit-sink-nexus", () => {
+  test("log and flush writes entries to Nexus transport", async () => {
+    const { createNexusAuditSink } = await import("@koi/audit-sink-nexus");
+    type AuditEntry = import("@koi/core").AuditEntry;
+
+    const written: string[] = [];
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (_method: string, params: Record<string, unknown>) => {
+        written.push((params as { path: string }).path);
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const entry: AuditEntry = {
+      schema_version: 1,
+      timestamp: Date.now(),
+      sessionId: "golden-session",
+      agentId: "agent-1",
+      turnIndex: 0,
+      kind: "tool_call",
+      durationMs: 10,
+    };
+
+    const sink = createNexusAuditSink({ transport, batchSize: 100 });
+    await sink.log(entry);
+    await sink.flush?.();
+    expect(written.length).toBe(1);
+    expect(written[0]).toMatch(/^koi\/audit\/golden-session\//);
+  });
+
+  test("query returns entries sorted by timestamp", async () => {
+    const { createNexusAuditSink } = await import("@koi/audit-sink-nexus");
+    type AuditEntry = import("@koi/core").AuditEntry;
+
+    const store = new Map<string, string>();
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (method: string, params: Record<string, unknown>) => {
+        const p = (params as { path: string }).path;
+        if (method === "write") {
+          store.set(p, (params as { content: string }).content);
+          return { ok: true, value: undefined };
+        }
+        if (method === "list") {
+          const prefix = `${p}/`;
+          return {
+            ok: true,
+            value: [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ path: k })),
+          };
+        }
+        if (method === "read") {
+          const v = store.get(p);
+          return v !== undefined
+            ? { ok: true, value: v }
+            : { ok: false, error: { code: "NOT_FOUND" as const, message: "nf", retryable: false } };
+        }
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const base: Omit<AuditEntry, "timestamp" | "turnIndex"> = {
+      schema_version: 1,
+      sessionId: "golden-q",
+      agentId: "a",
+      kind: "model_call",
+      durationMs: 5,
+    };
+
+    const sink = createNexusAuditSink({ transport, batchSize: 100 });
+    await sink.log({ ...base, timestamp: 200, turnIndex: 1 });
+    await sink.log({ ...base, timestamp: 100, turnIndex: 0 });
+    const entries = (await sink.query?.("golden-q")) ?? [];
+    expect(entries).toHaveLength(2);
+    expect(entries[0]?.timestamp).toBe(100);
+    expect(entries[1]?.timestamp).toBe(200);
+  });
+});
