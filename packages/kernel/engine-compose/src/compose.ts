@@ -128,12 +128,16 @@ export function recomposeChains(
     instrumentation,
     provenanceHints,
   );
-  // When the adapter has a native stream terminal, compose stream
-  // middleware around it. Otherwise synthesize a stream from the composed
-  // modelChain so wrapModelStream middleware (e.g. tool-recovery) runs
-  // for every adapter — and crucially, wrapModelCall middleware ALSO
-  // fires inside the synth via modelChain (no semantics regression).
-  // #review-round12-F1.
+  // Stream chain is composed only when the adapter provides a native
+  // stream terminal. When absent, callers (compose-bridge / koi.ts) are
+  // responsible for installing a synthesized stream terminal in
+  // `terminals.modelStreamHandler` BEFORE calling recomposeChains. We
+  // intentionally do NOT synthesize from the composed `modelChain` here
+  // because wrapModelStream + wrapModelCall middleware double-fire
+  // (concurrency-guard self-deadlock, budget double-charge —
+  // #review-round13-F1, F2). The synth lives at the terminal layer so
+  // exactly one composed chain (wrapModelStream around a raw-terminal
+  // synth) governs each logical request.
   const streamChain =
     terminals.modelStreamHandler !== undefined
       ? composeModelStreamChain(
@@ -142,21 +146,7 @@ export function recomposeChains(
           instrumentation,
           provenanceHints,
         )
-      : composeModelStreamChainCtx(
-          sortedMiddleware,
-          async function* synthFromModelChain(
-            req: ModelRequest,
-            ctx: TurnContext,
-          ): AsyncIterable<ModelChunk> {
-            const response = await modelChain(ctx, req);
-            if (response.content.length > 0) {
-              yield { kind: "text_delta", delta: response.content };
-            }
-            yield { kind: "done", response };
-          },
-          instrumentation,
-          provenanceHints,
-        );
+      : undefined;
   return { toolChain, modelChain, streamChain };
 }
 
@@ -397,41 +387,6 @@ export function composeModelStreamChain(
   const wrappedTerminal = (req: ModelRequest, _ctx: TurnContext): AsyncIterable<ModelChunk> =>
     terminal(req);
   return composeOnion(entries, "wrapModelStream", wrappedTerminal, (result, resetGuard) => {
-    return wrapAsyncIterableWithErrorReset(result, resetGuard);
-  });
-}
-
-/**
- * Like {@link composeModelStreamChain} but the terminal receives ctx as a
- * second argument. Used to synthesize a stream pipeline when the adapter
- * has no native stream — the synth needs ctx to call into the composed
- * `modelChain` (which itself takes ctx). Internal to engine plumbing;
- * external middleware should still implement the standard
- * `ModelStreamHandler` shape.
- */
-export function composeModelStreamChainCtx(
-  middleware: readonly KoiMiddleware[],
-  ctxTerminal: (req: ModelRequest, ctx: TurnContext) => AsyncIterable<ModelChunk>,
-  instrumentation?: DebugInstrumentation,
-  provenanceHints?: ReadonlyMap<string, MiddlewareSource>,
-): (ctx: TurnContext, request: ModelRequest) => AsyncIterable<ModelChunk> {
-  const rawEntries: OnionEntry<ModelRequest, AsyncIterable<ModelChunk>>[] = [];
-  for (const mw of middleware) {
-    if (mw.wrapModelStream !== undefined) {
-      rawEntries.push({ name: mw.name, hook: mw.wrapModelStream });
-    }
-  }
-  const entries =
-    instrumentation !== undefined
-      ? applyInstrumentationToEntries(
-          rawEntries,
-          "wrapModelStream",
-          middleware,
-          instrumentation,
-          provenanceHints ?? new Map(),
-        )
-      : rawEntries;
-  return composeOnion(entries, "wrapModelStream", ctxTerminal, (result, resetGuard) => {
     return wrapAsyncIterableWithErrorReset(result, resetGuard);
   });
 }

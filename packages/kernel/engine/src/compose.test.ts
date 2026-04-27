@@ -1476,12 +1476,15 @@ describe("createComposedCallHandlers streaming", () => {
     expect(rawModel).toHaveBeenCalled();
   });
 
-  test("synthesized modelStream goes through composed modelChain so wrapModelCall middleware also fires (round 12)", async () => {
-    // Round 12 (high): synthetic stream now bridges through the composed
-    // modelChain. A middleware implementing both hooks sees both fire
-    // exactly once per request — this is the correct contract because
-    // wrapModelCall middleware would otherwise be silently bypassed for
-    // pure-call adapters routed through the synthesized stream path.
+  test("synthesized modelStream fires wrapModelStream once and bypasses wrapModelCall (round 13)", async () => {
+    // Round 13 (critical): a single logical request must traverse only
+    // one composed model chain. Re-entering wrapModelCall from inside
+    // the synthesized stream double-fires every middleware that
+    // implements both hooks — concurrency-guard self-deadlocks, budget
+    // guards double-charge tokens. The synth therefore bridges to the
+    // RAW model terminal, not the composed modelChain. Documented
+    // trade-off: wrapModelCall-only middleware does not fire on
+    // synthesized streams.
     const agent = await createStartedAgent();
     const callCount = { call: 0, stream: 0 };
     const mw: KoiMiddleware = {
@@ -1515,7 +1518,7 @@ describe("createComposedCallHandlers streaming", () => {
     }
 
     expect(callCount.stream).toBe(1);
-    expect(callCount.call).toBe(1);
+    expect(callCount.call).toBe(0);
     expect(rawModel).toHaveBeenCalledTimes(1);
   });
 
@@ -2021,12 +2024,14 @@ describe("recomposeChains", () => {
     expect(typeof chains.streamChain).toBe("function");
   });
 
-  test("synthesizes streamChain from modelChain when no stream terminal (round 12)", () => {
-    // Round 12: recomposeChains synthesizes a stream chain from the
-    // composed modelChain when the adapter has no native stream
-    // terminal. wrapModelStream middleware (e.g. tool-recovery) runs
-    // uniformly across all adapters AND wrapModelCall semantics are
-    // preserved because the synth bridges through modelChain.
+  test("returns undefined streamChain when no stream terminal (round 13)", () => {
+    // Round 13: recomposeChains does NOT synthesize from the composed
+    // modelChain. Doing so caused wrapModelStream + wrapModelCall
+    // middleware to double-fire (concurrency-guard self-deadlock,
+    // budget double-charge). Synthesis lives at the terminal layer in
+    // createTerminalHandlers, where it bridges from the RAW terminal
+    // (not the composed chain) so exactly one composed chain governs
+    // each logical request.
     const sorted: readonly KoiMiddleware[] = [];
     const terminals = {
       modelHandler: async () => mockModelResponse(),
@@ -2037,8 +2042,7 @@ describe("recomposeChains", () => {
 
     expect(typeof chains.toolChain).toBe("function");
     expect(typeof chains.modelChain).toBe("function");
-    expect(chains.streamChain).toBeDefined();
-    expect(typeof chains.streamChain).toBe("function");
+    expect(chains.streamChain).toBeUndefined();
   });
 
   test("chains dispatch through middleware in correct order", async () => {

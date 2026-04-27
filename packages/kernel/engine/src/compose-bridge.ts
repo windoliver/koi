@@ -26,7 +26,6 @@ import type {
 import {
   composeModelChain,
   composeModelStreamChain,
-  composeModelStreamChainCtx,
   composeToolChain,
   injectCapabilities,
   sortMiddlewareByPhase,
@@ -86,13 +85,38 @@ export function createTerminalHandlers(
     }
   };
 
-  if (rawModelStreamTerminal === undefined) {
-    // No native stream terminal. recomposeChains will synthesize one from
-    // the composed modelChain so wrapModelStream middleware runs uniformly
-    // AND wrapModelCall semantics are preserved. We don't synthesize here
-    // because we don't yet have the composed modelChain in scope.
-    return { modelHandler, toolHandler };
-  }
+  // Synthesize a stream terminal from the RAW model terminal when the
+  // adapter doesn't expose a native modelStream. This unifies the engine
+  // pipeline so `wrapModelStream` middleware (e.g. @koi/middleware-tool-
+  // recovery) runs for every adapter — not just streaming-native ones.
+  //
+  // We deliberately bypass the composed modelChain (and any wrapModelCall
+  // middleware) here. Re-entering modelChain inside the stream chain
+  // double-fires every middleware that implements both hooks, which
+  // deadlocks the concurrency guard, double-charges budget guards, and
+  // duplicates accounting (#review-round13-F1, F2). One logical request
+  // must traverse exactly one composed model chain.
+  //
+  // Trade-off: middleware that ONLY implements `wrapModelCall` will not
+  // fire when an adapter is routed through the synthesized stream. This
+  // is documented contract — middleware that needs to apply universally
+  // should implement both hooks (and tolerate either firing).
+  //
+  // We also bypass `modelHandler` (lifecycle-wrapped) so the inner call
+  // doesn't emit a nested wait(model_call)/resume that would prematurely
+  // transition the agent back to `running` while stream middleware is
+  // still buffering chunks (#review-round11-F3). The outer
+  // `modelStreamHandler` below owns the wait(model_stream)/resume pair
+  // for the entire stream lifecycle.
+  const effectiveStreamTerminal: ModelStreamHandler =
+    rawModelStreamTerminal ??
+    async function* (request): AsyncIterable<ModelChunk> {
+      const response = await rawModelTerminal(request);
+      if (response.content.length > 0) {
+        yield { kind: "text_delta", delta: response.content };
+      }
+      yield { kind: "done", response };
+    };
 
   const modelStreamHandler: ModelStreamHandler = (request) => {
     let finished = false;
@@ -116,7 +140,7 @@ export function createTerminalHandlers(
     return {
       [Symbol.asyncIterator](): AsyncIterator<ModelChunk> {
         agent.transition({ kind: "wait", reason: "model_stream" });
-        const inner = rawModelStreamTerminal(request)[Symbol.asyncIterator]();
+        const inner = effectiveStreamTerminal(request)[Symbol.asyncIterator]();
 
         return {
           async next(): Promise<IteratorResult<ModelChunk>> {
@@ -194,26 +218,21 @@ export function createComposedCallHandlers(
     return injectCapabilities(sorted, getTurnContext(), withTools, capabilityConfig);
   };
 
-  // Synthesize a stream from the composed modelChain when there's no
-  // native stream terminal. Goes through composedModelChain so
-  // wrapModelCall middleware fires for non-streaming adapters
-  // (#review-round12-F1).
+  // createTerminalHandlers always returns a modelStreamHandler — either
+  // the adapter's native one or a synth around the raw model terminal.
+  // So the stream chain is always defined here.
   const streamChain =
     modelStreamHandler !== undefined
       ? composeModelStreamChain(sorted, modelStreamHandler)
-      : composeModelStreamChainCtx(
-          sorted,
-          async function* synthFromModelChain(
-            req: ModelRequest,
-            ctx: TurnContext,
-          ): AsyncIterable<ModelChunk> {
-            const response = await modelChain(ctx, req);
-            if (response.content.length > 0) {
-              yield { kind: "text_delta", delta: response.content };
-            }
-            yield { kind: "done", response };
-          },
-        );
+      : undefined;
+
+  if (streamChain === undefined) {
+    return {
+      modelCall: (request) => modelChain(getTurnContext(), prepareRequest(request)),
+      toolCall: (request) => toolChain(getTurnContext(), request),
+      tools: toolDescriptors,
+    };
+  }
 
   return {
     modelCall: (request) => modelChain(getTurnContext(), prepareRequest(request)),
