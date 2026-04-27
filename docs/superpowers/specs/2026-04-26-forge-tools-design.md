@@ -119,7 +119,11 @@ type _AssertHashFieldsDisjointFromMutable =
 
 ### Behavior
 
-- `save(brick)`: recompute `BrickId` from identity fields via `@koi/hash`. If recomputed id mismatches `brick.id` → `KoiError "INVARIANT_VIOLATION"`. If id already present → check **identity-field equality only** (kind/name/description/version/kind-discriminated content) against the stored record. Identity match → return success without overwriting (idempotent retry; original `provenance`, `lifecycle`, `usageCount`, etc. are preserved — first save wins for metadata). Identity mismatch on the same id → `KoiError "INVARIANT_VIOLATION"` (sha256 collision or tampering). Otherwise insert with `storeVersion: 1` and notify (`StoreChangeEvent { kind: "saved" }`).
+- `save(brick)`: recompute `BrickId` from identity fields via `@koi/hash`. If recomputed id mismatches `brick.id` → `KoiError "INVARIANT_VIOLATION"`. If id already present → check **identity-field equality only** against the stored record:
+  - Identity match **and** stored `lifecycle ∈ {draft, verifying, active}` → return success without overwriting (idempotent retry; first save wins for metadata).
+  - Identity match **but** stored `lifecycle ∈ {failed, deprecated, quarantined}` → `KoiError "CONFLICT"` carrying `context.existingBrickId` and `context.lifecycle`. Caller's `version` is in the hash, so bumping `version` produces a new id and unblocks. This prevents independent global publishes from aliasing into a stuck audit record.
+  - Identity mismatch on the same id → `KoiError "INVARIANT_VIOLATION"` (sha256 collision or tampering).
+  Otherwise insert with `storeVersion: 1` and notify (`StoreChangeEvent { kind: "saved" }`).
 - `load(id)`: returns artifact or `KoiError "NOT_FOUND"`.
 - `search(query)`: filter via `matchesBrickQuery`, sort via `sortBricks`, slice by `query.limit`. **Caller scope is enforced here** — see Trust + scope below.
 - `update(id, updates)`: optimistic locking via `expectedVersion`. Mismatch → `CONFLICT`. Apply via `applyBrickUpdate`, increment `storeVersion`, notify (`updated`). Empty update is a no-op success. (`BrickUpdate` only contains non-hashed fields by L0 contract.)
@@ -149,7 +153,14 @@ Visibility predicate inside `execute()` (caller resolved live from `getCurrentTo
 | `zone` | hidden (pending zoneId) |
 | `global` | always |
 
-`forge_list`: tool calls `store.search(query)` then applies the visibility predicate to each hit before returning summaries. Out-of-scope hits dropped silently.
+`forge_list`: visibility must be enforced **before** the caller-facing `limit` is applied, otherwise another agent's private bricks consuming the first N slots would silently truncate visible results. Implementation:
+
+1. Tool issues an overfetched search: `store.search({ ...callerQuery, limit: callerLimit + AGENT_VISIBILITY_PAGE })` — `AGENT_VISIBILITY_PAGE = 64` covers typical pollution from peer agents.
+2. Apply visibility predicate to each hit; collect visible summaries.
+3. If visible count < `callerLimit` and the underlying search returned a full page, repeat with offset until visible count ≥ `callerLimit` or the store is exhausted (cap iterations at 8 pages = 512 raw rows scanned to avoid pathological cases).
+4. Return the first `callerLimit` visible summaries.
+
+The store's `searchSummaries` projection is used for cheap overfetch when available; falls back via `searchSummariesWithFallback`. Pagination cursor is omitted in this PR — primordial discovery returns first-page-only.
 `forge_inspect`: tool calls `store.load(brickId)`, then applies the visibility predicate to the returned artifact. Predicate failure → `KoiError "NOT_FOUND"` (same code as a missing id; existence non-leak). The store's `load()` is unconditional by design (it is an L0 contract and other trusted runtime paths — e.g. `inherited-component-provider` — depend on unconditional reads); enforcement lives in the LLM-facing tool wrapper. The tool **must not return** the raw `BrickArtifact` without running the predicate.
 
 **Synthesis authorization** (also resolved live in `execute()`):
@@ -209,10 +220,10 @@ Total: ~400 LOC source + ~225 LOC tests.
 
 Unit (colocated `*.test.ts`):
 
-1. **memory-store**: round-trip save/load/search/remove; content-integrity rejection on tampered artifact (mutated content with stale id); version conflict on stale `expectedVersion`; watcher fires on save/update/remove with correct `kind`; empty-update no-op; `searchSummaries` projection equivalent to `search` + map.
+1. **memory-store**: round-trip save/load/search/remove; content-integrity rejection on tampered artifact (mutated content with stale id); version conflict on stale `expectedVersion`; watcher fires on save/update/remove with correct `kind`; empty-update no-op; `searchSummaries` projection equivalent to `search` + map; **idempotent save when stored lifecycle is `draft`/`verifying`/`active`**; **CONFLICT when stored lifecycle is `failed`/`deprecated`/`quarantined`** (failed-redrive recovery test); scope-update rejection (`update({ scope: ... })` → `INVARIANT_VIOLATION`).
 2. **forge_tool**: valid input → `ToolArtifact` persisted with `kind: "tool"`, `lifecycle: "draft"`, `id` matches recomputed content hash including `ownerAgentId` (or content-only for global); invalid input → `INVALID_INPUT`; `scope: "zone"` → `INVALID_INPUT`; descriptor satisfies `ToolDescriptor`; double-synthesize same content same agent (retry, possibly different provenance timestamp/invocationId) → idempotent success returning the same `brickId`, original metadata preserved; **two different agents synthesizing byte-identical agent-scoped content produce two different `brickId`s, each visible only to its owner** (cross-tenant aliasing test); caller without `allowGlobal` requesting `scope: "global"` → `FORBIDDEN`; caller resolved from `getCurrentToolExecutionContext()` not from constructor injection (tool built outside any session, succeeds only inside `runWithToolExecutionContext`).
 3. **forge_middleware**: same as forge_tool but for `ImplementationArtifact` with `kind: "middleware"`.
-4. **forge_list**: filter by kind/scope/lifecycle; empty store → empty array; respects `limit` and hard cap (200); visibility — agent-scope brick from another agent omitted silently; zone-scope brick omitted entirely (forge-tool tools reject zone reads pending zoneId); global-scope brick visible to all; explicit `scope: "zone"` filter → empty array.
+4. **forge_list**: filter by kind/scope/lifecycle; empty store → empty array; respects `limit` and hard cap (200); visibility — agent-scope brick from another agent omitted silently; zone-scope brick omitted entirely; global-scope brick visible to all; explicit `scope: "zone"` filter → empty array; **overfetch correctness — populate the store with `callerLimit` peer-agent-private bricks followed by `callerLimit` global bricks; verify the caller (different agent) receives all `callerLimit` visible global summaries despite peer pollution in the first page**; pagination cap test — > 512 invisible rows yields `callerLimit` results capped by exhaustion (no infinite loop).
 5. **forge_inspect**: returns artifact for known visible id; returns `NOT_FOUND` for unknown id; returns `NOT_FOUND` (not `FORBIDDEN`) for a known agent-scoped id owned by a different agent (existence non-leak); returns `NOT_FOUND` for any zone-scoped id (zone hidden in this PR); test exercises the by-id path explicitly to confirm the tool wrapper applies the predicate after `store.load()` rather than relying on `search` filtering.
 
 ≥80% line/function/statement coverage (CI threshold).
