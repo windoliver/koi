@@ -359,6 +359,42 @@ describe("createToolAuditMiddleware", () => {
       expect(saves.length).toBe(1);
     });
 
+    test("session end awaits in-flight tool calls before folding/persisting — round 36 F1", async () => {
+      // wrapToolCall increments callCount before awaiting and writes the
+      // success/failure/latency outcome AFTER awaiting. If onSessionEnd
+      // folded and persisted before the outcome landed, the persisted
+      // snapshot would carry the call but miss its outcome forever.
+      const { store, saves } = createMockStore();
+      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+      const wrap = getWrapToolCall(mw);
+
+      let resolveTool: ((v: { output: string }) => void) | undefined;
+      const toolDone = new Promise<{ output: string }>((r) => {
+        resolveTool = r;
+      });
+
+      await mw.onSessionStart?.(sessionCtx());
+      const callPromise = wrap(turnCtx(), toolReq("search"), () => toolDone);
+
+      // Kick onSessionEnd while the tool is still in-flight. The end must
+      // wait for the tool to settle before folding+persisting.
+      const endPromise = mw.onSessionEnd?.(sessionCtx());
+
+      // Give the event loop a tick — neither should have resolved.
+      await new Promise((r) => setTimeout(r, 0));
+      expect(saves.length).toBe(0);
+
+      // Now resolve the tool. The end should drain and persist the FULL
+      // record (callCount=1, successCount=1).
+      resolveTool?.({ output: "ok" });
+      await callPromise;
+      await endPromise;
+
+      expect(saves.length).toBe(1);
+      expect(saves[0]?.tools.search?.callCount).toBe(1);
+      expect(saves[0]?.tools.search?.successCount).toBe(1);
+    });
+
     test("retries a failed persist on the next session end even when otherwise clean — round 33 F1", async () => {
       // A transient store outage at session-end could strand committed
       // counters in memory: pendingPersist was cleared, the dirty flag

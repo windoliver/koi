@@ -168,6 +168,14 @@ interface ToolAuditSessionState {
    * #review-round27-F2.
    */
   readonly localTools: Map<string, MutableToolRecord>;
+  /**
+   * Promises representing tool calls currently awaiting outcome.
+   * onSessionEnd awaits all of them before folding localTools into the
+   * global aggregate so post-await success/failure/latency updates
+   * cannot be lost on early teardown (cancellation, timeout, stream
+   * failure). #review-round36-F1.
+   */
+  readonly inFlight: Set<Promise<void>>;
   dirty: boolean;
 }
 
@@ -302,6 +310,7 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       sessionAvailableTools: new Set<string>(),
       sessionUsedTools: new Set<string>(),
       localTools: new Map<string, MutableToolRecord>(),
+      inFlight: new Set<Promise<void>>(),
       dirty: false,
     });
   }
@@ -356,6 +365,17 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     }
 
     const start = clock();
+    // Track in-flight settlement so onSessionEnd can await all pending
+    // outcomes before folding localTools into the global aggregate. Without
+    // this, an early teardown (cancel/timeout/stream-failure) folds the
+    // pre-await callCount and the post-await success/failure/latency
+    // updates land on an orphaned record (#review-round36-F1).
+    // let: assigned via the IIFE settler so we can register the awaitable.
+    let settle: () => void = (): void => {};
+    const settled = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    if (state) state.inFlight.add(settled);
     try {
       const response = await next(request);
       const endTime = clock();
@@ -365,6 +385,9 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       const endTime = clock();
       recordToolOutcome(record, endTime - start, endTime, false);
       throw e;
+    } finally {
+      if (state) state.inFlight.delete(settled);
+      settle();
     }
   }
 
@@ -399,6 +422,17 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   async function recordOnSessionEnd(ctx: SessionContext): Promise<void> {
     const state = sessionStates.get(ctx.sessionId);
     if (!state) return;
+
+    // Wait for any tool calls still awaiting their outcome so the post-
+    // await success/failure/latency updates land in localTools BEFORE we
+    // fold and persist (#review-round36-F1). Without this, early teardown
+    // (cancel/timeout/stream-failure) persists half-recorded counts and
+    // the eventual outcome mutates an orphaned record never folded again.
+    if (state.inFlight.size > 0) {
+      // Snapshot before awaiting because each settler removes itself from
+      // the set, mutating it during iteration.
+      await Promise.allSettled([...state.inFlight]);
+    }
 
     // Fold session-local tool counters into the shared aggregate now that
     // every call this session made has either completed or aborted. Until
