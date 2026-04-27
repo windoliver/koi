@@ -53,6 +53,32 @@ interface NexusReadResponse {
   };
 }
 
+/** Decode a nexus read result to a plain string.
+ * Nexus may return:
+ *   - plain string
+ *   - `{ content: string }` (without metadata)
+ *   - `{ __type__: "bytes", data: "<base64>" }` (flat bytes envelope)
+ *   - `{ content: { __type__: "bytes", data: "<base64>" }, etag: "..." }` (with return_metadata=true)
+ * The function recurses so nested bytes envelopes are handled transparently.
+ */
+function decodeNexusContent(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (typeof raw !== "object" || raw === null) return "";
+  const obj = raw as Record<string, unknown>;
+  // Flat bytes envelope: { __type__: "bytes", data: "<base64>" }
+  if (obj.__type__ === "bytes") {
+    return typeof obj.data === "string" ? Buffer.from(obj.data, "base64").toString("utf-8") : "";
+  }
+  // Metadata wrapper: { content: <string | bytes-envelope>, etag?: "...", ... }
+  // When return_metadata=true, nexus wraps the content object inside { content: {...} }
+  if (obj.content !== undefined) {
+    return decodeNexusContent(obj.content);
+  }
+  return "";
+}
+
+const FS_NEXUS_DEBUG = process.env.KOI_FS_NEXUS_DEBUG === "1";
+
 interface NexusWriteResponse {
   readonly bytes_written: number;
   readonly size?: number;
@@ -150,8 +176,8 @@ async function clientSideSearch(
     });
     if (!readResult.ok) continue; // Skip unreadable files
 
-    const content =
-      typeof readResult.value === "string" ? readResult.value : readResult.value.content;
+    const rawRead: unknown = readResult.value;
+    const content = decodeNexusContent(rawRead);
     const lines = content.split("\n");
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -192,7 +218,15 @@ function simpleGlobMatch(filePath: string, pattern: string): boolean {
 
 /** Create a Nexus-backed FileSystemBackend for remote file operations. */
 export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSystemBackend {
-  if (config.transport === undefined) {
+  // Guard: only treat transport as an injected object when it's actually an object.
+  // Manifest configs carry `transport: "http"` (a string selector) in the same field;
+  // if we accepted a string here, `transport.call(...)` would throw at runtime.
+  const injectedTransport =
+    config.transport !== undefined && typeof config.transport === "object"
+      ? config.transport
+      : undefined;
+
+  if (injectedTransport === undefined) {
     // Full validation for HTTP transport (URL + mountPoint + all fields)
     const validated = validateNexusFileSystemConfig(config);
     if (!validated.ok) {
@@ -215,7 +249,7 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
     }
   }
 
-  const transport = config.transport ?? createHttpTransport(config);
+  const transport = injectedTransport ?? createHttpTransport(config);
   // Normalize mountPoint: strip leading slash for Nexus path convention
   const rawMount = config.mountPoint ?? DEFAULT_MOUNT_POINT;
   const basePath = rawMount.startsWith("/") ? rawMount.slice(1) : rawMount;
@@ -229,19 +263,27 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
     _options?: FileReadOptions,
   ): Promise<Result<FileReadResult, KoiError>> {
     return withSafePath(basePath, path, async (fullPath) => {
+      if (FS_NEXUS_DEBUG) {
+        console.error(
+          `[fs-nexus] read → transport.call("read", { path: ${JSON.stringify(fullPath)} })`,
+        );
+      }
       const result = await transport.call<NexusReadResponse | string>("read", {
         path: fullPath,
         return_metadata: true,
       });
+      if (FS_NEXUS_DEBUG) {
+        console.error(
+          `[fs-nexus] read ← ok=${result.ok} raw=${JSON.stringify(result.ok ? result.value : result.error).slice(0, 200)}`,
+        );
+      }
       if (!result.ok) return result;
 
-      // Decision #6: support structured + raw string only
-      const raw = result.value;
-      let content: string;
-      if (typeof raw === "string") {
-        content = raw;
-      } else {
-        content = raw.content;
+      const content = decodeNexusContent(result.value as unknown);
+      if (FS_NEXUS_DEBUG) {
+        console.error(
+          `[fs-nexus] read decoded ${content.length} chars for ${JSON.stringify(path)}`,
+        );
       }
 
       return {
