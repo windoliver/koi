@@ -343,11 +343,15 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
         return next(request);
       }
 
-      // Resolve the tracker via the bound id, not ctx.session.sessionId,
-      // so a mutated sessionId cannot redirect tool-call writes into
-      // another session's tracker. F100 regression.
-      const sid = observedSessions.get(ctx.session) ?? ctx.session.sessionId;
-      const tracker = trackers.get(sid);
+      // Resolve the tracker via the bound id ONLY. A fallback to
+      // `ctx.session.sessionId` would let an in-process caller skip
+      // onSessionStart, fabricate a TurnContext naming another tenant's
+      // sessionId, and drive recordSuccess/recordFailure into that
+      // tenant's live tracker bucket — quarantining a healthy tool
+      // or skewing latency/error windows for a session it does not own.
+      // F100/F111 regression. Unobserved contexts: skip tracker entirely.
+      const sid = observedSessions.get(ctx.session);
+      const tracker = sid !== undefined ? trackers.get(sid) : undefined;
       if (tracker !== undefined && (await tracker.isQuarantined(request.toolId))) {
         const feedback: ForgeToolErrorFeedback = {
           kind: "forge_tool_quarantined",

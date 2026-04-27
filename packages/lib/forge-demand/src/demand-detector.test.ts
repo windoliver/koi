@@ -6,6 +6,7 @@ import type {
   ModelChunk,
   ModelRequest,
   ModelResponse,
+  SessionContext,
   ToolRequest,
   ToolResponse,
   TurnContext,
@@ -60,6 +61,67 @@ function userMsg(text: string): InboundMessage {
 
 const ctx: TurnContext = createMockTurnContext();
 
+/**
+ * F110: forge-demand only trusts sessions registered via the engine-
+ * controlled `onSessionStart` hook. In the unit tests the test IS the
+ * engine — every detector handle must register the shared `ctx.session`
+ * (and any extra contexts the test introduces) before driving traffic
+ * through `wrapToolCall`/`wrapModelCall`/`wrapModelStream`. This helper
+ * keeps the test surface concise without weakening the production
+ * boundary.
+ */
+/**
+ * F110: production code only trusts sessions admitted via the engine-
+ * controlled `onSessionStart` hook — wrap* hooks pass through for
+ * unregistered contexts. In these tests the test IS the engine, so we
+ * wrap the returned handle's middleware to auto-register any sighted
+ * session BEFORE delegating to the real hook. This keeps the test
+ * surface ergonomic (no per-context bookkeeping) without weakening the
+ * production trust boundary, which is exercised end-to-end by F110's
+ * dedicated regression test (which calls `createForgeDemandDetector`
+ * directly and never goes through this helper).
+ */
+function observedDetector(
+  cfg: import("./types.js").ForgeDemandConfig,
+): import("./types.js").ForgeDemandHandle {
+  const h = createForgeDemandDetector(cfg);
+  const registered = new WeakSet<SessionContext>();
+  const ensure = (s: SessionContext): void => {
+    if (registered.has(s)) return;
+    registered.add(s);
+    void h.middleware.onSessionStart?.(s);
+  };
+  const real = h.middleware;
+  const wrappedMw: typeof real = {
+    ...real,
+    async wrapToolCall(turnCtx, req, next) {
+      ensure(turnCtx.session);
+      return real.wrapToolCall?.(turnCtx, req, next) ?? next(req);
+    },
+    async wrapModelCall(turnCtx, req, next) {
+      ensure(turnCtx.session);
+      return real.wrapModelCall?.(turnCtx, req, next) ?? next(req);
+    },
+    wrapModelStream(turnCtx, req, next) {
+      ensure(turnCtx.session);
+      return real.wrapModelStream?.(turnCtx, req, next) ?? next(req);
+    },
+    async onSessionEnd(sessionCtx) {
+      registered.delete(sessionCtx);
+      return real.onSessionEnd?.(sessionCtx);
+    },
+  };
+  return { ...h, middleware: wrappedMw };
+}
+
+/** Register additional sessions on a handle (F110: post-hoc binding for tests). */
+function registerSessions(
+  handle: import("./types.js").ForgeDemandHandle,
+  ...sessions: readonly SessionContext[]
+): void {
+  for (const s of sessions) void handle.middleware.onSessionStart?.(s);
+}
+
 // ---------------------------------------------------------------------------
 // Tests — issue spec
 // ---------------------------------------------------------------------------
@@ -67,7 +129,7 @@ const ctx: TurnContext = createMockTurnContext();
 describe("createForgeDemandDetector", () => {
   it("emits a demand signal once repeated tool failures reach threshold", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { repeatedFailureCount: 3 },
         onDemand: (s) => signals.push(s),
@@ -93,7 +155,7 @@ describe("createForgeDemandDetector", () => {
 
   it("detects user correction patterns via wrapModelCall", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { repeatedFailureCount: 1 },
         onDemand: (s) => signals.push(s),
@@ -121,7 +183,7 @@ describe("createForgeDemandDetector", () => {
   it("dedupes duplicate demands via cooldown per trigger key", async () => {
     const signals: ForgeDemandSignal[] = [];
     // Cooldown active — same trigger should NOT re-emit while hot.
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         budget: { ...DEFAULT_FORGE_BUDGET, cooldownMs: 60_000 },
         heuristics: { repeatedFailureCount: 3 },
@@ -146,9 +208,7 @@ describe("createForgeDemandDetector", () => {
   });
 
   it("maps an emitted signal to a ForgeCandidate", async () => {
-    const handle = createForgeDemandDetector(
-      makeConfig({ heuristics: { repeatedFailureCount: 2 } }),
-    );
+    const handle = observedDetector(makeConfig({ heuristics: { repeatedFailureCount: 2 } }));
 
     const failNext = async (): Promise<ToolResponse> => {
       throw new Error("nope");
@@ -185,9 +245,7 @@ describe("createForgeDemandDetector", () => {
 
   it("scores priority (confidence) deterministically across runs", async () => {
     async function firstSignalConfidence(): Promise<number | undefined> {
-      const handle = createForgeDemandDetector(
-        makeConfig({ heuristics: { repeatedFailureCount: 3 } }),
-      );
+      const handle = observedDetector(makeConfig({ heuristics: { repeatedFailureCount: 3 } }));
       const failNext = async (): Promise<ToolResponse> => {
         throw new Error("err");
       };
@@ -214,7 +272,7 @@ describe("createForgeDemandDetector", () => {
       swallowed.push(args);
     };
     try {
-      const handle = createForgeDemandDetector(
+      const handle = observedDetector(
         makeConfig({
           heuristics: { repeatedFailureCount: 1 },
           onDemand: () => {
@@ -262,7 +320,7 @@ describe("createForgeDemandDetector", () => {
   it("does not re-fire user_correction when transcript history is replayed on retry", async () => {
     const signals: ForgeDemandSignal[] = [];
     let now = 10;
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({ clock: () => now, onDemand: (s) => signals.push(s) }),
     );
 
@@ -289,7 +347,7 @@ describe("createForgeDemandDetector", () => {
 
   it("ignores assistant-authored text that happens to match a correction pattern", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(makeConfig({ onDemand: (s) => signals.push(s) }));
+    const handle = observedDetector(makeConfig({ onDemand: (s) => signals.push(s) }));
 
     const okNext = async (): Promise<ToolResponse> => toolRes();
     await handle.middleware.wrapToolCall?.(ctx, toolReq("a-tool"), okNext);
@@ -307,7 +365,7 @@ describe("createForgeDemandDetector", () => {
 
   it("does not let unrelated capability-gap responses combine into a single signal", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 2 },
         onDemand: (s) => signals.push(s),
@@ -352,7 +410,7 @@ describe("createForgeDemandDetector", () => {
     let now = 10;
     // Active cooldown — the correction must fire once and NOT be dropped on
     // retry because the watermark advanced before the failed model call.
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         clock: () => now,
         budget: { ...DEFAULT_FORGE_BUDGET, cooldownMs: 60_000 },
@@ -392,7 +450,7 @@ describe("createForgeDemandDetector", () => {
 
   it("does not let one capability-gap signal suppress unrelated gaps via cooldown", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         // Active cooldown — without per-bucket keys this would suppress the
         // second gap because the trigger.requiredCapability shares a prefix.
@@ -430,7 +488,7 @@ describe("createForgeDemandDetector", () => {
     const signals: ForgeDemandSignal[] = [];
     // Driveable clock so tool calls + correction timestamps are deterministic.
     let now = 1000;
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         clock: () => now,
         onDemand: (s) => signals.push(s),
@@ -465,7 +523,7 @@ describe("createForgeDemandDetector", () => {
   });
 
   it("clears the cooldown of an evicted signal when the queue rolls over", async () => {
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         budget: { ...DEFAULT_FORGE_BUDGET, cooldownMs: 60_000 },
         heuristics: { repeatedFailureCount: 1 },
@@ -502,9 +560,7 @@ describe("createForgeDemandDetector", () => {
   });
 
   it("dismiss resets the per-trigger counters so the next single event does not re-fire", async () => {
-    const handle = createForgeDemandDetector(
-      makeConfig({ heuristics: { repeatedFailureCount: 3 } }),
-    );
+    const handle = observedDetector(makeConfig({ heuristics: { repeatedFailureCount: 3 } }));
 
     const failNext = async (): Promise<ToolResponse> => {
       throw new Error("nope");
@@ -534,7 +590,7 @@ describe("createForgeDemandDetector", () => {
   it("does not collapse user_correction cooldown across different tools", async () => {
     const signals: ForgeDemandSignal[] = [];
     let now = 100;
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         clock: () => now,
         // Active cooldown — the cooldown key must include the corrected
@@ -580,7 +636,7 @@ describe("createForgeDemandDetector", () => {
 
   it("enforces maxForgesPerSession and stops emitting once the cap is reached", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         budget: { ...DEFAULT_FORGE_BUDGET, maxForgesPerSession: 2, cooldownMs: 0 },
         heuristics: { repeatedFailureCount: 1 },
@@ -603,7 +659,7 @@ describe("createForgeDemandDetector", () => {
   it("does not suppress later signals on idle wall-clock alone (computeTimeBudgetMs is forge-pipeline scope, not detector)", async () => {
     let now = 0;
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         clock: () => now,
         budget: { ...DEFAULT_FORGE_BUDGET, computeTimeBudgetMs: 1_000, cooldownMs: 0 },
@@ -636,7 +692,7 @@ describe("createForgeDemandDetector", () => {
 
   it("treats in-band tool errors ({error, code}) as failures, not successes", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { repeatedFailureCount: 3 },
         onDemand: (s) => signals.push(s),
@@ -665,7 +721,7 @@ describe("createForgeDemandDetector", () => {
     let now = 10;
     // cooldownMs=0 — dedupe must come from the per-message timestamp set,
     // NOT from cooldown.
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({ clock: () => now, onDemand: (s) => signals.push(s) }),
     );
     now = 50;
@@ -702,7 +758,7 @@ describe("createForgeDemandDetector", () => {
   it("does not consume the session compute-time budget on sub-threshold attempts", async () => {
     let now = 0;
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         clock: () => now,
         // demandThreshold high enough to suppress the first attempt
@@ -735,7 +791,7 @@ describe("createForgeDemandDetector", () => {
     // Long after the supposed budget window — a real, threshold-clearing
     // event must still emit because the window was never started.
     now = 5_000;
-    const handle2 = createForgeDemandDetector(
+    const handle2 = observedDetector(
       makeConfig({
         clock: () => now,
         budget: { ...DEFAULT_FORGE_BUDGET, computeTimeBudgetMs: 1_000, cooldownMs: 0 },
@@ -758,7 +814,7 @@ describe("createForgeDemandDetector", () => {
   it("attributes user_correction to a failed tool call (recordToolCall covers attempts, not just successes)", async () => {
     const signals: ForgeDemandSignal[] = [];
     let now = 0;
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         clock: () => now,
         onDemand: (s) => signals.push(s),
@@ -800,7 +856,7 @@ describe("createForgeDemandDetector", () => {
   it("does not let a long-running tool steal user_correction from an earlier completed tool", async () => {
     const signals: ForgeDemandSignal[] = [];
     let now = 0;
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         clock: () => now,
         onDemand: (s) => signals.push(s),
@@ -875,7 +931,7 @@ describe("createForgeDemandDetector", () => {
   });
 
   it("dismiss removes the signal and clears its cooldown", async () => {
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         budget: { ...DEFAULT_FORGE_BUDGET, cooldownMs: 60_000 },
         heuristics: { repeatedFailureCount: 1 },
@@ -901,7 +957,7 @@ describe("createForgeDemandDetector", () => {
   it("wrapModelStream scans corrections and runs capability-gap on assembled deltas", async () => {
     const signals: ForgeDemandSignal[] = [];
     let now = 10;
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         clock: () => now,
         heuristics: { capabilityGapOccurrences: 1 },
@@ -946,7 +1002,7 @@ describe("createForgeDemandDetector", () => {
   });
 
   it("middleware priority places it OUTSIDE feedback-loop (450) so it observes only committed state", () => {
-    const handle = createForgeDemandDetector(makeConfig());
+    const handle = observedDetector(makeConfig());
     // Lower priority = outer onion layer in the koi engine compose order.
     // forge-demand must be outer relative to feedback-loop (450) so that
     // capability-gap and latency checks fire only on post-validation,
@@ -959,7 +1015,7 @@ describe("createForgeDemandDetector", () => {
 
   it("does not double-count capability-gap on retry of the same request/response", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 2 },
         onDemand: (s) => signals.push(s),
@@ -976,6 +1032,7 @@ describe("createForgeDemandDetector", () => {
 
     // Same turnId = retries within one turn must dedup.
     const ctxA = createMockTurnContext({ turnIndex: 0 });
+    registerSessions(handle, ctxA.session);
     await handle.middleware.wrapModelCall?.(ctxA, modelReq([userTurn]), sameResp);
     await handle.middleware.wrapModelCall?.(ctxA, modelReq([userTurn]), sameResp);
     expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(0);
@@ -983,13 +1040,14 @@ describe("createForgeDemandDetector", () => {
     // A NEW turn (distinct turnId via different turnIndex) with the same
     // response text DOES count.
     const ctxB = createMockTurnContext({ turnIndex: 1 });
+    registerSessions(handle, ctxB.session);
     await handle.middleware.wrapModelCall?.(ctxB, modelReq([userTurn]), sameResp);
     expect(signals.filter((s) => s.trigger.kind === "capability_gap").length).toBe(1);
   });
 
   it("commits streamed signals on `done` chunk even if the consumer breaks immediately after", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 1 },
         onDemand: (s) => signals.push(s),
@@ -1024,7 +1082,7 @@ describe("createForgeDemandDetector", () => {
     const signals: ForgeDemandSignal[] = [];
     // Threshold above user_correction's hard-coded 0.7 confidence — the
     // correction is suppressed but must remain eligible for retry/replay.
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         budget: { ...DEFAULT_FORGE_BUDGET, demandThreshold: 0.95, cooldownMs: 0 },
         onDemand: (s) => signals.push(s),
@@ -1061,7 +1119,7 @@ describe("createForgeDemandDetector", () => {
 
   it("does not collapse long-transcript repeats of the same ask that share a prefix > 512 chars", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 2 },
         onDemand: (s) => signals.push(s),
@@ -1086,7 +1144,9 @@ describe("createForgeDemandDetector", () => {
     // should reach the threshold and emit one signal. Guards against
     // prefix-only dedup collisions that previously masked repeated calls.
     const ctxA = createMockTurnContext({ turnIndex: 1 });
+    registerSessions(handle, ctxA.session);
     const ctxB = createMockTurnContext({ turnIndex: 2 });
+    registerSessions(handle, ctxB.session);
     await handle.middleware.wrapModelCall?.(ctxA, modelReq([u]), respA);
     await handle.middleware.wrapModelCall?.(ctxB, modelReq([u]), respB);
 
@@ -1095,7 +1155,7 @@ describe("createForgeDemandDetector", () => {
 
   it("aggregates capability-gap occurrences when the user repeats the same ask across turns", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 2 },
         onDemand: (s) => signals.push(s),
@@ -1115,7 +1175,9 @@ describe("createForgeDemandDetector", () => {
     // user message identity) groups identical asks; dedup is keyed on
     // turn fingerprint so distinct turns are not collapsed as retries.
     const ctxA = createMockTurnContext({ turnIndex: 1 });
+    registerSessions(handle, ctxA.session);
     const ctxB = createMockTurnContext({ turnIndex: 2 });
+    registerSessions(handle, ctxB.session);
     await handle.middleware.wrapModelCall?.(ctxA, modelReq([u]), sameResp);
     await handle.middleware.wrapModelCall?.(ctxB, modelReq([u]), sameResp);
 
@@ -1123,9 +1185,7 @@ describe("createForgeDemandDetector", () => {
   });
 
   it("returns frozen signal clones from getSignals so callers cannot mutate detector state", async () => {
-    const handle = createForgeDemandDetector(
-      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
-    );
+    const handle = observedDetector(makeConfig({ heuristics: { repeatedFailureCount: 1 } }));
     const failNext = async (): Promise<ToolResponse> => {
       throw new Error("nope");
     };
@@ -1148,7 +1208,7 @@ describe("createForgeDemandDetector", () => {
 
   it("does not commit capability-gap signals when wrapModelStream aborts mid-stream", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 1 },
         onDemand: (s) => signals.push(s),
@@ -1179,11 +1239,11 @@ describe("createForgeDemandDetector", () => {
   });
 
   it("emits globally unique signal ids across sessions so dismiss() targets the right one", async () => {
-    const handle = createForgeDemandDetector(
-      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
-    );
+    const handle = observedDetector(makeConfig({ heuristics: { repeatedFailureCount: 1 } }));
     const ctxA = createMockTurnContext({ session: { sessionId: "sess-A" as never } });
+    registerSessions(handle, ctxA.session);
     const ctxB = createMockTurnContext({ session: { sessionId: "sess-B" as never } });
+    registerSessions(handle, ctxB.session);
 
     const failNext = async (): Promise<ToolResponse> => {
       throw new Error("nope");
@@ -1219,7 +1279,7 @@ describe("createForgeDemandDetector", () => {
 
   it("isolates state per session — failures and signals do not bleed across tenants", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { repeatedFailureCount: 3 },
         onDemand: (s) => signals.push(s),
@@ -1227,7 +1287,9 @@ describe("createForgeDemandDetector", () => {
     );
 
     const ctxA = createMockTurnContext({ session: { sessionId: "session-A" as never } });
+    registerSessions(handle, ctxA.session);
     const ctxB = createMockTurnContext({ session: { sessionId: "session-B" as never } });
+    registerSessions(handle, ctxB.session);
 
     const failNext = async (): Promise<ToolResponse> => {
       throw new Error("nope");
@@ -1269,7 +1331,7 @@ describe("createForgeDemandDetector", () => {
   it("dedupes user corrections by content identity, not raw timestamp", async () => {
     const signals: ForgeDemandSignal[] = [];
     let now = 10;
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({ clock: () => now, onDemand: (s) => signals.push(s) }),
     );
 
@@ -1297,7 +1359,7 @@ describe("createForgeDemandDetector", () => {
     // Regression for F57 (round 2) — onDemand received the live stored
     // signal object. Mutating `id`/`trigger`/`context.failedToolCalls`
     // through the callback corrupted dismissal/cooldown bookkeeping.
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { repeatedFailureCount: 1 },
         onDemand: (s) => {
@@ -1328,9 +1390,7 @@ describe("createForgeDemandDetector", () => {
     // victim's sessionId could fabricate a SessionContext literal and
     // read or dismiss the victim's signals. Now authorization is by
     // observed-object identity.
-    const handle = createForgeDemandDetector(
-      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
-    );
+    const handle = observedDetector(makeConfig({ heuristics: { repeatedFailureCount: 1 } }));
     // Run a real hook so `ctx.session` becomes an observed (legitimate)
     // SessionContext, then verify a forged literal carrying the same
     // sessionId is rejected.
@@ -1354,7 +1414,7 @@ describe("createForgeDemandDetector", () => {
     // maxForgesPerSession: 1 and a single demand-threshold pass, the
     // same conversation could retain a DIFFERENT signal depending only
     // on whether the provider used streaming.
-    function makeDetector(): ForgeDemandConfig & { signals: ForgeDemandSignal[] } {
+    function makeF71Cfg(): ForgeDemandConfig & { signals: ForgeDemandSignal[] } {
       const signals: ForgeDemandSignal[] = [];
       return {
         budget: {
@@ -1371,8 +1431,8 @@ describe("createForgeDemandDetector", () => {
     const correction = userMsg("no, that's not right");
     // Set up state: one prior tool call (so user_correction can attribute).
     async function runNonStream(): Promise<readonly string[]> {
-      const cfg = makeDetector();
-      const handle = createForgeDemandDetector(cfg);
+      const cfg = makeF71Cfg();
+      const handle = observedDetector(cfg);
       await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), async () => toolRes());
       await handle.middleware.wrapModelCall?.(ctx, modelReq([correction]), async () =>
         modelRes("I don't have a tool for that"),
@@ -1380,8 +1440,8 @@ describe("createForgeDemandDetector", () => {
       return cfg.signals.map((s) => s.trigger.kind);
     }
     async function runStream(): Promise<readonly string[]> {
-      const cfg = makeDetector();
-      const handle = createForgeDemandDetector(cfg);
+      const cfg = makeF71Cfg();
+      const handle = observedDetector(cfg);
       await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), async () => toolRes());
       const stream = handle.middleware.wrapModelStream;
       if (stream === undefined) throw new Error("wrapModelStream missing");
@@ -1412,7 +1472,7 @@ describe("createForgeDemandDetector", () => {
       swallowed.push(args);
     };
     try {
-      const handle = createForgeDemandDetector(
+      const handle = observedDetector(
         makeConfig({
           healthTracker: {
             getSnapshot: (_session, _tid) => {
@@ -1459,6 +1519,8 @@ describe("createForgeDemandDetector", () => {
     try {
       let attempt = 0;
       const delivered: number[] = [];
+      // Use raw handle (not observedDetector wrapper) so onSessionStart
+      // and wrap* delivery attempts are observable as separate steps.
       const handle = createForgeDemandDetector(
         makeConfig({
           onSessionAttached: (_session, _scoped) => {
@@ -1468,16 +1530,17 @@ describe("createForgeDemandDetector", () => {
           },
         }),
       );
-      // First call — callback throws; session must remain UNobserved
-      // so the next call retries.
-      await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), async () => toolRes());
+      // Engine-controlled bind step (F110): onSessionStart fires
+      // delivery once. The callback throws; session is observed but
+      // delivery is deferred to the next traffic.
+      await handle.middleware.onSessionStart?.(ctx.session);
       expect(attempt).toBe(1);
       expect(delivered.length).toBe(0);
-      // Second call — callback succeeds; session is now observed and
-      // a third call would short-circuit.
+      // Next traffic — bindObserved retries delivery and succeeds.
       await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), async () => toolRes());
       expect(attempt).toBe(2);
       expect(delivered).toEqual([2]);
+      // A third call short-circuits — already delivered.
       await handle.middleware.wrapToolCall?.(ctx, toolReq("t"), async () => toolRes());
       expect(attempt).toBe(2);
     } finally {
@@ -1500,7 +1563,7 @@ describe("createForgeDemandDetector", () => {
       },
     });
     expect(typeof config.onSessionAttached).toBe("function");
-    const handle = createForgeDemandDetector(config);
+    const handle = observedDetector(config);
     await handle.middleware.wrapToolCall?.(ctx, toolReq("any"), async () => toolRes());
     expect(attached.length).toBe(1);
   });
@@ -1512,7 +1575,7 @@ describe("createForgeDemandDetector", () => {
     // executed and burn forge budget.
     const signals: ForgeDemandSignal[] = [];
     let now = 0;
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({ clock: () => now, onDemand: (s) => signals.push(s) }),
     );
     now = 50;
@@ -1545,7 +1608,7 @@ describe("createForgeDemandDetector", () => {
     // any earlier tool blamed for an unrelated user complaint.
     const signals: ForgeDemandSignal[] = [];
     let now = 0;
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({ clock: () => now, onDemand: (s) => signals.push(s) }),
     );
     // Tool runs early — bound to the pre-correction part of the conversation.
@@ -1574,7 +1637,7 @@ describe("createForgeDemandDetector", () => {
     // object would silently start operating on another tenant's state.
     // The fix captures sessionId at issuance and closes over it.
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { repeatedFailureCount: 1 },
         onDemand: (s) => signals.push(s),
@@ -1608,7 +1671,7 @@ describe("createForgeDemandDetector", () => {
     // signal. The fix scopes the counter by last-user-message identity
     // so only repeated refusals to the same task contribute.
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 2 },
         capabilityGapPatterns: [/I don'?t have a tool/],
@@ -1647,7 +1710,7 @@ describe("createForgeDemandDetector", () => {
     // on the CURRENT (last) user message; this test guards that path
     // against regression to first-message scoping.
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 2 },
         capabilityGapPatterns: [/I don'?t have a tool/],
@@ -1685,7 +1748,7 @@ describe("createForgeDemandDetector", () => {
 
   it("F80: capability-gap aggregates the same ask across turns with distinct timestamps", async () => {
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 2 },
         capabilityGapPatterns: [/I don'?t have a tool/],
@@ -1719,7 +1782,7 @@ describe("createForgeDemandDetector", () => {
     // would surface stale errors alongside a fresh failureCount,
     // misleading downstream context.
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { repeatedFailureCount: 2 },
         onDemand: (s) => signals.push(s),
@@ -1774,7 +1837,7 @@ describe("createForgeDemandDetector", () => {
     // The fix falls back to a per-request fingerprint when no user
     // message is present.
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 2 },
         capabilityGapPatterns: [/I don'?t have a tool/],
@@ -1807,7 +1870,7 @@ describe("createForgeDemandDetector", () => {
     // false-positive signal. The fix folds non-text blocks into both
     // fingerprints.
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 2 },
         capabilityGapPatterns: [/I don'?t have a tool/],
@@ -1846,7 +1909,7 @@ describe("createForgeDemandDetector", () => {
     // (pattern,task,window) key as the cooldown key so each task has
     // its own cooldown.
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         // Active cooldown so suppression is observable across tasks.
         budget: { ...DEFAULT_FORGE_BUDGET, cooldownMs: 60_000 },
@@ -1891,7 +1954,7 @@ describe("createForgeDemandDetector", () => {
     // evidence on a different task. The fix stores the exact bucket
     // key per signal at emit time and clears only that bucket.
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 2 },
         capabilityGapPatterns: [/I don'?t have a tool/],
@@ -1944,7 +2007,7 @@ describe("createForgeDemandDetector", () => {
     // detector remains functional (no error, fresh signals still
     // possible) — exact internal sizes are intentionally not asserted
     // since the cap is an implementation detail.
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 2 },
         capabilityGapPatterns: [/I don'?t have a tool/],
@@ -1985,9 +2048,7 @@ describe("createForgeDemandDetector", () => {
     // banner conditioned future model calls on observed signals,
     // violating the passive-observer contract. The middleware must
     // return undefined regardless of how many signals are pending.
-    const handle = createForgeDemandDetector(
-      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
-    );
+    const handle = observedDetector(makeConfig({ heuristics: { repeatedFailureCount: 1 } }));
     try {
       await handle.middleware.wrapToolCall?.(ctx, toolReq("flaky"), async () => {
         throw new Error("boom");
@@ -2005,9 +2066,7 @@ describe("createForgeDemandDetector", () => {
     // silently read the new session's signals. The fix captures a
     // generation token at issuance and refuses to operate once
     // onSessionEnd advances the generation.
-    const handle = createForgeDemandDetector(
-      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
-    );
+    const handle = observedDetector(makeConfig({ heuristics: { repeatedFailureCount: 1 } }));
     const sessionA = createMockTurnContext({ turnIndex: 1 });
     try {
       await handle.middleware.wrapToolCall?.(sessionA, toolReq("flaky"), async () => {
@@ -2045,9 +2104,7 @@ describe("createForgeDemandDetector", () => {
     // sessionId and obtain a handle for a different tenant. The fix
     // stores the sessionId observed at first sighting and resolves
     // forSession against that binding.
-    const handle = createForgeDemandDetector(
-      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
-    );
+    const handle = observedDetector(makeConfig({ heuristics: { repeatedFailureCount: 1 } }));
     // Tenant A — drive a signal.
     const tenantA = createMockTurnContext({ turnIndex: 1 });
     try {
@@ -2090,9 +2147,7 @@ describe("createForgeDemandDetector", () => {
     // the scoped handle still pointed at the original — opening a
     // cross-session corruption path. The fix routes every detector
     // path through the bound id captured at first observation.
-    const handle = createForgeDemandDetector(
-      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
-    );
+    const handle = observedDetector(makeConfig({ heuristics: { repeatedFailureCount: 1 } }));
     const tenantA = createMockTurnContext({ turnIndex: 1 });
     const originalAId = tenantA.session.sessionId;
     // First observation binds tenantA.session ↔ originalAId.
@@ -2150,7 +2205,7 @@ describe("createForgeDemandDetector", () => {
     // observedSessions entry on session end so ensureObserved can
     // rebind to the new id on the next sighting.
     const attached: { id: string; signals: number }[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { repeatedFailureCount: 1 },
         onSessionAttached: (s, scoped) => {
@@ -2204,9 +2259,7 @@ describe("createForgeDemandDetector", () => {
     // by identity check on session end. This test exercises a long
     // poll loop and asserts handles still revoke correctly when the
     // session ends.
-    const handle = createForgeDemandDetector(
-      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
-    );
+    const handle = observedDetector(makeConfig({ heuristics: { repeatedFailureCount: 1 } }));
     const sessionA = createMockTurnContext({ turnIndex: 1 });
     try {
       await handle.middleware.wrapToolCall?.(sessionA, toolReq("flaky"), async () => {
@@ -2239,7 +2292,7 @@ describe("createForgeDemandDetector", () => {
     // the last few user turns into the task fingerprint so the prior
     // ask disambiguates the bucket.
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { capabilityGapOccurrences: 2 },
         capabilityGapPatterns: [/I don'?t have a tool/],
@@ -2287,7 +2340,7 @@ describe("createForgeDemandDetector", () => {
     // re-checks after the await: a stale epoch short-circuits all
     // post-await mutation.
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { repeatedFailureCount: 1 },
         onDemand: (s) => signals.push(s),
@@ -2319,9 +2372,7 @@ describe("createForgeDemandDetector", () => {
     // middleware object could fabricate `{ sessionId: victim, ... }`
     // and revoke another tenant's signals/handles. The fix requires
     // an observed binding — unobserved contexts are a no-op.
-    const handle = createForgeDemandDetector(
-      makeConfig({ heuristics: { repeatedFailureCount: 1 } }),
-    );
+    const handle = observedDetector(makeConfig({ heuristics: { repeatedFailureCount: 1 } }));
     // Establish a real session with state.
     const victim = createMockTurnContext({
       session: { sessionId: "victim-session" } as never,
@@ -2361,7 +2412,7 @@ describe("createForgeDemandDetector", () => {
     // returned early (binding not present) — leaking detector state.
     // The fix binds early and tracks delivery in a separate set so
     // teardown always succeeds.
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { repeatedFailureCount: 1 },
         onSessionAttached: () => {
@@ -2414,7 +2465,7 @@ describe("createForgeDemandDetector", () => {
     // should drive replacement provisioning never fired. Detector now
     // treats the quarantine kind as an in-band failure too.
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { repeatedFailureCount: 2 },
         onDemand: (s) => signals.push(s),
@@ -2444,7 +2495,7 @@ describe("createForgeDemandDetector", () => {
     // the bug was the request, not the tool. Detector now skips
     // recordFailure for VALIDATION rejects.
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { repeatedFailureCount: 1 },
         onDemand: (s) => signals.push(s),
@@ -2482,7 +2533,7 @@ describe("createForgeDemandDetector", () => {
     // the repeated_failure streak and suppressed legitimate emission.
     // Correct outcome: VALIDATION is neutral — no signal, no reset.
     const signals: ForgeDemandSignal[] = [];
-    const handle = createForgeDemandDetector(
+    const handle = observedDetector(
       makeConfig({
         heuristics: { repeatedFailureCount: 3 },
         onDemand: (s) => signals.push(s),
@@ -2514,5 +2565,56 @@ describe("createForgeDemandDetector", () => {
       expect(repeated.trigger.toolName).toBe("healthy");
       expect(repeated.trigger.count).toBe(3);
     }
+  });
+
+  it("F110: traffic hooks do not auto-bind sessions — only onSessionStart establishes trust", async () => {
+    // Reviewer F110: ensureObserved blindly inserted any sighted
+    // SessionContext into observedSessions. Because every entry point
+    // (wrapToolCall/wrapModelCall/wrapModelStream) called it before any
+    // checks, an in-process caller could fabricate
+    // `{ sessionId: victim, ... }`, drive one wrap* call, and then
+    // invoke `forSession(fakeSession)` for tenant-scoped access.
+    // The fix: only `onSessionStart` may bind, and forSession rejects
+    // unobserved contexts.
+    const signals: ForgeDemandSignal[] = [];
+    // Use raw handle (no test-wrapper auto-registration) — this proves
+    // the production middleware itself enforces the boundary.
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { repeatedFailureCount: 1 },
+        onDemand: (s) => signals.push(s),
+      }),
+    );
+    const fake = createMockTurnContext({
+      session: { sessionId: "victim-session" } as never,
+    });
+    // Drive a failing tool call through every traffic hook without ever
+    // calling onSessionStart. None must record state, emit, or admit
+    // the fake session into observedSessions.
+    try {
+      await handle.middleware.wrapToolCall?.(fake, toolReq("flaky"), async () => {
+        throw new Error("boom");
+      });
+    } catch {
+      // expected — traffic passes through, real next throws
+    }
+    await handle.middleware.wrapModelCall?.(fake, modelReq([userMsg("ping")]), async () =>
+      modelRes("ack"),
+    );
+    expect(signals.length).toBe(0);
+    // forSession on the unobserved context must reject (not silently
+    // upgrade trust by issuing a scoped handle).
+    expect(() => handle.forSession(fake.session)).toThrow(/observed by the detector/);
+
+    // Sanity: a properly admitted session DOES emit.
+    await handle.middleware.onSessionStart?.(fake.session);
+    try {
+      await handle.middleware.wrapToolCall?.(fake, toolReq("flaky"), async () => {
+        throw new Error("boom");
+      });
+    } catch {
+      // expected
+    }
+    expect(signals.filter((s) => s.trigger.kind === "repeated_failure").length).toBe(1);
   });
 });

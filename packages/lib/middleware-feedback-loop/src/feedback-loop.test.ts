@@ -31,10 +31,10 @@ function mockSessionCtx(): SessionContext {
   };
 }
 
-function mockTurnCtx(): TurnContext {
+function mockTurnCtx(session?: SessionContext): TurnContext {
   const rid = runId("run-1");
   return {
-    session: mockSessionCtx(),
+    session: session ?? mockSessionCtx(),
     turnIndex: 0,
     turnId: turnId(rid, 0),
     messages: [],
@@ -294,7 +294,7 @@ describe("createFeedbackLoopMiddleware", () => {
         await mw.onSessionStart?.(sessionCtx);
 
         const next = mock(async (_req: ToolRequest) => mockToolResponse());
-        const result = await mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next);
+        const result = await mw.wrapToolCall?.(mockTurnCtx(sessionCtx), mockToolRequest(), next);
 
         expect(next).not.toHaveBeenCalled();
         expect(result).toBeDefined();
@@ -332,7 +332,7 @@ describe("createFeedbackLoopMiddleware", () => {
         // Tool is session-quarantined. resolveBrickId still returns undefined.
         // Middleware must block the call.
         const next = mock(async (_req: ToolRequest) => mockToolResponse());
-        const result = await mw2.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next);
+        const result = await mw2.wrapToolCall?.(mockTurnCtx(sessionCtx), mockToolRequest(), next);
 
         expect(next).not.toHaveBeenCalled();
         expect((result?.output as { kind: string }).kind).toBe("forge_tool_quarantined");
@@ -371,7 +371,7 @@ describe("createFeedbackLoopMiddleware", () => {
             output: { error: "permission denied", code: "EACCES" },
           }),
         );
-        const result = await mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next);
+        const result = await mw.wrapToolCall?.(mockTurnCtx(sessionCtx), mockToolRequest(), next);
         // Response is returned unchanged — feedback-loop is observational.
         expect(result?.output).toEqual({ error: "permission denied", code: "EACCES" });
         // But the tracker counted it as a FAILURE, not a success.
@@ -410,7 +410,7 @@ describe("createFeedbackLoopMiddleware", () => {
             output: { error: "missing arg 'path'", code: "VALIDATION" },
           }),
         );
-        const result = await mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next);
+        const result = await mw.wrapToolCall?.(mockTurnCtx(sessionCtx), mockToolRequest(), next);
         expect(result?.output).toEqual({ error: "missing arg 'path'", code: "VALIDATION" });
         // NEUTRAL: tracker untouched — neither success nor failure.
         expect(recordFailure).not.toHaveBeenCalled();
@@ -463,9 +463,9 @@ describe("createFeedbackLoopMiddleware", () => {
           throw toolError;
         });
 
-        await expect(mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next)).rejects.toBe(
-          toolError,
-        );
+        await expect(
+          mw.wrapToolCall?.(mockTurnCtx(sessionCtx), mockToolRequest(), next),
+        ).rejects.toBe(toolError);
 
         expect(recordFailure).toHaveBeenCalledTimes(1);
       } finally {
@@ -549,6 +549,62 @@ describe("createFeedbackLoopMiddleware", () => {
       // After onSessionEnd, even the real ctx no longer resolves.
       await mw.onSessionEnd?.(realCtx);
       expect(mw.healthHandle?.getSnapshot(realCtx, "any-tool")).toBeUndefined();
+    });
+
+    it("F111: tracker writes do NOT fall back to raw ctx.session.sessionId for unobserved contexts", async () => {
+      // Reviewer F111: wrapToolCall resolved tracker as
+      // `observedSessions.get(ctx.session) ?? ctx.session.sessionId`.
+      // An in-process caller could skip onSessionStart, fabricate a
+      // TurnContext naming another tenant's sessionId, and drive
+      // recordSuccess/recordFailure into that tenant's live tracker —
+      // quarantining a healthy tool or skewing latency windows for a
+      // session it does not own. Fix: drop the fallback. Unobserved
+      // contexts get NO tracker access, so their traffic cannot
+      // poison anyone else's metrics.
+      const recordSuccess = mock((_t: string, _l: number) => {});
+      const recordFailure = mock((_t: string, _l: number, _r: string) => {});
+      const fakeTracker: ToolHealthTracker = {
+        recordSuccess,
+        recordFailure,
+        getSnapshot: () => undefined,
+        getL0Snapshot: () => undefined,
+        checkAndQuarantine: async () => false,
+        checkAndDemote: async () => false,
+        isQuarantined: async () => false,
+        dispose: async () => {},
+      };
+      const spy = spyOn(toolHealthModule, "createToolHealthTracker").mockReturnValue(fakeTracker);
+      try {
+        const mw = createFeedbackLoopMiddleware({ forgeHealth: makeMinimalForgeHealth() });
+        // Register a real victim session — this allocates the tracker
+        // under the bound id.
+        const victim = mockSessionCtx();
+        await mw.onSessionStart?.(victim);
+        // Attacker fabricates a TurnContext naming the victim's
+        // sessionId without ever calling onSessionStart on its own
+        // SessionContext object.
+        const forgedTurnCtx = {
+          ...mockTurnCtx(),
+          session: {
+            sessionId: victim.sessionId,
+            agentId: "attacker",
+            runId: "fake",
+            metadata: {},
+          },
+        } as ReturnType<typeof mockTurnCtx>;
+        const next = mock(
+          async (_req: ToolRequest): Promise<ToolResponse> => ({
+            output: { ok: true },
+          }),
+        );
+        await mw.wrapToolCall?.(forgedTurnCtx, mockToolRequest(), next);
+        // Tracker must NOT have been written to — fabricated context
+        // is unobserved, so no fallback to raw sessionId.
+        expect(recordSuccess).not.toHaveBeenCalled();
+        expect(recordFailure).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });

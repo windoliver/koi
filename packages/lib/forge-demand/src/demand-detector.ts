@@ -314,7 +314,17 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     return observedSessions.get(session) ?? session.sessionId;
   }
 
-  function ensureObserved(session: SessionContext): void {
+  /**
+   * Bind a SessionContext as observed. Called ONLY from the engine-
+   * controlled `onSessionStart` lifecycle hook — never from traffic
+   * hooks. Letting `wrapToolCall`/`wrapModelCall`/`wrapModelStream`
+   * auto-bind would let any in-process caller fabricate a
+   * `{ sessionId: victim, ... }` SessionContext, invoke the exported
+   * middleware once, and then call `forSession(fakeSession)` to read
+   * or poison the victim's signals — defeating the object-identity
+   * trust boundary the scoped handle is meant to enforce. F110.
+   */
+  function bindObserved(session: SessionContext): void {
     // Bind the SessionContext to its sessionId BEFORE attempting
     // callback delivery so per-session state allocated by middleware
     // hooks always has a teardown path. Without this, a permanently
@@ -916,6 +926,18 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
 
   const middleware: KoiMiddleware = {
     name: "forge-demand-detector",
+
+    /**
+     * Engine-controlled session registration. The middleware trusts only
+     * sessions admitted through this hook — wrap* hooks pass through
+     * for unregistered contexts so an in-process caller cannot fabricate
+     * a SessionContext, drive traffic through the middleware, and then
+     * call `forSession()` for tenant-scoped access. F110 regression.
+     */
+    async onSessionStart(ctx: SessionContext): Promise<void> {
+      bindObserved(ctx);
+    },
+
     // Outer layer relative to feedback-loop (priority 450) — lower priority
     // runs first / wraps later layers. This ordering matters:
     //   - Latency check: feedback-loop records tool-health AFTER `next()`,
@@ -932,7 +954,15 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      ensureObserved(ctx.session);
+      // Trust gate: only sessions registered via the engine-controlled
+      // onSessionStart hook are observed. Unregistered contexts pass
+      // through with no detector state — never auto-bind here. F110.
+      if (!observedSessions.has(ctx.session)) {
+        return next(request);
+      }
+      // Retry onSessionAttached delivery for observed sessions whose
+      // first delivery threw. Idempotent on the bind step. F98.
+      bindObserved(ctx.session);
       const sid = boundIdFor(ctx.session);
       // Capture the session epoch BEFORE awaiting downstream work so
       // a late completion that crosses an onSessionEnd does not
@@ -1014,7 +1044,12 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      ensureObserved(ctx.session);
+      // Trust gate: see wrapToolCall. F110.
+      if (!observedSessions.has(ctx.session)) {
+        return next(request);
+      }
+      // Retry onSessionAttached delivery if first attempt threw. F98.
+      bindObserved(ctx.session);
       const sid = boundIdFor(ctx.session);
       // Capture epoch pre-await — see wrapToolCall comment. F95 regression.
       const epoch = getOrCreateEpoch(sid);
@@ -1034,7 +1069,12 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      ensureObserved(ctx.session);
+      // Trust gate: see wrapToolCall. F110.
+      if (!observedSessions.has(ctx.session)) {
+        return next(request);
+      }
+      // Retry onSessionAttached delivery if first attempt threw. F98.
+      bindObserved(ctx.session);
       const sid = boundIdFor(ctx.session);
       // Capture epoch pre-await. A long-running stream that crosses
       // onSessionEnd must not commit corrections or capability-gap

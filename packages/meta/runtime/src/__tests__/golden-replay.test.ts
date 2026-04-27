@@ -13872,6 +13872,8 @@ describe("Golden: @koi/forge-demand", () => {
       messages: [],
       metadata: {},
     };
+    // F110: register via engine-controlled onSessionStart before traffic.
+    await handle.middleware.onSessionStart?.(probeSession);
     await handle.middleware.wrapModelCall?.(
       probeCtx,
       { messages: [], model: "test" },
@@ -13915,6 +13917,11 @@ describe("Golden: @koi/forge-demand", () => {
       messages: [],
       metadata: {},
     };
+
+    // F110: forge-demand only trusts sessions admitted via the engine-
+    // controlled onSessionStart hook. Wrap* hooks pass through for
+    // unregistered contexts.
+    await handle.middleware.onSessionStart?.(ctxSession);
 
     const failingNext = async (): Promise<never> => {
       throw new Error("boom");
@@ -14157,6 +14164,8 @@ describe("Golden: @koi/forge-demand", () => {
       messages: [],
       metadata: {},
     };
+    // F110: register via engine-controlled onSessionStart before traffic.
+    await handle.middleware.onSessionStart?.(ctxSession);
     const stream = handle.middleware.wrapModelStream;
     if (stream === undefined) throw new Error("wrapModelStream missing");
     // Drain the stream so the wrap actually executes its lead-in code.
