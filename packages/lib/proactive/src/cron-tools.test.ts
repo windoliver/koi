@@ -134,7 +134,7 @@ describe("schedule_cron tool", () => {
     expect(stub.scheduleCalls).toHaveLength(1);
   });
 
-  test("forwards idempotency_key as TaskOptions.idempotencyKey to scheduler.schedule", async () => {
+  test("does NOT forward idempotency_key to scheduler.schedule (Temporal rejects it)", async () => {
     const stub = createSchedulerStub();
     const state = createCronToolState();
     const tool = createScheduleCronTool({ scheduler: stub.component }, state);
@@ -148,8 +148,22 @@ describe("schedule_cron tool", () => {
     const opts = stub.scheduleCalls[0]?.options as
       | { timezone?: string; idempotencyKey?: string }
       | undefined;
-    expect(opts?.idempotencyKey).toBe("k");
+    expect(opts?.idempotencyKey).toBeUndefined();
     expect(opts?.timezone).toBe("UTC");
+  });
+
+  test("rejects idempotency_key containing ':' (Temporal stable-id delimiter)", async () => {
+    const stub = createSchedulerStub();
+    const state = createCronToolState();
+    const tool = createScheduleCronTool({ scheduler: stub.component }, state);
+
+    const result = (await exec(tool, {
+      expression: "0 9 * * *",
+      idempotency_key: "bad:key",
+    })) as { ok: boolean; error: string };
+
+    expect(result.ok).toBe(false);
+    expect(stub.scheduleCalls).toHaveLength(0);
   });
 
   test("concurrent same-key calls share one registration", async () => {

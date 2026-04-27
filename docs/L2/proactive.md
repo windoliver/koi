@@ -83,10 +83,17 @@ PR, not buried in a thin tool wrapper.
 
 ### `sleep`
 
-Schedules a single deferred dispatch back to the calling agent after `duration_ms`.
-Returns the `TaskId` of the queued dispatch and the absolute `wake_at_ms` so the model
-can reason about the gap. The scheduler delivers an `EngineInput` of kind `"text"`
+Schedules a deferred wake of the calling agent after `duration_ms`. Returns the
+`TaskId` of the queued task and the absolute `wake_at_ms` so the model can
+reason about the gap. The scheduler delivers an `EngineInput` of kind `"text"`
 carrying `wake_message` (or `defaultWakeMessage`) when the delay elapses.
+
+**Mode is `"spawn"`, not `"dispatch"`.** The durable Temporal scheduler rejects
+`dispatch` + `delayMs` because dispatch targets a *running* workflow (signal
+delivery) and cannot defer. Spawn + delayMs is supported on both the in-memory
+scheduler and Temporal: at wake time the scheduler creates a fresh agent run.
+Hosts that need same-process state continuity across the wake should persist
+that state through the agent's normal channels (memory, scratchpad, etc.).
 
 Bounds: `1 <= duration_ms <= maxSleepMs`. Out-of-bounds inputs return
 `{ ok: false, error: "..." }` without ever touching the scheduler.

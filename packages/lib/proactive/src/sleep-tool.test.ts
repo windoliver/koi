@@ -27,7 +27,7 @@ describe("sleep tool", () => {
     expect(result.task_id).toBe("task-1");
     expect(result.wake_at_ms).toBe(fixedNow + 5000);
     expect(stub.submitCalls).toHaveLength(1);
-    expect(stub.submitCalls[0]?.mode).toBe("dispatch");
+    expect(stub.submitCalls[0]?.mode).toBe("spawn");
     expect(stub.submitCalls[0]?.options?.delayMs).toBe(5000);
     expect(stub.submitCalls[0]?.input).toEqual({
       kind: "text",
@@ -234,6 +234,20 @@ describe("sleep tool", () => {
 
     expect(stub.submitCalls[0]?.options?.idempotencyKey).toBe("k");
     expect(stub.submitCalls[0]?.options?.delayMs).toBe(5_000);
+  });
+
+  test("rejects idempotency_key containing ':' (Temporal stable-id delimiter)", async () => {
+    const stub = createSchedulerStub();
+    const state = createSleepToolState();
+    const tool = createSleepTool({ scheduler: stub.component }, state);
+
+    const result = (await exec(tool, {
+      duration_ms: 5_000,
+      idempotency_key: "bad:key",
+    })) as { ok: boolean };
+
+    expect(result.ok).toBe(false);
+    expect(stub.submitCalls).toHaveLength(0);
   });
 
   test("failed pending submission frees the key for retry", async () => {

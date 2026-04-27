@@ -1,5 +1,15 @@
 /**
- * `sleep` tool — schedules a delayed self-dispatch and returns wake metadata.
+ * `sleep` tool — schedules a delayed wake and returns wake metadata.
+ *
+ * Mode: `"spawn"`, not `"dispatch"`
+ * ---------------------------------
+ * The durable Temporal scheduler explicitly rejects `dispatch` + `delayMs`
+ * because dispatch targets a *running* workflow (signal delivery) and cannot
+ * defer. Spawn + delayMs is supported on both the in-memory `@koi/scheduler`
+ * and Temporal: the scheduler creates a fresh agent run at the wake time.
+ * Hosts that need same-process state continuity across the wake should
+ * persist that state through the agent's normal channels (memory, scratchpad,
+ * etc.) — sleep is a wake-up trigger, not a coroutine resume.
  *
  * Idempotency model
  * -----------------
@@ -46,6 +56,11 @@ const schema = z.object({
   idempotency_key: z
     .string()
     .min(1)
+    // Forwarded as TaskOptions.idempotencyKey. The Temporal scheduler builds
+    // a stable task ID from `${agentId}:${mode}:${key}` and rejects keys
+    // containing ':'. Reject up front so we surface a clear error rather
+    // than letting the scheduler throw a delimiter-collision message.
+    .refine((s) => !s.includes(":"), "idempotency_key must not contain ':'")
     .optional()
     .describe(
       "Best-effort process-local dedupe key. Re-using the same key with the same duration " +
@@ -138,7 +153,7 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
         const submittedAt = now();
         const wakeAt = submittedAt + duration_ms;
         try {
-          const id = await scheduler.submit({ kind: "text", text: message }, "dispatch", {
+          const id = await scheduler.submit({ kind: "text", text: message }, "spawn", {
             delayMs: duration_ms,
           });
           return { ok: true, task_id: String(id), wake_at_ms: wakeAt };
@@ -194,7 +209,7 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
       // the pattern is portable across older Node runtimes that lack
       // Promise.try (added in Node 22.10).
       const submission = Promise.resolve()
-        .then(() => scheduler.submit({ kind: "text", text: message }, "dispatch", submitOptions))
+        .then(() => scheduler.submit({ kind: "text", text: message }, "spawn", submitOptions))
         .then((id): SleepRecord => {
           const rec: SleepRecord = {
             taskId: String(id),

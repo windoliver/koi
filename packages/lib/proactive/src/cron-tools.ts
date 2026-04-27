@@ -49,6 +49,11 @@ const scheduleCronSchema = z.object({
   idempotency_key: z
     .string()
     .min(1)
+    // Although schedule_cron does NOT forward this to the scheduler (Temporal
+    // rejects schedule-level idempotency options), keep the same ':' refusal
+    // rule as sleep so an agent that uses the same key shape across both
+    // tools never picks something the durable submit() path would reject.
+    .refine((s) => !s.includes(":"), "idempotency_key must not contain ':'")
     .optional()
     .describe(
       "Best-effort process-local dedupe key. Re-using the same key with the same expression, " +
@@ -147,14 +152,15 @@ export function createScheduleCronTool(config: ProactiveToolsConfig, state: Cron
         }
       }
 
-      // Forward idempotency_key so any scheduler that honours
-      // TaskOptions.idempotencyKey durably can dedupe there too. The current
-      // `@koi/scheduler` ignores the field; the in-memory map below remains
-      // the same-process safety net regardless.
-      const scheduleOptions = {
-        ...(timezone !== undefined ? { timezone } : {}),
-        idempotencyKey: idempotency_key,
-      };
+      // Do NOT forward idempotency_key into scheduler.schedule options.
+      // The Temporal scheduler explicitly rejects every TaskOption on
+      // schedule() (including idempotencyKey) because they cannot be persisted
+      // or enforced by Temporal schedule policies — passing it through would
+      // turn every retry-safe schedule_cron call into a hard failure under
+      // the durable scheduler. Same-process dedup is enforced via the
+      // in-memory map below; cross-restart cron dedup needs an L0/L2 contract
+      // change that lets the scheduler accept a stable schedule ID.
+      const scheduleOptions = timezone !== undefined ? { timezone } : undefined;
 
       // Path 2: idempotency_key supplied. Reserve atomically.
       const existing = state.idempotencyMap.get(idempotency_key);
