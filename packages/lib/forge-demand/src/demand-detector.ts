@@ -216,18 +216,33 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
 
   const sessions = new Map<SessionId, SessionState>();
   /**
-   * Per-sessionId generation counter, incremented on every onSessionEnd.
-   * Scoped handles capture the generation at issuance and refuse to
-   * read or dismiss against a different generation. Without this, a
-   * sessionId reused across resume/replay would let an old handle
-   * silently attach to the new session's signals — a cross-session
-   * isolation break. F88 regression. Kept separate from `sessions`
-   * because that map is cleared on session end; this counter must
-   * persist for the lifetime of the detector.
+   * Per-handle revocation tag. Each scoped handle captures a fresh
+   * mutable `{ revoked: false }` cell at issuance; onSessionEnd flips
+   * `revoked = true` for every handle bound to that session. Reads/
+   * dismiss on a revoked handle become no-ops, so a sessionId reused
+   * after teardown cannot be addressed through stale handles. Tokens
+   * are stored per-session in `liveHandlesBySid` and removed when the
+   * session ends (no permanent map entry — the prior generation-
+   * counter design leaked a record per ended session). F88/F92
+   * regression.
    */
-  const sessionGenerations = new Map<SessionId, number>();
-  function currentGeneration(sid: SessionId): number {
-    return sessionGenerations.get(sid) ?? 0;
+  type HandleTag = { revoked: boolean };
+  const liveHandlesBySid = new Map<SessionId, Set<HandleTag>>();
+  function newHandleTag(sid: SessionId): HandleTag {
+    const tag: HandleTag = { revoked: false };
+    let set = liveHandlesBySid.get(sid);
+    if (set === undefined) {
+      set = new Set<HandleTag>();
+      liveHandlesBySid.set(sid, set);
+    }
+    set.add(tag);
+    return tag;
+  }
+  function revokeHandlesFor(sid: SessionId): void {
+    const set = liveHandlesBySid.get(sid);
+    if (set === undefined) return;
+    for (const t of set) t.revoked = true;
+    liveHandlesBySid.delete(sid);
   }
   // Object-identity authorization for forSession(). Authorizing purely
   // by sessionId would let any in-process caller fabricate a
@@ -280,11 +295,12 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
     // resolution must use the id we actually authorized for. F76
     // regression.
     const sid = session.sessionId;
-    // Capture the session generation at issuance. If the session ends
-    // and a later session reuses the same id, the generation counter
-    // advances and this stale handle becomes a no-op. F88 regression.
-    const gen = currentGeneration(sid);
-    const isLive = (): boolean => currentGeneration(sid) === gen;
+    // Per-handle revocation cell. onSessionEnd flips this for every
+    // handle still bound to the session, so stale closures cannot
+    // address a future session that reuses the same sessionId.
+    // F88 regression.
+    const tag = newHandleTag(sid);
+    const isLive = (): boolean => !tag.revoked;
     const scoped: SessionScopedForgeDemandHandle = {
       getSignals: (): readonly ForgeDemandSignal[] => {
         if (!isLive()) return [];
@@ -1002,11 +1018,17 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
       // also clear an unrelated tenant's signals. F90 regression.
       const sid = boundIdFor(ctx);
       sessions.delete(sid);
-      // Bump generation so any previously issued scoped handles are
-      // revoked: if a future session reuses this sessionId, those
-      // stale closures will not be able to read or dismiss its
-      // signals. F88 regression.
-      sessionGenerations.set(sid, currentGeneration(sid) + 1);
+      // Revoke every live scoped handle bound to this session: if a
+      // future session reuses this sessionId, those stale closures
+      // will not be able to read or dismiss its signals. F88
+      // regression.
+      revokeHandlesFor(sid);
+      // Unbind the SessionContext object too — if the host reuses the
+      // same SessionContext for a later logical session (mutating its
+      // sessionId), ensureObserved must re-bind to the NEW id and
+      // re-fire onSessionAttached, not short-circuit on the stale
+      // entry. F91 regression.
+      observedSessions.delete(ctx);
     },
 
     // The detector is a passive observer: we MUST NOT inject
@@ -1059,13 +1081,11 @@ export function createForgeDemandDetector(rawConfig: ForgeDemandConfig): ForgeDe
             "fabricated literal carrying only a sessionId.",
         );
       }
-      // Capture the current session generation. If the session ends
-      // before this handle is consumed, the generation advances and
-      // every operation becomes a no-op — the new session that
-      // happens to reuse `sid` is not addressable through this stale
-      // handle. F88 regression.
-      const gen = currentGeneration(sid);
-      const isLive = (): boolean => currentGeneration(sid) === gen;
+      // Per-handle revocation cell. onSessionEnd revokes every live
+      // handle for the session so stale closures cannot address a
+      // future session that reuses `sid`. F88 regression.
+      const tag = newHandleTag(sid);
+      const isLive = (): boolean => !tag.revoked;
       return {
         getSignals: (): readonly ForgeDemandSignal[] => {
           if (!isLive()) return [];

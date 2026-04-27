@@ -2137,4 +2137,58 @@ describe("createForgeDemandDetector", () => {
     expect(handle.forSession(victimCtx.session).getActiveSignalCount()).toBe(1);
     expect(originalAId).not.toBe("victim-session"); // sanity
   });
+
+  it("F91: a reused SessionContext rebinds to its new sessionId after onSessionEnd", async () => {
+    // Reviewer F91: ensureObserved permanently bound a SessionContext
+    // object to its first sessionId via WeakMap, so a host that reused
+    // the same SessionContext object for a later logical session
+    // (mutating its sessionId) would have all subsequent traffic still
+    // misroute through the stale binding. The fix removes the
+    // observedSessions entry on session end so ensureObserved can
+    // rebind to the new id on the next sighting.
+    const attached: { id: string; signals: number }[] = [];
+    const handle = createForgeDemandDetector(
+      makeConfig({
+        heuristics: { repeatedFailureCount: 1 },
+        onSessionAttached: (s, scoped) => {
+          attached.push({ id: s.sessionId, signals: scoped.getActiveSignalCount() });
+        },
+      }),
+    );
+    const reusedCtx = createMockTurnContext({
+      session: { sessionId: "logical-1" } as never,
+    });
+    try {
+      await handle.middleware.wrapToolCall?.(reusedCtx, toolReq("flaky"), async () => {
+        throw new Error("boom-1");
+      });
+    } catch {
+      // expected
+    }
+    expect(attached).toHaveLength(1);
+    expect(attached[0]?.id).toBe("logical-1");
+    // End logical-1 — the SessionContext object becomes available for
+    // reuse on a brand-new logical session.
+    await handle.middleware.onSessionEnd?.(reusedCtx.session);
+    // Host reuses the same SessionContext object with a fresh id.
+    (reusedCtx.session as { sessionId: string }).sessionId = "logical-2";
+    try {
+      await handle.middleware.wrapToolCall?.(reusedCtx, toolReq("flaky"), async () => {
+        throw new Error("boom-2");
+      });
+    } catch {
+      // expected
+    }
+    // onSessionAttached must fire AGAIN for the new logical session —
+    // the stale binding was cleared so the detector re-observes.
+    expect(attached).toHaveLength(2);
+    expect(attached[1]?.id).toBe("logical-2");
+    // The fresh handle reads logical-2's signal, not a stale logical-1
+    // entry.
+    const scoped = handle.forSession(reusedCtx.session);
+    const signals = scoped.getSignals();
+    expect(signals.length).toBe(1);
+    expect(signals[0]?.context.failedToolCalls.some((m) => m.includes("boom-2"))).toBe(true);
+    expect(signals[0]?.context.failedToolCalls.some((m) => m.includes("boom-1"))).toBe(false);
+  });
 });
