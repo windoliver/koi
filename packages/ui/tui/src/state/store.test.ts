@@ -205,8 +205,8 @@ describe("TuiStore — throwing listener", () => {
     Object.defineProperty(process.stderr, "isTTY", { value: originalIsTTY, configurable: true });
   });
 
-  test("throwing listener surfaces add_error block in TUI messages (reads current state)", async () => {
-    // #1940: dispatch() reads snapshot at microtask time — never a stale capture.
+  test("throwing listener surfaces add_error block in TUI messages (TTY: visible, not silent)", async () => {
+    // #1940: dispatch() notifies remaining subscribers so the renderer re-renders.
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
     const originalIsTTY = process.stderr.isTTY;
     Object.defineProperty(process.stderr, "isTTY", { value: undefined, configurable: true });
@@ -215,9 +215,8 @@ describe("TuiStore — throwing listener", () => {
       throw new Error("listener-boom");
     });
     store.dispatch({ kind: "set_view", view: "sessions" });
-    await flushMicrotasks();
-    // queueMicrotask schedules the add_error dispatch; flush one more tick.
-    await flushMicrotasks();
+    await flushMicrotasks(); // notifySubscribers: listener throws, queueMicrotask(dispatch)
+    await flushMicrotasks(); // dispatch(add_error): state updated with error block
     const messages = store.getState().messages;
     const errorMsg = messages.find(
       (m) => m.kind === "assistant" && m.blocks.some((b) => b.kind === "error"),
@@ -230,6 +229,28 @@ describe("TuiStore — throwing listener", () => {
         expect(errorBlock.message).toContain("listener-boom");
       }
     }
+    stderrSpy.mockRestore();
+    Object.defineProperty(process.stderr, "isTTY", { value: originalIsTTY, configurable: true });
+  });
+
+  test("throwing listener is quarantined — subsequent dispatches do not re-invoke it", async () => {
+    // #1940: listener is removed after first throw; no error-block flooding.
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    const originalIsTTY = process.stderr.isTTY;
+    Object.defineProperty(process.stderr, "isTTY", { value: undefined, configurable: true });
+    const store = makeStore();
+    const thrower = mock(() => {
+      throw new Error("once");
+    });
+    store.subscribe(thrower);
+    store.dispatch({ kind: "set_view", view: "sessions" });
+    await flushMicrotasks(); // listener invoked and quarantined
+    await flushMicrotasks(); // add_error dispatch
+    expect(thrower).toHaveBeenCalledTimes(1); // only called once
+    // Second dispatch must not re-invoke the quarantined listener.
+    store.dispatch({ kind: "set_view", view: "help" });
+    await flushMicrotasks();
+    expect(thrower).toHaveBeenCalledTimes(1); // still only once
     stderrSpy.mockRestore();
     Object.defineProperty(process.stderr, "isTTY", { value: originalIsTTY, configurable: true });
   });

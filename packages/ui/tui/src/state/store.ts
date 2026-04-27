@@ -62,24 +62,23 @@ export function createStore(initialState: TuiState): TuiStore {
       try {
         listener();
       } catch (e: unknown) {
+        // Quarantine the offending listener immediately so re-dispatch below does
+        // not re-enter it (no infinite loop, no duplicate error blocks).
+        listeners.delete(listener);
         // tui-single-writer-exception: stderr only when not a TTY — in interactive
         // sessions the renderer controls stdout+stderr; write there would interleave
         // with rendered frames. CI / piped contexts (non-TTY) always see the log.
         if (!process.stderr.isTTY) {
           process.stderr.write(`[TuiStore] listener threw: ${String(e)}\n`);
         }
-        // Surface in TUI as an error block. applyState(reduce(snapshot, ...)) is
-        // safe here: `snapshot` is a `let` closure — it holds the current state at
-        // microtask execution time, not a stale capture. applyState intentionally
-        // skips scheduleNotify() to avoid re-notifying the throwing listener (#1940).
+        // Surface in TUI via normal dispatch — notifies remaining subscribers so
+        // the error block is rendered. Safe from re-entry: bad listener is gone.
         queueMicrotask(() => {
-          applyState(
-            reduce(snapshot, {
-              kind: "add_error",
-              code: "STORE_LISTENER_ERROR",
-              message: `Store listener threw: ${e instanceof Error ? e.message : String(e)}`,
-            }),
-          );
+          dispatch({
+            kind: "add_error",
+            code: "STORE_LISTENER_ERROR",
+            message: `Store listener threw: ${e instanceof Error ? e.message : String(e)}`,
+          });
         });
       }
     }
