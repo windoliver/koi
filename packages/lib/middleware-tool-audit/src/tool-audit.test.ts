@@ -359,12 +359,12 @@ describe("createToolAuditMiddleware", () => {
       expect(saves.length).toBe(1);
     });
 
-    test("defers persist while OTHER sessions are still active — round 17 F1", async () => {
-      // Concurrent sessions share the global `tools` map. Persisting at A's
-      // session-end while B is still recording calls would commit B's
-      // partial in-flight counters with no matching sessionsAvailable /
-      // sessionsUsed updates yet. The last completing session drains the
-      // pending persist once sessionStates is empty.
+    test("persists immediately on session end even while OTHER sessions remain active — round 26 F2", async () => {
+      // Round 26 (high): persistence used to defer until sessionStates was
+      // empty. A long-lived or stuck session blocked all completed-session
+      // writes process-wide; a crash before drain dropped them all.
+      // Persistence now runs on every session end — loadAndMergeForSave's
+      // read-modify-write merge keeps overlapping persists safe.
       const { store, saves } = createMockStore();
       const mw = createToolAuditMiddleware(defaultConfig({ store }));
       const wrap = getWrapToolCall(mw);
@@ -377,22 +377,39 @@ describe("createToolAuditMiddleware", () => {
       await wrap(turnCtx(sessA), toolReq("search"), async () => ({ output: "ok" }));
       await wrap(turnCtx(sessB), toolReq("read"), async () => ({ output: "ok" }));
 
-      // A ends while B is still active — must NOT persist yet.
+      // A ends while B is still active — MUST persist now (not waiting
+      // for B). Snapshot contains BOTH tools because the in-memory map
+      // already has read recorded from B's wrap call above.
       await mw.onSessionEnd?.(sessA);
-      expect(saves.length).toBe(0);
-
-      // B ends — drains the deferred persist.
-      await mw.onSessionEnd?.(sessB);
       expect(saves.length).toBe(1);
       expect(saves[0]?.tools.search?.callCount).toBe(1);
       expect(saves[0]?.tools.read?.callCount).toBe(1);
+
+      // B ends — persists a second time. (Mock load is stateless, so
+      // the merged snapshot's content depends on baseline tracking; we
+      // only assert the second save fires, proving non-deferral.)
+      await mw.onSessionEnd?.(sessB);
+      expect(saves.length).toBe(2);
     });
 
-    test("non-dirty tail still drains a deferred persist — round 17 F1", async () => {
-      // If the tail session itself is non-dirty but a prior concurrent
-      // session left a pending persist, the tail must still flush it.
-      const { store, saves } = createMockStore();
-      const mw = createToolAuditMiddleware(defaultConfig({ store }));
+    test("deferred signal emission is drained on the next completing session — round 26 F2", async () => {
+      // Lifecycle signals must still defer under overlap to avoid false
+      // low_adoption / high_failure flags from in-flight (not yet
+      // finalized) session counters. The next session to complete drains
+      // the deferred signal, even if it itself recorded no work.
+      const auditResults: readonly unknown[][] = [];
+      const onAuditResult = mock((s: readonly unknown[]) => {
+        (auditResults as unknown[][]).push([...s]);
+      });
+      const { store } = createMockStore();
+      const mw = createToolAuditMiddleware(
+        defaultConfig({
+          store,
+          onAuditResult,
+          highValueMinCalls: 1,
+          highValueSuccessThreshold: 0.9,
+        }),
+      );
       const wrap = getWrapToolCall(mw);
 
       const sessA = sessionCtx({ sessionId: "sess-A" });
@@ -402,13 +419,13 @@ describe("createToolAuditMiddleware", () => {
 
       await wrap(turnCtx(sessA), toolReq("search"), async () => ({ output: "ok" }));
 
+      // A ends with overlap → signals deferred.
       await mw.onSessionEnd?.(sessA);
-      expect(saves.length).toBe(0);
+      expect(onAuditResult).toHaveBeenCalledTimes(0);
 
-      // B never recorded anything — but must still drain A's pending persist.
+      // B ends with no work — must still drain the deferred signal.
       await mw.onSessionEnd?.(sessB);
-      expect(saves.length).toBe(1);
-      expect(saves[0]?.tools.search?.callCount).toBe(1);
+      expect(onAuditResult).toHaveBeenCalled();
     });
 
     test("saves snapshot to store when dirty", async () => {
@@ -599,14 +616,11 @@ describe("createToolAuditMiddleware", () => {
       expect(diskState.tools.search?.successCount).toBe(7);
     });
 
-    test("concurrent session ends collapse to a single tail-only persist with both tools — round 17 F1", async () => {
-      // Round 17 changed semantics: persistence is deferred while OTHER
-      // sessions are still active so partial in-flight counters can't
-      // be committed under cross-session contention. Two sessions
-      // ending concurrently therefore produce ONE save (from the tail),
-      // not two. The save still contains both sessions' tool deltas
-      // because the shared `tools` map has been folded by both
-      // session-ends before the snapshot is built.
+    test("concurrent session ends serialize through savePromise and both flush — round 26 F2", async () => {
+      // Round 26 changed semantics: each session end persists
+      // independently. Concurrent ends serialize through savePromise
+      // (no overlapping store.save calls) but both run; the shared
+      // savePromise chain prevents inter-leaved writes.
       const saveOrder: number[] = [];
       const saveSnapshots: ToolAuditSnapshot[] = [];
       // let: incremented per save invocation
@@ -633,7 +647,7 @@ describe("createToolAuditMiddleware", () => {
 
       await Promise.all([mw.onSessionEnd?.(ctxA), mw.onSessionEnd?.(ctxB)]);
 
-      expect(saveOrder).toEqual([1]);
+      expect(saveOrder).toEqual([1, 2]);
       const last = saveSnapshots[saveSnapshots.length - 1];
       expect(last?.tools.search).toBeDefined();
       expect(last?.tools.read).toBeDefined();
@@ -903,13 +917,14 @@ describe("createToolAuditMiddleware", () => {
       await Promise.all([mw.onSessionStart?.(ctxA), mw.onSessionStart?.(ctxB)]);
       await wrapTool(turnCtx(ctxA), toolReq("x"), async () => ({ output: "" }));
       await mw.onSessionEnd?.(ctxA);
-      // Round 17: A's persist is deferred because B is still active.
-      // End B (no work) — drains the deferred save so this test can
-      // observe the totalSessions count via the save side-effect.
-      await mw.onSessionEnd?.(ctxB);
 
       // 4 (snapshot) + 2 (concurrent starts) = 6. A double-hydration race
       // would reset to snapshot value before each increment and yield 5.
+      // Assert via getSnapshot — the save side-effect is unreliable here
+      // because round-26 persists on every session end and the test mock's
+      // load is stateless, so a follow-up session-end would re-merge
+      // against the stale disk and clobber appliedCount.
+      expect(mw.getSnapshot().totalSessions).toBe(6);
       expect(appliedCount).toBe(6);
     });
   });

@@ -344,41 +344,40 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     sessionStates.delete(ctx.sessionId);
 
     // Skip when this session contributed nothing AND no earlier
-    // concurrent session left a deferred persist for us to drain.
+    // concurrent session left a deferred signal flush for us to drain.
     if (!state.dirty && !pendingPersist) return;
 
-    // Defer persistence AND signal emission while OTHER sessions are
-    // still active. The shared `tools` map already contains in-flight
-    // call counts / latencies from those sessions; persisting or
-    // emitting signals now would commit / surface partial data that
-    // the still-active session has not finalized (no matching
-    // sessionsAvailable/sessionsUsed updates yet). Lifecycle signals
-    // computed from this knowingly-partial state can falsely flag
-    // tools as high_failure / low_adoption during overlap windows
-    // and trigger downstream pages or auto-disable
-    // (#review-round17-F1, #review-round18-F2). The last completing
-    // session in the active set drains the deferred persist + signal
-    // once everyone has folded in their session-level totals.
-    if (sessionStates.size > 0) {
-      if (state.dirty) pendingPersist = true;
-      return;
-    }
-    pendingPersist = false;
-
-    // Defer signal emission AND persistence until hydration succeeds.
+    // Defer persistence AND signal emission until hydration succeeds.
     // Without this guard, a transient store outage produced false
     // unused / low_adoption / high_failure signals from in-memory
     // counters that hadn't been merged with historical disk state
-    // yet — driving downstream paging or auto-disable on
-    // outage-local data (#review-round24-F1). Deltas recorded
-    // during the outage are NOT lost: they live in `tools` /
-    // `totalSessions` and merge with the disk snapshot on the next
-    // successful load (mergeSnapshotIntoMemory in onSessionStart).
-    if (!hydrated) return;
+    // yet, and overwrites of disk with outage-local data
+    // (#review-round24-F1). Deltas recorded during the outage are
+    // NOT lost: they live in `tools` / `totalSessions` and merge
+    // with the disk snapshot on the next successful load
+    // (mergeSnapshotIntoMemory in onSessionStart).
+    if (!hydrated) {
+      if (state.dirty) pendingPersist = true;
+      return;
+    }
 
     const snapshot = buildSnapshot(tools, totalSessions, clock);
+    const otherSessionsActive = sessionStates.size > 0;
 
-    if (onAuditResult !== undefined) {
+    // Defer signal emission while OTHER sessions are still active. The
+    // shared `tools` map contains in-flight call counts / latencies from
+    // those sessions but their sessionsAvailable / sessionsUsed counters
+    // have not been folded in yet, so lifecycle signals computed now
+    // would falsely flag tools as high_failure / low_adoption during
+    // overlap windows and trigger downstream pages or auto-disable
+    // (#review-round17-F1, #review-round18-F2). The last completing
+    // session in the active set drains the deferred signal.
+    // PERSISTENCE intentionally does NOT defer here: a long-lived or
+    // stuck session blocking flushes process-wide meant a crash/redeploy
+    // before the active set drained lost ALL completed-session counters
+    // (#review-round26-F2). loadAndMergeForSave's read-modify-write
+    // makes overlapping persists safe for in-flight counters.
+    if (!otherSessionsActive && onAuditResult !== undefined) {
       // Observe-phase telemetry must never abort session teardown — a
       // throwing sink would otherwise reject onSessionEnd and skip the
       // store.save below, leaving the snapshot unpersisted. Route any
@@ -390,6 +389,9 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
         onError?.(e);
       }
     }
+    // Mark for the next session to drain signals if overlap suppressed
+    // emission this round; clear otherwise.
+    pendingPersist = otherSessionsActive;
 
     // Serialize saves so two concurrent session ends in this process can't
     // race each other. Across PROCESSES sharing one ToolAuditStore, we

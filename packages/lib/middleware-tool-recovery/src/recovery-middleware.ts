@@ -259,8 +259,52 @@ export function createToolRecoveryMiddleware(config?: ToolRecoveryConfig): KoiMi
           // mode === "buffer"
           pending.push(chunk);
           continue;
+        } else if (chunk.kind === "error") {
+          // ModelChunk.error is a terminal chunk (consumeModelStream surfaces
+          // it the same as a thrown stream). In passthrough mode, pass it
+          // through untouched. In buffer mode, this is the only signal the
+          // consumer will see — without explicit handling the loop falls off
+          // after the upstream iterator ends and we'd emit nothing, dropping
+          // both the recovered tool call AND the underlying provider/hook
+          // failure (#review-round26-F1). Mirror the catch-path's recover-
+          // and-synth-done logic; if recovery fails, replay pending and
+          // surface the error.
+          if (mode === "passthrough") {
+            yield chunk;
+            return;
+          }
+          if (!bypass) {
+            const recovered = runRecovery(
+              ctx,
+              invocationNonce,
+              bufferedText,
+              tools,
+              patterns,
+              maxCalls,
+              onEvent,
+            );
+            if (recovered !== undefined && recovered.calls.length > 0) {
+              for (const buf of pending) {
+                if (buf.kind !== "text_delta") yield buf;
+              }
+              if (recovered.cleanedText.length > 0) {
+                yield { kind: "text_delta", delta: recovered.cleanedText };
+              }
+              yield* synthesizeToolCallChunks(recovered.calls);
+              const syntheticResponse: ModelResponse = {
+                content: recovered.cleanedText,
+                model: "unknown",
+                metadata: { recoveryError: chunk.message, recovered: true },
+              };
+              yield { kind: "done", response: syntheticResponse };
+              return;
+            }
+          }
+          for (const buf of pending) yield buf;
+          yield chunk;
+          return;
         } else {
-          // thinking_delta / usage / error / tool_call_delta / tool_call_end
+          // thinking_delta / usage / tool_call_delta / tool_call_end
           if (mode === "passthrough") {
             yield chunk;
           } else {

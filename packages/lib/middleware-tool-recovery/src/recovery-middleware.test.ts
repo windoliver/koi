@@ -470,6 +470,63 @@ describe("createToolRecoveryMiddleware — streaming buffer & bypass", () => {
     expect(allText).not.toContain("<tool_call>");
   });
 
+  test("terminal error chunk in buffer mode surfaces as terminal failure — round 26 F1", async () => {
+    // Without explicit error-chunk handling, the wrapper buffered the
+    // error and fell off the loop after the upstream iterator ended,
+    // emitting nothing — dropping both the recovered tool call AND the
+    // underlying provider/hook failure. When recovery cannot produce
+    // executable calls, the error must be surfaced.
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes"] });
+    const tools = [tool("foo")];
+    const next: ModelStreamHandler = async function* () {
+      // Marker triggers buffer mode but the markup is malformed → no recovery.
+      yield { kind: "text_delta", delta: "<tool_call>not json</tool_call>" };
+      yield { kind: "error", message: "provider rate limited" };
+    };
+
+    const out: ModelChunk[] = [];
+    let caught: unknown;
+    try {
+      for await (const c of getStream(mw)(turnCtx(), { messages: [], tools }, next)) {
+        out.push(c);
+      }
+    } catch (e: unknown) {
+      caught = e;
+    }
+
+    expect(caught).toBeUndefined();
+    const errors = out.filter((c) => c.kind === "error");
+    expect(errors.length).toBe(1);
+    const err = errors[0] as Extract<ModelChunk, { kind: "error" }>;
+    expect(err.message).toBe("provider rate limited");
+  });
+
+  test("terminal error chunk in buffer mode synthesizes done when recovery succeeds — round 26 F1", async () => {
+    // If recovery DOES produce executable calls, prefer synthesizing a
+    // done with recoveryError metadata so the engine runs the recovered
+    // call (mirrors the stream-throw catch path).
+    const mw = createToolRecoveryMiddleware({ patterns: ["hermes"] });
+    const tools = [tool("foo")];
+    const next: ModelStreamHandler = async function* () {
+      yield {
+        kind: "text_delta",
+        delta: '<tool_call>{"name":"foo","arguments":{"x":1}}</tool_call>',
+      };
+      yield { kind: "error", message: "stream interrupted" };
+    };
+
+    const out: ModelChunk[] = [];
+    for await (const c of getStream(mw)(turnCtx(), { messages: [], tools }, next)) {
+      out.push(c);
+    }
+    const starts = out.filter((c) => c.kind === "tool_call_start");
+    expect(starts.length).toBe(1);
+    const dones = out.filter((c) => c.kind === "done");
+    expect(dones.length).toBe(1);
+    const done = dones[0] as Extract<ModelChunk, { kind: "done" }>;
+    expect(done.response.metadata?.recoveryError).toBe("stream interrupted");
+  });
+
   test("throwing onRecoveryEvent does not abort recovery on the done path — round 25 F2", async () => {
     // Telemetry sinks must be best-effort: a throwing observer used to
     // escape recoverToolCalls and turn an otherwise valid recovered call
