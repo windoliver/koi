@@ -444,8 +444,12 @@ export interface RuntimeConfig {
    * Forge-demand detector configuration. When provided, wires
    * `@koi/forge-demand` as a passive observer on tool/model traffic to
    * surface forge-demand signals (repeated_failure, capability_gap,
-   * user_correction, performance_degradation). Skipped if a middleware
-   * named "forge-demand-detector" is already in `config.middleware`.
+   * user_correction, performance_degradation). When provided alongside a
+   * caller-supplied `forge-demand-detector` middleware in
+   * `config.middleware`, the runtime-owned instance REPLACES the
+   * preinstalled one so `RuntimeHandle.forgeDemand` always points at the
+   * active detector. Omit this config to keep a preinstalled middleware
+   * intact (the caller owns its handle out-of-band).
    */
   readonly forgeDemand?: import("@koi/forge-demand").ForgeDemandConfig | undefined;
 

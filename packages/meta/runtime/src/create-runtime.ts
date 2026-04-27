@@ -259,29 +259,20 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // failure, capability gap, user correction). Auto-wiring is tracked as
     // follow-up; until then `performance_degradation` is dormant in the
     // default runtime path.
-    const hasForgeDemand = new Set(baseWithFeedbackLoop.map((mw) => mw.name)).has(
-      "forge-demand-detector",
-    );
-    // Fail closed: a caller cannot ask the runtime to install forge-demand
-    // while ALSO preinstalling their own forge-demand-detector middleware.
-    // Either path is fine alone, but mixing them produces a runtime where
-    // `RuntimeHandle.forgeDemand` cannot inspect the active middleware's
-    // signals — a half-wired control surface that would silently lose
-    // dismissal and cooldown recovery.
-    if (config.forgeDemand !== undefined && hasForgeDemand) {
-      throw new Error(
-        "config.forgeDemand was provided but a middleware named 'forge-demand-detector' " +
-          "is already in config.middleware. Pass forgeDemand config OR preinstall the " +
-          "middleware with your own handle, not both.",
-      );
-    }
-    // Build the handle once and surface it on RuntimeHandle so callers can
-    // dismiss signals and inspect pending state.
+    // Build the runtime-owned handle when forgeDemand config is provided.
+    // If the caller ALSO preinstalled their own `forge-demand-detector`
+    // middleware in config.middleware, the runtime version replaces it
+    // (filtered out below) so `RuntimeHandle.forgeDemand` always points
+    // at the active detector — preinstalled middleware without config
+    // is left untouched (caller owns the handle out-of-band).
     const forgeDemandHandle =
       config.forgeDemand !== undefined ? createForgeDemandDetector(config.forgeDemand) : undefined;
     const baseWithForgeDemand: readonly KoiMiddleware[] =
       forgeDemandHandle !== undefined
-        ? [...baseWithFeedbackLoop, forgeDemandHandle.middleware]
+        ? [
+            ...baseWithFeedbackLoop.filter((mw) => mw.name !== "forge-demand-detector"),
+            forgeDemandHandle.middleware,
+          ]
         : baseWithFeedbackLoop;
 
     // Install exfiltration guard by default when: (1) not explicitly disabled,

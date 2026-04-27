@@ -49,6 +49,8 @@ const GAP_CONTEXT_WINDOW = 120;
 const RECENT_TOOL_CALL_HISTORY = 16;
 /** Max (request, response) ids retained for capability-gap retry dedup. */
 const RECENT_GAP_RESPONSE_CAP = 32;
+/** Max correction message identities retained per session. */
+const CORRECTION_ID_CAP = 256;
 
 const DEFAULT_THRESHOLDS: HeuristicThresholds = {
   repeatedFailureCount: 3,
@@ -191,6 +193,21 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     };
   }
 
+  /**
+   * FIFO add: insert into the set, evicting the oldest entry once `cap`
+   * is exceeded. Bounds long-lived sessions so correction-id sets cannot
+   * grow without limit. Sets in V8/Bun preserve insertion order, so the
+   * first key from `values()` is the oldest.
+   */
+  function addBoundedId(set: Set<string>, id: string, cap: number = CORRECTION_ID_CAP): void {
+    set.add(id);
+    while (set.size > cap) {
+      const oldest = set.values().next().value;
+      if (oldest === undefined) break;
+      set.delete(oldest);
+    }
+  }
+
   function getOrCreate(sessionId: SessionId): SessionState {
     let state = sessions.get(sessionId);
     if (state === undefined) {
@@ -206,18 +223,18 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     return clock() - lastEmitted < config.budget.cooldownMs;
   }
 
-  function emitSignal(state: SessionState, trigger: ForgeTrigger, context: DemandContext): void {
+  function emitSignal(state: SessionState, trigger: ForgeTrigger, context: DemandContext): boolean {
     const key = triggerKey(trigger);
-    if (isOnCooldown(state, key)) return;
+    if (isOnCooldown(state, key)) return false;
 
     // Confidence + cooldown gates run BEFORE budget bookkeeping so a
     // sub-threshold probe never consumes the session budget window.
     const confidence = computeDemandConfidence(trigger, thresholds.confidenceWeights, context);
-    if (confidence < config.budget.demandThreshold) return;
+    if (confidence < config.budget.demandThreshold) return false;
 
     // Count-based session cap only. computeTimeBudgetMs is forge-pipeline
     // compute, not detector wall-clock.
-    if (state.sessionEmitCount >= config.budget.maxForgesPerSession) return;
+    if (state.sessionEmitCount >= config.budget.maxForgesPerSession) return false;
 
     globalSignalCounter += 1;
     const signal: ForgeDemandSignal = {
@@ -241,6 +258,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     state.cooldowns.set(key, clock());
     state.sessionEmitCount += 1;
     safeInvoke(config.onDemand, signal);
+    return true;
   }
 
   function resetTriggerState(state: SessionState, trigger: ForgeTrigger): void {
@@ -301,7 +319,9 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     fingerprint: string,
   ): void {
     if (patterns.length === 0 || responseText.length === 0) return;
-    const responseId = `${fingerprint}|${responseText.slice(0, 128)}`;
+    // Hash the full response — earlier 128-char prefix would let two long
+    // distinct refusals share a bucket and silently dedupe each other.
+    const responseId = `${fingerprint}|${String(responseText.length)}|${fnv1a(responseText)}`;
     if (state.recentGapResponseIds.has(responseId)) return;
     state.recentGapResponseIds.add(responseId);
     if (state.recentGapResponseIds.size > RECENT_GAP_RESPONSE_CAP) {
@@ -340,36 +360,45 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
    *     then retry re-scans the same transcript and emits again).
    */
   function requestFingerprint(ctx: TurnContext, request: ModelRequest): string {
-    // Per-call identity used to dedup capability-gap counts across
-    // retries/replays. Anchors on `turnId` so retries WITHIN a turn share
-    // identity, while a new turn is treated as a fresh observation. Adds
-    // last-user-message identity as a secondary discriminator so a single
-    // turn issuing multiple model calls (refinement loops) doesn't collapse
-    // them into one bucket. Falls back to message count for the rare case
-    // of empty/system-only requests in tests.
-    let secondary = `len:${String(request.messages.length)}`;
-    for (let i = request.messages.length - 1; i >= 0; i -= 1) {
-      const msg = request.messages[i];
-      if (msg !== undefined && msg.senderId === "user") {
-        secondary = messageIdentity(msg);
-        break;
-      }
+    // Content-based identity: turnId + FULL-message-stack hash. Earlier
+    // versions truncated to the first 512 chars and lost discrimination
+    // on long transcripts (a refinement loop with a 600-char prefix
+    // shared between attempts would collapse to one bucket). Hashing the
+    // entire concatenation eliminates that class of collision.
+    let body = "";
+    let total = 0;
+    for (const msg of request.messages) {
+      body += `${messageIdentity(msg)};`;
+      total += 1;
     }
-    return `${String(ctx.turnId)}|${secondary}`;
+    return `${String(ctx.turnId)}|n=${String(total)}|${fnv1a(body)}`;
+  }
+
+  /**
+   * 32-bit FNV-1a hash. Cheap, deterministic, no allocations per char.
+   * Sufficient for in-process dedup keys (we accept astronomically rare
+   * collisions in exchange for bounded-size identity strings — content
+   * is also length-prefixed so collisions require both equal length AND
+   * equal hash).
+   */
+  function fnv1a(s: string): string {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i += 1) {
+      h ^= s.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return h.toString(36);
   }
 
   function messageIdentity(msg: InboundMessage): string {
-    // Per-message identity: senderId + timestamp + content fingerprint.
-    // Both timestamp AND content are required:
-    //   - Two distinct corrections with the SAME text targeting different
-    //     tools (different turns of the conversation) must not collapse
-    //     to one signal — content alone fails that case.
-    //   - Two messages with the same timestamp but different content must
-    //     not collapse — timestamp alone fails that.
-    // The koi transport contract treats `msg.timestamp` as stable for a
-    // given inbound message, so retries replay the same identity (no
-    // restamping in the runtime). Imports that rewrite timestamps are
-    // out of scope — they are a logically new transcript.
+    // Per-message identity: senderId + timestamp + length + FULL-content
+    // hash. Truncating content to a prefix (as before) lets two distinct
+    // long messages with the same prefix collide and silently dedupe each
+    // other — see F51. Hashing the entire concatenated text avoids that.
+    // Both timestamp AND content are required: timestamp distinguishes
+    // distinct messages with identical content (different tool turns),
+    // content distinguishes distinct messages that happen to share a
+    // millisecond timestamp.
     let textFingerprint = "";
     let len = 0;
     for (const block of msg.content) {
@@ -378,8 +407,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
         len += block.text.length;
       }
     }
-    const head = textFingerprint.slice(0, 256);
-    return `${msg.senderId}|${String(msg.timestamp)}|${String(len)}|${head}`;
+    return `${msg.senderId}|${String(msg.timestamp)}|${String(len)}|${fnv1a(textFingerprint)}`;
   }
 
   function hasAnyCompletedTool(state: SessionState): boolean {
@@ -415,7 +443,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       if (state.scannedCorrectionIds.has(id)) continue;
       const toolsCompletedAtScan = hasAnyCompletedTool(state);
       if (!toolsCompletedAtScan) {
-        state.scannedCorrectionIds.add(id);
+        addBoundedId(state.scannedCorrectionIds, id);
         continue;
       }
       if (msg.timestamp > state.lastProcessedUserTimestamp) {
@@ -435,8 +463,12 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   function commitCorrections(state: SessionState, pending: readonly PendingCorrection[]): void {
     for (const p of pending) {
       if (state.emittedCorrectionIds.has(p.id)) continue;
-      emitSignal(state, p.trigger, { failureCount: 1, threshold: 1 });
-      state.emittedCorrectionIds.add(p.id);
+      // Only mark emitted when emitSignal actually emitted. A correction
+      // suppressed by cooldown/threshold/maxForges must remain eligible
+      // for the next retry/replay, otherwise raising demandThreshold
+      // would silently blacklist every correction for the session.
+      const emitted = emitSignal(state, p.trigger, { failureCount: 1, threshold: 1 });
+      if (emitted) addBoundedId(state.emittedCorrectionIds, p.id);
     }
   }
 
