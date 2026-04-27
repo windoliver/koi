@@ -30,6 +30,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/event-delivery",
   "@koi/execution-context",
   "@koi/file-resolution",
+  "@koi/forge-types",
   "@koi/fs-scoped",
   "@koi/gateway-types",
   "@koi/git-utils",
@@ -90,6 +91,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/snapshot-store-sqlite",
   "@koi/task-tools",
   "@koi/tasks",
+  "@koi/temporal",
   "@koi/tools-bash",
   "@koi/workspace",
 ]);

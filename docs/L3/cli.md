@@ -826,3 +826,9 @@ surface changes. See `docs/L2/tasks.md` for the detailed change log and
 ## @koi/mcp `triggerAuth` lint fix (PR #2046)
 
 Replaced `conn.triggerAuth!()` non-null assertions in `connection.test.ts` with explicit `if (conn.triggerAuth === undefined) throw` guards to satisfy `noNonNullAssertion`. No CLI surface change; `triggerAuth?()` remains an optional method on `McpConnection` callable via `koi mcp auth`.
+
+---
+
+## @koi/scheduler `RunStoreFilter` update (PR #2052)
+
+`RunStoreFilter.status` now accepts `"dead_letter"` in addition to `"completed"` and `"failed"`, aligning with `TaskHistoryFilter.status` from `@koi/core`.

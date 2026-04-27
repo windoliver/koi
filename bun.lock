@@ -298,6 +298,13 @@
       "name": "@koi/file-type",
       "version": "0.0.0",
     },
+    "packages/lib/forge-types": {
+      "name": "@koi/forge-types",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/fs-local": {
       "name": "@koi/fs-local",
       "version": "0.0.0",
@@ -1700,6 +1707,8 @@
     "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/lib/file-resolution"],
 
     "@koi/file-type": ["@koi/file-type@workspace:packages/lib/file-type"],
+
+    "@koi/forge-types": ["@koi/forge-types@workspace:packages/lib/forge-types"],
 
     "@koi/fs-local": ["@koi/fs-local@workspace:packages/lib/fs-local"],
 

@@ -11,7 +11,7 @@ L2 — imports `@koi/core` only. All `@temporalio/*` types are internal.
 No `@temporalio/*` types appear in any public export. The public API uses:
 - L0 contracts: `SpawnLedger`, `TaskScheduler`
 - Structural types: `WorkerLike`, `NativeConnectionLike`, `TemporalClientLike`
-- Config types: `TemporalConfig`, `TemporalSchedulerConfig`
+- Config types: `TemporalConfig`, `TemporalSchedulerConfig`, `WorkerConfig`
 
 ## Exports
 
@@ -22,6 +22,19 @@ No `@temporalio/*` types appear in any public export. The public API uses:
 | `createTemporalWorker(config, activities, workflowsPath, factory?)` | Creates a Temporal Worker handle with lifecycle management |
 | `mapTemporalError(error)` | Maps Temporal failure types to `KoiError` |
 | `mapKoiErrorToApplicationFailure(err)` | Maps `KoiError` to an `ApplicationFailure` payload for round-tripping |
+
+### `WorkerConfig`
+
+Flat config accepted by `createTemporalWorker`. All fields except `taskQueue` are optional with documented defaults:
+
+```typescript
+interface WorkerConfig {
+  taskQueue: string;          // required
+  url?: string;               // default: "localhost:7233"
+  namespace?: string;         // default: "default"
+  maxCachedWorkflows?: number; // default: 100
+}
+```
 
 ## SpawnLedger
 

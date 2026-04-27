@@ -11,7 +11,7 @@ const baseScope = (): CapabilityScope => ({
   sessionId: sessionId("sess-1"),
 });
 
-const hmacSigner = (): Signer => ({ kind: "hmac-sha256", secret: randomBytes(32) });
+const hmacSigner = (): Signer => ({ kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) });
 
 describe("issueRootCapability", () => {
   test("returns a token with chainDepth=0 and no parentId", async () => {
@@ -50,8 +50,8 @@ describe("issueRootCapability", () => {
 
   test("produces an Ed25519 token whose proof has the correct kind + fingerprint", async () => {
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    const pubDer = publicKey.export({ format: "der", type: "spki" });
-    const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+    const pubDer = new Uint8Array(publicKey.export({ format: "der", type: "spki" }));
+    const privDer = new Uint8Array(privateKey.export({ format: "der", type: "pkcs8" }));
     const fp = Buffer.from(pubDer).toString("base64");
     const tok = await issueRootCapability({
       signer: { kind: "ed25519", privateKey: privDer, publicKeyFingerprint: fp },
@@ -130,7 +130,7 @@ describe("delegateCapability", () => {
       now: () => number;
     }> = {},
   ): Promise<{ signer: Signer; root: import("@koi/core").CapabilityToken }> => {
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const root = await issueRootCapability({
       signer,
       issuerId: agentId("engine"),
@@ -276,7 +276,7 @@ describe("delegateCapability", () => {
   });
 
   test("resource attenuation enforced (codex round-1: high)", async () => {
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const root = await issueRootCapability({
       signer,
       issuerId: agentId("engine"),
@@ -338,7 +338,7 @@ describe("delegateCapability", () => {
   });
 
   test("ask preservation enforced at issue time (codex round-4: critical)", async () => {
-    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const signer: Signer = { kind: "hmac-sha256", secret: new Uint8Array(randomBytes(32)) };
     const root = await issueRootCapability({
       signer,
       issuerId: agentId("engine"),

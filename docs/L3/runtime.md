@@ -435,3 +435,11 @@ Changes visible at the `@koi/runtime` integration boundary:
   delivery before the board `kill` transition. Failure notes (`[cancel-notify:
   failed — HTTP NNN]`) land in the task's output stream and are readable via
   `readOutput()` after the stop call returns.
+
+---
+
+## @koi/temporal `WorkerConfig` API (PR #2052)
+
+`createTemporalWorker` now accepts a flat `WorkerConfig` object `{ taskQueue, url?, namespace?, maxCachedWorkflows? }` as its first argument (replacing the previous `{ config: TemporalConfig }` wrapper). The argument order is `(config, activities, workflowsPath, factory?)`. `WorkerConfig` is exported from `@koi/temporal` for downstream typing.
+
+`createTemporalScheduler` now implements `TaskScheduler.querySchedules(agentId)` returning all cron schedules for a given agent.

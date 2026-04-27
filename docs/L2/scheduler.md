@@ -106,3 +106,9 @@ to let the microtask queue drain before asserting outcomes.
 
 All stores (`TaskStore`, `RunStore`, `ScheduleStore`) are backed by `:memory:` SQLite
 databases in tests so there is no disk I/O and each test gets a fresh schema.
+
+## RunStoreFilter
+
+`RunStoreFilter.status` accepts `"completed" | "failed" | "dead_letter"` — the `dead_letter`
+value matches the `TaskHistoryFilter.status` in `@koi/core` so callers can query
+dead-lettered runs directly via the store.
