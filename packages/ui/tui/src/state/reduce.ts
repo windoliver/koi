@@ -267,10 +267,10 @@ function updateToolBlock(state: TuiState, callId: string, patch: Partial<ToolCal
   const tool = findToolBlock(found.msg.blocks, callId);
   if (!tool) {
     // tui-single-writer-exception: inside pure reducer — cannot dispatch to store.
-    // Stderr write is intentional: this signals a reconnect/upstream-bug invariant
-    // violation that operators must see. Stderr ≠ stdout — it does not touch the
-    // renderer's frame buffer so it cannot corrupt rendering (#1940).
-    process.stderr.write(`[tui/reduce] no tool_call block found for callId="${callId}"\n`);
+    // Only write when stderr is not the same terminal as the TUI renderer (#1940).
+    if (!process.stderr.isTTY) {
+      process.stderr.write(`[tui/reduce] no tool_call block found for callId="${callId}"\n`);
+    }
     return state;
   }
 

@@ -618,12 +618,10 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           const hasRawModeMarker = e instanceof Error && /setRawMode|errno: 2/.test(e.message);
           const isStdinRawModeError = hasRawModeMarker && (hasErrnoCode || errno === undefined);
           if (!isStdinRawModeError) {
-            // tui-single-writer-exception: renderer is being destroyed — cannot
-            // dispatch to store. Only emit when stderr is not a TTY (redirected
-            // to a log) so the sequence doesn't corrupt the terminal (#1940).
-            if (!process.stderr.isTTY) {
-              process.stderr.write(`[tui] stop: renderer.destroy() threw: ${String(e)}\n`);
-            }
+            // tui-single-writer-exception: renderer is being destroyed — no active
+            // renderer owns the terminal at this point, so stderr write is safe
+            // regardless of TTY state. Cannot dispatch to store (#1940).
+            process.stderr.write(`[tui] stop: renderer.destroy() threw: ${String(e)}\n`);
           }
         }
       }
