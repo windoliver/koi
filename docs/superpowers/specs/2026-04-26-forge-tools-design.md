@@ -149,8 +149,8 @@ Visibility predicate inside `execute()` (caller resolved live from `getCurrentTo
 | `zone` | hidden (pending zoneId) |
 | `global` | always |
 
-`forge_list`: scope filter intersected with predicate; agent-scoped artifacts owned by another agent dropped silently (do not leak existence).
-`forge_inspect`: predicate failure → `KoiError "NOT_FOUND"` (do not leak existence with `FORBIDDEN`).
+`forge_list`: tool calls `store.search(query)` then applies the visibility predicate to each hit before returning summaries. Out-of-scope hits dropped silently.
+`forge_inspect`: tool calls `store.load(brickId)`, then applies the visibility predicate to the returned artifact. Predicate failure → `KoiError "NOT_FOUND"` (same code as a missing id; existence non-leak). The store's `load()` is unconditional by design (it is an L0 contract and other trusted runtime paths — e.g. `inherited-component-provider` — depend on unconditional reads); enforcement lives in the LLM-facing tool wrapper. The tool **must not return** the raw `BrickArtifact` without running the predicate.
 
 **Synthesis authorization** (also resolved live in `execute()`):
 
@@ -158,7 +158,17 @@ Visibility predicate inside `execute()` (caller resolved live from `getCurrentTo
 - `scope: "zone"` synthesis: rejected (see above).
 - `scope: "global"` synthesis: requires the caller's `ToolExecutionContext` to carry a `forge.allowGlobal: true` capability. Without it → `KoiError "FORBIDDEN"`.
 
-The store applies the visibility predicate once for `search` and `searchSummaries`; tools never re-implement filtering.
+### Trust boundary
+
+The in-memory `ForgeStore` exposes unrestricted `save`, `load`, `search`, `update`, `remove` — it is the **L0 contract**, not an LLM-facing surface, and other trusted runtime code (engine `inherited-component-provider`, future `ForgePipeline` verifier, `mcp-server` tool-cache) needs unconditional access. The store is never injected into LLM-controlled tool implementations.
+
+**Authorization lives exclusively at the LLM-facing tool wrapper boundary** (`forge_tool`/`forge_middleware`/`forge_list`/`forge_inspect`). Each tool's `execute()`:
+
+1. Resolves caller identity from `getCurrentToolExecutionContext()`.
+2. Applies scope/visibility/capability predicates.
+3. Calls store mutators with arguments derived from the validated input — caller cannot bypass.
+
+Wiring contract: `@koi/runtime` and any other meta-package that exposes forge tools to a model **must** wrap the store with these tool factories and never expose the raw store via `agent.query("tool:")` or any other LLM-reachable surface. A `docs/L2/forge-tools.md` "Wiring" section makes this requirement explicit.
 
 A follow-up issue tracks adding a real `zoneId` to `ForgeScope` / `ForgeRunMetadata` / `SessionContext` so zone visibility can be promoted from "rejected" to first-class.
 
@@ -203,7 +213,7 @@ Unit (colocated `*.test.ts`):
 2. **forge_tool**: valid input → `ToolArtifact` persisted with `kind: "tool"`, `lifecycle: "draft"`, `id` matches recomputed content hash including `ownerAgentId` (or content-only for global); invalid input → `INVALID_INPUT`; `scope: "zone"` → `INVALID_INPUT`; descriptor satisfies `ToolDescriptor`; double-synthesize same content same agent (retry, possibly different provenance timestamp/invocationId) → idempotent success returning the same `brickId`, original metadata preserved; **two different agents synthesizing byte-identical agent-scoped content produce two different `brickId`s, each visible only to its owner** (cross-tenant aliasing test); caller without `allowGlobal` requesting `scope: "global"` → `FORBIDDEN`; caller resolved from `getCurrentToolExecutionContext()` not from constructor injection (tool built outside any session, succeeds only inside `runWithToolExecutionContext`).
 3. **forge_middleware**: same as forge_tool but for `ImplementationArtifact` with `kind: "middleware"`.
 4. **forge_list**: filter by kind/scope/lifecycle; empty store → empty array; respects `limit` and hard cap (200); visibility — agent-scope brick from another agent omitted silently; zone-scope brick omitted entirely (forge-tool tools reject zone reads pending zoneId); global-scope brick visible to all; explicit `scope: "zone"` filter → empty array.
-5. **forge_inspect**: returns artifact for known visible id; returns `NOT_FOUND` for unknown id; returns `NOT_FOUND` (not `FORBIDDEN`) for known-but-not-visible id (existence non-leak).
+5. **forge_inspect**: returns artifact for known visible id; returns `NOT_FOUND` for unknown id; returns `NOT_FOUND` (not `FORBIDDEN`) for a known agent-scoped id owned by a different agent (existence non-leak); returns `NOT_FOUND` for any zone-scoped id (zone hidden in this PR); test exercises the by-id path explicitly to confirm the tool wrapper applies the predicate after `store.load()` rather than relying on `search` filtering.
 
 ≥80% line/function/statement coverage (CI threshold).
 
