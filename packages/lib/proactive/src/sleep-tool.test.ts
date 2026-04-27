@@ -236,19 +236,45 @@ describe("sleep tool", () => {
     expect(stub.submitCalls[0]?.options?.delayMs).toBe(5_000);
   });
 
-  test("evicts the oldest idempotency entry when the cap is reached", async () => {
+  test("rejects new idempotency_key when sleep cap is reached (no live-task eviction)", async () => {
     const stub = createSchedulerStub();
     const state = createSleepToolState(2);
     const tool = createSleepTool({ scheduler: stub.component }, state);
 
     await exec(tool, { duration_ms: 1_000, idempotency_key: "a" });
     await exec(tool, { duration_ms: 1_000, idempotency_key: "b" });
-    await exec(tool, { duration_ms: 1_000, idempotency_key: "c" });
+    const blocked = (await exec(tool, { duration_ms: 1_000, idempotency_key: "c" })) as {
+      ok: boolean;
+      error?: string;
+    };
 
-    expect(state.idempotencyMap.size).toBe(2);
-    expect(state.idempotencyMap.has("a")).toBe(false);
+    expect(blocked.ok).toBe(false);
+    expect(blocked.error).toContain("cap reached");
+    expect(state.idempotencyMap.has("a")).toBe(true);
     expect(state.idempotencyMap.has("b")).toBe(true);
-    expect(state.idempotencyMap.has("c")).toBe(true);
+    expect(state.idempotencyMap.has("c")).toBe(false);
+    // Only the two pre-cap submits made it to the scheduler — the 3rd
+    // failed closed rather than silently registering a duplicate-prone task.
+    expect(stub.submitCalls).toHaveLength(2);
+  });
+
+  test("at the cap, an existing key still dedupes (update, not new entry)", async () => {
+    const stub = createSchedulerStub();
+    const state = createSleepToolState(2);
+    const tool = createSleepTool({ scheduler: stub.component }, state);
+
+    const r1 = (await exec(tool, { duration_ms: 1_000, idempotency_key: "a" })) as {
+      task_id: string;
+    };
+    await exec(tool, { duration_ms: 1_000, idempotency_key: "b" });
+    const r2 = (await exec(tool, { duration_ms: 1_000, idempotency_key: "a" })) as {
+      task_id: string;
+      deduped?: boolean;
+    };
+
+    expect(r2.task_id).toBe(r1.task_id);
+    expect(r2.deduped).toBe(true);
+    expect(stub.submitCalls).toHaveLength(2);
   });
 
   test("rejects idempotency_key containing ':' (Temporal stable-id delimiter)", async () => {

@@ -111,20 +111,26 @@ export function createSleepToolState(maxEntries?: number): SleepToolState {
 }
 
 /**
- * Insert/update with FIFO eviction when the cap is reached. We delete first
- * if the key already exists so re-setting bumps it to the back (Map iteration
- * order is insertion order). Eviction targets the oldest entry — agents
- * trying to retry the very oldest key after a reattach + 1024+ unique sleeps
- * may legitimately produce a duplicate; that is the documented bound, not a
- * silent correctness failure.
+ * True iff inserting `key` would exceed `maxEntries`. Updates to an existing
+ * key never count against the cap — they replace, not grow. We refuse new
+ * keys at the cap rather than FIFO-evicting live entries: evicting a still-
+ * pending entry would let a retry with the same key submit a duplicate
+ * wake-up.
+ *
+ * Phase-1 limitation: there is no scheduler completion callback yet, and
+ * wall-clock-based reclaim (deleting entries past `wake_at_ms`) is unsafe
+ * because a backlogged scheduler may deliver the original wake after the
+ * nominal deadline — a retry after that point would register a duplicate.
+ * Operators of long-running processes should size `maxEntries` for their
+ * keyed-sleep volume or call `cancel_sleep(release_key:true)` after
+ * confirmed delivery. This is documented in `docs/L2/proactive.md`.
  */
-function setBounded(state: SleepToolState, key: string, value: SleepEntry): void {
-  if (state.idempotencyMap.has(key)) {
-    state.idempotencyMap.delete(key);
-  } else if (state.idempotencyMap.size >= state.maxEntries) {
-    const oldest = state.idempotencyMap.keys().next().value;
-    if (oldest !== undefined) state.idempotencyMap.delete(oldest);
-  }
+function sleepCapReached(state: SleepToolState, key: string): boolean {
+  if (state.idempotencyMap.has(key)) return false;
+  return state.idempotencyMap.size >= state.maxEntries;
+}
+
+function setSleepEntry(state: SleepToolState, key: string, value: SleepEntry): void {
   state.idempotencyMap.set(key, value);
 }
 
@@ -208,6 +214,15 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
       };
 
       // Path 2: idempotency_key supplied. Reserve atomically.
+      if (sleepCapReached(state, idempotency_key)) {
+        return {
+          ok: false,
+          error:
+            `proactive sleep idempotency cap reached (${state.maxEntries} active keys). ` +
+            "Cancel a prior task with cancel_sleep (release_key:true) before registering more, " +
+            "or omit idempotency_key to bypass the dedupe map.",
+        };
+      }
       const existing = state.idempotencyMap.get(idempotency_key);
       if (existing !== undefined) {
         try {
@@ -250,7 +265,7 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
             durationMs: duration_ms,
             wakeMessage: message,
           };
-          setBounded(state, idempotency_key, { kind: "settled", record: rec });
+          setSleepEntry(state, idempotency_key, { kind: "settled", record: rec });
           return rec;
         });
       // Catch the rejection so we can drop the failed reservation. We also
@@ -260,7 +275,7 @@ export function createSleepTool(config: ProactiveToolsConfig, state: SleepToolSt
         throw err;
       });
 
-      setBounded(state, idempotency_key, {
+      setSleepEntry(state, idempotency_key, {
         kind: "pending",
         promise: trackedSubmission,
       });

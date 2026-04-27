@@ -37,6 +37,17 @@ interface AgentStateSlot {
    * came from. If a later attach observes a different scheduler instance for
    * the same agent (in-memory scheduler restart, failover, test reassembly),
    * the cached IDs no longer refer to anything live and must be discarded.
+   *
+   * Trade-off: the L0 SchedulerComponent contract exposes no stable identity
+   * or epoch, so we can't distinguish "host wrapped the same durable backend
+   * in a fresh adapter object" from "host swapped to a brand-new scheduler".
+   * We pick the safer of the two failure modes: a wrapper swap may forget a
+   * still-live durable schedule (causing one duplicate registration on the
+   * next retry), but preserving state across object swaps would risk dedupe
+   * matches against task IDs the new scheduler has never seen — which fails
+   * silently at fire time. Hosts that need cross-swap continuity should
+   * surface a stable identity from their scheduler implementation; once the
+   * L0 contract grows that, we can key invalidation off it.
    */
   readonly scheduler: object;
 }
