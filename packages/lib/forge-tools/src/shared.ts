@@ -3,7 +3,14 @@
  * caller resolution from the tool execution context, and KoiError factories.
  */
 
-import type { BrickId, BrickKind, ForgeScope, JsonObject, KoiError } from "@koi/core";
+import type {
+  BrickArtifact,
+  BrickId,
+  BrickKind,
+  ForgeScope,
+  JsonObject,
+  KoiError,
+} from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 import { getExecutionContext } from "@koi/execution-context";
 import { computeBrickId } from "@koi/hash";
@@ -49,6 +56,57 @@ function canonicalize(value: unknown): string {
   if (!isPlainObject(value)) return JSON.stringify(value);
   const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalize(v)}`).join(",")}}`;
+}
+
+/**
+ * Extract the kind-specific identity content from a persisted BrickArtifact,
+ * mirroring exactly what the synthesizer passed to `computeIdentityBrickId`.
+ *
+ * Returns `undefined` for kinds whose identity content is not defined here
+ * (e.g. `composite`) — callers should treat this as "skip validation, opaque".
+ */
+function extractIdentityContent(brick: BrickArtifact): JsonObject | undefined {
+  if (brick.kind === "tool") {
+    return {
+      implementation: brick.implementation,
+      inputSchema: brick.inputSchema,
+      ...(brick.outputSchema !== undefined ? { outputSchema: brick.outputSchema } : {}),
+    };
+  }
+  if (brick.kind === "middleware" || brick.kind === "channel") {
+    return { implementation: brick.implementation };
+  }
+  if (brick.kind === "skill") {
+    return { content: brick.content };
+  }
+  if (brick.kind === "agent") {
+    return { manifestYaml: brick.manifestYaml };
+  }
+  return undefined;
+}
+
+/**
+ * Recompute the canonical identity BrickId from a persisted artifact's
+ * identity-bearing fields plus its owning agent (read from provenance).
+ *
+ * Returns `undefined` when the kind has no defined identity-content extractor
+ * or when provenance.metadata.agentId is missing — caller should skip
+ * validation in those cases (defensive: opaque kinds are passed through).
+ */
+export function recomputeBrickIdFromArtifact(brick: BrickArtifact): BrickId | undefined {
+  const content = extractIdentityContent(brick);
+  if (content === undefined) return undefined;
+  const ownerAgentId = brick.provenance.metadata.agentId;
+  if (typeof ownerAgentId !== "string" || ownerAgentId.length === 0) return undefined;
+  return computeIdentityBrickId({
+    kind: brick.kind,
+    name: brick.name,
+    description: brick.description,
+    version: brick.version,
+    scope: brick.scope,
+    ownerAgentId,
+    content,
+  });
 }
 
 // ---------------------------------------------------------------------------

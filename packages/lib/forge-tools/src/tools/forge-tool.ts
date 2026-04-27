@@ -134,7 +134,9 @@ export function createForgeToolTool(deps: ForgeToolDeps): Tool {
       const content: JsonObject = {
         implementation: input.implementation,
         inputSchema: input.inputSchema as JsonObject,
-        outputSchema: (input.outputSchema ?? null) as JsonObject | null,
+        ...(input.outputSchema !== undefined
+          ? { outputSchema: input.outputSchema as JsonObject }
+          : {}),
       };
       const id = computeIdentityBrickId({
         kind: "tool",

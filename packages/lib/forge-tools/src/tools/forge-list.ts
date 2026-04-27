@@ -6,6 +6,7 @@
  */
 
 import type {
+  BrickArtifact,
   BrickSummary,
   ForgeQuery,
   ForgeStore,
@@ -14,7 +15,8 @@ import type {
   Result,
   Tool,
 } from "@koi/core";
-import { DEFAULT_SANDBOXED_POLICY, searchSummariesWithFallback } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
+import { sortBricks } from "@koi/validation";
 import { toJSONSchema, z } from "zod";
 import { invalidInput, resolveCaller } from "../shared.js";
 
@@ -36,6 +38,17 @@ export interface ForgeListDeps {
 
 export interface ForgeListOk {
   readonly summaries: readonly BrickSummary[];
+}
+
+function toSummary(brick: BrickArtifact): BrickSummary {
+  return {
+    id: brick.id,
+    kind: brick.kind,
+    name: brick.name,
+    description: brick.description,
+    tags: brick.tags,
+    ...(brick.trigger !== undefined ? { trigger: brick.trigger } : {}),
+  };
 }
 
 export function createForgeListTool(deps: ForgeListDeps): Tool {
@@ -93,17 +106,25 @@ export function createForgeListTool(deps: ForgeListDeps): Tool {
         });
       }
 
-      const responses = await Promise.all(
-        queries.map((q) => searchSummariesWithFallback(deps.store, q)),
-      );
+      // Use full search (not summaries) so we have ranking-bearing fields
+      // (createdAt, fitness, trailStrength) to rank globally across scopes
+      // before truncation. Without this, top-N from one scope can crowd out
+      // higher-ranked items from the other.
+      const responses = await Promise.all(queries.map((q) => deps.store.search(q)));
       for (const r of responses) {
         if (!r.ok) {
           const failure: Result<ForgeListOk, KoiError> = { ok: false, error: r.error };
           return failure;
         }
       }
-      const merged: readonly BrickSummary[] = responses.flatMap((r) => (r.ok ? r.value : []));
-      const sliced = merged.slice(0, callerLimit);
+      const merged: readonly BrickArtifact[] = responses.flatMap((r) => (r.ok ? r.value : []));
+      const mergeQuery: ForgeQuery = {
+        ...(input.kind !== undefined ? { kind: input.kind } : {}),
+        ...(input.lifecycle !== undefined ? { lifecycle: input.lifecycle } : {}),
+        limit: callerLimit,
+      };
+      const ranked = sortBricks(merged, mergeQuery, { nowMs: Date.now() });
+      const sliced = ranked.slice(0, callerLimit).map(toSummary);
       const success: Result<ForgeListOk, KoiError> = { ok: true, value: { summaries: sliced } };
       return success;
     },

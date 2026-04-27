@@ -24,7 +24,7 @@ import {
   matchesBrickQuery,
   sortBricks,
 } from "@koi/validation";
-import { conflict, invariantViolation, notFound } from "./shared.js";
+import { conflict, invariantViolation, notFound, recomputeBrickIdFromArtifact } from "./shared.js";
 
 const TERMINAL_LIFECYCLES: ReadonlySet<BrickLifecycle> = new Set<BrickLifecycle>([
   "failed",
@@ -114,6 +114,20 @@ export function createInMemoryForgeStore(): ForgeStore {
   const notifier = createMemoryStoreChangeNotifier();
 
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
+    // Defense-in-depth: verify the caller-supplied BrickId matches the
+    // canonical identity hash of the artifact's identity-bearing fields.
+    // Rejects tampered or mis-keyed inserts before they corrupt the map.
+    // Skipped for kinds with no identity-content extractor (opaque pass-through).
+    const expectedId = recomputeBrickIdFromArtifact(brick);
+    if (expectedId !== undefined && expectedId !== brick.id) {
+      return {
+        ok: false,
+        error: invariantViolation(
+          `BrickId mismatch on save: artifact identity hashes to ${expectedId} but was supplied as ${brick.id}`,
+          { suppliedBrickId: brick.id, expectedBrickId: expectedId, kind: brick.kind },
+        ),
+      };
+    }
     const existing = bricks.get(brick.id);
     if (existing !== undefined) {
       if (!isIdentityEqual(existing, brick)) {
@@ -198,6 +212,13 @@ export function createInMemoryForgeStore(): ForgeStore {
           { expectedVersion: expected, currentVersion },
         ),
       };
+    }
+    // No-op detection: after stripping control fields, an empty patch produces
+    // no change. Skip storeVersion bump and watcher notify so idempotent
+    // retries don't appear as updates.
+    const effectiveKeys = Object.keys(updates).filter((k) => k !== "expectedVersion");
+    if (effectiveKeys.length === 0) {
+      return { ok: true, value: undefined };
     }
     const applied = applyBrickUpdate(existing, updates);
     const versioned: BrickArtifact = { ...applied, storeVersion: currentVersion + 1 };
