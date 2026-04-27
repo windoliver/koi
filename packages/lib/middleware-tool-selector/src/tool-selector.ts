@@ -78,8 +78,21 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
   // call wasn't bound to a specific snapshot (non-streaming path
   // without a callId, or stream wrappers that don't preserve callIds).
   // #review-round20-F1.
-  const callAllowlists = new Map<string, ReadonlySet<string>>();
+  // Per-turn map of callId → snapshot. Scoping by turnId means
+  // providers that recycle short callIds ("call_0", "tc1") across
+  // overlapping turns / sessions on the same middleware instance
+  // cannot overwrite each other's bindings (#review-round22-F1).
+  const callAllowlists = new Map<TurnId, Map<string, ReadonlySet<string>>>();
   const turnSnapshots = new Map<TurnId, ReadonlySet<string>[]>();
+
+  function bindCall(turnId: TurnId, callId: string, snapshot: ReadonlySet<string>): void {
+    let m = callAllowlists.get(turnId);
+    if (m === undefined) {
+      m = new Map<string, ReadonlySet<string>>();
+      callAllowlists.set(turnId, m);
+    }
+    m.set(callId, snapshot);
+  }
 
   function recordSnapshot(turnId: TurnId, allowed: ReadonlySet<string>): void {
     const list = turnSnapshots.get(turnId);
@@ -149,13 +162,18 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     } catch (e: unknown) {
       reportError(e);
       if (enforceFiltering) {
-        // Fail closed: install an allowlist containing only `alwaysInclude`
-        // so wrapToolCall still rejects every other tool for this turn.
-        // Returning the original (unfiltered) request without an allowlist
-        // would let the model both see and call every tool — defeating the
-        // very trust boundary enforceFiltering exists to provide.
-        const snapshot = captureSnapshot(ctx.turnId, new Set<string>(alwaysInclude));
+        // Fail closed: install an allowlist matching ONLY the
+        // alwaysInclude tools that were actually present in the
+        // request — never raw alwaysInclude names. If a name is in
+        // alwaysInclude but absent from request.tools, the model
+        // never saw it; allowing it at execution would let a forged
+        // tool_call_* invoke a tool that was intentionally omitted
+        // from this turn's advertised set (#review-round22-F2).
         const fallbackTools = tools.filter((t) => alwaysInclude.includes(t.name));
+        const snapshot = captureSnapshot(
+          ctx.turnId,
+          new Set<string>(fallbackTools.map((t) => t.name)),
+        );
         return { request: { ...request, tools: fallbackTools }, snapshot };
       }
       return { request, snapshot: undefined };
@@ -209,7 +227,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       const { request: filtered, snapshot } = await filterRequest(ctx, request);
       for await (const chunk of next(filtered)) {
         if (snapshot !== undefined && chunk.kind === "tool_call_start") {
-          callAllowlists.set(chunk.callId, snapshot);
+          bindCall(ctx.turnId, chunk.callId, snapshot);
         }
         yield chunk;
       }
@@ -221,9 +239,11 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     ): Promise<ToolResponse> {
       if (!enforceFiltering) return next(request);
       // Prefer the per-call snapshot bound when this tool_call_start
-      // was emitted by the model stream (#review-round20-F1).
+      // was emitted by the model stream (#review-round20-F1). Lookup
+      // is scoped by turn so recycled callIds across sessions /
+      // overlapping turns never collide (#review-round22-F1).
       if (request.callId !== undefined) {
-        const allowed = callAllowlists.get(request.callId);
+        const allowed = callAllowlists.get(ctx.turnId)?.get(request.callId);
         if (allowed !== undefined) {
           if (allowed.has(request.toolId)) return next(request);
           throw KoiRuntimeError.from(
@@ -249,15 +269,8 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       );
     },
     async onAfterTurn(ctx: TurnContext): Promise<void> {
-      const snapshots = turnSnapshots.get(ctx.turnId);
       turnSnapshots.delete(ctx.turnId);
-      // Drop callId bindings recorded under this turn's snapshots so
-      // long-lived sessions don't leak entries.
-      if (snapshots !== undefined) {
-        for (const [callId, snap] of callAllowlists) {
-          if (snapshots.includes(snap)) callAllowlists.delete(callId);
-        }
-      }
+      callAllowlists.delete(ctx.turnId);
     },
   };
 }

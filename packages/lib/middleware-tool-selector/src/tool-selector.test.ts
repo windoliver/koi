@@ -12,12 +12,13 @@ import { KoiRuntimeError } from "@koi/errors";
 import { createTagSelectTools } from "./select-strategy.js";
 import { createToolSelectorMiddleware } from "./tool-selector.js";
 
-function turnCtx(): TurnContext {
+function turnCtx(opts: { readonly turnIndex?: number } = {}): TurnContext {
   const rid = runId("run-1");
+  const idx = opts.turnIndex ?? 0;
   return {
     session: { agentId: "a", sessionId: sessionId("s-1"), runId: rid, metadata: {} },
-    turnIndex: 0,
-    turnId: turnId(rid, 0),
+    turnIndex: idx,
+    turnId: turnId(rid, idx),
     messages: [],
     metadata: {},
   };
@@ -230,6 +231,62 @@ describe("createToolSelectorMiddleware — pass-through paths", () => {
     await expect(
       wrapTool(ctx, { toolId: "gamma", input: {}, callId: callB }, toolNext as never),
     ).resolves.toEqual({ output: "ok" });
+  });
+
+  test("recycled callIds across overlapping turns do not collide — round 22 F1", async () => {
+    // Providers commonly emit short recycled IDs ("call_0", "tc1").
+    // Without per-turn scoping, invocation B (turn-2) overwrote
+    // invocation A's (turn-1) binding for the same callId, so A's
+    // tool execution validated against B's snapshot.
+    let nthCall = 0;
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => {
+        nthCall += 1;
+        return nthCall === 1 ? ["alpha"] : ["gamma"];
+      },
+      minTools: 0,
+    });
+    const wrapStream = mw.wrapModelStream;
+    if (!wrapStream) throw new Error("wrapModelStream missing");
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+
+    const ctx1 = turnCtx({ turnIndex: 0 });
+    const ctx2 = turnCtx({ turnIndex: 1 });
+    const tools = [tool("alpha"), tool("beta"), tool("gamma")];
+    const recycled = toolCallId("call_0"); // same id, different turns
+
+    const stream1: ModelStreamHandler = async function* () {
+      yield { kind: "tool_call_start", toolName: "alpha", callId: recycled };
+      yield { kind: "tool_call_end", callId: recycled };
+      yield { kind: "done", response: modelResponse() };
+    };
+    const stream2: ModelStreamHandler = async function* () {
+      yield { kind: "tool_call_start", toolName: "gamma", callId: recycled };
+      yield { kind: "tool_call_end", callId: recycled };
+      yield { kind: "done", response: modelResponse() };
+    };
+    for await (const _ of wrapStream(ctx1, { messages: [userMsg("a")], tools }, stream1));
+    for await (const _ of wrapStream(ctx2, { messages: [userMsg("b")], tools }, stream2));
+
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "ok" }),
+    );
+    // ctx1 + recycled → snapshot {alpha}. gamma must reject even
+    // though the second turn authorized gamma under the same callId.
+    await expect(
+      wrapTool(ctx1, { toolId: "alpha", input: {}, callId: recycled }, toolNext as never),
+    ).resolves.toEqual({ output: "ok" });
+    await expect(
+      wrapTool(ctx1, { toolId: "gamma", input: {}, callId: recycled }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
+    // ctx2 + recycled → snapshot {gamma}. alpha must reject.
+    await expect(
+      wrapTool(ctx2, { toolId: "gamma", input: {}, callId: recycled }, toolNext as never),
+    ).resolves.toEqual({ output: "ok" });
+    await expect(
+      wrapTool(ctx2, { toolId: "alpha", input: {}, callId: recycled }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
   });
 
   test("rejects tool calls without callId once snapshots exist — round 21 F2", async () => {
@@ -473,6 +530,44 @@ describe("createToolSelectorMiddleware — selector-error handling", () => {
     await expect(
       wrapTool(ctx, { toolId: "a", input: {}, callId: callIdA }, toolNext as never),
     ).resolves.toEqual({ output: "ok" });
+  });
+
+  test("selector throw fallback never authorizes alwaysInclude names absent from request.tools — round 22 F2", async () => {
+    // alwaysInclude lists a name that ISN'T in the current request's
+    // tool set. The fallback request correctly omits it, but a
+    // forged tool_call_* could still execute it if the snapshot was
+    // built from raw alwaysInclude rather than the actual fallback
+    // tools.
+    const tools = [tool("a"), tool("b")];
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => {
+        throw new Error("boom");
+      },
+      alwaysInclude: ["a", "ghost"], // "ghost" not in request.tools
+      minTools: 0,
+    });
+    const ctx = turnCtx();
+    const wrapStream = mw.wrapModelStream;
+    if (!wrapStream) throw new Error("wrapModelStream missing");
+    const ghostCall = toolCallId("call-ghost");
+    const stream: ModelStreamHandler = async function* () {
+      // Forged: model never saw "ghost" in fallbackTools.
+      yield { kind: "tool_call_start", toolName: "ghost", callId: ghostCall };
+      yield { kind: "tool_call_end", callId: ghostCall };
+      yield { kind: "done", response: modelResponse() };
+    };
+    for await (const _ of wrapStream(ctx, { messages: [userMsg("go")], tools }, stream)) {
+      // drain
+    }
+
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "ok" }),
+    );
+    await expect(
+      wrapTool(ctx, { toolId: "ghost", input: {}, callId: ghostCall }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
   });
 
   test("with enforceFiltering=false, selector throw passes original tools through", async () => {
