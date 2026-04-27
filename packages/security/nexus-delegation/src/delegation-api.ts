@@ -86,7 +86,7 @@ const BASE = "/api/v2/agents/delegate";
 function mapHttpError(status: number, method: string): KoiError {
   const retryable = status === 429 || status >= 500;
   const code: KoiError["code"] =
-    status === 404 ? "NOT_FOUND" : status === 403 ? "PERMISSION" : "INTERNAL";
+    status === 404 ? "NOT_FOUND" : status === 401 || status === 403 ? "PERMISSION" : "INTERNAL";
   return {
     code,
     message: `Nexus ${method} failed: HTTP ${status}`,
@@ -130,9 +130,9 @@ export function createNexusDelegationApi(config: NexusDelegationApiConfig): Nexu
         ok: false,
         error: {
           code: "INTERNAL",
-          message: e instanceof Error ? e.message : String(e),
+          message: `Nexus ${method} ${path} failed: ${e instanceof Error ? e.message : String(e)}`,
           retryable: true,
-          context: {},
+          context: { method, path },
         },
       };
     }
