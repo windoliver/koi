@@ -34,15 +34,50 @@ function defaultExtractKey(model: string | undefined): string {
   return slash > 0 ? model.slice(0, slash) : model;
 }
 
+/**
+ * Map a KoiError-style code to an HTTP-shaped status the breaker can filter.
+ * Only upstream-shaped codes are returned; everything else is `undefined`
+ * so non-provider errors do not poison the circuit.
+ */
+function statusFromCode(code: unknown): number | undefined {
+  if (code === "RATE_LIMIT") return 429;
+  if (code === "TIMEOUT") return 503;
+  if (code === "EXTERNAL") return 502;
+  return undefined;
+}
+
+/**
+ * Extract an HTTP status code from a caught error — provider-originated only.
+ *
+ * Recognizes:
+ *   - HTTP client / provider SDK shapes: top-level `status` / `statusCode`
+ *   - The koi runtime adapter envelope: `Error(..., { cause: { code } })`
+ *     where `cause.code` is a KoiErrorCode like `RATE_LIMIT` / `TIMEOUT`
+ *     / `EXTERNAL`. The OpenAI-compatible adapter (and similar) wrap
+ *     upstream HTTP failures this way, so reading the nested code is the
+ *     only way to see real provider 429s/503s without a top-level status.
+ *
+ * Deliberately does NOT infer status from a TOP-level `code` field —
+ * downstream local middleware (call-limits, internal throttles) emit
+ * KoiError-shaped objects with `code: "RATE_LIMIT"` and no `cause`, and
+ * counting those would let one session's local quota poison the shared
+ * circuit for every other session on a healthy provider.
+ *
+ * Errors without any provider-shaped signal return `undefined`; the caller
+ * uses that to skip recording a breaker failure.
+ */
 function extractStatusCode(error: unknown): number | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const e = error as Record<string, unknown>;
   if (typeof e.status === "number") return e.status;
   if (typeof e.statusCode === "number") return e.statusCode;
-  if (typeof e.code === "string") {
-    if (e.code === "RATE_LIMIT") return 429;
-    if (e.code === "TIMEOUT") return 503;
-    if (e.code === "EXTERNAL") return 502;
+  // Walk one level into `cause` — the runtime adapter envelope.
+  if (typeof e.cause === "object" && e.cause !== null) {
+    const c = e.cause as Record<string, unknown>;
+    if (typeof c.status === "number") return c.status;
+    if (typeof c.statusCode === "number") return c.statusCode;
+    const fromCode = statusFromCode(c.code);
+    if (fromCode !== undefined) return fromCode;
   }
   return undefined;
 }
@@ -60,6 +95,23 @@ async function* errorStream(error: KoiError): AsyncIterable<ModelChunk> {
   yield { kind: "error", message: error.message, code: error.code, retryable: error.retryable };
 }
 
+/**
+ * Map a streamed `error` chunk to an HTTP status the breaker can filter.
+ *
+ * Streamed errors come from the model adapter, not from local middleware
+ * (local middleware throw, they don't emit chunks). So an upstream-shaped
+ * code on a stream chunk IS provider-originated and should count.
+ *
+ * Returns `undefined` for codes without a clear upstream mapping
+ * (validation, abort, unknown) — those leave breaker state unchanged.
+ */
+function streamErrorStatus(chunk: {
+  readonly code?: string | undefined;
+  readonly retryable?: boolean | undefined;
+}): number | undefined {
+  return statusFromCode(chunk.code);
+}
+
 async function* trackedStream(
   source: AsyncIterable<ModelChunk>,
   breaker: CircuitBreaker,
@@ -67,7 +119,8 @@ async function* trackedStream(
   try {
     for await (const chunk of source) {
       if (chunk.kind === "error") {
-        breaker.recordFailure();
+        const status = streamErrorStatus(chunk);
+        if (status !== undefined) breaker.recordFailure(status);
         yield chunk;
         return;
       }
@@ -78,9 +131,15 @@ async function* trackedStream(
       }
       yield chunk;
     }
-    breaker.recordSuccess();
+    // Iterator ended without an explicit terminal chunk — query-engine treats
+    // this as an error ("stream ended without terminal chunk"). Count it as
+    // a failure so degraded providers that produce truncated streams trip
+    // the breaker instead of healing it. Pass no status so configured
+    // failureStatusCodes filters can still suppress this if desired.
+    breaker.recordFailure();
   } catch (err: unknown) {
-    breaker.recordFailure(extractStatusCode(err));
+    const status = extractStatusCode(err);
+    if (status !== undefined) breaker.recordFailure(status);
     throw err;
   }
 }
@@ -97,11 +156,18 @@ interface CbState {
 function getOrCreateBreaker(s: CbState, key: string): CircuitBreaker {
   const existing = s.breakers.get(key);
   if (existing !== undefined) return existing;
-  if (!s.warnGuard.warned && s.breakers.size >= s.maxKeys) {
-    s.warnGuard.warned = true;
-    console.warn(
-      `[circuit-breaker] key map reached ${String(s.breakers.size)} entries — possible key explosion`,
-    );
+  // Enforce maxKeys: evict the oldest insertion to bound memory. Keys are
+  // caller-controlled (model strings or extractKey output), so an unbounded
+  // map is a memory leak and a state-isolation problem under high cardinality.
+  if (s.breakers.size >= s.maxKeys) {
+    if (!s.warnGuard.warned) {
+      s.warnGuard.warned = true;
+      console.warn(
+        `[circuit-breaker] key map reached ${String(s.maxKeys)} entries — evicting oldest; possible key explosion`,
+      );
+    }
+    const oldest = s.breakers.keys().next().value;
+    if (oldest !== undefined) s.breakers.delete(oldest);
   }
   const fresh =
     s.clock !== undefined
@@ -126,7 +192,11 @@ async function cbWrapModelCall(
     breaker.recordSuccess();
     return response;
   } catch (err: unknown) {
-    breaker.recordFailure(extractStatusCode(err));
+    // Only count failures with a provider-set HTTP status. Errors without one
+    // are local (validation, our own RATE_LIMIT, abort) and must not poison
+    // the shared circuit for a healthy provider.
+    const status = extractStatusCode(err);
+    if (status !== undefined) breaker.recordFailure(status);
     throw err;
   }
 }

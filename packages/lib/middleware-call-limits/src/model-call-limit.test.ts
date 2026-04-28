@@ -72,4 +72,20 @@ describe("createModelCallLimitMiddleware", () => {
     const mw = createModelCallLimitMiddleware({ limit: 7 });
     expect(mw.describeCapabilities(turnCtx())?.description).toContain("7");
   });
+
+  test("onSessionEnd resets counter so fresh session can run", async () => {
+    const mw = createModelCallLimitMiddleware({ limit: 1 });
+    const ctx = turnCtx("model-cleanup");
+    await mw.wrapModelCall?.(ctx, { messages: [] }, okHandler());
+    let threw = false;
+    try {
+      await mw.wrapModelCall?.(ctx, { messages: [] }, okHandler());
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    await mw.onSessionEnd?.(ctx.session);
+    const r = await mw.wrapModelCall?.(ctx, { messages: [] }, okHandler());
+    expect(r?.content).toBe("ok");
+  });
 });

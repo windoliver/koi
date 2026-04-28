@@ -1482,7 +1482,7 @@ import { createCallDedupMiddleware } from "@koi/middleware-call-dedup";
 
 describe("Golden: @koi/middleware-call-dedup", () => {
   test("returns cached response with metadata.cached on identical second call", async () => {
-    const mw = createCallDedupMiddleware();
+    const mw = createCallDedupMiddleware({ include: ["lookup"] });
     const ctx = {
       session: { sessionId: "cd-golden", agentId: "a", metadata: {} },
       turnIndex: 0,
@@ -1500,8 +1500,8 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     expect(executions).toBe(1);
   });
 
-  test("default exclude list bypasses cache for shell_exec", async () => {
-    const mw = createCallDedupMiddleware();
+  test("DEFAULT_EXCLUDE wins over user include for shell_exec", async () => {
+    const mw = createCallDedupMiddleware({ include: ["shell_exec"] });
     const ctx = {
       session: { sessionId: "cd-golden-2", agentId: "a", metadata: {} },
       turnIndex: 0,
@@ -1515,5 +1515,46 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: { cmd: "ls" } }, handler);
     await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: { cmd: "ls" } }, handler);
     expect(executions).toBe(2);
+  });
+
+  // Composition test: dedup MUST run before call-limits so cache hits do not
+  // burn quota. Both middlewares are intercept-phase; dedup priority 150
+  // vs call-limits 175 means dedup wraps call-limits in the onion.
+  test("dedup wraps call-limits: cache hit does not consume quota", async () => {
+    const dedup = createCallDedupMiddleware({ include: ["lookup"] });
+    const limits = createToolCallLimitMiddleware({ limits: { lookup: 1 } });
+    const ctx = {
+      session: { sessionId: "ordering-golden", agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+    let executions = 0;
+    const baseHandler: import("@koi/core/middleware").ToolHandler = async () => {
+      executions++;
+      return { output: "v" };
+    };
+    // Compose in onion order: dedup(limits(base)). dedup is the outer wrapper
+    // because it has lower priority within the same phase.
+    const composed: import("@koi/core/middleware").ToolHandler = async (req) => {
+      const inner: import("@koi/core/middleware").ToolHandler = async (innerReq) => {
+        const r = await limits.wrapToolCall?.(ctx, innerReq, baseHandler);
+        if (r === undefined) throw new Error("limits returned undefined");
+        return r;
+      };
+      const r = await dedup.wrapToolCall?.(ctx, req, inner);
+      if (r === undefined) throw new Error("dedup returned undefined");
+      return r;
+    };
+
+    const first = await composed({ toolId: "lookup", input: { q: 1 } });
+    const second = await composed({ toolId: "lookup", input: { q: 1 } });
+    const third = await composed({ toolId: "lookup", input: { q: 1 } });
+    expect(first.output).toBe("v");
+    // Cache hits must NOT be marked blocked by the limiter.
+    expect(second.metadata?.cached).toBe(true);
+    expect(second.metadata?.blocked).toBeUndefined();
+    expect(third.metadata?.cached).toBe(true);
+    expect(third.metadata?.blocked).toBeUndefined();
+    expect(executions).toBe(1);
   });
 });

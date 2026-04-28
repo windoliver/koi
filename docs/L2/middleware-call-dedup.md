@@ -4,6 +4,21 @@
 
 ---
 
+## ⚠️ Opt-in (v2): caching requires an explicit `include` allowlist
+
+**Without `include`, this middleware is a passthrough — nothing is cached.**
+
+This is a deliberate safety choice. A default-on cache would silently:
+
+- **Drop side-effecting writes** — `task_create`, `task_update`, `koi_send_message`, `notebook_delete_cell`, etc. Returning a cached "success" without re-executing means the second write never happens. Caller thinks the operation succeeded; reality says otherwise.
+- **Serve stale stateful reads** — `task_list`, `notebook_read`, `*_read` reflect ambient state. If another tool mutates the resource between two reads, the second read returns up to TTL-old data while the agent makes decisions on it.
+
+The cache key (`{sessionId, toolId, input}`) cannot detect ambient state changes, so the only safe default is to require the caller to declare which tools they have proven deterministic against immutable inputs.
+
+`DEFAULT_EXCLUDE` (mutating shell/file/agent tools) is a hard floor: even tools mistakenly added to `include` are still bypassed if they appear in the exclude list.
+
+---
+
 ## Why It Exists
 
 Agents frequently call the same deterministic tool multiple times per session with identical arguments. Each call executes fully — file I/O, network requests, token counting, billing. The loop guard detects *patterns* but still executes each call. This middleware caches *results*.

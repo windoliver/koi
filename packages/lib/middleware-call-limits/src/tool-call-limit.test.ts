@@ -129,4 +129,27 @@ describe("createToolCallLimitMiddleware", () => {
     expect(a.describeCapabilities(ctx)?.description).toContain("10");
     expect(b.describeCapabilities(ctx)?.description).toContain("per-tool");
   });
+
+  // Regression: per-session state must be released on session end so a
+  // long-lived runtime does not accumulate counters for dead sessions.
+  test("onSessionEnd resets per-session counters and fired markers", async () => {
+    const mw = createToolCallLimitMiddleware({
+      limits: { foo: 1 },
+      globalLimit: 5,
+      onLimitReached: () => {},
+    });
+    const ctx = turnCtx("s-cleanup");
+    await mw.wrapToolCall?.(ctx, { toolId: "foo", input: {} }, okHandler());
+    // foo at limit; second call blocks.
+    const blocked = await mw.wrapToolCall?.(ctx, { toolId: "foo", input: {} }, okHandler());
+    expect(blocked?.metadata?.blocked).toBe(true);
+
+    // End session.
+    await mw.onSessionEnd?.(ctx.session);
+
+    // After cleanup, the same sessionId should see fresh counters — first
+    // post-cleanup call must succeed (not be blocked).
+    const fresh = await mw.wrapToolCall?.(ctx, { toolId: "foo", input: {} }, okHandler());
+    expect(fresh?.output).toBe("ok");
+  });
 });

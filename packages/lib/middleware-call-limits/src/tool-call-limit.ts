@@ -13,6 +13,7 @@
 import type {
   CapabilityFragment,
   KoiMiddleware,
+  SessionContext,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -104,6 +105,22 @@ async function tlWrapToolCall(
   return next(request);
 }
 
+async function tlOnSessionEnd(s: ToolLimitState, ctx: SessionContext): Promise<void> {
+  const sessionId = ctx.sessionId;
+  s.store.reset(globalKey(sessionId));
+  if (s.config.limits !== undefined) {
+    for (const toolId of Object.keys(s.config.limits)) {
+      s.store.reset(toolKey(sessionId, toolId));
+    }
+  }
+  // Drop any per-(session,tool) `fired` markers so a future session reusing
+  // the same id does not silently swallow its first onLimitReached fire.
+  const prefix = `${sessionId}:`;
+  for (const k of s.fired) {
+    if (k.startsWith(prefix)) s.fired.delete(k);
+  }
+}
+
 export function createToolCallLimitMiddleware(config: ToolCallLimitConfig): KoiMiddleware {
   const state: ToolLimitState = {
     config,
@@ -123,6 +140,7 @@ export function createToolCallLimitMiddleware(config: ToolCallLimitConfig): KoiM
     priority: 175,
     phase: "intercept",
     wrapToolCall: (ctx, request, next) => tlWrapToolCall(state, ctx, request, next),
+    onSessionEnd: (ctx) => tlOnSessionEnd(state, ctx),
     describeCapabilities: () => state.capability,
   } satisfies KoiMiddleware;
 }
