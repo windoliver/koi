@@ -153,6 +153,12 @@ export function createNexusDelegationBackend(
   }
   // let is justified: the retry queue is a mutable bounded list rebuilt after each drain
   let pendingRevocations: PendingRevocation[] = [];
+  // Serializes drain with grant() so a same-id regrant cannot race an
+  // in-flight drain that already snapshotted the queue. grant() awaits this
+  // promise before installing into the grantStore, guaranteeing the drain's
+  // grantStore.delete() lands first if it was about to fire for this id.
+  // let is justified: chained on each new drain to enforce FIFO ordering
+  let drainInProgress: Promise<void> = Promise.resolve();
 
   // ---------------------------------------------------------------------------
   // Retry queue helpers
@@ -175,7 +181,16 @@ export function createNexusDelegationBackend(
     ];
   }
 
-  async function drainQueue(): Promise<void> {
+  function drainQueue(): Promise<void> {
+    // Chain off the current drainInProgress so concurrent drain triggers
+    // serialize FIFO. grant() awaits this same promise before installing into
+    // grantStore, closing the race where a drain snapshot could revoke a
+    // freshly-issued same-id regrant.
+    drainInProgress = drainInProgress.then(realDrain).catch(() => {});
+    return drainInProgress;
+  }
+
+  async function realDrain(): Promise<void> {
     if (pendingRevocations.length === 0) return;
     const snapshot = pendingRevocations;
     pendingRevocations = [];
@@ -275,6 +290,13 @@ export function createNexusDelegationBackend(
     if (!result.ok) {
       throw new Error(`Nexus delegation grant failed: ${result.error.message}`);
     }
+
+    // Wait for any in-flight drain to settle before installing this grant.
+    // If drainQueue snapshotted the pending list before we filtered it, its
+    // remaining work (api.revokeDelegation + grantStore.delete + cache
+    // invalidate) needs to complete BEFORE we install — otherwise a same-id
+    // regrant could be silently revoked by stale retry work.
+    await drainInProgress;
 
     const now = Date.now();
     const expiresRaw = result.value.expires_at;

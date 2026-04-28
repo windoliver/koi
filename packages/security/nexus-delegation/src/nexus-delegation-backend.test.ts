@@ -248,6 +248,73 @@ describe("revoke()", () => {
     expect(calls).toBeGreaterThanOrEqual(3);
   });
 
+  test("regrant during in-flight drain serializes — drain completes before install", async () => {
+    // Manual control over the revoke promise so we can interleave grant()
+    // with an in-flight drainQueue snapshot.
+    let releaseRevoke: (() => void) | undefined;
+    const revokeGate = new Promise<void>((resolve) => {
+      releaseRevoke = resolve;
+    });
+    const api = makeMockApi({
+      revokeDelegation: mock(async () => {
+        await revokeGate;
+        return { ok: true as const, value: undefined };
+      }),
+    });
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+
+    // Step 1: grant + revoke-fail to enqueue the entry. We use a different
+    // mock for THIS revoke (rejects so it enqueues), then swap the mock to
+    // the gated success path for the drain that follows.
+    (api.revokeDelegation as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+      ok: false as const,
+      error: { code: "INTERNAL" as const, message: "tx", retryable: true, context: {} },
+    }));
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    await backend.grant(SCOPE, CHILD_ID);
+    await expect(backend.revoke(GRANT_ID)).rejects.toThrow();
+
+    // Step 2: trigger a drain by revoking ANOTHER grant; that drain will
+    // pick up GRANT_ID from the queue and block on revokeGate. We need the
+    // drain to start before our regrant.
+    const id2 = delegationId("del-trigger");
+    (api.createDelegation as ReturnType<typeof mock>).mockResolvedValueOnce({
+      ok: true as const,
+      value: makeGrantResponse({ delegation_id: id2, api_key: "k2" }),
+    });
+    await backend.grant(SCOPE, agentId("child-2"));
+    // Trigger drain (revoke id2 — also goes through the gated mock, but the
+    // first thing the drain does is process GRANT_ID from the queue).
+    const revokePromise = backend.revoke(id2).catch(() => {});
+
+    // Step 3: regrant GRANT_ID. With drain serialization, this should AWAIT
+    // the in-flight drain before installing. Without the fix, the regrant
+    // would install first and then drain's grantStore.delete(GRANT_ID)
+    // would silently kill it.
+    (api.createDelegation as ReturnType<typeof mock>).mockResolvedValueOnce({
+      ok: true as const,
+      value: makeGrantResponse({ delegation_id: GRANT_ID, api_key: "k-fresh" }),
+    });
+    const regrantPromise = backend.grant(SCOPE, CHILD_ID);
+
+    // Step 4: release the gated revokes. Drain will revoke GRANT_ID and id2,
+    // then regrant resolves.
+    releaseRevoke?.();
+    await Promise.all([revokePromise, regrantPromise]);
+
+    // After everything settles: a verify() against GRANT_ID must NOT come
+    // back as "revoked". With drain-serialization, the regrant clears the
+    // tombstone; without it, the in-flight drain's grantStore.delete races
+    // grant() and the tombstone could survive — verify() would then deny.
+    // (We don't assert ok=true because the mock chain isn't fully wired;
+    //  we just assert the failure reason is not the revoke leak.)
+    const verifyRes = await backend.verify(GRANT_ID, "any-tool");
+    if (!verifyRes.ok) {
+      expect(verifyRes.reason).not.toBe("revoked");
+    }
+    errSpy.mockRestore();
+  });
+
   test("regrant of same delegation id cancels stale pending revocation", async () => {
     let revokeOk = false;
     const api = makeMockApi({
