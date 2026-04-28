@@ -92,6 +92,10 @@ const TOOL_MAP: Readonly<Record<string, ToolDisplayEntry>> = {
   memory_recall: { title: "Memory Recall", subtitleKey: "query" },
   memory_search: { title: "Memory Search", subtitleKey: "keyword" },
   memory_delete: { title: "Memory Delete", subtitleKey: "id" },
+  koi_plan_write: { title: "Plan", subtitleKey: "summary" },
+  task_create: { title: "Task Create", subtitleKey: "name" },
+  task_update: { title: "Task Update", subtitleKey: "id" },
+  task_list: { title: "Task List", subtitleKey: "status" },
 };
 
 /** Suffix-based entries for prefixed tools (`fs_read`, `web_fetch`, etc.). */
