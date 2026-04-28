@@ -7,6 +7,20 @@ import type { ToolRequest, ToolResponse } from "@koi/core";
 export interface CacheEntry {
   readonly response: ToolResponse;
   readonly expiresAt: number;
+  /**
+   * Per-session generation captured at write time. The middleware bumps
+   * its in-memory `sessionGen` on `onSessionEnd`, so a stored entry whose
+   * generation no longer matches the live counter belongs to a previous
+   * run of the same `sessionId`. Such orphans can outlive their session
+   * if backend `delete()` failed during eviction (best-effort by
+   * design); reads MUST treat a generation mismatch as a miss to prevent
+   * cross-session staleness.
+   *
+   * Optional for back-compat with stores that already hold entries
+   * written before this field existed — callers are expected to default
+   * a missing generation to 0 and reject any non-zero live generation.
+   */
+  readonly generation?: number | undefined;
 }
 
 export interface CallDedupStore {

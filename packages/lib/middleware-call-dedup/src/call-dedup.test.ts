@@ -659,6 +659,61 @@ describe("createCallDedupMiddleware", () => {
     expect(r2?.output).toBe("v");
   });
 
+  // Regression (review round 6): if a backend `store.delete()` fails during
+  // `onSessionEnd` eviction (best-effort by design), the stale entry can
+  // remain in the backend after the in-memory index is dropped. A reused
+  // sessionId must NOT receive that orphan as a cache hit. The generation
+  // tombstone stamped on each entry detects this and forces a miss.
+  test("stale entry from prior session eviction is rejected on reuse (generation tombstone)", async () => {
+    const m = new Map<
+      string,
+      { response: ToolResponse; expiresAt: number; generation?: number | undefined }
+    >();
+    let allowDelete = false;
+    const store = {
+      async get(k: string) {
+        return m.get(k);
+      },
+      async set(
+        k: string,
+        v: { response: ToolResponse; expiresAt: number; generation?: number | undefined },
+      ) {
+        m.set(k, v);
+      },
+      async delete(k: string) {
+        if (!allowDelete) throw new Error("backend offline");
+        m.delete(k);
+        return true;
+      },
+      size() {
+        return m.size;
+      },
+      clear() {
+        m.clear();
+      },
+    };
+    const mw = createCallDedupMiddleware({ include: ["lookup"], store });
+    const sid = "s-reuse";
+    const ctx = turnCtx(sid);
+    // Run 1: populate the cache, then end the session. The backend
+    // `delete` rejects so the entry survives — but the in-memory index
+    // is gone, replicating the post-failure state described in the
+    // round-6 finding.
+    const h1 = makeHandler("v1");
+    await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: "x" } }, h1.handler);
+    await mw.onSessionEnd?.(ctx.session);
+    expect(m.size).toBe(1); // orphan retained
+    // Run 2: same sessionId, same input. Without the generation
+    // tombstone, the orphan would be served as a cache hit
+    // (returning "v1"). With the tombstone, it must be treated as a
+    // miss and re-execute, returning the fresh response.
+    allowDelete = true; // let the read-path's cleanup actually delete
+    const h2 = makeHandler("v2");
+    const r = await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: "x" } }, h2.handler);
+    expect(r?.output).toBe("v2");
+    expect(h2.calls).toBe(1);
+  });
+
   // Regression (review round 4): a backend `store.delete()` failure during
   // FIFO eviction or stale-TTL cleanup must not surface as a tool failure.
   // The originating call already produced a valid response; surfacing a

@@ -158,7 +158,15 @@ async function executeAndStore(
     const snapshot = tryCloneResponse(response);
     if (snapshot === undefined) return response;
     try {
-      await s.store.set(cacheKey, { response: snapshot, expiresAt: s.now() + s.ttlMs });
+      await s.store.set(cacheKey, {
+        response: snapshot,
+        expiresAt: s.now() + s.ttlMs,
+        // Stamp the live generation so a later read can detect orphan
+        // entries left behind by a failed best-effort backend delete
+        // during session teardown. Without this tombstone, a reused
+        // sessionId could see stale cached output from the prior run.
+        generation: s.sessionGen.get(sessionId) ?? 0,
+      });
     } catch {
       // Same rationale: a failing store write must not surface as a tool
       // failure. The call already completed; the cache is best-effort.
@@ -324,7 +332,16 @@ async function ddWrapToolCall(
 
   const cached = await s.store.get(cacheKey);
   if (cached !== undefined) {
-    if (cached.expiresAt > s.now()) {
+    // Generation tombstone check: an entry whose stamped `generation`
+    // does not match the live `sessionGen` counter is an orphan from
+    // a previous run of this sessionId — the in-memory index was
+    // dropped during onSessionEnd but the backend delete failed
+    // best-effort. Treat as miss and try to delete it again so it
+    // does not haunt subsequent reads.
+    const liveGen = s.sessionGen.get(sessionId) ?? 0;
+    const entryGen = cached.generation ?? 0;
+    const generationMatch = entryGen === liveGen;
+    if (generationMatch && cached.expiresAt > s.now()) {
       // Deep-clone so the cached entry is immune to caller-side mutation.
       // The cached entry was successfully cloned at write time, but a clone
       // failure here MUST NOT throw (the call already produced a valid hit) —
@@ -341,9 +358,9 @@ async function ddWrapToolCall(
       notifyHit(s, sessionId, toolId, cacheKey, request, stamped);
       return stamped;
     }
-    // Stale TTL eviction: best-effort. A backend delete failure here
-    // does not change correctness — we already decided this entry is
-    // unusable, so we will fall through and re-execute below.
+    // Stale (TTL or cross-session generation) eviction: best-effort.
+    // Re-attempt delete so a previously-failed best-effort delete from
+    // session teardown gets another chance to clear the orphan.
     await safeStoreDelete(s, cacheKey);
   }
 
