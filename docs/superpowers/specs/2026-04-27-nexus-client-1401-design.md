@@ -339,7 +339,7 @@ Sequence:
 
 1. Record `start = performance.now()`
 2. `transport.call("version", {}, { deadlineMs: HEALTH_DEADLINE_MS, nonInteractive: true })` — liveness: TCP+TLS+JSON-RPC reachable; capture version string.
-3. For each path in `opts.readPaths ?? DEFAULT_PROBE_PATHS`: `transport.call("read", { path }, { deadlineMs, nonInteractive: true })`. 200 with **valid payload shape** → record success for that path. 200 with malformed payload (not a string and not `{ content: string }`) → return `Result.error` with `code: "VALIDATION"` — the permission backend would fail to parse this same payload on first sync, so a 200 alone is insufficient signal. 404 → record the path under `notFound[]` (do NOT short-circuit; collect 404s for ALL paths). 5xx / network / auth → return `Result.error`. After all reads complete: if any path 404'd, return `Result.ok({ status: "missing-paths", notFound, ... })`; if every path succeeded with valid payload, return `Result.ok({ status: "ok", ... })`. Callers cannot mistake a missing namespace for healthy because "ok" and "missing-paths" are different discriminator values — a `result.value.status === "ok"` check is the minimum required handshake. Runtime-factory still decides outcome by mode: `telemetry` AND `assert-transport-reachable-at-boot` BOTH treat `missing-paths` as a WARNING (Loop 5 R6 — empty-store bootstrap is the documented behavior of nexus-permission-backend); only `assert-remote-policy-loaded-at-boot` treats `missing-paths` as FATAL because that mode's contract is "remote policy was loaded at boot", which an empty namespace explicitly does not satisfy. (Custom `readPaths` keep the same per-path 404 semantics; caller code that uses custom paths must still handle the `missing-paths` discriminator.)
+3. For each path in `opts.readPaths ?? DEFAULT_PROBE_PATHS`: `transport.call("read", { path }, { deadlineMs, nonInteractive: true })`. 200 with **valid payload shape** → record success for that path. 200 with malformed payload (not a string and not `{ content: string }`) → return `Result.error` with `code: "VALIDATION"` — the permission backend would fail to parse this same payload on first sync, so a 200 alone is insufficient signal. 404 → record the path under `notFound[]` (do NOT short-circuit; collect 404s for ALL paths). 5xx / network / auth → return `Result.error`. After all reads complete: if any path 404'd, return `Result.ok({ status: "missing-paths", notFound, ... })`; if every path succeeded with valid payload, return `Result.ok({ status: "ok", ... })`. Callers cannot mistake a missing namespace for healthy because "ok" and "missing-paths" are different discriminator values — a `result.value.status === "ok"` check is the minimum required handshake. Runtime-factory decides outcome by mode (Loop 5 R9 — refined): `telemetry` treats `missing-paths` as a WARNING (matches pre-PR local-first fallback); `assert-transport-reachable-at-boot` treats it as FATAL by default (typo/wrong-tenant/missing namespace would otherwise silently degrade) with an explicit `nexusAllowEmptyPolicyStore: true` opt-in for genuine bootstrap deployments; `assert-remote-policy-loaded-at-boot` treats it as FATAL unconditionally (the opt-in is rejected by config validation in this mode — its contract demands remote policy presence). (Custom `readPaths` keep the same per-path 404 semantics; caller code that uses custom paths must still handle the `missing-paths` discriminator.)
 4. **Payload extractor parity**: the `read`-payload validator MUST be the SAME function the permission backend uses. Sharing the extractor closes the false-negative gap where `health()` reports OK on a 200 with a malformed body that the permission backend would later reject as parse error and demote to local fallback. **The canonical `extractReadContent` lives in `@koi/nexus-client/extract-read-content`** (lowest layer that needs it; `@koi/permissions-nexus` is updated in this PR to import it instead of its current ad-hoc destructuring). One owner, one shape contract, no drift between probe and backend.
 5. All calls go through `transport.call(...)` — local-bridge included.
 6. **Local-bridge probing is constrained.** The fs-nexus `local-bridge` cannot be cleanly probed in-place without risk: its subprocess serializes one in-flight call, has no protocol-level cancel that doesn't poison the channel, and a wedged auth flow blocks every queued call. The two honest options for probing have unacceptable downsides under fail-closed semantics:
@@ -414,7 +414,7 @@ Earlier drafts proposed making audit-wired runtimes default to `assert-transport
 | Mode | Behavior |
 |---|---|
 | `telemetry` (default) | log on transport failure; log activation status; continue boot |
-| `assert-transport-reachable-at-boot` | throw on transport failure (network unreachable, 5xx, auth failure, malformed payload). **DOES NOT throw on `missing-paths`** — a `version.json` / `policy.json` 404 means the Nexus store is empty (a documented bootstrap state — `nexus-permission-backend.ts:58-77` treats version.json `NOT_FOUND` as valid empty-state and falls back to local rules until the store is seeded). The earlier "404 fatal here" rule (Loop 4) turned a supported empty-store bootstrap into a startup outage (Loop 5 R6 finding); 404 is now logged as warning and boot continues. Reachability-only: this mode validates the JSON-RPC channel can carry read calls AND that read responses with content are parseable; it makes no claim about policy presence or backend activation. Operators wanting "remote policy must already exist" use `assert-remote-policy-loaded-at-boot`. |
+| `assert-transport-reachable-at-boot` | throw on transport failure (network unreachable, 5xx, auth failure, malformed payload). **404 on probe paths is FATAL by default** (Loop 5 R9 — same 404 result that means "empty store" also results from typo/wrong-tenant/missing namespace; silently degrading to local-rule fallback under an assert-* gate defeats the operator's contract). Bootstrap deployments opt in via `nexusAllowEmptyPolicyStore: true` (env: `KOI_NEXUS_ALLOW_EMPTY_POLICY_STORE`) which warns and continues; without the opt-in, 404 throws with an actionable message naming both resolution paths (set the flag for genuine bootstrap, OR fix `nexusPolicyPath` for typo). Validates: JSON-RPC reachability + parseable response payload + (default) policy namespace presence. Does NOT validate backend activation — use `assert-remote-policy-loaded-at-boot` for that. |
 | `assert-remote-policy-loaded-at-boot` | throw on transport failure; throw on first-sync policy-activation failure (awaits `backend.ready` AND checks `isCentralizedPolicyActive()`). **404 on probe paths IS fatal here** — this mode's contract is "remote policy was loaded at boot", which empty-store explicitly does not satisfy. **STARTUP GATE ONLY, REMOTE-LOAD ONLY** — proves remote policy was loaded at boot. Does NOT prove remote policy will be enforced for every check: per existing composition (`runtime-factory.ts:1797-1806`), Nexus backend chains to local TUI on `ask`/no-opinion results, so queries not matched by remote policy still execute under local rules. Does NOT enforce ongoing freshness either: last-known-good remote policy continues to be served after sync failures. Operators needing strict centralized enforcement (no local fallback for unmatched queries) need a permission-composition change tracked separately. |
 
 **⚠️ Security caveat — no mode in this PR provides centralized-policy enforcement.** `assert-transport-reachable-at-boot` only proves the transport can carry read calls. `assert-remote-policy-loaded-at-boot` only proves remote policy was loaded at boot. Neither prevents local-rule fallback for queries the remote policy doesn't match (existing permission composition chains to local TUI on `ask`/no-opinion). The mode names deliberately reflect what they actually gate (`-transport`, `-remote-policy-loaded`) rather than implying enforcement they don't deliver. **Operators requiring strict centralized enforcement (no local fallback for unmatched queries) must wait for the permission-composition change tracked separately** — neither mode here is sufficient for that requirement.
@@ -794,12 +794,61 @@ interface KoiRuntimeFactoryConfig {
    * Threaded into probeTransport.health(...) below.
    */
   readonly nexusProbeDeadlineMs?: number | undefined;
+  /**
+   * Bootstrap escape hatch for `assert-transport-reachable-at-boot` (Loop 5
+   * R9). Default false: 404 on probe paths is fatal because the same
+   * result that legitimately means "empty Nexus store" also results from
+   * a typoed nexusPolicyPath, the wrong tenant, or a Nexus instance that
+   * lacks the expected policy surface — silently degrading into local-
+   * rule fallback under an assert-* boot gate would defeat the operator's
+   * explicit startup contract. Set true to permit boot when the policy
+   * namespace is genuinely empty (greenfield deployment, store seeding).
+   * REJECTED with a config error if set in assert-remote-policy-loaded-
+   * at-boot mode (that mode's contract is "remote policy loaded at boot",
+   * which empty store cannot satisfy under any opt-in).
+   */
+  readonly nexusAllowEmptyPolicyStore?: boolean | undefined;
 }
 
 const NEXUS_BOOT_SYNC_DEADLINE_MS_DEFAULT = 10_000;
 
 export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // … existing setup …
+
+  // Step -1: RUNTIME-LEVEL silent-bypass guard (Loop 5 R9). The CLI parser
+  // (parseNexusConfigFromEnvAndFlags) enforces this same check, but
+  // KoiRuntimeFactoryConfig is a public runtime API — programmatic callers
+  // that bypass the CLI must ALSO be protected. Without this check, a non-
+  // CLI integration that sets nexusBootMode / nexusAuditPoisonOnError /
+  // probe deadlines / nexusPolicyPath without an enabled consumer would
+  // get a quiet no-op, recreating the trust-boundary failure the parser
+  // guard was designed to prevent. Validation is duplicated by design:
+  // each public boundary (CLI parse + runtime entry) enforces the same
+  // contract independently so neither can be bypassed.
+  const consumerWanted =
+    config.nexusPermissionsEnabled === true
+    || config.nexusAuditEnabled === true;
+  const controlPlaneFlagsSet: string[] = [];
+  if (config.nexusBootMode !== undefined && config.nexusBootMode !== "telemetry")
+    controlPlaneFlagsSet.push(`nexusBootMode=${config.nexusBootMode}`);
+  if (config.nexusAuditPoisonOnError === true)
+    controlPlaneFlagsSet.push("nexusAuditPoisonOnError=true");
+  if (config.nexusProbeDeadlineMs !== undefined)
+    controlPlaneFlagsSet.push("nexusProbeDeadlineMs");
+  if (config.nexusBootSyncDeadlineMs !== undefined)
+    controlPlaneFlagsSet.push("nexusBootSyncDeadlineMs");
+  if (config.nexusPolicyPath !== undefined && config.nexusPolicyPath !== "koi/permissions")
+    controlPlaneFlagsSet.push(`nexusPolicyPath=${config.nexusPolicyPath}`);
+  if (controlPlaneFlagsSet.length > 0 && !consumerWanted) {
+    throw new Error(
+      `Nexus control-plane flags set without an enabled consumer: ` +
+      `${controlPlaneFlagsSet.join(", ")}. These flags are silent no-ops ` +
+      `unless nexusPermissionsEnabled=true OR nexusAuditEnabled=true. ` +
+      `Resolve by either: (a) enable a consumer to make the flags take effect, ` +
+      `OR (b) clear the control-plane flags if rollback to default behavior is intended. ` +
+      `Refusing to silently drop operator-declared startup gates.`,
+    );
+  }
 
   // Step 0: RESOLVE consumer flags BEFORE any gate fires. All subsequent
   // checks (probe-factory required, security gates, audit-mode required)
@@ -913,6 +962,24 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // with no probe — exactly the misconfiguration this gate exists to catch.
   const declaredBootMode: NexusBootMode =
     config.nexusBootMode ?? "telemetry";
+  // CONFIG-VALIDATION GATE (Loop 5 R9): nexusAllowEmptyPolicyStore is a
+  // bootstrap escape hatch SCOPED to assert-transport-reachable-at-boot.
+  // It is meaningless in telemetry (warn-and-continue is already the
+  // default behavior) and INCOMPATIBLE with assert-remote-policy-loaded-
+  // at-boot (that mode's contract is "remote policy loaded at boot",
+  // which empty-store cannot satisfy under any opt-in). Reject the flag
+  // explicitly in those modes so operators don't silently get unexpected
+  // behavior.
+  if (config.nexusAllowEmptyPolicyStore === true && declaredBootMode === "assert-remote-policy-loaded-at-boot") {
+    throw new Error(
+      `nexusAllowEmptyPolicyStore=true is incompatible with ` +
+      `nexusBootMode=assert-remote-policy-loaded-at-boot. That mode's ` +
+      `contract is "remote policy loaded at boot", which an empty store ` +
+      `cannot satisfy under any opt-in. Use ` +
+      `nexusBootMode=assert-transport-reachable-at-boot if your deployment ` +
+      `legitimately bootstraps with an empty Nexus policy store.`,
+    );
+  }
   // POSITIVE-IDENTIFICATION GATE for assert-* boot modes.
   // assert-* is HTTP-only. Validating the rejection by `kind === "local-bridge"`
   // alone would let two unsafe configurations slip through:
@@ -1106,24 +1173,44 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       }
     } else if (health !== undefined && health.value.status === "missing-paths") {
       // status="missing-paths" means the policy NAMESPACE is missing — not
-      // a transport failure, but an absent control surface. This represents
-      // a documented bootstrap state: nexus-permission-backend treats
-      // version.json NOT_FOUND as valid empty-state and falls back to
-      // local rules until the store is seeded. Earlier draft (Loop 4)
-      // failed boot here for BOTH assert-* modes; Loop 5 R6 narrowed:
-      //   - telemetry: warn + continue (unchanged)
-      //   - assert-transport-reachable-at-boot: warn + continue. The mode's
-      //     contract is reachability + parseability, NOT policy presence.
-      //     Failing on 404 here would convert a supported empty-store
-      //     bootstrap into a startup outage. Operators wanting "remote
-      //     policy must already exist" use the next mode.
-      //   - assert-remote-policy-loaded-at-boot: throw. THAT mode's
-      //     contract IS "remote policy was loaded at boot", which an
-      //     empty store explicitly does not satisfy.
+      // a transport failure, but an absent control surface.
+      //
+      // Three cases by mode (Loop 5 R6 + R9 — refined contract):
+      //   - telemetry: warn + continue (default behavior; matches pre-PR
+      //     local-first fallback when nexus-permission-backend hits 404).
+      //   - assert-transport-reachable-at-boot: throw BY DEFAULT. The same
+      //     404 result that legitimately means "empty Nexus store, bootstrap
+      //     state" ALSO results from a typoed `nexusPolicyPath`, the wrong
+      //     tenant/namespace, or a transport pointed at a Nexus instance
+      //     that lacks the expected policy surface. An assert-* mode
+      //     silently degrading into local-rule fallback in those cases
+      //     defeats the operator's explicit boot gate (Loop 5 R9 finding).
+      //     Bootstrap deployments opt in via `nexusAllowEmptyPolicyStore:
+      //     true` (env: KOI_NEXUS_ALLOW_EMPTY_POLICY_STORE), which warns
+      //     and continues. The flag exists ONLY for this mode — it is
+      //     ignored in telemetry (always warns) and rejected by config
+      //     validation in assert-remote-policy-loaded-at-boot (where 404
+      //     is unconditionally fatal because the mode's contract demands
+      //     remote policy presence).
+      //   - assert-remote-policy-loaded-at-boot: throw unconditionally.
+      //     That mode's contract IS "remote policy was loaded at boot";
+      //     empty store does not satisfy it under any opt-in.
       const missing = health.value.notFound.join(", ");
-      const msg = `Nexus probe found missing policy paths: ${missing} (namespace absent)`;
+      const msg = `Nexus probe found missing policy paths: ${missing} (namespace absent — typo, wrong tenant, or empty store?)`;
       if (mode === "assert-remote-policy-loaded-at-boot") {
-        throw new Error(msg);  // ONLY this mode treats namespace-absent as fatal
+        throw new Error(msg);
+      } else if (mode === "assert-transport-reachable-at-boot") {
+        if (config.nexusAllowEmptyPolicyStore === true) {
+          logger.warn({ notFound: health.value.notFound, probeKind: txKind, mode, allowEmptyPolicyStore: true },
+            `${msg} (continuing because nexusAllowEmptyPolicyStore=true — bootstrap mode)`);
+        } else {
+          throw new Error(
+            `${msg} ` +
+            `Set nexusAllowEmptyPolicyStore=true (env: KOI_NEXUS_ALLOW_EMPTY_POLICY_STORE) ` +
+            `to permit boot under empty-store bootstrap, OR fix nexusPolicyPath if this is a typo/wrong-tenant. ` +
+            `Refusing to silently degrade into local-rule fallback under an assert-* boot gate.`,
+          );
+        }
       } else {
         logger.warn({ notFound: health.value.notFound, probeKind: txKind, mode }, msg);
       }
@@ -1619,13 +1706,15 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j13e. `HTTP perms-only (audit explicitly disabled) telemetry probe success: logs INFO with msg "nexus probe ok: session-validated" + auditUnvalidated:false (the only path that gets the plain green log — audit isn't in scope for this deployment)`
 7g16j13f. `Probe log payload always includes auditUnvalidated boolean field for downstream alerting (true whenever audit consumer is wired OR audit-only path active; false only when permissions wired and audit explicitly disabled)`
 7g16j14. `local-bridge with nexusProbeFactory: probe is NOT executed by createKoiRuntime` (regression guard — local-bridge probe is caller-site responsibility, runtime block is HTTP-only)
-7g16j15. `assert-transport-reachable-at-boot + 404 on version.json or policy.json: BOOTS with warning naming notFound list and mode (Loop 5 R6 — empty-store bootstrap is supported; this mode does not enforce policy presence). Regression guard: the earlier "throw on 404 here" behavior was an outage hazard for documented empty-store deployments`
-7g16j16. `assert-remote-policy-loaded-at-boot + 404 on either default probe path: THROWS — this mode's contract is "remote policy loaded at boot", which empty-store explicitly does not satisfy. ONLY this mode treats namespace-absent as fatal`
-7g16j17. `telemetry mode + 404: logs warning with notFound list and mode; boot CONTINUES`
+7g16j15. `assert-transport-reachable-at-boot + 404 on version.json or policy.json + nexusAllowEmptyPolicyStore unset/false: THROWS with actionable message naming both resolution paths (Loop 5 R9 — fatal-by-default to catch typo/wrong-tenant)`
+7g16j15b. `assert-transport-reachable-at-boot + 404 + nexusAllowEmptyPolicyStore=true: BOOTS with warning naming the opt-in flag (Loop 5 R9 — explicit bootstrap escape hatch). Verifies the opt-in path keeps greenfield deployments unblocked while the default catches misconfigurations`
+7g16j16. `assert-remote-policy-loaded-at-boot + 404 on either default probe path: THROWS unconditionally — this mode's contract is "remote policy loaded at boot", which empty-store explicitly does not satisfy under any opt-in`
+7g16j16b. `assert-remote-policy-loaded-at-boot + nexusAllowEmptyPolicyStore=true: THROWS at config validation (the opt-in is rejected here because the mode's contract is incompatible with empty-store under any setting)`
+7g16j17. `telemetry mode + 404: logs warning with notFound list and mode; boot CONTINUES regardless of nexusAllowEmptyPolicyStore (the flag has no effect outside assert-transport-reachable-at-boot)`
 7g16j18. `assert-transport-reachable-at-boot probe success + no 404: boots normally`
 7g16j19. `assert-transport-reachable-at-boot + nexusPermissionsEnabled=false (audit-only HTTP): THROWS — version probe doesn't exercise audit write path, would be a false-negative gate. Error names "telemetry" as the only supported audit-only mode.`
 7g16j20. `assert-remote-policy-loaded-at-boot + nexusPermissionsEnabled=false: THROWS (no policy backend to await). Same root cause as 7g16j19; both assert-* modes require permissions wired.`
-7g16j21. `assert-transport-reachable-at-boot + nexusPermissionsEnabled=true + 404: BOOTS with warning (Loop 5 R6 — empty-store bootstrap is the documented behavior; warn-and-continue replaces the earlier throw). Operators wanting fatal-on-404 use assert-remote-policy-loaded-at-boot, which exists exactly for this requirement.`
+7g16j21. `assert-transport-reachable-at-boot + nexusPermissionsEnabled=true + 404 + opt-in unset: THROWS (Loop 5 R9 — same root rule as 7g16j15; permissions-enabled does not change default fatal behavior).`
 7g16j22. `assert-remote-policy-loaded-at-boot: backend.ready resolves within bootSyncDeadlineMs default (10s) → boots normally`
 7g16j23. `assert-remote-policy-loaded-at-boot: backend.ready stalls past bootSyncDeadlineMs → THROWS with "Nexus first-sync timed out after Xms" actionable message naming nexusBootSyncDeadlineMs as the tunable` (regression guard against the Loop-4-R4 unbounded-await bug — fail-fast assert mode must be bounded end-to-end)
 7g16j24. `assert-remote-policy-loaded-at-boot: custom bootSyncDeadlineMs=2000 enforces tighter bound; 3s simulated sync throws within ~2s (not 45s transport default)`
@@ -1686,7 +1775,7 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 9. `telemetry: succeeds and logs info on transport ok`
 10. `telemetry: does NOT await backend.ready` — preserves existing async semantics
 11. `assert-transport-reachable-at-boot: throws on transport error`
-11b. `assert-transport-reachable-at-boot: BOOTS with warning when version.json or policy.json read returns 404 (Loop 5 R6 — supersedes earlier throw; empty-store bootstrap is supported in this mode). assert-remote-policy-loaded-at-boot retains the throw (it explicitly requires policy presence).`
+11b. `assert-transport-reachable-at-boot: THROWS by default when version.json or policy.json read returns 404 (Loop 5 R9 — fatal-by-default catches typo/wrong-tenant). Operators with greenfield deployments opt in via nexusAllowEmptyPolicyStore=true to permit boot. assert-remote-policy-loaded-at-boot retains unconditional throw (the opt-in is rejected in that mode).`
 11c. `telemetry mode: 404 on default probe path is logged + boot continues` (unchanged; regression guard)
 11d. `health() result includes per-path notFound: true field when 404 returned` (caller decides handling — health() itself remains transport-success-on-404 from nexus-client's pure-transport perspective)
 12. `assert-transport-reachable-at-boot: does NOT await backend.ready` — only transport gate, no policy gate
@@ -1731,6 +1820,7 @@ The new `KoiRuntimeFactoryConfig` fields need a public input surface. This PR wi
 | `nexusSyncIntervalMs` | `KOI_NEXUS_SYNC_INTERVAL_MS` | `--nexus-sync-interval-ms <n>` | `30000` |
 | `nexusBootSyncDeadlineMs` | `KOI_NEXUS_BOOT_SYNC_DEADLINE_MS` | `--nexus-boot-sync-deadline-ms <n>` | `10000` (only honored under `assert-remote-policy-loaded-at-boot`) |
 | `nexusProbeDeadlineMs` | `KOI_NEXUS_PROBE_DEADLINE_MS` | `--nexus-probe-deadline-ms <n>` | `5000` (HEALTH_DEADLINE_MS — applied to every health() call: version probe + each readPaths read). Loop 5 R5: previously hard-coded; exposed so operators with legitimate cold-start / cross-region latency can raise the probe budget independently of bootSyncDeadlineMs |
+| `nexusAllowEmptyPolicyStore` | `KOI_NEXUS_ALLOW_EMPTY_POLICY_STORE` (tri-state) | `--nexus-allow-empty-policy-store` / `--no-nexus-allow-empty-policy-store` | `false` (Loop 5 R9 — assert-transport-reachable-at-boot now treats 404 on probe paths as fatal by default to catch typos/wrong-tenant/missing namespace; greenfield bootstrap deployments opt in here). REJECTED in assert-remote-policy-loaded-at-boot mode (that mode's "remote policy loaded at boot" contract is incompatible with empty-store under any opt-in) |
 | ~~`nexusProbeFactory`~~ | (REMOVED Loop 3) | (REMOVED) | runtime config no longer accepts the field; standalone probe runs are caller-site responsibility via the exported `createLocalBridgeProbeTransport` |
 
 **Tri-state parsing:** booleans accept `true`/`1` → true, `false`/`0` → false, anything else (including unset) → undefined (which triggers the explicit-decision throw for required fields). The CLI parser rejects ambiguous combinations (e.g., both `--nexus-permissions` and `--no-nexus-permissions` on the same invocation). Existing CLI/env-driven deployments need at minimum:
