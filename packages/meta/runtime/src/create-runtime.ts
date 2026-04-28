@@ -399,6 +399,38 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // dispose() awaits these so transport is not closed under a stream still flushing.
     const activeStreamFinalizations = new Set<Promise<void>>();
 
+    // Compatibility guard: under stable RuntimeConfig.sessionId, the
+    // approval relay fails closed when an approval step arrives
+    // without `step.metadata.runId` (cross-stream leak prevention).
+    // Older `@koi/middleware-permissions` versions do not stamp
+    // runId, so a partial rollout / version skew silently drops
+    // those records — a real audit hole on a security-sensitive
+    // path. Require operators to explicitly opt out by either
+    //   (a) confirming the producer stamps runId (no-op at runtime
+    //       — operators audit by upgrading the dep), AND/OR
+    //   (b) wiring `onUnroutedApprovalStep` to a session-level
+    //       fallback sink so unrouted records are captured.
+    // Fail fast at construction when the unsafe combination is
+    // detected: stable sessionId + approvalStepHandle present +
+    // no fallback hook. Operators that have verified their
+    // permissions producer stamps runId can pass a no-op
+    // `onUnroutedApprovalStep: () => {}` to acknowledge.
+    if (
+      config.sessionId !== undefined &&
+      config.approvalStepHandle !== undefined &&
+      config.onUnroutedApprovalStep === undefined
+    ) {
+      throw new Error(
+        "[runtime] RuntimeConfig.sessionId is set with approvalStepHandle but no " +
+          "onUnroutedApprovalStep fallback sink. Under stable sessionId, an approval step " +
+          "missing step.metadata.runId cannot be routed safely (broadcasting would leak one " +
+          "stream's approval decision into other concurrent streams' trajectories). Configure " +
+          "RuntimeConfig.onUnroutedApprovalStep to capture session-level fallback records, " +
+          "or pass a no-op `() => {}` after verifying your @koi/middleware-permissions " +
+          "version stamps runId on every approval step.",
+      );
+    }
+
     // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to
     // the per-stream EventTraceHandle that originated the call. With
     // `RuntimeConfig.sessionId`, multiple concurrent streams share one

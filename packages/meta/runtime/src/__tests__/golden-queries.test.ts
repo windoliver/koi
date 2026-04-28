@@ -2110,6 +2110,38 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     expect(endCalls.length).toBe(2);
   });
 
+  // Regression (#1419 round 42): under stable RuntimeConfig.sessionId,
+  // approvalStepHandle without an explicit `onUnroutedApprovalStep`
+  // sink is a silent audit hole (older permissions producers that
+  // do not stamp runId would have their approval steps dropped).
+  // Fail at construction so operators wire a fallback or
+  // acknowledge with a noop.
+  test("createRuntime refuses stable sessionId + approvalStepHandle without onUnroutedApprovalStep", () => {
+    const handle = {
+      setApprovalStepSink:
+        (
+          _sink: (sid: string, step: import("@koi/core").RichTrajectoryStep) => void,
+        ): (() => void) =>
+        () => {},
+    };
+    expect(() =>
+      createRuntime({
+        adapter: createTerminalAdapter(),
+        sessionId: "stable-no-fallback",
+        approvalStepHandle: handle,
+      }),
+    ).toThrow(/onUnroutedApprovalStep/);
+    // With explicit ack noop, construction succeeds.
+    expect(() =>
+      createRuntime({
+        adapter: createTerminalAdapter(),
+        sessionId: "stable-with-noop",
+        approvalStepHandle: handle,
+        onUnroutedApprovalStep: () => {},
+      }),
+    ).not.toThrow();
+  });
+
   // Regression (#1419 round 29): under stable RuntimeConfig.sessionId,
   // multiple concurrent streams share one sessionId. The approval-step
   // dispatch relay must route by per-stream `runId` (stamped onto
@@ -2166,6 +2198,11 @@ describe("Golden: @koi/middleware-call-dedup", () => {
       sessionId: "stable-routing",
       trajectoryDir: `/tmp/koi-1419-r29-routing-${Date.now()}`,
       approvalStepHandle,
+      // Round 42: stable sessionId + approvalStepHandle requires an
+      // explicit fallback sink (or a no-op ack that the producer
+      // stamps runId). Pass a noop here since this test fires steps
+      // by hand and validates routing, not fallback behavior.
+      onUnroutedApprovalStep: () => {},
     });
     const store = runtime.trajectoryStore;
 
