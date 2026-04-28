@@ -260,25 +260,26 @@ describe("createCircuitBreakerMiddleware", () => {
     expect(ok?.content).toBe("ok");
   });
 
-  // Regression: stream that ends without an explicit `done` chunk must be
-  // treated as failure, not silent success. query-engine surfaces this as
-  // an error to callers, so the breaker must agree.
-  test("wrapModelStream records failure when stream ends without done chunk", async () => {
+  // Regression: a truncated stream (no done, no error chunk) is NOT a
+  // confirmed provider fault. Round-16 changed the policy: previously
+  // we counted truncation as failure with no status — that bypassed
+  // any restrictive `failureStatusCodes` configuration. Now truncation
+  // is silently ignored and only classified upstream errors trip the
+  // breaker.
+  test("wrapModelStream does NOT count truncated streams (no status) against the breaker", async () => {
     const mw = createCircuitBreakerMiddleware({ breaker: { failureThreshold: 2 } });
     const ctx = turnCtx();
-    // Iterator yields a delta then ends — no `done`, no `error`.
     const naked: () => AsyncIterable<ModelChunk> = () =>
       asyncStream([{ kind: "text_delta", delta: "hi" }]);
-
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 5; i++) {
       const s = mw.wrapModelStream?.(ctx, { messages: [], model: "openai/gpt-4o" }, naked);
       if (s === undefined) throw new Error("no stream");
       for await (const _c of s) {
         // drain
       }
     }
-    // Two truncated streams should trip the circuit.
-    expect(mw.describeCapabilities(ctx)?.description).toContain("openai");
+    // Even five truncated streams must not trip the breaker.
+    expect(mw.describeCapabilities(ctx)?.description).toContain("healthy");
   });
 
   // Regression: the runtime adapter wraps upstream HTTP failures as

@@ -165,9 +165,12 @@ async function* trackedStream(
       yield chunk;
     }
     // for-await exited because the source ran out, not because the consumer
-    // broke. That's an upstream truncation — count it as a failure.
+    // broke. We do NOT count this as a failure: the underlying
+    // `recordFailure()` with no status counts unconditionally and would
+    // bypass any restrictive `failureStatusCodes` configuration. A
+    // truncated stream without a classified upstream error is not a
+    // confirmed provider fault — only count when a status is present.
     consumerCancelled = false;
-    breaker.recordFailure();
   } catch (err: unknown) {
     consumerCancelled = false;
     const status = extractStatusCode(err);
@@ -183,6 +186,14 @@ async function* trackedStream(
     //     wedging the provider. Treat an abandoned probe as a failure so
     //     the circuit returns to OPEN and can re-arm on the next cooldown.
     if (consumerCancelled && tookProbe) {
+      // Clearing probeInFlight is mandatory; without it, the circuit
+      // wedges and `isAllowed()` rejects every future call. The breaker
+      // primitive only clears the probe slot via record{Success,Failure},
+      // and recordSuccess would prematurely close the circuit. We
+      // therefore record an unclassified failure here even though it
+      // bypasses `failureStatusCodes` filtering — the alternative is
+      // unrecoverable. Documented as a known limitation in
+      // docs/L2/middleware-circuit-breaker.md.
       breaker.recordFailure();
     }
   }

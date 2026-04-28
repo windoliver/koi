@@ -128,11 +128,11 @@ async function executeAndStore(
   // Snapshot the response into the cache so later mutation by the caller
   // does not corrupt cached state.
   await s.store.set(cacheKey, { response: cloneResponse(response), expiresAt: s.now() + s.ttlMs });
-  trackKey(s, sessionId, cacheKey);
+  await trackKey(s, sessionId, cacheKey);
   return response;
 }
 
-function trackKey(s: DedupState, sessionId: string, cacheKey: string): void {
+async function trackKey(s: DedupState, sessionId: string, cacheKey: string): Promise<void> {
   const existing = s.keysBySession.get(sessionId);
   if (existing === undefined) {
     s.keysBySession.set(sessionId, new Set([cacheKey]));
@@ -150,12 +150,17 @@ function trackKey(s: DedupState, sessionId: string, cacheKey: string): void {
   // Otherwise an `onSessionEnd` later sees only the truncated set and
   // leaves the orphaned store entry behind — a fresh run reusing the
   // sessionId would then receive stale cached output.
+  //
+  // The store contract supports async backends (e.g., Redis) so we
+  // await the delete here rather than fire-and-forget. A late delete
+  // failure would otherwise leave an orphan that no later cleanup can
+  // see (the session index already moved on).
   if (existing.size >= s.maxEntries) {
     const oldest = existing.values().next().value;
     if (oldest !== undefined) {
       existing.delete(oldest);
       s.inFlight.delete(oldest);
-      void s.store.delete(oldest);
+      await s.store.delete(oldest);
     }
   }
   existing.add(cacheKey);
@@ -251,7 +256,7 @@ async function ddWrapToolCall(
       // Refresh session index so the cache HIT promotes in our FIFO
       // alongside its store-LRU promotion — without this, the index
       // diverges from the store and `onSessionEnd` could miss the key.
-      trackKey(s, sessionId, cacheKey);
+      await trackKey(s, sessionId, cacheKey);
       notifyHit(s, sessionId, toolId, cacheKey, request, stamped);
       return stamped;
     }
@@ -264,7 +269,7 @@ async function ddWrapToolCall(
   // signal-free identity, so one caller cannot abort the others.
   const existing = s.inFlight.get(cacheKey);
   if (existing !== undefined) {
-    trackKey(s, sessionId, cacheKey);
+    await trackKey(s, sessionId, cacheKey);
     return existing;
   }
 
@@ -273,7 +278,7 @@ async function ddWrapToolCall(
     s.inFlight.delete(cacheKey);
   });
   s.inFlight.set(cacheKey, promise);
-  trackKey(s, sessionId, cacheKey);
+  await trackKey(s, sessionId, cacheKey);
   return promise;
 }
 
