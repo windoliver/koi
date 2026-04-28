@@ -141,6 +141,25 @@ export interface RuntimeConfig {
     | undefined;
 
   /**
+   * Fallback sink for approval steps that the per-stream relay cannot
+   * route. Fires only when (1) `RuntimeConfig.sessionId` is set so
+   * multiple concurrent streams share one sessionId, AND (2) an
+   * approval step arrives without `step.metadata.runId` so the
+   * originating stream cannot be identified. Without this hook, the
+   * runtime drops the step (logging per event) to prevent
+   * cross-stream audit corruption / data leak from broadcast — wire
+   * a session-level audit sink here to capture those records
+   * instead of losing them.
+   *
+   * The typical cause is a version-skewed
+   * `@koi/middleware-permissions` that does not stamp `runId` yet.
+   * Upgrading the producer eliminates the fallback firing.
+   */
+  readonly onUnroutedApprovalStep?:
+    | ((sessionId: string, step: RichTrajectoryStep) => void)
+    | undefined;
+
+  /**
    * Fixed session ID threaded into TurnContext.session.sessionId for every
    * stream() call. When provided, all turns in this runtime share the same
    * session routing key so middleware (e.g. transcript) writes to a single

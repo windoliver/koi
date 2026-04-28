@@ -433,37 +433,38 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 return;
               }
               // No runId on the step. With exactly one emitter the
-              // routing is unambiguous, so fan out as before. With
-              // multiple concurrent emitters, we cannot identify the
-              // originating stream — drop would lose audit records
-              // (silent observability hole), pure broadcast would
-              // corrupt every other stream's trajectory. Compromise:
-              // broadcast WITH a marker so observers can filter or
-              // dedupe, AND warn per-event so audit losses are
-              // tractable instead of hidden behind a one-shot log.
+              // routing is unambiguous — fan out. With multiple
+              // concurrent emitters we MUST fail closed: broadcasting
+              // the step would write one stream's approval decision
+              // into every other concurrent stream's trajectory
+              // (audit corruption + cross-stream data leak — an
+              // approval is a security record, not just telemetry).
+              // Drop the step and log per-event so audit loss is
+              // visible to operators and they can upgrade their
+              // permissions middleware to stamp `runId`. If a
+              // session-level fallback sink is configured, deliver
+              // there instead so no record is silently lost.
               if (byRunId.size === 1) {
                 const only = byRunId.values().next().value;
                 if (only !== undefined) only(sid, step);
                 return;
               }
-              const baseMd = (step.metadata ?? {}) as Record<string, unknown>;
-              const flaggedMetadata: Readonly<Record<string, unknown>> = {
-                ...baseMd,
-                // Observers should treat this as best-effort
-                // (cross-stream broadcast under version skew);
-                // dedupe by toolId+timestamp+sessionId across
-                // concurrent streams or filter from final
-                // trajectories.
-                approvalRelayFanout: true,
-              };
-              const flaggedStep: RichTrajectoryStep = { ...step, metadata: flaggedMetadata };
+              if (config.onUnroutedApprovalStep !== undefined) {
+                try {
+                  config.onUnroutedApprovalStep(sid, step);
+                } catch (e: unknown) {
+                  console.warn(`[runtime] onUnroutedApprovalStep threw for sessionId "${sid}":`, e);
+                }
+                return;
+              }
               console.warn(
-                `[runtime] approval-step relay: step.metadata.runId missing under stable ` +
-                  `sessionId "${sid}" with ${String(byRunId.size)} concurrent streams; ` +
-                  `broadcasting with approvalRelayFanout=true marker. Update the ` +
-                  `permissions middleware to stamp runId.`,
+                `[runtime] approval-step relay: dropping step — step.metadata.runId is ` +
+                  `missing under stable sessionId "${sid}" with ${String(byRunId.size)} ` +
+                  `concurrent streams. Broadcasting would leak one stream's approval ` +
+                  `decision into unrelated trajectories. Upgrade @koi/middleware-permissions ` +
+                  `to stamp runId, or configure RuntimeConfig.onUnroutedApprovalStep to ` +
+                  `capture session-level fallback records.`,
               );
-              for (const emit of byRunId.values()) emit(sid, flaggedStep);
             },
           )
         : undefined;
