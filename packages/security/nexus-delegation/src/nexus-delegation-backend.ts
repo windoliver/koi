@@ -251,6 +251,21 @@ export function createNexusDelegationBackend(
         ? `${idempotencyPrefix}${ownId}:${delegateeId}`
         : `${ownId}:${delegateeId}:${randomUUID()}`;
 
+    // Drain any in-flight revocations BEFORE asking Nexus for a new delegation.
+    //
+    // The race we close: revoke(D) failed and enqueued; a drain is in-flight
+    // DELETEing D in Nexus. If we POST createDelegation now and Nexus replays
+    // the same delegation_id (deterministic idempotency, or Nexus internal
+    // dedup window), the in-flight DELETE can complete AFTER our POST commits
+    // — the freshly returned token is already revoked server-side, but we
+    // would happily install it locally.
+    //
+    // Draining first ensures any prior id is dead in Nexus before POST, so
+    // Nexus's idempotency cache for that id is invalidated and POST mints a
+    // new delegation_id. Cheap when the queue is empty (already-resolved
+    // promise).
+    await drainInProgress;
+
     const adjustments = mapScopeToNexus(scope);
 
     const requestBody = {
@@ -291,11 +306,12 @@ export function createNexusDelegationBackend(
       throw new Error(`Nexus delegation grant failed: ${result.error.message}`);
     }
 
-    // Wait for any in-flight drain to settle before installing this grant.
-    // If drainQueue snapshotted the pending list before we filtered it, its
-    // remaining work (api.revokeDelegation + grantStore.delete + cache
-    // invalidate) needs to complete BEFORE we install — otherwise a same-id
-    // regrant could be silently revoked by stale retry work.
+    // Belt-and-suspenders: also wait for any drain enqueued during our POST
+    // before installing. If a concurrent revoke fired during createDelegation
+    // and queued an id that ended up matching the one we just minted (a
+    // narrow window when callers re-issue revokes for ids they previously
+    // saw), this barrier ensures the drain's grantStore.delete cannot land
+    // after our install. Cheap when no new drain ran (already-resolved).
     await drainInProgress;
 
     const now = Date.now();

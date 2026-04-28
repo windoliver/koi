@@ -315,6 +315,88 @@ describe("revoke()", () => {
     errSpy.mockRestore();
   });
 
+  test("grant() drains in-flight revoke before POST so server-side state stays consistent", async () => {
+    // Stateful mock: tracks remote "active" / "revoked" state per delegation_id.
+    // Models Nexus idempotency replay: createDelegation replays GRANT_ID only
+    // while GRANT_ID is still "active" server-side. Once it's DELETEd, the
+    // idempotency cache is invalidated and a fresh id is minted.
+    const remote = new Map<string, "active" | "revoked">();
+    let releaseRevoke: (() => void) | undefined;
+    const revokeGate = new Promise<void>((resolve) => {
+      releaseRevoke = resolve;
+    });
+    let mintCount = 0;
+    const api: NexusDelegationApi = {
+      createDelegation: mock(async () => {
+        const grantActive = remote.get(GRANT_ID) === "active";
+        // First call (or while GRANT_ID still active): mint/replay GRANT_ID.
+        // Once GRANT_ID is revoked remotely: idempotency cache cleared, mint fresh.
+        if (mintCount === 0 || grantActive) {
+          mintCount++;
+          remote.set(GRANT_ID, "active");
+          return { ok: true as const, value: makeGrantResponse({ delegation_id: GRANT_ID }) };
+        }
+        mintCount++;
+        const fresh = `del-fresh-${mintCount}`;
+        remote.set(fresh, "active");
+        return { ok: true as const, value: makeGrantResponse({ delegation_id: fresh }) };
+      }),
+      revokeDelegation: mock(async (id: string) => {
+        await revokeGate;
+        remote.set(id, "revoked");
+        return { ok: true as const, value: undefined };
+      }),
+      verifyChain: mock(async (id: string) => {
+        const status = remote.get(id) ?? "active";
+        return {
+          ok: true as const,
+          value: makeChainResponse({ chain: [makeChainItem({ delegation_id: id, status })] }),
+        };
+      }),
+      listDelegations: mock(async () => ({
+        ok: true as const,
+        value: { delegations: [], total: 0, limit: 50, offset: 0 },
+      })),
+    };
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    // Step 1: grant CHILD_ID + revoke-fail to enqueue GRANT_ID. The one-shot
+    // failure avoids the gated path so the queue is populated synchronously.
+    (api.revokeDelegation as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+      ok: false as const,
+      error: { code: "INTERNAL" as const, message: "tx", retryable: true, context: {} },
+    }));
+    await backend.grant(SCOPE, CHILD_ID);
+    await expect(backend.revoke(GRANT_ID)).rejects.toThrow();
+
+    // Step 2: trigger an in-flight drain by calling backend.revoke for an
+    // unrelated id. Drain picks up GRANT_ID from the queue and blocks on the
+    // gate; the unrelated revoke also blocks on the gate.
+    const triggerId = delegationId("del-trigger");
+    const triggerRevokePromise = backend.revoke(triggerId).catch(() => {});
+
+    // Step 3: regrant CHILD_ID concurrently. With the pre-POST drain barrier
+    // applied, grant() must wait for the gated drain to DELETE GRANT_ID
+    // remotely before calling createDelegation. Once GRANT_ID is revoked
+    // remotely, the createDelegation mock mints a FRESH id rather than
+    // replaying GRANT_ID (modelling Nexus's idempotency-cache invalidation).
+    queueMicrotask(() => releaseRevoke?.());
+    const fresh = await backend.grant(SCOPE, CHILD_ID);
+    await triggerRevokePromise;
+
+    // Without the fix: grant() would POST while drain was in-flight, Nexus
+    // would replay GRANT_ID, and the in-flight DELETE would land AFTER our
+    // POST committed — fresh.id would equal GRANT_ID and remote state would
+    // mark it as "revoked", silently killing the freshly issued credential.
+    expect(remote.get(GRANT_ID)).toBe("revoked");
+    expect(fresh.id).not.toBe(GRANT_ID);
+    expect(remote.get(fresh.id)).toBe("active");
+    const verifyRes = await backend.verify(fresh.id, "read_file");
+    expect(verifyRes.ok).toBe(true);
+    errSpy.mockRestore();
+  });
+
   test("regrant of same delegation id cancels stale pending revocation", async () => {
     let revokeOk = false;
     const api = makeMockApi({
