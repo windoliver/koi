@@ -197,6 +197,51 @@ describe("createCallDedupMiddleware", () => {
     expect(mw.describeCapabilities(turnCtx())?.label).toBe("call-dedup");
   });
 
+  // Regression: a request carrying a cancellation signal must NOT be
+  // coalesced. Otherwise aborting one caller would cancel the shared
+  // execution for every coalesced waiter — a fan-out failure.
+  test("requests with AbortSignal bypass coalescing AND cache", async () => {
+    const mw = createCallDedupMiddleware({ include: ["lookup"] });
+    const ctx = turnCtx();
+    const h = makeHandler("v");
+    const ac = new AbortController();
+    const r1 = await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "lookup", input: { q: 1 }, signal: ac.signal },
+      h.handler,
+    );
+    const r2 = await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "lookup", input: { q: 1 }, signal: ac.signal },
+      h.handler,
+    );
+    // Both calls executed independently. Neither response is marked cached.
+    expect(h.calls).toBe(2);
+    expect(r1?.metadata?.cached).toBeUndefined();
+    expect(r2?.metadata?.cached).toBeUndefined();
+  });
+
+  // Regression: per-call metadata (traceCallId, request-scoped correlation)
+  // is part of request identity. Replaying a cached response across
+  // requests with different metadata would replay across different request
+  // contexts. Bypass cache when metadata is present.
+  test("requests with metadata bypass cache", async () => {
+    const mw = createCallDedupMiddleware({ include: ["lookup"] });
+    const ctx = turnCtx();
+    const h = makeHandler("v");
+    await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "lookup", input: { q: 1 }, metadata: { traceCallId: "a" } },
+      h.handler,
+    );
+    await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "lookup", input: { q: 1 }, metadata: { traceCallId: "b" } },
+      h.handler,
+    );
+    expect(h.calls).toBe(2);
+  });
+
   // Regression: two concurrent identical misses must coalesce onto a single
   // underlying execution, otherwise dedup fails the retry-storm scenario it
   // exists to mitigate.

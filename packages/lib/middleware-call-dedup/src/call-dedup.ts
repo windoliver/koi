@@ -88,6 +88,32 @@ async function executeAndStore(
   return response;
 }
 
+/**
+ * Decide whether a request can participate in caching. Two conservative
+ * bypasses keep dedup safe under realistic runtime conditions:
+ *
+ *   - `request.signal`: aborting a coalesced caller would abort the
+ *     underlying shared execution for every other waiter. Until per-waiter
+ *     fan-out is implemented, requests with cancellation tokens skip both
+ *     the cache and the in-flight map and run independently.
+ *   - `request.metadata`: per-call metadata (traceCallId, request-scoped
+ *     correlation, future per-call permission scope) is part of the request
+ *     identity but cannot be folded into the cache key without making cache
+ *     hits effectively impossible. Refusing to cache metadata-tagged
+ *     requests preserves correctness — a later identical call with
+ *     different metadata never receives a stale earlier response.
+ */
+function isRequestCacheSafe(request: ToolRequest): boolean {
+  if (request.signal !== undefined) return false;
+  if (request.metadata !== undefined) {
+    // Treat any provided metadata as identity-relevant. An empty object
+    // counts as "metadata-tagged" because we cannot prove the absent keys
+    // are semantically irrelevant.
+    return false;
+  }
+  return true;
+}
+
 async function ddWrapToolCall(
   s: DedupState,
   ctx: TurnContext,
@@ -96,6 +122,7 @@ async function ddWrapToolCall(
 ): Promise<ToolResponse> {
   const toolId = request.toolId;
   if (!isCacheable(s, toolId)) return next(request);
+  if (!isRequestCacheSafe(request)) return next(request);
 
   const sessionId = ctx.session.sessionId;
   const cacheKey = s.hashFn(sessionId, toolId, request.input);
@@ -112,9 +139,10 @@ async function ddWrapToolCall(
     await s.store.delete(cacheKey);
   }
 
-  // Coalesce concurrent identical misses onto a single execution. Without
-  // this, two simultaneous requests for the same key both miss the cache
-  // and both call `next`, defeating dedup precisely under retry storms.
+  // Coalesce concurrent identical misses onto a single execution. Safe here
+  // because isRequestCacheSafe already bypassed any request carrying a
+  // cancellation signal — coalesced callers all share metadata-free,
+  // signal-free identity, so one caller cannot abort the others.
   const existing = s.inFlight.get(cacheKey);
   if (existing !== undefined) return existing;
 
