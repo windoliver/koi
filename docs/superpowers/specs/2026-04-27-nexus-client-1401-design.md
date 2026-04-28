@@ -362,16 +362,43 @@ After the permission backend is created, the runtime `await`s `nexusPermBackend.
 interface KoiRuntimeFactoryConfig {
   // …
   /**
-   * When true, wire the Nexus audit sink through the same poison-on-error
-   * guard used by NDJSON/SQLite sinks: first failure latches; subsequent
-   * `log()` calls throw; every middleware flush boundary rethrows.
+   * **POST-FAILURE CONTAINMENT — NOT A COMPLIANCE-ENFORCEMENT CONTROL.**
+   * Do NOT enable this flag to satisfy a compliance requirement that every
+   * audited operation MUST persist before the operation completes. The
+   * Nexus audit sink is asynchronous and remote; this flag cannot make it
+   * synchronous-fail-stop. It is named "poison" not "fail-stop" for that
+   * reason.
+   *
+   * What this flag actually does when true:
+   *   - Latches `nexusPoison.err` on the first sink failure.
+   *   - Rejects subsequent `sink.log()` calls at the wrapper (post-poison
+   *     records surface as observable failures).
+   *   - Denies admission at the NEXT middleware boundary
+   *     (`onSessionStart`/`onBeforeTurn`/`wrapModelCall`/`wrapToolCall`/
+   *     `onSessionEnd`).
+   *
+   * What this flag does NOT do:
+   *   - It does NOT abort an in-flight tool/model call when the audit
+   *     sink fails. Operations that have already crossed an admission
+   *     boundary RUN TO COMPLETION — including any side effects.
+   *   - It does NOT guarantee the triggering record was persisted (the
+   *     background/size-triggered flush may already have lost it).
+   *   - It does NOT call `process.exit(1)` (Nexus is remote; async hard
+   *     exit on remote failure would strand mid-session work — see
+   *     out-of-scope: coordinated runtime shutdown API).
+   *   - It does NOT match the synchronous flush+rethrow per boundary that
+   *     NDJSON/SQLite required-sinks perform (remote round-trip per
+   *     boundary would wedge the agent loop).
+   *
+   * Operators who require per-operation synchronous fail-stop MUST use a
+   * required local sink (NDJSON or SQLite with `required: true`); the
+   * Nexus poison mode is for operators who want eventual containment of
+   * NEW work after a known sink failure without paying remote-round-trip
+   * cost on every loop iteration. Use this when "stop accepting new work
+   * once Nexus audit breaks" is good enough. Do NOT use this when
+   * "guarantee no operation completes without an audit record" is required.
    *
    * Default: false (best-effort, matches current Nexus audit behavior).
-   * Provides fail-stop on SUBSEQUENT admission boundaries after a sink error
-   * — does NOT guarantee the triggering record was persisted (background
-   * flush may have already lost it). Operators wanting per-record durability
-   * need a synchronous-write architecture; this PR does not provide one.
-   *
    * Independent of nexusBootMode — boot-mode controls the startup probe;
    * this controls runtime audit error semantics.
    */
@@ -1348,11 +1375,11 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g. `local-bridge + assert-transport-reachable-at-boot mode: throws config validation error (unsupported) — fires UNCONDITIONALLY before consumer-resolution gate, so even no-op consumer combinations still get the loud rejection`
 7h. `local-bridge + assert-remote-policy-loaded-at-boot mode: throws config validation error (unsupported) — same unconditional path as 7g`
 7h_unc1. `local-bridge + nexusAuditMode="local-only" + assert-transport-reachable-at-boot: STILL throws (anyEffectiveConsumer=false would otherwise skip the block — regression guard against the Round 5 silent-skip bug)`
-7h_unc2. `local-bridge + nexusAuditEnabled=false + nexusPermissionsEnabled=false + assert-remote-policy-loaded-at-boot: STILL throws (no-consumer path must not silently accept assert-* on local-bridge)`
-7h_unc3. `local-bridge + EXPLICIT nexusPermissionsEnabled=false + EXPLICIT nexusAuditEnabled=false + assert-transport-reachable-at-boot: STILL throws (regression guard for the Loop-4-R2 bypass — opt-out must not skip the assert-* preflight when the raw transport kind is local-bridge)`
-7h_unc4. `local-bridge + same opt-out + assert-remote-policy-loaded-at-boot: STILL throws (same root cause as 7h_unc3)`
+7h_unc2. (REMOVED Loop 4 R8 — same superseding rationale as 7h_unc3/4: explicit opt-out is the locked rollback contract, so assert-* on opt-out does not throw. Coverage moved to 7h_unc10)
+7h_unc3. (REMOVED Loop 4 R8 — superseded by 7h_unc9/10. R2 wrote this test to close the Round-2 raw-kind bypass, but R7 made explicit opt-out a hard rollback contract that wins over assert-* preflight. Both expectations cannot hold; the rollback contract is the locked decision and these throw cases are deleted)
+7h_unc4. (REMOVED Loop 4 R8 — same superseding rationale as 7h_unc3)
 7h_unc5. `local-bridge + same opt-out + nexusBootMode="telemetry" (or unset): BOOTS without Nexus block (opt-out path is honored only when the boot mode is compatible with local-bridge)`
-7h_unc6. `MISSING KIND structural adapter + EXPLICIT nexusPermissionsEnabled=false + EXPLICIT nexusAuditEnabled=false + nexusBootMode=assert-transport-reachable-at-boot: THROWS via positive-identification gate (regression guard for Loop-4-R3 — fs-only opt-out cannot also bypass assert-* validation by stripping the kind discriminator)`
+7h_unc6. (REMOVED Loop 4 R8 — superseded by 7h_unc11. R3 expected throw on missing-kind + opt-out + assert-*; R7 made opt-out a hard rollback contract that wins over every Nexus boot gate including the kind assertion. Both expectations cannot hold; rollback contract is locked)
 7h_unc7. `MISSING KIND adapter + same opt-out + nexusBootMode="telemetry": BOOTS without Nexus block (assert-* gate fires only on assert-* modes; telemetry opt-out for legacy adapters is preserved)`
 7h_unc8. `assert-* preflight throw message names "positively-identified HTTP transport" so operators understand the gate fires on missing-kind + local-bridge + any other non-HTTP shape uniformly`
 7h_unc9. `EXPLICIT opt-out (perms=false + audit=false) + ANY nexusBootMode (including assert-*): BOOTS without throw + logs ONE WARN naming the dead config (Loop 4 R7 — opt-out is a hard rollback contract, not a stricter gate)`
