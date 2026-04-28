@@ -36,6 +36,12 @@ import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
 import { createLspComponentProvider } from "@koi/lsp";
 import { createMemoryStore, type MemoryStore } from "@koi/memory-fs";
 import { createAuditMiddleware } from "@koi/middleware-audit";
+import { createCallDedupMiddleware } from "@koi/middleware-call-dedup";
+import {
+  createModelCallLimitMiddleware,
+  createToolCallLimitMiddleware,
+} from "@koi/middleware-call-limits";
+import { createCircuitBreakerMiddleware } from "@koi/middleware-circuit-breaker";
 import { createBrowserProvider } from "@koi/tool-browser";
 import { createArtifactToolProvider } from "./artifact-tool-provider.js";
 
@@ -280,10 +286,43 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // guard and semantic-retry) so each retry attempt independently benefits from
     // provider failover. Skip when already provided in config.middleware by name.
     const hasModelRouter = new Set(afterExfiltration.map((mw) => mw.name)).has("model-router");
-    const middleware: readonly KoiMiddleware[] =
+    const afterModelRouter: readonly KoiMiddleware[] =
       config.modelRouterMiddleware !== undefined && !hasModelRouter
         ? [...afterExfiltration, config.modelRouterMiddleware]
         : afterExfiltration;
+
+    // Resilience trio (#1419) — opt-in via explicit config:
+    //   * circuitBreaker — fail-fast on unhealthy providers (priority 175 model-side)
+    //   * callLimits     — per-tool / per-model session budgets
+    //   * callDedup      — cache identical deterministic tool calls (opt-in include allowlist)
+    // Each is skipped when explicitly disabled (`false`), unconfigured
+    // (`undefined`), or already provided by name in `config.middleware`.
+    const resilienceNames = new Set(afterModelRouter.map((mw) => mw.name));
+    const resilienceAdds: KoiMiddleware[] = [];
+    if (
+      config.circuitBreaker !== undefined &&
+      config.circuitBreaker !== false &&
+      !resilienceNames.has("koi:circuit-breaker")
+    ) {
+      resilienceAdds.push(createCircuitBreakerMiddleware(config.circuitBreaker));
+    }
+    if (config.callLimits !== undefined && config.callLimits !== false) {
+      if (config.callLimits.tool !== undefined && !resilienceNames.has("koi:tool-call-limit")) {
+        resilienceAdds.push(createToolCallLimitMiddleware(config.callLimits.tool));
+      }
+      if (config.callLimits.model !== undefined && !resilienceNames.has("koi:model-call-limit")) {
+        resilienceAdds.push(createModelCallLimitMiddleware(config.callLimits.model));
+      }
+    }
+    if (
+      config.callDedup !== undefined &&
+      config.callDedup !== false &&
+      !resilienceNames.has("koi:call-dedup")
+    ) {
+      resilienceAdds.push(createCallDedupMiddleware(config.callDedup));
+    }
+    const middleware: readonly KoiMiddleware[] =
+      resilienceAdds.length > 0 ? [...afterModelRouter, ...resilienceAdds] : afterModelRouter;
 
     const activityTimeoutConfig = resolveActivityTimeoutConfig(
       config.activityTimeout,

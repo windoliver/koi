@@ -64,6 +64,14 @@ export const DEFAULT_EXCLUDE: readonly string[] = [
   "agent_resume",
   "koi_send_message",
   "send_message",
+  // koi_* primordial mcp-server tools (mutating + stateful reads)
+  "koi_list_messages",
+  "koi_list_mailbox",
+  "koi_list_tasks",
+  "koi_get_task",
+  "koi_update_task",
+  "koi_task_output",
+  "koi_list_agents",
   // notebook mutation + stateful read
   "notebook_add_cell",
   "notebook_replace_cell",

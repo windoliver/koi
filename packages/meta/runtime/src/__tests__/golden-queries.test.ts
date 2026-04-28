@@ -1557,4 +1557,63 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     expect(third.metadata?.blocked).toBeUndefined();
     expect(executions).toBe(1);
   });
+
+  // Regression (#1419 round 11): the canonical runtime must actually
+  // install the resilience trio when the new config fields are set —
+  // adding the deps + tests in isolation is not enough.
+  function createTerminalAdapter(): EngineAdapter {
+    return {
+      engineId: "test-resilience",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(): AsyncIterable<EngineEvent> {
+        yield {
+          kind: "done",
+          output: {
+            content: [{ kind: "text", text: "ok" }],
+            stopReason: "completed",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: 0,
+            },
+          },
+        };
+      },
+      terminals: {
+        modelCall: async () => ({
+          content: "ok",
+          model: "test",
+          usage: { inputTokens: 0, outputTokens: 0 },
+        }),
+        toolCall: async (req: { toolId: string }) => ({ toolId: req.toolId, output: "ok" }),
+      },
+    } as unknown as EngineAdapter;
+  }
+
+  test("createRuntime installs circuit-breaker + call-limits + call-dedup when configured", () => {
+    const handle = createRuntime({
+      adapter: createTerminalAdapter(),
+      circuitBreaker: { breaker: { failureThreshold: 5 } },
+      callLimits: {
+        tool: { limits: { lookup: 10 } },
+        model: { limit: 50 },
+      },
+      callDedup: { include: ["lookup"] },
+    });
+    const names = handle.middleware.map((mw) => mw.name);
+    expect(names).toContain("koi:circuit-breaker");
+    expect(names).toContain("koi:tool-call-limit");
+    expect(names).toContain("koi:model-call-limit");
+    expect(names).toContain("koi:call-dedup");
+  });
+
+  test("createRuntime omits resilience middleware when not configured", () => {
+    const handle = createRuntime({ adapter: createTerminalAdapter() });
+    const names = handle.middleware.map((mw) => mw.name);
+    expect(names).not.toContain("koi:circuit-breaker");
+    expect(names).not.toContain("koi:tool-call-limit");
+    expect(names).not.toContain("koi:call-dedup");
+  });
 });

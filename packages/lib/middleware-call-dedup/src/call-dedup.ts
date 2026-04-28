@@ -163,20 +163,19 @@ async function evictSession(s: DedupState, sessionId: string): Promise<void> {
  *     different metadata never receives a stale earlier response.
  */
 function isRequestCacheSafe(request: ToolRequest): boolean {
+  // `signal` is the only field that genuinely cannot be coalesced:
+  // aborting any one caller of a shared in-flight execution would cascade
+  // to every other waiter sharing it. Until per-waiter fan-out is
+  // implemented, signal-bearing requests run independently with no
+  // caching.
   if (request.signal !== undefined) return false;
-  if (request.metadata !== undefined) {
-    // Treat any provided metadata as identity-relevant. An empty object
-    // counts as "metadata-tagged" because we cannot prove the absent keys
-    // are semantically irrelevant.
-    return false;
-  }
-  // `callId` is the per-invocation correlation id used by checkpoint /
-  // debug / audit middleware to tie side effects back to the exact tool
-  // call. Replaying a cached response across distinct callIds would hide
-  // the second invocation from those downstream systems, breaking the
-  // per-invocation contract. Conservative bypass: when callId is set,
-  // every invocation runs fresh.
-  if (request.callId !== undefined) return false;
+  // `metadata` (notably `metadata.traceCallId`) and `callId` are
+  // observability/correlation fields stamped on every runtime request.
+  // They are deliberately NOT identity-relevant for the cache key:
+  // dedup's whole contract is "two identical tool calls return the same
+  // result", and that statement must hold across distinct trace ids.
+  // Cached responses are marked `metadata.cached = true` so downstream
+  // observability can tell hits apart from real executions.
   return true;
 }
 

@@ -23,12 +23,11 @@ The middleware exposes `onSessionEnd` to evict the cache and in-flight coalescin
 
 ### Per-request bypass conditions
 
-Even for allowlisted tools, dedup also bypasses when the `ToolRequest` carries:
+Even for allowlisted tools, dedup bypasses when the `ToolRequest` carries:
 
 - **`signal: AbortSignal`** — coalescing across cancellable requests would let one caller's abort cascade to every waiter sharing the in-flight execution. Until per-waiter fan-out is implemented, signal-bearing requests run independently with no caching.
-- **`metadata`** — per-call metadata (`traceCallId`, request-scoped correlation, future per-call permission scope) is part of request identity. Replaying a cached response across different metadata would cross trust boundaries the runtime expects to remain distinct. Any non-undefined `metadata` triggers a bypass.
 
-These bypasses are conservative: when in doubt, execute fresh.
+`callId` and `metadata` (notably `metadata.traceCallId`) are observability/correlation fields stamped on every runtime request — they are deliberately NOT identity-relevant for the cache key. Dedup's contract is "two identical tool calls return the same result", and that statement must hold across distinct trace ids. Cached responses are marked `metadata.cached = true` so downstream observability can distinguish hits from real executions.
 
 ---
 

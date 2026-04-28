@@ -129,6 +129,14 @@ describe("createCallDedupMiddleware", () => {
       "send_message",
       "execute_code",
       "forge_agent",
+      "koi_send_message",
+      "koi_list_messages",
+      "koi_list_mailbox",
+      "koi_list_tasks",
+      "koi_get_task",
+      "koi_update_task",
+      "koi_task_output",
+      "koi_list_agents",
     ];
     const mw = createCallDedupMiddleware({ include: muting });
     const ctx = turnCtx();
@@ -339,15 +347,13 @@ describe("createCallDedupMiddleware", () => {
     expect(r2?.metadata?.cached).toBeUndefined();
   });
 
-  // Regression: per-call metadata (traceCallId, request-scoped correlation)
-  // is part of request identity. Replaying a cached response across
-  // requests with different metadata would replay across different request
-  // contexts. Bypass cache when metadata is present.
-  // Regression: callId is per-invocation correlation. Two calls with
-  // identical sessionId+toolId+input but distinct callIds must NOT
-  // share cached output — downstream middleware (checkpoint/debug)
-  // would otherwise miss the second invocation entirely.
-  test("requests with distinct callId values do not share cache", async () => {
+  // Regression: distinct callIds / traceCallIds must STILL hit cache.
+  // The runtime stamps every tool request with `callId` and
+  // `metadata.traceCallId` for observability — treating those as
+  // identity-relevant would make dedup inert on every real request.
+  // Cached responses are marked `metadata.cached = true` so downstream
+  // observability can distinguish hits from real executions.
+  test("distinct callId values share cache (not identity-relevant)", async () => {
     const mw = createCallDedupMiddleware({ include: ["lookup"] });
     const ctx = turnCtx();
     const h = makeHandler("v");
@@ -356,15 +362,16 @@ describe("createCallDedupMiddleware", () => {
       { toolId: "lookup", input: { q: 1 }, callId: "call-a" },
       h.handler,
     );
-    await mw.wrapToolCall?.(
+    const r2 = await mw.wrapToolCall?.(
       ctx,
       { toolId: "lookup", input: { q: 1 }, callId: "call-b" },
       h.handler,
     );
-    expect(h.calls).toBe(2);
+    expect(h.calls).toBe(1);
+    expect(r2?.metadata?.cached).toBe(true);
   });
 
-  test("requests with metadata bypass cache", async () => {
+  test("distinct metadata.traceCallId values share cache", async () => {
     const mw = createCallDedupMiddleware({ include: ["lookup"] });
     const ctx = turnCtx();
     const h = makeHandler("v");
@@ -373,12 +380,13 @@ describe("createCallDedupMiddleware", () => {
       { toolId: "lookup", input: { q: 1 }, metadata: { traceCallId: "a" } },
       h.handler,
     );
-    await mw.wrapToolCall?.(
+    const r2 = await mw.wrapToolCall?.(
       ctx,
       { toolId: "lookup", input: { q: 1 }, metadata: { traceCallId: "b" } },
       h.handler,
     );
-    expect(h.calls).toBe(2);
+    expect(h.calls).toBe(1);
+    expect(r2?.metadata?.cached).toBe(true);
   });
 
   // Regression: two concurrent identical misses must coalesce onto a single
