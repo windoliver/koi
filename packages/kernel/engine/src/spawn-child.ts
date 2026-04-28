@@ -650,6 +650,21 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
               );
             });
         }
+
+        // Revoke auto-delegation grant on child dispose (no-registry path).
+        // Mirrors the registry-path handler — when there is no registry, dispose
+        // is the only termination signal we get, so we hook revoke here.
+        if (childGrantId !== undefined && parentHasDelegation) {
+          const parentDel = options.parentAgent.component<DelegationComponent>(DELEGATION);
+          if (parentDel !== undefined) {
+            void Promise.resolve(parentDel.revoke(childGrantId, false)).catch((err: unknown) => {
+              console.warn(
+                `[spawn-child] delegation revoke failed — key may remain active until manually revoked. ` +
+                  `delegationId="${childGrantId}", childId="${childPid.id}", error: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            });
+          }
+        }
       }
       await originalDispose();
     };
