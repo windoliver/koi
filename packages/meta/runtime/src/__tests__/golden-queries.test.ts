@@ -1703,7 +1703,9 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     // With stable sessionId, onSessionEnd MUST NOT have fired on stream
     // teardown — middleware state must persist for the next turn.
     expect(endCalls).toEqual([]);
+    // dispose() MUST fire onSessionEnd exactly once with the stable id.
     await runtime.dispose();
+    expect(endCalls).toEqual(["stable-session-r24"]);
   });
 
   test("RuntimeConfig without sessionId still finalizes per stream", async () => {
@@ -1793,11 +1795,12 @@ describe("Golden: @koi/middleware-call-dedup", () => {
   // phase middleware, not just audit-named ones. Dedup hides cache hits
   // from event-trace, session-transcript, custom telemetry, and any
   // observe-phase observer.
-  // Regression (#1419 round 23): when the caller injects a dedup
-  // middleware directly through `config.middleware`, the runtime must
-  // still enforce the onCacheHit acknowledgement. The previous gate
-  // only ran on the auto-install path and was bypassable.
-  test("createRuntime refuses caller-injected koi:call-dedup alongside observe-phase MW without onCacheHit", () => {
+  // Regression (#1419 round 24): the dedup observability gate scopes
+  // to the runtime AUTO-INSTALL path. Caller-injected dedup is trusted
+  // to handle observability internally — gating it would be a
+  // compatibility regression for stacks that already forward cache
+  // hits via their own pathway.
+  test("createRuntime accepts caller-injected koi:call-dedup alongside observe-phase MW", () => {
     const fakeDedup = {
       name: "koi:call-dedup",
       phase: "intercept" as const,
@@ -1815,7 +1818,7 @@ describe("Golden: @koi/middleware-call-dedup", () => {
         adapter: createTerminalAdapter(),
         middleware: [fakeDedup, fakeAudit],
       }),
-    ).toThrow(/onCacheHit/);
+    ).not.toThrow();
   });
 
   test("createRuntime refuses callDedup when any observe-phase middleware is present", () => {

@@ -460,26 +460,33 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // Dedup short-circuits cached AND coalesced tool calls in the
     // intercept phase, bypassing the entire observe-phase chain. Any
     // observe-phase telemetry middleware (audit, event-trace,
-    // session-transcript, metrics, or caller-supplied observers) is
-    // therefore blind to those calls. Runtime-added per-stream
-    // observers (event-trace bound to trajectory storage, OTel) are
-    // appended INSIDE composeMiddlewareIntoAdapter and so don't appear
-    // in `middleware`; their config flags trigger the gate equivalently.
+    // session-transcript, metrics) is therefore blind to those calls.
+    // Runtime-added per-stream observers (event-trace bound to
+    // trajectory storage, OTel) are appended INSIDE
+    // composeMiddlewareIntoAdapter and so don't appear in `middleware`;
+    // their config flags trigger the gate equivalently.
     //
-    // The gate inspects the FULLY ASSEMBLED middleware chain plus
-    // runtime-added observer flags, not just the runtime auto-install
-    // path. A caller who supplies `koi:call-dedup` directly through
-    // `config.middleware` is held to the same contract.
-    const hasDedupMw = middleware.some((mw) => mw.name === "koi:call-dedup");
+    // Scope: this gate only fires for the runtime AUTO-INSTALL path
+    // (`config.callDedup`). When the caller injects `koi:call-dedup`
+    // directly through `config.middleware`, we trust them to have
+    // wired observability themselves — gating their MW would be a
+    // compatibility regression for stacks that already forward cache
+    // hits via their own pathway. The auto-install path is the one
+    // the runtime is responsible for; the caller-injected path is
+    // theirs.
     const hasObserveMw = middleware.some((mw) => mw.phase === "observe");
     const hasTrajectoryObserver = trajectoryStore !== undefined;
     const hasOtelObserver = otelConfig !== undefined;
+    const dedupAutoInstalled =
+      config.callDedup !== undefined &&
+      config.callDedup !== false &&
+      !resilienceNames.has("koi:call-dedup");
     const dedupAck =
       config.callDedup !== undefined &&
       config.callDedup !== false &&
       config.callDedup.onCacheHit !== undefined;
     if (
-      hasDedupMw &&
+      dedupAutoInstalled &&
       (config.audit !== undefined || hasObserveMw || hasTrajectoryObserver || hasOtelObserver) &&
       !dedupAck
     ) {
@@ -761,6 +768,27 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       dispose: async () => {
         // Unsubscribe approval sink to prevent leak on long-lived permission handles
         unsubApprovalSink?.();
+        // Step 0: When the runtime was constructed with a stable
+        // `RuntimeConfig.sessionId`, per-stream `onSessionEnd` was
+        // suppressed (so middleware state survives across turns). The
+        // session-end hooks must still fire EXACTLY ONCE at runtime
+        // teardown, otherwise audit/transcript/metrics middleware that
+        // rely on onSessionEnd never get their finalization callback.
+        // Synthesize a SessionContext from the stable id and run the
+        // hooks now, before adapter disposal. Errors are swallowed —
+        // dispose continues regardless so other resources still close.
+        if (config.sessionId !== undefined) {
+          try {
+            const sortedForFinalize = sortMiddlewareByPhase(middleware);
+            const finalizeSession = createMinimalTurnContext({
+              streamId: "runtime-dispose",
+              sessionId: config.sessionId,
+            }).session;
+            await runSessionHooks(sortedForFinalize, "onSessionEnd", finalizeSession).catch(noop);
+          } catch {
+            // Defensive: never block dispose on session-end failures.
+          }
+        }
         // Step 1: Dispose adapter first — this terminates active model streams,
         // which triggers their finally blocks (where flush + afterFlush run).
         // Without this, awaiting stream finalizations would deadlock because
