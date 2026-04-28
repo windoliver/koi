@@ -77,6 +77,11 @@ import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
 import type { GovernanceConfig, KoiRuntime } from "@koi/engine";
 import { createGovernanceController, createKoi } from "@koi/engine";
+import {
+  createForgeDemandDetector,
+  type ForgeDemandConfig,
+  validateForgeDemandConfig,
+} from "@koi/forge-demand";
 import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
 import {
   createJsonlApprovalStore,
@@ -88,6 +93,7 @@ import type { CostCalculator } from "@koi/governance-core";
 import { createGovernanceMiddleware } from "@koi/governance-core";
 import type { PatternRule } from "@koi/governance-defaults";
 import {
+  createAuditMiddlewareComplianceRecorder,
   createAuditSinkComplianceRecorder,
   createPatternBackend,
   fanOutComplianceRecorder,
@@ -855,6 +861,15 @@ export interface KoiRuntimeConfig {
    * quarantine thresholds — observe-only posture).
    */
   readonly feedbackLoop?: FeedbackLoopConfig | undefined;
+  /**
+   * Opt-in: activate `@koi/forge-demand` detector. Auto-wires
+   * feedback-loop's healthHandle when feedbackLoop is also configured
+   * with `forgeHealth`. Caller must supply `onSessionAttached` (F96/F101);
+   * the TUI env-var path provides a logging stub that captures scoped
+   * handles per session for later inspection.
+   * Surface via `KOI_FORGE_DEMAND_ENABLED=true` in the TUI.
+   */
+  readonly forgeDemand?: ForgeDemandConfig | undefined;
   /**
    * Subset of filesystem operations to expose (#1777). `undefined`
    * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
@@ -2450,13 +2465,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
     // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
     // Build the NDJSON sink + hash-chained audit middleware when the host
-    // host opted in (KOI_AUDIT_NDJSON env var in the TUI). The runtime
+    // opted in (KOI_AUDIT_NDJSON env var in the TUI). The runtime
     // owns both the middleware and the underlying sink's writer/timer;
-    // `shutdownBackgroundTasks` below flushes and closes on shutdown.
-    // let: retained so shutdown can flush+close.
-    let auditMwForShutdown:
-      | { readonly flush: () => Promise<void>; readonly close: () => Promise<void> }
-      | undefined;
+    // shutdown is wired through a manifest-middleware hook so it runs
+    // AFTER runtime.dispose() fires audit.onSessionEnd → logSync.
     const auditPresetExtras: KoiMiddleware[] = [];
     // Compliance recorders accumulated from each active audit sink.
     // Used later to populate governanceBackend.compliance.
@@ -2555,15 +2567,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         },
       });
       complianceRecorders.push(
-        createAuditSinkComplianceRecorder(poisonedNdjsonSink, {
+        // Route through the audit middleware's `append` so compliance_event
+        // entries pass through the same hash-chain + signing pipeline as
+        // model_call / tool_call / permission_decision rows. Direct sink
+        // writes would land unsigned and break verifier chain integrity.
+        createAuditMiddlewareComplianceRecorder(auditMw, {
           sessionId: getLiveSessionId,
-          onError: (error: unknown) => {
-            // Compliance writes are fire-and-forget by design; the only way to
-            // guarantee no further work runs after a compliance write failure is
-            // synchronous termination. process.exit(1) is correct here.
-            console.error("[koi/cli] compliance sink write failed — terminating:", error);
-            process.exit(1);
-          },
         }),
       );
       const guardedAuditMw: KoiMiddleware = {
@@ -2745,10 +2754,20 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // `audit:n/a` in /trajectory — point KOI_AUDIT_SQLITE at a DB (or
       // enable both) to get the live audit lane. NDJSON remains the
       // right sink for offline compliance export and forensic replay.
-      auditMwForShutdown = {
-        flush: () => auditMw.flush(),
-        close: () => auditSink.close(),
-      };
+      // Register flush+close as a manifest shutdown hook so it runs AFTER
+      // runtime.dispose() (which fires audit.onSessionEnd → logSync).
+      // shutdownBackgroundTasks fires before dispose; if it closed the
+      // sink there, closedFlag would be set and the session_end logSync
+      // would no-op, leaving the audit trail without a closing record.
+      const ndjsonSinkForHook = auditSink;
+      const ndjsonMwForHook = auditMw;
+      manifestMiddlewareShutdownHooks.push(async () => {
+        try {
+          await ndjsonMwForHook.flush();
+        } finally {
+          await ndjsonSinkForHook.close();
+        }
+      });
     }
 
     // --- SQLite audit middleware (opt-in via config.auditSqlitePath) ---
@@ -2860,12 +2879,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         },
       });
       complianceRecorders.push(
-        createAuditSinkComplianceRecorder(poisonedSqliteSink, {
+        // Route through the audit middleware's `append` so compliance_event
+        // entries pass through the same hash-chain + signing pipeline as the
+        // middleware's own events. (See ndjson branch above for full rationale.)
+        createAuditMiddlewareComplianceRecorder(sqliteAuditMw, {
           sessionId: getLiveSessionId,
-          onError: (error: unknown) => {
-            console.error("[koi/cli] compliance sink write failed — terminating:", error);
-            process.exit(1);
-          },
         }),
       );
       const guardedSqliteAuditMw: KoiMiddleware = {
@@ -3091,8 +3109,62 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
     // --- Feedback-loop middleware (opt-in via config.feedbackLoop) ---
     // Model-response validation + tool-health tracking. No shutdown resources.
-    if (config.feedbackLoop !== undefined) {
-      auditPresetExtras.push(createFeedbackLoopMiddleware(config.feedbackLoop));
+    const feedbackLoopMw =
+      config.feedbackLoop !== undefined
+        ? createFeedbackLoopMiddleware(config.feedbackLoop)
+        : undefined;
+    if (feedbackLoopMw !== undefined) {
+      auditPresetExtras.push(feedbackLoopMw);
+    }
+
+    // --- Forge-demand detector (opt-in via config.forgeDemand) ---
+    // Priority 445 — outer of feedback-loop (450) so the detector observes
+    // committed state. Auto-wires feedback-loop's healthHandle into
+    // forge-demand when feedbackLoop is configured with forgeHealth (F64/F66).
+    // Mirrors the auto-wire logic in @koi/runtime's createRuntime so the CLI
+    // and the standalone runtime stay behaviorally aligned.
+    if (config.forgeDemand !== undefined) {
+      const validated = validateForgeDemandConfig(config.forgeDemand);
+      if (!validated.ok) {
+        throw new Error(
+          `Invalid forgeDemand config: ${validated.error.message}` +
+            (validated.error.context !== undefined
+              ? ` (${JSON.stringify(validated.error.context)})`
+              : ""),
+        );
+      }
+      // F96/F101: onSessionAttached is the only surface that can dismiss
+      // signals; without it a re-emitting condition consumes the session
+      // budget and silently suppresses unrelated demand work.
+      if (validated.value.onSessionAttached === undefined) {
+        throw new Error(
+          "forgeDemand requires `config.forgeDemand.onSessionAttached`. " +
+            "Pass an onSessionAttached callback or set KOI_FORGE_DEMAND_ENABLED " +
+            "via the TUI which installs a logging stub.",
+        );
+      }
+      const baseForgeConfig = validated.value;
+      // Auto-wire feedback-loop's healthHandle when its forgeHealth is
+      // configured (live trackers exist). Suppressed otherwise so a
+      // dormant performance_degradation trigger emits a loud warning
+      // rather than a silent no-op (F64 regression).
+      const installedHandle =
+        feedbackLoopMw !== undefined && config.feedbackLoop?.forgeHealth !== undefined
+          ? feedbackLoopMw.healthHandle
+          : undefined;
+      const finalForgeConfig =
+        baseForgeConfig.healthTracker === undefined && installedHandle !== undefined
+          ? { ...baseForgeConfig, healthTracker: installedHandle }
+          : baseForgeConfig;
+      if (finalForgeConfig.healthTracker === undefined) {
+        console.warn(
+          "[forge-demand] performance_degradation trigger is dormant: " +
+            "no healthTracker on config.forgeDemand and no feedback-loop " +
+            "with forgeHealth to auto-wire.",
+        );
+      }
+      const forgeDemandHandle = createForgeDemandDetector(finalForgeConfig);
+      auditPresetExtras.push(forgeDemandHandle.middleware);
     }
 
     // --- Pre-build shared GovernanceController so it is shared between:
@@ -4090,28 +4162,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         // configHotReload is factory-bootstrap, not a stack feature —
         // dispose directly.
         configHotReload?.dispose();
-        // Flush + close runtime-owned audit sink (opt-in via
-        // config.auditNdjsonPath). Fire-and-forget because
-        // shutdownBackgroundTasks is sync; any error is logged but does
-        // not block shutdown. The process exits after this returns, so
-        // the fire-and-forget close must complete synchronously relative
-        // to the event loop before exit — createNdjsonAuditSink drains
-        // its internal timer queue synchronously on close().
-        if (auditMwForShutdown !== undefined) {
-          const audit = auditMwForShutdown;
-          void (async () => {
-            try {
-              await audit.flush();
-              await audit.close();
-            } catch (err) {
-              console.warn(
-                `[koi/${hostId}] audit shutdown failed: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-              );
-            }
-          })();
-        }
+        // Audit sink close is registered as a manifest-middleware shutdown
+        // hook (see auditMwForShutdown setup) so it runs AFTER runtime.dispose()
+        // → audit.onSessionEnd → logSync. Closing here would set the sink's
+        // closedFlag before the session_end record is written, causing logSync
+        // to silently no-op and leaving the audit trail without a closing
+        // record. The hook path drains the writer chain and closes durably.
         if (auditSqliteMwForShutdown !== undefined) {
           const sqliteAudit = auditSqliteMwForShutdown;
           void (async () => {

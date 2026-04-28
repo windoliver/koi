@@ -2,6 +2,10 @@
 
 Intercepts every model call, tool call, permission decision, config change, and session lifecycle event, writing tamper-evident structured audit entries to a pluggable `AuditSink`. Supports hash chain tamper-detection, optional Ed25519 per-record signing, bounded backpressure, and redaction via `@koi/redaction`.
 
+## Recent updates
+
+- **`createAuditMiddlewareComplianceRecorder`** (S20-S22 bug bash, #2072): governance compliance events now route through the audit middleware's `append()` rather than calling `sink.log()` directly, so they share the same hash-chain + Ed25519 signing path as `model_call` / `tool_call` / `session_*` entries. Previously `compliance_event` rows landed in the NDJSON unsigned, breaking chain integrity for any verifier that interleaved them with signed entries.
+
 ---
 
 ## Why It Exists

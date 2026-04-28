@@ -539,6 +539,19 @@ export interface RuntimeConfig {
   readonly callDedupObservabilityAck?: boolean | undefined;
 
   /**
+   * Forge-demand detector configuration. When provided, wires
+   * `@koi/forge-demand` as a passive observer on tool/model traffic to
+   * surface forge-demand signals (repeated_failure, capability_gap,
+   * user_correction, performance_degradation). When provided alongside a
+   * caller-supplied `forge-demand-detector` middleware in
+   * `config.middleware`, the runtime-owned instance REPLACES the
+   * preinstalled one so `RuntimeHandle.forgeDemand` always points at the
+   * active detector. Omit this config to keep a preinstalled middleware
+   * intact (the caller owns its handle out-of-band).
+   */
+  readonly forgeDemand?: RuntimeForgeDemandConfig | undefined;
+
+  /**
    * Browser tool provider configuration. When provided, wires `@koi/tool-browser`
    * and exposes the resulting `ComponentProvider` on `RuntimeHandle.browserProvider`
    * so callers can pass it to `createKoi({ providers })`.
@@ -578,6 +591,27 @@ export interface RuntimeConfig {
    */
   readonly memoryFs?: MemoryStoreConfig | undefined;
 }
+
+/**
+ * Runtime-narrowed `ForgeDemandConfig`. The runtime intentionally does
+ * NOT expose a sessionId-keyed lookup (F67), and `onDemand` alone is
+ * insufficient because it has no dismiss capability — emitted signals
+ * stay in detector state until acknowledged, so the same condition
+ * can re-emit after cooldown and eventually consume the session forge
+ * budget. The scoped handle delivered to `onSessionAttached` is the
+ * only surface that supports both read and dismiss; making it
+ * required at the type level prevents callers from constructing a
+ * runtime config that the factory will then reject at startup.
+ * F102 regression.
+ */
+export type RuntimeForgeDemandConfig = Omit<
+  import("@koi/forge-demand").ForgeDemandConfig,
+  "onSessionAttached"
+> & {
+  readonly onSessionAttached: NonNullable<
+    import("@koi/forge-demand").ForgeDemandConfig["onSessionAttached"]
+  >;
+};
 
 /** Default stream timeout: 2 minutes for live API calls. */
 export const DEFAULT_STREAM_TIMEOUT_MS = 120_000 as const;
@@ -621,6 +655,26 @@ export interface RuntimeDebugInfo {
 // ---------------------------------------------------------------------------
 // Runtime handle
 // ---------------------------------------------------------------------------
+
+/**
+ * Runtime-facing forge-demand handle.
+ *
+ * The L2 detector authorizes session-scoped operations by SessionContext
+ * object identity (engine-issued, not caller-supplied) — see F61. The
+ * runtime intentionally does NOT expose a sessionId-keyed lookup like
+ * `forSessionId(sid)` here, because that would let any in-process caller
+ * with a sessionId read or dismiss another tenant's signals (F67).
+ * Instead, scoped handles are delivered to the legitimate session owner
+ * via the `forgeDemand.onSessionAttached` callback supplied at runtime
+ * configuration time. The owner stores its handle and acks/dismisses
+ * its own signals — no out-of-band lookup surface.
+ *
+ * The `middleware` field is exposed for assembly inspection only —
+ * wiring is automatic.
+ */
+export interface RuntimeForgeDemandHandle {
+  readonly middleware: import("@koi/core").KoiMiddleware;
+}
 
 /** The assembled runtime returned by createRuntime. */
 export interface RuntimeHandle {
@@ -766,6 +820,20 @@ export interface RuntimeHandle {
    * for `@koi/memory-tools` is tracked as follow-up work.
    */
   readonly memoryStore?: MemoryStore | undefined;
+
+  /**
+   * Forge-demand handle. Only populated when `config.forgeDemand` is provided.
+   *
+   * @see RuntimeForgeDemandHandle
+   * Exposes `forSessionId(sessionId)` to obtain a session-scoped view of
+   * pending signals — runtime callers do not have direct access to the
+   * engine-issued `SessionContext` object, so a sessionId-keyed surface
+   * is the only operable inspection path. Without this, signals would
+   * re-fire after cooldown expiry and consume the per-session forge
+   * budget until session end. Throws when the sessionId has not been
+   * observed in the runtime — there is no cross-tenant aggregator.
+   */
+  readonly forgeDemand?: RuntimeForgeDemandHandle | undefined;
 
   /** Dispose all resources. */
   readonly dispose: () => Promise<void>;

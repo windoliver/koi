@@ -2,6 +2,8 @@
 
 Intercepts every model response and tool call. On model validation failure, injects structured error context back into the prompt and retries. Quality gates halt the pipeline without retry. For forged tools, tracks runtime health in a sliding-window ring buffer, quarantines tools that breach error thresholds, and demotes trust tiers on sustained failure. Zero LLM involvement for health tracking — pure arithmetic and state machine evaluation.
 
+**Public surface (#1346):** `FeedbackLoopMiddleware` and `FeedbackLoopHealthHandle` are now exported from the package index. The middleware returned by `createFeedbackLoopMiddleware(config)` exposes `healthHandle` (a `(sessionId, toolId) => ToolHealthSnapshot | undefined` accessor) so downstream consumers — notably `@koi/forge-demand` — can read tool-health state without depending on the internal `ToolHealthTracker`. The runtime auto-wires this handle into forge-demand's `healthTracker` slot when both packages are configured (see `docs/L3/runtime.md`); the handle returns live data only when `forgeHealth` is configured on the feedback-loop config, matching the existing tool-health contract.
+
 ---
 
 ## Why It Exists

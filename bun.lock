@@ -298,6 +298,20 @@
       "name": "@koi/file-type",
       "version": "0.0.0",
     },
+    "packages/lib/forge-demand": {
+      "name": "@koi/forge-demand",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
+      },
+    },
     "packages/lib/forge-tools": {
       "name": "@koi/forge-tools",
       "version": "0.0.0",
@@ -482,6 +496,22 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/middleware-prompt-cache": {
+      "name": "@koi/middleware-prompt-cache",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/execution-context": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-reflex": {
+      "name": "@koi/middleware-reflex",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/middleware-report": {
       "name": "@koi/middleware-report",
       "version": "0.0.0",
@@ -534,6 +564,13 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-turn-ack": {
+      "name": "@koi/middleware-turn-ack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/lib/middleware-turn-prelude": {
@@ -847,6 +884,7 @@
         "@koi/engine": "workspace:*",
         "@koi/event-trace": "workspace:*",
         "@koi/file-type": "workspace:*",
+        "@koi/forge-demand": "workspace:*",
         "@koi/forge-tools": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
@@ -877,9 +915,12 @@
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-plan-persist": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
+        "@koi/middleware-prompt-cache": "workspace:*",
+        "@koi/middleware-reflex": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
+        "@koi/middleware-turn-ack": "workspace:*",
         "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -970,6 +1011,7 @@
         "@koi/event-trace": "workspace:*",
         "@koi/execution-context": "workspace:*",
         "@koi/file-type": "workspace:*",
+        "@koi/forge-demand": "workspace:*",
         "@koi/forge-tools": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
@@ -1008,10 +1050,13 @@
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-plan-persist": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
+        "@koi/middleware-prompt-cache": "workspace:*",
+        "@koi/middleware-reflex": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-strict-agentic": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
+        "@koi/middleware-turn-ack": "workspace:*",
         "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -1832,6 +1877,8 @@
 
     "@koi/file-type": ["@koi/file-type@workspace:packages/lib/file-type"],
 
+    "@koi/forge-demand": ["@koi/forge-demand@workspace:packages/lib/forge-demand"],
+
     "@koi/forge-tools": ["@koi/forge-tools@workspace:packages/lib/forge-tools"],
 
     "@koi/forge-types": ["@koi/forge-types@workspace:packages/lib/forge-types"],
@@ -1916,6 +1963,10 @@
 
     "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/lib/middleware-planning"],
 
+    "@koi/middleware-prompt-cache": ["@koi/middleware-prompt-cache@workspace:packages/lib/middleware-prompt-cache"],
+
+    "@koi/middleware-reflex": ["@koi/middleware-reflex@workspace:packages/lib/middleware-reflex"],
+
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
 
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/lib/middleware-semantic-retry"],
@@ -1929,6 +1980,8 @@
     "@koi/middleware-tool-recovery": ["@koi/middleware-tool-recovery@workspace:packages/lib/middleware-tool-recovery"],
 
     "@koi/middleware-tool-selector": ["@koi/middleware-tool-selector@workspace:packages/lib/middleware-tool-selector"],
+
+    "@koi/middleware-turn-ack": ["@koi/middleware-turn-ack@workspace:packages/lib/middleware-turn-ack"],
 
     "@koi/middleware-turn-prelude": ["@koi/middleware-turn-prelude@workspace:packages/lib/middleware-turn-prelude"],
 

@@ -66,8 +66,21 @@ const noopToolHandler = async (_req: ToolRequest): Promise<ToolResponse> => ({
   output: "done",
 });
 
+// IS_DEFAULT_ASK marker — see handle-ask-decision.ts. Stamped on mock
+// asks so persistent / session-allow grant overrides apply (matching the
+// real `createPermissionBackend` behavior on unmatched-rule fall-through).
+// Explicit ask rules (e.g. fs_read out-of-workspace) intentionally omit
+// this marker so user-stored grants do not silently bypass them.
+const IS_DEFAULT_ASK_TEST: symbol = Symbol.for("@koi/permissions/default-fallthrough-ask");
 function askBackend(): PermissionBackend {
-  return { check: (): PermissionDecision => ({ effect: "ask", reason: "needs approval" }) };
+  return {
+    check: (): PermissionDecision =>
+      ({
+        effect: "ask",
+        reason: "needs approval",
+        [IS_DEFAULT_ASK_TEST]: true,
+      }) as PermissionDecision,
+  };
 }
 
 // ---------------------------------------------------------------------------

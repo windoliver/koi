@@ -8,6 +8,7 @@
   "references": [
     { "path": "../../kernel/core" },
     { "path": "../../kernel/engine" },
+    { "path": "../../lib/forge-demand" },
     { "path": "../../lib/forge-tools" },
     { "path": "../../lib/file-type" },
     { "path": "../../lib/agent-summary" },
