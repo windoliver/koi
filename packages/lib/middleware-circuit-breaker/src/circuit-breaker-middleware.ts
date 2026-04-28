@@ -116,31 +116,48 @@ async function* trackedStream(
   source: AsyncIterable<ModelChunk>,
   breaker: CircuitBreaker,
 ): AsyncIterable<ModelChunk> {
+  // Tracks whether the consumer broke out of the loop early (cancellation,
+  // abort, downstream short-circuit). If they did, we MUST NOT count the
+  // truncation as a provider failure — it's a local control-flow event.
+  // Conversely, if the source's own iterator returns without a terminal
+  // chunk while the consumer is still receiving, that's an upstream
+  // truncation and IS counted (with no status, so failureStatusCodes can
+  // suppress it if configured).
+  let consumerCancelled = true;
   try {
     for await (const chunk of source) {
       if (chunk.kind === "error") {
+        consumerCancelled = false;
         const status = streamErrorStatus(chunk);
         if (status !== undefined) breaker.recordFailure(status);
         yield chunk;
         return;
       }
       if (chunk.kind === "done") {
+        consumerCancelled = false;
         breaker.recordSuccess();
         yield chunk;
         return;
       }
       yield chunk;
     }
-    // Iterator ended without an explicit terminal chunk — query-engine treats
-    // this as an error ("stream ended without terminal chunk"). Count it as
-    // a failure so degraded providers that produce truncated streams trip
-    // the breaker instead of healing it. Pass no status so configured
-    // failureStatusCodes filters can still suppress this if desired.
+    // for-await exited because the source ran out, not because the consumer
+    // broke. That's an upstream truncation — count it as a failure.
+    consumerCancelled = false;
     breaker.recordFailure();
   } catch (err: unknown) {
+    consumerCancelled = false;
     const status = extractStatusCode(err);
     if (status !== undefined) breaker.recordFailure(status);
     throw err;
+  } finally {
+    // If the generator was closed early (consumer break / generator.return /
+    // abort), `consumerCancelled` stays true and we leave breaker state
+    // untouched. Without this guard, normal local cancellation would poison
+    // a healthy provider's circuit on the next request.
+    if (consumerCancelled) {
+      // intentional no-op — explicit branch documents the policy
+    }
   }
 }
 

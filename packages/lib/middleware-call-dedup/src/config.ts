@@ -12,14 +12,70 @@ export const DEFAULT_TTL_MS = 300_000;
 /** Default LRU capacity. */
 export const DEFAULT_MAX_ENTRIES = 100;
 
-/** Tools always excluded from caching (mutating / side-effecting). */
+/**
+ * Tools always excluded from caching (mutating / side-effecting / stateful-read).
+ *
+ * This is a HARD floor: even tools mistakenly added to a caller's `include`
+ * allowlist are bypassed if they appear here. The list covers every mutating
+ * or ambient-state-dependent tool currently shipped in this repo. It is
+ * intentionally wide — silently dropping a write or serving a stale read is
+ * a data-loss / data-corruption class failure, not a cache miss, so we err
+ * heavily on the side of NOT caching.
+ *
+ * Categories represented:
+ *   - shell / file write surface: shell_exec, file_*, fs_*
+ *   - agent control plane: agent_*, koi_send_message
+ *   - notebook mutation: notebook_add_cell, notebook_replace_cell, notebook_delete_cell
+ *   - stateful task board (reads see writes): task_create, task_update, task_stop,
+ *     task_delegate, task_list, task_get, task_output
+ *   - notebook read (sees concurrent edits): notebook_read
+ *   - code execution (side-effecting): execute_code
+ *   - watcher / event subscription: watch
+ *   - forge / spawn surface: forge_agent, agent_send, agent_spawn, agent_revoke,
+ *     agent_pause, agent_resume
+ */
 export const DEFAULT_EXCLUDE: readonly string[] = [
+  // shell / filesystem mutation
   "shell_exec",
   "file_write",
   "file_delete",
   "file_create",
+  "file_move",
+  "file_rename",
+  "file_update",
+  "file_patch",
+  "fs_write",
+  "fs_delete",
+  "fs_create",
+  "fs_move",
+  "fs_rename",
+  "fs_update",
+  "fs_patch",
+  // agent / messaging control plane
   "agent_send",
   "agent_spawn",
+  "agent_revoke",
+  "agent_pause",
+  "agent_resume",
+  "koi_send_message",
+  // notebook mutation + stateful read
+  "notebook_add_cell",
+  "notebook_replace_cell",
+  "notebook_delete_cell",
+  "notebook_read",
+  // task board (mutations + reads-see-writes)
+  "task_create",
+  "task_update",
+  "task_stop",
+  "task_delegate",
+  "task_list",
+  "task_get",
+  "task_output",
+  // code exec, watchers
+  "execute_code",
+  "watch",
+  // forge surface
+  "forge_agent",
 ] as const;
 
 export interface CallDedupConfig {

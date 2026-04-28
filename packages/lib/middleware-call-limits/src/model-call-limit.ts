@@ -1,16 +1,19 @@
 /**
  * Model call limit middleware — caps total model calls per session.
  *
- * Throws RATE_LIMIT KoiRuntimeError on overflow. No "continue" mode for model
- * calls — there is no useful "blocked response" for the engine to act on.
+ * Throws RATE_LIMIT KoiRuntimeError on overflow. Counter is shared across
+ * the streaming and non-streaming paths so the cap holds regardless of
+ * which terminal the engine selects.
  */
 
 import type {
   CapabilityFragment,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   SessionContext,
   TurnContext,
 } from "@koi/core";
@@ -42,22 +45,43 @@ function fireModelLimit(s: ModelLimitState, sessionId: string, count: number): v
   }
 }
 
+function buildLimitError(s: ModelLimitState, sessionId: string): KoiRuntimeError {
+  return KoiRuntimeError.from(
+    "RATE_LIMIT",
+    `Model call limit exceeded (${String(s.config.limit)})`,
+    { retryable: false, context: { sessionId, limit: s.config.limit } },
+  );
+}
+
+function checkAndIncrement(s: ModelLimitState, sessionId: string): void {
+  const r = s.store.incrementIfBelow(modelKey(sessionId), s.config.limit);
+  if (!r.allowed) {
+    fireModelLimit(s, sessionId, r.current + 1);
+    throw buildLimitError(s, sessionId);
+  }
+}
+
 async function mlWrapModelCall(
   s: ModelLimitState,
   ctx: TurnContext,
   request: ModelRequest,
   next: ModelHandler,
 ): Promise<ModelResponse> {
-  const sessionId = ctx.session.sessionId;
-  const r = s.store.incrementIfBelow(modelKey(sessionId), s.config.limit);
-  if (!r.allowed) {
-    fireModelLimit(s, sessionId, r.current + 1);
-    throw KoiRuntimeError.from(
-      "RATE_LIMIT",
-      `Model call limit exceeded (${String(s.config.limit)})`,
-      { retryable: false, context: { sessionId, limit: s.config.limit } },
-    );
-  }
+  checkAndIncrement(s, ctx.session.sessionId);
+  return next(request);
+}
+
+function mlWrapModelStream(
+  s: ModelLimitState,
+  ctx: TurnContext,
+  request: ModelRequest,
+  next: ModelStreamHandler,
+): AsyncIterable<ModelChunk> {
+  // Counter must be charged before yielding from the upstream stream;
+  // otherwise the streaming path silently bypasses the cap. We count the
+  // attempt synchronously (as soon as the iterator is requested) so the
+  // limit applies whether the consumer drains the stream or aborts early.
+  checkAndIncrement(s, ctx.session.sessionId);
   return next(request);
 }
 
@@ -81,6 +105,7 @@ export function createModelCallLimitMiddleware(config: ModelCallLimitConfig): Ko
     priority: 175,
     phase: "intercept",
     wrapModelCall: (ctx, request, next) => mlWrapModelCall(state, ctx, request, next),
+    wrapModelStream: (ctx, request, next) => mlWrapModelStream(state, ctx, request, next),
     onSessionEnd: (ctx) => mlOnSessionEnd(state, ctx),
     describeCapabilities: () => state.capability,
   } satisfies KoiMiddleware;

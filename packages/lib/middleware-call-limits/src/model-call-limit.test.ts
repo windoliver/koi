@@ -73,6 +73,42 @@ describe("createModelCallLimitMiddleware", () => {
     expect(mw.describeCapabilities(turnCtx())?.description).toContain("7");
   });
 
+  // Regression: model cap MUST apply to streaming path. The runtime selects
+  // modelStream when available, so wrapping only modelCall lets streamed
+  // turns silently bypass the cap.
+  test("wrapModelStream is also limited and shares the counter", async () => {
+    const mw = createModelCallLimitMiddleware({ limit: 2 });
+    const ctx = turnCtx("stream-cap");
+    async function* okStream(): AsyncIterable<import("@koi/core").ModelChunk> {
+      yield { kind: "text_delta", delta: "x" };
+      yield {
+        kind: "done",
+        response: { content: "x", model: "m" },
+      };
+    }
+    // First call (non-stream)
+    await mw.wrapModelCall?.(ctx, { messages: [] }, okHandler());
+    // Second call (stream) — should still be allowed
+    const s1 = mw.wrapModelStream?.(ctx, { messages: [] }, okStream);
+    if (s1 === undefined) throw new Error("no stream");
+    for await (const _c of s1) {
+      // drain
+    }
+    // Third call (stream) — must throw RATE_LIMIT, sharing the counter
+    let threw = false;
+    try {
+      const s2 = mw.wrapModelStream?.(ctx, { messages: [] }, okStream);
+      if (s2 === undefined) throw new Error("no stream");
+      for await (const _c of s2) {
+        // drain
+      }
+    } catch (e: unknown) {
+      threw = true;
+      expect((e as { code?: string }).code).toBe("RATE_LIMIT");
+    }
+    expect(threw).toBe(true);
+  });
+
   test("onSessionEnd resets counter so fresh session can run", async () => {
     const mw = createModelCallLimitMiddleware({ limit: 1 });
     const ctx = turnCtx("model-cleanup");

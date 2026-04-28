@@ -109,6 +109,36 @@ describe("createCallDedupMiddleware", () => {
     expect(h.calls).toBe(3); // 2 + 1
   });
 
+  // Regression: DEFAULT_EXCLUDE must cover ALL mutating / stateful-read
+  // tools shipped in the repo, not just the original six. A misconfigured
+  // include must never silently drop writes or serve stale reads.
+  test("DEFAULT_EXCLUDE covers task / notebook / fs / agent surface", async () => {
+    const muting = [
+      "fs_write",
+      "fs_delete",
+      "task_create",
+      "task_update",
+      "task_stop",
+      "task_list", // stateful read
+      "notebook_add_cell",
+      "notebook_replace_cell",
+      "notebook_delete_cell",
+      "notebook_read", // stateful read
+      "koi_send_message",
+      "execute_code",
+      "forge_agent",
+    ];
+    const mw = createCallDedupMiddleware({ include: muting });
+    const ctx = turnCtx();
+    const h = makeHandler("v");
+    for (const toolId of muting) {
+      await mw.wrapToolCall?.(ctx, { toolId, input: {} }, h.handler);
+      await mw.wrapToolCall?.(ctx, { toolId, input: {} }, h.handler);
+    }
+    // None of these should be cached: 13 tools × 2 calls = 26 executions.
+    expect(h.calls).toBe(muting.length * 2);
+  });
+
   test("user exclude is merged with defaults", async () => {
     const mw = createCallDedupMiddleware({
       include: ["custom_writer"],

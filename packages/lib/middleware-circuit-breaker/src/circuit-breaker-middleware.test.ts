@@ -302,6 +302,31 @@ describe("createCircuitBreakerMiddleware", () => {
     expect(mw.describeCapabilities(ctx)?.description).toContain("openai");
   });
 
+  // Regression: consumer cancellation (early break, abort, downstream
+  // short-circuit) must NOT count as a provider failure. Otherwise a few
+  // local cancellations would trip the circuit on a healthy backend.
+  test("consumer breaking out of stream does not record breaker failure", async () => {
+    const mw = createCircuitBreakerMiddleware({ breaker: { failureThreshold: 2 } });
+    const ctx = turnCtx();
+    // Long stream that yields many text deltas before any terminal chunk.
+    async function* longStream(): AsyncIterable<ModelChunk> {
+      for (let i = 0; i < 100; i++) {
+        yield { kind: "text_delta", delta: "x" };
+      }
+      yield { kind: "done", response: modelResponse() };
+    }
+    // Consumer breaks after the first chunk, repeatedly.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const s = mw.wrapModelStream?.(ctx, { messages: [], model: "openai/gpt-4o" }, longStream);
+      if (s === undefined) throw new Error("no stream");
+      for await (const _c of s) {
+        break; // consumer cancellation
+      }
+    }
+    // Circuit must still be CLOSED — no upstream failure occurred.
+    expect(mw.describeCapabilities(ctx)?.description).toContain("healthy");
+  });
+
   // Regression: streamed RATE_LIMIT/TIMEOUT/EXTERNAL chunks come from the
   // model adapter, not local middleware (which throw, not yield). They
   // ARE provider failures and must count.
