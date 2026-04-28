@@ -14465,3 +14465,120 @@ describe("Golden: @koi/audit-sink-nexus", () => {
     expect(entries[1]?.timestamp).toBe(200);
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-circuit-breaker (2 queries)
+//
+// Standalone — no cassette. The middleware shape and lifecycle hooks are
+// asserted directly. Replay coverage is gated on cassette plumbing for
+// model-failure storms (#1419 follow-up).
+// ---------------------------------------------------------------------------
+
+function stubTurnCtx(): import("@koi/core").TurnContext {
+  type Ctx = import("@koi/core").TurnContext;
+  const sid = sessionId("golden-stub");
+  const rid = runId("r-stub");
+  return {
+    session: { agentId: "a", sessionId: sid, runId: rid, metadata: {} },
+    turnIndex: 0,
+    turnId: `${rid}-0` as Ctx["turnId"],
+    messages: [],
+    metadata: {},
+  };
+}
+
+describe("Golden: @koi/middleware-circuit-breaker", () => {
+  test("middleware exposes name 'koi:circuit-breaker' with intercept phase + wrapModelCall", async () => {
+    const { createCircuitBreakerMiddleware } = await import("@koi/middleware-circuit-breaker");
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 3, failureWindowMs: 10_000, cooldownMs: 1000 },
+    });
+    expect(mw.name).toBe("koi:circuit-breaker");
+    expect(mw.phase).toBe("intercept");
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapModelStream).toBe("function");
+    expect(typeof mw.onSessionEnd).toBe("function");
+    expect(typeof mw.describeCapabilities).toBe("function");
+  });
+
+  test("describeCapabilities labels the breaker state", async () => {
+    const { createCircuitBreakerMiddleware } = await import("@koi/middleware-circuit-breaker");
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 5, failureWindowMs: 20_000, cooldownMs: 30_000 },
+    });
+    const ctx = stubTurnCtx();
+    const cap = mw.describeCapabilities?.(ctx);
+    expect(cap).toBeDefined();
+    expect(cap?.label).toBe("circuit-breaker");
+    expect(typeof cap?.description).toBe("string");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-call-limits (2 queries)
+//
+// Standalone — exercise both factories directly. Cap behavior under live
+// streams is covered by the package's unit tests.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-call-limits", () => {
+  test("model factory yields 'koi:model-call-limit' with wrapModelCall + wrapModelStream", async () => {
+    const { createModelCallLimitMiddleware } = await import("@koi/middleware-call-limits");
+    const mw = createModelCallLimitMiddleware({ limit: 4 });
+    expect(mw.name).toBe("koi:model-call-limit");
+    expect(mw.phase).toBe("intercept");
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapModelStream).toBe("function");
+    expect(mw.describeCapabilities?.(stubTurnCtx())?.description).toContain("4");
+  });
+
+  test("tool factory yields 'koi:tool-call-limit' with wrapToolCall + namespaced global", async () => {
+    const { createToolCallLimitMiddleware, createInMemoryCallLimitStore } = await import(
+      "@koi/middleware-call-limits"
+    );
+    const store = createInMemoryCallLimitStore();
+    const mw = createToolCallLimitMiddleware({
+      limits: { web_fetch: 2 },
+      globalLimit: 10,
+      store,
+    });
+    expect(mw.name).toBe("koi:tool-call-limit");
+    expect(typeof mw.wrapToolCall).toBe("function");
+    // Global namespace must not collide with a tool literally named '__global__'.
+    const r = store.incrementIfBelow("tool-global:s-1", 10);
+    expect(r.allowed).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-call-dedup (2 queries)
+//
+// Standalone — config validation + middleware shape. Cache short-circuit
+// behavior is covered by the package's own tests.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-call-dedup", () => {
+  test("middleware exposes 'koi:call-dedup' with wrapToolCall and observe hooks", async () => {
+    const { createCallDedupMiddleware } = await import("@koi/middleware-call-dedup");
+    const mw = createCallDedupMiddleware({
+      include: ["pure_calc"],
+      ttlMs: 1000,
+      maxEntries: 16,
+    });
+    expect(mw.name).toBe("koi:call-dedup");
+    expect(typeof mw.wrapToolCall).toBe("function");
+    expect(typeof mw.onSessionEnd).toBe("function");
+  });
+
+  test("default exclude list covers scheduler + mutating tool families", async () => {
+    const { DEFAULT_EXCLUDE, validateCallDedupConfig } = await import("@koi/middleware-call-dedup");
+    // Scheduler mutations must never be cached (round-30 fix).
+    expect(DEFAULT_EXCLUDE).toContain("sleep");
+    expect(DEFAULT_EXCLUDE).toContain("cancel_sleep");
+    expect(DEFAULT_EXCLUDE).toContain("schedule_cron");
+    expect(DEFAULT_EXCLUDE).toContain("cancel_schedule");
+    // Validation rejects empty instanceNonce.
+    const result = validateCallDedupConfig({ include: ["x"], instanceNonce: "" });
+    expect(result.ok).toBe(false);
+  });
+});
