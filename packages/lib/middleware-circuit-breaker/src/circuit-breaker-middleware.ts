@@ -389,7 +389,27 @@ function cbWrapModelStream(
   const tookProbe =
     breaker.getSnapshot().state === "HALF_OPEN" &&
     (stateBefore === "OPEN" || stateBefore === "HALF_OPEN");
-  return trackedStream(next(request), breaker, tookProbe);
+  // `next(request)` can throw synchronously before returning an
+  // AsyncIterable (e.g., a downstream call-limit middleware throws when
+  // the session budget is exhausted, or a stream factory fails during
+  // setup). If a probe was taken, none of `trackedStream`'s cleanup
+  // would run and `probeInFlight` would leak — wedging the circuit in
+  // HALF_OPEN forever even though the provider is healthy.
+  let stream: AsyncIterable<ModelChunk>;
+  try {
+    stream = next(request);
+  } catch (err: unknown) {
+    if (tookProbe) {
+      const status = extractStatusCode(err);
+      if (status !== undefined) {
+        breaker.recordFailure(status);
+      } else {
+        breaker.releaseProbe();
+      }
+    }
+    throw err;
+  }
+  return trackedStream(stream, breaker, tookProbe);
 }
 
 function cbDescribe(s: CbState): CapabilityFragment {

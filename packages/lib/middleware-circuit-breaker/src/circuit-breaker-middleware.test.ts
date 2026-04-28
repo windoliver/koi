@@ -411,6 +411,41 @@ describe("createCircuitBreakerMiddleware", () => {
     expect(ok?.content).toBe("ok");
   });
 
+  // Regression (#1419 round 22): wrapModelStream's `next(request)` may
+  // throw synchronously before returning an AsyncIterable (e.g.
+  // call-limit middleware throws when budget exhausted, or a stream
+  // factory fails during setup). If a HALF_OPEN probe was taken, the
+  // probeInFlight slot must be released or the circuit wedges forever.
+  test("HALF_OPEN stream probe is released when next() throws synchronously", async () => {
+    let now = 1000;
+    const clock = (): number => now;
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 2, cooldownMs: 1000 },
+      clock,
+    });
+    const ctx = turnCtx();
+    const req: ModelRequest = { messages: [], model: "openai/gpt-4o" };
+
+    // Trip OPEN.
+    await expect(mw.wrapModelCall?.(ctx, req, makeHandler("fail-500"))).rejects.toThrow();
+    await expect(mw.wrapModelCall?.(ctx, req, makeHandler("fail-500"))).rejects.toThrow();
+    now += 2000; // cooldown → next call gets the probe
+
+    // wrapModelStream where the inner handler throws synchronously
+    // (no upstream status — purely local). The probe slot must be
+    // released.
+    const throwingFactory = (): AsyncIterable<ModelChunk> => {
+      throw new Error("local-setup-error");
+    };
+    expect(() => mw.wrapModelStream?.(ctx, req, throwingFactory)).toThrow("local-setup-error");
+
+    // Immediate follow-up (no clock advance) must still get a probe.
+    // If probeInFlight had leaked, isAllowed() would return false here
+    // because the breaker remains HALF_OPEN with the slot occupied.
+    const ok = await mw.wrapModelCall?.(ctx, req, makeHandler("ok"));
+    expect(ok?.content).toBe("ok");
+  });
+
   // Regression: streamed RATE_LIMIT/TIMEOUT/EXTERNAL chunks come from the
   // model adapter, not local middleware (which throw, not yield). They
   // ARE provider failures and must count.

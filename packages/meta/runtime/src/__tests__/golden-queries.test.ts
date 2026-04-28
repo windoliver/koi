@@ -1730,6 +1730,26 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     ).toThrow(/onCacheHit/);
   });
 
+  // Regression (#1419 round 22): the gate must trigger on ANY observe-
+  // phase middleware, not just audit-named ones. Dedup hides cache hits
+  // from event-trace, session-transcript, custom telemetry, and any
+  // observe-phase observer.
+  test("createRuntime refuses callDedup when any observe-phase middleware is present", () => {
+    const customTelemetry = {
+      name: "custom-telemetry",
+      phase: "observe" as const,
+      priority: 500,
+      describeCapabilities: () => ({ label: "telemetry", description: "telemetry" }),
+    } as unknown as import("@koi/core").KoiMiddleware;
+    expect(() =>
+      createRuntime({
+        adapter: createTerminalAdapter(),
+        middleware: [customTelemetry],
+        callDedup: { include: ["lookup"] },
+      }),
+    ).toThrow(/onCacheHit/);
+  });
+
   test("createRuntime accepts callDedup without audit even when onCacheHit is omitted", () => {
     const handle = createRuntime({
       adapter: createTerminalAdapter(),
