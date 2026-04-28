@@ -432,19 +432,21 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 if (emit !== undefined) emit(sid, step);
                 return;
               }
-              // No runId on the step. With exactly one emitter the
-              // routing is unambiguous — fan out. With multiple
-              // concurrent emitters we MUST fail closed: broadcasting
-              // the step would write one stream's approval decision
-              // into every other concurrent stream's trajectory
-              // (audit corruption + cross-stream data leak — an
-              // approval is a security record, not just telemetry).
-              // Drop the step and log per-event so audit loss is
-              // visible to operators and they can upgrade their
-              // permissions middleware to stamp `runId`. If a
-              // session-level fallback sink is configured, deliver
-              // there instead so no record is silently lost.
-              if (byRunId.size === 1) {
+              // No runId on the step. Routing rule:
+              //   * Non-stable mode (each stream has its own
+              //     sessionId): a sessionId NEVER hosts more than
+              //     one emitter at a time, so byRunId.size === 1
+              //     is unambiguous — fan out.
+              //   * Stable mode (RuntimeConfig.sessionId set):
+              //     the same sessionId hosts many streams across
+              //     its lifetime. A delayed approval step from a
+              //     now-deregistered stream A could arrive while
+              //     stream B is the only emitter still registered
+              //     — forwarding A's record into B's trajectory
+              //     is audit corruption + cross-stream leak on a
+              //     security-sensitive path. Always fail closed
+              //     in stable mode.
+              if (config.sessionId === undefined && byRunId.size === 1) {
                 const only = byRunId.values().next().value;
                 if (only !== undefined) only(sid, step);
                 return;
