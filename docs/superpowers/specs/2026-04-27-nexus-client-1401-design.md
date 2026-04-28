@@ -127,12 +127,13 @@ Sequence:
 
 1. Record `start = performance.now()`
 2. `transport.call("version", {}, { deadlineMs: HEALTH_DEADLINE_MS, nonInteractive: true })` — liveness: TCP+TLS+JSON-RPC reachable; capture version string.
-3. `transport.call("read", { path: "koi/permissions/version.json" }, { deadlineMs, nonInteractive: true })` — exercises the read path used by every policy sync. Discard result; we only care that it returned a valid JSON-RPC envelope (200 ok or 404 — both prove the read code path works). 5xx / network / auth → return error.
-4. All calls go through `transport.call(...)` — local-bridge included.
-5. **Health probes are non-interactive.** `nonInteractive: true` MUST cause local-bridge to reject (not extend timeout for) `auth_required` notifications. Without this, an unauthenticated mount could stall startup behind interactive OAuth. HTTP transport has no auth flow; this flag is a no-op there.
-6. Per-call `deadlineMs: HEALTH_DEADLINE_MS = 5_000` overrides each transport's default.
-7. On success: `{ ok: true, value: { ok: true, version, latencyMs, probed: ["version", "read:koi/permissions/version.json"] } }`.
-8. On failure: propagate `KoiError` via `mapNexusError`.
+3. `transport.call("read", { path: "koi/permissions/version.json" }, { deadlineMs, nonInteractive: true })` — exercises the read path. 200 ok or 404 → both prove the read code works (file-not-found is a transport success). 5xx / network / auth → return error.
+4. `transport.call("read", { path: "koi/permissions/policy.json" }, { deadlineMs, nonInteractive: true })` — exercises the second read path. Same accept criteria: 200 or 404 → ok; 5xx / network / auth → return error.
+5. All calls go through `transport.call(...)` — local-bridge included.
+6. **Health probes are non-interactive.** `nonInteractive: true` MUST cause local-bridge to reject (not extend timeout for) `auth_required` notifications. Without this, an unauthenticated mount could stall startup behind interactive OAuth. HTTP transport has no auth flow; this flag is a no-op there.
+7. Per-call `deadlineMs: HEALTH_DEADLINE_MS = 5_000` overrides each transport's default.
+8. On success: `{ ok: true, value: { ok: true, version, latencyMs, probed: ["version", "read:koi/permissions/version.json", "read:koi/permissions/policy.json"] } }`.
+9. On failure: propagate `KoiError` via `mapNexusError`.
 
 **Scope of `health()`:** transport-layer only — it validates that the JSON-RPC channel can carry the read calls that `createNexusPermissionBackend` will make. It does NOT claim that policy is "synced", that the policy backend will successfully activate, or that audit writes will succeed. Those are downstream concerns and belong to the runtime startup (next section), not to nexus-client.
 
@@ -181,20 +182,35 @@ Earlier drafts proposed making audit-wired runtimes default to `fail-closed-tran
 | Mode | Behavior |
 |---|---|
 | `telemetry` (default) | log on transport failure; log activation status; continue boot |
-| `fail-closed-transport` | throw on transport failure; **does NOT validate centralized policy** — local-fallback may still apply if Nexus policy files are missing/malformed |
+| `fail-closed-transport` | throw on transport failure for any of the 3 probes (version + version.json read + policy.json read); does NOT validate that policy files exist or that backend successfully activates remote policy |
 | `fail-closed-policy` | throw on transport failure; throw on policy-activation failure (awaits `backend.ready`); centralized policy is required to serve traffic |
 
-**⚠️ Security caveat for `fail-closed-transport`:** the name implies stricter posture than it delivers. It only gates transport reachability — `createNexusPermissionBackend` will still fall back to local rules if `version.json`/`policy.json` are missing, malformed, or fail backend rebuild. Operators who require centralized-policy enforcement must use `fail-closed-policy`, not `fail-closed-transport`. The two-name split is deliberate so this caveat cannot be papered over by mode-name optimism.
+**⚠️ Security caveat for `fail-closed-transport`:** this gate only proves the transport can carry the read calls. Even with a 404 on `version.json`/`policy.json` the probe succeeds (file-not-found is a transport-success signal). And even when the files exist, parsing or backend `rebuildBackend` shape mismatch can still cause silent local-fallback. Operators who require centralized-policy *enforcement* must use `fail-closed-policy`, not `fail-closed-transport`. The two-name split is deliberate so this caveat cannot be papered over by mode-name optimism.
 
 **Policy-activation check** (only in `fail-closed-policy`):
 
 After the permission backend is created, the runtime `await`s `nexusPermBackend.ready` and inspects whether centralized policy actually activated (vs. fell back to local). The backend exposes activation status via its existing `ready` promise resolution and a documented status field. If activation failed (file 404, parse error, `rebuildBackend` shape mismatch, `supportsDefaultDenyMarker` mismatch), the runtime throws before exposing the runtime to requests. This closes the race the earlier draft had: requests cannot be served against the local fallback when policy-required mode is set.
 
-**Documented audit-write gap (in package README):**
+**Audit-write runtime error surfacing (in scope this PR):**
 
-> "Nexus audit write readiness is not probed at startup. A broken Nexus audit backend can pass `health()` and still drop compliance records — `createNexusAuditSink` and `createAuditMiddleware` currently swallow async flush failures with no observable signal (no `onError` hook, no drop counter today). Closing this gap requires (a) a Nexus server-side audit ping RPC for non-side-effecting probing, AND (b) a runtime `onError`/poison hook on the audit middleware so dropped writes become observable. Both are tracked as follow-up issues; this PR does NOT add either."
+`@koi/middleware-audit` already exposes an `onError` hook, and `runtime-factory.ts` already wires NDJSON and SQLite sinks through a poison-on-error pattern (`runtime-factory.ts:2526–2602` — `ndjsonPoisonError` accumulator, `onError` callback, post-flush rethrow). The Nexus audit sink is currently the only one wired without this pattern, which is what makes Nexus audit silently drop records on flush failure.
 
-This is honest disclosure rather than pointing operators at observability surfaces that don't exist. Adding the `onError` hook is out of scope for this PR (it's an audit middleware change, not a nexus-client change), but the limitation is now documented in plain language so operators understand the gap rather than assuming `telemetry` mode plus existing tooling gives them audit reliability.
+This PR adds the same poison-on-error wiring for `createNexusAuditSink`:
+
+```ts
+let nexusAuditPoisonError: unknown;
+const nexusAuditSink = createNexusAuditSink({
+  transport: nexusTransport,
+  onError: (error: unknown) => {
+    if (nexusAuditPoisonError === undefined) nexusAuditPoisonError = error;
+    logger.error({ err: error }, "nexus audit sink write failed");
+  },
+  // … existing config …
+});
+// At session-end / explicit flush boundary, rethrow if poisoned (matches NDJSON pattern).
+```
+
+**Remaining gap (server-side, out of scope):** `health()` still does not probe audit *write* readiness — there is no non-side-effecting audit RPC on the Nexus server. The poison-on-error wiring closes the runtime observability gap (operators see failures via logs and the runtime fails fast on flush), but does not move detection to startup. A server-side `audit.ping` RPC would close that remaining gap; tracked as a separate Nexus server issue.
 
 ```ts
 // packages/meta/cli/src/runtime-factory.ts
@@ -258,7 +274,16 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
 }
 ```
 
-**Backend API addition required** (`@koi/permissions-nexus`): `nexusPermBackend.isCentralizedPolicyActive(): boolean`. Returns true iff the most recent sync produced a successfully-activated remote policy backend (not the local-fallback path). This is a read-only query of internal activation state and is needed to honor `fail-closed-policy` honestly.
+**Backend API addition required** (`@koi/permissions-nexus`): `nexusPermBackend.isCentralizedPolicyActive(): boolean`.
+
+**Semantics (matched to current backend behavior):** returns true iff the **currently-serving backend** is a remote-policy backend (i.e. some prior sync activated remote policy and the backend has not since fallen back to local). The current backend keeps last-known-good remote policy across transient sync failures — it does NOT drop back to local on a single bad poll. Therefore:
+
+- First sync ever fails (no prior remote policy to keep) → `false` (serving local fallback)
+- First sync succeeds → `true`
+- Subsequent sync fails (last-known-good preserved) → still `true` (still serving remote policy)
+- Sync produces a structurally-incompatible policy that backend cannot rebuild → `false` (backend reverts to local)
+
+`fail-closed-policy` checks this **once at startup** after `await backend.ready` completes. Post-boot transient failures do not re-trigger the gate — they continue to serve last-known-good remote policy per existing semantics. This preserves the existing operational contract: the new mode adds a startup guarantee without changing steady-state behavior.
 
 **Type-system enforcement:** field typed as `HealthCapableNexusTransport`. Production transports (`createHttpTransport`, fs-nexus `local-bridge`) must return this. TypeScript rejects a base `NexusTransport`. The `as unknown as NexusTransport` cast in `tui-command.ts:1704` becomes `assertHealthCapable(transport)`.
 
@@ -276,8 +301,8 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
 | File | Change | Est LOC |
 |---|---|---|
 | `packages/lib/nexus-client/src/types.ts` | Add `NexusCallOptions` (deadlineMs, nonInteractive), `NexusHealth` (transport-only fields), optional `health` on `NexusTransport`, required `health` on `HealthCapableNexusTransport`; extend `call` signature with optional `opts` | +22 |
-| `packages/lib/nexus-client/src/transport.ts` | HTTP impl: thread `opts.deadlineMs` into existing `AbortSignal.timeout`; implement `health()` with two transport probes (version + read koi/permissions/version.json); discard read result body; return `HealthCapableNexusTransport` | +45 |
-| `packages/lib/nexus-client/src/health.test.ts` | New: both probes ok → ok with version+latency; read returns 404 → still ok (transport works); version 5xx → fail; read 5xx → fail; read 401 → fail; per-call deadline honored; network error; malformed version response; nonInteractive flag set on all calls | +160 |
+| `packages/lib/nexus-client/src/transport.ts` | HTTP impl: thread `opts.deadlineMs` into existing `AbortSignal.timeout`; implement `health()` with three transport probes (version + read koi/permissions/version.json + read koi/permissions/policy.json); discard read result bodies; return `HealthCapableNexusTransport` | +50 |
+| `packages/lib/nexus-client/src/health.test.ts` | New: all probes ok → ok with version+latency+probed[3]; either read returns 404 → still ok (transport works); version 5xx → fail; version.json read 5xx → fail; policy.json read 5xx → fail (proves we don't stop after first read); read 401 → fail; per-call deadline honored; network error; malformed version response; nonInteractive flag set on all calls | +180 |
 | `packages/lib/nexus-client/src/assert-health-capable.ts` | New: `assertHealthCapable` assertion function | +15 |
 | `packages/lib/nexus-client/src/assert-health-capable.test.ts` | New: present narrows; missing throws | +25 |
 | `packages/lib/nexus-client/src/index.ts` | Re-export `NexusHealth`, `HealthCapableNexusTransport`, `assertHealthCapable` | +3 |
@@ -285,12 +310,13 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
 | `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; nonInteractive=true rejects on auth_required without extending deadline; health success through subprocess; health failure when subprocess dead; health failure when stdio handshake broken | +120 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | Add `isCentralizedPolicyActive(): boolean` method; tracks whether last sync produced a successfully-rebuilt remote backend (vs. fell back to local) | +30 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.test.ts` | New tests: returns false before first sync; true after successful sync; false after sync that fell back (file 404, parse error, rebuildBackend mismatch, supportsDefaultDenyMarker mismatch) | +80 |
-| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as `HealthCapableNexusTransport`; add `nexusBootMode` config field (default `"telemetry"`); wire transport-health preflight; in `fail-closed-policy` mode, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()` before exposing runtime | +50 |
+| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as `HealthCapableNexusTransport`; add `nexusBootMode` config field (default `"telemetry"`); wire transport-health preflight; in `fail-closed-policy` mode, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()` before exposing runtime; **wire `createNexusAuditSink` through poison-on-error pattern matching NDJSON/SQLite sinks** (close runtime audit-loss gap) | +75 |
+| `packages/meta/cli/src/__tests__/runtime-factory-nexus-audit-poison.test.ts` | New tests: `onError` accumulates first failure; subsequent flush rethrows poisoned error; success path does not poison; matches existing NDJSON pattern semantics | +90 |
 | `packages/meta/cli/src/__tests__/runtime-factory-health.test.ts` | New tests covering all three modes + activation race coverage (see Tests section) | +200 |
 | `packages/meta/cli/src/tui-command.ts` | Replace `as unknown as NexusTransport` cast (line 1704) with `assertHealthCapable(transport)` narrowing | +5 |
 | `docs/L2/nexus-client.md` | Document readiness probe semantics; `HealthCapableNexusTransport` contract; WS/gRPC/pool out-of-scope rationale | +60 |
 
-**Total: ~660 LOC (200 src + 400 test + 60 doc).**
+**Total: ~825 LOC (225 src + 540 test + 60 doc).**
 
 (Larger than the original ~170 estimate because reviews correctly demanded real integration, type-system enforcement, and a readiness probe — not just a dead liveness API.)
 
@@ -298,13 +324,15 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
 
 `packages/lib/nexus-client/src/health.test.ts`:
 
-1. `health() returns ok with version + latency + probed when both probes succeed`
-2. `health() returns ok when read returns 404 (transport works; activation status is runtime's job)`
-3. `health() returns error when version probe returns 503` — liveness fail
-4. `health() returns error when read returns 503` — transport fail
-5. `health() returns error when read returns 401 (auth failure)`
-6. `health() passes nonInteractive=true and deadlineMs on every transport.call`
-7. `health() honors per-call deadline (rejects within HEALTH_DEADLINE_MS)`
+1. `health() returns ok with version + latency + probed=[version, read:version.json, read:policy.json] when all probes succeed`
+2. `health() returns ok when version.json read returns 404 (transport works)`
+3. `health() returns ok when policy.json read returns 404 (transport works)`
+4. `health() returns error when version probe returns 503`
+5. `health() returns error when version.json read returns 503`
+6. `health() returns error when policy.json read returns 503` — proves we don't stop after first read
+7. `health() returns error when any read returns 401 (auth failure)`
+8. `health() passes nonInteractive=true and deadlineMs on every transport.call`
+9. `health() honors per-call deadline (rejects within HEALTH_DEADLINE_MS)`
 5. `health() returns error on timeout shorter than default deadline`
 6. `health() returns error on network failure`
 7. `health() returns error on malformed response`
