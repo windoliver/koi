@@ -1752,6 +1752,95 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     expect(endCalls).toEqual(["stable-lifecycle"]);
   });
 
+  // Regression (#1419 round 28): concurrent streams under stable
+  // sessionId must dedupe onto a single onSessionStart invocation.
+  // A boolean flag was racy — both concurrent streams could observe
+  // the unset flag and BOTH execute the hook. A shared in-flight
+  // promise dedupes them onto one initialization.
+  test("RuntimeConfig.sessionId dedupes concurrent onSessionStart", async () => {
+    let starts = 0;
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const probe = {
+      name: "concurrent-start-probe",
+      phase: "observe" as const,
+      priority: 999,
+      describeCapabilities: () => ({ label: "probe", description: "probe" }),
+      onSessionStart: async () => {
+        starts++;
+        await gate;
+      },
+    } as unknown as import("@koi/core").KoiMiddleware;
+    const runtime = createRuntime({
+      adapter: createTerminalAdapter(),
+      sessionId: "stable-concurrent",
+      middleware: [probe],
+    });
+    // Fire two streams concurrently. The init hook gates on `gate`
+    // so both streams' init pending status overlaps.
+    const s1 = (async () => {
+      for await (const _ of runtime.adapter.stream({ kind: "text", text: "first" })) {
+        // drain
+      }
+    })();
+    const s2 = (async () => {
+      for await (const _ of runtime.adapter.stream({ kind: "text", text: "second" })) {
+        // drain
+      }
+    })();
+    // Give the runtime a tick to register both pending init awaits.
+    await Promise.resolve();
+    await Promise.resolve();
+    release?.();
+    await Promise.all([s1, s2]);
+    // Exactly one onSessionStart despite two concurrent streams.
+    expect(starts).toBe(1);
+    await runtime.dispose();
+  });
+
+  // Regression (#1419 round 28): per-stream observers (event-trace,
+  // otel) live for one stream only and must always run their own
+  // start/end pair, even under stable sessionId. Otherwise the first
+  // stream's per-stream MW gets a start with no end (leaked spans),
+  // and later streams' per-stream MW gets neither (missing coverage).
+  // Verify by checking that the deferred dispose end hook reuses the
+  // SAME SessionContext that fired onSessionStart (matched runId).
+  test("RuntimeConfig.sessionId reuses captured SessionContext at dispose", async () => {
+    const observed: Array<{
+      phase: "start" | "end";
+      session: { sessionId: string; runId: string };
+    }> = [];
+    const probe = {
+      name: "session-runid-probe",
+      phase: "observe" as const,
+      priority: 999,
+      describeCapabilities: () => ({ label: "probe", description: "probe" }),
+      onSessionStart: (session: { sessionId: string; runId: string }) => {
+        observed.push({ phase: "start", session: { ...session } });
+      },
+      onSessionEnd: (session: { sessionId: string; runId: string }) => {
+        observed.push({ phase: "end", session: { ...session } });
+      },
+    } as unknown as import("@koi/core").KoiMiddleware;
+    const runtime = createRuntime({
+      adapter: createTerminalAdapter(),
+      sessionId: "stable-runid",
+      middleware: [probe],
+    });
+    for await (const _ of runtime.adapter.stream({ kind: "text", text: "hello" })) {
+      // drain
+    }
+    await runtime.dispose();
+    // start + end pair, sessionId AND runId must match.
+    expect(observed.length).toBe(2);
+    expect(observed[0]?.phase).toBe("start");
+    expect(observed[1]?.phase).toBe("end");
+    expect(observed[0]?.session.sessionId).toBe(observed[1]?.session.sessionId);
+    expect(observed[0]?.session.runId).toBe(observed[1]?.session.runId);
+  });
+
   // Regression (#1419 round 27): a transient onSessionStart failure
   // on the first stream must NOT permanently disable session-start
   // hooks for subsequent streams under stable sessionId.

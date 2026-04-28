@@ -21,6 +21,7 @@ import type {
   ModelStreamHandler,
   RetrySignalReader,
   RichTrajectoryStep,
+  SessionContext,
   ToolDescriptor,
   ToolRequest,
   ToolResponse,
@@ -507,6 +508,13 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       );
     }
 
+    // Stable-session lifecycle ref: compose populates `capturedSession`
+    // when onSessionStart succeeds for the first stream under stable
+    // sessionId; dispose() reuses it to fire the matching onSessionEnd
+    // with the SAME SessionContext (so middleware that correlates by
+    // runId sees a paired close).
+    const stableLifecycleRef: { capturedSession?: SessionContext } = {};
+
     // Compose middleware around adapter terminals, then apply timeout
     const composedAdapter = composeMiddlewareIntoAdapter(
       adapterWithFsTools,
@@ -526,6 +534,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       activeStreamFinalizations,
       otelConfig,
       config.sessionId,
+      stableLifecycleRef,
     );
     const adapter = applyActivityTimeout(composedAdapter, activityTimeoutConfig);
 
@@ -806,16 +815,19 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         // call-limits counters, breaker history) while a stream from
         // the same logical session was still unwinding through final
         // model/tool activity, allowing late calls to escape limits or
-        // lose final accounting. Errors are swallowed so dispose
-        // continues to close other owned resources.
-        if (config.sessionId !== undefined) {
+        // lose final accounting. We only fire if onSessionStart
+        // actually succeeded (stableLifecycleRef.capturedSession is
+        // set) — otherwise there is no matching start to pair with.
+        // The captured SessionContext is reused so middleware that
+        // correlates start/end by runId sees the SAME object on close.
+        if (config.sessionId !== undefined && stableLifecycleRef.capturedSession !== undefined) {
           try {
             const sortedForFinalize = sortMiddlewareByPhase(middleware);
-            const finalizeSession = createMinimalTurnContext({
-              streamId: "runtime-dispose",
-              sessionId: config.sessionId,
-            }).session;
-            await runSessionHooks(sortedForFinalize, "onSessionEnd", finalizeSession).catch(noop);
+            await runSessionHooks(
+              sortedForFinalize,
+              "onSessionEnd",
+              stableLifecycleRef.capturedSession,
+            ).catch(noop);
           } catch {
             // Defensive: never block dispose on session-end failures.
           }
@@ -1759,13 +1771,27 @@ function composeMiddlewareIntoAdapter(
   streamFinalizationTracker?: Set<Promise<void>>,
   otelConfig?: OtelMiddlewareConfig,
   runtimeSessionId?: string,
+  stableLifecycleRef?: { capturedSession?: SessionContext },
 ): EngineAdapter {
   // Stable-session lifecycle: when a fixed `runtimeSessionId` is set,
   // every stream() shares one logical session, so middleware lifecycle
   // hooks must follow a 1-start / 1-end contract instead of N-per-stream.
-  // We track whether onSessionStart has fired to ensure the start-end
-  // pair stays balanced; the deferred end runs once at runtime dispose.
-  let stableSessionStartFired = false;
+  //
+  // Implementation:
+  // - `stableSessionStartPromise` is a shared in-flight promise. The
+  //   FIRST stream to enter creates it and awaits onSessionStart;
+  //   concurrent streams await the same promise (no double-start).
+  //   On rejection, the promise is cleared so a later stream can retry
+  //   initialization (transient failure must not permanently disable).
+  // - `capturedStableSession` is the exact SessionContext that
+  //   completed onSessionStart. The deferred onSessionEnd at dispose
+  //   reuses it so middleware that correlates start/end by runId sees
+  //   a matched pair.
+  // - Per-stream observers (event-trace, otel) live ONLY for their
+  //   own stream and always run their own start/end pair regardless
+  //   of stable mode — they are not part of the shared session.
+  let stableSessionStartPromise: Promise<void> | undefined;
+  let capturedStableSession: SessionContext | undefined;
   if (adapter.terminals === undefined) {
     // Fail closed: if intercept-phase middleware is configured, refusing to silently
     // bypass it is a security requirement. Adapters without terminals cannot have
@@ -2106,20 +2132,60 @@ function composeMiddlewareIntoAdapter(
       // Wrapped in an async generator so the synchronous stream() method can return
       // immediately while initialization happens on the first next() call.
       // Under a stable `runtimeSessionId`, fire onSessionStart EXACTLY ONCE
-      // for the runtime's lifetime (paired with the deferred onSessionEnd in
-      // dispose()). Otherwise generic middleware that allocates session-
-      // scoped resources or writes session-open audit records would
-      // duplicate work for every stream and never see a matching end.
-      // The "fired" flag flips only AFTER the hook resolves
-      // successfully — a transient onSessionStart failure must not
-      // permanently disable the hook so a later stream can retry
-      // initialization.
-      const shouldFireSessionStart = runtimeSessionId === undefined || !stableSessionStartFired;
-      const sessionStartPromise = shouldFireSessionStart
-        ? runSessionHooks(sorted, "onSessionStart", ctx.session).then(() => {
-            if (runtimeSessionId !== undefined) stableSessionStartFired = true;
-          })
-        : Promise.resolve();
+      // across the runtime's lifetime — paired with the deferred
+      // onSessionEnd in dispose(). The base `middleware` chain is
+      // shared, so its lifecycle hooks must NOT duplicate per stream.
+      // Per-stream observers (event-trace, otel) are NOT part of this
+      // contract: each stream creates its own instances and so each
+      // stream runs its own start+end pair below.
+      //
+      // Concurrency: a shared in-flight promise dedupes concurrent
+      // streams onto a single onSessionStart invocation. On rejection
+      // the promise is cleared so a later stream can retry — a
+      // transient init failure must not permanently disable the hook.
+      // On success we capture the originating SessionContext so the
+      // deferred onSessionEnd at dispose can reuse it (matched runId).
+      const baseSorted = sortMiddlewareByPhase(middleware);
+      let baseStartPromise: Promise<void>;
+      if (runtimeSessionId === undefined) {
+        // Each stream IS its own session — straight per-stream start.
+        baseStartPromise = runSessionHooks(baseSorted, "onSessionStart", ctx.session);
+      } else if (capturedStableSession !== undefined) {
+        // Already initialized — skip.
+        baseStartPromise = Promise.resolve();
+      } else if (stableSessionStartPromise !== undefined) {
+        // Initialization in flight on another concurrent stream — join it.
+        baseStartPromise = stableSessionStartPromise;
+      } else {
+        // First stream — kick off shared init.
+        const initSession = ctx.session;
+        const inflight = runSessionHooks(baseSorted, "onSessionStart", initSession).then(
+          () => {
+            capturedStableSession = initSession;
+            if (stableLifecycleRef !== undefined) {
+              stableLifecycleRef.capturedSession = initSession;
+            }
+          },
+          (err) => {
+            stableSessionStartPromise = undefined;
+            throw err;
+          },
+        );
+        stableSessionStartPromise = inflight;
+        baseStartPromise = inflight;
+      }
+      // Per-stream observers always run their own start/end pair.
+      const perStreamLifecycleMw: KoiMiddleware[] = [];
+      if (eventTraceHandle !== undefined) perStreamLifecycleMw.push(eventTraceHandle.middleware);
+      if (otelHandle !== undefined) perStreamLifecycleMw.push(otelHandle.middleware);
+      const perStreamSorted = sortMiddlewareByPhase(perStreamLifecycleMw);
+      const perStreamStartPromise =
+        perStreamLifecycleMw.length > 0
+          ? runSessionHooks(perStreamSorted, "onSessionStart", ctx.session)
+          : Promise.resolve();
+      const sessionStartPromise = Promise.all([baseStartPromise, perStreamStartPromise]).then(
+        () => undefined,
+      );
 
       const innerStream = adapter.stream(injectCallHandlers(input, callHandlers));
       const initializedStream = (async function* (): AsyncIterable<EngineEvent> {
@@ -2192,15 +2258,22 @@ function composeMiddlewareIntoAdapter(
           // sit behind an engine layer dispatching onAfterTurn per-turn.
           // Middleware like checkpoint relies on this invocation.
           await runTurnHooks(sorted, "onAfterTurn", ctx).catch(noop);
-          // When the runtime is configured with a stable `RuntimeConfig.sessionId`,
-          // per-stream `onSessionEnd` would tear down per-session middleware
-          // state (call-dedup cache, call-limits counters, circuit-breaker
-          // history) after every turn — defeating the cross-turn guarantees
-          // those middlewares advertise. Defer `onSessionEnd` to runtime
-          // dispose() in that mode. Without a stable sessionId, each
-          // stream IS the session, so finalize as before.
+          // Per-stream observers (event-trace, otel) ALWAYS get their
+          // own onSessionEnd here — they are stream-scoped instances
+          // whose start fired in this same stream. Running their end
+          // here is required even under stable sessionId, otherwise
+          // the first stream's per-stream MW never sees a matching end
+          // and span/lifecycle state leaks.
+          if (perStreamLifecycleMw.length > 0) {
+            await runSessionHooks(perStreamSorted, "onSessionEnd", ctx.session).catch(noop);
+          }
+          // Base middleware lifecycle. Under stable sessionId, defer to
+          // dispose() so per-session state (call-dedup cache,
+          // call-limits counters, breaker history) survives across
+          // turns. Without a stable sessionId, each stream IS the
+          // session, so finalize the base chain here too.
           if (runtimeSessionId === undefined) {
-            await runSessionHooks(sorted, "onSessionEnd", ctx.session).catch(noop);
+            await runSessionHooks(baseSorted, "onSessionEnd", ctx.session).catch(noop);
           }
         },
         onFlushError,
