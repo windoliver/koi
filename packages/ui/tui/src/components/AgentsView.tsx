@@ -20,6 +20,19 @@ function formatDuration(ms: number): string {
   return `${ms}ms`;
 }
 
+/**
+ * One-line description. The renderer's flex-column layout doesn't reserve
+ * vertical space for soft-wrapped text, so a 2+ line description gets
+ * clobbered by the agentId row below it. Collapse newlines and truncate.
+ */
+const DESCRIPTION_MAX_CHARS = 200;
+function oneLine(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > DESCRIPTION_MAX_CHARS
+    ? `${flat.slice(0, DESCRIPTION_MAX_CHARS - 1)}…`
+    : flat;
+}
+
 function phaseColor(phase: SupervisedChildEntry["phase"]): string {
   switch (phase) {
     case "running":
@@ -106,7 +119,7 @@ export function AgentsView(): JSX.Element {
                         <text fg={COLORS.textMuted}>{elapsed}</text>
                       </box>
                       <box paddingLeft={2}>
-                        <text fg={COLORS.textSecondary}>{progress.description}</text>
+                        <text fg={COLORS.textSecondary}>{oneLine(progress.description)}</text>
                       </box>
                       <Show when={progress.currentTool}>
                         <box paddingLeft={2}>
@@ -145,7 +158,7 @@ export function AgentsView(): JSX.Element {
                         <text fg={COLORS.textMuted}>{duration}</text>
                       </box>
                       <box paddingLeft={2}>
-                        <text fg={COLORS.textSecondary}>{rec.description}</text>
+                        <text fg={COLORS.textSecondary}>{oneLine(rec.description)}</text>
                       </box>
                       <box paddingLeft={2}>
                         <text fg={COLORS.fgDim}>{rec.agentId}</text>

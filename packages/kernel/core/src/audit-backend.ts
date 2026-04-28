@@ -41,6 +41,15 @@ export interface AuditSink {
   readonly flush?: () => Promise<void>;
   /** Query audit entries for a session. Optional — enables rich trajectory adapters. */
   readonly query?: (sessionId: string) => Promise<readonly AuditEntry[]>;
+  /**
+   * Synchronous, durable write of a single entry. Optional. Used by the audit
+   * middleware on session_end to guarantee the closing record reaches disk
+   * even when the async write chain is wedged (renderer teardown, fd churn,
+   * or pending interval flushes during shutdown). Implementations MUST fsync
+   * or the equivalent before returning so a verifier can detect a missing
+   * session_end as a hard truncation rather than a queue still draining.
+   */
+  readonly logSync?: (entry: AuditEntry) => void;
 }
 
 export interface RedactionRule {

@@ -2,6 +2,10 @@
 
 Implements `AuditSink` from `@koi/core`, writing audit entries to a local NDJSON file using a buffered write stream. One JSON object per line, append-only.
 
+## Recent updates
+
+- **`logSync` synchronous write path** (S20-S22 bug bash, #2072): the sink now exposes a synchronous `appendFileSync` + `fsync` path that `audit.onSessionEnd` uses to guarantee the closing `session_end` record reaches disk on shutdown. Without it, `shutdownBackgroundTasks` could close the sink before `runtime.dispose()` fired the closing record, producing audit logs that ended mid-session.
+
 ---
 
 ## Why It Exists
