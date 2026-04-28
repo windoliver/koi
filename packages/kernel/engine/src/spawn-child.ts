@@ -21,6 +21,7 @@ import type {
   ChildLifecycleEvent,
   ComponentProvider,
   DelegationComponent,
+  DelegationGrant,
   DelegationId,
   EngineEvent,
   EngineInput,
@@ -29,6 +30,7 @@ import type {
   Tool,
 } from "@koi/core";
 import {
+  COMPONENT_PRIORITY,
   channelToken,
   DEFAULT_FORK_MAX_TURNS,
   DEFAULT_SPAWN_CHANNEL_POLICY,
@@ -49,6 +51,18 @@ import { createInheritedChannel } from "./inherited-channel.js";
 import { createInheritedComponentProvider } from "./inherited-component-provider.js";
 import { createKoi } from "./koi.js";
 import type { KoiRuntime, RunHandle, SpawnChildOptions, SpawnChildResult } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum time `dispose()` will wait for a no-registry path delegation revoke
+ * before giving up and resolving disposal anyway. Bounded so a hung Nexus
+ * cannot wedge child cleanup, but large enough that a healthy network round-trip
+ * always completes.
+ */
+const REVOKE_DISPOSE_TIMEOUT_MS = 5000;
 
 // ---------------------------------------------------------------------------
 // Noop child handle — used when no registry is provided
@@ -368,13 +382,83 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // SpawnChildOptions.fork doc which promises DEFAULT_FORK_MAX_TURNS.
   const effectiveLimits = computeEffectiveSpawnLimits(options.limits, isFork);
 
+  // 5. Auto-delegation provider: when parent has DELEGATION, grant attenuated
+  //    scope to the child DURING child assembly so the issued Nexus proof token
+  //    can be installed into the child's ENV (replacing the parent's NEXUS_API_KEY)
+  //    before any child component reads its credentials. The grant must run as
+  //    a provider — not after createKoi — because the child's ENV is immutable
+  //    once assembly completes, and we need agent.pid.id (only known inside
+  //    attach()) as the delegateeId.
+  //
+  //    Caveat (in-process spawns): this only attenuates code paths that read
+  //    `agent.component(ENV).values["NEXUS_API_KEY"]` at request time. L2 clients
+  //    that capture `process.env.NEXUS_API_KEY` at construction (top-level fs-nexus,
+  //    pre-built nexus-delegation api) keep using the parent's key. Out-of-process
+  //    spawns (Temporal worker) consume the returned `nexusApiKey` directly — no
+  //    env override needed.
+  const parentHasDelegation = options.parentAgent.has(DELEGATION);
+  // let justified: closure-captured grant outcome from delegation provider attach()
+  let childGrantId: DelegationId | undefined;
+  let childNexusApiKey: string | undefined;
+  let delegationGrantError: unknown;
+  const delegationRequired = options.manifest.delegation?.required === true;
+
+  let delegationGrantProvider: ComponentProvider | undefined;
+  if (parentHasDelegation && options.manifest.delegation?.enabled !== false) {
+    const parentDelegation = options.parentAgent.component<DelegationComponent>(DELEGATION);
+    if (parentDelegation !== undefined) {
+      const parentPermissions = options.parentAgent.manifest.permissions ?? {};
+      const childPermissions = options.manifest.permissions ?? {};
+      const childScope = computeChildDelegationScope(
+        { permissions: parentPermissions },
+        childPermissions,
+      );
+      delegationGrantProvider = {
+        name: "delegation-grant-env",
+        // GLOBAL_FORGED (50) wins ENV against the BUNDLED (100) agent-env-provider.
+        // Component assembly is first-write-wins ordered by priority ascending.
+        priority: COMPONENT_PRIORITY.GLOBAL_FORGED,
+        attach: async (agent): Promise<ReadonlyMap<string, unknown>> => {
+          let grant: DelegationGrant;
+          try {
+            grant = await parentDelegation.grant(childScope, agent.pid.id);
+          } catch (e: unknown) {
+            delegationGrantError = e;
+            return new Map();
+          }
+          childGrantId = grant.id;
+          if (grant.proof.kind !== "nexus") return new Map();
+          childNexusApiKey = grant.proof.token;
+
+          // Override NEXUS_API_KEY in the child's env so any agent-env-aware
+          // component on the child observes the attenuated key, not the parent's.
+          const parentEnv = options.parentAgent.component<AgentEnv>(ENV);
+          const parentValues = parentEnv?.values ?? {};
+          if (!("NEXUS_API_KEY" in parentValues)) return new Map();
+          const merged: Record<string, string> = {
+            ...parentValues,
+            NEXUS_API_KEY: grant.proof.token,
+          };
+          const childEnv: AgentEnv =
+            parentEnv !== undefined ? { values: merged, parentEnv } : { values: merged };
+          return new Map([[ENV as string, childEnv]]);
+        },
+      };
+    }
+  }
+
   let childRuntime: KoiRuntime;
   try {
     childRuntime = await createKoi({
       manifest: options.manifest,
       adapter: options.adapter,
       parentPid: options.parentAgent.pid,
-      providers: [inheritedProvider, ...inheritanceProviders, ...selfCeilingFilteredProviders],
+      providers: [
+        ...(delegationGrantProvider !== undefined ? [delegationGrantProvider] : []),
+        inheritedProvider,
+        ...inheritanceProviders,
+        ...selfCeilingFilteredProviders,
+      ],
       spawnLedger: options.spawnLedger,
       spawn: options.spawnPolicy,
       ...(childMiddleware.length > 0 ? { middleware: childMiddleware } : {}),
@@ -393,13 +477,34 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
 
   const childPid = childRuntime.agent.pid;
 
+  // 5b. Resolve grant outcome captured during assembly. When delegation is
+  //     `required` and grant failed, dispose the partially-assembled child and
+  //     re-throw — fail-closed semantics; otherwise log and continue without
+  //     delegation (graceful degradation).
+  if (delegationGrantError !== undefined) {
+    if (delegationRequired) {
+      const release = options.spawnLedger.release();
+      await release;
+      void Promise.resolve(childRuntime.dispose()).catch(() => {});
+      throw KoiRuntimeError.from(
+        "PERMISSION",
+        `Delegation required but grant failed: ${delegationGrantError instanceof Error ? delegationGrantError.message : String(delegationGrantError)}`,
+        { retryable: false, context: { childId: childPid.id }, cause: delegationGrantError },
+      );
+    }
+    console.error(
+      `[spawn-child] delegation grant failed for child "${childPid.id}", continuing without delegation`,
+      delegationGrantError,
+    );
+  }
+
   // gov-8: resolve parent's GovernanceController (optional — engine works
   // without one). Captured once here so both cleanup paths (terminated
   // handler and dispose-override) read the same reference even if the
   // parent is later disposed.
   const parentGovController = options.parentAgent.component<GovernanceController>(GOVERNANCE);
 
-  // 5. Register child in registry (if provided)
+  // 6. Register child in registry (if provided)
   if (options.registry !== undefined) {
     const childAgentType = childPid.type;
     await options.registry.register({
@@ -418,56 +523,6 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       priority: childPriority,
       ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
     });
-  }
-
-  // 6. Auto-delegation: grant attenuated scope to child if parent has DELEGATION component.
-  //    When the grant carries a Nexus proof, extract the per-child API key and
-  //    inject it into the child's env. This is the in-process equivalent of the
-  //    Temporal path where WorkerWorkflowConfig.nexusApiKey carries the key.
-  let childGrantId: DelegationId | undefined; // let justified: mutable for cleanup on failure
-  let childNexusApiKey: string | undefined; // let justified: set once from proof.token
-  const parentHasDelegation = options.parentAgent.has(DELEGATION);
-
-  if (parentHasDelegation && options.manifest.delegation?.enabled !== false) {
-    const parentDelegation = options.parentAgent.component<DelegationComponent>(DELEGATION);
-    if (parentDelegation !== undefined) {
-      const parentPermissions = options.parentAgent.manifest.permissions ?? {};
-      const childPermissions = options.manifest.permissions ?? {};
-      const childScope = computeChildDelegationScope(
-        { permissions: parentPermissions },
-        childPermissions,
-      );
-      const delegationRequired = options.manifest.delegation?.required === true;
-      try {
-        const grant = await parentDelegation.grant(childScope, childPid.id);
-        childGrantId = grant.id;
-        // Extract per-child Nexus API key from grant proof.
-        // CapabilityProof is an L0 discriminated union — L1 reads its variants
-        // to map proof kinds to child env vars. This is L1's job: it bridges
-        // L0 contracts to runtime concerns. Revised from original Decision #1-A
-        // because the provider-based approach leaked the bootstrap key (codex
-        // review finding #2).
-        if (grant.proof.kind === "nexus") {
-          childNexusApiKey = grant.proof.token;
-        }
-      } catch (e: unknown) {
-        if (delegationRequired) {
-          // Release ledger slot before re-throwing — no leak
-          const release = options.spawnLedger.release();
-          await release;
-          throw KoiRuntimeError.from(
-            "PERMISSION",
-            `Delegation required but grant failed: ${e instanceof Error ? e.message : String(e)}`,
-            { retryable: false, context: { childId: childPid.id }, cause: e },
-          );
-        }
-        // Graceful degradation: child operates without delegation
-        console.error(
-          `[spawn-child] delegation grant failed for child "${childPid.id}", continuing without delegation`,
-          e,
-        );
-      }
-    }
   }
 
   // 7. Wrap runtime.run() to compose the abort signal from the child handle.
@@ -654,15 +709,27 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         // Revoke auto-delegation grant on child dispose (no-registry path).
         // Mirrors the registry-path handler — when there is no registry, dispose
         // is the only termination signal we get, so we hook revoke here.
+        // We AWAIT the revoke (with a bounded timeout) before resolving dispose
+        // so the host cannot tear down networking with the key still active.
         if (childGrantId !== undefined && parentHasDelegation) {
           const parentDel = options.parentAgent.component<DelegationComponent>(DELEGATION);
           if (parentDel !== undefined) {
-            void Promise.resolve(parentDel.revoke(childGrantId, false)).catch((err: unknown) => {
+            try {
+              await Promise.race([
+                Promise.resolve(parentDel.revoke(childGrantId, false)),
+                new Promise<void>((_resolve, reject) => {
+                  setTimeout(
+                    () => reject(new Error("revoke timed out after 5000ms")),
+                    REVOKE_DISPOSE_TIMEOUT_MS,
+                  ).unref?.();
+                }),
+              ]);
+            } catch (err: unknown) {
               console.warn(
                 `[spawn-child] delegation revoke failed — key may remain active until manually revoked. ` +
                   `delegationId="${childGrantId}", childId="${childPid.id}", error: ${err instanceof Error ? err.message : String(err)}`,
               );
-            });
+            }
           }
         }
       }

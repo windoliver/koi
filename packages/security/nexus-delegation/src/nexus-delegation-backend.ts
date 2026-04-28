@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type {
   AgentId,
   DelegationComponent,
@@ -178,10 +177,15 @@ export function createNexusDelegationBackend(
     ttlMs?: number,
   ): Promise<DelegationGrant> {
     const ttlSeconds = ttlMs !== undefined ? Math.ceil(ttlMs / 1000) : defaultTtlSeconds;
+    // Idempotency key is stable per (parent, child) pair so retries of the same
+    // logical spawn collapse onto a single Nexus delegation. Each child has a
+    // freshly-minted unique AgentId, so `${ownId}:${delegateeId}` is unique per
+    // spawn AND stable across retries — preventing partial-failure key leaks
+    // where a lost response would otherwise cause a duplicate active grant.
     const idempotencyKey =
       idempotencyPrefix !== undefined
         ? `${idempotencyPrefix}${ownId}:${delegateeId}`
-        : randomUUID();
+        : `${ownId}:${delegateeId}`;
 
     const adjustments = mapScopeToNexus(scope);
 
@@ -333,14 +337,22 @@ export function createNexusDelegationBackend(
       return r;
     }
 
-    // TTL cache (fresh hit, or stale -> serve-stale + background refresh)
+    // TTL cache. Fresh hit → serve immediately.
+    // Stale + negative (already-denied) → serve stale + background refresh; the
+    // worst case is one extra denial that may have flipped to allow, which is
+    // safe to delay.
+    // Stale + positive (allowed) → MUST revalidate synchronously. Serving a
+    // stale `ok: true` would authorize a tool call after the underlying grant
+    // could have been revoked or expired in Nexus, which silently widens the
+    // capability boundary this backend is supposed to enforce.
     if (verifyCache !== undefined) {
       const cached = verifyCache.get(id, toolId);
-      if (cached !== undefined && !verifyCache.isStale(id, toolId)) return cached;
       if (cached !== undefined) {
-        // Stale — serve stale, background refresh
-        void verifyFromNexus(id, toolId);
-        return cached;
+        if (!verifyCache.isStale(id, toolId)) return cached;
+        if (!cached.ok) {
+          void verifyFromNexus(id, toolId);
+          return cached;
+        }
       }
     }
 
