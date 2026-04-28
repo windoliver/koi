@@ -34,6 +34,7 @@
     "@koi/fs-local": "workspace:*",
     "@koi/fs-nexus": "workspace:*",
     "@koi/nexus-client": "workspace:*",
+    "@koi/nexus-delegation": "workspace:*",
     "@koi/ipc-local": "workspace:*",
     "@koi/fs-scoped": "workspace:*",
     "@koi/gateway": "workspace:*",

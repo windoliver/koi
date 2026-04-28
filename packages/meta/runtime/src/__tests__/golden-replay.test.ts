@@ -14185,3 +14185,84 @@ describe("Golden: @koi/audit-sink-nexus", () => {
     expect(entries[1]?.timestamp).toBe(200);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/nexus-delegation (standalone — no LLM required)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/nexus-delegation", () => {
+  test("NexusDelegationBackend.grant() returns nexus proof with token", async () => {
+    const { createNexusDelegationBackend, createNexusDelegationApi } = await import(
+      "@koi/nexus-delegation"
+    );
+    const { agentId } = await import("@koi/core");
+
+    let capturedBody: Record<string, unknown> | undefined;
+    const mockFetch: typeof fetch = async (_input, init) => {
+      capturedBody = JSON.parse((init?.body as string) ?? "{}") as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          delegation_id: "del-golden-1",
+          api_key: "golden-child-key",
+          created_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const api = createNexusDelegationApi({ url: "http://nexus.test", fetch: mockFetch });
+    const backend = createNexusDelegationBackend({ api, agentId: agentId("parent-golden") });
+
+    const grant = await backend.grant(
+      { permissions: { allow: ["read_file"], deny: [] } },
+      agentId("child-golden"),
+    );
+
+    expect(grant.proof.kind).toBe("nexus");
+    if (grant.proof.kind === "nexus") {
+      expect(grant.proof.token).toBe("golden-child-key");
+    }
+    expect(grant.issuerId).toBe(agentId("parent-golden"));
+    expect(capturedBody?.parent_agent_id).toBe(agentId("parent-golden"));
+    expect(capturedBody?.child_agent_id).toBe(agentId("child-golden"));
+  });
+
+  test("NexusDelegationBackend.revoke() removes grant and calls DELETE", async () => {
+    const { createNexusDelegationBackend, createNexusDelegationApi } = await import(
+      "@koi/nexus-delegation"
+    );
+    const { agentId, delegationId } = await import("@koi/core");
+
+    const calls: { method: string; url: string }[] = [];
+    const mockFetch: typeof fetch = async (input, init) => {
+      calls.push({ method: (init?.method ?? "GET").toUpperCase(), url: input as string });
+      if ((init?.method ?? "").toUpperCase() === "POST") {
+        return new Response(
+          JSON.stringify({
+            delegation_id: "del-golden-revoke",
+            api_key: "key-to-revoke",
+            created_at: new Date().toISOString(),
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(null, { status: 204 });
+    };
+
+    const api = createNexusDelegationApi({ url: "http://nexus.test", fetch: mockFetch });
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: agentId("parent-revoke"),
+      verifyCacheTtlMs: 0,
+    });
+
+    await backend.grant({ permissions: { allow: ["read_file"] } }, agentId("child-revoke"));
+    await backend.revoke(delegationId("del-golden-revoke"));
+
+    const deleteCall = calls.find((c) => c.method === "DELETE");
+    expect(deleteCall).toBeDefined();
+    expect(deleteCall?.url).toContain("del-golden-revoke");
+  });
+});
