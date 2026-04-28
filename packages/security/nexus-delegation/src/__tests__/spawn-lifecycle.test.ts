@@ -228,4 +228,67 @@ describe("spawn lifecycle — Nexus delegation", () => {
     await result.runtime.dispose();
     await registry[Symbol.asyncDispose]();
   });
+
+  test("registry-path runtime.dispose() awaits bounded revoke before resolving", async () => {
+    // Gated revoke: holds DELETE in-flight until we release. Verifies that
+    // calling wrappedRuntime.dispose() in the registry-backed path does NOT
+    // resolve until the per-child Nexus key revoke has completed (or timed
+    // out). Without the dispose-wrapping, host teardown could complete with
+    // the key still active server-side.
+    let releaseRevoke: (() => void) | undefined;
+    const revokeGate = new Promise<void>((resolve) => {
+      releaseRevoke = resolve;
+    });
+    const mockApi = makeMockApi({
+      revokeDelegation: mock(async () => {
+        await revokeGate;
+        return { ok: true as const, value: undefined };
+      }),
+    });
+    const delegation = createNexusDelegationBackend({
+      api: mockApi,
+      agentId: agentId("parent-1"),
+    });
+    const parent = mockParentAgent(delegation);
+    const registry = createInMemoryRegistry();
+    const ledger = createInMemorySpawnLedger(10);
+
+    const result = await spawnChildAgent({
+      manifest: {
+        name: "child",
+        version: "0.1.0",
+        model: { name: "mock" },
+        permissions: { allow: ["read_file"] },
+        delegation: { enabled: true, maxChainDepth: 3, defaultTtlMs: 3_600_000 },
+      },
+      parentAgent: parent,
+      adapter: makeMockAdapter(),
+      spawnLedger: ledger,
+      spawnPolicy: DEFAULT_SPAWN_POLICY,
+      registry,
+    });
+
+    // Track resolution timing to assert dispose() blocks on revokeGate.
+    // let justified: mutable flag flipped by dispose continuation
+    let disposeResolved = false;
+    const disposePromise = result.runtime.dispose().then(() => {
+      disposeResolved = true;
+    });
+
+    // Give the event loop several turns. Without the bounded-revoke await,
+    // dispose() would resolve immediately because the underlying
+    // childRuntime.dispose() has nothing to wait on.
+    await new Promise((r) => setTimeout(r, 50));
+    // sanity: revoke was invoked (gated, in-flight)
+    expect(mockApi.revokeDelegation).toHaveBeenCalled();
+    expect(disposeResolved).toBe(false);
+
+    // Release the gate; dispose() must now resolve.
+    releaseRevoke?.();
+    await disposePromise;
+    expect(disposeResolved).toBe(true);
+    expect(mockApi.revokeDelegation).toHaveBeenCalledTimes(1);
+
+    await registry[Symbol.asyncDispose]();
+  });
 });

@@ -246,6 +246,24 @@ export function createNexusDelegationBackend(
     //     unintended dedup across separate grant() calls for the same pair).
     // Within either mode, the SAME key is reused across the internal retry
     // loop below so within-call lost-response races dedup onto one delegation.
+    //
+    // KNOWN LIMITATION (deterministic mode only):
+    //   Concurrent grant + revoke for the SAME delegation_id under
+    //   deterministic-idempotency replay can produce two narrow races:
+    //
+    //   (a) regrant clears tombstone+queue → silently supersedes a known-failed
+    //       revocation. Caller's earlier revoke() intent is lost.
+    //   (b) revoke fails AFTER concurrent grant install → enqueue/tombstone
+    //       point at the new grant; later drain DELETEs it remotely.
+    //
+    //   Both require deterministic mode AND interleaved grant/revoke calls
+    //   for the same id. The default (uuid-suffixed) mode used by the
+    //   spawn-child production path does not exhibit either race because every
+    //   grant() returns a fresh delegation_id. Hosts opting into deterministic
+    //   mode must serialize their grant/revoke for a given id externally, OR
+    //   accept the documented semantic that "most recent grant() wins" over a
+    //   pending revocation. Tracked as a follow-up: per-delegation generation
+    //   tokens with refusal-to-install on conflict.
     const idempotencyKey =
       idempotencyPrefix !== undefined
         ? `${idempotencyPrefix}${ownId}:${delegateeId}`

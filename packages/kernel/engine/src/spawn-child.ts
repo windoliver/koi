@@ -57,10 +57,11 @@ import type { KoiRuntime, RunHandle, SpawnChildOptions, SpawnChildResult } from 
 // ---------------------------------------------------------------------------
 
 /**
- * Maximum time `dispose()` will wait for a no-registry path delegation revoke
- * before giving up and resolving disposal anyway. Bounded so a hung Nexus
- * cannot wedge child cleanup, but large enough that a healthy network round-trip
- * always completes.
+ * Maximum time `dispose()` will wait for a delegation revoke before giving up
+ * and resolving disposal anyway. Applied in BOTH the registry-backed and
+ * no-registry paths so host teardown cannot complete with a per-child Nexus
+ * key still active server-side. Bounded so a hung Nexus cannot wedge child
+ * cleanup, but large enough that a healthy network round-trip always completes.
  */
 const REVOKE_DISPOSE_TIMEOUT_MS = 5000;
 
@@ -728,6 +729,40 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   let handle: ChildHandle;
   let disposeOverride: (() => Promise<void>) | undefined;
 
+  // Shared bounded-revoke promise. Used by BOTH the registry-path terminated
+  // handler (kicked off fire-and-forget) and the dispose override (awaited).
+  // Memoized so both paths converge on a single in-flight revoke and a host
+  // calling dispose() after termination still gates teardown on revoke.
+  // let justified: lazily initialized memo of the in-flight revoke promise
+  let revokePromise: Promise<void> | undefined;
+  function boundedRevokeOnce(): Promise<void> {
+    if (revokePromise !== undefined) return revokePromise;
+    if (childGrantId === undefined || !parentHasDelegation) {
+      revokePromise = Promise.resolve();
+      return revokePromise;
+    }
+    const parentDel = options.parentAgent.component<DelegationComponent>(DELEGATION);
+    if (parentDel === undefined) {
+      revokePromise = Promise.resolve();
+      return revokePromise;
+    }
+    revokePromise = Promise.race([
+      Promise.resolve(parentDel.revoke(childGrantId, false)),
+      new Promise<void>((_resolve, reject) => {
+        setTimeout(
+          () => reject(new Error("revoke timed out after 5000ms")),
+          REVOKE_DISPOSE_TIMEOUT_MS,
+        ).unref?.();
+      }),
+    ]).catch((err: unknown) => {
+      console.warn(
+        `[spawn-child] delegation revoke failed — key may remain active until manually revoked. ` +
+          `delegationId="${childGrantId}", childId="${childPid.id}", error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+    return revokePromise;
+  }
+
   if (options.registry !== undefined) {
     const reg = options.registry;
     handle = createChildHandle(
@@ -768,26 +803,27 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
               );
             });
         }
+        // Kick off bounded revoke in parallel with dispose. Both go via
+        // memoized helpers so a host calling wrappedRuntime.dispose() after
+        // termination converges on the same in-flight revoke promise rather
+        // than firing a second one (or — worse — completing teardown before
+        // the first revoke finishes).
+        void boundedRevokeOnce();
         void Promise.resolve(childRuntime.dispose()).catch((err: unknown) => {
           console.error(`[spawn-child] dispose failed for child "${childPid.id}"`, err);
         });
-
-        // Revoke auto-delegation grant on child termination.
-        // Failure is logged as a structured warning with enough context to manually
-        // revoke the leaked key. Future: retry queue (#1425 follow-up).
-        if (childGrantId !== undefined && parentHasDelegation) {
-          const parentDel = options.parentAgent.component<DelegationComponent>(DELEGATION);
-          if (parentDel !== undefined) {
-            void Promise.resolve(parentDel.revoke(childGrantId, false)).catch((err: unknown) => {
-              console.warn(
-                `[spawn-child] delegation revoke failed — key may remain active until manually revoked. ` +
-                  `delegationId="${childGrantId}", childId="${childPid.id}", error: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            });
-          }
-        }
       }
     });
+
+    // Always wrap dispose: gates host teardown on bounded revoke. Without
+    // this, a host that observes `terminated` and proceeds to call
+    // wrappedRuntime.dispose() (or proceeds to process exit) could complete
+    // teardown while the per-child Nexus key is still active server-side.
+    const originalRegistryDispose = childRuntime.dispose;
+    disposeOverride = async (): Promise<void> => {
+      await boundedRevokeOnce();
+      await originalRegistryDispose();
+    };
   } else {
     // No-registry path: wire ledger release to dispose.
     // Without a registry, there is no termination event to trigger cleanup,
@@ -821,27 +857,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         // is the only termination signal we get, so we hook revoke here.
         // We AWAIT the revoke (with a bounded timeout) before resolving dispose
         // so the host cannot tear down networking with the key still active.
-        if (childGrantId !== undefined && parentHasDelegation) {
-          const parentDel = options.parentAgent.component<DelegationComponent>(DELEGATION);
-          if (parentDel !== undefined) {
-            try {
-              await Promise.race([
-                Promise.resolve(parentDel.revoke(childGrantId, false)),
-                new Promise<void>((_resolve, reject) => {
-                  setTimeout(
-                    () => reject(new Error("revoke timed out after 5000ms")),
-                    REVOKE_DISPOSE_TIMEOUT_MS,
-                  ).unref?.();
-                }),
-              ]);
-            } catch (err: unknown) {
-              console.warn(
-                `[spawn-child] delegation revoke failed — key may remain active until manually revoked. ` +
-                  `delegationId="${childGrantId}", childId="${childPid.id}", error: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            }
-          }
-        }
+        await boundedRevokeOnce();
       }
       await originalDispose();
     };
