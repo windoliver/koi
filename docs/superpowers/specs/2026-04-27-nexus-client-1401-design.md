@@ -842,10 +842,16 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // is inert. Resolve audit through the same condition the wiring block
   // uses below (effectiveAuditWired), so the guard reflects what will
   // actually run.
+  // Match effectiveAuditWired's "Nexus sink will be wired" semantics
+  // (Loop 6 R8): local-only is a LOCAL-BRIDGE-only mode that skips the
+  // Nexus sink there, but on HTTP local-only is treated same as unset
+  // (the Nexus sink IS wired — see effectiveAuditWired below at the
+  // wiring boundary). Including local-only as "off" here would falsely
+  // reject HTTP+local-only+assert-* even though the sink is actually
+  // wired. Only "disabled" universally skips the sink.
   const auditEffectivelyOn =
     config.nexusAuditEnabled === true
-    && config.nexusAuditMode !== "disabled"
-    && config.nexusAuditMode !== "local-only";  // local-only also skips Nexus sink
+    && config.nexusAuditMode !== "disabled";
   const permsEffectivelyOn = config.nexusPermissionsEnabled === true;
   const httpTransportImpliesConsumer =
     config.nexusTransport !== undefined
@@ -877,7 +883,17 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   const controlPlaneFlagsSet: string[] = [];
   if (config.nexusBootMode !== undefined && config.nexusBootMode !== "telemetry")
     controlPlaneFlagsSet.push(`nexusBootMode=${config.nexusBootMode}`);
-  if (config.nexusAuditPoisonOnError === true)
+  // Loop 6 R8: only include poison flag when it would actually take
+  // effect. If nexusAuditMode skips the Nexus sink (disabled, OR
+  // local-only on local-bridge), the poison flag is inert by design
+  // and the runtime emits a one-time WARN downstream (the documented
+  // "inert poison" rollback path). Including it in controlPlaneFlagsSet
+  // here would fire Step -1 BEFORE the warn-only path runs.
+  const auditModeSkipsNexusSink =
+    config.nexusAuditMode === "disabled"
+    || (config.nexusAuditMode === "local-only"
+        && (config.nexusTransport as { kind?: NexusTransportKind } | undefined)?.kind === "local-bridge");
+  if (config.nexusAuditPoisonOnError === true && !auditModeSkipsNexusSink)
     controlPlaneFlagsSet.push("nexusAuditPoisonOnError=true");
   if (config.nexusProbeDeadlineMs !== undefined)
     controlPlaneFlagsSet.push("nexusProbeDeadlineMs");
@@ -1070,36 +1086,22 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       );
     }
   }
-  // CONFIG-SKEW GATE: explicit opt-out (false/false) coexisting with a
-  // supplied nexusTransport AND a non-telemetry boot mode is a security-
-  // critical config-layering error, not a benign rollback. The earlier
-  // "warn + opt-out wins" behavior was wrong: a deployment that originally
-  // intended assert-remote-policy-loaded-at-boot can lose its centralized-
-  // permissions + audit-poison guarantees via a single flag flip and the
-  // operator has no fail-fast signal. Throw instead — the operator must
-  // ALSO clear KOI_NEXUS_BOOT_MODE (or unset nexusTransport entirely) to
-  // make the rollback intent unambiguous. The warn-only path was an
-  // auth/audit bypass on stale config; this throw closes that hazard.
-  // (Loop 5 R3 finding — locked.)
-  if (
-    explicitlyOptedOut
-    && declaredBootMode !== "telemetry"
-    && config.nexusTransport !== undefined
-  ) {
-    throw new Error(
-      `Config skew: nexusPermissionsEnabled=false AND nexusAuditEnabled=false ` +
-      `(explicit fs-only opt-out) coexists with nexusBootMode=${declaredBootMode} ` +
-      `(non-telemetry assert-* gate) AND a supplied nexusTransport. ` +
-      `This combination silently disables both centralized permissions and Nexus ` +
-      `audit while still appearing to enforce the assert-* boot mode in config. ` +
-      `Resolve by either: ` +
-      `(a) clearing the boot mode to "telemetry" (KOI_NEXUS_BOOT_MODE=telemetry) ` +
-      `if rollback to fs-only is intentional, OR ` +
-      `(b) omitting nexusTransport entirely from createKoiRuntime ` +
-      `(programmatic fs-only callers that don't need any Nexus transport), OR ` +
-      `(c) re-enabling at least one Nexus consumer if the assert-* gate is ` +
-      `still required. Refusing to silently drop the security control.`,
-    );
+  // (Loop 6 R8 — Loop 5 R3 config-skew throw REMOVED.) Earlier drafts
+  // threw on (explicit opt-out + non-telemetry boot mode + transport
+  // supplied) on the theory that this was security-critical config skew.
+  // That contradicted the locked Loop 4 R7 rollback contract (explicit
+  // false/false is a hard rollback path that wins over stale env vars,
+  // including stale assert-* config). Operators rolling back from a
+  // Nexus-enabled deployment in an outage do not have time to scrub
+  // every Nexus env var; if both consumer flags are explicitly false,
+  // there is nothing to enforce against. Stale assert-* + transport in
+  // the presence of opt-out is dead config, not a security-critical
+  // skew — the runtime simply skips the entire Nexus block (probe,
+  // consumer wiring, assert-* preflight, all of it). A one-time WARN
+  // names the dead config so it's visible without breaking boot.
+  if (explicitlyOptedOut && declaredBootMode !== "telemetry") {
+    logger.warn({ declaredBootMode, txKind, hasTransport: config.nexusTransport !== undefined },
+      "nexusBootMode is set but ignored: explicit opt-out (nexusPermissionsEnabled=false + nexusAuditEnabled=false) skips ALL Nexus boot validation per the Loop 4 R7 rollback contract. Clear KOI_NEXUS_BOOT_MODE / --nexus-boot-mode to remove this warning.");
   }
   // Opt-out + telemetry mode is a benign config (telemetry is the default and
   // imposes no enforcement). No warning needed — operators who want assert-*
@@ -1695,14 +1697,14 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7h_unc6. (REMOVED Loop 4 R8 — superseded by 7h_unc11. R3 expected throw on missing-kind + opt-out + assert-*; R7 made opt-out a hard rollback contract that wins over every Nexus boot gate including the kind assertion. Both expectations cannot hold; rollback contract is locked)
 7h_unc7. `MISSING KIND adapter + same opt-out + nexusBootMode="telemetry": BOOTS without Nexus block (assert-* gate fires only on assert-* modes; telemetry opt-out for legacy adapters is preserved)`
 7h_unc8. `assert-* preflight throw message names "positively-identified HTTP transport" so operators understand the gate fires on missing-kind + local-bridge + any other non-HTTP shape uniformly`
-7h_unc9. `EXPLICIT opt-out (perms=false + audit=false) + nexusBootMode="telemetry" + nexusTransport supplied: BOOTS without throw, no warning (telemetry is the default and imposes no enforcement, so opt-out + telemetry is a benign rollback). Loop 4 R7's "rollback contract" is preserved for the telemetry case`
-7h_unc9b. (Loop 5 R3 supersedes the all-modes warn behavior — assert-* + opt-out + transport now throws, see 7h_unc9c. Telemetry case is 7h_unc9.)
-7h_unc9c. `EXPLICIT opt-out + nexusBootMode!=telemetry (any assert-*) + nexusTransport supplied: THROWS with config-skew message naming all three resolution paths (clear boot mode, omit transport, re-enable consumer). Closes the Loop 5 R3 silent-bypass hazard where opt-out + stale assert-* config dropped both centralized permissions AND audit while config still appeared to enforce`
-7h_unc10. `EXPLICIT opt-out + assert-remote-policy-loaded-at-boot + local-bridge transport: THROWS via the Loop 5 R3 config-skew gate BEFORE the kind-positive-identification gate. Error message names the three resolution paths, not "use HTTP" (the latter would be misleading — local-bridge here is incidental; the real problem is the config skew)`
-7h_unc10b. `EXPLICIT opt-out + assert-* + NO nexusTransport supplied: BOOTS without throw (rollback contract — Loop 4 R7 locked decision: explicit opt-out wins over stale assert-* config when there is no transport AND no consumer to enforce against). Loop 6 R4 reconfirmed: a deployment that has fully disabled Nexus (no transport AND both consumer flags=false) must NOT be blocked by stale env vars during rollback. The Step -1 silent-bypass guard fires only when control-plane flags coexist with at least one of: a supplied transport (consumer might be implicitly wanted), OR no opt-out (operator hasn't declared rollback intent). With explicit opt-out AND no transport, neither precondition holds; nothing to enforce, nothing to bypass.`
-7h_unc11. `EXPLICIT opt-out + UNDISCRIMINATED transport + assert-*: THROWS via the Loop 5 R3 config-skew gate BEFORE the kind assertion would fire (kind assertion is downstream and never reached). Error names config-skew resolution paths, not the missing-kind migration list`
-7h_unc12. `Loop 6 R7 effective-wiring guard: nexusAuditEnabled=true + nexusAuditMode="disabled" + nexusPermissionsEnabled=false + nexusBootMode=assert-* THROWS at Step -1. Raw flags say "audit on", but mode resolves audit OFF — no Nexus consumer is actually wired, so the assert gate would be inert. The guard now reads effective wiring (auditEffectivelyOn / permsEffectivelyOn) instead of raw booleans. Same input with nexusAuditPoisonOnError=true ALSO throws (poison flag has nothing to poison when sink is disabled).`
-7h_unc12b. `Loop 6 R7: same as 7h_unc12 but with nexusAuditMode="local-only" — also throws (local-only also skips Nexus sink on local-bridge AND HTTP). Verifies the guard treats both skip-modes uniformly.`
+7h_unc9. `EXPLICIT opt-out (perms=false + audit=false) + nexusBootMode="telemetry" + nexusTransport supplied: BOOTS without throw, no warning (telemetry is the default and imposes no enforcement). Loop 4 R7 rollback contract preserved.`
+7h_unc9b. (REMOVED Loop 6 R8 — superseded by 7h_unc9c which now BOOTS instead of throws under the restored rollback contract.)
+7h_unc9c. `EXPLICIT opt-out + nexusBootMode!=telemetry (any assert-*) + nexusTransport supplied: BOOTS with ONE WARN naming the dead boot-mode config and pointing at KOI_NEXUS_BOOT_MODE removal. Loop 6 R8 — explicit opt-out is the locked rollback contract; stale assert-* env vars must not block emergency disable. The earlier Loop 5 R3 config-skew throw was reverted because it contradicted the rollback contract. Operators who want assert-* enforcement back must clear at least one consumer flag; the runtime never silently pretends to enforce while opt-out is set.`
+7h_unc10. `EXPLICIT opt-out + assert-remote-policy-loaded-at-boot + local-bridge transport: BOOTS with ONE WARN (same root rule as 7h_unc9c). The local-bridge kind is irrelevant because the entire Nexus block is skipped under opt-out; the kind-positive-identification gate is not reached.`
+7h_unc10b. `EXPLICIT opt-out + assert-* + NO nexusTransport supplied: BOOTS without throw (rollback contract — Loop 4 R7 locked decision; Loop 6 R4+R8 reconfirmed). Same WARN as 7h_unc9c if assert-* is set. The Step -1 silent-bypass guard does not fire under explicit opt-out regardless of transport presence.`
+7h_unc11. `EXPLICIT opt-out + UNDISCRIMINATED transport + assert-*: BOOTS with ONE WARN (Loop 6 R8 — opt-out skips the entire Nexus block including the kind assertion). Operators see the warning and know their assert-* config is dead until they re-enable a consumer.`
+7h_unc12. `Loop 6 R7+R8 effective-wiring guard: nexusAuditEnabled=true + nexusAuditMode="disabled" + nexusPermissionsEnabled=false + nexusBootMode=assert-* THROWS at Step -1. Raw flags say "audit on", but mode resolves audit OFF — no Nexus consumer is actually wired, so the assert gate would be inert. The guard reads effective wiring instead of raw booleans. Same input with nexusAuditPoisonOnError=true does NOT throw on the poison flag (poison is omitted from controlPlaneFlagsSet when audit mode skips the sink — the runtime's downstream "inert poison" warning path handles it); the assert-* throw still fires.`
+7h_unc12b. `Loop 6 R7+R8: nexusAuditEnabled=true + nexusAuditMode="local-only" + nexusPermissionsEnabled=false + nexusBootMode=assert-* on HTTP: BOOTS — local-only on HTTP wires the Nexus sink (matches effectiveAuditWired semantics), so audit IS effectively on and the assert gate has a real consumer. On local-bridge the same input throws upstream at the local-bridge+assert-* preflight (assert-* is HTTP-only).`
 7h_unc12c. `Loop 6 R7: nexusAuditEnabled=true + nexusAuditMode unset + nexusPermissionsEnabled=false + nexusBootMode=assert-* on HTTP: BOOTS (audit is effectively wired with default mode); permissions disabled is the documented audit-only path that the assert-* preflight then rejects via 7g16j19. Confirms the new effective-wiring check correctly distinguishes "audit truly on" from "audit nominally on but disabled by mode".`
 7h_unc12d. `Loop 6 R7: nexusAllowEmptyPolicyStore=true with no consumer wired (perms=false, audit=false): THROWS at Step -1 — relax-on-404 is dead config without an active assert-transport-reachable-at-boot gate; allowing it as inert config means stale env vars later become active when consumers are added. Fail-fast enforces operator intent at the Phase 1 boundary.`
 7g2. (REMOVED Loop 3 — nexusProbeFactory removed from runtime config; no runtime test applies)
