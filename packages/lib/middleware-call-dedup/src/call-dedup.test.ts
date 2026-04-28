@@ -396,6 +396,47 @@ describe("createCallDedupMiddleware", () => {
     expect(calls).toBe(4);
   });
 
+  // Regression (#1419 round 17): FIFO truncation must NOT evict an
+  // unresolved in-flight coalescing slot. Otherwise a duplicate
+  // request for the same key would miss `inFlight` and call next()
+  // again, defeating the single-execution guarantee under load.
+  test("FIFO truncation skips in-flight entries to preserve coalescing", async () => {
+    const mw = createCallDedupMiddleware({ maxEntries: 2, include: ["lookup"] });
+    const ctx = turnCtx("s-coalesce");
+    let calls = 0;
+    let releaseFirst: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    const slowHandler: ToolHandler = async () => {
+      calls++;
+      await gate;
+      return { output: "first" };
+    };
+    // Issue p1 with q=1 — registers in inFlight, never resolves yet.
+    const p1 = mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 1 } }, slowHandler);
+    await Promise.resolve();
+    await Promise.resolve();
+    // Fill the session FIFO with two more keys so the next add forces
+    // truncation. q=2 + q=3 → set holds [k1, k2, k3], cap=2.
+    const fast: ToolHandler = async () => {
+      calls++;
+      return { output: "fast" };
+    };
+    await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 2 } }, fast);
+    await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 3 } }, fast);
+    // Now request q=1 again — must coalesce onto the still-running p1
+    // even though k1 was the oldest tracked key. Eviction must skip
+    // it because inFlight still owns the slot.
+    const p1bis = mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 1 } }, slowHandler);
+    releaseFirst?.();
+    const [r1, r2] = await Promise.all([p1, p1bis]);
+    expect(r1?.output).toBe("first");
+    expect(r2?.output).toBe("first");
+    // q=1 executed exactly once (1 call), q=2 + q=3 fast handlers ran (2 calls). Total 3.
+    expect(calls).toBe(3);
+  });
+
   test("describeCapabilities describes the cache", () => {
     const mw = createCallDedupMiddleware();
     expect(mw.describeCapabilities(turnCtx())?.label).toBe("call-dedup");

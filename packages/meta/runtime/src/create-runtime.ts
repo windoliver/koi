@@ -475,6 +475,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       activeFlushes,
       activeStreamFinalizations,
       otelConfig,
+      config.sessionId,
     );
     const adapter = applyActivityTimeout(composedAdapter, activityTimeoutConfig);
 
@@ -1684,6 +1685,7 @@ function composeMiddlewareIntoAdapter(
   flushTracker?: Set<Promise<void>>,
   streamFinalizationTracker?: Set<Promise<void>>,
   otelConfig?: OtelMiddlewareConfig,
+  runtimeSessionId?: string,
 ): EngineAdapter {
   if (adapter.terminals === undefined) {
     // Fail closed: if intercept-phase middleware is configured, refusing to silently
@@ -1716,6 +1718,12 @@ function composeMiddlewareIntoAdapter(
       const streamSignal = input.signal;
       const ctxOpts: MinimalContextOptions = {
         streamId,
+        // Forward the fixed RuntimeConfig.sessionId so per-session middleware
+        // (call-limits / call-dedup / circuit-breaker) keys off a stable id
+        // across multi-turn `stream()` invocations. Without this they reset
+        // on every stream — defeating the per-session contracts those
+        // packages advertise.
+        ...(runtimeSessionId !== undefined ? { sessionId: runtimeSessionId } : {}),
       };
       if (streamSignal !== undefined) (ctxOpts as Record<string, unknown>).signal = streamSignal;
       if (requestApproval !== undefined)

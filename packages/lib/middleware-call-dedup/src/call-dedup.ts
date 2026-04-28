@@ -156,11 +156,22 @@ async function trackKey(s: DedupState, sessionId: string, cacheKey: string): Pro
   // failure would otherwise leave an orphan that no later cleanup can
   // see (the session index already moved on).
   if (existing.size >= s.maxEntries) {
-    const oldest = existing.values().next().value;
-    if (oldest !== undefined) {
-      existing.delete(oldest);
-      s.inFlight.delete(oldest);
-      await s.store.delete(oldest);
+    // Pick the oldest tracked key that is NOT currently in-flight.
+    // Evicting an unresolved coalescing slot would make a duplicate
+    // request miss `inFlight` and call `next()` again — defeating the
+    // single-execution guarantee under high-cardinality load. If every
+    // tracked entry is in-flight (rare), accept temporary overshoot
+    // rather than evict live work.
+    let victim: string | undefined;
+    for (const k of existing) {
+      if (!s.inFlight.has(k)) {
+        victim = k;
+        break;
+      }
+    }
+    if (victim !== undefined) {
+      existing.delete(victim);
+      await s.store.delete(victim);
     }
   }
   existing.add(cacheKey);
