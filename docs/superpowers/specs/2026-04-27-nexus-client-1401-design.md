@@ -169,7 +169,7 @@ Sequence:
 
 1. Record `start = performance.now()`
 2. `transport.call("version", {}, { deadlineMs: HEALTH_DEADLINE_MS, nonInteractive: true })` — liveness: TCP+TLS+JSON-RPC reachable; capture version string.
-3. For each path in `opts.readPaths ?? DEFAULT_PROBE_PATHS`: `transport.call("read", { path }, { deadlineMs, nonInteractive: true })`. 200 → success. 404 → returned in `value.notFound: true` (per-path field; not silently flattened to success). 5xx / network / auth → return error. Caller — runtime-factory — decides what to do with 404: in `telemetry` it's a warning; in `fail-closed-transport` AND `assert-remote-policy-loaded-at-boot` 404 on either default probe path is FATAL because the policy namespace is missing. (Custom `readPaths` keep the same per-path notFound semantics; caller can handle 404 differently if desired.)
+3. For each path in `opts.readPaths ?? DEFAULT_PROBE_PATHS`: `transport.call("read", { path }, { deadlineMs, nonInteractive: true })`. 200 → success. 404 → returned in `value.notFound: true` (per-path field; not silently flattened to success). 5xx / network / auth → return error. Caller — runtime-factory — decides what to do with 404: in `telemetry` it's a warning; in `assert-transport-reachable-at-boot` AND `assert-remote-policy-loaded-at-boot` 404 on either default probe path is FATAL because the policy namespace is missing. (Custom `readPaths` keep the same per-path notFound semantics; caller can handle 404 differently if desired.)
 5. All calls go through `transport.call(...)` — local-bridge included.
 6. **Local-bridge probing is constrained.** The fs-nexus `local-bridge` cannot be cleanly probed in-place without risk: its subprocess serializes one in-flight call, has no protocol-level cancel that doesn't poison the channel, and a wedged auth flow blocks every queued call. The two honest options for probing have unacceptable downsides under fail-closed semantics:
 
@@ -182,7 +182,7 @@ Sequence:
 
    - **HTTP transport:** probe in place (no auth flow risk). All boot modes supported.
    - **local-bridge + `telemetry`:** the runtime does NOT probe. Operators who want telemetry can construct a disposable probe at the call site via the exported `createLocalBridgeProbeTransport` and log the result before calling `createKoiRuntime`. Caller-site responsibility — runtime block is HTTP-only.
-   - **local-bridge + `fail-closed-transport` / `assert-remote-policy-loaded-at-boot`:** **NOT SUPPORTED.** Throws a config validation error at startup. Both implementation options would produce wrong behavior (session-wedge or false-guarantee). Once the bridge gains a non-poisoning cancel/reset (out of scope), this restriction can be lifted. Operators needing fail-closed must use HTTP transport.
+   - **local-bridge + `assert-transport-reachable-at-boot` / `assert-remote-policy-loaded-at-boot`:** **NOT SUPPORTED.** Throws a config validation error at startup. Both implementation options would produce wrong behavior (session-wedge or false-guarantee). Once the bridge gains a non-poisoning cancel/reset (out of scope), this restriction can be lifted. Operators needing fail-closed must use HTTP transport.
 
    API surface:
    - `createLocalBridgeTransport(config)` → long-lived session transport (no probe support exposed)
@@ -228,23 +228,23 @@ The fs-nexus `local-bridge` transport is a spawned Python subprocess speaking JS
 
 If the Nexus server adds a dedicated `health` or `ready` RPC that aggregates all subsystem checks (incl. audit/fs storage), `health()` switches to that single call. Until then, the documented control-plane-only contract is the honest one.
 
-## Startup integration (telemetry by default, opt-in fail-closed-transport / assert-remote-policy-loaded-at-boot)
+## Startup integration (telemetry by default, opt-in assert-transport-reachable-at-boot / assert-remote-policy-loaded-at-boot)
 
 The real production boundary is `packages/meta/cli/src/runtime-factory.ts:832` (`KoiRuntimeFactoryConfig.nexusTransport`). The runtime factory wires Nexus into `createNexusPermissionBackend` and `createNexusAuditSink`.
 
 **Critical existing contract: local-first permissions.** `createNexusPermissionBackend` is documented as "local-first: TUI rules apply when Nexus has no policy or is unreachable." A golden test in `meta/runtime/src/__tests__/golden-replay.test.ts` proves this fallback. **A fail-closed startup gate would break this contract** and convert recoverable Nexus outages into total runtime unavailability. That is a regression.
 
-**Decision: telemetry-by-default for everything; fail-closed-transport and assert-remote-policy-loaded-at-boot are explicit opt-ins.**
+**Decision: telemetry-by-default for everything; assert-transport-reachable-at-boot and assert-remote-policy-loaded-at-boot are explicit opt-ins.**
 
-Earlier drafts proposed making audit-wired runtimes default to `fail-closed-transport`. That was wrong: `health()` does NOT probe the audit write path (no non-side-effecting audit RPC exists today), so defaulting to fail-closed for audit gives a **false safety signal**. Better to be honest: telemetry default for everything, document the audit-write gap, and let operators opt in.
+Earlier drafts proposed making audit-wired runtimes default to `assert-transport-reachable-at-boot`. That was wrong: `health()` does NOT probe the audit write path (no non-side-effecting audit RPC exists today), so defaulting to fail-closed for audit gives a **false safety signal**. Better to be honest: telemetry default for everything, document the audit-write gap, and let operators opt in.
 
 | Mode | Behavior |
 |---|---|
 | `telemetry` (default) | log on transport failure; log activation status; continue boot |
-| `fail-closed-transport` | throw on transport failure OR on `notFound: true` for either default probe path (`version.json` / `policy.json`) — missing policy namespace is fatal, not healths (version + version.json read + policy.json read); does NOT validate that policy files exist or that backend successfully activates remote policy |
+| `assert-transport-reachable-at-boot` | throw on transport failure OR on `notFound: true` for either default probe path (`version.json` / `policy.json`) — missing policy namespace is fatal, not healths (version + version.json read + policy.json read); does NOT validate that policy files exist or that backend successfully activates remote policy |
 | `assert-remote-policy-loaded-at-boot` | throw on transport failure; throw on first-sync policy-activation failure (awaits `backend.ready`). **STARTUP GATE ONLY, REMOTE-LOAD ONLY** — proves remote policy was loaded at boot. Does NOT prove remote policy will be enforced for every check: per existing composition (`runtime-factory.ts:1797-1806`), Nexus backend chains to local TUI on `ask`/no-opinion results, so queries not matched by remote policy still execute under local rules. Does NOT enforce ongoing freshness either: last-known-good remote policy continues to be served after sync failures. Operators needing strict centralized enforcement (no local fallback for unmatched queries) need a permission-composition change tracked separately. |
 
-**⚠️ Security caveat — no mode in this PR provides centralized-policy enforcement.** `fail-closed-transport` only proves the transport can carry read calls. `assert-remote-policy-loaded-at-boot` only proves remote policy was loaded at boot. Neither prevents local-rule fallback for queries the remote policy doesn't match (existing permission composition chains to local TUI on `ask`/no-opinion). The mode names deliberately reflect what they actually gate (`-transport`, `-remote-policy-loaded`) rather than implying enforcement they don't deliver. **Operators requiring strict centralized enforcement (no local fallback for unmatched queries) must wait for the permission-composition change tracked separately** — neither mode here is sufficient for that requirement.
+**⚠️ Security caveat — no mode in this PR provides centralized-policy enforcement.** `assert-transport-reachable-at-boot` only proves the transport can carry read calls. `assert-remote-policy-loaded-at-boot` only proves remote policy was loaded at boot. Neither prevents local-rule fallback for queries the remote policy doesn't match (existing permission composition chains to local TUI on `ask`/no-opinion). The mode names deliberately reflect what they actually gate (`-transport`, `-remote-policy-loaded`) rather than implying enforcement they don't deliver. **Operators requiring strict centralized enforcement (no local fallback for unmatched queries) must wait for the permission-composition change tracked separately** — neither mode here is sufficient for that requirement.
 
 **Policy-activation check** (only in `assert-remote-policy-loaded-at-boot`):
 
@@ -329,7 +329,7 @@ This means:
 
 Background flush failure → `onError` fires → per-sink latch set → operator sees error log immediately. Next admission boundary (`onSessionStart`/`onBeforeTurn`/`wrapModelCall`/`wrapToolCall`) inspects the latch and refuses. **The triggering record (the operation whose audit write failed) is NOT protected — it has already completed and its audit may be lost.** What `nexusAuditPoisonOnError` provides is "no SUBSEQUENT work proceeds past a known-failed sink," matching NDJSON/SQLite exactly.
 
-Operators needing per-record durability (the audited operation must not return until its record is persisted) need a synchronous-write architecture, which Nexus today does not support. This PR does NOT advertise per-record durability and explicitly documents the gap.
+Operators needing per-record durability (the audited operation must not return until its record is persisted) need a synchronous-write architecture, which Nexus today does not support. This PR does NOT advertise per-record durability and explicitly documents the gap. **Position `nexusAuditPoisonOnError` as POST-FAILURE CONTAINMENT (no further work after a known-failed sink), NOT compliance/forensic durability.** The mode name and docs intentionally avoid "durability" / "compliance" language for that reason.
 
 **The previous `createPoisonGuardedNexusAuditSink` helper is dropped** — runtime-factory hooks the existing pattern directly. Less code, no duplicate guard surface, no risk of helper-vs-runtime divergence.
 
@@ -394,7 +394,7 @@ When `nexusTransport.kind === "local-bridge"` AND `nexusAuditPoisonOnError === t
 // packages/meta/cli/src/runtime-factory.ts
 import type { HealthCapableNexusTransport } from "@koi/nexus-client";
 
-type NexusBootMode = "telemetry" | "fail-closed-transport" | "assert-remote-policy-loaded-at-boot";
+type NexusBootMode = "telemetry" | "assert-transport-reachable-at-boot" | "assert-remote-policy-loaded-at-boot";
 
 interface KoiRuntimeFactoryConfig {
   // …
@@ -478,7 +478,7 @@ interface KoiRuntimeFactoryConfig {
    *
    * - "telemetry": log on transport failure; continue boot; preserves
    *   existing local-first contract for permissions.
-   * - "fail-closed-transport": throw on transport failure OR on missing
+   * - "assert-transport-reachable-at-boot": throw on transport failure OR on missing
    *   default probe path (404 on version.json / policy.json — namespace
    *   absent is fatal, not health). Does NOT validate
    *   that centralized policy activated — local-fallback may still apply.
@@ -678,7 +678,7 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       if (mode === "telemetry") {
         logger.warn({ notFound: health.value.notFound, probeKind: txKind }, msg);
       } else {
-        throw new Error(msg);  // fail-closed-transport AND assert-remote-policy-loaded-at-boot
+        throw new Error(msg);  // assert-transport-reachable-at-boot AND assert-remote-policy-loaded-at-boot
       }
     } else if (health !== undefined) {
       const probeScope = txKind === "local-bridge"
@@ -730,7 +730,7 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
         );
       }
     }
-    // telemetry / fail-closed-transport: do NOT await ready (preserves existing async semantics)
+    // telemetry / assert-transport-reachable-at-boot: do NOT await ready (preserves existing async semantics)
   }
 
   // Step 5: wire Nexus audit sink. Routes failures into the per-sink
@@ -829,15 +829,19 @@ The function reports what the backend is *actually serving right now*, not the s
 
 `assert-remote-policy-loaded-at-boot` checks this **once at startup** after `await backend.ready` completes — i.e., it asserts that the first sync produced a remote backend. Post-boot transient failures do not re-trigger the gate. The new mode adds a startup guarantee without changing steady-state behavior.
 
-**Naming intentionally drops `fail-closed-` prefix (Round 7 follow-up):** the mode is named `assert-remote-policy-loaded-at-boot`, NOT `fail-closed-remote-policy-loaded`. The previous name invited operator confusion because the mode does NOT change permission composition — local TUI fallback still applies for queries unmatched by remote policy. Calling it "fail-closed-*" would oversell the security property. The new name describes exactly what it does: assert remote policy loaded successfully at boot, no more.
+**Naming intentionally drops `fail-closed-` prefix (Round 7 + Loop 3 Round 2 follow-up):** both non-telemetry modes were renamed because `fail-closed-*` invited operator confusion about authorization guarantees they do not provide.
 
-It does NOT guarantee:
+- `assert-transport-reachable-at-boot` (was `fail-closed-transport`): proves the JSON-RPC transport carries `version` + the policy reads at boot. Does NOT block runtime exposure on first-sync completion, does NOT change permission composition.
+- `assert-remote-policy-loaded-at-boot` (was `fail-closed-remote-policy-loaded`): also asserts first sync produced a remote-policy backend at boot. Does NOT enforce freshness or revocation propagation post-boot — last-known-good remote policy is preserved indefinitely under partition / 404 / parse failure.
+
+**Both modes are STARTUP DIAGNOSTIC GATES, not authorization controls.** They do NOT guarantee:
 - That subsequent sync attempts succeed (network partition / Nexus down → node continues serving last-known-good remote policy indefinitely)
 - That central-side policy changes (revocations, tightened denies) propagate within any bounded time
 - That a withdrawn policy file (404 after first load) demotes the node — last-known-good is preserved by design (availability over consistency)
 - That **all queries are authorized by remote policy** — local TUI rules still answer queries the remote policy doesn't cover
+- That early requests cannot authorize against local TUI rules before first remote sync completes (under `assert-transport-reachable-at-boot`)
 
-Operators requiring true fail-closed semantics (no local fallback, freshness enforcement, demotion on revocation) need a different control plane — explicitly out of scope and tracked as follow-up work. The renamed mode preserves option-space for that future without misrepresenting today's guarantee.
+Operators wanting blocking-first-sync, freshness enforcement, or revocation propagation need a different control plane — explicitly out of scope this PR, tracked as follow-up. The renamed modes preserve option-space for that future without misrepresenting today's guarantees.
 
 Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-at-boot` is selected without any out-of-band freshness mechanism (e.g., short `nexusSyncIntervalMs` + alerting on backend.lastSyncError) so operators don't conflate the two guarantees.
 
@@ -847,7 +851,7 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 
 - Default mode preserves the existing local-first contract — no regression
 - Operators get visibility into Nexus health via logs at every startup
-- Compliance/security deployments opt in to `fail-closed-transport` or `assert-remote-policy-loaded-at-boot` explicitly
+- Compliance/security deployments opt in to `assert-transport-reachable-at-boot` or `assert-remote-policy-loaded-at-boot` explicitly
 - The golden test for local-first fallback continues to pass unchanged
 
 `assertHealthCapable<T extends NexusTransport>(t: T): asserts t is T & HealthCapableNexusTransport` is the assertion helper.
@@ -913,7 +917,7 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7d. `runtime-factory threads nexusPolicyPath into BOTH health() readPaths AND createNexusPermissionBackend` (mismatch is impossible)
 7e. `default nexusPolicyPath is "koi/permissions" when config field omitted`
 7f. `local-bridge + telemetry mode: probe spawns disposable subprocess (session not touched)`
-7g. `local-bridge + fail-closed-transport mode: throws config validation error (unsupported)`
+7g. `local-bridge + assert-transport-reachable-at-boot mode: throws config validation error (unsupported)`
 7h. `local-bridge + assert-remote-policy-loaded-at-boot mode: throws config validation error (unsupported)`
 7g2. (REMOVED Loop 3 — nexusProbeFactory removed from runtime config; no runtime test applies)
 7g2b. (REMOVED — same)
@@ -958,10 +962,10 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j12. `local-bridge + auditEnabled=true + nexusAuditMode="local-only": same as above (no Nexus consumer effectively wired on local-bridge)`
 7g16j13. `HTTP + auditEnabled=true + nexusAuditMode="disabled": probe SKIPPED AND audit sink NOT wired (Round 10 — wiring honors disabled on HTTP, not just probe)`
 7g16j14. `local-bridge with nexusProbeFactory: probe is NOT executed by createKoiRuntime` (regression guard — local-bridge probe is caller-site responsibility, runtime block is HTTP-only)
-7g16j15. `fail-closed-transport + 404 on version.json or policy.json: throws with 'namespace absent' message` (Round 9 plumbing now reaches throw)
-7g16j16. `assert-remote-policy-loaded-at-boot + 404 on either default probe path: throws (same handling as fail-closed-transport)`
+7g16j15. `assert-transport-reachable-at-boot + 404 on version.json or policy.json: throws with 'namespace absent' message` (Round 9 plumbing now reaches throw)
+7g16j16. `assert-remote-policy-loaded-at-boot + 404 on either default probe path: throws (same handling as assert-transport-reachable-at-boot)`
 7g16j17. `telemetry mode + 404: logs warning with notFound list; boot CONTINUES`
-7g16j18. `fail-closed-transport probe success + no 404: boots normally`
+7g16j18. `assert-transport-reachable-at-boot probe success + no 404: boots normally`
 7g16k. (REMOVED — local-bridge + permissions categorically rejected)
 7g16l. (REMOVED — same)
 7g16m. (REMOVED — same)
@@ -989,11 +993,11 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 8. `telemetry default: succeeds and logs warning on health() error` — local-first preserved
 9. `telemetry: succeeds and logs info on transport ok`
 10. `telemetry: does NOT await backend.ready` — preserves existing async semantics
-11. `fail-closed-transport: throws on transport error`
-11b. `fail-closed-transport: throws when version.json or policy.json read returns 404 (notFound)` (Round 9 — missing namespace is fatal in fail-closed-* modes)
+11. `assert-transport-reachable-at-boot: throws on transport error`
+11b. `assert-transport-reachable-at-boot: throws when version.json or policy.json read returns 404 (notFound)` (Round 9 — missing namespace is fatal in fail-closed-* modes)
 11c. `telemetry mode: 404 on default probe path is logged + boot continues` (regression guard — fail-closed semantics do NOT leak into telemetry)
 11d. `health() result includes per-path notFound: true field when 404 returned` (caller decides handling — health() itself remains transport-success-on-404 from nexus-client's pure-transport perspective)
-12. `fail-closed-transport: does NOT await backend.ready` — only transport gate, no policy gate
+12. `assert-transport-reachable-at-boot: does NOT await backend.ready` — only transport gate, no policy gate
 13. `assert-remote-policy-loaded-at-boot: awaits backend.ready before exposing runtime`
 14. `assert-remote-policy-loaded-at-boot: throws when first sync fails (no last-known-good) — file 404, no remote backend ever activated`
 15. `assert-remote-policy-loaded-at-boot: throws when first sync fails — parse error`
@@ -1004,7 +1008,7 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 19. `default mode is "telemetry" regardless of audit wiring` (honest contract)
 20. `explicit nexusBootMode override always wins`
 21. `skips preflight when nexusTransport is undefined`
-22. `fail-closed-transport / assert-remote-policy-loaded-at-boot error messages include nexus error code`
+22. `assert-transport-reachable-at-boot / assert-remote-policy-loaded-at-boot error messages include nexus error code`
 23. `existing local-first golden test still passes (telemetry default)` — regression guard
 
 `packages/lib/fs-nexus/src/local-transport.test.ts` (additions):
@@ -1030,7 +1034,7 @@ The new `KoiRuntimeFactoryConfig` fields need a public input surface. This PR wi
 | `nexusAuditEnabled` | `KOI_NEXUS_AUDIT` (tri-state: `true`/`1`/`false`/`0`) | `--nexus-audit` / `--no-nexus-audit` (mutually exclusive) | unset → Phase 1: infer true + warn; Phase 2: throws |
 | `nexusAuditMode` | `KOI_NEXUS_AUDIT_MODE` (=`local-only`/`disabled`) | `--nexus-audit-mode <m>` | unset (only required for local-bridge + audit-enabled). `require` is REJECTED with actionable error — that mode was removed; local-bridge audit always skips Nexus sink |
 | `nexusAuditPoisonOnError` | `KOI_NEXUS_AUDIT_POISON` (tri-state) | `--nexus-audit-poison` / `--no-nexus-audit-poison` | false |
-| `nexusBootMode` | `KOI_NEXUS_BOOT_MODE` (=`telemetry`/`fail-closed-transport`/`assert-remote-policy-loaded-at-boot`) | `--nexus-boot-mode <m>` | `telemetry` |
+| `nexusBootMode` | `KOI_NEXUS_BOOT_MODE` (=`telemetry`/`assert-transport-reachable-at-boot`/`assert-remote-policy-loaded-at-boot`) | `--nexus-boot-mode <m>` | `telemetry` |
 | `nexusPolicyPath` | `KOI_NEXUS_POLICY_PATH` | `--nexus-policy-path <p>` | `koi/permissions` |
 | `nexusSyncIntervalMs` | `KOI_NEXUS_SYNC_INTERVAL_MS` | `--nexus-sync-interval-ms <n>` | `30000` |
 | ~~`nexusProbeFactory`~~ | (REMOVED Loop 3) | (REMOVED) | runtime config no longer accepts the field; standalone probe runs are caller-site responsibility via the exported `createLocalBridgeProbeTransport` |
