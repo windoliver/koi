@@ -1620,7 +1620,7 @@ export { createNexusDelegationProvider } from "./nexus-delegation-provider.js";
 - [ ] **Step 2: Run all package tests**
 
 ```bash
-bun test --filter=@koi/nexus-delegation
+bun run test --filter=@koi/nexus-delegation
 ```
 
 Expected: All tests green.
@@ -2014,7 +2014,7 @@ describe("Golden: @koi/nexus-delegation", () => {
 - [ ] **Step 4: Run runtime tests to verify golden queries pass**
 
 ```bash
-bun test --filter=@koi/runtime packages/meta/runtime/src/__tests__/golden-replay.test.ts
+bun run test --filter=@koi/runtime packages/meta/runtime/src/__tests__/golden-replay.test.ts
 ```
 
 Expected: The two new `@koi/nexus-delegation` golden query tests pass.
@@ -2041,7 +2041,7 @@ git commit -m "feat(@koi/runtime): wire @koi/nexus-delegation + 2 golden queries
 - [ ] **Step 1: Run full test suite for the package**
 
 ```bash
-bun test --filter=@koi/nexus-delegation
+bun run test --filter=@koi/nexus-delegation
 ```
 
 Expected: All tests pass. Coverage ≥ 80% lines/functions/statements.
