@@ -15144,4 +15144,37 @@ describe("Golden: @koi/middleware-prompt-cache", () => {
     expect(captured).toBe(original);
     expect(readCacheHints(captured?.metadata)).toBeUndefined();
   });
+
+  test("trajectory fixture contains prompt-cache MW spans across both model rounds", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/prompt-cache.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly extra?: Record<string, unknown>;
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("prompt-cache");
+    expect(doc.steps.length).toBeGreaterThan(0);
+
+    // Prompt-cache MW span fires on every model round. The recorded query
+    // exercises a tool loop, so we expect at least 2 prompt-cache spans
+    // (one before tool call, one after the tool result is fed back).
+    const pcSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "prompt-cache",
+    );
+    expect(pcSpans.length).toBeGreaterThanOrEqual(2);
+    for (const span of pcSpans) {
+      expect(span.extra?.phase).toBe("resolve");
+      expect(span.extra?.priority).toBe(150);
+      expect(span.extra?.nextCalled).toBe(true);
+    }
+
+    // The tool call must still execute end-to-end through the middleware chain
+    // — proves prompt-cache reordering did not break correctness.
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+  });
 });
