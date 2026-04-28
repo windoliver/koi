@@ -322,7 +322,12 @@ The interface keeps `health` optional so fixtures don't need no-op stubs and so 
 
 ## Implementation
 
-`health()` is a **control-plane readiness probe** — narrower than full system readiness. It validates the transport can reach Nexus and that the permissions/auth path is functional. Data-plane failures (audit writes, fs writes, trajectory persistence) are NOT covered and will surface on first real use. This is documented as the explicit contract.
+`health()` is a **control-plane readiness probe** — narrower than full system readiness. It validates the transport can reach Nexus and that the **policy-read path** is functional (NOT the broader permissions/auth path). Specifically NOT covered (Loop 6 R10 — narrowed):
+- **Revocation-registry readiness** (`nexus-revocation-registry.ts` — `read`/`write` of revocations). Includes both a different namespace and a write path; probing it would either be side-effecting or fail to detect write-side ACL gaps. Revocation failures surface on first revocation event at runtime.
+- **Audit writes** (`audit-sink-nexus` — `append`/batch). No non-side-effecting audit RPC exists.
+- **fs writes / trajectory persistence** (`fs-nexus` — `write`/`subscribe`). Writes are side-effecting.
+
+The probe contract is "transport reaches Nexus AND the two policy-read paths return valid payloads", nothing more. The mode names (`assert-transport-reachable-at-boot`, `assert-remote-policy-loaded-at-boot`) reflect this scope. Operators who need revocation-readiness or audit-readiness verified at boot must wait for server-side `health.*` RPCs (out of scope; tracked under "Server-side dedicated `health` RPC").
 
 ### What `health()` checks (in this PR)
 
@@ -843,12 +848,12 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // uses below (effectiveAuditWired), so the guard reflects what will
   // actually run.
   // Match effectiveAuditWired's "Nexus sink will be wired" semantics
-  // (Loop 6 R8): local-only is a LOCAL-BRIDGE-only mode that skips the
-  // Nexus sink there, but on HTTP local-only is treated same as unset
-  // (the Nexus sink IS wired — see effectiveAuditWired below at the
-  // wiring boundary). Including local-only as "off" here would falsely
-  // reject HTTP+local-only+assert-* even though the sink is actually
-  // wired. Only "disabled" universally skips the sink.
+  // (Loop 6 R8 + R10): local-only is now categorically rejected on
+  // HTTP (Loop 6 R10) so the only way to skip the Nexus sink uniformly
+  // is "disabled". On local-bridge, both "local-only" and "disabled"
+  // skip the sink — but local-bridge is handled by separate gates
+  // upstream. Here we conservatively treat "disabled" as off; everything
+  // else means the sink is or could be wired.
   const auditEffectivelyOn =
     config.nexusAuditEnabled === true
     && config.nexusAuditMode !== "disabled";
@@ -1507,6 +1512,23 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
         "local-bridge so there is nothing to poison. Clear the flag to " +
         "remove this warning.");
     }
+    // HARD REJECT (Loop 6 R10): nexusAuditMode="local-only" is a
+    // local-bridge-only mode. On HTTP it would silently re-enable the
+    // Nexus sink while operators carry the value forward expecting
+    // remote audit to stay off (the name "local-only" implies
+    // local-only universally). Reject the combination explicitly so
+    // operators must use "disabled" on HTTP if they want to suppress
+    // the Nexus sink. This closes the trust-boundary footgun where
+    // the same config value flips meaning by transport.
+    if (!isLocalBridge && config.nexusAuditMode === "local-only") {
+      throw new Error(
+        'nexusAuditMode="local-only" is a local-bridge-only mode. On HTTP, ' +
+        '"local-only" was previously treated same as unset (Nexus sink wired) ' +
+        "which silently re-enables remote audit despite the mode name. " +
+        'Use nexusAuditMode="disabled" to suppress the Nexus sink on HTTP, ' +
+        "or omit the mode to wire the Nexus sink with default semantics.",
+      );
+    }
     // HARD REJECT: local-bridge audit always skips the Nexus sink — operator
     // must declare which fallback policy applies (local-only or disabled).
     if (isLocalBridge && config.nexusAuditMode === undefined) {
@@ -1704,7 +1726,7 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7h_unc10b. `EXPLICIT opt-out + assert-* + NO nexusTransport supplied: BOOTS without throw (rollback contract — Loop 4 R7 locked decision; Loop 6 R4+R8 reconfirmed). Same WARN as 7h_unc9c if assert-* is set. The Step -1 silent-bypass guard does not fire under explicit opt-out regardless of transport presence.`
 7h_unc11. `EXPLICIT opt-out + UNDISCRIMINATED transport + assert-*: BOOTS with ONE WARN (Loop 6 R8 — opt-out skips the entire Nexus block including the kind assertion). Operators see the warning and know their assert-* config is dead until they re-enable a consumer.`
 7h_unc12. `Loop 6 R7+R8 effective-wiring guard: nexusAuditEnabled=true + nexusAuditMode="disabled" + nexusPermissionsEnabled=false + nexusBootMode=assert-* THROWS at Step -1. Raw flags say "audit on", but mode resolves audit OFF — no Nexus consumer is actually wired, so the assert gate would be inert. The guard reads effective wiring instead of raw booleans. Same input with nexusAuditPoisonOnError=true does NOT throw on the poison flag (poison is omitted from controlPlaneFlagsSet when audit mode skips the sink — the runtime's downstream "inert poison" warning path handles it); the assert-* throw still fires.`
-7h_unc12b. `Loop 6 R7+R8: nexusAuditEnabled=true + nexusAuditMode="local-only" + nexusPermissionsEnabled=false + nexusBootMode=assert-* on HTTP: BOOTS — local-only on HTTP wires the Nexus sink (matches effectiveAuditWired semantics), so audit IS effectively on and the assert gate has a real consumer. On local-bridge the same input throws upstream at the local-bridge+assert-* preflight (assert-* is HTTP-only).`
+7h_unc12b. `Loop 6 R10 (supersedes earlier R7+R8 expectation): nexusAuditEnabled=true + nexusAuditMode="local-only" on HTTP THROWS at the local-only-on-HTTP gate BEFORE Step -1 even runs. The earlier expectation that this combination would BOOT was wrong because local-only-on-HTTP is now categorically rejected. On local-bridge the same input is the documented audit fallback path and routes through normal local-bridge audit handling.`
 7h_unc12c. `Loop 6 R7: nexusAuditEnabled=true + nexusAuditMode unset + nexusPermissionsEnabled=false + nexusBootMode=assert-* on HTTP: BOOTS (audit is effectively wired with default mode); permissions disabled is the documented audit-only path that the assert-* preflight then rejects via 7g16j19. Confirms the new effective-wiring check correctly distinguishes "audit truly on" from "audit nominally on but disabled by mode".`
 7h_unc12d. `Loop 6 R7: nexusAllowEmptyPolicyStore=true with no consumer wired (perms=false, audit=false): THROWS at Step -1 — relax-on-404 is dead config without an active assert-transport-reachable-at-boot gate; allowing it as inert config means stale env vars later become active when consumers are added. Fail-fast enforces operator intent at the Phase 1 boundary.`
 7g2. (REMOVED Loop 3 — nexusProbeFactory removed from runtime config; no runtime test applies)
@@ -1747,7 +1769,9 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j. `nexusPermissionsEnabled=true + HTTP: permissions wired normally`
 7g16j2. `nexusTransport set + nexusAuditEnabled UNSET: Phase 1 — same warning + infer-true; Phase 2 — throws`
 7g16j3. `nexusAuditEnabled=false: Nexus audit sink skipped regardless of nexusAuditMode value`
-7g16j4. `nexusAuditEnabled=true + HTTP + nexusAuditMode unset OR "local-only": sink wired (HTTP has no wedge surface; only "disabled" suppresses wiring — see 7g16j13)`
+7g16j4. `nexusAuditEnabled=true + HTTP + nexusAuditMode unset: Nexus sink wired (default semantics)`
+7g16j4b. `nexusAuditEnabled=true + HTTP + nexusAuditMode="local-only": THROWS (Loop 6 R10 — local-only is local-bridge-only; rejecting on HTTP closes the trust-boundary footgun where the same value silently wired the Nexus sink despite the "local-only" name). Error message names "disabled" as the HTTP path to suppress the sink.`
+7g16j4c. `nexusAuditEnabled=true + HTTP + nexusAuditMode="disabled": Nexus sink NOT wired (HTTP-side suppression — see 7g16j13)`
 7g16j5. `local-bridge + nexusAuditEnabled=false: nexusAuditMode is NOT required (regression guard — backward-compat scoping)`
 7g16j6. `Phase 1 deprecation warning fires on HTTP only (unset flags → infer true + warn). Local-bridge unset flags THROWS instead (no warning path) — see 7g16y` (single-source-of-truth: HTTP warns, local-bridge throws)
 7g16j7. `Both consumers explicitly false (any transport): startup probe is SKIPPED entirely; runtime does not call probeTransport.health()` (fs-only Nexus session — probe is none of this block's concern)
