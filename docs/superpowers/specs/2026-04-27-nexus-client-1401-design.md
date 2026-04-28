@@ -631,7 +631,23 @@ interface KoiRuntimeFactoryConfig {
    *   enforce ongoing freshness.
    */
   readonly nexusBootMode?: NexusBootMode | undefined;
+  /**
+   * Bound on the `await nexusPermBackend.ready` step in
+   * `assert-remote-policy-loaded-at-boot` mode. The backend's internal
+   * first-sync `read` calls inherit the transport DEFAULT deadline (45s
+   * for HTTP), which would let a "fail-fast" assert mode hang the CLI
+   * tens of seconds against a slow Nexus. The runtime races the ready
+   * promise against this deadline; on timeout, boot throws with an
+   * actionable message. Default: 10_000ms (HEALTH_DEADLINE_MS=5s probe +
+   * one read RTT round-trip budget for the backend's first sync).
+   * Operators on legitimately slow Nexus deployments can raise this; in
+   * telemetry / assert-transport-reachable-at-boot modes the field is
+   * unused (no first-sync await runs).
+   */
+  readonly nexusBootSyncDeadlineMs?: number | undefined;
 }
+
+const NEXUS_BOOT_SYNC_DEADLINE_MS_DEFAULT = 10_000;
 
 export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // … existing setup …
@@ -900,32 +916,50 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
         throw new Error(msg);  // both assert-* modes
       }
     } else if (health !== undefined && health.value.status === "ok") {
-      // Distinguish "version + policy reads succeeded" from "version only,
-      // because permissions are disabled and we have no audit-write probe".
-      // The audit-only telemetry path skips policy-path reads, so a green
-      // probe message here would be a false-positive observability signal:
-      // operators would see "nexus probe ok" even though the audit
-      // namespace, ACLs, and write path were never tested. Surface the
-      // limitation in the log line so dashboards and humans cannot mistake
-      // this for validated audit health.
-      const auditOnlyVersionOnly = !effectivePermsWired;
+      // Probe success log — but ALWAYS surface the audit-readiness gap.
+      // The probe validates `version` (transport reachability) and policy
+      // reads (when permissions are wired). It NEVER validates the audit
+      // write path — there is no non-side-effecting audit-readiness RPC
+      // today (documented under "Out of scope"). Three honest variants:
+      //
+      //   - permissions wired + audit wired: policy reads succeeded BUT
+      //     audit-write readiness UNVALIDATED — log includes the marker so
+      //     dashboards / operators don't mistake this for fully-validated
+      //     audit health. The session can still fail asynchronously on the
+      //     first audit flush.
+      //   - permissions wired + audit NOT wired: policy reads succeeded;
+      //     audit not in scope for this deployment. Plain "ok".
+      //   - permissions NOT wired + audit wired: only `version` was probed
+      //     (no policy reads, no audit probe) — log as PARTIAL with WARN.
+      //   - permissions NOT wired + audit NOT wired: this branch unreachable
+      //     because anyEffectiveConsumer would be false.
+      const auditWired = effectiveAuditWired;
+      const versionOnlyAuditOnly = !effectivePermsWired;
       const probeScope = txKind === "local-bridge"
         ? "spawn-config-validated (disposable probe; live session NOT validated)"
-        : auditOnlyVersionOnly
+        : versionOnlyAuditOnly
           ? "version-only (audit write path NOT validated — no audit-readiness probe exists)"
-          : "session-validated";
-      const msg = auditOnlyVersionOnly
+          : auditWired
+            ? "session-validated-with-policy-reads (audit-write readiness UNVALIDATED — no audit-readiness probe exists)"
+            : "session-validated";
+      const msg = versionOnlyAuditOnly
         ? "nexus probe partial: version reachable, audit-write readiness UNVALIDATED"
-        : `nexus probe ok: ${probeScope}`;
-      // Use logger.warn for the audit-only partial path so it surfaces in
-      // default log levels and can't be filtered out as routine info.
-      const logFn = auditOnlyVersionOnly ? logger.warn.bind(logger) : logger.info.bind(logger);
+        : auditWired
+          ? "nexus probe ok (with caveat): policy reads succeeded; audit-write readiness UNVALIDATED — failures will surface on first audit flush"
+          : "nexus probe ok: session-validated";
+      // logger.warn for the audit-only partial AND for the perms+audit
+      // path so audit-unvalidated is impossible to filter out as routine
+      // info. Only the perms-wired-without-audit path uses INFO.
+      const logFn = (versionOnlyAuditOnly || auditWired)
+        ? logger.warn.bind(logger)
+        : logger.info.bind(logger);
       logFn({
         latencyMs: health.value.latencyMs,
         version: health.value.version,
         probed: health.value.probed,
         probeScope,
-        partial: auditOnlyVersionOnly,
+        partial: versionOnlyAuditOnly,
+        auditUnvalidated: auditWired || versionOnlyAuditOnly,
       }, msg);
     }
     // health === undefined → probe skipped (already logged above)
@@ -951,6 +985,14 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       transport: config.nexusTransport,
       policyPath: config.nexusPolicyPath ?? "koi/permissions",  // existing backend field name
       syncIntervalMs: config.nexusSyncIntervalMs,
+      // First-sync deadline override (see nexusBootSyncDeadlineMs). The
+      // backend uses this opts.deadlineMs only for the initial sync; later
+      // polls keep the transport default. The field is OPTIONAL on the
+      // backend config — when absent, behavior matches pre-PR (transport
+      // default). Specifying it is the supported path for bounded
+      // assert-remote-policy-loaded-at-boot semantics.
+      bootSyncDeadlineMs:
+        config.nexusBootSyncDeadlineMs ?? NEXUS_BOOT_SYNC_DEADLINE_MS_DEFAULT,
       // … existing config …
     });
 
@@ -961,7 +1003,47 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     // (runtime-factory.ts:1797-1806). Strict centralized enforcement requires
     // a separate permission-composition change tracked outside this PR.
     if ((config.nexusBootMode ?? "telemetry") === "assert-remote-policy-loaded-at-boot") {
-      await nexusPermBackend.ready;
+      // BOUNDED first-sync wait. The backend's `ready` promise resolves after
+      // an internal `transport.call("read", ...)` for version.json + policy.json
+      // — but those calls inherit the transport's DEFAULT 45s deadline, not
+      // the 5s HEALTH_DEADLINE_MS we used for the probe. Without an
+      // independent bound here, "fail-fast" assert-remote-policy-loaded-at-
+      // boot can still hang the CLI for tens of seconds against a slow /
+      // unresponsive Nexus before failing closed — a user-visible availability
+      // regression that is hard to diagnose because the probe already
+      // returned quickly.
+      //
+      // Two-step bound:
+      //   (a) the backend is constructed with a startup-deadline option that
+      //       overrides per-call transport deadline for the FIRST sync only
+      //       (subsequent polls keep the normal 45s default — operators who
+      //       want bounded poll deadlines tune nexusSyncIntervalMs +
+      //       transport defaults separately).
+      //   (b) we ALSO wrap `await backend.ready` in a Promise.race against
+      //       the same deadline as a defense-in-depth bound — implementation
+      //       skew between backend and runtime cannot reintroduce the hang.
+      const bootSyncDeadlineMs =
+        config.nexusBootSyncDeadlineMs ?? NEXUS_BOOT_SYNC_DEADLINE_MS_DEFAULT;
+      const deadlineSignal = AbortSignal.timeout(bootSyncDeadlineMs);
+      let timedOut = false;
+      const result = await Promise.race([
+        nexusPermBackend.ready.then(() => "ready" as const),
+        new Promise<"timeout">((resolve) => {
+          deadlineSignal.addEventListener("abort", () => {
+            timedOut = true;
+            resolve("timeout");
+          });
+        }),
+      ]);
+      if (result === "timeout") {
+        throw new Error(
+          `Nexus first-sync timed out after ${bootSyncDeadlineMs}ms; ` +
+          `assert-remote-policy-loaded-at-boot mode requires remote policy loaded at boot. ` +
+          `(The probe succeeded quickly but the permission backend's first sync is slower; ` +
+          `tune nexusBootSyncDeadlineMs if Nexus reads legitimately need longer than the default ` +
+          `${NEXUS_BOOT_SYNC_DEADLINE_MS_DEFAULT}ms.)`,
+        );
+      }
       if (!nexusPermBackend.isCentralizedPolicyActive()) {
         throw new Error(
           "Nexus remote policy not loaded after first sync (file missing, parse error, or backend rebuild failed); " +
@@ -1114,7 +1196,7 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 | `packages/lib/fs-nexus/src/probe-transport.ts` | New: `createLocalBridgeProbeTransport(spawnConfig): HealthCapableNexusTransport` — spawns a fresh, short-lived bridge subprocess; the ONLY local-bridge variant that implements `health()`; closes itself after the call. spawnConfig is held in closure scope, never on the returned transport object (no credential leak). | +75 |
 | `packages/lib/fs-nexus/src/probe-transport.test.ts` | New: probe spawns isolated subprocess; health() returns ok when bridge healthy; health() returns error when bridge auth-blocked (nonInteractive); probe subprocess is killed after probe regardless of result; probe failure does NOT affect any concurrently-running session transport | +110 |
 | `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; long-lived session transport does NOT receive nonInteractive flag from runtime probe path; existing call/subscribe behavior unchanged | +80 |
-| `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior. (Round 10 trim: `deferInitialSync` and `triggerImmediateSync` REMOVED — both existed solely to soften local-bridge auth-wedge, which is now categorically rejected upstream.) | +20 |
+| `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior. (Round 10 trim: `deferInitialSync` and `triggerImmediateSync` REMOVED — both existed solely to soften local-bridge auth-wedge, which is now categorically rejected upstream.) **Add optional `bootSyncDeadlineMs` config field** — when set, the FIRST-sync `transport.call("read", ...)` calls pass `{deadlineMs: bootSyncDeadlineMs}` so they cannot inherit the transport's 45s default. Subsequent polls use the transport default unchanged. Without this, `assert-remote-policy-loaded-at-boot` could hang the CLI tens of seconds against a slow Nexus despite the 5s probe deadline. | +30 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.test.ts` | New tests: false before any sync; false when first sync fails (404/parse/rebuild mismatch — no last-known-good); true after first successful sync; stays true when subsequent sync fails (last-known-good preserved); stays true when subsequent sync produces incompatible policy (skipped, last-known-good preserved) | +60 |
 | `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as base `NexusTransport` (long-lived session has no health); add `nexusBootMode`, `nexusPolicyPath`, `nexusAuditPoisonOnError`, `nexusPermissionsEnabled`, `nexusAuditEnabled`, `nexusAuditMode`, `nexusSyncIntervalMs` config fields (Loop 3 Round 1: `nexusProbeFactory` REMOVED — was dead in runtime; standalone probe is caller-site only); **Phase 1 deprecation:** HTTP transport with unset `nexusPermissionsEnabled`/`nexusAuditEnabled` infers TRUE + warns (Phase 2 throws). Local-bridge with unset flags THROWS unconditionally (no inference) — fs-only sessions must use the tui-command.ts decoupling and not pass `nexusTransport` into the runtime. Local-bridge + explicit `nexusPermissionsEnabled=true` THROWS (security gate, both phases). **Probe + consumer wiring gated on resolved flags:** if both effective consumer flags are false, the entire Nexus startup block is SKIPPED — explicit fs-only HTTP configurations also unaffected. runtime probes HTTP transports only (in-place); local-bridge probing is caller-site responsibility via the exported `createLocalBridgeProbeTransport` and is never invoked from the runtime; preflight: throw on local-bridge + fail-closed-* (unsupported); thread `nexusPolicyPath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws on probe failure; in `assert-remote-policy-loaded-at-boot`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **preserve per-sink poison latches (NDJSON, SQLite, Nexus each independent) AND existing per-sink fail-stop admission semantics** — pre-PR NDJSON/SQLite required-sink behavior is unchanged; Nexus joins on the same terms when `nexusAuditPoisonOnError === true`. NO quorum gate. Optional sinks (default) log only; **add early-throw validation** when `local-bridge + telemetry + nexusSyncIntervalMs===0` (deferred sync would never fire, deadlocking `ready`); route Nexus sink errors into it ONLY when `nexusAuditPoisonOnError === true` (default best-effort); existing middleware admission guards now cover Nexus too via per-sink poison latch; **wire Nexus compliance-recorder `onError` to latch `nexusPoison` in opt-in mode (admission gate then refuses new work at next boundary; poisoned-sink wrapper rejects post-poison log() calls). NO `process.exit(1)` — Nexus is a remote dependency and the runtime exposes no coordinated shutdown primitive today, so synchronous hard-exit on async remote failure is explicitly out-of-scope. Best-effort logging in default mode (was silent — bug fix). Coordinated-shutdown follow-up tracked under "Out of scope".** | +145 |
 | `packages/security/audit-sink-nexus/src/config.ts` | **Add `onError?: (err: unknown) => void` to `NexusAuditSinkConfig`** — the field doesn't exist today; wrapper depends on it | +8 |
@@ -1225,7 +1307,9 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j13. `HTTP + auditEnabled=true + nexusAuditMode="disabled": probe SKIPPED AND audit sink NOT wired (Round 10 — wiring honors disabled on HTTP, not just probe)`
 7g16j13b. `HTTP audit-only telemetry probe success (permissions=false): logs WARNING with msg "nexus probe partial: version reachable, audit-write readiness UNVALIDATED" (NOT "nexus probe ok") and partial:true field — closes the false-positive observability signal flagged in Loop 4 R2`
 7g16j13c. `HTTP audit-only probe payload includes probeScope="version-only (audit write path NOT validated — no audit-readiness probe exists)" so log aggregators / dashboards can filter on the limitation`
-7g16j13d. `HTTP perms+audit telemetry probe success: logs INFO with msg "nexus probe ok: session-validated" and partial:false (regression guard — full-validation path keeps the green log)`
+7g16j13d. `HTTP perms+audit telemetry probe success: logs WARN with msg "nexus probe ok (with caveat): policy reads succeeded; audit-write readiness UNVALIDATED — failures will surface on first audit flush" + auditUnvalidated:true. NEVER logs a fully-green INFO line while audit is wired (Loop 4 R4 fix — audit write path is unprobed regardless of consumer wiring, so the limitation must surface uniformly)`
+7g16j13e. `HTTP perms-only (audit explicitly disabled) telemetry probe success: logs INFO with msg "nexus probe ok: session-validated" + auditUnvalidated:false (the only path that gets the plain green log — audit isn't in scope for this deployment)`
+7g16j13f. `Probe log payload always includes auditUnvalidated boolean field for downstream alerting (true whenever audit consumer is wired OR audit-only path active; false only when permissions wired and audit explicitly disabled)`
 7g16j14. `local-bridge with nexusProbeFactory: probe is NOT executed by createKoiRuntime` (regression guard — local-bridge probe is caller-site responsibility, runtime block is HTTP-only)
 7g16j15. `assert-transport-reachable-at-boot + 404 on version.json or policy.json: throws with 'namespace absent' message` (Round 9 plumbing now reaches throw)
 7g16j16. `assert-remote-policy-loaded-at-boot + 404 on either default probe path: throws (same handling as assert-transport-reachable-at-boot)`
@@ -1234,6 +1318,11 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j19. `assert-transport-reachable-at-boot + nexusPermissionsEnabled=false (audit-only HTTP): THROWS — version probe doesn't exercise audit write path, would be a false-negative gate. Error names "telemetry" as the only supported audit-only mode.`
 7g16j20. `assert-remote-policy-loaded-at-boot + nexusPermissionsEnabled=false: THROWS (no policy backend to await). Same root cause as 7g16j19; both assert-* modes require permissions wired.`
 7g16j21. `assert-transport-reachable-at-boot + nexusPermissionsEnabled=true: probe reads default policy paths; 404 still fatal` (regression guard — gating only loosens audit-only path, permissions path unchanged)
+7g16j22. `assert-remote-policy-loaded-at-boot: backend.ready resolves within bootSyncDeadlineMs default (10s) → boots normally`
+7g16j23. `assert-remote-policy-loaded-at-boot: backend.ready stalls past bootSyncDeadlineMs → THROWS with "Nexus first-sync timed out after Xms" actionable message naming nexusBootSyncDeadlineMs as the tunable` (regression guard against the Loop-4-R4 unbounded-await bug — fail-fast assert mode must be bounded end-to-end)
+7g16j24. `assert-remote-policy-loaded-at-boot: custom bootSyncDeadlineMs=2000 enforces tighter bound; 3s simulated sync throws within ~2s (not 45s transport default)`
+7g16j25. `Backend constructed with bootSyncDeadlineMs threads {deadlineMs} into FIRST-sync transport.call but NOT into subsequent poll calls` (regression guard — bound applies only to first sync)
+7g16j26. `telemetry / assert-transport-reachable-at-boot modes: backend.ready is NEVER awaited regardless of bootSyncDeadlineMs (no timeout path can fire)`
 7g16k. (REMOVED — local-bridge + permissions categorically rejected)
 7g16l. (REMOVED — same)
 7g16m. (REMOVED — same)
@@ -1311,6 +1400,7 @@ The new `KoiRuntimeFactoryConfig` fields need a public input surface. This PR wi
 | `nexusBootMode` | `KOI_NEXUS_BOOT_MODE` (=`telemetry`/`assert-transport-reachable-at-boot`/`assert-remote-policy-loaded-at-boot`) | `--nexus-boot-mode <m>` | `telemetry` |
 | `nexusPolicyPath` | `KOI_NEXUS_POLICY_PATH` | `--nexus-policy-path <p>` | `koi/permissions` |
 | `nexusSyncIntervalMs` | `KOI_NEXUS_SYNC_INTERVAL_MS` | `--nexus-sync-interval-ms <n>` | `30000` |
+| `nexusBootSyncDeadlineMs` | `KOI_NEXUS_BOOT_SYNC_DEADLINE_MS` | `--nexus-boot-sync-deadline-ms <n>` | `10000` (only honored under `assert-remote-policy-loaded-at-boot`) |
 | ~~`nexusProbeFactory`~~ | (REMOVED Loop 3) | (REMOVED) | runtime config no longer accepts the field; standalone probe runs are caller-site responsibility via the exported `createLocalBridgeProbeTransport` |
 
 **Tri-state parsing:** booleans accept `true`/`1` → true, `false`/`0` → false, anything else (including unset) → undefined (which triggers the explicit-decision throw for required fields). The CLI parser rejects ambiguous combinations (e.g., both `--nexus-permissions` and `--no-nexus-permissions` on the same invocation). Existing CLI/env-driven deployments need at minimum:
