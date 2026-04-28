@@ -395,12 +395,27 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   //    once assembly completes, and we need agent.pid.id (only known inside
   //    attach()) as the delegateeId.
   //
-  //    Caveat (in-process spawns): this only attenuates code paths that read
-  //    `agent.component(ENV).values["NEXUS_API_KEY"]` at request time. L2 clients
-  //    that capture `process.env.NEXUS_API_KEY` at construction (top-level fs-nexus,
-  //    pre-built nexus-delegation api) keep using the parent's key. Out-of-process
-  //    spawns (Temporal worker) consume the returned `nexusApiKey` directly — no
-  //    env override needed.
+  //    Known limitations (tracked as follow-ups, intentional for this PR):
+  //
+  //    a) In-process credential rebinding. The env override only attenuates
+  //       code paths that read `agent.component(ENV).values["NEXUS_API_KEY"]`
+  //       at request time. L2 clients that capture `process.env.NEXUS_API_KEY`
+  //       at construction (top-level fs-nexus, pre-built NexusDelegationApi)
+  //       keep using the parent's key for the child's lifetime. Closing this
+  //       requires either making those L2 clients agent-env-aware on every
+  //       request or stripping parent-credentialed Nexus components from the
+  //       inheritance set — both span multiple packages and are out of scope
+  //       for this change. Out-of-process spawns (Temporal worker) consume
+  //       the returned `nexusApiKey` directly and do not have this limitation.
+  //
+  //    b) Cross-spawn idempotency recovery. The default per-call UUID prevents
+  //       collisions between unrelated grant() calls but cannot dedup an outer
+  //       spawn retry against a Nexus-side delegation whose POST response was
+  //       lost — the retried spawn produces a new child AgentId, a new key,
+  //       and (potentially) a new active delegation orphaning the first.
+  //       Callers that own a stable logical-spawn id can opt into deterministic
+  //       dedup via `idempotencyPrefix`. Wiring that prefix through every
+  //       production spawn provider is a follow-up.
   const parentHasDelegation = options.parentAgent.has(DELEGATION);
   // let justified: closure-captured grant outcome from delegation provider attach()
   let childGrantId: DelegationId | undefined;
@@ -416,15 +431,22 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       // via spawn.env.exclude, the child must observe no Nexus credential —
       // neither in its ENV component nor returned through SpawnChildResult.
       // Skip grant() entirely so we don't mint a server-side key that would
-      // exist only to be revoked. If delegation is `required`, this becomes a
-      // hard failure handled by the post-createKoi setup catch.
+      // exist only to be revoked.
       const nexusKeyExcluded = envExcludeKeys.has("NEXUS_API_KEY");
       if (nexusKeyExcluded) {
         if (delegationRequired) {
-          delegationGrantError = new Error(
+          // Contradictory manifest: required + delivery disabled. Fail closed
+          // BEFORE createKoi runs — no point assembling a child runtime that
+          // is guaranteed to fail validation. Releases the spawn ledger slot
+          // we already acquired so capacity is not held against a doomed spawn.
+          const release = options.spawnLedger.release();
+          await release;
+          throw KoiRuntimeError.from(
+            "VALIDATION",
             "delegation.required is true but spawn.env.exclude contains NEXUS_API_KEY — " +
               "the child cannot receive a delegated Nexus credential. Remove NEXUS_API_KEY from " +
               "spawn.env.exclude or set delegation.required to false.",
+            { retryable: false },
           );
         }
         // Otherwise: silently skip Nexus grant; child runs without delegation.

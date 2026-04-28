@@ -294,6 +294,13 @@ export function createNexusDelegationBackend(
     };
 
     grantStore.set(g.id, g);
+    // Clear any prior tombstone for this id. With deterministic
+    // (idempotencyPrefix-supplied) keys or Nexus replay semantics, a grant()
+    // can return the same delegation_id as a previously revoked one — without
+    // this, verify() would deny the freshly issued grant until the tombstone
+    // TTL expires. Also drop any stale verify cache entry for the same id.
+    revokedTombstones.delete(g.id);
+    verifyCache?.invalidate(g.id);
     return g;
   }
 
