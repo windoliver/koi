@@ -1670,6 +1670,65 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     expect(handle.middleware.some((mw) => mw.name === "koi:tool-call-limit")).toBe(true);
   });
 
+  // Regression (#1419 round 24): per-stream `onSessionEnd` would tear
+  // down per-session middleware state (call-dedup cache, call-limits
+  // counters, circuit-breaker history) after every stream, defeating
+  // the cross-turn guarantees those middlewares advertise. When a
+  // stable `RuntimeConfig.sessionId` is configured, the runtime MUST
+  // defer onSessionEnd to dispose() so middleware state survives across
+  // streams.
+  test("RuntimeConfig.sessionId defers onSessionEnd across stream() invocations", async () => {
+    const endCalls: string[] = [];
+    const probe = {
+      name: "session-end-probe",
+      phase: "observe" as const,
+      priority: 999,
+      describeCapabilities: () => ({ label: "probe", description: "probe" }),
+      onSessionEnd: (session: { sessionId: string }) => {
+        endCalls.push(session.sessionId);
+      },
+    } as unknown as import("@koi/core").KoiMiddleware;
+    const runtime = createRuntime({
+      adapter: createTerminalAdapter(),
+      sessionId: "stable-session-r24",
+      middleware: [probe],
+    });
+    // Drive two streams to completion.
+    for await (const _ of runtime.adapter.stream({ kind: "text", text: "first" })) {
+      // drain
+    }
+    for await (const _ of runtime.adapter.stream({ kind: "text", text: "second" })) {
+      // drain
+    }
+    // With stable sessionId, onSessionEnd MUST NOT have fired on stream
+    // teardown — middleware state must persist for the next turn.
+    expect(endCalls).toEqual([]);
+    await runtime.dispose();
+  });
+
+  test("RuntimeConfig without sessionId still finalizes per stream", async () => {
+    const endCalls: string[] = [];
+    const probe = {
+      name: "session-end-probe",
+      phase: "observe" as const,
+      priority: 999,
+      describeCapabilities: () => ({ label: "probe", description: "probe" }),
+      onSessionEnd: (session: { sessionId: string }) => {
+        endCalls.push(session.sessionId);
+      },
+    } as unknown as import("@koi/core").KoiMiddleware;
+    const runtime = createRuntime({
+      adapter: createTerminalAdapter(),
+      // no sessionId — each stream IS its own session, so end-per-stream is correct
+      middleware: [probe],
+    });
+    for await (const _ of runtime.adapter.stream({ kind: "text", text: "first" })) {
+      // drain
+    }
+    expect(endCalls.length).toBe(1);
+    await runtime.dispose();
+  });
+
   // Regression (#1419 round 20): when audit is configured, dedup must
   // not be installed without an `onCacheHit` observer — otherwise
   // cached/coalesced tool calls short-circuit the observe-phase chain
@@ -1781,5 +1840,31 @@ describe("Golden: @koi/middleware-call-dedup", () => {
       callDedup: { include: ["lookup"] },
     });
     expect(handle.middleware.map((mw) => mw.name)).toContain("koi:call-dedup");
+  });
+
+  // Regression (#1419 round 24): the gate must trigger on runtime-added
+  // observers too — `trajectoryDir`/`trajectoryNexus` (event-trace) and
+  // `otel` are appended per-stream INSIDE composeMiddlewareIntoAdapter
+  // and don't show up in the assembled middleware chain. Without this
+  // gate, callers enabling trajectory storage or OTel and dedup would
+  // silently lose cache/coalesced tool calls from telemetry.
+  test("createRuntime refuses callDedup + trajectoryDir without onCacheHit", () => {
+    expect(() =>
+      createRuntime({
+        adapter: createTerminalAdapter(),
+        trajectoryDir: "/tmp/koi-1419-r24-trajectories",
+        callDedup: { include: ["lookup"] },
+      }),
+    ).toThrow(/onCacheHit/);
+  });
+
+  test("createRuntime refuses callDedup + otel without onCacheHit", () => {
+    expect(() =>
+      createRuntime({
+        adapter: createTerminalAdapter(),
+        otel: true,
+        callDedup: { include: ["lookup"] },
+      }),
+    ).toThrow(/onCacheHit/);
   });
 });

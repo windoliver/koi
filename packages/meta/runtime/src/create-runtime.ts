@@ -324,35 +324,6 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     const middleware: readonly KoiMiddleware[] =
       resilienceAdds.length > 0 ? [...afterModelRouter, ...resilienceAdds] : afterModelRouter;
 
-    // Dedup short-circuits cached AND coalesced tool calls in the
-    // intercept phase, bypassing the entire observe-phase chain. Any
-    // observe-phase telemetry middleware (audit, event-trace,
-    // session-transcript, metrics, or caller-supplied observers) is
-    // therefore blind to those calls.
-    //
-    // The gate inspects the FULLY ASSEMBLED middleware chain, not just
-    // the runtime auto-install path, so a caller who supplies
-    // `koi:call-dedup` directly through `config.middleware` is held to
-    // the same contract: if any observe-phase middleware is also
-    // installed, the runtime requires `config.callDedup.onCacheHit` as
-    // an explicit acknowledgement that cache hits are forwarded into
-    // the observability pathway.
-    const hasDedupMw = middleware.some((mw) => mw.name === "koi:call-dedup");
-    const hasObserveMw = middleware.some((mw) => mw.phase === "observe");
-    const dedupAck =
-      config.callDedup !== undefined &&
-      config.callDedup !== false &&
-      config.callDedup.onCacheHit !== undefined;
-    if (hasDedupMw && (config.audit !== undefined || hasObserveMw) && !dedupAck) {
-      throw new Error(
-        "[runtime] callDedup is enabled alongside observe-phase middleware (audit / event-trace / " +
-          "transcript / metrics) but no onCacheHit observer is configured. Cached and coalesced " +
-          "tool calls short-circuit the observe-phase chain and would be invisible to those " +
-          "middleware. Provide config.callDedup.onCacheHit to acknowledge that cache hits are " +
-          "forwarded into your observability pathway, or remove call-dedup from the chain.",
-      );
-    }
-
     const activityTimeoutConfig = resolveActivityTimeoutConfig(
       config.activityTimeout,
       config.streamTimeoutMs,
@@ -485,6 +456,42 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         : config.otel !== undefined && config.otel !== false
           ? config.otel
           : undefined;
+
+    // Dedup short-circuits cached AND coalesced tool calls in the
+    // intercept phase, bypassing the entire observe-phase chain. Any
+    // observe-phase telemetry middleware (audit, event-trace,
+    // session-transcript, metrics, or caller-supplied observers) is
+    // therefore blind to those calls. Runtime-added per-stream
+    // observers (event-trace bound to trajectory storage, OTel) are
+    // appended INSIDE composeMiddlewareIntoAdapter and so don't appear
+    // in `middleware`; their config flags trigger the gate equivalently.
+    //
+    // The gate inspects the FULLY ASSEMBLED middleware chain plus
+    // runtime-added observer flags, not just the runtime auto-install
+    // path. A caller who supplies `koi:call-dedup` directly through
+    // `config.middleware` is held to the same contract.
+    const hasDedupMw = middleware.some((mw) => mw.name === "koi:call-dedup");
+    const hasObserveMw = middleware.some((mw) => mw.phase === "observe");
+    const hasTrajectoryObserver = trajectoryStore !== undefined;
+    const hasOtelObserver = otelConfig !== undefined;
+    const dedupAck =
+      config.callDedup !== undefined &&
+      config.callDedup !== false &&
+      config.callDedup.onCacheHit !== undefined;
+    if (
+      hasDedupMw &&
+      (config.audit !== undefined || hasObserveMw || hasTrajectoryObserver || hasOtelObserver) &&
+      !dedupAck
+    ) {
+      throw new Error(
+        "[runtime] callDedup is enabled alongside observe-phase middleware or runtime-added " +
+          "observers (audit / event-trace / trajectory store / otel / transcript / metrics) but " +
+          "no onCacheHit observer is configured. Cached and coalesced tool calls short-circuit " +
+          "the observe-phase chain and would be invisible to those observers. Provide " +
+          "config.callDedup.onCacheHit to acknowledge that cache hits are forwarded into your " +
+          "observability pathway, or remove call-dedup from the chain.",
+      );
+    }
 
     // Compose middleware around adapter terminals, then apply timeout
     const composedAdapter = composeMiddlewareIntoAdapter(
@@ -2113,7 +2120,16 @@ function composeMiddlewareIntoAdapter(
           // sit behind an engine layer dispatching onAfterTurn per-turn.
           // Middleware like checkpoint relies on this invocation.
           await runTurnHooks(sorted, "onAfterTurn", ctx).catch(noop);
-          await runSessionHooks(sorted, "onSessionEnd", ctx.session).catch(noop);
+          // When the runtime is configured with a stable `RuntimeConfig.sessionId`,
+          // per-stream `onSessionEnd` would tear down per-session middleware
+          // state (call-dedup cache, call-limits counters, circuit-breaker
+          // history) after every turn — defeating the cross-turn guarantees
+          // those middlewares advertise. Defer `onSessionEnd` to runtime
+          // dispose() in that mode. Without a stable sessionId, each
+          // stream IS the session, so finalize as before.
+          if (runtimeSessionId === undefined) {
+            await runSessionHooks(sorted, "onSessionEnd", ctx.session).catch(noop);
+          }
         },
         onFlushError,
         flushTracker,
