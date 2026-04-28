@@ -140,27 +140,25 @@ Sequence:
 2. `transport.call("version", {}, { deadlineMs: HEALTH_DEADLINE_MS, nonInteractive: true })` — liveness: TCP+TLS+JSON-RPC reachable; capture version string.
 3. For each path in `opts.readPaths ?? DEFAULT_PROBE_PATHS`: `transport.call("read", { path }, { deadlineMs, nonInteractive: true })`. 200 ok or 404 → success (file-not-found is a transport-success signal). 5xx / network / auth → return error.
 5. All calls go through `transport.call(...)` — local-bridge included.
-6. **Local-bridge probing strategy is mode-dependent.** The fs-nexus `local-bridge` cannot be cleanly probed in-place without risk: its subprocess serializes one in-flight call, has no protocol-level cancel that doesn't poison the channel, and a wedged auth flow blocks every queued call. The honest tradeoff:
+6. **Local-bridge probing is constrained.** The fs-nexus `local-bridge` cannot be cleanly probed in-place without risk: its subprocess serializes one in-flight call, has no protocol-level cancel that doesn't poison the channel, and a wedged auth flow blocks every queued call. The two honest options for probing have unacceptable downsides under fail-closed semantics:
 
-   | Probe target | Pros | Cons |
+   | Probe target | Pros | Cons under fail-closed |
    |---|---|---|
-   | Live session transport | Real validation of the instance consumers will use | Auth blip can wedge / kill the session for the whole run |
-   | Disposable fresh subprocess | Session safe (probe failures don't affect session) | Only validates bridge spawn + code paths, NOT the live session instance state |
+   | Live session transport | Real validation | Auth blip wedges session — startup-only probe causes non-recoverable transport failure for the whole run |
+   | Disposable fresh subprocess | Session safe | Validates spawn config + code paths only, NOT the live session — fail-closed guarantee would be misleading |
 
-   Neither option is universally correct; pick per mode:
+   **Resolution:**
 
-   - **`telemetry` (default):** disposable probe. Session safety wins because the probe is advisory anyway — boot continues regardless of probe result, so a probe blip silently killing the session would be a strictly worse outcome than a probe blip being logged.
-   - **`fail-closed-transport` / `fail-closed-policy-at-boot`:** session probe. Operators choosing strict modes accept the auth-blip risk in exchange for real validation. Probing a surrogate subprocess in fail-closed mode would be misleading — it claims a guarantee about a transport instance it never tested.
+   - **HTTP transport:** probe in place (no auth flow risk). All boot modes supported.
+   - **local-bridge + `telemetry` (default):** probe via a disposable subprocess. Session-safe; the probe is advisory anyway. **The transport object never exposes spawn config or credentials.** A separate `nexusProbeFactory` is passed to `runtime-factory` by the caller (e.g., `tui-command.ts`) which constructs the disposable probe with the same spawn config but in a sealed capability — runtime-wide code can't read secrets from it.
+   - **local-bridge + `fail-closed-transport` / `fail-closed-policy-at-boot`:** **NOT SUPPORTED.** Throws a config validation error at startup. Both implementation options would produce wrong behavior (session-wedge or false-guarantee). Once the bridge gains a non-poisoning cancel/reset (out of scope), this restriction can be lifted. Operators needing fail-closed must use HTTP transport.
 
-   API: `createLocalBridgeTransport()` returns the long-lived session transport. `createLocalBridgeProbeTransport()` returns a disposable transport (used only by telemetry-mode probes). HTTP transport has no auth flow and is naturally safe to probe in place — session probe always.
+   API surface:
+   - `createLocalBridgeTransport(config)` → long-lived session transport (no probe support exposed)
+   - `createLocalBridgeProbeTransport(spawnConfig)` → disposable transport that closes after one `health()` call. Caller passes spawn config; transport object does NOT retain it after spawn.
+   - `KoiRuntimeFactoryConfig.nexusProbeFactory?: () => HealthCapableNexusTransport` — caller-supplied factory for probe construction. Required when `nexusTransport.kind === "local-bridge"` AND `nexusBootMode === "telemetry"`. Not stored on the runtime; called once during boot then discarded.
 
-   On any probe failure path (session or disposable, telemetry or fail-closed):
-   - `nonInteractive: true` rejects the in-flight call locally on `auth_required` (no OAuth stall)
-   - For disposable probe: the probe subprocess is killed
-   - For session probe in fail-closed mode: the session may be wedged by the cancellation; this is the accepted cost of fail-closed semantics for local-bridge
-   - Result propagates to runtime startup as a normal `health()` failure
-
-   Documented operator caveat (in `docs/L2/nexus-client.md`): "Local-bridge transports in `fail-closed-*` modes are probed in-place; a transient auth challenge at startup can wedge the session and require restart. Operators who cannot tolerate this should use HTTP transport or `telemetry` mode."
+   This eliminates the credential-leak risk (transport is opaque; spawn secrets live in a sealed capability) AND avoids making misleading fail-closed claims for local-bridge.
 7. Per-call `deadlineMs: HEALTH_DEADLINE_MS = 5_000` overrides each transport's default.
 8. On success: `{ ok: true, value: { ok: true, version, latencyMs, probed: ["version", "read:koi/permissions/version.json", "read:koi/permissions/policy.json"] } }`.
 9. On failure: propagate `KoiError` via `mapNexusError`.
@@ -245,7 +243,7 @@ interface KoiRuntimeFactoryConfig {
 }
 ```
 
-When `nexusAuditPoisonOnError === true`, the runtime composes `createNexusAuditSink` with a thin wrapper that conforms to the existing `AuditSink` interface (`log()` required, `flush?` optional, `query?` optional — NOT `append`/`close`):
+When `nexusAuditPoisonOnError === true`, the runtime composes `createNexusAuditSink` with a thin wrapper that conforms to the existing `AuditSink` interface (`log()` required, `flush?` optional, `query?` optional):
 
 ```ts
 function createPoisonGuardedNexusAuditSink(opts: {
@@ -273,6 +271,25 @@ function createPoisonGuardedNexusAuditSink(opts: {
   };
 }
 ```
+
+**Honest semantics — fail-stop is at flush boundaries, not at log time:**
+
+The Nexus sink is buffered. `log()` returns synchronously after enqueueing; the actual write happens later via interval/size/explicit flush. Therefore the wrapper's `log()` cannot fail-stop on the *first lost write* — only on subsequent writes after `onError` has fired. Concretely:
+
+- Write A enqueued → log returns ok
+- Background flush A fails → `onError` fires → poison latched → `opts.onError` invoked (operator sees log immediately)
+- Write B enqueued → wrapper's `log()` throws (poisoned)
+
+So write A appears successful even though it was lost. The window matters: any work the runtime does between A's enqueue and B's log call proceeds against a sink that has already failed.
+
+**Closing the window requires middleware-boundary flushes**, which the existing audit middleware already performs at session-end and other durability points. This PR adds: middleware MUST `await sink.flush()` at every durability boundary it currently has, and the wrapper's `flush()` rethrows. After the first poisoned flush, every subsequent `log()` also throws. So:
+
+- The first lost write is observed at the **next middleware flush boundary**, not at the next `log()`
+- Operators get an immediate `onError` log when the failure happens
+- Subsequent writes hard-fail
+- Every middleware-driven flush hard-fails
+
+This matches the NDJSON/SQLite pattern (those sinks are also buffered; their guard catches at flush time too). The spec previously implied first-call latching, which is impossible against a buffered sink without making `log()` fully synchronous (expensive and orthogonal). The honest contract is "fail-stop at flush boundaries" — documented explicitly.
 
 **Default (telemetry mode, `nexusAuditPoisonOnError` unset):** Nexus audit remains best-effort. Failures are logged via `onError` but do not abort writes or rethrow at flush. Same observable behavior as today.
 
@@ -309,6 +326,15 @@ interface KoiRuntimeFactoryConfig {
    */
   readonly nexusPolicyBasePath?: string | undefined;
   /**
+   * Caller-supplied factory for constructing a disposable probe transport.
+   * REQUIRED when `nexusTransport.kind === "local-bridge"` and
+   * `nexusBootMode === "telemetry"`. Called once during boot, result is closed
+   * after the probe. The runtime never stores spawn config / credentials on
+   * the long-lived transport, so secrets stay in this sealed capability.
+   * Ignored for HTTP transport (probe in place).
+   */
+  readonly nexusProbeFactory?: (() => HealthCapableNexusTransport) | undefined;
+  /**
    * When true, wire Nexus audit sink through poison-on-error guard.
    * Default false (best-effort, matches current behavior).
    * Independent of nexusBootMode — orthogonal concern.
@@ -342,26 +368,36 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
 
     // Step 1: probe transport health.
     //
-    // Hard tradeoff for local-bridge transports:
-    //   - probe the live SESSION transport: real validation, but a transient
-    //     auth blip can wedge/kill the session for the whole run
-    //   - probe a DISPOSABLE fresh subprocess: session safe, but only validates
-    //     bridge spawn + code paths, not the live session instance state
+    // Local-bridge probing is constrained by two realities:
+    //   - probing the live session can be poisoned by an auth blip
+    //     (no protocol-level cancel exists today)
+    //   - probing a disposable subprocess validates spawn + code paths
+    //     but NOT the actual session instance state
     //
-    // Resolution by mode:
-    //   - telemetry (default): disposable probe — preserves session safety;
-    //     advisory probe is acceptable since boot continues regardless
-    //   - fail-closed-transport / fail-closed-policy-at-boot: SESSION probe —
-    //     operators picking strict modes accept the auth-blip risk in
-    //     exchange for real validation of the actual session transport
-    //
-    // HTTP transport has no auth flow and is naturally safe to probe in place;
-    // session probe always.
-    const useSessionProbe =
-      config.nexusTransport.kind !== "local-bridge" || mode !== "telemetry";
-    const probeTransport = useSessionProbe
-      ? config.nexusTransport
-      : createLocalBridgeProbeTransport(config.nexusTransport.spawnConfig);
+    // Strategy:
+    //   - HTTP transport: probe in place (no auth flow risk).
+    //   - local-bridge + telemetry mode: probe via a disposable subprocess
+    //     constructed by a SEPARATE FACTORY passed in via config.
+    //     The transport object NEVER exposes spawn config / credentials.
+    //   - local-bridge + fail-closed-* modes: NOT SUPPORTED in this PR.
+    //     We throw a config validation error at startup. The honest options
+    //     ("probe session and risk wedge" vs "probe disposable and lie about
+    //     guarantee") both have unacceptable failure modes. Until the bridge
+    //     gains a non-poisoning cancel/reset, fail-closed-* is HTTP-only.
+    if (config.nexusTransport.kind === "local-bridge"
+        && mode !== "telemetry") {
+      throw new Error(
+        `nexusBootMode=${mode} is not supported for local-bridge transports. ` +
+        `Use HTTP transport or nexusBootMode="telemetry". ` +
+        `(Local-bridge cannot be probed without risking session wedge on auth challenges; ` +
+        `probing a disposable subprocess would not validate the live session, so the ` +
+        `fail-closed-* guarantee would be misleading.)`,
+      );
+    }
+
+    const probeTransport = config.nexusTransport.kind === "local-bridge"
+      ? config.nexusProbeFactory!()  // factory-provided; NEVER reads secrets from transport
+      : config.nexusTransport;
     let health;
     try {
       health = await probeTransport.health({
@@ -484,7 +520,7 @@ The function reports what the backend is *actually serving right now*, not the s
 | `packages/security/permissions-nexus/src/nexus-permission-backend.test.ts` | New tests: false before any sync; false when first sync fails (404/parse/rebuild mismatch — no last-known-good); true after first successful sync; **stays true when subsequent sync fails** (last-known-good preserved); **stays true when subsequent sync produces incompatible policy** (skipped, last-known-good preserved) | +100 |
 | `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as `HealthCapableNexusTransport`; add `nexusBootMode`, `nexusPolicyBasePath`, **`nexusAuditPoisonOnError`** config fields; probe via `createLocalBridgeProbeTransport` for local-bridge (HTTP probes itself); thread `nexusPolicyBasePath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws; in `fail-closed-policy-at-boot`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **wire Nexus audit via `createPoisonGuardedNexusAuditSink` ONLY when `nexusAuditPoisonOnError === true`; default best-effort** | +110 |
 | `packages/meta/cli/src/poison-guarded-nexus-audit.ts` | New small helper: `createPoisonGuardedNexusAuditSink({ transport, onError }): AuditSink` — composes `createNexusAuditSink` with the poison-guard pattern, returns the standard `AuditSink` shape (`log`, optional `flush`, optional `query`); preserves `query` passthrough | +55 |
-| `packages/meta/cli/src/poison-guarded-nexus-audit.test.ts` | New tests: first error latches; subsequent log() throws with cause chain; flush rethrows; success path passes through; query passes through unchanged; multiple errors keep first | +100 |
+| `packages/meta/cli/src/poison-guarded-nexus-audit.test.ts` | New tests: simulated background flush failure latches via onError; SUBSEQUENT log() throws with cause chain (NOT the failing-write log call — that's the documented honest semantic); flush rethrows; success path passes through; query passes through unchanged; multiple errors keep first | +110 |
 | `packages/security/audit-sink-nexus/src/config.ts` | **Add `onError?: (err: unknown) => void` to `NexusAuditSinkConfig`** — the field doesn't exist today; wrapper depends on it | +8 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.ts` | Remove silent `.catch(() => {})` on `startFlush()`; invoke `config.onError?.(err)` on flush failure (interval-triggered AND size-triggered AND explicit-flush-triggered paths must all route through `onError`) | +12 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.test.ts` | New: interval-triggered flush failure invokes `onError`; size-triggered flush failure invokes `onError`; explicit `flush()` failure invokes `onError`; `onError` undefined doesn't crash (regression guard against silent swallowing) | +60 |
@@ -493,7 +529,7 @@ The function reports what the backend is *actually serving right now*, not the s
 | `packages/meta/cli/src/tui-command.ts` | Replace `as unknown as NexusTransport` cast (line 1704) with `assertHealthCapable(transport)` narrowing | +5 |
 | `docs/L2/nexus-client.md` | Document readiness probe semantics; `HealthCapableNexusTransport` contract; WS/gRPC/pool out-of-scope rationale | +60 |
 
-**Total: ~1080 LOC (320 src + 700 test + 60 doc).**
+**Total: ~1110 LOC (335 src + 715 test + 60 doc).**
 
 (Larger than the original ~170 estimate because reviews correctly demanded real integration, type-system enforcement, and a readiness probe — not just a dead liveness API.)
 
@@ -527,8 +563,10 @@ The function reports what the backend is *actually serving right now*, not the s
 7d. `runtime-factory threads nexusPolicyBasePath into BOTH health() readPaths AND createNexusPermissionBackend` (mismatch is impossible)
 7e. `default nexusPolicyBasePath is "koi/permissions" when config field omitted`
 7f. `local-bridge + telemetry mode: probe spawns disposable subprocess (session not touched)`
-7g. `local-bridge + fail-closed-transport mode: probes session transport directly (real validation, accepts auth-blip risk)`
-7h. `local-bridge + fail-closed-policy-at-boot mode: probes session transport directly`
+7g. `local-bridge + fail-closed-transport mode: throws config validation error (unsupported)`
+7h. `local-bridge + fail-closed-policy-at-boot mode: throws config validation error (unsupported)`
+7g2. `local-bridge + telemetry mode without nexusProbeFactory: throws config validation error (factory required)`
+7h2. `transport object does NOT expose spawn config / credentials` (security regression guard)
 7i. `HTTP transport: always probes session directly regardless of mode (no auth flow risk)`
 7j. `fs-nexus HTTP wrapper forwards health() to underlying transport (regression guard)`
 8. `telemetry default: succeeds and logs warning on health() error` — local-first preserved
