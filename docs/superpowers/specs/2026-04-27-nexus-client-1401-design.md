@@ -55,17 +55,36 @@ export interface NexusCallOptions {
    */
   readonly nonInteractive?: boolean;
   /**
-   * Caller-provided abort signal. When the signal aborts BEFORE the call
-   * settles, transport MUST reject the in-flight call with `KoiError`
-   * `code: "ABORTED"` AND release any subprocess/socket handles it owns
-   * for the cancelled call. HTTP transport piggybacks on `fetch`'s
-   * native `signal` plumbing; local-bridge transport adds an internal
-   * pending-request map keyed by JSON-RPC id and responds to abort by
-   * sending the bridge a cancel notification + rejecting the pending
-   * call's promise. Required by `permission-backend.abortInFlightSync()`
-   * (the assert-remote-policy-loaded-at-boot timeout path) — without
-   * this option, the timeout would only abandon the promise while the
-   * underlying read continued to mutate backend state after dispose.
+   * Caller-provided abort signal. Behavior is transport-dependent and
+   * deliberately asymmetric — the spec is honest about which guarantees
+   * are end-to-end vs best-effort:
+   *
+   *   - HTTP transport: end-to-end abort. Threads the signal into `fetch`,
+   *     so abort cancels the TCP read mid-flight and rejects the call
+   *     with `KoiError` `code: "ABORTED"`. The remote work also stops
+   *     (no socket left reading bytes server-side once the connection
+   *     drops).
+   *
+   *   - local-bridge transport: BEST-EFFORT abort. On signal, the
+   *     transport rejects the JS-side promise with `code: "ABORTED"` and
+   *     frees its single-flight slot so the next queued call can dispatch.
+   *     It CANNOT preempt the in-flight Python work: bridge.py's main
+   *     loop awaits `handle_request(...)` synchronously before draining
+   *     the next stdin message, and the JS transport is single-flight
+   *     by construction. The Python read continues to completion and its
+   *     reply is silently dropped on the JS side (the pending-id map
+   *     was already cleared on abort). A bridge concurrency redesign
+   *     with an out-of-band cancellation channel + cooperative checks
+   *     in long-running ops is required for true preemption and is
+   *     out of scope this PR (see Out of scope).
+   *
+   * Required by `permission-backend.abortInFlightSync()` (the
+   * assert-remote-policy-loaded-at-boot timeout path) so the JS-side
+   * wait is bounded and the backend's mutation guard prevents a late
+   * `initializePolicy()` resolution from mutating state after dispose.
+   * On local-bridge this is sufficient for state-correctness (mutation
+   * guard catches the late reply) but does NOT shorten the actual
+   * Python read latency.
    */
   readonly signal?: AbortSignal;
 }
@@ -1148,10 +1167,15 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
         }),
       ]);
       if (result === "timeout") {
-        // ABORT the in-flight sync BEFORE we throw, so the transport.call
-        // settles (rejected with AbortError) instead of completing async after
-        // the caller has already failed boot. dispose() in the catch handler
-        // also clears poll timers, but only abort cancels the in-flight read.
+        // ABORT the in-flight sync BEFORE we throw so the JS-side promise
+        // settles (rejected with AbortError) instead of completing async
+        // after the caller has already failed boot. On HTTP this also
+        // cancels the underlying fetch end-to-end. On local-bridge this
+        // is best-effort: the JS slot is freed but the Python read
+        // continues to completion (its reply is dropped by the backend
+        // mutation guard before it can mutate state — see
+        // NexusCallOptions.signal JSDoc and Out of scope:bridge concurrency).
+        // dispose() in the catch handler also clears poll timers.
         nexusPermBackend.abortInFlightSync?.();
       }
       if (result === "timeout") {
@@ -1335,15 +1359,13 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 | `packages/lib/nexus-client/src/assert-health-capable.ts` | New: `assertHealthCapable` assertion function | +15 |
 | `packages/lib/nexus-client/src/assert-health-capable.test.ts` | New: present narrows; missing throws | +25 |
 | `packages/lib/nexus-client/src/index.ts` | Re-export `NexusHealth`, `HealthCapableNexusTransport`, `assertHealthCapable` | +3 |
-| `packages/lib/fs-nexus/src/local-transport.ts` | (1) Per-call `opts.deadlineMs` for use by the disposable probe. (2) Per-call `opts.nonInteractive` — on `auth_required`: reject in-flight call and kill the subprocess (disposable-probe path only). (3) **Per-call `opts.signal` — pending-request map keyed by JSON-RPC id; on signal abort send a `cancel` notification to the bridge (NEW protocol RPC — see bridge.py row), reject the pending call with `code:"ABORTED"`, free the slot. Required so `permission-backend.abortInFlightSync()` works on local-bridge as well as HTTP (HTTP gets it free via fetch).** (4) Add `kind: "local-bridge"` discriminator. **Does NOT implement `health()`** — long-lived local-bridge transport stays at base `NexusTransport`. Probing the live session is unsafe (auth wedge); `health()` only exists on the disposable probe variant. | +85 |
-| `packages/lib/fs-nexus/src/bridge.py` | **NEW protocol RPC `cancel(id)`** — when the JS side sends a JSON-RPC notification with method `cancel` and `params: {id: <pending-id>}`, the bridge: (a) looks up the pending request handler by id, (b) signals cancellation to the in-flight read (Python `concurrent.futures.Future.cancel()` for I/O work; `threading.Event` set for blocking ops), (c) responds with a final error `{jsonrpc:"2.0", id:<original>, error:{code:-32099, message:"cancelled"}}` so the JS pending-request map can settle. Idempotent: `cancel` for an already-completed id is a no-op. Without this RPC, the JS-side abort would only reject the JS promise while the Python read continued to mutate state — the exact late-completion hazard the abortInFlightSync contract claims to eliminate. | +60 |
-| `packages/lib/fs-nexus/src/bridge_test.py` | New: cancel(id) for a pending read returns the cancelled error and frees the slot; cancel(id) for an unknown/completed id is a no-op (no error response); concurrent cancels on multiple in-flight ids are independent; bridge does not crash if cancellation arrives after natural completion | +90 |
+| `packages/lib/fs-nexus/src/local-transport.ts` | (1) Per-call `opts.deadlineMs` for use by the disposable probe. (2) Per-call `opts.nonInteractive` — on `auth_required`: reject in-flight call and kill the subprocess (disposable-probe path only). (3) **Per-call `opts.signal` — BEST-EFFORT abort. Pending-request map keyed by JSON-RPC id; on signal abort, reject the pending call with `code:"ABORTED"` and free the single-flight slot so the next queued call can dispatch. NO `cancel` notification is sent and NO change to `bridge.py` — the existing main-loop architecture (synchronous `await handle_request(...)` before draining the next stdin message) cannot interrupt the in-flight Python read, so any "cancel" RPC would queue behind the very request it tried to cancel. The Python read continues to completion and its eventual reply is silently dropped on the JS side (pending-id already cleared). This is sufficient for `permission-backend.abortInFlightSync()` correctness because the backend's mutation guard rejects late `initializePolicy()` resolutions — but it does NOT shorten Python read latency. True preemption requires a bridge concurrency redesign (see Out of scope).** (4) Add `kind: "local-bridge"` discriminator. **Does NOT implement `health()`** — long-lived local-bridge transport stays at base `NexusTransport`. Probing the live session is unsafe (auth wedge); `health()` only exists on the disposable probe variant. | +60 |
 | `packages/lib/fs-nexus/src/transport.ts` | **Forward `health` from the wrapped HTTP transport** (currently this fs-nexus HTTP wrapper drops it, returning only `{ call, close, subscribe, submitAuthCode }`). Add `health` passthrough so the type contract upgrade in runtime-factory works for HTTP path. Add `kind: "http"` discriminator. | +20 |
 | `packages/lib/fs-nexus/src/transport.test.ts` | New: HTTP wrapper forwards `health()` calls to underlying transport; result shape preserved; opts pass through | +50 |
 | `packages/lib/fs-nexus/src/probe-transport.ts` | New: `createLocalBridgeProbeTransport(spawnConfig): HealthCapableNexusTransport` — spawns a fresh, short-lived bridge subprocess; the ONLY local-bridge variant that implements `health()`; closes itself after the call. spawnConfig is held in closure scope, never on the returned transport object (no credential leak). | +75 |
 | `packages/lib/fs-nexus/src/probe-transport.test.ts` | New: probe spawns isolated subprocess; health() returns ok when bridge healthy; health() returns error when bridge auth-blocked (nonInteractive); probe subprocess is killed after probe regardless of result; probe failure does NOT affect any concurrently-running session transport | +110 |
 | `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; long-lived session transport does NOT receive nonInteractive flag from runtime probe path; existing call/subscribe behavior unchanged | +80 |
-| `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior. (Round 10 trim: `deferInitialSync` and `triggerImmediateSync` REMOVED — both existed solely to soften local-bridge auth-wedge, which is now categorically rejected upstream.) **Add optional `bootSyncDeadlineMs` config field** — when set, the FIRST-sync `transport.call("read", ...)` calls pass `{deadlineMs: bootSyncDeadlineMs}` so they cannot inherit the transport's 45s default. Subsequent polls use the transport default unchanged. **Add `abortInFlightSync()` method + internal `AbortController` threaded into the first-sync `transport.call(...)` `signal`** — when called, it aborts the in-flight read so `initializePolicy()` cannot mutate backend state after `dispose()`. State-mutation guard: any `initializePolicy()` resolution that lands AFTER `abortInFlightSync()` or `dispose()` is silently dropped (no skip-bad-update path triggered). Without these, the assert-remote-policy-loaded-at-boot timeout path leaves a live `read` request running against the shared transport. | +50 |
+| `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior. (Round 10 trim: `deferInitialSync` and `triggerImmediateSync` REMOVED — both existed solely to soften local-bridge auth-wedge, which is now categorically rejected upstream.) **Add optional `bootSyncDeadlineMs` config field** — when set, the FIRST-sync `transport.call("read", ...)` calls pass `{deadlineMs: bootSyncDeadlineMs}` so they cannot inherit the transport's 45s default. Subsequent polls use the transport default unchanged. **Add `abortInFlightSync()` method + internal `AbortController` threaded into the first-sync `transport.call(...)` `signal`** — when called, the JS-side wait is bounded and the backend's state-mutation guard rejects any `initializePolicy()` resolution that lands AFTER `abortInFlightSync()` or `dispose()` (silently dropped, no skip-bad-update path triggered). On HTTP this is end-to-end (fetch is cancelled); on local-bridge this is correctness-only — the underlying Python read continues to completion but its reply is dropped before it can mutate state. Without these, the assert-remote-policy-loaded-at-boot timeout path would leave a live `read` request whose eventual resolution corrupts backend state after `dispose()`. | +50 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.test.ts` | New tests: false before any sync; false when first sync fails (404/parse/rebuild mismatch — no last-known-good); true after first successful sync; stays true when subsequent sync fails (last-known-good preserved); stays true when subsequent sync produces incompatible policy (skipped, last-known-good preserved) | +60 |
 | `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as base `NexusTransport` (long-lived session has no health); add `nexusBootMode`, `nexusPolicyPath`, `nexusAuditPoisonOnError`, `nexusPermissionsEnabled`, `nexusAuditEnabled`, `nexusAuditMode`, `nexusSyncIntervalMs` config fields (Loop 3 Round 1: `nexusProbeFactory` REMOVED — was dead in runtime; standalone probe is caller-site only); **Phase 1 deprecation:** HTTP transport with unset `nexusPermissionsEnabled`/`nexusAuditEnabled` infers TRUE + warns (Phase 2 throws). Local-bridge with unset flags THROWS unconditionally (no inference) — fs-only sessions must use the tui-command.ts decoupling and not pass `nexusTransport` into the runtime. Local-bridge + explicit `nexusPermissionsEnabled=true` THROWS (security gate, both phases). **Probe + consumer wiring gated on resolved flags:** if both effective consumer flags are false, the entire Nexus startup block is SKIPPED — explicit fs-only HTTP configurations also unaffected. runtime probes HTTP transports only (in-place); local-bridge probing is caller-site responsibility via the exported `createLocalBridgeProbeTransport` and is never invoked from the runtime; preflight: throw on local-bridge + fail-closed-* (unsupported); thread `nexusPolicyPath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws on probe failure; in `assert-remote-policy-loaded-at-boot`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **preserve per-sink poison latches (NDJSON, SQLite, Nexus each independent) AND existing per-sink fail-stop admission semantics** — pre-PR NDJSON/SQLite required-sink behavior is unchanged; Nexus joins on the same terms when `nexusAuditPoisonOnError === true`. NO quorum gate. Optional sinks (default) log only; **add early-throw validation** when `local-bridge + telemetry + nexusSyncIntervalMs===0` (deferred sync would never fire, deadlocking `ready`); route Nexus sink errors into it ONLY when `nexusAuditPoisonOnError === true` (default best-effort); existing middleware admission guards now cover Nexus too via per-sink poison latch; **wire Nexus compliance-recorder `onError` to latch `nexusPoison` in opt-in mode (admission gate then refuses new work at next boundary; poisoned-sink wrapper rejects post-poison log() calls). NO `process.exit(1)` — Nexus is a remote dependency and the runtime exposes no coordinated shutdown primitive today, so synchronous hard-exit on async remote failure is explicitly out-of-scope. Best-effort logging in default mode (was silent — bug fix). Coordinated-shutdown follow-up tracked under "Out of scope".** | +145 |
 | `packages/security/audit-sink-nexus/src/config.ts` | **Add `onError?: (err: unknown) => void` to `NexusAuditSinkConfig`** — the field doesn't exist today; wrapper depends on it | +8 |
@@ -1489,9 +1511,9 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j32. `Backend's initializePolicy() resolving AFTER abortInFlightSync() does NOT mutate backend state (drops the late resolution; isCentralizedPolicyActive() does not flip from false to true post-abort)`
 7g16j33. `Backend's initializePolicy() resolving AFTER dispose() does NOT mutate state (state-mutation guard — same root cause coverage as 7g16j32 but driven by dispose path instead of timeout path)`
 7g16j34. `HTTP transport: opts.signal aborts mid-flight — fetch is cancelled, returns Result.error code="ABORTED" distinct from code="TIMEOUT"` (Loop 4 R9 — abortInFlightSync depends on this end-to-end)
-7g16j35. `Local-bridge transport: opts.signal aborts mid-flight — pending-request map removes the slot, sends cancel notification to bridge, returns code="ABORTED"`
+7g16j35. `Local-bridge transport: opts.signal aborts mid-flight (BEST-EFFORT) — pending-request map removes the slot, returns code="ABORTED" on the JS side; bridge.py is unchanged and the in-flight Python read continues to completion; its eventual reply is silently dropped (no late callback fires, no double-reject)`
 7g16j36. `Both transports: signal that aborts AFTER the call settles is a no-op (no double-reject, no resource leak)`
-7g16j37. `Permission backend: abortInFlightSync() observably aborts via the signal it threaded into transport.call (verified through a mock transport that records the AbortSignal it received)` — closes the Loop-4-R9 gap where the abort contract lacked an end-to-end transport API
+7g16j37. `Permission backend: abortInFlightSync() observably aborts via the signal it threaded into transport.call (verified through a mock transport that records the AbortSignal it received). On HTTP this manifests as fetch cancellation; on local-bridge as JS-side promise rejection only — the test fixture for local-bridge asserts that the late synthetic transport reply is dropped by the backend's mutation guard (not by transport-level cancellation), matching the documented best-effort contract`
 7g16k. (REMOVED — local-bridge + permissions categorically rejected)
 7g16l. (REMOVED — same)
 7g16m. (REMOVED — same)
@@ -1650,6 +1672,21 @@ Why no further mitigation in this PR:
 - **Per-operation durable audit requires a synchronous-write architecture** (every audit write blocks the audited operation until persisted). Nexus is remote — that means a remote round-trip per operation, which would wedge the agent loop. The pre-PR design intentionally does not provide this; that is a global architectural choice, not a Nexus-specific gap.
 - **Operators who require both** (per-operation durable audit AND fail-stop on audit failure) have ONE supported path today: a required local sink (NDJSON or SQLite with `required: true`). Local-disk writes are microseconds; synchronous flush+rethrow at every boundary works. The Nexus poison mode is for operators who want eventual containment of NEW work without paying remote round-trip cost on every loop iteration.
 
+### Persistent design decision: `opts.signal` on local-bridge is best-effort, not end-to-end
+
+Adversarial review recurringly observes that `opts.signal` cannot truly preempt an in-flight local-bridge call: `bridge.py`'s main loop awaits `handle_request(...)` synchronously before draining the next stdin message, and the JS transport is single-flight. Any in-band cancellation RPC would queue behind the very request it tried to cancel.
+
+The spec embraces this asymmetry honestly rather than papering over it:
+
+- **HTTP transport: end-to-end abort.** `opts.signal` threads into `fetch`, the TCP read is cancelled mid-flight, and the call rejects with `code:"ABORTED"`. Remote work also stops once the connection drops.
+- **Local-bridge transport: BEST-EFFORT abort.** `opts.signal` rejects the JS-side promise with `code:"ABORTED"` and frees the single-flight slot so the next queued call can dispatch. The Python read continues to completion and its eventual reply is silently dropped on the JS side. No `cancel` notification is sent and `bridge.py` is unchanged.
+
+`permission-backend.abortInFlightSync()` correctness does NOT depend on Python-side cancellation. The backend's state-mutation guard rejects any `initializePolicy()` resolution that lands after `abortInFlightSync()` or `dispose()`, regardless of whether the underlying read was preempted. This means the assert-remote-policy-loaded-at-boot timeout path is correct on both transports — just slower-to-release-resources on local-bridge.
+
+True local-bridge preemption requires a bridge concurrency redesign (out-of-band cancellation channel + cooperative checks in long-running ops + JS-side handshake) that is a substantial protocol change with its own test surface. Tracked under "Out of scope".
+
+Reviewers who continue to ask for a `cancel(id)` RPC, `concurrent.futures.Future.cancel()` integration, or any other in-band cancellation mechanism that does not first redesign the bridge concurrency model should refer back to this section. Decision is locked across review loops.
+
 The JSDoc on `nexusAuditPoisonOnError` already names this limitation in capitals ("POST-FAILURE CONTAINMENT — NOT A COMPLIANCE-ENFORCEMENT CONTROL") with explicit lists of what the flag does and does NOT do. Reviewers who continue to ask for in-flight cancellation guarantees from this flag should refer to the JSDoc + this section. Decision is locked across review loops.
 
 ## Out of scope
@@ -1662,6 +1699,7 @@ The JSDoc on `nexusAuditPoisonOnError` already names this limitation in capitals
 - **Audit/fs/trajectory write probes** in `health()` — would be side-effecting; data-plane failures surface on first real call (documented contract)
 - **Server-side dedicated `health` RPC** — Nexus server change; future work
 - **Coordinated runtime shutdown API (`requestShutdown`)** — currently the runtime exposes only `shutdownBackgroundTasks()` (synchronous, fire-and-forget). A first-class coordinated-shutdown primitive that stops admission, flushes local audit sinks, closes channels/MCP servers/transports, and exits cleanly is required to honor a synchronous hard-exit guarantee for Nexus compliance failures. Tracked separately; until it lands, this PR's `nexusAuditPoisonOnError: true` mode terminates new admission via the latch and rejects post-poison sink writes via the wrapper, but does NOT abort the in-flight session.
+- **Bridge concurrency redesign for true local-bridge preemption** — `bridge.py`'s main loop awaits `handle_request(...)` synchronously before draining the next stdin message, so any in-band cancellation RPC would queue behind the very request it tried to cancel. True preemption requires (a) an out-of-band cancellation channel (e.g., dedicated stdin lane like `auth_submit`, or a control fd), (b) cooperative cancellation checks inside long-running ops in the bridge (file reads, NFS calls, OAuth waits), and (c) a JS-side handshake to confirm the cancel was observed. This is a substantial bridge-protocol change with its own test surface and is out of scope this PR. Until it lands, `opts.signal` on local-bridge is documented as best-effort: it bounds the JS-side wait and frees the slot but cannot shorten Python read latency. The `permission-backend.abortInFlightSync()` correctness guarantee does not depend on Python-side cancellation — the backend's state-mutation guard drops late `initializePolicy()` resolutions regardless of whether the underlying read was preempted.
 
 ## Acceptance
 
