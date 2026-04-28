@@ -129,6 +129,65 @@ function isLocalKoiError(error: unknown): boolean {
   );
 }
 
+/**
+ * Network-layer error codes that mark a thrown error as upstream
+ * transport failure (DNS / connection / TCP). These appear on
+ * `error.cause.code` from Node/Bun fetch, undici, http.request, etc.
+ */
+const TRANSPORT_ERROR_CODES: ReadonlySet<string> = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EPIPE",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EPROTO",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+
+/**
+ * Positive classifier for upstream/adapter transport faults thrown
+ * without an HTTP status. Only errors that match a known transport
+ * shape contribute to breaker failure history — local plain `Error`
+ * bugs from downstream middleware or adapter glue must NOT mutate
+ * provider health, otherwise a bug in an unrelated middleware can
+ * blackhole traffic behind a healthy provider.
+ *
+ * Recognized shapes:
+ *   - `name === "TypeError"` and message contains "fetch": fetch()
+ *     transport failure (Bun/Node throws `TypeError("fetch failed")`).
+ *   - `name in {FetchError, RequestError, NetworkError, TimeoutError}`:
+ *     adapter SDK transport markers.
+ *   - `error.cause.code` in TRANSPORT_ERROR_CODES: chained network
+ *     code from undici/http (the canonical adapter-boundary signal).
+ */
+function isUpstreamTransportError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const e = error as Record<string, unknown>;
+  const name = typeof e.name === "string" ? e.name : "";
+  const message = typeof e.message === "string" ? e.message : "";
+  if (name === "TypeError" && message.toLowerCase().includes("fetch")) return true;
+  if (
+    name === "FetchError" ||
+    name === "RequestError" ||
+    name === "NetworkError" ||
+    name === "TimeoutError"
+  ) {
+    return true;
+  }
+  const cause = e.cause;
+  if (typeof cause === "object" && cause !== null) {
+    const c = cause as Record<string, unknown>;
+    if (typeof c.code === "string" && TRANSPORT_ERROR_CODES.has(c.code)) return true;
+  }
+  return false;
+}
+
 function createCircuitOpenError(key: string): KoiError {
   return {
     code: "RATE_LIMIT",
@@ -212,9 +271,23 @@ async function* trackedStream(
     // Same classification as cbWrapModelCall: status → record(status);
     // local abort → ignore; bare provider/transport throw → record
     // unconditionally so the breaker actually trips on real outages.
+    // Failure classification is fail-CLOSED on local bugs:
+    //   1. Status present (HTTP 4xx/5xx mapped via cause.code or
+    //      top-level status/statusCode) → count, subject to
+    //      `failureStatusCodes` filtering.
+    //   2. Local abort or KoiError-shaped local emission → never count.
+    //   3. Bare error → only count when it is POSITIVELY identified as
+    //      an upstream transport fault (TypeError("fetch failed"),
+    //      FetchError/NetworkError/TimeoutError, or chained
+    //      cause.code in TRANSPORT_ERROR_CODES). Anything else (a
+    //      plain `Error` from local middleware, validators, glue
+    //      bugs) does NOT mutate breaker state — local faults must
+    //      not blackhole a healthy provider.
     const status = extractStatusCode(err);
     if (status !== undefined) breaker.recordFailure(status);
-    else if (!isLocalAbortError(err) && !isLocalKoiError(err)) breaker.recordFailure();
+    else if (!isLocalAbortError(err) && !isLocalKoiError(err) && isUpstreamTransportError(err)) {
+      breaker.recordFailure();
+    }
     throw err;
   } finally {
     // Cancellation handling has two cases:
@@ -405,9 +478,23 @@ async function cbWrapModelCall(
     //     UNCONDITIONALLY. Skipping these would leave the breaker
     //     permanently CLOSED during real transport outages — exactly
     //     the failure mode this middleware exists to contain.
+    // Failure classification is fail-CLOSED on local bugs:
+    //   1. Status present (HTTP 4xx/5xx mapped via cause.code or
+    //      top-level status/statusCode) → count, subject to
+    //      `failureStatusCodes` filtering.
+    //   2. Local abort or KoiError-shaped local emission → never count.
+    //   3. Bare error → only count when it is POSITIVELY identified as
+    //      an upstream transport fault (TypeError("fetch failed"),
+    //      FetchError/NetworkError/TimeoutError, or chained
+    //      cause.code in TRANSPORT_ERROR_CODES). Anything else (a
+    //      plain `Error` from local middleware, validators, glue
+    //      bugs) does NOT mutate breaker state — local faults must
+    //      not blackhole a healthy provider.
     const status = extractStatusCode(err);
     if (status !== undefined) breaker.recordFailure(status);
-    else if (!isLocalAbortError(err) && !isLocalKoiError(err)) breaker.recordFailure();
+    else if (!isLocalAbortError(err) && !isLocalKoiError(err) && isUpstreamTransportError(err)) {
+      breaker.recordFailure();
+    }
     throw err;
   }
 }

@@ -922,16 +922,20 @@ describe("createCircuitBreakerMiddleware", () => {
     expect(aRun).toBe(0);
   });
 
-  // Regression (#1419 round 29): bare provider/transport errors
-  // (plain `Error` from a provider SDK or fetch with no `status`/
-  // `cause.code`) must trip the breaker. Skipping them would leave
-  // the breaker permanently CLOSED during real outages — the exact
-  // failure mode this middleware exists to contain.
+  // Regression (#1419 round 29 → tightened in round 35): bare
+  // provider/transport errors must trip the breaker, but ONLY when
+  // they carry a recognized transport shape (TypeError("fetch
+  // failed"), FetchError/NetworkError/TimeoutError, or chained
+  // cause.code in TRANSPORT_ERROR_CODES). A plain `Error` from local
+  // middleware bugs must NOT mutate provider health — see the
+  // matching "local plain Error does not trip the breaker" test.
   test("bare transport errors with no status code trip the breaker", async () => {
     const mw = createCircuitBreakerMiddleware({ breaker: { failureThreshold: 3 } });
     const ctx = turnCtx();
     const transport: ModelHandler = async () => {
-      throw new Error("fetch failed");
+      // Mirror what Bun/Node fetch throws on connection failure:
+      // a TypeError whose message starts with "fetch failed".
+      throw new TypeError("fetch failed");
     };
     // Three bare transport errors in a row should trip OPEN.
     for (let i = 0; i < 3; i++) {
@@ -974,5 +978,57 @@ describe("createCircuitBreakerMiddleware", () => {
       makeHandler("ok"),
     );
     expect(ok?.content).toBe("ok");
+  });
+
+  // Regression (#1419 round 35): a plain `Error` from local middleware
+  // bugs (validators, exfiltration guard, model-router glue, etc.)
+  // must NOT trip the breaker. The breaker wraps the entire
+  // downstream chain via `next(request)`, so a local fault would
+  // otherwise mutate provider health and could blackhole subsequent
+  // model traffic behind a healthy provider until cooldown.
+  test("local plain Error from downstream middleware does not trip the breaker", async () => {
+    const mw = createCircuitBreakerMiddleware({ breaker: { failureThreshold: 2 } });
+    const ctx = turnCtx();
+    const localBuggy: ModelHandler = async () => {
+      // Plain `Error`, no `cause`, name === "Error". Indistinguishable
+      // from a downstream validator throw — must not affect provider
+      // breaker state.
+      throw new Error("validator misconfiguration");
+    };
+    for (let i = 0; i < 5; i++) {
+      await expect(
+        mw.wrapModelCall?.(ctx, { messages: [], model: "openai/gpt-4o" }, localBuggy),
+      ).rejects.toThrow("validator misconfiguration");
+    }
+    // Circuit must still allow traffic — local faults are not
+    // provider failures.
+    const ok = await mw.wrapModelCall?.(
+      ctx,
+      { messages: [], model: "openai/gpt-4o" },
+      makeHandler("ok"),
+    );
+    expect(ok?.content).toBe("ok");
+  });
+
+  // Regression (#1419 round 35): chained `cause.code` in the
+  // transport allowlist (ECONNRESET, ETIMEDOUT, etc.) DOES trip the
+  // breaker — that's the canonical adapter-boundary signal for an
+  // upstream transport fault.
+  test("error with cause.code in TRANSPORT_ERROR_CODES trips the breaker", async () => {
+    const mw = createCircuitBreakerMiddleware({ breaker: { failureThreshold: 3 } });
+    const ctx = turnCtx();
+    const transport: ModelHandler = async () => {
+      const err = new Error("provider unreachable");
+      (err as Error & { cause: { code: string } }).cause = { code: "ECONNRESET" };
+      throw err;
+    };
+    for (let i = 0; i < 3; i++) {
+      await expect(
+        mw.wrapModelCall?.(ctx, { messages: [], model: "openai/gpt-4o" }, transport),
+      ).rejects.toThrow("provider unreachable");
+    }
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "openai/gpt-4o" }, makeHandler("ok")),
+    ).rejects.toMatchObject({ code: "RATE_LIMIT" });
   });
 });
