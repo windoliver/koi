@@ -59,16 +59,20 @@ export interface NexusTransport {
 }
 ```
 
-### Why optional, not required
+### Why optional on the type, but required at the production boundary
 
-Audit shows 12+ structural implementers of `NexusTransport` across the repo (production: `audit-sink-nexus`, `permissions-nexus`, `meta/runtime`, `meta/cli`; tests/fixtures: `fs-nexus/test-helpers.ts`, `testing.ts`, plus per-package test mocks). Making `health` required would force every fixture to grow a no-op stub purely to satisfy the type — a breaking source change with no caller-visible benefit.
+Audit shows 12+ structural implementers of `NexusTransport` across the repo. Two categories:
 
-Optional is the right shape because:
+| Category | Examples | health() requirement |
+|---|---|---|
+| **Production transports** | `createHttpTransport` (this package); fs-nexus `local-bridge` transport (cast in `meta/cli/tui-command.ts:1704`) | **MUST implement** |
+| **Test fixtures / mocks** | `fs-nexus/test-helpers.ts`, `testing.ts`, per-package test stubs | MAY omit (no startup path) |
 
-1. **Minimal-surface contracts** (CLAUDE.md L0 principle) — only `stream()`-style required methods; everything else opt-in
-2. **Async-by-default symmetry** — same pattern as other L0 contracts that allow sync-or-async via union
-3. **Caller cost is one line:** `if (transport.health === undefined) { /* skip */ } else { await transport.health() }`
-4. **`createHttpTransport` always provides it** — production callers always get a real implementation; only test fixtures opt out
+The interface keeps `health` optional so fixtures don't need no-op stubs, but startup code enforces it via a runtime guard (`assertHealthCapable`). This gives us:
+
+1. Source compatibility for tests (no mass churn)
+2. Fail-closed enforcement at the single boundary that matters (runtime startup)
+3. Clear error message when a non-production transport is wired into production: "transport does not support health check"
 
 ## Implementation
 
@@ -81,17 +85,48 @@ Optional is the right shape because:
 
 A short deadline matters because health-check is called from startup paths (e.g., runtime boot) where blocking 45s on a dead Nexus is unacceptable.
 
+## Startup integration (fail-closed)
+
+The runtime is the single integration boundary. Pseudocode for `packages/meta/runtime/src/create-runtime.ts` after the transport is constructed and before it is handed to permissions/audit/fs middleware:
+
+```ts
+import { assertHealthCapable } from "@koi/nexus-client";
+
+if (nexusTransport !== undefined) {
+  const health = assertHealthCapable(nexusTransport);  // throws if undefined
+  const result = await health();
+  if (!result.ok) {
+    throw new Error(
+      `Nexus unavailable at startup: ${result.error.message} (code=${result.error.code})`,
+      { cause: result.error },
+    );
+  }
+}
+```
+
+**Policy:** block startup. Rationale — every nexus-using middleware (permissions, audit, fs-nexus) will fail on its first call anyway; failing 5s into boot with a clear message beats failing minutes later mid-conversation with a confusing one. No warn-and-degrade because there is no degraded mode (denying every permission check is worse than not booting).
+
+`assertHealthCapable<T extends NexusTransport>(t: T): T & { health: NonNullable<T["health"]> }` is a tiny exported helper that throws if `health` is undefined. Pure type narrowing for callers.
+
 ## Files
 
 | File | Change | Est LOC |
 |---|---|---|
-| `src/types.ts` | Add `NexusHealth`; add `health` to `NexusTransport` | +10 |
-| `src/transport.ts` | Implement `health()`; refactor `call()` to accept a per-call deadline override (private helper) | +30 |
-| `src/health.test.ts` | New: ok, unhealthy 5xx, timeout, network error, malformed response | +90 |
-| `src/index.ts` | Re-export `NexusHealth` | +1 |
-| `docs/L2/nexus-client.md` | Document health check; document WS/gRPC/pool out-of-scope rationale | +40 |
+| `packages/lib/nexus-client/src/types.ts` | Add `NexusHealth`; add optional `health` to `NexusTransport` | +12 |
+| `packages/lib/nexus-client/src/transport.ts` | Implement `health()`; per-call deadline override helper | +30 |
+| `packages/lib/nexus-client/src/health.test.ts` | New: ok, unhealthy 5xx, timeout, network error, malformed response | +90 |
+| `packages/lib/nexus-client/src/assert-health-capable.ts` | New: `assertHealthCapable` guard + test | +20 |
+| `packages/lib/nexus-client/src/assert-health-capable.test.ts` | New: present, missing, narrowing | +30 |
+| `packages/lib/nexus-client/src/index.ts` | Re-export `NexusHealth`, `assertHealthCapable` | +2 |
+| `packages/lib/fs-nexus/src/local-transport.ts` | Implement `health()` on local-bridge transport (in-process equivalent — calls bridge `version`) | +25 |
+| `packages/lib/fs-nexus/src/local-transport.test.ts` | New test for local-bridge `health()` | +30 |
+| `packages/meta/runtime/src/create-runtime.ts` | Wire startup preflight: call `health()`, throw on failure | +20 |
+| `packages/meta/runtime/src/__tests__/create-runtime-health.test.ts` | New: startup blocks on missing/failing health | +60 |
+| `docs/L2/nexus-client.md` | Document health check; WS/gRPC/pool out-of-scope rationale; startup contract | +50 |
 
-**Total: ~170 LOC (40 src + 90 test + 40 doc).**
+**Total: ~370 LOC (107 src + 210 test + 50 doc).**
+
+(Larger than the original ~170 estimate because the review correctly demanded real integration, not just a dead API.)
 
 ## Tests (TDD — written before code)
 
@@ -116,8 +151,15 @@ Existing `transport.test.ts` continues to pass unchanged.
 
 ## Acceptance
 
-- [ ] All existing `nexus-client` tests still pass
+- [ ] All existing `nexus-client`, `fs-nexus`, `meta/runtime` tests still pass
 - [ ] New `health.test.ts` passes (6 cases, ≥80% coverage on new code)
+- [ ] New `assert-health-capable.test.ts` passes
+- [ ] New `local-transport.test.ts` health case passes
+- [ ] **New `create-runtime-health.test.ts` proves fail-closed startup:**
+  - `runtime throws when transport.health is undefined` (capability missing)
+  - `runtime throws when transport.health() returns error` (nexus unhealthy)
+  - `runtime succeeds when transport.health() returns ok`
+  - `runtime skips preflight when no nexus transport configured`
 - [ ] `bun run typecheck`, `bun run lint`, `bun run check:layers` clean
-- [ ] PR description explains punted scope with rationale
+- [ ] PR description explains punted scope (gRPC/WS/pool) with rationale
 - [ ] Issue #1401 closed by PR
