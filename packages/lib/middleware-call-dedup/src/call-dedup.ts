@@ -62,6 +62,14 @@ interface DedupState {
    * session.
    */
   readonly keysBySession: Map<string, Set<string>>;
+  /**
+   * Per-session generation counter. Bumped on every `onSessionEnd`. An
+   * in-flight `executeAndStore` captures the generation at start time
+   * and refuses to write back if the live generation has advanced — so
+   * a tool call still running when the session ends cannot repopulate
+   * the cache for that (now dead) session id.
+   */
+  readonly sessionGen: Map<string, number>;
 }
 
 function isCacheable(s: DedupState, toolId: string): boolean {
@@ -97,12 +105,18 @@ async function executeAndStore(
   s: DedupState,
   cacheKey: string,
   sessionId: string,
+  generation: number,
   request: ToolRequest,
   next: ToolHandler,
 ): Promise<ToolResponse> {
   const response = await next(request);
   const meta = response.metadata;
   if (meta?.blocked === true || meta?.error === true) return response;
+  // If the session ended (or was reused under a new generation) while the
+  // tool call was in flight, drop the result instead of repopulating the
+  // cache for a now-dead session id. Otherwise a later run reusing that
+  // sessionId could receive stale output from the prior run.
+  if ((s.sessionGen.get(sessionId) ?? 0) !== generation) return response;
   // Snapshot the response into the cache so later mutation by the caller
   // does not corrupt cached state.
   await s.store.set(cacheKey, { response: cloneResponse(response), expiresAt: s.now() + s.ttlMs });
@@ -120,6 +134,10 @@ function trackKey(s: DedupState, sessionId: string, cacheKey: string): void {
 }
 
 async function evictSession(s: DedupState, sessionId: string): Promise<void> {
+  // Bump generation FIRST so any executeAndStore call still in flight
+  // sees the mismatch and refuses to write back. Eviction of currently
+  // tracked entries follows.
+  s.sessionGen.set(sessionId, (s.sessionGen.get(sessionId) ?? 0) + 1);
   const keys = s.keysBySession.get(sessionId);
   if (keys === undefined) return;
   s.keysBySession.delete(sessionId);
@@ -192,7 +210,8 @@ async function ddWrapToolCall(
     return existing;
   }
 
-  const promise = executeAndStore(s, cacheKey, sessionId, request, next).finally(() => {
+  const generation = s.sessionGen.get(sessionId) ?? 0;
+  const promise = executeAndStore(s, cacheKey, sessionId, generation, request, next).finally(() => {
     s.inFlight.delete(cacheKey);
   });
   s.inFlight.set(cacheKey, promise);
@@ -216,6 +235,7 @@ export function createCallDedupMiddleware(config?: CallDedupConfig): KoiMiddlewa
     },
     inFlight: new Map(),
     keysBySession: new Map(),
+    sessionGen: new Map(),
   };
   return {
     name: "koi:call-dedup",

@@ -276,6 +276,40 @@ describe("createCallDedupMiddleware", () => {
     expect(r2?.metadata?.tags).toEqual(["a"]);
   });
 
+  // Regression: a tool call still running when onSessionEnd fires must NOT
+  // repopulate the cache for the now-dead session. Otherwise a later run
+  // reusing the same sessionId would receive stale output from the prior
+  // session, defeating the whole eviction guarantee.
+  test("late-completing tool call does not repopulate cache after session end", async () => {
+    const mw = createCallDedupMiddleware({ include: ["lookup"] });
+    const ctx = turnCtx("s-late");
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let calls = 0;
+    const handler: ToolHandler = async () => {
+      calls++;
+      await gate;
+      return { output: "stale" };
+    };
+    const p1 = mw.wrapToolCall?.(ctx, { toolId: "lookup", input: {} }, handler);
+    // Yield so p1 registers in inFlight + keysBySession.
+    await Promise.resolve();
+    await Promise.resolve();
+    // End the session BEFORE p1 completes.
+    await mw.onSessionEnd?.(ctx.session);
+    // Now release the still-running p1.
+    release?.();
+    await p1;
+    // A new run reusing the same sessionId must miss cache — the late
+    // writeback from p1 must have been refused.
+    const fresh: ToolHandler = async () => ({ output: "fresh" });
+    const r2 = await mw.wrapToolCall?.(turnCtx("s-late"), { toolId: "lookup", input: {} }, fresh);
+    expect(r2?.output).toBe("fresh");
+    expect(calls).toBe(1);
+  });
+
   test("describeCapabilities describes the cache", () => {
     const mw = createCallDedupMiddleware();
     expect(mw.describeCapabilities(turnCtx())?.label).toBe("call-dedup");

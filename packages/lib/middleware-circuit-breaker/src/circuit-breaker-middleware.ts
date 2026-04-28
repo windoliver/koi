@@ -28,7 +28,7 @@ import type { CircuitBreakerMiddlewareConfig } from "./types.js";
 
 const DEFAULT_MAX_KEYS = 50;
 
-function defaultExtractKey(model: string | undefined): string {
+function defaultExtractKey(model: string | undefined, _ctx: TurnContext): string {
   if (model === undefined || model.length === 0) return "default";
   const slash = model.indexOf("/");
   return slash > 0 ? model.slice(0, slash) : model;
@@ -168,23 +168,31 @@ async function* trackedStream(
 
 interface CbState {
   readonly breakerConfig: CircuitBreakerConfig;
-  readonly extractKey: (model: string | undefined) => string;
+  readonly extractKey: (model: string | undefined, ctx: TurnContext) => string;
   readonly maxKeys: number;
   readonly clock: (() => number) | undefined;
   readonly breakers: Map<string, CircuitBreaker>;
   readonly warnGuard: { warned: boolean };
 }
 
-function getOrCreateBreaker(s: CbState, key: string): CircuitBreaker {
+function getOrCreateBreaker(s: CbState, key: string): CircuitBreaker | undefined {
   const existing = s.breakers.get(key);
   if (existing !== undefined) return existing;
-  // Enforce maxKeys: evict the oldest CLOSED entry to bound memory. Keys
-  // are caller-controlled (model strings or extractKey output), so an
-  // unbounded map is a memory leak and a state-isolation problem under
-  // high cardinality. We MUST NOT evict OPEN/HALF_OPEN circuits — that
-  // would silently reset a tripped breaker and resume sending traffic to
-  // a still-unhealthy provider, defeating fail-fast exactly during the
-  // high-cardinality incidents this guard exists to handle.
+  // Enforce maxKeys as a HARD cap. Keys are caller-controlled, so an
+  // unbounded map is a memory leak under high cardinality.
+  //
+  // Eviction policy: only CLOSED entries are evictable. We MUST NOT
+  // evict OPEN/HALF_OPEN circuits — that would silently reset a tripped
+  // breaker and resume sending traffic to a still-unhealthy provider,
+  // defeating fail-fast exactly during the high-cardinality failure
+  // storms this guard is meant to handle.
+  //
+  // If the map is at capacity AND every existing entry is OPEN/HALF_OPEN,
+  // we refuse to insert. The caller receives `undefined` and the request
+  // proceeds without breaker coverage for that key, but `s.breakers`
+  // does not grow past `maxKeys`. This is the only safe behavior under
+  // a key-explosion failure storm: insert-past-cap would lose the bound,
+  // active-eviction would lose fail-fast.
   if (s.breakers.size >= s.maxKeys) {
     if (!s.warnGuard.warned) {
       s.warnGuard.warned = true;
@@ -192,15 +200,20 @@ function getOrCreateBreaker(s: CbState, key: string): CircuitBreaker {
         `[circuit-breaker] key map reached ${String(s.maxKeys)} entries — evicting oldest CLOSED; possible key explosion`,
       );
     }
+    let evicted = false;
     for (const [k, b] of s.breakers) {
       if (b.getSnapshot().state === "CLOSED") {
         s.breakers.delete(k);
+        evicted = true;
         break;
       }
     }
-    // If every entry is OPEN/HALF_OPEN we accept temporary overshoot
-    // rather than reset an active breaker. Memory is bounded by incident
-    // duration in that pathological case.
+    if (!evicted) {
+      console.warn(
+        `[circuit-breaker] key map at ${String(s.maxKeys)} entries with all circuits active — refusing new key "${key}"`,
+      );
+      return undefined;
+    }
   }
   const fresh =
     s.clock !== undefined
@@ -212,11 +225,16 @@ function getOrCreateBreaker(s: CbState, key: string): CircuitBreaker {
 
 async function cbWrapModelCall(
   s: CbState,
+  ctx: TurnContext,
   request: ModelRequest,
   next: ModelHandler,
 ): Promise<ModelResponse> {
-  const key = s.extractKey(request.model);
+  const key = s.extractKey(request.model, ctx);
   const breaker = getOrCreateBreaker(s, key);
+  // No breaker available (maxKeys exhausted with all circuits active).
+  // Pass through without coverage — preferable to silently growing the
+  // map past its hard cap.
+  if (breaker === undefined) return next(request);
   if (!breaker.isAllowed()) {
     throw createCircuitOpenError(key);
   }
@@ -236,11 +254,14 @@ async function cbWrapModelCall(
 
 function cbWrapModelStream(
   s: CbState,
+  ctx: TurnContext,
   request: ModelRequest,
   next: ModelStreamHandler,
 ): AsyncIterable<ModelChunk> {
-  const key = s.extractKey(request.model);
+  const key = s.extractKey(request.model, ctx);
   const breaker = getOrCreateBreaker(s, key);
+  // No breaker available — pass through (see cbWrapModelCall for rationale).
+  if (breaker === undefined) return next(request);
   // Snapshot before isAllowed so we can detect an OPEN→HALF_OPEN transition
   // that consumed our probe slot. The breaker primitive marks `probeInFlight`
   // when isAllowed returns true from OPEN or HALF_OPEN, so we MUST eventually
@@ -284,8 +305,8 @@ export function createCircuitBreakerMiddleware(
     name: "koi:circuit-breaker",
     priority: 175,
     phase: "intercept",
-    wrapModelCall: (_ctx: TurnContext, request, next) => cbWrapModelCall(state, request, next),
-    wrapModelStream: (_ctx: TurnContext, request, next) => cbWrapModelStream(state, request, next),
+    wrapModelCall: (ctx, request, next) => cbWrapModelCall(state, ctx, request, next),
+    wrapModelStream: (ctx, request, next) => cbWrapModelStream(state, ctx, request, next),
     describeCapabilities: () => cbDescribe(state),
   } satisfies KoiMiddleware;
 }

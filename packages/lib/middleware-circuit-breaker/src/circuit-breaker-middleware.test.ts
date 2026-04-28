@@ -4,10 +4,10 @@ import { runId, sessionId, turnId } from "@koi/core";
 import type { ModelChunk, ModelHandler, ModelRequest, ModelResponse } from "@koi/core/middleware";
 import { createCircuitBreakerMiddleware } from "./circuit-breaker-middleware.js";
 
-function turnCtx(): TurnContext {
-  const rid = runId("run-1");
+function turnCtx(sid = "s-1"): TurnContext {
+  const rid = runId(`run-${sid}`);
   return {
-    session: { agentId: "a", sessionId: sessionId("s-1"), runId: rid, metadata: {} },
+    session: { agentId: "a", sessionId: sessionId(sid), runId: rid, metadata: {} },
     turnIndex: 0,
     turnId: turnId(rid, 0),
     messages: [],
@@ -449,5 +449,66 @@ describe("createCircuitBreakerMiddleware", () => {
       mw.wrapModelCall?.(ctx, { messages: [], model: "p1/m" }, handler),
     ).rejects.toThrow();
     expect(p1Calls).toBe(0);
+  });
+
+  // Regression: maxKeys is a HARD bound. When all existing entries are
+  // OPEN/HALF_OPEN and a new key arrives, the middleware must NOT insert
+  // past capacity. Otherwise a high-cardinality failure storm would let
+  // s.breakers grow without limit during the exact incident the bound is
+  // meant to contain.
+  test("maxKeys is a hard cap when every circuit is OPEN", async () => {
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 2 },
+      maxKeys: 2,
+    });
+    const ctx = turnCtx();
+    // Trip both p1 and p2 to OPEN.
+    for (const m of ["p1/m", "p2/m"]) {
+      await expect(
+        mw.wrapModelCall?.(ctx, { messages: [], model: m }, makeHandler("fail-500")),
+      ).rejects.toThrow();
+      await expect(
+        mw.wrapModelCall?.(ctx, { messages: [], model: m }, makeHandler("fail-500")),
+      ).rejects.toThrow();
+    }
+    // Now p3 arrives — capacity full, every entry OPEN. Middleware must
+    // pass through (no breaker coverage) rather than insert past cap.
+    const r = await mw.wrapModelCall?.(ctx, { messages: [], model: "p3/m" }, makeHandler("ok"));
+    expect(r?.content).toBe("ok");
+    // p1 / p2 must still be OPEN.
+    let runCount = 0;
+    const trace = async (): Promise<never> => {
+      runCount++;
+      throw new Error("should-not-run");
+    };
+    await expect(mw.wrapModelCall?.(ctx, { messages: [], model: "p1/m" }, trace)).rejects.toThrow();
+    expect(runCount).toBe(0);
+  });
+
+  // Regression: extractKey receives TurnContext so multi-tenant deployments
+  // can scope circuits by tenant. Without this, one tenant's quota
+  // exhaustion could trip the breaker for unrelated traffic on the same
+  // provider.
+  test("extractKey receives TurnContext for tenant-scoped breaker keys", async () => {
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 2 },
+      extractKey: (model, c) => `${model ?? "x"}|${c.session.sessionId}`,
+    });
+    // Tenant A trips its breaker.
+    const ctxA = turnCtx("tenant-a");
+    await expect(
+      mw.wrapModelCall?.(ctxA, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    await expect(
+      mw.wrapModelCall?.(ctxA, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    // Tenant B on the SAME provider must NOT be affected.
+    const ctxB = turnCtx("tenant-b");
+    const r = await mw.wrapModelCall?.(
+      ctxB,
+      { messages: [], model: "openai/m" },
+      makeHandler("ok"),
+    );
+    expect(r?.content).toBe("ok");
   });
 });
