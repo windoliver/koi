@@ -62,24 +62,41 @@ export interface NexusCallOptions {
  * version. Policy-activation readiness is the runtime's responsibility
  * (it owns the backend instance and can await `backend.ready`).
  *
- * Three-state status (forces callers to handle missing-namespace explicitly
- * instead of treating it as healthy via a boolean check):
- *   - "ok": transport reachable AND every probe path returned a valid 200
- *   - "missing-paths": transport reachable BUT one or more probe paths
- *     returned 404 (policy namespace absent — control surface missing)
+ * Four-state status (forces callers to distinguish full validation from
+ * version-only and from missing-namespace, instead of collapsing all
+ * partial states into "ok" via a boolean check):
+ *   - "ok": transport reachable AND every probe path (>=1) returned a
+ *     valid 200. Reachability + namespace coverage both confirmed.
+ *   - "version-only": transport reachable BUT no probe paths were
+ *     supplied (caller passed `readPaths: []`). Version was probed; no
+ *     policy / namespace coverage was attempted. Distinct from "ok" so a
+ *     caller that gates on `status === "ok"` cannot misread a degraded
+ *     audit-only probe as full readiness.
+ *   - "missing-paths": transport reachable BUT one or more supplied probe
+ *     paths returned 404 (policy namespace absent — control surface missing).
  *   - "error": transport unreachable / 5xx / auth failure / malformed
- *     payload (returned as `Result.error`, not part of this success union)
+ *     payload (returned as `Result.error`, not part of this success union).
  *
  * Callers that only check `status === "ok"` get correct fail-closed behavior
  * by default. The earlier `ok: true` + optional `notFound[]` shape was
- * misuse-prone: a caller checking only `result.value.ok` would silently
- * accept a missing namespace as healthy.
+ * misuse-prone (boolean-readiness misread for missing-namespace); the
+ * three-state status from Loop 4 R1 closed that hazard for missing-paths
+ * but reused "ok" for empty-readPaths probes — Loop 4 R7 closes that one too.
  */
 export type NexusHealth =
   | {
       readonly status: "ok";
       readonly version: string;
       readonly latencyMs: number;
+      readonly probed: readonly string[];
+    }
+  | {
+      readonly status: "version-only";
+      readonly version: string;
+      readonly latencyMs: number;
+      /** Always `["version"]` — no read paths were supplied. Surfaced as a
+       *  distinct status so dashboards and code that gate on `"ok"` cannot
+       *  treat a probe with zero policy reads as fully validated. */
       readonly probed: readonly string[];
     }
   | {
@@ -274,8 +291,9 @@ Sequence:
 
    This eliminates the credential-leak risk (transport is opaque; spawn secrets live in a sealed capability) AND avoids making misleading fail-closed claims for local-bridge.
 7. Per-call `deadlineMs: HEALTH_DEADLINE_MS = 5_000` overrides each transport's default.
-8. On success (every probe path returned a valid 200): `{ ok: true, value: { status: "ok", version, latencyMs, probed: ["version", "read:koi/permissions/version.json", "read:koi/permissions/policy.json"] } }`.
-8a. On namespace-absent (one or more reads returned 404, no other failure): `{ ok: true, value: { status: "missing-paths", version, latencyMs, probed, notFound: [<paths>] } }` — surfaces the gap as a non-"ok" status so a `status === "ok"` check fails closed.
+8. On success (one or more `readPaths` supplied AND every read returned a valid 200): `{ ok: true, value: { status: "ok", version, latencyMs, probed: ["version", "read:<path1>", ...] } }`.
+8a. On version-only (`opts.readPaths` was `[]` so no reads ran): `{ ok: true, value: { status: "version-only", version, latencyMs, probed: ["version"] } }` — distinct status so a caller checking `status === "ok"` cannot misread a degraded audit-only probe as full validation.
+8b. On namespace-absent (one or more reads returned 404, no other failure): `{ ok: true, value: { status: "missing-paths", version, latencyMs, probed, notFound: [<paths>] } }` — surfaces the gap as a non-"ok" status so a `status === "ok"` check fails closed.
 9. On failure (transport/5xx/auth/malformed): propagate `KoiError` via `mapNexusError`.
 
 **Scope of `health()`:** transport-layer only — it validates that the JSON-RPC channel can carry the read calls that `createNexusPermissionBackend` will make. It does NOT claim that policy is "synced", that the policy backend will successfully activate, or that audit writes will succeed. Those are downstream concerns and belong to the runtime startup (next section), not to nexus-client.
@@ -794,7 +812,20 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // Both end up booting with no probe under a mode the operator believed
   // would fail-fast. Flip the gate to require POSITIVE identification of
   // HTTP — anything else throws.
-  if (config.nexusTransport !== undefined && declaredBootMode !== "telemetry") {
+  // assert-* preflight ONLY when the operator hasn't explicitly opted out
+  // of all Nexus consumers. Without the opt-out check, a caller who follows
+  // the documented fs-only migration (perms=false + audit=false) but leaves
+  // a stale KOI_NEXUS_BOOT_MODE=assert-* in their environment would still
+  // hard-fail boot — turning the opt-out into a hidden tripwire. Once both
+  // consumers are explicitly disabled, ALL Nexus boot validation is inert:
+  // no probe, no consumer wiring, no boot-mode preflight, no kind assertion.
+  // This is the rollback contract: a caller can disable Nexus by setting
+  // both flags false WITHOUT having to scrub every Nexus env/CLI input.
+  if (
+    !explicitlyOptedOut
+    && config.nexusTransport !== undefined
+    && declaredBootMode !== "telemetry"
+  ) {
     // assertProductionTransport throws on missing kind (and that error message
     // already names the named factories + opt-out). When kind IS set but is
     // local-bridge, throw the local-bridge-specific message instead.
@@ -809,6 +840,13 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
         `guarantee would be misleading. Use HTTP transport or nexusBootMode="telemetry".`,
       );
     }
+  }
+  // (Operators who set assert-* AND opted out get a one-time warning so the
+  // misconfiguration is visible without breaking boot — opt-out wins, but
+  // the dead config is not silent.)
+  if (explicitlyOptedOut && declaredBootMode !== "telemetry") {
+    logger.warn({ declaredBootMode },
+      "nexusBootMode is set but ignored: explicit opt-out (nexusPermissionsEnabled=false + nexusAuditEnabled=false) skips all Nexus boot validation. Remove KOI_NEXUS_BOOT_MODE / --nexus-boot-mode to clear this warning.");
   }
   // (rawKindForBootValidation is no longer needed — the positive-identification
   // gate above subsumes the raw-kind peek and closes the missing-kind bypass.)
@@ -935,7 +973,10 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       } else {
         throw new Error(msg);  // both assert-* modes
       }
-    } else if (health !== undefined && health.value.status === "ok") {
+    } else if (
+      health !== undefined
+      && (health.value.status === "ok" || health.value.status === "version-only")
+    ) {
       // Probe success log — but ALWAYS surface the audit-readiness gap.
       // The probe validates `version` (transport reachability) and policy
       // reads (when permissions are wired). It NEVER validates the audit
@@ -1275,6 +1316,8 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 3. `health() returns Result.ok({ status: "missing-paths", notFound: [<path>] }) when any read returns 404 — NOT status: "ok" (forces caller handling; closes the false-readiness hazard from the prior shape)`
 3a. `health() collects 404s for ALL paths (no short-circuit) — multi-path probes report the full notFound[] for operator diagnostics`
 3b. `health() returns Result.ok({status:"missing-paths"}) even when only ONE of N paths 404s — partial-namespace is still fail-closed`
+3c. `health({readPaths: []}) returns Result.ok({status:"version-only", probed:["version"]}) — version-only is a distinct discriminator, NOT "ok" (Loop 4 R7 — closes the false-readiness hazard for empty-readPaths probes)`
+3d. `health() with no readPaths option (defaults to DEFAULT_PROBE_PATHS): returns "ok" or "missing-paths" — version-only ONLY fires for explicit empty array`
 4. `health() returns Result.error when version probe returns 503`
 5. `health() returns error when any read returns 503` — proves we don't stop after first read
 6. `health() returns error when any read returns 401 (auth failure)`
@@ -1312,6 +1355,9 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7h_unc6. `MISSING KIND structural adapter + EXPLICIT nexusPermissionsEnabled=false + EXPLICIT nexusAuditEnabled=false + nexusBootMode=assert-transport-reachable-at-boot: THROWS via positive-identification gate (regression guard for Loop-4-R3 — fs-only opt-out cannot also bypass assert-* validation by stripping the kind discriminator)`
 7h_unc7. `MISSING KIND adapter + same opt-out + nexusBootMode="telemetry": BOOTS without Nexus block (assert-* gate fires only on assert-* modes; telemetry opt-out for legacy adapters is preserved)`
 7h_unc8. `assert-* preflight throw message names "positively-identified HTTP transport" so operators understand the gate fires on missing-kind + local-bridge + any other non-HTTP shape uniformly`
+7h_unc9. `EXPLICIT opt-out (perms=false + audit=false) + ANY nexusBootMode (including assert-*): BOOTS without throw + logs ONE WARN naming the dead config (Loop 4 R7 — opt-out is a hard rollback contract, not a stricter gate)`
+7h_unc10. `EXPLICIT opt-out + assert-remote-policy-loaded-at-boot + local-bridge transport: STILL boots with warning (no probe, no consumer wiring, no kind assertion fires — verifies opt-out wins over every Nexus boot gate uniformly)`
+7h_unc11. `EXPLICIT opt-out + UNDISCRIMINATED transport + assert-*: BOOTS with warning (opt-out also short-circuits the kind assertion — already covered by 7g16u6 but verified end-to-end here with stale assert-* config to prove the migration table claim)`
 7g2. (REMOVED Loop 3 — nexusProbeFactory removed from runtime config; no runtime test applies)
 7g2b. (REMOVED — same)
 7g3. (REMOVED — runtime no longer consumes nexusProbeFactory)
@@ -1517,6 +1563,19 @@ This row in the Phase 1 table has surfaced as a recurring review concern across 
   (B) **Warn + infer false** — rejected after repeated consideration. Inferring `false` silently disables Nexus permissions/audit on local-bridge for callers that previously had implicit `true` wiring (the pre-PR behavior on local-bridge was an unsafe wedge-prone path; "preserve current behavior" preserves a known bug). Inferring `true` is also unsafe — it wires the categorically-rejected local-bridge + permissions combination, which the security gate then throws on anyway. There is no warn-only option that preserves a working configuration; current behavior on local-bridge is itself the problem this PR solves.
 
 Decision (locked): option (A). External callers see a hard, actionable error instead of a silent authorization downgrade. The `tui-command.ts` decoupling makes the in-tree migration atomic; reviewers concerned about external callers should consult the migration table above for the explicit migration paths.
+
+### Persistent design decision: local-bridge + Nexus permissions/audit is unsupported (no compatibility mode)
+
+Adversarial review recurringly asks for a "compatibility mode" that preserves today's local-bridge + Nexus permissions/audit wiring. This is rejected (locked decision) because the pre-PR behavior is itself the unsafe pattern this PR exists to remove:
+
+  - **Local-bridge + Nexus permissions** has TWO documented security failures: (a) the first policy sync can wedge the shared subprocess on `auth_required` (no protocol-level cancel exists), taking down every other Nexus consumer attached to the same session; (b) requests issued before the first sync completes authorize against the local-TUI fallback — a centralized-policy bypass that contradicts the operator's own intent in enabling Nexus permissions. Both are serious enough that earlier rounds of THIS SAME REVIEW LOOP independently called them out as security defects.
+  - **Local-bridge + Nexus audit** has ONE documented security failure: a single failed audit write on `auth_required` wedges the shared subprocess, taking other Nexus consumers down with it. The local-bridge audit-mode gate (`local-only` / `disabled`) is the supported migration: skip the Nexus sink, keep working through NDJSON/SQLite (with a required-sink assertion under `local-only`).
+
+A "preserve current behavior" compatibility mode would preserve the security defects. There is no design that simultaneously (a) keeps wiring Nexus consumers on local-bridge AND (b) avoids the auth-wedge / centralized-policy-bypass failures, because the failures are intrinsic to using a shared single-flight subprocess for security-critical reads. Operators who genuinely need Nexus permissions/audit must use HTTP transport — that is the documented migration path and there is no shortcut.
+
+Operators who do NOT need Nexus consumers but still use local-bridge for fs reads have the documented `tui-command.ts` decoupling AND the explicit fs-only opt-out (`nexusPermissionsEnabled=false` + `nexusAuditEnabled=false`). Both work today and neither breaks pre-PR fs-only deployments. The "outage" framing in adversarial review applies only to deployments that were relying on the pre-PR unsafe wiring; those deployments need to migrate to HTTP, not preserve the bug.
+
+Reviewers who continue to ask for a local-bridge compatibility mode should refer back to this section. Decision is locked across review loops.
 
 ## Out of scope
 
