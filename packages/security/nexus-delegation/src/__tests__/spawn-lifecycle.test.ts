@@ -291,4 +291,75 @@ describe("spawn lifecycle — Nexus delegation", () => {
 
     await registry[Symbol.asyncDispose]();
   });
+
+  test("dispose() retries revoke after terminated-handler attempt failed", async () => {
+    // First api.revokeDelegation call (from terminated handler) throws.
+    // Backend wraps it as a queued retry and rejects the outer revoke().
+    // The bounded-revoke memo must be CLEARED on rejection so that the
+    // subsequent host-driven dispose() triggers a fresh attempt rather than
+    // reusing the failed promise as a silent no-op.
+    let revokeCallCount = 0;
+    const errSpy = mock(() => {});
+    const consoleErrorSpy = console.error;
+    const consoleWarnSpy = console.warn;
+    console.error = errSpy;
+    console.warn = errSpy;
+
+    const mockApi = makeMockApi({
+      revokeDelegation: mock(async () => {
+        revokeCallCount++;
+        if (revokeCallCount === 1) {
+          return {
+            ok: false as const,
+            error: {
+              code: "INTERNAL" as const,
+              message: "transient",
+              retryable: true,
+              context: {},
+            },
+          };
+        }
+        return { ok: true as const, value: undefined };
+      }),
+    });
+    const delegation = createNexusDelegationBackend({
+      api: mockApi,
+      agentId: agentId("parent-1"),
+    });
+    const parent = mockParentAgent(delegation);
+    const registry = createInMemoryRegistry();
+    const ledger = createInMemorySpawnLedger(10);
+
+    const result = await spawnChildAgent({
+      manifest: {
+        name: "child",
+        version: "0.1.0",
+        model: { name: "mock" },
+        permissions: { allow: ["read_file"] },
+        delegation: { enabled: true, maxChainDepth: 3, defaultTtlMs: 3_600_000 },
+      },
+      parentAgent: parent,
+      adapter: makeMockAdapter(),
+      spawnLedger: ledger,
+      spawnPolicy: DEFAULT_SPAWN_POLICY,
+      registry,
+    });
+
+    // Trigger terminated handler — first revoke attempt fails (transient).
+    registry.transition(result.childPid.id, "terminated", 0, { kind: "completed" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(revokeCallCount).toBeGreaterThanOrEqual(1);
+
+    // Host now calls dispose. Without memo-clear-on-failure, the cached
+    // already-resolved (caught) promise would be reused and revoke would not
+    // be retried, leaving the per-child key active. With the fix, dispose
+    // triggers a fresh boundedRevokeOnce attempt that succeeds.
+    const before = revokeCallCount;
+    await result.runtime.dispose();
+    expect(revokeCallCount).toBeGreaterThan(before);
+
+    console.error = consoleErrorSpy;
+    console.warn = consoleWarnSpy;
+    await registry[Symbol.asyncDispose]();
+  });
 });

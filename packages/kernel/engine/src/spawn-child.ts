@@ -729,11 +729,21 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   let handle: ChildHandle;
   let disposeOverride: (() => Promise<void>) | undefined;
 
-  // Shared bounded-revoke promise. Used by BOTH the registry-path terminated
+  // Shared bounded-revoke helper. Used by BOTH the registry-path terminated
   // handler (kicked off fire-and-forget) and the dispose override (awaited).
-  // Memoized so both paths converge on a single in-flight revoke and a host
-  // calling dispose() after termination still gates teardown on revoke.
-  // let justified: lazily initialized memo of the in-flight revoke promise
+  // Memoization rules:
+  //   - In-flight attempt: shared so concurrent callers (terminated handler +
+  //     host dispose) converge on one revoke instead of firing two.
+  //   - Successful attempt: stays memoized so subsequent calls are no-ops.
+  //   - Failed/timed-out attempt: memo CLEARED on rejection so a later call
+  //     (e.g., explicit dispose() after a terminated-handler revoke failed
+  //     transiently) can retry instead of silently reusing a resolved-but-
+  //     unsuccessful promise. The Nexus backend's retry queue drains
+  //     opportunistically on subsequent revoke() calls, so a fresh attempt
+  //     here also gives the queue another chance to drain before teardown
+  //     completes.
+  // let justified: lazily initialized memo of the in-flight revoke promise;
+  //                cleared on failure to enable retry
   let revokePromise: Promise<void> | undefined;
   function boundedRevokeOnce(): Promise<void> {
     if (revokePromise !== undefined) return revokePromise;
@@ -746,7 +756,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       revokePromise = Promise.resolve();
       return revokePromise;
     }
-    revokePromise = Promise.race([
+    const raw = Promise.race([
       Promise.resolve(parentDel.revoke(childGrantId, false)),
       new Promise<void>((_resolve, reject) => {
         setTimeout(
@@ -754,13 +764,22 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
           REVOKE_DISPOSE_TIMEOUT_MS,
         ).unref?.();
       }),
-    ]).catch((err: unknown) => {
+    ]);
+    const attempt: Promise<void> = raw.catch((err: unknown) => {
+      // Clear the memo on rejection so a follow-up call (e.g., host dispose
+      // after the terminated-handler attempt failed) can retry instead of
+      // reusing this already-rejected attempt as a silent no-op. Safe to
+      // unconditionally clear: concurrent attempts cannot exist, since the
+      // memo gates new attempts and only resolves to undefined after this
+      // catch runs.
+      revokePromise = undefined;
       console.warn(
         `[spawn-child] delegation revoke failed — key may remain active until manually revoked. ` +
           `delegationId="${childGrantId}", childId="${childPid.id}", error: ${err instanceof Error ? err.message : String(err)}`,
       );
     });
-    return revokePromise;
+    revokePromise = attempt;
+    return attempt;
   }
 
   if (options.registry !== undefined) {
