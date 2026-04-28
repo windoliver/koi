@@ -1002,6 +1002,13 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     // permission composition chains to local TUI on ask/no-opinion results
     // (runtime-factory.ts:1797-1806). Strict centralized enforcement requires
     // a separate permission-composition change tracked outside this PR.
+    // ASSEMBLY-FAILURE TEARDOWN: every Nexus resource constructed in this
+    // block must be deterministically disposed when an assert-* throw aborts
+    // boot, otherwise a live poll timer + transport activity leaks after
+    // createKoiRuntime() rejects (the runtime's outer cleanup runs only on
+    // successful return). Use a try/catch that disposes nexusPermBackend
+    // (which started polling in ready.finally) before re-throwing.
+    try {
     if ((config.nexusBootMode ?? "telemetry") === "assert-remote-policy-loaded-at-boot") {
       // BOUNDED first-sync wait. The backend's `ready` promise resolves after
       // an internal `transport.call("read", ...)` for version.json + policy.json
@@ -1053,6 +1060,20 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       }
     }
     // telemetry / assert-transport-reachable-at-boot: do NOT await ready (preserves existing async semantics)
+    } catch (err: unknown) {
+      // ASSEMBLY-FAILURE TEARDOWN — dispose every Nexus resource constructed
+      // before the throw, then rethrow. Without this, a poll timer + transport
+      // activity leaks after createKoiRuntime() rejects (the runtime's outer
+      // shutdown path runs only on successful return). Failure to dispose
+      // here is the difference between "fail-fast assert mode rejects cleanly"
+      // and "fail-fast assert mode leaks a live polling backend".
+      try {
+        nexusPermBackend?.dispose?.();
+      } catch (disposeErr: unknown) {
+        logger.warn({ err: disposeErr }, "nexus permission backend dispose failed during assert-* teardown");
+      }
+      throw err;
+    }
   }
 
   // Step 5: wire Nexus audit sink. Routes failures into the per-sink
@@ -1205,6 +1226,10 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 | `packages/meta/cli/src/__tests__/runtime-factory-nexus-audit-poison.test.ts` | New tests: default (`nexusAuditPoisonOnError` unset) — Nexus middleware errors stay out of per-sink poison latch; admission boundaries do NOT block; best-effort preserved. Opt-in (`true`) — Nexus middleware error latches shared `auditPoisonError`; admission boundaries refuse work. **Compliance-recorder coverage (both modes):** default — failure logs warning (was silent regression); opt-in — failure latches `nexusPoison`; admission gate refuses new work at next boundary; poisoned-sink wrapper rejects subsequent log() calls. Test asserts that NO `process.exit` occurs (regression guard against accidentally re-introducing a hard-exit path now that the spec scopes it out) | +200 |
 | `packages/meta/cli/src/__tests__/runtime-factory-health.test.ts` | New tests covering all three modes + activation race coverage (see Tests section) | +200 |
 | `packages/meta/cli/src/tui-command.ts` | Drop the `as unknown as NexusTransport` cast at line 1704 — fs-nexus local-bridge transport now structurally satisfies base `NexusTransport` directly (after fs-nexus adds `kind: "local-bridge"` discriminator). **Architectural decoupling (this PR):** when neither `nexusPermissionsEnabled` nor `nexusAuditEnabled` resolves to true, do NOT pass `nexusTransport` into `createKoiRuntime` at all — fs-only sessions use the local-bridge transport directly through the fs-nexus path and bypass the Nexus consumer block entirely. This eliminates the contradictory upgrade tradeoff (warn-and-infer-false vs hard-throw on no-flags): callers reaching the Nexus block always intentionally enabled at least one consumer. When constructed, the probe factory captures its own copy of the spawn config. | +20 |
+| `packages/meta/cli/src/nexus-config.ts` | **NEW shared module** — single source of truth for parsing `KOI_NEXUS_*` env vars and `--nexus-*` CLI flags into the `KoiRuntimeFactoryConfig` Nexus subset. Exported `parseNexusConfigFromEnvAndFlags(env, flags) → Pick<KoiRuntimeFactoryConfig, "nexusPermissionsEnabled" \| "nexusAuditEnabled" \| "nexusAuditMode" \| "nexusAuditPoisonOnError" \| "nexusBootMode" \| "nexusPolicyPath" \| "nexusSyncIntervalMs" \| "nexusBootSyncDeadlineMs">`. Used by BOTH `tui-command.ts` AND `commands/start.ts` so the new boot gate, consumer wiring, and assert-* preflight are uniform across interactive and headless entrypoints. Without this module, the headless path silently bypasses every new safety check. | +90 |
+| `packages/meta/cli/src/commands/start.ts` | **Wire shared `parseNexusConfigFromEnvAndFlags(...)`** into the existing headless boot path that calls `createKoiRuntime(...)`. Today `koi start` only supplies a filesystem backend (`packages/meta/cli/src/commands/start.ts:493-584` and `:786-896`); after this PR it ALSO threads through Nexus consumer flags + boot mode + (when `manifest.filesystem.backend === "nexus"` AND HTTP) assembles a `nexusTransport` so the same assert-*/poison/missing-kind contracts apply headlessly. Local-bridge headless boots remain telemetry-only (assert-* preflight will reject them, same as TUI). | +60 |
+| `packages/meta/cli/src/__tests__/start-nexus-wiring.test.ts` | New: headless `koi start` with `KOI_NEXUS_BOOT_MODE=assert-remote-policy-loaded-at-boot` + healthy HTTP transport boots; same with unreachable transport throws (proves headless honors the gate); `KOI_NEXUS_AUDIT_POISON=true` headless propagates to runtime config; legacy headless deployments without any `KOI_NEXUS_*` vars still boot with current behavior (regression guard) | +120 |
+| `packages/meta/cli/src/__tests__/nexus-config.test.ts` | New: tri-state parsing for every flag; mutual-exclusion enforcement for `--nexus-*` / `--no-nexus-*`; `KOI_NEXUS_BOOT_MODE` rejects unknown values with actionable message; legacy `require` audit-mode rejected; numeric fields parse + bound-check | +110 |
 | `docs/L2/nexus-client.md` | Document readiness probe semantics; `HealthCapableNexusTransport` contract; WS/gRPC/pool out-of-scope rationale | +60 |
 
 **Total: ~1075 LOC (335 src + 680 test + 60 doc).**
@@ -1323,6 +1348,10 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j24. `assert-remote-policy-loaded-at-boot: custom bootSyncDeadlineMs=2000 enforces tighter bound; 3s simulated sync throws within ~2s (not 45s transport default)`
 7g16j25. `Backend constructed with bootSyncDeadlineMs threads {deadlineMs} into FIRST-sync transport.call but NOT into subsequent poll calls` (regression guard — bound applies only to first sync)
 7g16j26. `telemetry / assert-transport-reachable-at-boot modes: backend.ready is NEVER awaited regardless of bootSyncDeadlineMs (no timeout path can fire)`
+7g16j27. `assert-remote-policy-loaded-at-boot first-sync timeout: nexusPermBackend.dispose() is called before the throw propagates (no live poll timer leak after createKoiRuntime rejects — Loop 4 R5)`
+7g16j28. `assert-remote-policy-loaded-at-boot isCentralizedPolicyActive()===false: same disposal path before the throw`
+7g16j29. `dispose() throwing during teardown is logged as warning + does NOT mask the original assert-* error (operator sees the actionable cause, not the disposal noise)`
+7g16j30. `Successful boot path: dispose() is NOT called from the assert-* try/catch (only from runtime's outer shutdown handle — regression guard against double-dispose)`
 7g16k. (REMOVED — local-bridge + permissions categorically rejected)
 7g16l. (REMOVED — same)
 7g16m. (REMOVED — same)
@@ -1416,7 +1445,9 @@ KOI_NEXUS_PERMISSIONS=false KOI_NEXUS_AUDIT=true koi up
 KOI_NEXUS_PERMISSIONS=true KOI_NEXUS_AUDIT=false koi up
 ```
 
-The CLI parser in `tui-command.ts` reads env + flag, validates, and passes the typed object into `createKoiRuntime(config)`. Existing flags/env keys are unchanged. New `tui-command.ts` work counted in the existing line in the file table (estimate +20 LOC for arg parsing). `tui-command.ts` is also responsible for the fs-only decoupling: it does NOT pass `nexusTransport` into `createKoiRuntime` when no Nexus consumer is wanted, so local-bridge sessions used purely for fs reads bypass the runtime's Nexus block entirely.
+**Shared parser module:** parsing lives in the new `packages/meta/cli/src/nexus-config.ts` (single source of truth — see file table). Both `tui-command.ts` (interactive) AND `commands/start.ts` (headless) import `parseNexusConfigFromEnvAndFlags(env, flags)` and pass the result into `createKoiRuntime(config)`. Without this shared module the headless path silently bypasses every new safety check (`nexusBootMode`, consumer wiring, assert-*/poison contracts) — a real Loop-4-R5 finding closed by uniform wiring.
+
+Existing flags/env keys are unchanged. `tui-command.ts` is also responsible for the fs-only decoupling: it does NOT pass `nexusTransport` into `createKoiRuntime` when no Nexus consumer is wanted, so local-bridge sessions used purely for fs reads bypass the runtime's Nexus block entirely. `commands/start.ts` follows the same rule: when both consumer flags are explicitly false AND the manifest filesystem backend is not Nexus-backed, no `nexusTransport` is constructed.
 
 ## Migration (existing v2 deployments) — two-phase rollout
 
