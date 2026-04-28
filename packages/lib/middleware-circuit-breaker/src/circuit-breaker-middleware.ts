@@ -250,6 +250,15 @@ function getOrCreateBreaker(s: CbState, key: string): CircuitBreaker | undefined
     for (const [k, b] of s.breakers) {
       if (b.getSnapshot().state === "CLOSED") {
         s.breakers.delete(k);
+        // Prune ownership bookkeeping in lockstep — otherwise stale
+        // keyOwners/keysBySession entries grow unbounded under high
+        // key cardinality, and stale owner refs would block future
+        // reclamation by the refcount path.
+        const owners = s.keyOwners.get(k);
+        if (owners !== undefined) {
+          for (const sid of owners) s.keysBySession.get(sid)?.delete(k);
+          s.keyOwners.delete(k);
+        }
         evicted = true;
         break;
       }

@@ -41,6 +41,7 @@ function defaultHashFn(sessionId: string, toolId: string, input: JsonObject): st
 
 interface DedupState {
   readonly ttlMs: number;
+  readonly maxEntries: number;
   readonly store: CallDedupStore;
   readonly now: () => number;
   readonly onCacheHit: ((info: CacheHitInfo) => void) | undefined;
@@ -126,18 +127,46 @@ async function executeAndStore(
 
 function trackKey(s: DedupState, sessionId: string, cacheKey: string): void {
   const existing = s.keysBySession.get(sessionId);
-  if (existing !== undefined) {
-    existing.add(cacheKey);
+  if (existing === undefined) {
+    s.keysBySession.set(sessionId, new Set([cacheKey]));
     return;
   }
-  s.keysBySession.set(sessionId, new Set([cacheKey]));
+  // FIFO cap matches the store's `maxEntries`. The store silently
+  // LRU-evicts older entries above that cap, so any key tracked here
+  // beyond `maxEntries` must already be stale in the store. Capping
+  // prevents per-session bookkeeping from outgrowing the advertised
+  // cache size for long-lived sessions with high input churn.
+  if (existing.size >= s.maxEntries && !existing.has(cacheKey)) {
+    const oldest = existing.values().next().value;
+    if (oldest !== undefined) existing.delete(oldest);
+  }
+  existing.add(cacheKey);
+}
+
+function bumpGeneration(s: DedupState, sessionId: string): number {
+  const next = (s.sessionGen.get(sessionId) ?? 0) + 1;
+  // FIFO cap on `sessionGen`: per-session generation tracking is bounded
+  // by `4 * maxEntries`. Eviction is safe — a stale read returns 0 which
+  // matches the inflight-call's captured generation only for sessions
+  // that never bumped, so the only failure mode is occasional
+  // false-positive cache misses, never bad cache hits.
+  if (!s.sessionGen.has(sessionId) && s.sessionGen.size >= s.maxEntries * 4) {
+    const oldest = s.sessionGen.keys().next().value;
+    if (oldest !== undefined) s.sessionGen.delete(oldest);
+  }
+  s.sessionGen.set(sessionId, next);
+  return next;
 }
 
 async function evictSession(s: DedupState, sessionId: string): Promise<void> {
   // Bump generation FIRST so any executeAndStore call still in flight
   // sees the mismatch and refuses to write back. Eviction of currently
-  // tracked entries follows.
-  s.sessionGen.set(sessionId, (s.sessionGen.get(sessionId) ?? 0) + 1);
+  // tracked entries follows. The sessionGen entry is intentionally
+  // NOT removed here — late writebacks need the bumped value to detect
+  // the gen mismatch. `sessionGen` is independently bounded by FIFO
+  // eviction in `bumpGeneration` so long-running processes do not
+  // accumulate per-session markers without bound.
+  bumpGeneration(s, sessionId);
   const keys = s.keysBySession.get(sessionId);
   if (keys === undefined) return;
   s.keysBySession.delete(sessionId);
@@ -229,6 +258,7 @@ export function createCallDedupMiddleware(config?: CallDedupConfig): KoiMiddlewa
   const maxEntries = config?.maxEntries ?? DEFAULT_MAX_ENTRIES;
   const state: DedupState = {
     ttlMs: config?.ttlMs ?? DEFAULT_TTL_MS,
+    maxEntries,
     store: config?.store ?? createInMemoryDedupStore(maxEntries),
     now: config?.now ?? Date.now,
     onCacheHit: config?.onCacheHit,

@@ -605,4 +605,42 @@ describe("createCircuitBreakerMiddleware", () => {
     ).rejects.toMatchObject({ code: "RATE_LIMIT" });
     expect(runCount).toBe(0);
   });
+
+  // Regression (#1419 round 13): ownership bookkeeping must shrink in
+  // lockstep with the breakers map. If `getOrCreateBreaker` evicts a
+  // CLOSED entry but leaves stale `keyOwners` / `keysBySession` refs
+  // behind, a long-lived session driving many distinct keys grows
+  // unbounded auxiliary state — defeating the advertised `maxKeys` cap.
+  test("CLOSED-breaker eviction also prunes keyOwners + keysBySession", async () => {
+    const mw = createCircuitBreakerMiddleware({ maxKeys: 2, breaker: { failureThreshold: 2 } });
+    // Reach into state via describeCapabilities is opaque; validate by
+    // observable behavior: drive >>maxKeys distinct keys through one
+    // session, confirm subsequent calls still get real breaker coverage
+    // (no permanent passthrough), and confirm OPEN circuits survive.
+    const ctx = turnCtx("long-session");
+    for (let i = 0; i < 20; i++) {
+      await mw.wrapModelCall?.(
+        ctx,
+        { messages: [], model: `provider${String(i)}/m` },
+        makeHandler("ok"),
+      );
+    }
+    // Now trip a fresh provider to OPEN — must succeed (breaker was
+    // installed, not passthrough), and OPEN must persist.
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "openX/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "openX/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    let runCount = 0;
+    const trace = async (): Promise<never> => {
+      runCount++;
+      throw new Error("should-not-run");
+    };
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "openX/m" }, trace),
+    ).rejects.toMatchObject({ code: "RATE_LIMIT" });
+    expect(runCount).toBe(0);
+  });
 });
