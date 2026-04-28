@@ -254,6 +254,28 @@ describe("createCallDedupMiddleware", () => {
     expect(executions).toBe(2);
   });
 
+  // Regression: cached responses must be isolated from caller mutation.
+  // ToolResponse.output is `unknown` and commonly a mutable object/array;
+  // storing/returning the same reference would let a downstream mutation
+  // silently corrupt the cache.
+  test("cached responses are immune to caller-side mutation", async () => {
+    const mw = createCallDedupMiddleware({ include: ["lookup"] });
+    const ctx = turnCtx();
+    let calls = 0;
+    const handler: ToolHandler = async () => {
+      calls++;
+      return { output: { items: [1, 2, 3] }, metadata: { tags: ["a"] } };
+    };
+    const r1 = await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: {} }, handler);
+    // Mutate the first response after it returns.
+    (r1?.output as { items: number[] }).items.push(999);
+    (r1?.metadata?.tags as string[])?.push("mutated");
+    const r2 = await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: {} }, handler);
+    expect(calls).toBe(1);
+    expect((r2?.output as { items: number[] }).items).toEqual([1, 2, 3]);
+    expect(r2?.metadata?.tags).toEqual(["a"]);
+  });
+
   test("describeCapabilities describes the cache", () => {
     const mw = createCallDedupMiddleware();
     expect(mw.describeCapabilities(turnCtx())?.label).toBe("call-dedup");

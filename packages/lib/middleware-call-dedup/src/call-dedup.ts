@@ -83,6 +83,16 @@ function notifyHit(s: DedupState, sessionId: string, toolId: string, cacheKey: s
   }
 }
 
+/**
+ * Clone a ToolResponse at the cache boundary. `output` is `unknown` and
+ * commonly an object/array; without cloning, any caller or downstream
+ * middleware that mutates the first response mutates the cached entry,
+ * silently corrupting every later hit.
+ */
+function cloneResponse(response: ToolResponse): ToolResponse {
+  return structuredClone(response);
+}
+
 async function executeAndStore(
   s: DedupState,
   cacheKey: string,
@@ -93,7 +103,9 @@ async function executeAndStore(
   const response = await next(request);
   const meta = response.metadata;
   if (meta?.blocked === true || meta?.error === true) return response;
-  await s.store.set(cacheKey, { response, expiresAt: s.now() + s.ttlMs });
+  // Snapshot the response into the cache so later mutation by the caller
+  // does not corrupt cached state.
+  await s.store.set(cacheKey, { response: cloneResponse(response), expiresAt: s.now() + s.ttlMs });
   trackKey(s, sessionId, cacheKey);
   return response;
 }
@@ -160,9 +172,11 @@ async function ddWrapToolCall(
   if (cached !== undefined) {
     if (cached.expiresAt > s.now()) {
       notifyHit(s, sessionId, toolId, cacheKey);
+      // Deep-clone so the cached entry is immune to caller-side mutation.
+      const cloned = cloneResponse(cached.response);
       return {
-        ...cached.response,
-        metadata: { ...cached.response.metadata, cached: true },
+        ...cloned,
+        metadata: { ...cloned.metadata, cached: true },
       };
     }
     await s.store.delete(cacheKey);

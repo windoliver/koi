@@ -178,18 +178,29 @@ interface CbState {
 function getOrCreateBreaker(s: CbState, key: string): CircuitBreaker {
   const existing = s.breakers.get(key);
   if (existing !== undefined) return existing;
-  // Enforce maxKeys: evict the oldest insertion to bound memory. Keys are
-  // caller-controlled (model strings or extractKey output), so an unbounded
-  // map is a memory leak and a state-isolation problem under high cardinality.
+  // Enforce maxKeys: evict the oldest CLOSED entry to bound memory. Keys
+  // are caller-controlled (model strings or extractKey output), so an
+  // unbounded map is a memory leak and a state-isolation problem under
+  // high cardinality. We MUST NOT evict OPEN/HALF_OPEN circuits — that
+  // would silently reset a tripped breaker and resume sending traffic to
+  // a still-unhealthy provider, defeating fail-fast exactly during the
+  // high-cardinality incidents this guard exists to handle.
   if (s.breakers.size >= s.maxKeys) {
     if (!s.warnGuard.warned) {
       s.warnGuard.warned = true;
       console.warn(
-        `[circuit-breaker] key map reached ${String(s.maxKeys)} entries — evicting oldest; possible key explosion`,
+        `[circuit-breaker] key map reached ${String(s.maxKeys)} entries — evicting oldest CLOSED; possible key explosion`,
       );
     }
-    const oldest = s.breakers.keys().next().value;
-    if (oldest !== undefined) s.breakers.delete(oldest);
+    for (const [k, b] of s.breakers) {
+      if (b.getSnapshot().state === "CLOSED") {
+        s.breakers.delete(k);
+        break;
+      }
+    }
+    // If every entry is OPEN/HALF_OPEN we accept temporary overshoot
+    // rather than reset an active breaker. Memory is bounded by incident
+    // duration in that pathological case.
   }
   const fresh =
     s.clock !== undefined

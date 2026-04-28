@@ -415,4 +415,39 @@ describe("createCircuitBreakerMiddleware", () => {
     const openCount = desc === "All circuits closed (healthy)." ? 0 : desc.split(",").length;
     expect(openCount).toBeLessThanOrEqual(2);
   });
+
+  // Regression: capacity-pressure eviction must NOT drop an OPEN circuit.
+  // If it did, the next request for that still-unhealthy provider would
+  // create a fresh CLOSED breaker and resume sending traffic upstream —
+  // defeating fail-fast during the high-cardinality incidents the bound
+  // is meant to handle.
+  test("maxKeys never evicts OPEN circuits — only CLOSED entries", async () => {
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 2 },
+      maxKeys: 2,
+    });
+    const ctx = turnCtx();
+    // Trip p1 to OPEN.
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "p1/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "p1/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    // Add p2 (CLOSED) — fills capacity at 2.
+    await mw.wrapModelCall?.(ctx, { messages: [], model: "p2/m" }, makeHandler("ok"));
+    // p3 forces eviction. p1 is OPEN and must be preserved; p2 (CLOSED)
+    // must be the one evicted.
+    await mw.wrapModelCall?.(ctx, { messages: [], model: "p3/m" }, makeHandler("ok"));
+    // p1 must still be OPEN — calling it must short-circuit, not re-execute.
+    let p1Calls = 0;
+    const handler = async (): Promise<never> => {
+      p1Calls++;
+      throw new Error("should-not-run");
+    };
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "p1/m" }, handler),
+    ).rejects.toThrow();
+    expect(p1Calls).toBe(0);
+  });
 });
