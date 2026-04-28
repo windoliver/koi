@@ -834,6 +834,19 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // the documented Phase 1 inference path. Phase 2 removes the inference
   // path AND tightens this guard symmetrically (unset flags throw in
   // Step 0; the implicit-consumer-intent carve-out becomes unreachable).
+  // Resolve EFFECTIVE consumer wiring, not raw flags (Loop 6 R7).
+  // nexusAuditEnabled=true + nexusAuditMode="disabled" turns audit OFF
+  // at the wiring boundary; using the raw flag here would let
+  // (audit=true + mode=disabled + perms=false + assert-*) pass the guard
+  // even though no Nexus consumer is actually wired and the assert gate
+  // is inert. Resolve audit through the same condition the wiring block
+  // uses below (effectiveAuditWired), so the guard reflects what will
+  // actually run.
+  const auditEffectivelyOn =
+    config.nexusAuditEnabled === true
+    && config.nexusAuditMode !== "disabled"
+    && config.nexusAuditMode !== "local-only";  // local-only also skips Nexus sink
+  const permsEffectivelyOn = config.nexusPermissionsEnabled === true;
   const httpTransportImpliesConsumer =
     config.nexusTransport !== undefined
     && (config.nexusTransport as { kind?: NexusTransportKind }).kind === "http"
@@ -854,8 +867,8 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     && config.nexusPermissionsEnabled === false
     && config.nexusAuditEnabled === false;
   const consumerWanted =
-    config.nexusPermissionsEnabled === true
-    || config.nexusAuditEnabled === true
+    permsEffectivelyOn
+    || auditEffectivelyOn
     || httpTransportImpliesConsumer;  // Phase 1 only — see Step 0
   // The guard's "throw on control-plane flags without consumer" rule is
   // suppressed entirely when the operator has fully opted out AND has
@@ -872,6 +885,8 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     controlPlaneFlagsSet.push("nexusBootSyncDeadlineMs");
   if (config.nexusPolicyPath !== undefined && config.nexusPolicyPath !== "koi/permissions")
     controlPlaneFlagsSet.push(`nexusPolicyPath=${config.nexusPolicyPath}`);
+  if (config.nexusAllowEmptyPolicyStore === true)
+    controlPlaneFlagsSet.push("nexusAllowEmptyPolicyStore=true");  // Loop 6 R7 — relax-on-404 escape hatch is dead config without an active assert gate
   if (controlPlaneFlagsSet.length > 0 && !consumerWanted && !fullyOptedOutWithNoTransport) {
     throw new Error(
       `Nexus control-plane flags set without an enabled consumer: ` +
@@ -1686,6 +1701,10 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7h_unc10. `EXPLICIT opt-out + assert-remote-policy-loaded-at-boot + local-bridge transport: THROWS via the Loop 5 R3 config-skew gate BEFORE the kind-positive-identification gate. Error message names the three resolution paths, not "use HTTP" (the latter would be misleading — local-bridge here is incidental; the real problem is the config skew)`
 7h_unc10b. `EXPLICIT opt-out + assert-* + NO nexusTransport supplied: BOOTS without throw (rollback contract — Loop 4 R7 locked decision: explicit opt-out wins over stale assert-* config when there is no transport AND no consumer to enforce against). Loop 6 R4 reconfirmed: a deployment that has fully disabled Nexus (no transport AND both consumer flags=false) must NOT be blocked by stale env vars during rollback. The Step -1 silent-bypass guard fires only when control-plane flags coexist with at least one of: a supplied transport (consumer might be implicitly wanted), OR no opt-out (operator hasn't declared rollback intent). With explicit opt-out AND no transport, neither precondition holds; nothing to enforce, nothing to bypass.`
 7h_unc11. `EXPLICIT opt-out + UNDISCRIMINATED transport + assert-*: THROWS via the Loop 5 R3 config-skew gate BEFORE the kind assertion would fire (kind assertion is downstream and never reached). Error names config-skew resolution paths, not the missing-kind migration list`
+7h_unc12. `Loop 6 R7 effective-wiring guard: nexusAuditEnabled=true + nexusAuditMode="disabled" + nexusPermissionsEnabled=false + nexusBootMode=assert-* THROWS at Step -1. Raw flags say "audit on", but mode resolves audit OFF — no Nexus consumer is actually wired, so the assert gate would be inert. The guard now reads effective wiring (auditEffectivelyOn / permsEffectivelyOn) instead of raw booleans. Same input with nexusAuditPoisonOnError=true ALSO throws (poison flag has nothing to poison when sink is disabled).`
+7h_unc12b. `Loop 6 R7: same as 7h_unc12 but with nexusAuditMode="local-only" — also throws (local-only also skips Nexus sink on local-bridge AND HTTP). Verifies the guard treats both skip-modes uniformly.`
+7h_unc12c. `Loop 6 R7: nexusAuditEnabled=true + nexusAuditMode unset + nexusPermissionsEnabled=false + nexusBootMode=assert-* on HTTP: BOOTS (audit is effectively wired with default mode); permissions disabled is the documented audit-only path that the assert-* preflight then rejects via 7g16j19. Confirms the new effective-wiring check correctly distinguishes "audit truly on" from "audit nominally on but disabled by mode".`
+7h_unc12d. `Loop 6 R7: nexusAllowEmptyPolicyStore=true with no consumer wired (perms=false, audit=false): THROWS at Step -1 — relax-on-404 is dead config without an active assert-transport-reachable-at-boot gate; allowing it as inert config means stale env vars later become active when consumers are added. Fail-fast enforces operator intent at the Phase 1 boundary.`
 7g2. (REMOVED Loop 3 — nexusProbeFactory removed from runtime config; no runtime test applies)
 7g2b. (REMOVED — same)
 7g3. (REMOVED — runtime no longer consumes nexusProbeFactory)
