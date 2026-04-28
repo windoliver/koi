@@ -1374,3 +1374,146 @@ describe("Golden: @koi/middleware-permissions — bash spec guard", () => {
     expect(deniedActions).toContain("deny");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-circuit-breaker
+// ---------------------------------------------------------------------------
+
+import { createCircuitBreakerMiddleware } from "@koi/middleware-circuit-breaker";
+
+describe("Golden: @koi/middleware-circuit-breaker", () => {
+  test("trips after threshold failures and fails fast on next call", async () => {
+    const mw = createCircuitBreakerMiddleware({ breaker: { failureThreshold: 2 } });
+    const ctx = {
+      session: { sessionId: "cb-golden", agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+    const req = {
+      messages: [],
+      model: "openai/gpt-4o",
+    } as unknown as import("@koi/core/middleware").ModelRequest;
+
+    const failing: import("@koi/core/middleware").ModelHandler = async () => {
+      const e = new Error("upstream 500") as Error & { status: number };
+      e.status = 500;
+      throw e;
+    };
+
+    await mw.wrapModelCall?.(ctx, req, failing).catch(() => {});
+    await mw.wrapModelCall?.(ctx, req, failing).catch(() => {});
+
+    let nextCalled = false;
+    await mw
+      .wrapModelCall?.(ctx, req, async () => {
+        nextCalled = true;
+        return { content: "ok", model: "openai/gpt-4o" };
+      })
+      ?.catch(() => {});
+
+    expect(nextCalled).toBe(false);
+    expect(mw.describeCapabilities(ctx)?.description).toContain("openai");
+  });
+
+  test("describeCapabilities reports healthy when no circuit is open", () => {
+    const mw = createCircuitBreakerMiddleware();
+    const ctx = {
+      session: { sessionId: "cb-golden-2", agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+    expect(mw.describeCapabilities(ctx)?.description).toContain("healthy");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-call-limits
+// ---------------------------------------------------------------------------
+
+import {
+  createModelCallLimitMiddleware,
+  createToolCallLimitMiddleware,
+} from "@koi/middleware-call-limits";
+
+describe("Golden: @koi/middleware-call-limits", () => {
+  test("tool call limit blocks identical tool past per-tool cap (continue)", async () => {
+    const mw = createToolCallLimitMiddleware({ limits: { foo: 1 } });
+    const ctx = {
+      session: { sessionId: "cl-golden", agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+    const ok: import("@koi/core/middleware").ToolHandler = async () => ({ output: "ok" });
+
+    await mw.wrapToolCall?.(ctx, { toolId: "foo", input: {} }, ok);
+    const blocked = await mw.wrapToolCall?.(ctx, { toolId: "foo", input: {} }, ok);
+    expect(blocked?.metadata?.blocked).toBe(true);
+  });
+
+  test("model call limit aborts past cap with RATE_LIMIT", async () => {
+    const mw = createModelCallLimitMiddleware({ limit: 1 });
+    const ctx = {
+      session: { sessionId: "cl-golden-2", agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+    const ok: import("@koi/core/middleware").ModelHandler = async () => ({
+      content: "ok",
+      model: "test",
+    });
+
+    await mw.wrapModelCall?.(ctx, { messages: [] }, ok);
+    let threw = false;
+    try {
+      await mw.wrapModelCall?.(ctx, { messages: [] }, ok);
+    } catch (e: unknown) {
+      threw = true;
+      expect((e as { code?: string }).code).toBe("RATE_LIMIT");
+    }
+    expect(threw).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-call-dedup
+// ---------------------------------------------------------------------------
+
+import { createCallDedupMiddleware } from "@koi/middleware-call-dedup";
+
+describe("Golden: @koi/middleware-call-dedup", () => {
+  test("returns cached response with metadata.cached on identical second call", async () => {
+    const mw = createCallDedupMiddleware();
+    const ctx = {
+      session: { sessionId: "cd-golden", agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+    let executions = 0;
+    const handler: import("@koi/core/middleware").ToolHandler = async () => {
+      executions++;
+      return { output: "first" };
+    };
+    const r1 = await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 1 } }, handler);
+    const r2 = await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 1 } }, handler);
+    expect(r1?.output).toBe("first");
+    expect(r2?.metadata?.cached).toBe(true);
+    expect(executions).toBe(1);
+  });
+
+  test("default exclude list bypasses cache for shell_exec", async () => {
+    const mw = createCallDedupMiddleware();
+    const ctx = {
+      session: { sessionId: "cd-golden-2", agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+    let executions = 0;
+    const handler: import("@koi/core/middleware").ToolHandler = async () => {
+      executions++;
+      return { output: "ran" };
+    };
+    await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: { cmd: "ls" } }, handler);
+    await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: { cmd: "ls" } }, handler);
+    expect(executions).toBe(2);
+  });
+});
