@@ -226,7 +226,7 @@ Earlier drafts proposed making audit-wired runtimes default to `fail-closed-tran
 |---|---|
 | `telemetry` (default) | log on transport failure; log activation status; continue boot |
 | `fail-closed-transport` | throw on transport failure for any of the 3 probes (version + version.json read + policy.json read); does NOT validate that policy files exist or that backend successfully activates remote policy |
-| `fail-closed-policy-at-boot` | throw on transport failure; throw on first-sync policy-activation failure (awaits `backend.ready`). **STARTUP GATE ONLY** — does NOT enforce ongoing policy freshness. After successful boot, last-known-good remote policy continues to be served per existing semantics even if subsequent syncs fail or produce incompatible policy. Operators needing ongoing freshness enforcement need a separate mechanism (out of scope this PR). |
+| `fail-closed-policy-at-boot` | throw on transport failure; throw on first-sync policy-activation failure (awaits `backend.ready`). **STARTUP GATE ONLY, REMOTE-LOAD ONLY** — proves remote policy was loaded at boot. Does NOT prove remote policy will be enforced for every check: per existing composition (`runtime-factory.ts:1797-1806`), Nexus backend chains to local TUI on `ask`/no-opinion results, so queries not matched by remote policy still execute under local rules. Does NOT enforce ongoing freshness either: last-known-good remote policy continues to be served after sync failures. Operators needing strict centralized enforcement (no local fallback for unmatched queries) need a permission-composition change tracked separately. |
 
 **⚠️ Security caveat for `fail-closed-transport`:** this gate only proves the transport can carry the read calls. Even with a 404 on `version.json`/`policy.json` the probe succeeds (file-not-found is a transport-success signal). And even when the files exist, parsing or backend `rebuildBackend` shape mismatch can still cause silent local-fallback. Operators who require centralized-policy *enforcement* must use `fail-closed-policy-at-boot`, not `fail-closed-transport`. The two-name split is deliberate so this caveat cannot be papered over by mode-name optimism.
 
@@ -312,6 +312,38 @@ Background flush failure → `onError` fires → accumulator latched → operato
 
 **Opt-in (`nexusAuditPoisonOnError: true`):** Full guard model — first failure latches, subsequent `log()` calls throw, every middleware flush boundary rethrows. Matches NDJSON/SQLite semantics. Compatible with any `nexusBootMode`.
 
+**Compliance-recorder coverage (in scope this PR):**
+
+The Nexus audit sink is wired into TWO middleware paths in `runtime-factory.ts`:
+
+1. **Audit middleware sink** (`createAuditMiddleware({ sink: nexusSink })`) — failures here flow through `nexus-sink`'s `onError` config and (when opted in) the shared `auditPoisonError` accumulator described above.
+2. **Compliance recorder** (`createAuditSinkComplianceRecorder(nexusSink, { sessionId, onError })`) at `runtime-factory.ts:3058-3059` — this is a SEPARATE write path with its own failure policy. NDJSON and SQLite compliance recorders use `onError: process.exit(1)` (synchronous termination because compliance writes are fire-and-forget and there's no other way to guarantee no further work runs after a compliance failure). The current Nexus compliance recorder is wired with NO `onError` callback, defaulting to silent.
+
+This PR brings Nexus compliance-recorder failure handling to **NDJSON/SQLite parity** — but only when the operator opts in. Three modes:
+
+| `nexusAuditPoisonOnError` | Audit middleware sink | Compliance recorder |
+|---|---|---|
+| `false` (default) | best-effort log | best-effort log (NEW: was silent) |
+| `true` | shared poison accumulator + admission deny | `process.exit(1)` (matches NDJSON/SQLite) |
+
+Concretely in `runtime-factory.ts`:
+
+```ts
+complianceRecorders.push(
+  createAuditSinkComplianceRecorder(nexusSink, {
+    sessionId: getLiveSessionId,
+    onError: config.nexusAuditPoisonOnError === true
+      ? (error) => {
+          console.error("[koi/cli] nexus compliance sink write failed — terminating:", error);
+          process.exit(1);
+        }
+      : (error) => logger.warn({ err: error }, "nexus compliance sink write failed (best-effort)"),
+  }),
+);
+```
+
+This closes the parity gap: in `nexusAuditPoisonOnError: true` mode, both audit-middleware writes AND compliance-recorder writes have fail-fast behavior matching NDJSON/SQLite.
+
 **Sink-side change (always applies):**
 
 `NexusAuditSinkConfig` does NOT currently expose an `onError` field — the existing config has only `transport`, `basePath`, `batchSize`, `flushIntervalMs`. This PR **adds** `onError?: (err: unknown) => void` to the public API in `packages/security/audit-sink-nexus/src/config.ts`. Without this, the wrapper has no observable signal for interval-triggered flush failures and the silent-drop bug remains.
@@ -378,10 +410,11 @@ interface KoiRuntimeFactoryConfig {
    *   that centralized policy activated — local-fallback may still apply.
    *   See security caveat in design doc.
    * - "fail-closed-policy-at-boot": throw on transport failure OR first-sync
-   *   policy-activation failure (awaits backend.ready and inspects
-   *   isCentralizedPolicyActive()). STARTUP GATE ONLY — does not enforce
-   *   ongoing policy freshness; last-known-good remote policy continues to
-   *   be served after sync failures.
+   *   policy-load failure (awaits backend.ready and inspects
+   *   isCentralizedPolicyActive()). STARTUP GATE, REMOTE-LOAD ONLY — proves
+   *   remote policy was loaded at boot. Does NOT prevent local-rule fallback
+   *   for queries not matched by remote policy (existing composition chains
+   *   to local TUI on ask/no-opinion). Does NOT enforce ongoing freshness.
    */
   readonly nexusBootMode?: NexusBootMode | undefined;
 }
@@ -488,16 +521,19 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       // … existing config …
     });
 
-    // Step 4: policy-activation check — ONLY in fail-closed-policy-at-boot mode.
-    // Note: this is the ONE place probe outcome AND wiring outcome must agree —
-    // we get here because the probe succeeded (otherwise step 2 threw), then
-    // we additionally require the first sync to actually activate remote policy.
+    // Step 4: policy-load check — ONLY in fail-closed-policy-at-boot mode.
+    // CONTRACT: this gates that remote policy was LOADED at boot. It does NOT
+    // gate that remote policy will be ENFORCED for every check — current
+    // permission composition chains to local TUI on ask/no-opinion results
+    // (runtime-factory.ts:1797-1806). Strict centralized enforcement requires
+    // a separate permission-composition change tracked outside this PR.
     if ((config.nexusBootMode ?? "telemetry") === "fail-closed-policy-at-boot") {
       await nexusPermBackend.ready;
       if (!nexusPermBackend.isCentralizedPolicyActive()) {
         throw new Error(
-          "Nexus centralized policy not active after first sync (file missing, parse error, or backend rebuild failed); " +
-          "fail-closed-policy-at-boot mode requires active centralized policy at boot",
+          "Nexus remote policy not loaded after first sync (file missing, parse error, or backend rebuild failed); " +
+          "fail-closed-policy-at-boot mode requires remote policy loaded at boot. " +
+          "Note: this mode does NOT prevent local-rule fallback for queries not matched by remote policy.",
         );
       }
     }
@@ -536,7 +572,7 @@ The function reports what the backend is *actually serving right now*, not the s
 
 `fail-closed-policy-at-boot` checks this **once at startup** after `await backend.ready` completes — i.e., it asserts that the first sync produced a remote backend. Post-boot transient failures do not re-trigger the gate. The new mode adds a startup guarantee without changing steady-state behavior.
 
-**Type-system enforcement:** field typed as `HealthCapableNexusTransport`. Production transports (`createHttpTransport`, fs-nexus `local-bridge`) must return this. TypeScript rejects a base `NexusTransport`. The `as unknown as NexusTransport` cast in `tui-command.ts:1704` becomes `assertHealthCapable(transport)`.
+**Type-system enforcement:** the runtime config field is typed as base `NexusTransport` (since long-lived local-bridge transports do not expose `health`). HTTP transports happen to also satisfy `HealthCapableNexusTransport` and are upcast at the probe site. The `as unknown as NexusTransport` cast in `tui-command.ts:1704` is dropped — fs-nexus local-bridge structurally satisfies `NexusTransport` directly once the `kind` discriminator is added. `assertHealthCapable` is exported for callers who hold a base `NexusTransport` and need to narrow before invoking `health()` themselves (e.g., custom probe wrappers); it is NOT used in the standard tui-command path.
 
 **Why this is the right policy:**
 
@@ -565,16 +601,16 @@ The function reports what the backend is *actually serving right now*, not the s
 | `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; long-lived session transport does NOT receive nonInteractive flag from runtime probe path; existing call/subscribe behavior unchanged | +80 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior | +25 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.test.ts` | New tests: false before any sync; false when first sync fails (404/parse/rebuild mismatch — no last-known-good); true after first successful sync; **stays true when subsequent sync fails** (last-known-good preserved); **stays true when subsequent sync produces incompatible policy** (skipped, last-known-good preserved) | +100 |
-| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as base `NexusTransport` (long-lived session has no health); add `nexusBootMode`, `nexusPolicyBasePath`, `nexusAuditPoisonOnError`, `nexusProbeFactory` config fields; preflight: throw on local-bridge + fail-closed-* (unsupported); local-bridge + telemetry without factory SKIPS probe (backward compat); probe via factory for local-bridge, in-place for HTTP; thread `nexusPolicyBasePath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws on probe failure; in `fail-closed-policy-at-boot`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **rename existing `ndjsonPoisonError` accumulator to `auditPoisonError`; route Nexus sink errors into it ONLY when `nexusAuditPoisonOnError === true`** (default best-effort); existing middleware admission guards now cover Nexus too via shared accumulator | +130 |
+| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as base `NexusTransport` (long-lived session has no health); add `nexusBootMode`, `nexusPolicyBasePath`, `nexusAuditPoisonOnError`, `nexusProbeFactory` config fields; preflight: throw on local-bridge + fail-closed-* (unsupported); local-bridge + telemetry without factory SKIPS probe (backward compat); probe via factory for local-bridge, in-place for HTTP; thread `nexusPolicyBasePath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws on probe failure; in `fail-closed-policy-at-boot`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; rename existing `ndjsonPoisonError` accumulator to `auditPoisonError`; route Nexus sink errors into it ONLY when `nexusAuditPoisonOnError === true` (default best-effort); existing middleware admission guards now cover Nexus too via shared accumulator; **wire Nexus compliance-recorder `onError` to `process.exit(1)` in opt-in mode (matches NDJSON/SQLite at `runtime-factory.ts:3058-3059`); best-effort logging in default mode (was silent — bug fix)** | +145 |
 | `packages/security/audit-sink-nexus/src/config.ts` | **Add `onError?: (err: unknown) => void` to `NexusAuditSinkConfig`** — the field doesn't exist today; wrapper depends on it | +8 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.ts` | Remove silent `.catch(() => {})` on `startFlush()`; invoke `config.onError?.(err)` on flush failure (interval-triggered AND size-triggered AND explicit-flush-triggered paths must all route through `onError`) | +12 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.test.ts` | New: interval-triggered flush failure invokes `onError`; size-triggered flush failure invokes `onError`; explicit `flush()` failure invokes `onError`; `onError` undefined doesn't crash (regression guard against silent swallowing) | +60 |
-| `packages/meta/cli/src/__tests__/runtime-factory-nexus-audit-poison.test.ts` | New tests: default (`nexusAuditPoisonOnError` unset) — Nexus errors stay out of shared accumulator; admission boundaries do NOT block; best-effort preserved. Opt-in (`true`) — Nexus error latches shared `auditPoisonError`; subsequent `onSessionStart`/`onBeforeTurn`/`wrapModelCall`/`wrapToolCall` admission boundaries refuse work; matches existing NDJSON poison test parity | +160 |
+| `packages/meta/cli/src/__tests__/runtime-factory-nexus-audit-poison.test.ts` | New tests: default (`nexusAuditPoisonOnError` unset) — Nexus middleware errors stay out of shared accumulator; admission boundaries do NOT block; best-effort preserved. Opt-in (`true`) — Nexus middleware error latches shared `auditPoisonError`; admission boundaries refuse work. **Compliance-recorder coverage (both modes):** default — failure logs warning (was silent regression); opt-in — failure invokes `process.exit(1)` callback (mocked in test). Matches NDJSON/SQLite test parity for both paths | +200 |
 | `packages/meta/cli/src/__tests__/runtime-factory-health.test.ts` | New tests covering all three modes + activation race coverage (see Tests section) | +200 |
-| `packages/meta/cli/src/tui-command.ts` | Replace `as unknown as NexusTransport` cast (line 1704) with `assertHealthCapable(transport)` narrowing | +5 |
+| `packages/meta/cli/src/tui-command.ts` | Drop the `as unknown as NexusTransport` cast at line 1704 — fs-nexus local-bridge transport now structurally satisfies base `NexusTransport` directly (after fs-nexus adds `kind: "local-bridge"` discriminator). Pass through as base `NexusTransport`; do NOT wrap with `assertHealthCapable` (long-lived local-bridge has no health by design — see fs-nexus/local-transport.ts row above). When the runtime later calls `nexusProbeFactory()`, the factory constructs a fresh probe with its own captured spawn config. | +8 |
 | `docs/L2/nexus-client.md` | Document readiness probe semantics; `HealthCapableNexusTransport` contract; WS/gRPC/pool out-of-scope rationale | +60 |
 
-**Total: ~970 LOC (290 src + 620 test + 60 doc).** *(reduced — long-lived local-bridge no longer implements health(), dropped helper module)*
+**Total: ~1015 LOC (305 src + 650 test + 60 doc).**
 
 (Larger than the original ~170 estimate because reviews correctly demanded real integration, type-system enforcement, and a readiness probe — not just a dead liveness API.)
 
