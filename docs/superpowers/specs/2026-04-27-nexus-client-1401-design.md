@@ -140,18 +140,24 @@ Sequence:
 2. `transport.call("version", {}, { deadlineMs: HEALTH_DEADLINE_MS, nonInteractive: true })` — liveness: TCP+TLS+JSON-RPC reachable; capture version string.
 3. For each path in `opts.readPaths ?? DEFAULT_PROBE_PATHS`: `transport.call("read", { path }, { deadlineMs, nonInteractive: true })`. 200 ok or 404 → success (file-not-found is a transport-success signal). 5xx / network / auth → return error.
 5. All calls go through `transport.call(...)` — local-bridge included.
-6. **Health probes are non-interactive AND terminal-on-failure for the transport.** `nonInteractive: true` MUST cause local-bridge to:
-   - reject the in-flight call locally (do not wait for OAuth)
-   - **send `cancel` to the bridge subprocess** so the bridge-side request is unblocked (otherwise the single-request serializer stays wedged for queued calls)
-   - **mark the transport `unusable` and close it** on this failure path (the bridge cannot cleanly resume from a cancelled auth flow within the per-call deadline; recreating from scratch is the safer recovery)
+6. **Local-bridge health probes use a disposable probe transport, NOT the long-lived session transport.** The fs-nexus `local-bridge` cannot be cleanly probed in-place: its subprocess serializes one in-flight call, has no protocol-level cancel that doesn't poison the channel, and a wedged auth flow blocks every queued call. Probing the live transport directly forces a bad tradeoff between "deadlock on auth" and "kill the session transport on a transient auth blip."
 
-   Runtime behavior on terminal-transport result:
-   - `telemetry` mode: log warning; **continue boot WITHOUT nexus-backed permissions/audit** (treats nexus as if it were not configured for the rest of the session). The runtime must record this state so subsequent calls don't try to use the dead transport.
-   - `fail-closed-transport` / `fail-closed-policy`: throw at startup.
+   Solution: when the runtime needs to probe a local-bridge transport, it spawns a **separate, short-lived bridge subprocess** dedicated to the probe. The probe transport runs the same `health()` calls (version + reads) with `{ deadlineMs: 5000, nonInteractive: true }`, then is closed unconditionally regardless of result. The long-lived session transport is never touched by the probe.
 
-   HTTP transport has no auth flow; the flag is a no-op there and the transport stays usable.
+   API: `createLocalBridgeTransport()` returns the long-lived session transport. `createLocalBridgeProbeTransport()` returns a new, disposable transport that closes itself after `health()` is called once. The runtime calls the probe variant for startup gating; the session variant is what consumers receive.
 
-   Why terminal: the local-bridge serializes one in-flight request and currently only unblocks when the bridge answers or the process exits. A recoverable nonInteractive rejection is not implementable without bridge-protocol changes that are out of scope. Marking the transport terminal is the only honest semantics that doesn't deadlock queued calls or silently extend the 5s deadline.
+   On the disposable probe transport:
+   - `nonInteractive: true` rejects the in-flight call locally on `auth_required`
+   - the probe subprocess is killed (terminal — but it's a throwaway process, not the session)
+   - the result propagates to runtime startup as a normal `health()` failure
+
+   HTTP transport has no auth flow and is naturally probe-safe; no disposable variant needed there.
+
+   Runtime behavior on probe failure:
+   - `telemetry` mode: log warning; **continue boot using the live session transport for nexus consumers** (auth state may be re-established later via the session's normal `submitAuthCode` path; we do NOT downgrade the whole session for a probe blip)
+   - `fail-closed-transport` / `fail-closed-policy`: throw at startup before any consumer wiring
+
+   This eliminates the "transient startup auth challenge silently kills nexus for the whole session" risk that the previous spec introduced. Cost: one extra short-lived subprocess at boot for local-bridge transports — acceptable.
 7. Per-call `deadlineMs: HEALTH_DEADLINE_MS = 5_000` overrides each transport's default.
 8. On success: `{ ok: true, value: { ok: true, version, latencyMs, probed: ["version", "read:koi/permissions/version.json", "read:koi/permissions/policy.json"] } }`.
 9. On failure: propagate `KoiError` via `mapNexusError`.
@@ -243,6 +249,14 @@ interface KoiRuntimeFactoryConfig {
   // …
   readonly nexusTransport?: HealthCapableNexusTransport | undefined;
   /**
+   * Base path under which the Nexus permission backend stores `version.json`
+   * and `policy.json`. Defaults to "koi/permissions". MUST be threaded into
+   * BOTH `createNexusPermissionBackend` AND the `health()` probe so the
+   * readiness check validates the same namespace the backend will read.
+   * Mismatch produces false readiness signals.
+   */
+  readonly nexusPolicyBasePath?: string | undefined;
+  /**
    * Behavior when startup health probe fails or policy fails to activate.
    * Default: "telemetry" (always — does NOT vary by configured consumers;
    * audit-write readiness is not probed and an audit-driven default would
@@ -262,40 +276,74 @@ interface KoiRuntimeFactoryConfig {
 
 export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // … existing setup …
+  let useNexusConsumers = false;  // gate for permissions/audit wiring
+
   if (config.nexusTransport !== undefined) {
     const mode: NexusBootMode = config.nexusBootMode ?? "telemetry";
+    const policyBase = config.nexusPolicyBasePath ?? "koi/permissions";
 
-    // Step 1: transport health (what nexus-client can validate).
-    // Pass the configured policyPath so the probe validates the right namespace.
-    const policyBase = config.nexusPermissionsPath ?? "koi/permissions";
-    const health = await config.nexusTransport.health({
-      readPaths: [`${policyBase}/version.json`, `${policyBase}/policy.json`],
-    });
+    // Step 1: probe transport health using a DISPOSABLE probe transport for
+    // local-bridge (so an auth blip cannot poison the long-lived session
+    // transport). HTTP transport probes itself directly.
+    const probeTransport = config.nexusTransport.kind === "local-bridge"
+      ? createLocalBridgeProbeTransport(config.nexusTransport.spawnConfig)
+      : config.nexusTransport;
+    let health;
+    try {
+      health = await probeTransport.health({
+        readPaths: [`${policyBase}/version.json`, `${policyBase}/policy.json`],
+      });
+    } finally {
+      if (probeTransport !== config.nexusTransport) probeTransport.close();
+    }
+
+    // Step 2: branch on probe result + boot mode
     if (!health.ok) {
       const msg = `Nexus transport unhealthy: ${health.error.message} (code=${health.error.code})`;
-      if (mode === "telemetry") logger.warn({ err: health.error }, msg);
-      else throw new Error(msg, { cause: health.error });
+      if (mode === "telemetry") {
+        logger.warn({ err: health.error }, msg);
+        // useNexusConsumers stays false → skip wiring nexus permissions/audit below
+      } else {
+        throw new Error(msg, { cause: health.error });  // fail-closed-* throws
+      }
     } else {
       logger.info({ latencyMs: health.value.latencyMs, version: health.value.version,
                     probed: health.value.probed }, "nexus transport ok");
+      useNexusConsumers = true;  // probe succeeded → wire consumers
     }
+  }
 
-    // Step 2: build permission backend (existing wiring)
-    const nexusPermBackend = createNexusPermissionBackend({ transport, /* … */ });
+  // Step 3: wire nexus consumers ONLY when the probe succeeded (or no nexus configured)
+  let nexusPermBackend;
+  if (useNexusConsumers && config.nexusTransport !== undefined) {
+    nexusPermBackend = createNexusPermissionBackend({
+      transport: config.nexusTransport,
+      policyBasePath: config.nexusPolicyBasePath ?? "koi/permissions",
+      // … existing config …
+    });
 
-    // Step 3: policy-activation check — ONLY in fail-closed-policy mode
-    if (mode === "fail-closed-policy") {
-      await nexusPermBackend.ready;  // wait for first sync to complete (or fail)
+    // Step 4: policy-activation check — ONLY in fail-closed-policy mode
+    if ((config.nexusBootMode ?? "telemetry") === "fail-closed-policy") {
+      await nexusPermBackend.ready;
       if (!nexusPermBackend.isCentralizedPolicyActive()) {
         throw new Error(
-          "Nexus centralized policy not active after sync (file missing, parse error, or backend rebuild failed); " +
-          "fail-closed-policy mode requires active centralized policy",
+          "Nexus centralized policy not active after first sync (file missing, parse error, or backend rebuild failed); " +
+          "fail-closed-policy mode requires active centralized policy at boot",
         );
       }
     }
-    // telemetry / fail-closed-transport modes: do NOT await ready (preserves existing async semantics)
+    // telemetry / fail-closed-transport: do NOT await ready (preserves existing async semantics)
   }
-  // … then build audit sink and continue …
+
+  // Step 5: wire audit sink with poison-on-error (only if probe succeeded)
+  if (useNexusConsumers && config.nexusTransport !== undefined) {
+    const nexusAuditSink = createNexusAuditSink({
+      transport: config.nexusTransport,
+      onError: (err) => { /* poison pattern matching NDJSON sink */ },
+    });
+    auditSinks.push(nexusAuditSink);
+  }
+  // … continue with non-nexus runtime construction …
 }
 ```
 
@@ -335,17 +383,19 @@ The function reports what the backend is *actually serving right now*, not the s
 | `packages/lib/nexus-client/src/assert-health-capable.ts` | New: `assertHealthCapable` assertion function | +15 |
 | `packages/lib/nexus-client/src/assert-health-capable.test.ts` | New: present narrows; missing throws | +25 |
 | `packages/lib/nexus-client/src/index.ts` | Re-export `NexusHealth`, `HealthCapableNexusTransport`, `assertHealthCapable` | +3 |
-| `packages/lib/fs-nexus/src/local-transport.ts` | (1) Per-call `opts.deadlineMs` — pending-request map tracks per-entry deadline; reaper rejects on expiry. (2) Per-call `opts.nonInteractive` — on `auth_required`: reject the in-flight call locally, **send `cancel` notification to bridge subprocess**, **mark transport unusable and close**. After this, all subsequent `transport.call(...)` returns `{ ok: false, error: { code: "TRANSPORT_CLOSED", … } }`. (3) Implement `health()` with the three probes through real subprocess stdio with `{ deadlineMs: 5000, nonInteractive: true }`; return `HealthCapableNexusTransport` | +110 |
-| `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; nonInteractive=true on auth_required rejects locally AND sends cancel to bridge AND marks transport unusable; subsequent calls fail with TRANSPORT_CLOSED; queued calls don't deadlock after terminal failure; health success through subprocess; health failure when subprocess dead; health failure when stdio handshake broken | +160 |
+| `packages/lib/fs-nexus/src/local-transport.ts` | (1) Per-call `opts.deadlineMs` — pending-request map tracks per-entry deadline; reaper rejects on expiry. (2) Per-call `opts.nonInteractive` — on `auth_required`: reject the in-flight call locally and kill this transport's subprocess (terminal — but used ONLY by the disposable probe variant; long-lived session transports do not pass nonInteractive). (3) Add `kind: "local-bridge"` discriminator to the transport object so the runtime can pick the probe variant. (4) Implement `health(opts?)` with version + per-readPath probes through subprocess stdio. | +95 |
+| `packages/lib/fs-nexus/src/probe-transport.ts` | New: `createLocalBridgeProbeTransport(spawnConfig)` — spawns a fresh, short-lived bridge subprocess for one health() probe; closes itself unconditionally after probe completes. Uses the same JSON-RPC channel as the session transport but is throwaway. | +60 |
+| `packages/lib/fs-nexus/src/probe-transport.test.ts` | New: probe spawns isolated subprocess; health() returns ok when bridge healthy; health() returns error when bridge auth-blocked (nonInteractive); probe subprocess is killed after probe regardless of result; probe failure does NOT affect any concurrently-running session transport | +110 |
+| `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; long-lived session transport does NOT receive nonInteractive flag from runtime probe path; existing call/subscribe behavior unchanged | +80 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior | +25 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.test.ts` | New tests: false before any sync; false when first sync fails (404/parse/rebuild mismatch — no last-known-good); true after first successful sync; **stays true when subsequent sync fails** (last-known-good preserved); **stays true when subsequent sync produces incompatible policy** (skipped, last-known-good preserved) | +100 |
-| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as `HealthCapableNexusTransport`; add `nexusBootMode` config field (default `"telemetry"`); wire transport-health preflight; **on telemetry-mode probe failure, skip nexus-backed permissions/audit wiring** (don't pass dead transport to consumers); in `fail-closed-policy` mode, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()` before exposing runtime; wire `createNexusAuditSink` through poison-on-error pattern matching NDJSON/SQLite sinks | +90 |
+| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as `HealthCapableNexusTransport`; add `nexusBootMode` and `nexusPolicyBasePath` config fields; **probe via `createLocalBridgeProbeTransport` for local-bridge** (HTTP probes itself); thread `nexusPolicyBasePath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; gate all nexus-consumer wiring on `useNexusConsumers` flag set only after successful probe; in `fail-closed-policy` mode, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; wire `createNexusAuditSink` through poison-on-error pattern | +110 |
 | `packages/meta/cli/src/__tests__/runtime-factory-nexus-audit-poison.test.ts` | New tests: `onError` accumulates first failure; subsequent flush rethrows poisoned error; success path does not poison; matches existing NDJSON pattern semantics | +90 |
 | `packages/meta/cli/src/__tests__/runtime-factory-health.test.ts` | New tests covering all three modes + activation race coverage (see Tests section) | +200 |
 | `packages/meta/cli/src/tui-command.ts` | Replace `as unknown as NexusTransport` cast (line 1704) with `assertHealthCapable(transport)` narrowing | +5 |
 | `docs/L2/nexus-client.md` | Document readiness probe semantics; `HealthCapableNexusTransport` contract; WS/gRPC/pool out-of-scope rationale | +60 |
 
-**Total: ~890 LOC (250 src + 580 test + 60 doc).**
+**Total: ~990 LOC (290 src + 640 test + 60 doc).**
 
 (Larger than the original ~170 estimate because reviews correctly demanded real integration, type-system enforcement, and a readiness probe — not just a dead liveness API.)
 
@@ -373,9 +423,11 @@ The function reports what the backend is *actually serving right now*, not the s
 
 `packages/meta/cli/src/__tests__/runtime-factory-health.test.ts`:
 
-7b. `telemetry mode + terminal local-bridge failure: skips wiring nexus permissions and audit consumers; runtime still boots without nexus features`
-7c. `telemetry mode + terminal local-bridge failure: subsequent calls do NOT use the dead transport`
-7d. `runtime-factory passes configured policyPath to health() readPaths` (custom paths probed, not defaults)
+7b. `telemetry mode + probe failure: skips wiring nexus permissions and audit consumers; runtime still boots without nexus features`
+7c. `telemetry mode + probe failure: long-lived session transport remains usable` (probe used disposable, not session)
+7d. `runtime-factory threads nexusPolicyBasePath into BOTH health() readPaths AND createNexusPermissionBackend` (mismatch is impossible)
+7e. `default nexusPolicyBasePath is "koi/permissions" when config field omitted`
+7f. `local-bridge probe spawns separate subprocess; HTTP probe uses session transport directly`
 8. `telemetry default: succeeds and logs warning on health() error` — local-first preserved
 9. `telemetry: succeeds and logs info on transport ok`
 10. `telemetry: does NOT await backend.ready` — preserves existing async semantics
