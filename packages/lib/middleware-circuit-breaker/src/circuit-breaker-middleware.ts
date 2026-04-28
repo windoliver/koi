@@ -375,41 +375,39 @@ function cbWrapModelStream(
   // RATE_LIMIT used by cbWrapModelCall. See that path for rationale.
   if (breaker === undefined) return errorStream(createCapacityExhaustedError(key, s.maxKeys));
   trackSessionKey(s, ctx.session.sessionId, key);
-  // Snapshot before isAllowed so we can detect an OPEN→HALF_OPEN transition
-  // that consumed our probe slot. The breaker primitive marks `probeInFlight`
-  // when isAllowed returns true from OPEN or HALF_OPEN, so we MUST eventually
-  // call recordSuccess/recordFailure or the circuit wedges (see #1419 round 5).
-  const stateBefore = breaker.getSnapshot().state;
-  if (!breaker.isAllowed()) {
-    return errorStream(createCircuitOpenError(key));
-  }
-  // We took a probe slot iff the breaker is now HALF_OPEN. This is true after
-  // either OPEN→HALF_OPEN (cooldown elapsed) or HALF_OPEN remaining HALF_OPEN
-  // (we're the probe). CLOSED→CLOSED is the normal path; no probe consumed.
-  const tookProbe =
-    breaker.getSnapshot().state === "HALF_OPEN" &&
-    (stateBefore === "OPEN" || stateBefore === "HALF_OPEN");
-  // `next(request)` can throw synchronously before returning an
-  // AsyncIterable (e.g., a downstream call-limit middleware throws when
-  // the session budget is exhausted, or a stream factory fails during
-  // setup). If a probe was taken, none of `trackedStream`'s cleanup
-  // would run and `probeInFlight` would leak — wedging the circuit in
-  // HALF_OPEN forever even though the provider is healthy.
-  let stream: AsyncIterable<ModelChunk>;
-  try {
-    stream = next(request);
-  } catch (err: unknown) {
-    if (tookProbe) {
-      const status = extractStatusCode(err);
-      if (status !== undefined) {
-        breaker.recordFailure(status);
-      } else {
-        breaker.releaseProbe();
+  // Defer the gate (`isAllowed`) AND the upstream `next(request)` call
+  // until iteration actually begins. `isAllowed()` mutates state — it
+  // sets `probeInFlight=true` when claiming a HALF_OPEN probe — so
+  // calling it eagerly would leak the probe slot if the caller obtains
+  // the stream and then abandons it without iterating. Lazy acquisition
+  // means: no iteration → no probe taken → no leak.
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<ModelChunk> {
+      const stateBefore = breaker.getSnapshot().state;
+      if (!breaker.isAllowed()) {
+        return errorStream(createCircuitOpenError(key))[Symbol.asyncIterator]();
       }
-    }
-    throw err;
-  }
-  return trackedStream(stream, breaker, tookProbe);
+      // We took a probe slot iff the breaker is now HALF_OPEN.
+      const tookProbe =
+        breaker.getSnapshot().state === "HALF_OPEN" &&
+        (stateBefore === "OPEN" || stateBefore === "HALF_OPEN");
+      // `next(request)` can throw synchronously before returning an
+      // AsyncIterable. If a probe was taken, release/record it before
+      // surfacing the error so the slot does not leak.
+      let source: AsyncIterable<ModelChunk>;
+      try {
+        source = next(request);
+      } catch (err: unknown) {
+        if (tookProbe) {
+          const status = extractStatusCode(err);
+          if (status !== undefined) breaker.recordFailure(status);
+          else breaker.releaseProbe();
+        }
+        throw err;
+      }
+      return trackedStream(source, breaker, tookProbe)[Symbol.asyncIterator]();
+    },
+  };
 }
 
 function cbDescribe(s: CbState): CapabilityFragment {

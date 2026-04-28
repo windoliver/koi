@@ -437,11 +437,55 @@ describe("createCircuitBreakerMiddleware", () => {
     const throwingFactory = (): AsyncIterable<ModelChunk> => {
       throw new Error("local-setup-error");
     };
-    expect(() => mw.wrapModelStream?.(ctx, req, throwingFactory)).toThrow("local-setup-error");
+    // Iterate the lazy stream — the gate now runs inside the iterator,
+    // so the synchronous throw surfaces at iteration start.
+    const stream = mw.wrapModelStream?.(ctx, req, throwingFactory);
+    if (stream === undefined) throw new Error("no stream");
+    await expect(
+      (async () => {
+        // biome-ignore lint/correctness/noUnusedVariables: trigger iteration
+        for await (const _ of stream) {
+        }
+      })(),
+    ).rejects.toThrow("local-setup-error");
 
     // Immediate follow-up (no clock advance) must still get a probe.
     // If probeInFlight had leaked, isAllowed() would return false here
     // because the breaker remains HALF_OPEN with the slot occupied.
+    const ok = await mw.wrapModelCall?.(ctx, req, makeHandler("ok"));
+    expect(ok?.content).toBe("ok");
+  });
+
+  // Regression (#1419 round 23): if a caller obtains the stream and
+  // never iterates, the probe slot must NOT be taken. Eager probe
+  // acquisition would leak `probeInFlight` permanently because the
+  // generator's `finally` only runs on iteration completion.
+  test("HALF_OPEN stream that is never iterated does not consume the probe slot", async () => {
+    let now = 1000;
+    const clock = (): number => now;
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 2, cooldownMs: 1000 },
+      clock,
+    });
+    const ctx = turnCtx();
+    const req: ModelRequest = { messages: [], model: "openai/gpt-4o" };
+
+    await expect(mw.wrapModelCall?.(ctx, req, makeHandler("fail-500"))).rejects.toThrow();
+    await expect(mw.wrapModelCall?.(ctx, req, makeHandler("fail-500"))).rejects.toThrow();
+    now += 2000; // cooldown
+
+    // Obtain the stream but do not iterate it. The probe must not be
+    // taken, so a follow-up call can still claim the probe slot.
+    let factoryCalled = 0;
+    async function* okStream(): AsyncIterable<ModelChunk> {
+      factoryCalled++;
+      yield { kind: "done", response: modelResponse() };
+    }
+    const abandoned = mw.wrapModelStream?.(ctx, req, okStream);
+    expect(abandoned).toBeDefined();
+    expect(factoryCalled).toBe(0);
+
+    // Follow-up call must succeed (probe still available, no clock advance).
     const ok = await mw.wrapModelCall?.(ctx, req, makeHandler("ok"));
     expect(ok?.content).toBe("ok");
   });

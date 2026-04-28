@@ -1734,6 +1734,31 @@ describe("Golden: @koi/middleware-call-dedup", () => {
   // phase middleware, not just audit-named ones. Dedup hides cache hits
   // from event-trace, session-transcript, custom telemetry, and any
   // observe-phase observer.
+  // Regression (#1419 round 23): when the caller injects a dedup
+  // middleware directly through `config.middleware`, the runtime must
+  // still enforce the onCacheHit acknowledgement. The previous gate
+  // only ran on the auto-install path and was bypassable.
+  test("createRuntime refuses caller-injected koi:call-dedup alongside observe-phase MW without onCacheHit", () => {
+    const fakeDedup = {
+      name: "koi:call-dedup",
+      phase: "intercept" as const,
+      priority: 50,
+      describeCapabilities: () => ({ label: "dedup", description: "dedup" }),
+    } as unknown as import("@koi/core").KoiMiddleware;
+    const fakeAudit = {
+      name: "audit",
+      phase: "observe" as const,
+      priority: 999,
+      describeCapabilities: () => ({ label: "audit", description: "audit" }),
+    } as unknown as import("@koi/core").KoiMiddleware;
+    expect(() =>
+      createRuntime({
+        adapter: createTerminalAdapter(),
+        middleware: [fakeDedup, fakeAudit],
+      }),
+    ).toThrow(/onCacheHit/);
+  });
+
   test("createRuntime refuses callDedup when any observe-phase middleware is present", () => {
     const customTelemetry = {
       name: "custom-telemetry",
