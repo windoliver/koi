@@ -535,10 +535,25 @@ function cbWrapModelStream(
         source = next(request);
       } catch (err: unknown) {
         if (tookProbe) {
+          // Mirror the cbWrapModelCall / trackedStream classification:
+          // local plain `Error` from downstream stream-setup bugs must
+          // NOT count as a provider failure. Otherwise a local fault
+          // consumes the HALF_OPEN probe and reopens/opens the
+          // shared breaker without the provider ever being touched —
+          // user-visible blackholing of healthy providers.
           const status = extractStatusCode(err);
           if (status !== undefined) breaker.recordFailure(status);
-          else if (!isLocalAbortError(err) && !isLocalKoiError(err)) breaker.recordFailure();
-          else breaker.releaseProbe();
+          else if (
+            !isLocalAbortError(err) &&
+            !isLocalKoiError(err) &&
+            isUpstreamTransportError(err)
+          ) {
+            breaker.recordFailure();
+          } else {
+            // Local / unclassified error — release the probe so future
+            // HALF_OPEN attempts can proceed.
+            breaker.releaseProbe();
+          }
         }
         throw err;
       }

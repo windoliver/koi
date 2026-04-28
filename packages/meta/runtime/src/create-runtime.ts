@@ -419,6 +419,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       string,
       Map<string, (sessionId: string, step: RichTrajectoryStep) => void>
     >();
+    let warnedMissingRunId = false;
     const unsubApprovalSink =
       config.approvalStepHandle !== undefined
         ? config.approvalStepHandle.setApprovalStepSink(
@@ -432,7 +433,32 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 if (emit !== undefined) emit(sid, step);
                 return;
               }
-              for (const emit of byRunId.values()) emit(sid, step);
+              // Fail closed when runId is missing under stable
+              // RuntimeConfig.sessionId: there are multiple emitters
+              // for one sessionId, and broadcasting would write the
+              // approval into every concurrent stream's trajectory
+              // (cross-stream corruption). Only fall back to fan-out
+              // when exactly one emitter is registered, which is the
+              // non-concurrent / no-stable-mode case where fan-out
+              // is unambiguous and preserves back-compat with older
+              // permissions producers that omit `runId`.
+              if (byRunId.size === 1) {
+                const only = byRunId.values().next().value;
+                if (only !== undefined) only(sid, step);
+                return;
+              }
+              // Multiple concurrent streams + missing runId → drop.
+              // Surface a one-shot warning so the version skew is
+              // diagnosable; do not log per step (cardinality).
+              if (!warnedMissingRunId) {
+                warnedMissingRunId = true;
+                console.warn(
+                  "[runtime] approval-step relay: dropping step under stable sessionId because " +
+                    "step.metadata.runId is missing and multiple concurrent streams are registered. " +
+                    "Update the @koi/middleware-permissions producer to stamp runId, or run a " +
+                    "single stream at a time under this sessionId.",
+                );
+              }
             },
           )
         : undefined;

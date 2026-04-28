@@ -1010,6 +1010,57 @@ describe("createCircuitBreakerMiddleware", () => {
     expect(ok?.content).toBe("ok");
   });
 
+  // Regression (#1419 round 36): the cbWrapModelStream sync-throw
+  // catch site previously used the broad classification. A local
+  // plain `Error` thrown by downstream stream-setup BEFORE the
+  // iterable was returned would consume the HALF_OPEN probe AND be
+  // recorded as a provider failure — blackholing healthy providers
+  // after a local middleware bug.
+  test("local plain Error thrown synchronously in stream setup releases probe (no failure record)", async () => {
+    const mw = createCircuitBreakerMiddleware({ breaker: { failureThreshold: 2, cooldownMs: 50 } });
+    const ctx = turnCtx();
+    // Trip OPEN with two real upstream transport errors.
+    const upstream: ModelHandler = async () => {
+      throw new TypeError("fetch failed");
+    };
+    for (let i = 0; i < 2; i++) {
+      await expect(
+        mw.wrapModelCall?.(ctx, { messages: [], model: "openai/gpt-4o" }, upstream),
+      ).rejects.toThrow("fetch failed");
+    }
+    // Wait past cooldown so the breaker is HALF_OPEN.
+    await new Promise<void>((r) => setTimeout(r, 60));
+    // Local sync throw before iterable is returned. Must NOT
+    // record a failure; the probe must be released.
+    const localBuggyStream = (() => {
+      throw new Error("local stream setup bug");
+    }) as unknown as Parameters<NonNullable<typeof mw.wrapModelStream>>[2];
+    // The sync throw happens inside the lazy iterator entry, not at
+    // wrapModelStream call time. Drive iteration to surface it.
+    const it = mw.wrapModelStream?.(
+      ctx,
+      { messages: [], model: "openai/gpt-4o" },
+      localBuggyStream,
+    );
+    let caught: unknown;
+    try {
+      for await (const _ of it ?? []) {
+        // unreachable
+      }
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as Error).message).toContain("local stream setup bug");
+    // Provider call should now be allowed (probe released, breaker
+    // not pushed back to OPEN).
+    const ok = await mw.wrapModelCall?.(
+      ctx,
+      { messages: [], model: "openai/gpt-4o" },
+      makeHandler("ok"),
+    );
+    expect(ok?.content).toBe("ok");
+  });
+
   // Regression (#1419 round 35): chained `cause.code` in the
   // transport allowlist (ECONNRESET, ETIMEDOUT, etc.) DOES trip the
   // breaker — that's the canonical adapter-boundary signal for an
