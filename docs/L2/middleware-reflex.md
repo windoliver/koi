@@ -32,21 +32,19 @@ The reflex middleware sits at the outermost intercept layer (priority 50) and sh
 
 ```
 L0  @koi/core                        ─ KoiMiddleware, ModelRequest, ModelResponse,
-                                         TurnContext, InboundMessage (types only)
-L0u @koi/resolve                     ─ BrickDescriptor (manifest auto-resolution)
-L2  @koi/middleware-reflex           ─ this package (no L1 dependency)
+                                         TurnContext, InboundMessage, TextBlock (types only)
+L2  @koi/middleware-reflex           ─ this package (no L1, no peer L2 dependency)
 ```
+
+This package depends on `@koi/core` only. No L0u utilities required.
 
 ### Internal Module Map
 
 ```
-index.ts                    ← public re-exports
+index.ts                    ← public re-exports (createReflexMiddleware, textOf, types)
 │
-├── types.ts                ← ReflexRule, ReflexMetrics
-├── config.ts               ← ReflexMiddlewareConfig, validateReflexConfig
-├── text-of.ts              ← textOf() helper — extract text from InboundMessage
-├── reflex.ts               ← createReflexMiddleware() factory
-└── descriptor.ts           ← BrickDescriptor for manifest auto-resolution
+├── types.ts                ← ReflexRule, ReflexMiddlewareConfig
+└── reflex.ts               ← createReflexMiddleware() factory + textOf() helper
 ```
 
 ### Middleware Priority
@@ -93,10 +91,11 @@ wrapModelCall invoked
   │       content: rule.respond(message, ctx)
   │       model: "koi:reflex"
   │       usage: { inputTokens: 0, outputTokens: 0 }
+  │       stopReason: "stop"
   │       metadata: { reflexRule: ruleName, reflexHit: true }
-  │       ─► fire onMetrics("hit") ─► return response (skip LLM)
+  │       ─► return response (skip LLM)
   │
-  └─ No rule matched ─► fire onMetrics("miss") ─► next(request)
+  └─ No rule matched ─► next(request)
 ```
 
 ### Cooldown Mechanism
@@ -131,7 +130,6 @@ import { createReflexMiddleware } from "@koi/middleware-reflex";
 
 const reflex = createReflexMiddleware({
   rules: [greetingRule, statusRule, helpRule],
-  onMetrics: (m) => console.log(`reflex ${m.kind}: ${m.ruleName}`),
 });
 ```
 
@@ -161,41 +159,17 @@ interface ReflexMiddlewareConfig {
   readonly rules: readonly ReflexRule[];
   readonly enabled?: boolean;          // master switch, default true
   readonly now?: () => number;         // clock injection for testing
-  readonly onMetrics?: (metrics: ReflexMetrics) => void;
-}
-```
-
-### `ReflexMetrics`
-
-```typescript
-interface ReflexMetrics {
-  readonly ruleName: string;
-  readonly kind: "hit" | "miss";
-  readonly interceptedContentLength?: number;  // chars of request (hit only)
-  readonly responseLength?: number;            // chars of response (hit only)
-  readonly latencyMs: number;
 }
 ```
 
 ### `textOf(message)`
 
-Utility that extracts concatenated text from an `InboundMessage`:
+Utility that extracts concatenated text from an `InboundMessage`. Non-text content blocks (images, tool results) are ignored.
 
 ```typescript
 import { textOf } from "@koi/middleware-reflex";
 
 const text = textOf(message);  // joins all TextBlock.text with "\n"
-```
-
-### `validateReflexConfig(config)`
-
-Validates raw input (e.g., from YAML) into a typed config:
-
-```typescript
-const result = validateReflexConfig({ rules: [myRule] });
-if (result.ok) {
-  const config = result.value;  // ReflexMiddlewareConfig
-}
 ```
 
 ---
@@ -239,11 +213,10 @@ const helpRule: ReflexRule = {
 
 const reflex = createReflexMiddleware({
   rules: [greetingRule, statusRule, helpRule],
-  onMetrics: ({ kind, ruleName, latencyMs }) => {
-    metrics.histogram("reflex.latency", latencyMs, { kind, rule: ruleName });
-  },
 });
 ```
+
+To observe hit/miss rates, layer an observe-phase telemetry middleware (e.g. OTel) above reflex; metric collection is intentionally NOT a concern of this package.
 
 ### Dynamic Rules with Context
 
@@ -271,13 +244,10 @@ Reflex responses are deterministic. The same input always produces the same outp
 ### 4. Graceful Degradation
 Rules that throw are silently skipped. If all rules miss, the request passes through to the LLM unchanged. Adding reflexes never breaks existing behavior.
 
-### 5. Observable Short-Circuits
-The `onMetrics` callback reports hit/miss events with content lengths and latency. Teams can track reflex hit rates, identify patterns worth adding, and measure token savings.
-
-### 6. Cooldown-Aware Throttling
+### 5. Cooldown-Aware Throttling
 Rules can specify a cooldown to avoid repetitive responses. A greeting rule fires once, then stays quiet for 30 seconds even if the user says "hi" again — the LLM handles the follow-up naturally.
 
-### 7. Priority-Based Rule Ordering
+### 6. Priority-Based Rule Ordering
 Rules are sorted by priority at construction time (not per-call). Lower priority runs first. When multiple rules could match, the first match wins.
 
 ---
@@ -287,9 +257,10 @@ Rules are sorted by priority at construction time (not per-call). Lower priority
 ```
 @koi/middleware-reflex imports:
   ✅ @koi/core      (L0)  — KoiMiddleware, ModelRequest, ModelResponse, InboundMessage, etc.
-  ✅ @koi/resolve    (L0u) — BrickDescriptor
   ❌ @koi/engine     (L1)  — NOT imported
   ❌ peer L2          —      NOT imported
 ```
+
+This package is marked `koi.optional: true` — it is not part of the default runtime stack and must be explicitly enabled by the host.
 
 All interface properties are `readonly`. No vendor types. No framework-isms.

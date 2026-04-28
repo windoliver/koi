@@ -471,6 +471,22 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/middleware-prompt-cache": {
+      "name": "@koi/middleware-prompt-cache",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/execution-context": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-reflex": {
+      "name": "@koi/middleware-reflex",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/middleware-report": {
       "name": "@koi/middleware-report",
       "version": "0.0.0",
@@ -523,6 +539,13 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-turn-ack": {
+      "name": "@koi/middleware-turn-ack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/lib/middleware-turn-prelude": {
@@ -864,9 +887,12 @@
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-plan-persist": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
+        "@koi/middleware-prompt-cache": "workspace:*",
+        "@koi/middleware-reflex": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
+        "@koi/middleware-turn-ack": "workspace:*",
         "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -993,10 +1019,13 @@
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-plan-persist": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
+        "@koi/middleware-prompt-cache": "workspace:*",
+        "@koi/middleware-reflex": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-strict-agentic": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
+        "@koi/middleware-turn-ack": "workspace:*",
         "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -1897,6 +1926,10 @@
 
     "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/lib/middleware-planning"],
 
+    "@koi/middleware-prompt-cache": ["@koi/middleware-prompt-cache@workspace:packages/lib/middleware-prompt-cache"],
+
+    "@koi/middleware-reflex": ["@koi/middleware-reflex@workspace:packages/lib/middleware-reflex"],
+
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
 
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/lib/middleware-semantic-retry"],
@@ -1910,6 +1943,8 @@
     "@koi/middleware-tool-recovery": ["@koi/middleware-tool-recovery@workspace:packages/lib/middleware-tool-recovery"],
 
     "@koi/middleware-tool-selector": ["@koi/middleware-tool-selector@workspace:packages/lib/middleware-tool-selector"],
+
+    "@koi/middleware-turn-ack": ["@koi/middleware-turn-ack@workspace:packages/lib/middleware-turn-ack"],
 
     "@koi/middleware-turn-prelude": ["@koi/middleware-turn-prelude@workspace:packages/lib/middleware-turn-prelude"],
 

@@ -99,6 +99,7 @@ import {
   PLAN_SAVE_TOOL_NAME,
 } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware, WRITE_PLAN_DESCRIPTOR } from "@koi/middleware-planning";
+import { createPromptCacheMiddleware } from "@koi/middleware-prompt-cache";
 import {
   createRetrySignalBroker,
   createSemanticRetryMiddleware,
@@ -2171,6 +2172,36 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     extraMiddleware: [createStrictAgenticMiddleware({}).middleware],
+  },
+
+  // prompt-cache: exercises @koi/middleware-prompt-cache. The middleware reorders
+  // system messages to a stable prefix and writes CacheHints into request.metadata.
+  // The trajectory captures the MW span (proves it's wired) and the standard
+  // permissions+model lifecycle. Uses Sonnet (anthropic) so extractProvider
+  // resolves to a known allow-listed provider; staticPrefixMinTokens is low so
+  // the default kernel system prefix easily clears it.
+  {
+    name: "prompt-cache",
+    prompt: "Use the add_numbers tool to compute 2 + 3, then reply with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+    ],
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+    extraMiddleware: [
+      createPromptCacheMiddleware({
+        providers: ["anthropic", "openai"],
+        staticPrefixMinTokens: 1,
+      }),
+    ],
   },
 
   // artifacts-roundtrip: exercises @koi/artifacts via two tools backed by a
