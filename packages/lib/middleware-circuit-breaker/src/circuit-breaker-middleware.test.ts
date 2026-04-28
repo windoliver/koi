@@ -828,6 +828,43 @@ describe("createCircuitBreakerMiddleware", () => {
     expect(r?.content).toBe("ok");
   });
 
+  // Regression (#1419 round 39): shared-key (provider/tenant-scoped
+  // `extractKey`) deployments must NOT lose unhealthy breaker state
+  // when the last session ends. The cross-session outage history is
+  // exactly what the shared breaker exists to preserve — discarding
+  // it lets a fresh session restart from CLOSED and pay full upstream
+  // failures before its private circuit reopens (fail-open
+  // regression).
+  test("shared-key OPEN breaker survives last-session-end (no fail-open regression)", async () => {
+    const mw = createCircuitBreakerMiddleware({
+      // Provider-scoped: every session shares one breaker per model.
+      extractKey: (m): string => m ?? "unknown",
+      breaker: { failureThreshold: 2 },
+    });
+    // Session A and B both contribute to the same provider-scoped
+    // breaker key "openai/m". Together they trip it OPEN.
+    const ctxA = turnCtx("session-a");
+    const ctxB = turnCtx("session-b");
+    await expect(
+      mw.wrapModelCall?.(ctxA, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    await expect(
+      mw.wrapModelCall?.(ctxB, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    // Both sessions end. With shared keys, the OPEN breaker MUST be
+    // retained — provider is still unhealthy.
+    await mw.onSessionEnd?.(ctxA.session);
+    await mw.onSessionEnd?.(ctxB.session);
+    // session-c arrives. Provider not actually recovered (handler
+    // would still fail). Without retention, the breaker would be
+    // freshly CLOSED and the failing call would burn through. With
+    // retention, the OPEN breaker fast-fails immediately.
+    const ctxC = turnCtx("session-c");
+    await expect(
+      mw.wrapModelCall?.(ctxC, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+    ).rejects.toMatchObject({ code: "RATE_LIMIT" });
+  });
+
   // Regression (#1419 round 18): eviction must prefer victims with no
   // accumulated failure history. Otherwise a noisy session driving many
   // distinct keys can erase another live session's almost-tripped

@@ -152,4 +152,35 @@ describe("createToolCallLimitMiddleware", () => {
     const fresh = await mw.wrapToolCall?.(ctx, { toolId: "foo", input: {} }, okHandler());
     expect(fresh?.output).toBe("ok");
   });
+
+  // Regression (#1419 round 39): a tool whose id is literally
+  // `__global__` previously aliased the global counter's storage
+  // slot (`tool:${sessionId}:__global__`). Per-tool enforcement and
+  // global accounting would corrupt each other and a single
+  // onSessionEnd reset would clear both. With the namespace fix
+  // (`tool-global:${sessionId}`), the keys can never collide.
+  test("tool named __global__ does not alias global counter", async () => {
+    const mw = createToolCallLimitMiddleware({
+      limits: { __global__: 1 },
+      globalLimit: 5,
+    });
+    const ctx = turnCtx("s-collision");
+    // Per-tool limit on `__global__`: first call succeeds, second blocks.
+    const r1 = await mw.wrapToolCall?.(ctx, { toolId: "__global__", input: {} }, okHandler());
+    expect(r1?.output).toBe("ok");
+    const r2 = await mw.wrapToolCall?.(ctx, { toolId: "__global__", input: {} }, okHandler());
+    expect(r2?.metadata?.blocked).toBe(true);
+    // Global counter should still be at 1 (only the first call
+    // succeeded and counted globally — the blocked second call rolled
+    // back). With the prior key collision, the global slot would
+    // have been corrupted by the per-tool counter writes.
+    // Other tools must still execute under the global cap of 5.
+    for (let i = 0; i < 4; i++) {
+      const r = await mw.wrapToolCall?.(ctx, { toolId: `t${String(i)}`, input: {} }, okHandler());
+      expect(r?.output).toBe("ok");
+    }
+    // 5th unrelated tool call hits global cap.
+    const blocked = await mw.wrapToolCall?.(ctx, { toolId: "t-overflow", input: {} }, okHandler());
+    expect(blocked?.metadata?.blocked).toBe(true);
+  });
 });

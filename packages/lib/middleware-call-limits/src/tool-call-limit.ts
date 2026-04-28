@@ -28,8 +28,14 @@ function toolKey(sessionId: string, toolId: string): string {
   return `tool:${sessionId}:${toolId}`;
 }
 
+// Use a separate namespace prefix so a tool whose id is literally
+// `__global__` (allowed via plugin/connector tool ids) cannot alias
+// the global counter. With the prior `tool:${sessionId}:__global__`
+// scheme, that tool would have shared the global quota's storage
+// slot — per-tool enforcement and global accounting would corrupt
+// each other and a single `onSessionEnd` reset would clear both.
 function globalKey(sessionId: string): string {
-  return `tool:${sessionId}:__global__`;
+  return `tool-global:${sessionId}`;
 }
 
 function blockedResponse(toolId: string, limit: number): ToolResponse {

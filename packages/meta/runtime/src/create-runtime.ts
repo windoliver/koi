@@ -419,7 +419,6 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       string,
       Map<string, (sessionId: string, step: RichTrajectoryStep) => void>
     >();
-    let warnedMissingRunId = false;
     const unsubApprovalSink =
       config.approvalStepHandle !== undefined
         ? config.approvalStepHandle.setApprovalStepSink(
@@ -433,32 +432,38 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 if (emit !== undefined) emit(sid, step);
                 return;
               }
-              // Fail closed when runId is missing under stable
-              // RuntimeConfig.sessionId: there are multiple emitters
-              // for one sessionId, and broadcasting would write the
-              // approval into every concurrent stream's trajectory
-              // (cross-stream corruption). Only fall back to fan-out
-              // when exactly one emitter is registered, which is the
-              // non-concurrent / no-stable-mode case where fan-out
-              // is unambiguous and preserves back-compat with older
-              // permissions producers that omit `runId`.
+              // No runId on the step. With exactly one emitter the
+              // routing is unambiguous, so fan out as before. With
+              // multiple concurrent emitters, we cannot identify the
+              // originating stream — drop would lose audit records
+              // (silent observability hole), pure broadcast would
+              // corrupt every other stream's trajectory. Compromise:
+              // broadcast WITH a marker so observers can filter or
+              // dedupe, AND warn per-event so audit losses are
+              // tractable instead of hidden behind a one-shot log.
               if (byRunId.size === 1) {
                 const only = byRunId.values().next().value;
                 if (only !== undefined) only(sid, step);
                 return;
               }
-              // Multiple concurrent streams + missing runId → drop.
-              // Surface a one-shot warning so the version skew is
-              // diagnosable; do not log per step (cardinality).
-              if (!warnedMissingRunId) {
-                warnedMissingRunId = true;
-                console.warn(
-                  "[runtime] approval-step relay: dropping step under stable sessionId because " +
-                    "step.metadata.runId is missing and multiple concurrent streams are registered. " +
-                    "Update the @koi/middleware-permissions producer to stamp runId, or run a " +
-                    "single stream at a time under this sessionId.",
-                );
-              }
+              const baseMd = (step.metadata ?? {}) as Record<string, unknown>;
+              const flaggedMetadata: Readonly<Record<string, unknown>> = {
+                ...baseMd,
+                // Observers should treat this as best-effort
+                // (cross-stream broadcast under version skew);
+                // dedupe by toolId+timestamp+sessionId across
+                // concurrent streams or filter from final
+                // trajectories.
+                approvalRelayFanout: true,
+              };
+              const flaggedStep: RichTrajectoryStep = { ...step, metadata: flaggedMetadata };
+              console.warn(
+                `[runtime] approval-step relay: step.metadata.runId missing under stable ` +
+                  `sessionId "${sid}" with ${String(byRunId.size)} concurrent streams; ` +
+                  `broadcasting with approvalRelayFanout=true marker. Update the ` +
+                  `permissions middleware to stamp runId.`,
+              );
+              for (const emit of byRunId.values()) emit(sid, flaggedStep);
             },
           )
         : undefined;

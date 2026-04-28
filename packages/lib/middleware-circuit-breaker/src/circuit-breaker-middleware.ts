@@ -334,6 +334,18 @@ interface CbState {
    * always preserved.
    */
   readonly keyOwners: Map<string, Set<string>>;
+  /**
+   * Sticky flag: set the first time a key is seen with >1 simultaneous
+   * owner. Distinguishes the default session-scoped key (always
+   * single-owner over its lifetime — safe to reclaim at last-owner-
+   * leave to free `maxKeys` capacity) from shared-key deployments
+   * (provider/tenant-scoped `extractKey`, multiple concurrent sessions
+   * — must NOT discard unhealthy state on owner=0, otherwise the
+   * cross-session outage history is lost and the next session
+   * restarts from CLOSED, paying full upstream failures before its
+   * private circuit reopens).
+   */
+  readonly sharedKeys: Set<string>;
 }
 
 function trackSessionKey(s: CbState, sessionId: string, key: string): void {
@@ -341,8 +353,12 @@ function trackSessionKey(s: CbState, sessionId: string, key: string): void {
   if (sessions !== undefined) sessions.add(key);
   else s.keysBySession.set(sessionId, new Set([key]));
   const owners = s.keyOwners.get(key);
-  if (owners !== undefined) owners.add(sessionId);
-  else s.keyOwners.set(key, new Set([sessionId]));
+  if (owners !== undefined) {
+    owners.add(sessionId);
+    if (owners.size > 1) s.sharedKeys.add(key);
+  } else {
+    s.keyOwners.set(key, new Set([sessionId]));
+  }
 }
 
 function evictSessionKeys(s: CbState, sessionId: string): void {
@@ -353,17 +369,36 @@ function evictSessionKeys(s: CbState, sessionId: string): void {
     const owners = s.keyOwners.get(k);
     if (owners === undefined) continue;
     owners.delete(sessionId);
-    // Refcount: keep the breaker alive while any session still owns it
-    // (e.g., shared provider-scoped extractKey). When the last owner
-    // leaves, reclaim regardless of state — including OPEN/HALF_OPEN.
-    // Holding ownerless OPEN circuits would let an outage permanently
-    // wedge the map at capacity: many session-scoped circuits trip to
-    // OPEN, sessions end, the provider recovers, but new sessions
-    // forever hit `RATE_LIMIT` capacity-exhaustion because nothing
-    // reclaims the orphaned OPEN entries.
     if (owners.size > 0) continue;
+    // Last owner left. Two regimes:
+    //   * Single-owner-throughout (default session-scoped key): no
+    //     other session ever shared this breaker, so reclaiming
+    //     even an OPEN breaker is correct — it represents one
+    //     dead session's outage history with no remaining
+    //     consumers. Reclaim freely so `maxKeys` capacity does
+    //     not wedge under high session churn.
+    //   * Ever-shared (provider/tenant-scoped `extractKey`): this
+    //     breaker carries cross-session outage history. Discarding
+    //     unhealthy state would let a fresh session restart from
+    //     CLOSED and pay full upstream failures before its
+    //     private circuit reopens (fail-open regression). Retain
+    //     OPEN / HALF_OPEN / CLOSED-with-failures; reclaim only
+    //     once the breaker organically returns to CLOSED+0 via
+    //     cooldown + probe-success.
+    if (s.sharedKeys.has(k)) {
+      const breaker = s.breakers.get(k);
+      if (breaker !== undefined) {
+        const snap = breaker.getSnapshot();
+        if (snap.state !== "CLOSED" || snap.failureCount > 0) {
+          // Drop the empty owner set; keep the breaker alive.
+          s.keyOwners.delete(k);
+          continue;
+        }
+      }
+    }
     s.keyOwners.delete(k);
     s.breakers.delete(k);
+    s.sharedKeys.delete(k);
   }
 }
 
@@ -585,6 +620,7 @@ export function createCircuitBreakerMiddleware(
     warnGuard: { warned: false },
     keysBySession: new Map(),
     keyOwners: new Map(),
+    sharedKeys: new Set(),
   };
   return {
     name: "koi:circuit-breaker",
