@@ -67,6 +67,12 @@ export interface NexusHealth {
   readonly version: string;
   readonly latencyMs: number;
   readonly probed: readonly string[];
+  /** Per-path 404 results — caller decides what to do. Only populated for
+   *  probe paths that returned 404 (file-not-found). Empty when all paths
+   *  returned 200. nexus-client treats 404 as transport-success because the
+   *  TCP+JSON-RPC channel worked; runtime-factory treats it as fatal under
+   *  fail-closed-* boot modes (missing policy namespace). */
+  readonly notFound?: readonly string[];
 }
 
 /**
@@ -163,7 +169,7 @@ Sequence:
 
 1. Record `start = performance.now()`
 2. `transport.call("version", {}, { deadlineMs: HEALTH_DEADLINE_MS, nonInteractive: true })` — liveness: TCP+TLS+JSON-RPC reachable; capture version string.
-3. For each path in `opts.readPaths ?? DEFAULT_PROBE_PATHS`: `transport.call("read", { path }, { deadlineMs, nonInteractive: true })`. 200 ok or 404 → success (file-not-found is a transport-success signal). 5xx / network / auth → return error.
+3. For each path in `opts.readPaths ?? DEFAULT_PROBE_PATHS`: `transport.call("read", { path }, { deadlineMs, nonInteractive: true })`. 200 → success. 404 → returned in `value.notFound: true` (per-path field; not silently flattened to success). 5xx / network / auth → return error. Caller — runtime-factory — decides what to do with 404: in `telemetry` it's a warning; in `fail-closed-transport` AND `assert-remote-policy-loaded-at-boot` 404 on either default probe path is FATAL because the policy namespace is missing. (Custom `readPaths` keep the same per-path notFound semantics; caller can handle 404 differently if desired.)
 5. All calls go through `transport.call(...)` — local-bridge included.
 6. **Local-bridge probing is constrained.** The fs-nexus `local-bridge` cannot be cleanly probed in-place without risk: its subprocess serializes one in-flight call, has no protocol-level cancel that doesn't poison the channel, and a wedged auth flow blocks every queued call. The two honest options for probing have unacceptable downsides under fail-closed semantics:
 
@@ -235,7 +241,7 @@ Earlier drafts proposed making audit-wired runtimes default to `fail-closed-tran
 | Mode | Behavior |
 |---|---|
 | `telemetry` (default) | log on transport failure; log activation status; continue boot |
-| `fail-closed-transport` | throw on transport failure for any of the 3 probes (version + version.json read + policy.json read); does NOT validate that policy files exist or that backend successfully activates remote policy |
+| `fail-closed-transport` | throw on transport failure OR on `notFound: true` for either default probe path (`version.json` / `policy.json`) — missing policy namespace is fatal, not healths (version + version.json read + policy.json read); does NOT validate that policy files exist or that backend successfully activates remote policy |
 | `assert-remote-policy-loaded-at-boot` | throw on transport failure; throw on first-sync policy-activation failure (awaits `backend.ready`). **STARTUP GATE ONLY, REMOTE-LOAD ONLY** — proves remote policy was loaded at boot. Does NOT prove remote policy will be enforced for every check: per existing composition (`runtime-factory.ts:1797-1806`), Nexus backend chains to local TUI on `ask`/no-opinion results, so queries not matched by remote policy still execute under local rules. Does NOT enforce ongoing freshness either: last-known-good remote policy continues to be served after sync failures. Operators needing strict centralized enforcement (no local fallback for unmatched queries) need a permission-composition change tracked separately. |
 
 **⚠️ Security caveat — no mode in this PR provides centralized-policy enforcement.** `fail-closed-transport` only proves the transport can carry read calls. `assert-remote-policy-loaded-at-boot` only proves remote policy was loaded at boot. Neither prevents local-rule fallback for queries the remote policy doesn't match (existing permission composition chains to local TUI on `ask`/no-opinion). The mode names deliberately reflect what they actually gate (`-transport`, `-remote-policy-loaded`) rather than implying enforcement they don't deliver. **Operators requiring strict centralized enforcement (no local fallback for unmatched queries) must wait for the permission-composition change tracked separately** — neither mode here is sufficient for that requirement.
@@ -472,7 +478,9 @@ interface KoiRuntimeFactoryConfig {
    *
    * - "telemetry": log on transport failure; continue boot; preserves
    *   existing local-first contract for permissions.
-   * - "fail-closed-transport": throw on transport failure. Does NOT validate
+   * - "fail-closed-transport": throw on transport failure OR on missing
+   *   default probe path (404 on version.json / policy.json — namespace
+   *   absent is fatal, not health). Does NOT validate
    *   that centralized policy activated — local-fallback may still apply.
    *   See security caveat in design doc.
    * - "assert-remote-policy-loaded-at-boot": throw on transport failure OR first-sync
@@ -759,11 +767,19 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       );
     }
     if (isLocalBridge && config.nexusAuditMode === "local-only") {
-      const hasLocalSink = ndjsonSinkConfigured || sqliteSinkConfigured;
-      if (!hasLocalSink) {
+      // STRENGTHENED gate: at least one local sink must be REQUIRED (durable
+      // — fail-stop on poison), not just configured. A best-effort local sink
+      // would log on failure and continue, satisfying the previous weaker
+      // "configured" check while still losing audit writes silently.
+      const hasRequiredLocalSink =
+        (ndjsonSinkConfigured && config.ndjsonRequired === true)
+        || (sqliteSinkConfigured && config.sqliteRequired === true);
+      if (!hasRequiredLocalSink) {
         throw new Error(
-          'nexusAuditMode="local-only" requires at least one local audit sink ' +
-          "(NDJSON or SQLite); otherwise audit data is lost silently.",
+          'nexusAuditMode="local-only" requires at least one REQUIRED local ' +
+          "audit sink (NDJSON or SQLite with required=true). A configured-" +
+          "but-best-effort sink can silently drop writes on failure, defeating " +
+          "the local-only fallback guarantee.",
         );
       }
     }
@@ -904,8 +920,10 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g13. (REMOVED — superseded by 7g16o which throws rather than warns)
 7g14. `local-bridge + audit-enabled WITHOUT nexusAuditMode: throws config error at boot` (security gate; no implicit-default fallback for local-bridge audit)
 7g15. (REMOVED — "require" mode no longer exists; local-bridge audit always skips the Nexus sink)
-7g16. `local-bridge + nexusAuditMode="local-only" + NDJSON sink configured: Nexus sink skipped; boot succeeds`
+7g16. `local-bridge + nexusAuditMode="local-only" + NDJSON sink configured AND ndjsonRequired=true: Nexus sink skipped; boot succeeds`
 7g16b. `local-bridge + nexusAuditMode="local-only" + NO local sinks: throws config error (prevents silent audit data loss)`
+7g16b2. `local-bridge + nexusAuditMode="local-only" + NDJSON sink configured but ndjsonRequired=undefined/false: throws config error (best-effort sink does not satisfy local-only)` (strengthened gate — Round 9)
+7g16b3. `local-bridge + nexusAuditMode="local-only" + SQLite required=true: same — sqliteRequired=true also satisfies the gate`
 7g16c. `local-bridge + nexusAuditMode="disabled": Nexus sink skipped; no fallback assertion; boot succeeds`
 7g16d. `HTTP transport: nexusAuditMode ignored; sink always wired`
 7g16e. `nexusPermissionsEnabled=true + local-bridge: throws security gate at boot in BOTH phases` (no warn-and-continue path; no migration table fall-through)
@@ -954,6 +972,9 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 9. `telemetry: succeeds and logs info on transport ok`
 10. `telemetry: does NOT await backend.ready` — preserves existing async semantics
 11. `fail-closed-transport: throws on transport error`
+11b. `fail-closed-transport: throws when version.json or policy.json read returns 404 (notFound)` (Round 9 — missing namespace is fatal in fail-closed-* modes)
+11c. `telemetry mode: 404 on default probe path is logged + boot continues` (regression guard — fail-closed semantics do NOT leak into telemetry)
+11d. `health() result includes per-path notFound: true field when 404 returned` (caller decides handling — health() itself remains transport-success-on-404 from nexus-client's pure-transport perspective)
 12. `fail-closed-transport: does NOT await backend.ready` — only transport gate, no policy gate
 13. `assert-remote-policy-loaded-at-boot: awaits backend.ready before exposing runtime`
 14. `assert-remote-policy-loaded-at-boot: throws when first sync fails (no last-known-good) — file 404, no remote backend ever activated`
