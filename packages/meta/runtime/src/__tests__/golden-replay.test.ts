@@ -26,6 +26,7 @@ import { createS3BlobStore } from "@koi/artifacts-s3";
 import { runBlobStoreContract } from "@koi/blob-cas/contract";
 import type {
   Agent,
+  ChannelStatus,
   EngineAdapter,
   EngineEvent,
   EngineInput,
@@ -33,6 +34,7 @@ import type {
   JsonObject,
   KoiMiddleware,
   ModelChunk,
+  ModelHandler,
   ModelRequest,
   ModelResponse,
   SkillComponent,
@@ -50,6 +52,12 @@ import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createPlanMiddleware, WRITE_PLAN_TOOL_NAME } from "@koi/middleware-planning";
+import {
+  CACHE_HINTS_KEY,
+  createPromptCacheMiddleware,
+  readCacheHints,
+} from "@koi/middleware-prompt-cache";
+import { createReflexMiddleware, textOf } from "@koi/middleware-reflex";
 import { createReportMiddleware } from "@koi/middleware-report";
 import {
   buildEmptyBoardNudge,
@@ -57,6 +65,7 @@ import {
   createTaskAnchorMiddleware,
   formatTaskList,
 } from "@koi/middleware-task-anchor";
+import { createTurnAckMiddleware } from "@koi/middleware-turn-ack";
 import { createTurnPreludeMiddleware } from "@koi/middleware-turn-prelude";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
@@ -14897,5 +14906,242 @@ describe("Golden: @koi/audit-sink-nexus", () => {
     expect(entries).toHaveLength(2);
     expect(entries[0]?.timestamp).toBe(100);
     expect(entries[1]?.timestamp).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-reflex (3 standalone queries, no LLM)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-reflex", () => {
+  function makeReflexCtx(messages: readonly InboundMessage[]): TurnContext {
+    return {
+      session: {
+        agentId: "reflex-golden",
+        sessionId: sessionId("reflex-g"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      },
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages,
+      metadata: {},
+    };
+  }
+
+  function modelMessage(text: string): InboundMessage {
+    return { senderId: "user:1", timestamp: 0, content: [{ kind: "text", text }] };
+  }
+
+  test("matched rule short-circuits the model call", async () => {
+    const mw = createReflexMiddleware({
+      rules: [
+        {
+          name: "ping",
+          match: (m) => textOf(m) === "ping",
+          respond: () => "pong",
+        },
+      ],
+    });
+    let modelCalled = false;
+    const next: ModelHandler = async () => {
+      modelCalled = true;
+      return { content: "from-model", model: "test" };
+    };
+
+    const res = await mw.wrapModelCall?.(
+      makeReflexCtx([modelMessage("ping")]),
+      { messages: [] },
+      next,
+    );
+    expect(modelCalled).toBe(false);
+    expect(res?.content).toBe("pong");
+    expect(res?.model).toBe("koi:reflex");
+    expect(res?.stopReason).toBe("stop");
+    expect(res?.metadata?.reflexHit).toBe(true);
+  });
+
+  test("non-matching message falls through to next handler unchanged", async () => {
+    const mw = createReflexMiddleware({
+      rules: [{ name: "ping", match: (m) => textOf(m) === "ping", respond: () => "pong" }],
+    });
+    const fallback: ModelResponse = { content: "from-model", model: "test" };
+    const next: ModelHandler = async () => fallback;
+    const res = await mw.wrapModelCall?.(
+      makeReflexCtx([modelMessage("hello")]),
+      { messages: [] },
+      next,
+    );
+    expect(res).toBe(fallback);
+  });
+
+  test("public textOf helper ignores non-text content blocks", () => {
+    const text = textOf({
+      senderId: "user:1",
+      timestamp: 0,
+      content: [
+        { kind: "text", text: "a" },
+        { kind: "image", url: "x://y" },
+        { kind: "text", text: "b" },
+      ],
+    });
+    expect(text).toBe("a\nb");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-turn-ack (2 standalone queries, no LLM)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-turn-ack", () => {
+  function makeTurnAckCtx(
+    sendStatus: (s: ChannelStatus) => Promise<void>,
+    turnIndex = 0,
+  ): TurnContext {
+    return {
+      session: {
+        agentId: "turn-ack-golden",
+        sessionId: sessionId("ta-g"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      },
+      turnIndex,
+      turnId: `${runId("r1")}-${String(turnIndex)}` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+      sendStatus,
+    };
+  }
+
+  test("slow turn: processing emitted after debounce, idle on completion", async () => {
+    const tasks: (() => void)[] = [];
+    const scheduler = {
+      setTimeout: (h: () => void, _ms: number) => {
+        tasks.push(h);
+        return tasks.length - 1;
+      },
+      clearTimeout: (_id: unknown) => {},
+    };
+    const statuses: ChannelStatus[] = [];
+    const mw = createTurnAckMiddleware({ scheduler });
+    const ctx = makeTurnAckCtx(async (s) => {
+      statuses.push(s);
+    });
+
+    await mw.onBeforeTurn?.(ctx);
+    expect(tasks).toHaveLength(1);
+    tasks[0]?.();
+    await new Promise((r) => setImmediate(r));
+    expect(statuses.map((s) => s.kind)).toEqual(["processing"]);
+
+    await mw.onAfterTurn?.(ctx);
+    await new Promise((r) => setImmediate(r));
+    expect(statuses.map((s) => s.kind)).toEqual(["processing", "idle"]);
+    for (const s of statuses) expect(s.turnIndex).toBe(0);
+  });
+
+  test("fast turn: processing skipped, only idle emitted", async () => {
+    let cleared = 0;
+    const scheduler = {
+      setTimeout: (_h: () => void, _ms: number) => 1,
+      clearTimeout: (_id: unknown) => {
+        cleared += 1;
+      },
+    };
+    const statuses: ChannelStatus[] = [];
+    const mw = createTurnAckMiddleware({ scheduler });
+    const ctx = makeTurnAckCtx(async (s) => {
+      statuses.push(s);
+    });
+
+    await mw.onBeforeTurn?.(ctx);
+    await mw.onAfterTurn?.(ctx);
+    await new Promise((r) => setImmediate(r));
+
+    expect(cleared).toBeGreaterThanOrEqual(1);
+    expect(statuses.map((s) => s.kind)).toEqual(["idle"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-prompt-cache (3 standalone queries, no LLM)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-prompt-cache", () => {
+  function makeReorderCtx(): TurnContext {
+    return {
+      session: {
+        agentId: "pc-golden",
+        sessionId: sessionId("pc-g"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      },
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+  }
+
+  function makeMsg(senderId: string, text: string): InboundMessage {
+    return { senderId, timestamp: 0, content: [{ kind: "text", text }] };
+  }
+
+  test("attaches CacheHints when static prefix exceeds threshold", async () => {
+    const mw = createPromptCacheMiddleware();
+    let captured: ModelRequest | undefined;
+    const next: ModelHandler = async (req) => {
+      captured = req;
+      return { content: "ok", model: req.model ?? "x" };
+    };
+
+    await mw.wrapModelCall?.(
+      makeReorderCtx(),
+      {
+        model: "claude-sonnet-4-5",
+        messages: [makeMsg("user:1", "u"), makeMsg("system", "x".repeat(5000))],
+      },
+      next,
+    );
+
+    expect(captured?.messages[0]?.senderId).toBe("system");
+    const hints = readCacheHints(captured?.metadata);
+    expect(hints?.provider).toBe("anthropic");
+    expect(hints?.lastStableIndex).toBe(0);
+    expect(hints?.staticPrefixTokens).toBeGreaterThanOrEqual(1024);
+    expect(captured?.metadata?.[CACHE_HINTS_KEY]).toBeDefined();
+  });
+
+  test("static prefix below threshold: passes request through unchanged", async () => {
+    const mw = createPromptCacheMiddleware();
+    const original: ModelRequest = {
+      model: "claude-sonnet-4-5",
+      messages: [makeMsg("system", "tiny"), makeMsg("user:1", "u")],
+    };
+    let captured: ModelRequest | undefined;
+    const next: ModelHandler = async (req) => {
+      captured = req;
+      return { content: "ok", model: req.model ?? "x" };
+    };
+
+    await mw.wrapModelCall?.(makeReorderCtx(), original, next);
+    expect(captured).toBe(original);
+  });
+
+  test("known provider not in allow-list: skips reorder + hints", async () => {
+    const mw = createPromptCacheMiddleware({ providers: ["anthropic"] });
+    const original: ModelRequest = {
+      model: "gpt-4o",
+      messages: [makeMsg("user:1", "u"), makeMsg("system", "x".repeat(5000))],
+    };
+    let captured: ModelRequest | undefined;
+    const next: ModelHandler = async (req) => {
+      captured = req;
+      return { content: "ok", model: req.model ?? "x" };
+    };
+
+    await mw.wrapModelCall?.(makeReorderCtx(), original, next);
+    expect(captured).toBe(original);
+    expect(readCacheHints(captured?.metadata)).toBeUndefined();
   });
 });
