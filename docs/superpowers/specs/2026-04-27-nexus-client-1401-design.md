@@ -449,14 +449,16 @@ The Nexus audit sink is wired into TWO middleware paths in `runtime-factory.ts`:
 1. **Audit middleware sink** (`createAuditMiddleware({ sink: nexusSink })`) — failures here flow through `nexus-sink`'s `onError` config and (when opted in) the shared `auditPoisonError` accumulator described above.
 2. **Compliance recorder** (`createAuditSinkComplianceRecorder(nexusSink, { sessionId, onError })`) at `runtime-factory.ts:3058-3059` — this is a SEPARATE write path with its own failure policy. NDJSON and SQLite compliance recorders use `onError: process.exit(1)` today (synchronous termination — local writes are filesystem-bound, fail-stop is acceptable).
 
-**Important divergence from NDJSON/SQLite:** Nexus is a REMOTE dependency. A transient Nexus write failure delivered asynchronously through `sink.log(...).catch(onError)` would, under a naïve `process.exit(1)` mirror, abruptly terminate the CLI mid-session AFTER user-visible work has already executed and WITHOUT cleanup of channels, MCP servers, in-flight tool calls, or pending audit flushes for the local sinks. That is worse than fail-stop — it is uncontrolled abort. So the Nexus compliance-recorder failure policy is **coordinated runtime shutdown**, not direct `process.exit(1)`. The current Nexus compliance recorder is wired with NO `onError` callback, defaulting to silent (the bug this PR fixes).
+**Important divergence from NDJSON/SQLite:** Nexus is a REMOTE dependency. A transient Nexus write failure delivered asynchronously through `sink.log(...).catch(onError)` would, under a naïve `process.exit(1)` mirror, abruptly terminate the CLI mid-session AFTER user-visible work has already executed and WITHOUT cleanup of channels, MCP servers, in-flight tool calls, or pending audit flushes for the local sinks. That is worse than fail-stop — it is uncontrolled abort. The current Nexus compliance recorder is wired with NO `onError` callback, defaulting to silent (the bug this PR fixes).
 
-This PR brings Nexus compliance-recorder failure handling to **fail-stop semantics** — but only when the operator opts in. Three modes:
+**Scoping decision (Loop 4 R3):** the runtime today exposes only `shutdownBackgroundTasks()` (synchronous, fire-and-forget); there is no coordinated `requestShutdown` capability that could stop admissions, flush local sinks, close transports, and exit cleanly. Designing one is a separate prerequisite. Rather than specify a mitigation that the implementation cannot honor, this PR scopes Nexus compliance-recorder failure handling to **per-sink poison latch + admission gate**. No direct `process.exit(1)` is wired for Nexus. A coordinated-shutdown follow-up issue is tracked under "Out of scope" below.
+
+This PR brings Nexus compliance-recorder failure handling to fail-stop-at-admission-boundary semantics — but only when the operator opts in. Three modes:
 
 | `nexusAuditPoisonOnError` | Audit middleware sink | Compliance recorder |
 |---|---|---|
 | `false` (default) | best-effort log | best-effort log (NEW: was silent) |
-| `true` | per-sink poison latch + admission deny (joins NDJSON/SQLite per-sink fail-stop) | latch `nexusPoison` + signal coordinated shutdown via the runtime's `requestShutdown(reason)` handle (NOT `process.exit(1)`) |
+| `true` | per-sink poison latch + admission deny (joins NDJSON/SQLite per-sink fail-stop) | latch `nexusPoison` + admission gate refuses new work at next boundary (NO `process.exit(1)`, NO synthetic shutdown signal) |
 
 Concretely in `runtime-factory.ts`:
 
@@ -467,27 +469,22 @@ complianceRecorders.push(
     onError: config.nexusAuditPoisonOnError === true
       ? (error) => {
           // Latch first — admission gate stops accepting new work at the
-          // next boundary while the coordinated shutdown unwinds.
+          // next boundary. No process.exit() and no fictitious shutdown
+          // primitive: the runtime simply stops admitting and the in-flight
+          // session unwinds normally on its next iteration. The poisoned-
+          // sink wrapper (above) also rejects further sink.log() calls so
+          // post-poison compliance writes surface as observable failures.
           if (nexusPoison.err === undefined) nexusPoison.err = error;
-          logger.error({ err: error }, "nexus compliance sink write failed — requesting shutdown");
-          // requestShutdown is the runtime's coordinated-shutdown capability
-          // already used by Ctrl-C / SIGTERM handlers. It:
-          //   1. signals admission gate to refuse new work
-          //   2. flushes local audit sinks (NDJSON/SQLite) to disk
-          //   3. closes channels, MCP servers, transport
-          //   4. exits with code 1 after cleanup
-          // This avoids the async-exit-mid-side-effect problem that direct
-          // process.exit(1) would create on a remote-write failure.
-          requestShutdown({ reason: "nexus-compliance-failure", code: 1, cause: error });
+          logger.error({ err: error }, "nexus compliance sink write failed — admission gate latched");
         }
       : (error) => logger.warn({ err: error }, "nexus compliance sink write failed (best-effort)"),
   }),
 );
 ```
 
-**Why not mirror NDJSON/SQLite's `process.exit(1)` exactly:** local-disk compliance failures are usually system-level (disk full, permissions, FS corruption) — exit-now is appropriate because any further work would also fail to persist locally. Remote Nexus failures are commonly transient (network blip, server 5xx, auth token expiry) and arrive asynchronously after the audited operation has already happened. Hard-killing the CLI in that window strands MCP children, half-streamed tool output, and any unflushed local audit records — making the failure mode strictly worse than the original silent drop. Coordinated shutdown preserves the fail-stop guarantee (no new work admitted after first remote-compliance failure) without the new failure mode of mid-session abrupt termination.
+**Honest containment guarantee (this PR):** in `nexusAuditPoisonOnError: true` mode, after the first compliance failure: (a) the poisoned-sink wrapper rejects every subsequent `sink.log()` with `code: "AUDIT_SINK_POISONED"` so post-poison compliance writes are not silently dropped, AND (b) the audit-middleware admission gate denies new work at the next boundary. No new tool calls or model calls execute under a known-bad audit path. The current session's already-admitted work continues to natural completion; cleanup runs normally on session end. No mid-session abort.
 
-**Host-level escape hatch (out of scope this PR):** Hosts that genuinely need synchronous termination on Nexus compliance failure (e.g., regulated-environment CLI wrappers that have their own fast-exit semantics) can wrap `requestShutdown` in their adapter to call `process.exit(1)` immediately after `nexusPoison` is latched. This stays out of the in-tree default.
+**What this PR explicitly does NOT promise:** synchronous termination after first compliance failure. Operators who require a hard exit on remote-compliance failure (e.g., regulated-environment CLI wrappers) need the coordinated-shutdown follow-up — not in scope here. Without it, between the latch firing and end-of-session, work that was already admitted will run to completion. The admission gate and the poisoned-sink wrapper are the only fail-stop primitives this PR ships.
 
 **Sink-side change (always applies):**
 
@@ -686,19 +683,9 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // explicitly opted out of both Nexus consumers. Either way, no Nexus
   // startup work runs below.
   //
-  // CONFIG-VALIDATION-ONLY peek at the raw kind: the boot-mode preflight
-  // for local-bridge + assert-* must fire even on the explicit-opt-out
-  // path. Without this, an operator who passes a real local-bridge
-  // transport with both consumers disabled AND nexusBootMode=assert-*
-  // would silently boot — the assert-* mode is unsupported on local-bridge
-  // regardless of consumer wiring, so silently accepting it is a false
-  // fail-fast signal. We read the raw kind here without going through
-  // assertProductionTransport (no throw on missing kind — that case is
-  // already covered by the consumer-wired branch above; the bypass we're
-  // closing requires a real local-bridge factory output, which by
-  // definition has kind set).
-  const rawKindForBootValidation: NexusTransportKind | undefined =
-    config.nexusTransport?.kind;
+  // (No raw-kind peek needed — the assert-* preflight below uses
+  // assertProductionTransport for positive identification, which subsumes
+  // both the local-bridge reject and the missing-kind reject.)
   if (txKind === "local-bridge") {
     const missing: string[] = [];
     if (config.nexusPermissionsEnabled === undefined) missing.push("nexusPermissionsEnabled");
@@ -761,21 +748,34 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // with no probe — exactly the misconfiguration this gate exists to catch.
   const declaredBootMode: NexusBootMode =
     config.nexusBootMode ?? "telemetry";
-  // Use the RAW transport kind (not the consumer-resolved txKind) so this
-  // preflight fires even when the operator opted out of both consumers.
-  // Otherwise local-bridge + nexusPermissionsEnabled=false +
-  // nexusAuditEnabled=false + nexusBootMode=assert-* would silently boot.
-  if (rawKindForBootValidation === "local-bridge" && declaredBootMode !== "telemetry") {
-    throw new Error(
-      `nexusBootMode=${declaredBootMode} is not supported for local-bridge transports ` +
-      `(applies regardless of consumer-wiring opt-out — assert-* is unsupported on ` +
-      `local-bridge in any configuration). ` +
-      `Use HTTP transport or nexusBootMode="telemetry". ` +
-      `(Local-bridge cannot be probed without risking session wedge on auth challenges; ` +
-      `probing a disposable subprocess would not validate the live session, so the ` +
-      `fail-closed-* guarantee would be misleading.)`,
-    );
+  // POSITIVE-IDENTIFICATION GATE for assert-* boot modes.
+  // assert-* is HTTP-only. Validating the rejection by `kind === "local-bridge"`
+  // alone would let two unsafe configurations slip through:
+  //   (a) legacy local-bridge adapter without `kind` set + explicit fs-only
+  //       opt-out (both flags false): kind peek returns undefined, so the
+  //       local-bridge-specific reject doesn't fire.
+  //   (b) any structurally-shaped transport that lacks `kind`: same.
+  // Both end up booting with no probe under a mode the operator believed
+  // would fail-fast. Flip the gate to require POSITIVE identification of
+  // HTTP — anything else throws.
+  if (config.nexusTransport !== undefined && declaredBootMode !== "telemetry") {
+    // assertProductionTransport throws on missing kind (and that error message
+    // already names the named factories + opt-out). When kind IS set but is
+    // local-bridge, throw the local-bridge-specific message instead.
+    const positiveKind = assertProductionTransport(config.nexusTransport).kind;
+    if (positiveKind !== "http") {
+      throw new Error(
+        `nexusBootMode=${declaredBootMode} requires a positively-identified HTTP transport ` +
+        `(got kind=${JSON.stringify(positiveKind)}). assert-* is unsupported on ` +
+        `local-bridge in any configuration — local-bridge cannot be probed without ` +
+        `risking session wedge on auth challenges, and probing a disposable ` +
+        `subprocess would not validate the live session, so the fail-closed-* ` +
+        `guarantee would be misleading. Use HTTP transport or nexusBootMode="telemetry".`,
+      );
+    }
   }
+  // (rawKindForBootValidation is no longer needed — the positive-identification
+  // gate above subsumes the raw-kind peek and closes the missing-kind bypass.)
 
   // Probe + Nexus consumer wiring is GATED on resolved consumer flags.
   // A filesystem-only Nexus transport (both consumers explicitly false, OR
@@ -1116,11 +1116,11 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 | `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; long-lived session transport does NOT receive nonInteractive flag from runtime probe path; existing call/subscribe behavior unchanged | +80 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior. (Round 10 trim: `deferInitialSync` and `triggerImmediateSync` REMOVED — both existed solely to soften local-bridge auth-wedge, which is now categorically rejected upstream.) | +20 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.test.ts` | New tests: false before any sync; false when first sync fails (404/parse/rebuild mismatch — no last-known-good); true after first successful sync; stays true when subsequent sync fails (last-known-good preserved); stays true when subsequent sync produces incompatible policy (skipped, last-known-good preserved) | +60 |
-| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as base `NexusTransport` (long-lived session has no health); add `nexusBootMode`, `nexusPolicyPath`, `nexusAuditPoisonOnError`, `nexusPermissionsEnabled`, `nexusAuditEnabled`, `nexusAuditMode`, `nexusSyncIntervalMs` config fields (Loop 3 Round 1: `nexusProbeFactory` REMOVED — was dead in runtime; standalone probe is caller-site only); **Phase 1 deprecation:** HTTP transport with unset `nexusPermissionsEnabled`/`nexusAuditEnabled` infers TRUE + warns (Phase 2 throws). Local-bridge with unset flags THROWS unconditionally (no inference) — fs-only sessions must use the tui-command.ts decoupling and not pass `nexusTransport` into the runtime. Local-bridge + explicit `nexusPermissionsEnabled=true` THROWS (security gate, both phases). **Probe + consumer wiring gated on resolved flags:** if both effective consumer flags are false, the entire Nexus startup block is SKIPPED — explicit fs-only HTTP configurations also unaffected. runtime probes HTTP transports only (in-place); local-bridge probing is caller-site responsibility via the exported `createLocalBridgeProbeTransport` and is never invoked from the runtime; preflight: throw on local-bridge + fail-closed-* (unsupported); thread `nexusPolicyPath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws on probe failure; in `assert-remote-policy-loaded-at-boot`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **preserve per-sink poison latches (NDJSON, SQLite, Nexus each independent) AND existing per-sink fail-stop admission semantics** — pre-PR NDJSON/SQLite required-sink behavior is unchanged; Nexus joins on the same terms when `nexusAuditPoisonOnError === true`. NO quorum gate. Optional sinks (default) log only; **add early-throw validation** when `local-bridge + telemetry + nexusSyncIntervalMs===0` (deferred sync would never fire, deadlocking `ready`); route Nexus sink errors into it ONLY when `nexusAuditPoisonOnError === true` (default best-effort); existing middleware admission guards now cover Nexus too via per-sink poison latch; **wire Nexus compliance-recorder `onError` to latch `nexusPoison` + call `requestShutdown({reason:"nexus-compliance-failure", code:1, cause})` in opt-in mode (coordinated shutdown — NOT direct `process.exit(1)`; differs from NDJSON/SQLite because Nexus is a remote dependency and async hard-exit would strand mid-session work); best-effort logging in default mode (was silent — bug fix)** | +145 |
+| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as base `NexusTransport` (long-lived session has no health); add `nexusBootMode`, `nexusPolicyPath`, `nexusAuditPoisonOnError`, `nexusPermissionsEnabled`, `nexusAuditEnabled`, `nexusAuditMode`, `nexusSyncIntervalMs` config fields (Loop 3 Round 1: `nexusProbeFactory` REMOVED — was dead in runtime; standalone probe is caller-site only); **Phase 1 deprecation:** HTTP transport with unset `nexusPermissionsEnabled`/`nexusAuditEnabled` infers TRUE + warns (Phase 2 throws). Local-bridge with unset flags THROWS unconditionally (no inference) — fs-only sessions must use the tui-command.ts decoupling and not pass `nexusTransport` into the runtime. Local-bridge + explicit `nexusPermissionsEnabled=true` THROWS (security gate, both phases). **Probe + consumer wiring gated on resolved flags:** if both effective consumer flags are false, the entire Nexus startup block is SKIPPED — explicit fs-only HTTP configurations also unaffected. runtime probes HTTP transports only (in-place); local-bridge probing is caller-site responsibility via the exported `createLocalBridgeProbeTransport` and is never invoked from the runtime; preflight: throw on local-bridge + fail-closed-* (unsupported); thread `nexusPolicyPath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws on probe failure; in `assert-remote-policy-loaded-at-boot`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **preserve per-sink poison latches (NDJSON, SQLite, Nexus each independent) AND existing per-sink fail-stop admission semantics** — pre-PR NDJSON/SQLite required-sink behavior is unchanged; Nexus joins on the same terms when `nexusAuditPoisonOnError === true`. NO quorum gate. Optional sinks (default) log only; **add early-throw validation** when `local-bridge + telemetry + nexusSyncIntervalMs===0` (deferred sync would never fire, deadlocking `ready`); route Nexus sink errors into it ONLY when `nexusAuditPoisonOnError === true` (default best-effort); existing middleware admission guards now cover Nexus too via per-sink poison latch; **wire Nexus compliance-recorder `onError` to latch `nexusPoison` in opt-in mode (admission gate then refuses new work at next boundary; poisoned-sink wrapper rejects post-poison log() calls). NO `process.exit(1)` — Nexus is a remote dependency and the runtime exposes no coordinated shutdown primitive today, so synchronous hard-exit on async remote failure is explicitly out-of-scope. Best-effort logging in default mode (was silent — bug fix). Coordinated-shutdown follow-up tracked under "Out of scope".** | +145 |
 | `packages/security/audit-sink-nexus/src/config.ts` | **Add `onError?: (err: unknown) => void` to `NexusAuditSinkConfig`** — the field doesn't exist today; wrapper depends on it | +8 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.ts` | Remove silent `.catch(() => {})` on `startFlush()`; invoke `config.onError?.(err)` on flush failure (interval-triggered AND size-triggered AND explicit-flush-triggered paths must all route through `onError`) | +12 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.test.ts` | New: interval-triggered flush failure invokes `onError`; size-triggered flush failure invokes `onError`; explicit `flush()` failure invokes `onError`; `onError` undefined doesn't crash (regression guard against silent swallowing) | +60 |
-| `packages/meta/cli/src/__tests__/runtime-factory-nexus-audit-poison.test.ts` | New tests: default (`nexusAuditPoisonOnError` unset) — Nexus middleware errors stay out of per-sink poison latch; admission boundaries do NOT block; best-effort preserved. Opt-in (`true`) — Nexus middleware error latches shared `auditPoisonError`; admission boundaries refuse work. **Compliance-recorder coverage (both modes):** default — failure logs warning (was silent regression); opt-in — failure latches `nexusPoison` AND invokes the `requestShutdown` capability with `{reason: "nexus-compliance-failure", code: 1}` (mocked in test); admission gate refuses new work at next boundary; local sinks flush before exit. Verifies the coordinated-shutdown path (NOT direct `process.exit(1)`) so async remote-write failures cannot strand MCP children / channels / unflushed local audit records mid-session | +200 |
+| `packages/meta/cli/src/__tests__/runtime-factory-nexus-audit-poison.test.ts` | New tests: default (`nexusAuditPoisonOnError` unset) — Nexus middleware errors stay out of per-sink poison latch; admission boundaries do NOT block; best-effort preserved. Opt-in (`true`) — Nexus middleware error latches shared `auditPoisonError`; admission boundaries refuse work. **Compliance-recorder coverage (both modes):** default — failure logs warning (was silent regression); opt-in — failure latches `nexusPoison`; admission gate refuses new work at next boundary; poisoned-sink wrapper rejects subsequent log() calls. Test asserts that NO `process.exit` occurs (regression guard against accidentally re-introducing a hard-exit path now that the spec scopes it out) | +200 |
 | `packages/meta/cli/src/__tests__/runtime-factory-health.test.ts` | New tests covering all three modes + activation race coverage (see Tests section) | +200 |
 | `packages/meta/cli/src/tui-command.ts` | Drop the `as unknown as NexusTransport` cast at line 1704 — fs-nexus local-bridge transport now structurally satisfies base `NexusTransport` directly (after fs-nexus adds `kind: "local-bridge"` discriminator). **Architectural decoupling (this PR):** when neither `nexusPermissionsEnabled` nor `nexusAuditEnabled` resolves to true, do NOT pass `nexusTransport` into `createKoiRuntime` at all — fs-only sessions use the local-bridge transport directly through the fs-nexus path and bypass the Nexus consumer block entirely. This eliminates the contradictory upgrade tradeoff (warn-and-infer-false vs hard-throw on no-flags): callers reaching the Nexus block always intentionally enabled at least one consumer. When constructed, the probe factory captures its own copy of the spawn config. | +20 |
 | `docs/L2/nexus-client.md` | Document readiness probe semantics; `HealthCapableNexusTransport` contract; WS/gRPC/pool out-of-scope rationale | +60 |
@@ -1172,6 +1172,9 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7h_unc3. `local-bridge + EXPLICIT nexusPermissionsEnabled=false + EXPLICIT nexusAuditEnabled=false + assert-transport-reachable-at-boot: STILL throws (regression guard for the Loop-4-R2 bypass — opt-out must not skip the assert-* preflight when the raw transport kind is local-bridge)`
 7h_unc4. `local-bridge + same opt-out + assert-remote-policy-loaded-at-boot: STILL throws (same root cause as 7h_unc3)`
 7h_unc5. `local-bridge + same opt-out + nexusBootMode="telemetry" (or unset): BOOTS without Nexus block (opt-out path is honored only when the boot mode is compatible with local-bridge)`
+7h_unc6. `MISSING KIND structural adapter + EXPLICIT nexusPermissionsEnabled=false + EXPLICIT nexusAuditEnabled=false + nexusBootMode=assert-transport-reachable-at-boot: THROWS via positive-identification gate (regression guard for Loop-4-R3 — fs-only opt-out cannot also bypass assert-* validation by stripping the kind discriminator)`
+7h_unc7. `MISSING KIND adapter + same opt-out + nexusBootMode="telemetry": BOOTS without Nexus block (assert-* gate fires only on assert-* modes; telemetry opt-out for legacy adapters is preserved)`
+7h_unc8. `assert-* preflight throw message names "positively-identified HTTP transport" so operators understand the gate fires on missing-kind + local-bridge + any other non-HTTP shape uniformly`
 7g2. (REMOVED Loop 3 — nexusProbeFactory removed from runtime config; no runtime test applies)
 7g2b. (REMOVED — same)
 7g3. (REMOVED — runtime no longer consumes nexusProbeFactory)
@@ -1370,6 +1373,7 @@ Decision (locked): option (A). External callers see a hard, actionable error ins
 - Central typed method wrappers (`batchRead`, paths, delegation API from v1) — port these per-consumer in their own packages if/when needed
 - **Audit/fs/trajectory write probes** in `health()` — would be side-effecting; data-plane failures surface on first real call (documented contract)
 - **Server-side dedicated `health` RPC** — Nexus server change; future work
+- **Coordinated runtime shutdown API (`requestShutdown`)** — currently the runtime exposes only `shutdownBackgroundTasks()` (synchronous, fire-and-forget). A first-class coordinated-shutdown primitive that stops admission, flushes local audit sinks, closes channels/MCP servers/transports, and exits cleanly is required to honor a synchronous hard-exit guarantee for Nexus compliance failures. Tracked separately; until it lands, this PR's `nexusAuditPoisonOnError: true` mode terminates new admission via the latch and rejects post-poison sink writes via the wrapper, but does NOT abort the in-flight session.
 
 ## Acceptance
 
