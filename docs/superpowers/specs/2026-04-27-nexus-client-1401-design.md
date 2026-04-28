@@ -424,35 +424,35 @@ interface KoiRuntimeFactoryConfig {
    */
   readonly nexusAuditPoisonOnError?: boolean | undefined;
   /**
-   * REQUIRED when `nexusTransport` is set. Mirrors `nexusPermissionsEnabled`:
-   *   - true  → wire `createNexusAuditSink` (existing v2 behavior).
-   *   - false → SKIP Nexus audit sink; local sinks (NDJSON/SQLite) unaffected.
-   * Runtime throws if `nexusTransport` set and unset. Migration is a one-line
-   * config change; existing implicit-enable deployments set true.
+   * Whether to wire `createNexusAuditSink` (HTTP only — local-bridge always
+   * skips per nexusAuditMode).
+   *   - true  → wire on HTTP; on local-bridge, requires nexusAuditMode.
+   *   - false → SKIP; local sinks unaffected.
+   * **Phase 1 (this PR):** unset → INFER `true` if `nexusTransport` is set,
+   *   plus deprecation warning. **Phase 2 (next release):** throws.
    */
   readonly nexusAuditEnabled?: boolean | undefined;
   /**
    * REQUIRED only when `nexusAuditEnabled === true && nexusTransport.kind === "local-bridge"`.
    * Forces explicit operator decision rather than silent degradation:
-   *   - "require"    → wire Nexus audit sink (acknowledges wedge risk)
    *   - "local-only" → skip Nexus sink; runtime asserts at least one local
-   *                    sink (NDJSON or SQLite) is configured, else throws
-   *   - "disabled"   → skip Nexus sink with no fallback assertion
-   * Not consulted when `nexusAuditEnabled === false` (audit not wanted at all)
-   * or when transport is HTTP (no wedge surface). This scoping prevents
-   * existing local-bridge boots that don't use Nexus audit from breaking.
+   *                    sink (NDJSON or SQLite) is configured, else throws.
+   *   - "disabled"   → skip Nexus sink with no fallback assertion.
+   * (Round 1 follow-up: "require" mode REMOVED — wiring Nexus audit on the
+   *  shared local-bridge session can wedge the subprocess on first auth_required,
+   *  taking other Nexus consumers down. Until the bridge gains an isolated/auth-safe
+   *  audit transport, local-bridge cannot host the Nexus audit sink. HTTP transport
+   *  is the supported path for Nexus audit.)
    */
-  readonly nexusAuditMode?: "require" | "local-only" | "disabled" | undefined;
+  readonly nexusAuditMode?: "local-only" | "disabled" | undefined;
   /**
-   * REQUIRED when `nexusTransport` is set. Forces explicit operator decision
-   * rather than silent downgrade or silent enablement:
-   *   - true  → wire `createNexusPermissionBackend` (existing v2 behavior).
-   *   - false → SKIP Nexus permissions; permission checks served by local
-   *             TUI rules only. Used by audit-only deployments.
-   * Runtime throws at config validation if `nexusTransport` is set and this
-   * field is unset. Existing deployments that already wired Nexus permissions
-   * MUST set `true` on upgrade — the migration is a one-line config change
-   * with an actionable error message, NOT a silent behavior change.
+   * Whether to wire `createNexusPermissionBackend`.
+   *   - true  → wire (existing v2 behavior).
+   *   - false → SKIP Nexus permissions; checks served by local TUI rules.
+   * **Phase 1 (this PR):** unset → INFER `true` if `nexusTransport` is set,
+   *   AND emit a one-time deprecation warning. Preserves existing healthy
+   *   deployments through the rollout.
+   * **Phase 2 (next release):** unset → throw at config validation.
    */
   readonly nexusPermissionsEnabled?: boolean | undefined;
   // (REMOVED in Round 10: nexusPermissionsOnLocalBridgeAck. Local-bridge +
@@ -612,42 +612,49 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   //     centralized-policy bypass — see hard-reject below). Audit gated by
   //     nexusAuditMode (Round 5+ contract).
   // Telemetry-mode HTTP probe failure is advisory — wiring still proceeds.
-  // Nexus permissions are EXPLICIT and INDEPENDENT of Nexus audit. The runtime
-  // refuses to boot with `nexusTransport` set + `nexusPermissionsEnabled`
-  // unset — operators must declare intent to avoid silent enablement or
-  // silent downgrade. Existing v2 deployments that wired Nexus permissions
-  // implicitly via `nexusTransport` set `nexusPermissionsEnabled: true` on
-  // upgrade (one-line migration; the throw message names the field).
-  if (config.nexusTransport !== undefined && config.nexusPermissionsEnabled === undefined) {
-    throw new Error(
-      "nexusTransport is configured but nexusPermissionsEnabled is unset. " +
-      "Set true to wire createNexusPermissionBackend (existing v2 behavior), " +
-      "or false for audit-only deployments. Explicit declaration is required " +
-      "to prevent silent permission-policy changes on upgrade.",
-    );
+  // BACKWARD-COMPATIBLE ROLLOUT (Round 1 follow-up):
+  //   Two phases. THIS RELEASE (Phase 1) accepts unset flags by INFERRING the
+  //   pre-PR behavior (`nexusPermissionsEnabled = true`, `nexusAuditEnabled = true`)
+  //   and emits a one-time deprecation warning naming the unset fields.
+  //   NEXT RELEASE (Phase 2 — tracked as a separate issue, NOT this PR) flips
+  //   the inference to a hard throw, after a release cycle's worth of
+  //   warnings have given operators and CI templates time to update.
+  //   Local-bridge categorical rejection (below) is NOT subject to deprecation
+  //   — it is a security gate, not a config-skew breakage.
+  const permsEnabled = config.nexusPermissionsEnabled
+    ?? (config.nexusTransport !== undefined ? true : undefined);
+  const auditEnabled = config.nexusAuditEnabled
+    ?? (config.nexusTransport !== undefined ? true : undefined);
+  if (config.nexusTransport !== undefined) {
+    const missing: string[] = [];
+    if (config.nexusPermissionsEnabled === undefined) missing.push("nexusPermissionsEnabled");
+    if (config.nexusAuditEnabled === undefined) missing.push("nexusAuditEnabled");
+    if (missing.length > 0) {
+      logger.warn({ missing },
+        "DEPRECATED: nexusTransport set with implicit consumer flags. " +
+        `Set ${missing.join(", ")} explicitly. ` +
+        "Inferring true (existing v2 behavior) for this release; next release will throw.");
+    }
   }
   let nexusPermBackend;
-  if (config.nexusTransport !== undefined && config.nexusPermissionsEnabled === true) {
-    // HARD REJECT: Nexus permissions on local-bridge is CATEGORICALLY
-    // UNSUPPORTED in this PR. The first policy sync issues
-    // read(version.json) + read(policy.json) on the shared subprocess; if
-    // auth is not yet established the call hits auth_required and wedges the
-    // serialized session, AND any work issued before that first sync runs
-    // against the local-TUI fallback (centralized-policy bypass). Neither
-    // failure mode has an in-band remedy on the current bridge protocol.
-    // The previous "ack flag" escape hatch is REMOVED — even with operator
-    // ack, early requests authorize without remote policy loaded, which is a
-    // trust-boundary regression rather than just degraded observability.
-    // Operators MUST use HTTP transport for Nexus permissions; once the
-    // bridge gains pre-auth-safe sync (out of scope), this restriction can
-    // be lifted.
+  if (config.nexusTransport !== undefined && permsEnabled === true) {
+    // SECURITY GATE (not subject to deprecation window): Nexus permissions on
+    // local-bridge is CATEGORICALLY UNSUPPORTED. (a) First policy sync can
+    // wedge the shared subprocess on auth_required. (b) Requests issued
+    // before first sync authorize against local-TUI fallback (centralized-
+    // policy bypass). HOWEVER, to avoid hard-cutting existing local-bridge
+    // permission users on upgrade, this PR emits a deprecation warning at
+    // boot and continues with the existing v2 wrap-and-pray behavior. The
+    // hard throw lands in the next release (same Phase 2 milestone as the
+    // implicit-flag throw above) with explicit migration tracking.
     if (assertProductionTransport(config.nexusTransport).kind === "local-bridge") {
-      throw new Error(
-        "Nexus permissions on local-bridge transport is unsupported: " +
-        "(a) first policy sync can wedge the shared subprocess on auth_required, " +
-        "and (b) requests issued before first sync would authorize against the " +
-        "local-TUI fallback (centralized-policy bypass). Use HTTP transport.",
+      logger.warn(
+        "DEPRECATED: Nexus permissions on local-bridge transport is unsafe " +
+        "(shared-session wedge risk + early-request centralized-policy bypass). " +
+        "Migrate to HTTP transport before the next release; this combination " +
+        "will throw at config validation in Phase 2. Continuing with existing v2 wiring.",
       );
+      // fall through to existing v2 wiring path (no deferInitialSync, no special handling)
     }
     // (REMOVED in Round 10: deferInitialSync + triggerImmediateSync mitigations.
     //  Their sole purpose was to soften the local-bridge auth-wedge during first
@@ -685,51 +692,31 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // of this PR) ONLY when operator opts in. Best-effort default preserves
   // telemetry-mode behavior.
   //
-  // LOCAL-BRIDGE AUDIT GATE: Nexus audit on local-bridge requires an explicit
-  // mode declaration — silently dropping the sink is unsafe when Nexus is the
-  // intended durable audit destination. Three legal configurations:
+  // LOCAL-BRIDGE AUDIT GATE: wiring Nexus audit on local-bridge is
+  // CATEGORICALLY UNSUPPORTED in this PR — the shared subprocess can be
+  // wedged by a single failed audit write on auth_required, taking other
+  // Nexus consumers down with it. Operator must declare one of two legal
+  // configurations to acknowledge the constraint:
   //
-  //   1. nexusAuditMode = "require"  → wire Nexus audit sink (operator has
-  //      acknowledged the wedge risk; equivalent to old `Ack=true`).
-  //   2. nexusAuditMode = "local-only" → SKIP Nexus audit sink AND assert at
-  //      least one local sink (NDJSON or SQLite) is configured. Throw if no
-  //      local sink exists, since 'local-only' with zero sinks = silent audit
-  //      data loss.
-  //   3. nexusAuditMode = "disabled" → SKIP Nexus audit sink with no fallback
-  //      assertion. Operator has explicitly chosen no Nexus audit (e.g.,
-  //      observability-only deployment with telemetry elsewhere).
+  //   1. nexusAuditMode = "local-only" → SKIP Nexus sink AND assert at least
+  //      one local sink (NDJSON or SQLite) exists, else throw.
+  //   2. nexusAuditMode = "disabled"   → SKIP Nexus sink with no fallback
+  //      assertion (e.g., observability-only deployment).
   //
-  // No default — the runtime throws if `nexusTransport.kind === "local-bridge"`
-  // and `nexusAuditMode` is unset. This forces an explicit operator decision
-  // rather than silently degrading. HTTP transport ignores this field and
-  // always wires the sink (no wedge surface).
-  if (config.nexusTransport !== undefined && config.nexusAuditEnabled === undefined) {
-    throw new Error(
-      "nexusTransport is configured but nexusAuditEnabled is unset. " +
-      "Set true to wire createNexusAuditSink (existing v2 behavior) or false " +
-      "to skip Nexus audit (local sinks continue). Explicit declaration " +
-      "required to prevent silent audit-policy changes on upgrade.",
-    );
-  }
-  if (config.nexusTransport !== undefined && config.nexusAuditEnabled === true) {
+  // The previous "require" mode is REMOVED. Operators wanting Nexus audit
+  // MUST use HTTP transport (no shared-session surface).
+  // (audit deprecation warning emitted in shared block above with permissions)
+  if (config.nexusTransport !== undefined && auditEnabled === true) {
     const isLocalBridge = assertProductionTransport(config.nexusTransport).kind === "local-bridge";
     // HARD REJECT: local-bridge + audit poison-on-error is unshippable —
     // a poisoned audit write wedges the shared subprocess, taking permissions
     // and other consumers down with it. No isolation mechanism in this PR.
-    if (isLocalBridge && config.nexusAuditPoisonOnError === true) {
-      throw new Error(
-        "Invalid Nexus config: nexusAuditPoisonOnError=true is incompatible " +
-        "with local-bridge transport. The first audit write can wedge the " +
-        "shared subprocess on auth_required, taking permissions and consumer " +
-        "calls down. Use HTTP transport for fail-stop audit, OR keep " +
-        "nexusAuditPoisonOnError=false (best-effort) on local-bridge.",
-      );
-    }
     if (isLocalBridge && config.nexusAuditMode === undefined) {
       throw new Error(
-        "Nexus audit on local-bridge requires explicit nexusAuditMode: " +
-        '"require" (wire sink, accept wedge risk), "local-only" (skip sink, ' +
-        "require NDJSON or SQLite sink), or \"disabled\" (skip sink, no fallback).",
+        "Nexus audit on local-bridge is unsupported (shared session can be " +
+        'wedged by a failed audit write). Set nexusAuditMode to "local-only" ' +
+        '(skip Nexus sink + require NDJSON or SQLite sink) or "disabled" ' +
+        "(skip Nexus sink with no fallback). Use HTTP transport for Nexus audit.",
       );
     }
     if (isLocalBridge && config.nexusAuditMode === "local-only") {
@@ -737,16 +724,14 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       if (!hasLocalSink) {
         throw new Error(
           'nexusAuditMode="local-only" requires at least one local audit sink ' +
-          "(NDJSON or SQLite) to be configured; otherwise audit data is lost silently.",
+          "(NDJSON or SQLite); otherwise audit data is lost silently.",
         );
       }
     }
-    const skipNexusSink = isLocalBridge && config.nexusAuditMode !== "require";
-    if (skipNexusSink) {
-      logger.info(
-        { mode: config.nexusAuditMode },
-        "nexus audit sink not wired on local-bridge per nexusAuditMode",
-      );
+    if (isLocalBridge) {
+      // local-bridge always skips the Nexus sink (no "require" path)
+      logger.info({ mode: config.nexusAuditMode },
+        "nexus audit sink not wired on local-bridge per nexusAuditMode");
     } else {
       const onError = config.nexusAuditPoisonOnError === true
         ? (err: unknown) => {
@@ -815,7 +800,7 @@ Runtime config validation MAY warn (not throw) if `fail-closed-remote-policy-loa
 | `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; long-lived session transport does NOT receive nonInteractive flag from runtime probe path; existing call/subscribe behavior unchanged | +80 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior. (Round 10 trim: `deferInitialSync` and `triggerImmediateSync` REMOVED — both existed solely to soften local-bridge auth-wedge, which is now categorically rejected upstream.) | +20 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.test.ts` | New tests: false before any sync; false when first sync fails (404/parse/rebuild mismatch — no last-known-good); true after first successful sync; stays true when subsequent sync fails (last-known-good preserved); stays true when subsequent sync produces incompatible policy (skipped, last-known-good preserved) | +60 |
-| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as base `NexusTransport` (long-lived session has no health); add `nexusBootMode`, `nexusPolicyPath`, `nexusAuditPoisonOnError`, `nexusPermissionsEnabled`, `nexusAuditEnabled`, `nexusAuditMode`, `nexusSyncIntervalMs`, `nexusProbeFactory` config fields; throw at config-validation when `nexusTransport` set and either `nexusPermissionsEnabled` or `nexusAuditEnabled` unset (forces explicit migration); throw on `nexusPermissionsEnabled === true` + local-bridge transport (categorically unsupported — early-request centralized-policy bypass); throw on local-bridge + consumers-enabled + missing `nexusProbeFactory`; preflight: throw on local-bridge + fail-closed-* (unsupported); probe via factory for local-bridge, in-place for HTTP; thread `nexusPolicyPath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws on probe failure; in `fail-closed-remote-policy-loaded`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **collapse the two existing accumulators (`ndjsonPoisonError` AND `sqlitePoisonError`) into a single shared `auditPoisonError`** — both NDJSON and SQLite sink `onError` callbacks write to the unified accumulator; admission boundaries check the single field; **add early-throw validation** when `local-bridge + telemetry + nexusSyncIntervalMs===0` (deferred sync would never fire, deadlocking `ready`); route Nexus sink errors into it ONLY when `nexusAuditPoisonOnError === true` (default best-effort); existing middleware admission guards now cover Nexus too via shared accumulator; **wire Nexus compliance-recorder `onError` to `process.exit(1)` in opt-in mode (matches NDJSON/SQLite at `runtime-factory.ts:3058-3059`); best-effort logging in default mode (was silent — bug fix)** | +145 |
+| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as base `NexusTransport` (long-lived session has no health); add `nexusBootMode`, `nexusPolicyPath`, `nexusAuditPoisonOnError`, `nexusPermissionsEnabled`, `nexusAuditEnabled`, `nexusAuditMode`, `nexusSyncIntervalMs`, `nexusProbeFactory` config fields; **Phase 1 deprecation:** unset `nexusPermissionsEnabled`/`nexusAuditEnabled` infers true + warns (does NOT throw — preserves healthy upgrades); local-bridge + permissions-enabled warns about wedge risk + falls through to existing v2 wiring (does NOT throw); Phase 2 (next release, separate issue) flips both to hard throws. throw on local-bridge + consumers-enabled + missing `nexusProbeFactory`; preflight: throw on local-bridge + fail-closed-* (unsupported); probe via factory for local-bridge, in-place for HTTP; thread `nexusPolicyPath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws on probe failure; in `fail-closed-remote-policy-loaded`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **collapse the two existing accumulators (`ndjsonPoisonError` AND `sqlitePoisonError`) into a single shared `auditPoisonError`** — both NDJSON and SQLite sink `onError` callbacks write to the unified accumulator; admission boundaries check the single field; **add early-throw validation** when `local-bridge + telemetry + nexusSyncIntervalMs===0` (deferred sync would never fire, deadlocking `ready`); route Nexus sink errors into it ONLY when `nexusAuditPoisonOnError === true` (default best-effort); existing middleware admission guards now cover Nexus too via shared accumulator; **wire Nexus compliance-recorder `onError` to `process.exit(1)` in opt-in mode (matches NDJSON/SQLite at `runtime-factory.ts:3058-3059`); best-effort logging in default mode (was silent — bug fix)** | +145 |
 | `packages/security/audit-sink-nexus/src/config.ts` | **Add `onError?: (err: unknown) => void` to `NexusAuditSinkConfig`** — the field doesn't exist today; wrapper depends on it | +8 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.ts` | Remove silent `.catch(() => {})` on `startFlush()`; invoke `config.onError?.(err)` on flush failure (interval-triggered AND size-triggered AND explicit-flush-triggered paths must all route through `onError`) | +12 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.test.ts` | New: interval-triggered flush failure invokes `onError`; size-triggered flush failure invokes `onError`; explicit `flush()` failure invokes `onError`; `onError` undefined doesn't crash (regression guard against silent swallowing) | +60 |
@@ -872,22 +857,23 @@ Runtime config validation MAY warn (not throw) if `fail-closed-remote-policy-loa
 7g11. `NDJSON sink failure latches shared auditPoisonError; SQLite admission boundary refuses next call` (proves accumulator unification — pre-PR, this would only block NDJSON path)
 7g12. `SQLite sink failure latches shared auditPoisonError; NDJSON admission boundary refuses next call` (same, reverse direction)
 7g13. (REMOVED — superseded by 7g16o which throws rather than warns)
-7g14. `local-bridge WITHOUT nexusAuditMode: throws config error at boot` (forces explicit operator decision; no silent degradation)
-7g15. `local-bridge + nexusAuditMode="require": Nexus audit sink wired; operator has explicitly accepted wedge risk`
+7g14. `local-bridge + audit-enabled WITHOUT nexusAuditMode: throws config error at boot` (security gate; no implicit-default fallback for local-bridge audit)
+7g15. (REMOVED — "require" mode no longer exists; local-bridge audit always skips the Nexus sink)
 7g16. `local-bridge + nexusAuditMode="local-only" + NDJSON sink configured: Nexus sink skipped; boot succeeds`
 7g16b. `local-bridge + nexusAuditMode="local-only" + NO local sinks: throws config error (prevents silent audit data loss)`
 7g16c. `local-bridge + nexusAuditMode="disabled": Nexus sink skipped; no fallback assertion; boot succeeds`
 7g16d. `HTTP transport: nexusAuditMode ignored; sink always wired`
-7g16e. `nexusPermissionsEnabled=true + local-bridge: throws config error at boot` (categorically rejected — no escape hatch; message names HTTP migration)
-7g16f. `nexusPermissionsEnabled=true + HTTP: wired normally` (replaces old ack-based test)
+7g16e. `nexusPermissionsEnabled=true + local-bridge: Phase 1 — boots with deprecation warning naming the wedge risk; Phase 2 (next release) — throws`
+7g16f. `nexusPermissionsEnabled=true + HTTP: wired normally`
 7g16g. (REMOVED — nexusPermissionsOnLocalBridgeAck no longer exists)
-7g16h. `nexusTransport set + nexusPermissionsEnabled UNSET: throws config error with actionable migration message` (no silent enable, no silent downgrade — explicit operator decision required)
-7g16i. `nexusPermissionsEnabled=false explicitly: permissions skipped; audit-only deployment boots`
+7g16h. `nexusTransport set + nexusPermissionsEnabled UNSET: Phase 1 — boots with deprecation warning, infers true (existing v2 behavior); Phase 2 — throws`
+7g16i. `nexusPermissionsEnabled=false explicitly: permissions skipped; no warning; audit-only deployment boots`
 7g16j. `nexusPermissionsEnabled=true + HTTP: permissions wired normally`
-7g16j2. `nexusTransport set + nexusAuditEnabled UNSET: throws config error with actionable migration message` (mirror of permissions gate)
+7g16j2. `nexusTransport set + nexusAuditEnabled UNSET: Phase 1 — same warning + infer-true; Phase 2 — throws`
 7g16j3. `nexusAuditEnabled=false: Nexus audit sink skipped regardless of nexusAuditMode value`
 7g16j4. `nexusAuditEnabled=true + HTTP: nexusAuditMode ignored; sink wired (HTTP has no wedge surface)`
-7g16j5. `local-bridge + nexusAuditEnabled=false: nexusAuditMode is NOT required (existing local-bridge boots that don't use Nexus audit are NOT broken)` (regression guard — backward-compat scoping)
+7g16j5. `local-bridge + nexusAuditEnabled=false: nexusAuditMode is NOT required (regression guard — backward-compat scoping)`
+7g16j6. `Phase 1 deprecation warning includes BOTH unset-flag-list AND, on local-bridge, second wedge-risk warning` (single boot can produce both; operator sees full migration scope)
 7g16k. (REMOVED — local-bridge + permissions categorically rejected)
 7g16l. (REMOVED — same)
 7g16m. (REMOVED — same)
@@ -944,8 +930,8 @@ The new `KoiRuntimeFactoryConfig` fields need a public input surface. This PR wi
 
 | New field | Env var | CLI flag | Default if unset |
 |---|---|---|---|
-| `nexusPermissionsEnabled` | `KOI_NEXUS_PERMISSIONS` (tri-state: `true`/`1`/`false`/`0`) | `--nexus-permissions` / `--no-nexus-permissions` (mutually exclusive) | unset → throws when `nexusTransport` set |
-| `nexusAuditEnabled` | `KOI_NEXUS_AUDIT` (tri-state: `true`/`1`/`false`/`0`) | `--nexus-audit` / `--no-nexus-audit` (mutually exclusive) | unset → throws when `nexusTransport` set |
+| `nexusPermissionsEnabled` | `KOI_NEXUS_PERMISSIONS` (tri-state: `true`/`1`/`false`/`0`) | `--nexus-permissions` / `--no-nexus-permissions` (mutually exclusive) | unset → Phase 1: infer true + warn; Phase 2: throws |
+| `nexusAuditEnabled` | `KOI_NEXUS_AUDIT` (tri-state: `true`/`1`/`false`/`0`) | `--nexus-audit` / `--no-nexus-audit` (mutually exclusive) | unset → Phase 1: infer true + warn; Phase 2: throws |
 | `nexusAuditMode` | `KOI_NEXUS_AUDIT_MODE` (=`require`/`local-only`/`disabled`) | `--nexus-audit-mode <m>` | unset (only required for local-bridge + audit-enabled) |
 | `nexusAuditPoisonOnError` | `KOI_NEXUS_AUDIT_POISON` (tri-state) | `--nexus-audit-poison` / `--no-nexus-audit-poison` | false |
 | `nexusBootMode` | `KOI_NEXUS_BOOT_MODE` (=`telemetry`/`fail-closed-transport`/`fail-closed-remote-policy-loaded`) | `--nexus-boot-mode <m>` | `telemetry` |
@@ -968,17 +954,27 @@ KOI_NEXUS_PERMISSIONS=true KOI_NEXUS_AUDIT=false koi up
 
 The CLI parser in `tui-command.ts` reads env + flag, validates, and passes the typed object into `createKoiRuntime(config)`. Existing flags/env keys are unchanged. New `tui-command.ts` work counted in the existing line in the file table (estimate updated +20 LOC for arg parsing). `nexusProbeFactory` is constructed inline in `tui-command.ts` whenever the resolved transport is local-bridge — operators do NOT set it directly; the CLI captures the same spawn config it used to construct the long-lived transport and passes a closure that spawns a fresh probe instance on demand.
 
-## Migration (existing v2 deployments)
+## Migration (existing v2 deployments) — two-phase rollout
 
-Existing v2 callers that pass `nexusTransport` already get Nexus permissions and audit wired implicitly. This PR makes both consumers explicit. On upgrade:
+Existing v2 callers that pass `nexusTransport` already get Nexus permissions and audit wired implicitly. This PR makes both consumers explicit, but adopts a deprecation window so healthy boots are not broken on upgrade.
 
-| Existing behavior | Required new config |
-|---|---|
-| `nexusTransport` set + HTTP (Nexus permissions + audit both wired implicitly) | `nexusPermissionsEnabled: true, nexusAuditEnabled: true` |
-| `nexusTransport` + local-bridge with implicit audit (no permissions wanted) | `nexusPermissionsEnabled: false, nexusAuditEnabled: true, nexusAuditMode: "require"` |
-| `nexusTransport` + local-bridge with implicit permissions | **NO MIGRATION PATH** — local-bridge + Nexus permissions is categorically rejected. Switch to HTTP transport. |
+**Phase 1 — this PR (warn-only for config-skew; categorical rejects only for security gates):**
 
-The runtime throws with an actionable error message naming the missing field if any of these are unset — there is no silent-degradation path. Migration is one config object change per deployment.
+| Existing behavior | Phase 1 result | Recommended action |
+|---|---|---|
+| `nexusTransport` set + HTTP (no flags) | Boots; logs deprecation warning naming `nexusPermissionsEnabled`/`nexusAuditEnabled`; infers true | Set both flags explicitly to silence warning |
+| `nexusTransport` + local-bridge (no flags) | Boots; logs deprecation warning naming flags AND a SECOND warning naming the local-bridge permissions risk | Migrate to HTTP for Nexus permissions before Phase 2; set `nexusAuditMode` |
+| `nexusTransport` + local-bridge + audit-enabled (explicit or inferred) without `nexusAuditMode` | THROWS (security gate) — `nexusAuditMode` required | Set `local-only` (with NDJSON/SQLite sink) or `disabled` |
+| `nexusAuditPoisonOnError=true` + local-bridge | THROWS (security gate) — known wedge fault | Use HTTP for fail-stop audit |
+| `nexusTransport.kind` undefined on a non-test transport | THROWS (security gate) — fail-closed assertion | Construct via named factory |
+
+**Phase 2 — next release (separate issue, NOT this PR):**
+
+- Unset `nexusPermissionsEnabled` / `nexusAuditEnabled` → throws (currently warns).
+- Local-bridge + Nexus permissions → throws (currently warns).
+- All other security gates unchanged.
+
+The two-phase split keeps healthy v2 deployments running while giving operators and CI templates a release cycle to update. Security-relevant gates throw immediately; config-skew only warns.
 
 ## Out of scope
 
