@@ -569,4 +569,40 @@ describe("createCircuitBreakerMiddleware", () => {
     ).rejects.toMatchObject({ code: "RATE_LIMIT" });
     expect(runCount).toBe(0);
   });
+
+  // Regression (#1419 round 12): provider-scoped breakers are SHARED
+  // across concurrent sessions by design. When one session ends, its
+  // onSessionEnd path must NOT delete the shared CLOSED breaker — that
+  // would erase accumulated failure history for every other live
+  // session on the same provider, delaying a legitimate trip to OPEN.
+  test("onSessionEnd preserves shared provider breakers for live sessions", async () => {
+    const mw = createCircuitBreakerMiddleware({ breaker: { failureThreshold: 3 } });
+    const ctxA = turnCtx("session-a");
+    const ctxB = turnCtx("session-b");
+    // Both sessions touch the shared "openai" provider key. Two failures
+    // accumulate in the shared ring buffer — one short of threshold.
+    await expect(
+      mw.wrapModelCall?.(ctxA, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    await expect(
+      mw.wrapModelCall?.(ctxB, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    // session-a ends. The shared breaker MUST survive because session-b
+    // still references it.
+    await mw.onSessionEnd?.(ctxA.session);
+    // Third failure from session-b should now trip OPEN — proves the
+    // ring buffer was preserved across session-a's cleanup.
+    await expect(
+      mw.wrapModelCall?.(ctxB, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    let runCount = 0;
+    const trace = async (): Promise<never> => {
+      runCount++;
+      throw new Error("should-not-run");
+    };
+    await expect(
+      mw.wrapModelCall?.(ctxB, { messages: [], model: "openai/m" }, trace),
+    ).rejects.toMatchObject({ code: "RATE_LIMIT" });
+    expect(runCount).toBe(0);
+  });
 });

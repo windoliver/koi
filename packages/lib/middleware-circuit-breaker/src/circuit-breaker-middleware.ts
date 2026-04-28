@@ -174,24 +174,32 @@ interface CbState {
   readonly breakers: Map<string, CircuitBreaker>;
   readonly warnGuard: { warned: boolean };
   /**
-   * Reverse index: each session-id to the set of breaker keys created on
-   * its behalf. Lets `onSessionEnd` reclaim keys derived from that session
-   * (typical pattern when `extractKey` scopes by tenant/session). Without
-   * this, tenant-scoped keys accumulate until `maxKeys` is reached and
-   * subsequent tenants silently lose breaker coverage during an outage.
-   * Only CLOSED entries are evicted on session end — an OPEN circuit may
-   * still be useful to other observers and must not be reset.
+   * Reverse index: each session-id to the set of breaker keys it has
+   * touched. Lets `onSessionEnd` reclaim keys when their last owner
+   * leaves. With the default provider-scoped extractor, multiple
+   * concurrent sessions share a single breaker — so eviction MUST be
+   * refcounted: deleting a shared CLOSED breaker when one session
+   * happens to end would erase recent failure history for every
+   * remaining session on the same provider, delaying or preventing a
+   * legitimate trip to OPEN under cross-session incidents.
    */
   readonly keysBySession: Map<string, Set<string>>;
+  /**
+   * Forward index: each breaker key to the set of sessions currently
+   * referencing it. A key is reclaimable only when this set becomes
+   * empty AND the breaker is CLOSED. OPEN/HALF_OPEN circuits are
+   * always preserved.
+   */
+  readonly keyOwners: Map<string, Set<string>>;
 }
 
 function trackSessionKey(s: CbState, sessionId: string, key: string): void {
-  const existing = s.keysBySession.get(sessionId);
-  if (existing !== undefined) {
-    existing.add(key);
-    return;
-  }
-  s.keysBySession.set(sessionId, new Set([key]));
+  const sessions = s.keysBySession.get(sessionId);
+  if (sessions !== undefined) sessions.add(key);
+  else s.keysBySession.set(sessionId, new Set([key]));
+  const owners = s.keyOwners.get(key);
+  if (owners !== undefined) owners.add(sessionId);
+  else s.keyOwners.set(key, new Set([sessionId]));
 }
 
 function evictSessionKeys(s: CbState, sessionId: string): void {
@@ -199,9 +207,16 @@ function evictSessionKeys(s: CbState, sessionId: string): void {
   if (keys === undefined) return;
   s.keysBySession.delete(sessionId);
   for (const k of keys) {
+    const owners = s.keyOwners.get(k);
+    if (owners === undefined) continue;
+    owners.delete(sessionId);
+    // Refcount: only reclaim when the last live session releases the
+    // key AND the breaker is CLOSED. Shared provider breakers stay
+    // alive for every other concurrent session; OPEN/HALF_OPEN
+    // circuits are always preserved regardless of refcount.
+    if (owners.size > 0) continue;
+    s.keyOwners.delete(k);
     const b = s.breakers.get(k);
-    // Preserve OPEN/HALF_OPEN circuits — other sessions on the same
-    // tenant key (or future calls) may still need to fail-fast.
     if (b !== undefined && b.getSnapshot().state === "CLOSED") s.breakers.delete(k);
   }
 }
@@ -334,6 +349,7 @@ export function createCircuitBreakerMiddleware(
     breakers: new Map(),
     warnGuard: { warned: false },
     keysBySession: new Map(),
+    keyOwners: new Map(),
   };
   return {
     name: "koi:circuit-breaker",

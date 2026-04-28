@@ -88,8 +88,12 @@ export const DEFAULT_EXCLUDE: readonly string[] = [
   // code exec, watchers
   "execute_code",
   "watch",
-  // forge surface
+  // forge surface — primordial brick lifecycle tools (writes + stateful reads)
   "forge_agent",
+  "forge_tool",
+  "forge_middleware",
+  "forge_list",
+  "forge_inspect",
 ] as const;
 
 export interface CallDedupConfig {
