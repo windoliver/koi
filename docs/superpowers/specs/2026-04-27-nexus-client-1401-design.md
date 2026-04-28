@@ -76,10 +76,17 @@ export interface NexusHealth {
  * a public-API change.
  */
 export type NexusTransportKind = "http" | "local-bridge";
+// `kind` is OPTIONAL on the public base interface (see types.ts below) to
+// preserve source-compatibility with existing structural mocks/adapters that
+// only declare `call` and `close`. The runtime narrows at the production
+// boundary via `getTransportKind(t)` which falls back to "http" (the
+// historical default) when undefined. Production transport factories
+// (createHttpTransport, createLocalBridgeTransport, createLocalBridgeProbeTransport,
+// fs-nexus HTTP wrapper) always SET it; only test-only structural mocks may omit.
 
 /** Base transport — minimal surface, satisfied by tests/mocks/fixtures. */
 export interface NexusTransport {
-  readonly kind: NexusTransportKind;
+  readonly kind?: NexusTransportKind | undefined;  // optional on base; production factories set it; runtime narrows via getTransportKind() (default "http")
   readonly call: <T>(
     method: string,
     params: Record<string, unknown>,
@@ -165,13 +172,13 @@ Sequence:
    **Resolution:**
 
    - **HTTP transport:** probe in place (no auth flow risk). All boot modes supported.
-   - **local-bridge + `telemetry` (default):** probe via a disposable subprocess **when caller provides `nexusProbeFactory`**. If absent, probe is **skipped** (advisory log only); boot continues normally — preserves backward compatibility for existing callers that haven't been updated. The transport object never exposes spawn config or credentials; the factory is a sealed capability passed by the caller (e.g., `tui-command.ts`) that constructs the disposable probe with its own copy of the spawn config.
+   - **local-bridge + `telemetry`:** probe via a disposable subprocess **when caller provides `nexusProbeFactory`**. If `nexusProbeFactory` is absent AND any Nexus consumer is enabled (`nexusPermissionsEnabled === true` OR `nexusAuditEnabled === true`), the runtime THROWS at config validation — refusing to boot consumers on the highest-risk transport without a probe. If absent AND no consumers are enabled, the probe is silently skipped (no-op Nexus configuration — nothing to validate). Single rule: consumers + local-bridge ⇒ probe factory required. The transport object never exposes spawn config or credentials; the factory is a sealed capability passed by the caller (e.g., `tui-command.ts`) that constructs the disposable probe with its own copy of the spawn config.
    - **local-bridge + `fail-closed-transport` / `fail-closed-remote-policy-loaded`:** **NOT SUPPORTED.** Throws a config validation error at startup. Both implementation options would produce wrong behavior (session-wedge or false-guarantee). Once the bridge gains a non-poisoning cancel/reset (out of scope), this restriction can be lifted. Operators needing fail-closed must use HTTP transport.
 
    API surface:
    - `createLocalBridgeTransport(config)` → long-lived session transport (no probe support exposed)
    - `createLocalBridgeProbeTransport(spawnConfig)` → disposable transport that closes after one `health()` call. Caller passes spawn config; transport object does NOT retain it after spawn.
-   - `KoiRuntimeFactoryConfig.nexusProbeFactory?: () => HealthCapableNexusTransport` — caller-supplied factory for probe construction. Recommended when `nexusTransport.kind === "local-bridge"` AND `nexusBootMode === "telemetry"`. If absent, the probe is skipped (advisory log only); boot continues. Not stored on the runtime; called once during boot then discarded.
+   - `KoiRuntimeFactoryConfig.nexusProbeFactory?: () => HealthCapableNexusTransport` — caller-supplied factory for probe construction. **REQUIRED when `nexusTransport.kind === "local-bridge"` AND any Nexus consumer is enabled.** Otherwise optional. Not stored on the runtime; called once during boot then discarded.
 
    This eliminates the credential-leak risk (transport is opaque; spawn secrets live in a sealed capability) AND avoids making misleading fail-closed claims for local-bridge.
 7. Per-call `deadlineMs: HEALTH_DEADLINE_MS = 5_000` overrides each transport's default.
@@ -510,7 +517,7 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     //     gains a non-poisoning cancel/reset, fail-closed-* is HTTP-only.
     // Preflight: fail-closed-* + local-bridge is unsupported (no honest
     // implementation possible per design above).
-    if (config.nexusTransport.kind === "local-bridge" && mode !== "telemetry") {
+    if (getTransportKind(config.nexusTransport) === "local-bridge" && mode !== "telemetry") {
       throw new Error(
         `nexusBootMode=${mode} is not supported for local-bridge transports. ` +
         `Use HTTP transport or nexusBootMode="telemetry". ` +
@@ -528,7 +535,7 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     //     that haven't been updated to provide the factory yet. Telemetry mode
     //     is advisory anyway, so skipping is honest about what we don't know.
     let probeTransport: HealthCapableNexusTransport | undefined;
-    if (config.nexusTransport.kind === "http") {
+    if (getTransportKind(config.nexusTransport) === "http") {
       // Base NexusTransport keeps health optional for fixture compat. Production
       // HTTP transports MUST provide it (createHttpTransport always returns
       // HealthCapableNexusTransport). Guard rather than blind-cast to avoid
@@ -590,7 +597,7 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     } else if (health !== undefined) {
       // Distinct success log per probe target — operators must not mistake
       // disposable-probe success for live-session validation on local-bridge.
-      const probeScope = config.nexusTransport.kind === "local-bridge"
+      const probeScope = getTransportKind(config.nexusTransport) === "local-bridge"
         ? "spawn-config-validated (disposable probe; live session NOT validated)"
         : "session-validated";
       logger.info({
@@ -686,7 +693,7 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     // `nexusPermissionsOnLocalBridgeAck: true` (e.g., for dev/test where the
     // user authenticates before any boot work runs).
     if (
-      config.nexusTransport.kind === "local-bridge" &&
+      getTransportKind(config.nexusTransport) === "local-bridge" &&
       config.nexusPermissionsOnLocalBridgeAck !== true
     ) {
       throw new Error(
@@ -696,7 +703,7 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
         "acknowledge the wedge risk (dev/test only — not for production).",
       );
     }
-    const deferInitialSync = config.nexusTransport.kind === "local-bridge"
+    const deferInitialSync = getTransportKind(config.nexusTransport) === "local-bridge"
       && (config.nexusBootMode ?? "telemetry") === "telemetry";
     // Validation: deferInitialSync requires a positive sync interval. With
     // syncIntervalMs === 0 (polling disabled), deferring the constructor sync
@@ -769,7 +776,7 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     );
   }
   if (config.nexusTransport !== undefined && config.nexusAuditEnabled === true) {
-    const isLocalBridge = config.nexusTransport.kind === "local-bridge";
+    const isLocalBridge = getTransportKind(config.nexusTransport) === "local-bridge";
     // HARD REJECT: local-bridge + audit poison-on-error is unshippable —
     // a poisoned audit write wedges the shared subprocess, taking permissions
     // and other consumers down with it. No isolation mechanism in this PR.
@@ -858,7 +865,7 @@ Runtime config validation MAY warn (not throw) if `fail-closed-remote-policy-loa
 
 | File | Change | Est LOC |
 |---|---|---|
-| `packages/lib/nexus-client/src/types.ts` | Add `NexusCallOptions` (deadlineMs, nonInteractive), `NexusHealthOptions` (readPaths), `NexusHealth`, optional `health` on `NexusTransport`, required `health` on `HealthCapableNexusTransport`; extend `call` signature with optional `opts` | +28 |
+| `packages/lib/nexus-client/src/types.ts` | Add `NexusCallOptions` (deadlineMs, nonInteractive), `NexusHealthOptions` (readPaths), `NexusHealth`, **optional** `kind?: NexusTransportKind` on `NexusTransport` (preserves source-compat for structural mocks), optional `health` on `NexusTransport`, required `health` on `HealthCapableNexusTransport`; extend `call` signature with optional `opts` (additive — existing call sites without opts still type-check); add `getTransportKind(t): NexusTransportKind` helper (returns `t.kind ?? "http"`) used at every runtime branch on transport kind | +35 |
 | `packages/lib/nexus-client/src/transport.ts` | HTTP impl: thread `opts.deadlineMs` into existing `AbortSignal.timeout`; implement `health(opts?)` — version probe + one `read` per `opts.readPaths` (default `koi/permissions/version.json` + `koi/permissions/policy.json`); discard read result bodies; return `HealthCapableNexusTransport` | +55 |
 | `packages/lib/nexus-client/src/health.test.ts` | New: all probes ok → ok+probed lists each path; either read returns 404 → still ok; version 5xx → fail; any read 5xx → fail; read 401 → fail; per-call deadline honored; network error; malformed version response; nonInteractive flag set on all calls; **custom readPaths override default** (probes provided paths only) | +200 |
 | `packages/lib/nexus-client/src/assert-health-capable.ts` | New: `assertHealthCapable` assertion function | +15 |
@@ -930,12 +937,12 @@ Used by runtime-factory to collapse the local-fallback window after first auth-s
 7g4. `HTTP transport probe success logs probeScope=session-validated; local-bridge probe success NEVER logs session-validated`
 7g5. `long-lived local-bridge transport object does NOT have a health method` (regression guard against unsafe in-place probing)
 7g6. `local-bridge + telemetry: createNexusPermissionBackend is wired with deferInitialSync=true` (boot does not block on first sync that could trigger auth wedge)
-7g7. `local-bridge + fail-closed-remote-policy-loaded: deferInitialSync=false` (we accept first-sync risk because operator chose strict mode)
+7g7. (REMOVED — local-bridge + fail-closed-* is unsupported per 7g + 7h; no deferInitialSync test applies)
 7g8. `HTTP transport: deferInitialSync=false in all modes` (HTTP has no auth wedge risk)
 7g10. `local-bridge + telemetry + nexusSyncIntervalMs=0: throws config validation error at boot` (deferred sync would never fire — actionable message, not deadlock)
 7g11. `NDJSON sink failure latches shared auditPoisonError; SQLite admission boundary refuses next call` (proves accumulator unification — pre-PR, this would only block NDJSON path)
 7g12. `SQLite sink failure latches shared auditPoisonError; NDJSON admission boundary refuses next call` (same, reverse direction)
-7g13. `local-bridge + nexusAuditPoisonOnError=true: runtime logs warning at boot about audit-wedge limitation` (operator gets explicit signal)
+7g13. (REMOVED — superseded by 7g16o which throws rather than warns)
 7g14. `local-bridge WITHOUT nexusAuditMode: throws config error at boot` (forces explicit operator decision; no silent degradation)
 7g15. `local-bridge + nexusAuditMode="require": Nexus audit sink wired; operator has explicitly accepted wedge risk`
 7g16. `local-bridge + nexusAuditMode="local-only" + NDJSON sink configured: Nexus sink skipped; boot succeeds`
@@ -998,6 +1005,24 @@ Used by runtime-factory to collapse the local-fallback window after first auth-s
 23. `probe subprocess is killed after health() regardless of result`
 
 Existing `transport.test.ts` continues to pass unchanged.
+
+## Config wiring (CLI ↔ runtime-factory ↔ env)
+
+The new `KoiRuntimeFactoryConfig` fields need a public input surface. This PR wires them through the existing CLI/env path that already carries `nexusTransport`:
+
+| New field | Env var | CLI flag | Default if unset |
+|---|---|---|---|
+| `nexusPermissionsEnabled` | `KOI_NEXUS_PERMISSIONS` (=`1`/`true`) | `--nexus-permissions` | unset → throws when `nexusTransport` set |
+| `nexusAuditEnabled` | `KOI_NEXUS_AUDIT` (=`1`/`true`) | `--nexus-audit` | unset → throws when `nexusTransport` set |
+| `nexusAuditMode` | `KOI_NEXUS_AUDIT_MODE` (=`require`/`local-only`/`disabled`) | `--nexus-audit-mode <m>` | unset (only required for local-bridge + audit-enabled) |
+| `nexusAuditPoisonOnError` | `KOI_NEXUS_AUDIT_POISON` (=`1`/`true`) | `--nexus-audit-poison` | false |
+| `nexusBootMode` | `KOI_NEXUS_BOOT_MODE` (=`telemetry`/`fail-closed-transport`/`fail-closed-remote-policy-loaded`) | `--nexus-boot-mode <m>` | `telemetry` |
+| `nexusPolicyPath` | `KOI_NEXUS_POLICY_PATH` | `--nexus-policy-path <p>` | `koi/permissions` |
+| `nexusSyncIntervalMs` | `KOI_NEXUS_SYNC_INTERVAL_MS` | `--nexus-sync-interval-ms <n>` | `30000` |
+| `nexusPermissionsOnLocalBridgeAck` | `KOI_NEXUS_PERMISSIONS_LOCAL_BRIDGE_ACK` (=`1`) | `--nexus-permissions-local-bridge-ack` | false |
+| `nexusProbeFactory` | n/a (programmatic only — sealed capability holding spawn config) | n/a | constructed in `tui-command.ts` from already-resolved spawn config when `nexusTransport.kind === "local-bridge"` |
+
+The CLI parser in `tui-command.ts` reads env + flag, validates, and passes the typed object into `createKoiRuntime(config)`. Existing flags/env keys are unchanged. New `tui-command.ts` work counted in the existing line in the file table (estimate updated +20 LOC for arg parsing). `nexusProbeFactory` is constructed inline in `tui-command.ts` whenever the resolved transport is local-bridge — operators do NOT set it directly; the CLI captures the same spawn config it used to construct the long-lived transport and passes a closure that spawns a fresh probe instance on demand.
 
 ## Migration (existing v2 deployments)
 
