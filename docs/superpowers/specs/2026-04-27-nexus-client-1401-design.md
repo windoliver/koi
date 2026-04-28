@@ -69,15 +69,24 @@ export interface NexusHealth {
   readonly probed: readonly string[];
 }
 
+/**
+ * Transport kind discriminator. Public part of the contract — runtime
+ * code branches on this for probe strategy selection (e.g., disposable
+ * vs. session probe for local-bridge). Adding new transport kinds is
+ * a public-API change.
+ */
+export type NexusTransportKind = "http" | "local-bridge";
+
 /** Base transport — minimal surface, satisfied by tests/mocks/fixtures. */
 export interface NexusTransport {
+  readonly kind: NexusTransportKind;
   readonly call: <T>(
     method: string,
     params: Record<string, unknown>,
-    opts?: NexusCallOptions,  // NEW: per-call deadline override
+    opts?: NexusCallOptions,  // per-call deadline / nonInteractive override
   ) => Promise<Result<T, KoiError>>;
   /** OPTIONAL on the base type so test fixtures don't need stubs. */
-  readonly health?: () => Promise<Result<NexusHealth, KoiError>>;
+  readonly health?: (opts?: NexusHealthOptions) => Promise<Result<NexusHealth, KoiError>>;
   readonly close: () => void;
 }
 
@@ -243,53 +252,55 @@ interface KoiRuntimeFactoryConfig {
 }
 ```
 
-When `nexusAuditPoisonOnError === true`, the runtime composes `createNexusAuditSink` with a thin wrapper that conforms to the existing `AuditSink` interface (`log()` required, `flush?` optional, `query?` optional):
+When `nexusAuditPoisonOnError === true`, the runtime hooks Nexus sink errors into the **same runtime-level poison accumulator** that NDJSON/SQLite already use (`runtime-factory.ts:2526–2602`). A sink-only wrapper would be weaker than the existing pattern: NDJSON/SQLite poison is checked at every middleware admission boundary (`onSessionStart`, `onBeforeTurn`, `wrapModelCall`, `wrapToolCall`, end-of-session flush), so new work is synchronously refused once durability has failed. A pure sink wrapper only fails the next `log()` / `flush()` call, leaving model/tool activity proceeding past the failure point.
+
+**The poison flag MUST be a runtime-level shared accumulator, not a per-sink wrapper.**
+
+Implementation: extend the existing accumulator pattern in `runtime-factory.ts` to also accept Nexus sink errors:
 
 ```ts
-function createPoisonGuardedNexusAuditSink(opts: {
-  transport: HealthCapableNexusTransport;
-  onError: (err: unknown) => void;
-}): AuditSink {
-  let poisonErr: unknown;
-  const inner = createNexusAuditSink({
-    transport: opts.transport,
+// existing pattern (NDJSON/SQLite); extend `auditPoisonError` to cover Nexus too
+let auditPoisonError: unknown;  // shared accumulator (currently named ndjsonPoisonError;
+                                // rename to auditPoisonError as part of this PR)
+
+const ndjsonSink = createNdjsonAuditSink({
+  // … existing config …
+  onError: (err) => { if (auditPoisonError === undefined) auditPoisonError = err; },
+});
+
+// NEW: route Nexus sink errors into the same accumulator (only when opted in)
+if (config.nexusTransport !== undefined && config.nexusAuditPoisonOnError === true) {
+  auditSinks.push(createNexusAuditSink({
+    transport: config.nexusTransport,
     onError: (err) => {
-      if (poisonErr === undefined) poisonErr = err;
-      opts.onError(err);
+      if (auditPoisonError === undefined) auditPoisonError = err;
+      logger.error({ err }, "nexus audit sink poisoned");
     },
-  });
-  return {
-    log: (entry) => {
-      if (poisonErr !== undefined) throw new Error("nexus audit sink poisoned", { cause: poisonErr });
-      return inner.log(entry);
-    },
-    flush: inner.flush === undefined ? undefined : async () => {
-      await inner.flush?.();
-      if (poisonErr !== undefined) throw new Error("nexus audit flush failed", { cause: poisonErr });
-    },
-    query: inner.query,  // pass through unchanged — preserves ledger/query surface
-  };
+  }));
+} else if (config.nexusTransport !== undefined) {
+  // best-effort (default): log only, do NOT touch shared poison accumulator
+  auditSinks.push(createNexusAuditSink({
+    transport: config.nexusTransport,
+    onError: (err) => logger.warn({ err }, "nexus audit write failed (best-effort)"),
+  }));
 }
+
+// Existing middleware admission guards (no change — they already check auditPoisonError
+// at onSessionStart / onBeforeTurn / wrapModelCall / wrapToolCall / shutdown flush)
+// now ALSO catch Nexus failures because they share the accumulator.
 ```
 
-**Honest semantics — fail-stop is at flush boundaries, not at log time:**
+This means:
 
-The Nexus sink is buffered. `log()` returns synchronously after enqueueing; the actual write happens later via interval/size/explicit flush. Therefore the wrapper's `log()` cannot fail-stop on the *first lost write* — only on subsequent writes after `onError` has fired. Concretely:
+- **No new wrapper module needed** — the existing runtime-level guard pattern is the right abstraction
+- **No spec drift between sink kinds** — Nexus poisoning behaves exactly like NDJSON/SQLite poisoning at every admission boundary
+- **Nexus best-effort mode is preserved** — when `nexusAuditPoisonOnError !== true`, Nexus errors stay out of the shared accumulator and never trigger admission denial
 
-- Write A enqueued → log returns ok
-- Background flush A fails → `onError` fires → poison latched → `opts.onError` invoked (operator sees log immediately)
-- Write B enqueued → wrapper's `log()` throws (poisoned)
+**Honest semantics — fail-stop at admission boundaries, observability at log boundaries:**
 
-So write A appears successful even though it was lost. The window matters: any work the runtime does between A's enqueue and B's log call proceeds against a sink that has already failed.
+Background flush failure → `onError` fires → accumulator latched → operator sees error log immediately. Next admission boundary (`onSessionStart`/`onBeforeTurn`/`wrapModelCall`/`wrapToolCall`) inspects accumulator and refuses. The first failing flush's enqueued write may have been lost, but no subsequent model or tool activity proceeds against a known-failed sink. This matches NDJSON/SQLite exactly.
 
-**Closing the window requires middleware-boundary flushes**, which the existing audit middleware already performs at session-end and other durability points. This PR adds: middleware MUST `await sink.flush()` at every durability boundary it currently has, and the wrapper's `flush()` rethrows. After the first poisoned flush, every subsequent `log()` also throws. So:
-
-- The first lost write is observed at the **next middleware flush boundary**, not at the next `log()`
-- Operators get an immediate `onError` log when the failure happens
-- Subsequent writes hard-fail
-- Every middleware-driven flush hard-fails
-
-This matches the NDJSON/SQLite pattern (those sinks are also buffered; their guard catches at flush time too). The spec previously implied first-call latching, which is impossible against a buffered sink without making `log()` fully synchronous (expensive and orthogonal). The honest contract is "fail-stop at flush boundaries" — documented explicitly.
+**The previous `createPoisonGuardedNexusAuditSink` helper is dropped** — runtime-factory hooks the existing pattern directly. Less code, no duplicate guard surface, no risk of helper-vs-runtime divergence.
 
 **Default (telemetry mode, `nexusAuditPoisonOnError` unset):** Nexus audit remains best-effort. Failures are logged via `onError` but do not abort writes or rethrow at flush. Same observable behavior as today.
 
@@ -384,8 +395,8 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     //     ("probe session and risk wedge" vs "probe disposable and lie about
     //     guarantee") both have unacceptable failure modes. Until the bridge
     //     gains a non-poisoning cancel/reset, fail-closed-* is HTTP-only.
-    if (config.nexusTransport.kind === "local-bridge"
-        && mode !== "telemetry") {
+    // Preflight config validation — both errors are deterministic + actionable.
+    if (config.nexusTransport.kind === "local-bridge" && mode !== "telemetry") {
       throw new Error(
         `nexusBootMode=${mode} is not supported for local-bridge transports. ` +
         `Use HTTP transport or nexusBootMode="telemetry". ` +
@@ -394,9 +405,18 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
         `fail-closed-* guarantee would be misleading.)`,
       );
     }
+    if (config.nexusTransport.kind === "local-bridge" && config.nexusProbeFactory === undefined) {
+      throw new Error(
+        `nexusProbeFactory is required when nexusTransport.kind === "local-bridge" ` +
+        `and nexusBootMode === "telemetry". Pass a factory that constructs a ` +
+        `disposable probe transport with the same spawn config (e.g., ` +
+        `() => createLocalBridgeProbeTransport(spawnConfig)). ` +
+        `The runtime never stores spawn config / credentials on the transport object.`,
+      );
+    }
 
     const probeTransport = config.nexusTransport.kind === "local-bridge"
-      ? config.nexusProbeFactory!()  // factory-provided; NEVER reads secrets from transport
+      ? config.nexusProbeFactory()  // validated above — safe deref
       : config.nexusTransport;
     let health;
     try {
@@ -455,20 +475,18 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     // telemetry / fail-closed-transport: do NOT await ready (preserves existing async semantics)
   }
 
-  // Step 5: wire Nexus audit sink. Poison-guard is OPT-IN via nexusAuditPoisonOnError.
-  // Default (best-effort) preserves existing telemetry-mode behavior — failures
-  // are logged but do not abort writes.
+  // Step 5: wire Nexus audit sink. Hook into existing shared `auditPoisonError`
+  // accumulator (renamed from ndjsonPoisonError as part of this PR) ONLY when
+  // operator opts in. Best-effort default preserves telemetry-mode behavior.
+  // Existing middleware admission guards already check this accumulator.
   if (config.nexusTransport !== undefined) {
-    const sink = config.nexusAuditPoisonOnError === true
-      ? createPoisonGuardedNexusAuditSink({
-          transport: config.nexusTransport,
-          onError: (err) => logger.error({ err }, "nexus audit write failed"),
-        })
-      : createNexusAuditSink({
-          transport: config.nexusTransport,
-          onError: (err) => logger.warn({ err }, "nexus audit write failed (best-effort)"),
-        });
-    auditSinks.push(sink);
+    const onError = config.nexusAuditPoisonOnError === true
+      ? (err: unknown) => {
+          if (auditPoisonError === undefined) auditPoisonError = err;  // share with NDJSON/SQLite
+          logger.error({ err }, "nexus audit sink poisoned");
+        }
+      : (err: unknown) => logger.warn({ err }, "nexus audit write failed (best-effort)");
+    auditSinks.push(createNexusAuditSink({ transport: config.nexusTransport, onError }));
   }
   // … continue with non-nexus runtime construction …
 }
@@ -518,18 +536,16 @@ The function reports what the backend is *actually serving right now*, not the s
 | `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; long-lived session transport does NOT receive nonInteractive flag from runtime probe path; existing call/subscribe behavior unchanged | +80 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior | +25 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.test.ts` | New tests: false before any sync; false when first sync fails (404/parse/rebuild mismatch — no last-known-good); true after first successful sync; **stays true when subsequent sync fails** (last-known-good preserved); **stays true when subsequent sync produces incompatible policy** (skipped, last-known-good preserved) | +100 |
-| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as `HealthCapableNexusTransport`; add `nexusBootMode`, `nexusPolicyBasePath`, **`nexusAuditPoisonOnError`** config fields; probe via `createLocalBridgeProbeTransport` for local-bridge (HTTP probes itself); thread `nexusPolicyBasePath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws; in `fail-closed-policy-at-boot`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **wire Nexus audit via `createPoisonGuardedNexusAuditSink` ONLY when `nexusAuditPoisonOnError === true`; default best-effort** | +110 |
-| `packages/meta/cli/src/poison-guarded-nexus-audit.ts` | New small helper: `createPoisonGuardedNexusAuditSink({ transport, onError }): AuditSink` — composes `createNexusAuditSink` with the poison-guard pattern, returns the standard `AuditSink` shape (`log`, optional `flush`, optional `query`); preserves `query` passthrough | +55 |
-| `packages/meta/cli/src/poison-guarded-nexus-audit.test.ts` | New tests: simulated background flush failure latches via onError; SUBSEQUENT log() throws with cause chain (NOT the failing-write log call — that's the documented honest semantic); flush rethrows; success path passes through; query passes through unchanged; multiple errors keep first | +110 |
+| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as `HealthCapableNexusTransport`; add `nexusBootMode`, `nexusPolicyBasePath`, `nexusAuditPoisonOnError`, `nexusProbeFactory` config fields; **explicit preflight validation: throw on local-bridge + fail-closed-* (unsupported); throw on local-bridge + telemetry without nexusProbeFactory**; probe via factory for local-bridge, in-place for HTTP; thread `nexusPolicyBasePath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws on probe failure; in `fail-closed-policy-at-boot`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **rename existing `ndjsonPoisonError` accumulator to `auditPoisonError`; route Nexus sink errors into it ONLY when `nexusAuditPoisonOnError === true`** (default best-effort); existing middleware admission guards now cover Nexus too via shared accumulator | +130 |
 | `packages/security/audit-sink-nexus/src/config.ts` | **Add `onError?: (err: unknown) => void` to `NexusAuditSinkConfig`** — the field doesn't exist today; wrapper depends on it | +8 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.ts` | Remove silent `.catch(() => {})` on `startFlush()`; invoke `config.onError?.(err)` on flush failure (interval-triggered AND size-triggered AND explicit-flush-triggered paths must all route through `onError`) | +12 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.test.ts` | New: interval-triggered flush failure invokes `onError`; size-triggered flush failure invokes `onError`; explicit `flush()` failure invokes `onError`; `onError` undefined doesn't crash (regression guard against silent swallowing) | +60 |
-| `packages/meta/cli/src/__tests__/runtime-factory-nexus-audit-poison.test.ts` | New tests: default (`nexusAuditPoisonOnError` unset) wires plain `createNexusAuditSink` — first failure logs warning, subsequent log() succeeds (best-effort preserved); opt-in (`nexusAuditPoisonOnError: true`) wires guarded sink — first failure poisons; subsequent log() throws; per-hook flush rethrows; integration with audit middleware boundaries | +140 |
+| `packages/meta/cli/src/__tests__/runtime-factory-nexus-audit-poison.test.ts` | New tests: default (`nexusAuditPoisonOnError` unset) — Nexus errors stay out of shared accumulator; admission boundaries do NOT block; best-effort preserved. Opt-in (`true`) — Nexus error latches shared `auditPoisonError`; subsequent `onSessionStart`/`onBeforeTurn`/`wrapModelCall`/`wrapToolCall` admission boundaries refuse work; matches existing NDJSON poison test parity | +160 |
 | `packages/meta/cli/src/__tests__/runtime-factory-health.test.ts` | New tests covering all three modes + activation race coverage (see Tests section) | +200 |
 | `packages/meta/cli/src/tui-command.ts` | Replace `as unknown as NexusTransport` cast (line 1704) with `assertHealthCapable(transport)` narrowing | +5 |
 | `docs/L2/nexus-client.md` | Document readiness probe semantics; `HealthCapableNexusTransport` contract; WS/gRPC/pool out-of-scope rationale | +60 |
 
-**Total: ~1110 LOC (335 src + 715 test + 60 doc).**
+**Total: ~1010 LOC (305 src + 645 test + 60 doc).** *(reduced — dropped redundant `poison-guarded-nexus-audit.ts` helper module after switching to runtime-level shared accumulator)*
 
 (Larger than the original ~170 estimate because reviews correctly demanded real integration, type-system enforcement, and a readiness probe — not just a dead liveness API.)
 
@@ -565,7 +581,8 @@ The function reports what the backend is *actually serving right now*, not the s
 7f. `local-bridge + telemetry mode: probe spawns disposable subprocess (session not touched)`
 7g. `local-bridge + fail-closed-transport mode: throws config validation error (unsupported)`
 7h. `local-bridge + fail-closed-policy-at-boot mode: throws config validation error (unsupported)`
-7g2. `local-bridge + telemetry mode without nexusProbeFactory: throws config validation error (factory required)`
+7g2. `local-bridge + telemetry mode without nexusProbeFactory: throws config validation error with actionable message (factory required)`
+7g3. `validation error mentions exactly which mode + transport combination is unsupported`
 7h2. `transport object does NOT expose spawn config / credentials` (security regression guard)
 7i. `HTTP transport: always probes session directly regardless of mode (no auth flow risk)`
 7j. `fs-nexus HTTP wrapper forwards health() to underlying transport (regression guard)`
