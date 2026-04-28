@@ -82,6 +82,9 @@ cleanup() {
   step "Cleanup"
   tmux kill-session -t "$SESSION" 2>/dev/null || true
   rm -rf "$WORKDIR"
+  # Defensive: env dir is also unlinked from inside the tmux command, but if
+  # the session never starts (e.g. tmux failure) clean it up here too.
+  [[ -n "${ENV_DIR:-}" ]] && rm -rf "$ENV_DIR"
   # Kill any lingering temporal
   pkill -f "temporal.*server" 2>/dev/null || true
   echo "  tmux session killed, temp dir cleaned"
@@ -117,8 +120,63 @@ echo "  koi.yaml written"
 
 step "Start: koi up in tmux"
 
+# Provider/auth secrets (OPENROUTER_API_KEY, NEXUS_API_KEY) must reach the
+# child `koi up` process WITHOUT appearing on any process's argv — both
+# inline `KEY=VAL cmd` forms AND `tmux new-session -e KEY=VAL ...` make the
+# values visible via `ps`. Use a private env file (mode 0600) that the
+# session sources and deletes before invoking `koi up`. We also cannot rely
+# on tmux server env inheritance: a pre-existing tmux server keeps the env
+# it was started with, so values exported in the current shell may not
+# reach the new session.
+#
+# NEXUS_URL is intentionally still passed as the `--nexus-url` flag because
+# it is a non-secret service endpoint (e.g. http://localhost:33320). If a
+# deployment ever embeds credentials in that URL, switch it to env-only
+# delivery the same way as the keys above.
+# Use a private mktemp dir (mode 0700 by default) so the env file is
+# accessible only to this user even if /tmp itself is world-readable.
+ENV_DIR="$(mktemp -d -t e2e-tui-env.XXXXXX)"
+ENV_FILE="$ENV_DIR/env"
+( umask 077 && cat > "$ENV_FILE" ) <<EOF
+export OPENROUTER_API_KEY=$(printf '%q' "$OPENROUTER_API_KEY")
+export NEXUS_API_KEY=$(printf '%q' "${NEXUS_API_KEY:-}")
+EOF
+# Build the tmux child command with %q-escaped values so any shell
+# metacharacters in NEXUS_URL / WORKDIR / BIN / ENV_FILE are passed as
+# data, not re-parsed as shell syntax (command injection guard). %q is a
+# bash format, so we run the result through `bash --noprofile --norc -c`
+# rather than tmux's default-shell (which may be sh/dash/fish):
+#   - non-bash default-shells cannot round-trip %q-quoted output
+#   - --noprofile/--norc skip /etc/profile and ~/.bash_profile, which
+#     could otherwise enable `set -x` (echoing exported secrets) or fail
+#     before the harness command runs
+# `set +x` defensively disables tracing in case it was inherited from
+# the parent environment. The env file is unlinked the moment after it
+# is sourced so it is on disk only for the few ms before tmux starts
+# the child; abnormal termination (SIGKILL, host crash) can still leave
+# a residual file under $ENV_DIR — the parent's EXIT trap removes the
+# whole dir, but operators should not store long-lived secrets here.
+# Resolve `bun` to an absolute path in the parent shell so the tmux child
+# does not depend on the tmux server's PATH (--noprofile/--norc skips
+# ~/.bash_profile, where Bun is typically added).
+BUN_BIN="$(command -v bun)"
+if [[ -z "$BUN_BIN" ]]; then
+  echo "bun not found on PATH" >&2
+  exit 1
+fi
+# Resolve bash too — a pre-existing tmux server may have a stripped PATH
+# that cannot find `bash` by bare name, which would silently fail before
+# `koi up` runs.
+BASH_BIN="$(command -v bash)"
+if [[ -z "$BASH_BIN" ]]; then
+  echo "bash not found on PATH" >&2
+  exit 1
+fi
+printf -v TMUX_CMD \
+  'set +x; cd %q && . %q && rm -rf %q && %q run %q up --manifest %q --nexus-url %q --verbose 2>&1' \
+  "$WORKDIR" "$ENV_FILE" "$ENV_DIR" "$BUN_BIN" "$BIN" "$WORKDIR/koi.yaml" "$NEXUS_URL"
 tmux new-session -d -s "$SESSION" -x 120 -y 40 \
-  "cd $WORKDIR && OPENROUTER_API_KEY=$OPENROUTER_API_KEY NEXUS_API_KEY=${NEXUS_API_KEY:-} bun run $BIN up --manifest $WORKDIR/koi.yaml --nexus-url ${NEXUS_URL} --verbose 2>&1"
+  "$BASH_BIN" --noprofile --norc -c "$TMUX_CMD"
 
 echo "  tmux session: $SESSION"
 
