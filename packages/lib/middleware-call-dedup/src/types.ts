@@ -21,6 +21,22 @@ export interface CacheEntry {
    * a missing generation to 0 and reject any non-zero live generation.
    */
   readonly generation?: number | undefined;
+  /**
+   * Runtime-instance nonce captured at middleware creation. Reads
+   * MUST reject any entry whose `instance` does not match the live
+   * middleware instance — otherwise a persistent store (Redis,
+   * SQLite, etc.) would replay stale tool output across process
+   * restarts (the in-memory `sessionGen` tombstone is empty after
+   * restart, so a `generation: 0` entry written by the prior
+   * instance would still match `liveGen: 0` for a reused sessionId).
+   *
+   * Optional for back-compat: entries written before this field
+   * existed are treated as foreign-instance and rejected. To opt
+   * into restart-safe persistent caching, pin
+   * `CallDedupConfig.instanceNonce` to a stable value across
+   * deployments.
+   */
+  readonly instance?: string | undefined;
 }
 
 export interface CallDedupStore {

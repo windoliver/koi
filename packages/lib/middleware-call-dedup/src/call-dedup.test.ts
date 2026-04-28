@@ -784,6 +784,122 @@ describe("createCallDedupMiddleware", () => {
     expect(h3.calls).toBe(1);
   });
 
+  // Regression (review round 11): a persistent store (Redis, SQLite,
+  // custom backend) outlives the runtime process. After a restart,
+  // `sessionGen` resets to empty so a `generation: 0` entry written
+  // by the prior process would still match `liveGen: 0` for a
+  // reused sessionId — replaying stale tool output across restarts.
+  // The instance-nonce stamped on every entry must reject
+  // foreign-instance entries.
+  test("entries from a prior runtime instance are rejected on read (restart safety)", async () => {
+    type Entry = {
+      response: ToolResponse;
+      expiresAt: number;
+      generation?: number | undefined;
+      instance?: string | undefined;
+    };
+    const m = new Map<string, Entry>();
+    // Shared persistent store survives "restart": both instances
+    // point at the same Map.
+    const store = {
+      async get(k: string) {
+        return m.get(k);
+      },
+      async set(k: string, v: Entry) {
+        m.set(k, v);
+      },
+      async delete(k: string) {
+        m.delete(k);
+        return true;
+      },
+      size(): number {
+        return m.size;
+      },
+      clear(): void {
+        m.clear();
+      },
+    };
+    const sid = "s-restart";
+    // Instance #1 populates the cache.
+    const mw1 = createCallDedupMiddleware({ include: ["lookup"], store });
+    const ctx1 = turnCtx(sid);
+    await mw1.wrapToolCall?.(
+      ctx1,
+      { toolId: "lookup", input: { q: "x" } },
+      makeHandler("v1").handler,
+    );
+    expect(m.size).toBe(1);
+    // Instance #2 (simulating a runtime restart) — fresh middleware,
+    // same persistent store, same sessionId, same input. Without the
+    // instance-nonce check, `generation: 0` would match and v1 would
+    // be served as a stale cache hit.
+    const mw2 = createCallDedupMiddleware({ include: ["lookup"], store });
+    const ctx2 = turnCtx(sid);
+    const h2 = makeHandler("v2");
+    const r = await mw2.wrapToolCall?.(ctx2, { toolId: "lookup", input: { q: "x" } }, h2.handler);
+    expect(r?.output).toBe("v2");
+    expect(h2.calls).toBe(1);
+  });
+
+  // Regression (review round 11): operators wanting persistent
+  // restart-safe caching can pin `instanceNonce` to a stable value
+  // (e.g. a deployment id). Two instances with the same nonce share
+  // the cache.
+  test("pinned instanceNonce makes persistent cache survive restart", async () => {
+    type Entry = {
+      response: ToolResponse;
+      expiresAt: number;
+      generation?: number | undefined;
+      instance?: string | undefined;
+    };
+    const m = new Map<string, Entry>();
+    const store = {
+      async get(k: string) {
+        return m.get(k);
+      },
+      async set(k: string, v: Entry) {
+        m.set(k, v);
+      },
+      async delete(k: string) {
+        m.delete(k);
+        return true;
+      },
+      size(): number {
+        return m.size;
+      },
+      clear(): void {
+        m.clear();
+      },
+    };
+    const nonce = "deploy-2026-04-28";
+    const sid = "s-pinned";
+    const mw1 = createCallDedupMiddleware({
+      include: ["lookup"],
+      store,
+      instanceNonce: nonce,
+    });
+    await mw1.wrapToolCall?.(
+      turnCtx(sid),
+      { toolId: "lookup", input: { q: "x" } },
+      makeHandler("v1").handler,
+    );
+    const mw2 = createCallDedupMiddleware({
+      include: ["lookup"],
+      store,
+      instanceNonce: nonce,
+    });
+    const h2 = makeHandler("v2");
+    const r = await mw2.wrapToolCall?.(
+      turnCtx(sid),
+      { toolId: "lookup", input: { q: "x" } },
+      h2.handler,
+    );
+    // Cache hit: same nonce → entry valid across "restart".
+    expect(r?.output).toBe("v1");
+    expect(h2.calls).toBe(0);
+    expect(r?.metadata?.cached).toBe(true);
+  });
+
   // Regression (review round 6): if a backend `store.delete()` fails during
   // `onSessionEnd` eviction (best-effort by design), the stale entry can
   // remain in the backend after the in-memory index is dropped. A reused

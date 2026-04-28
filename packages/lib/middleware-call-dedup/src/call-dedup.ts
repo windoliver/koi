@@ -80,6 +80,24 @@ interface DedupState {
    * a dead session id.
    */
   readonly inFlightBySession: Map<string, number>;
+  /**
+   * Runtime-instance nonce captured at middleware creation. Stamped
+   * into every cache entry and re-checked on read. A persistent store
+   * (Redis, SQLite, custom backend) can outlive the runtime process,
+   * so the in-memory `sessionGen` tombstone alone is insufficient: a
+   * fresh instance starts with `sessionGen` empty and a previously-
+   * written entry's `generation: 0` would match `liveGen: 0` for the
+   * same reused sessionId, replaying stale tool output across
+   * restarts. The instance nonce closes that gap by making old-
+   * instance entries unreachable from a new instance.
+   *
+   * Operators who want their persistent cache to survive process
+   * restarts (the whole point of using Redis with dedup) can pin a
+   * stable nonce via `CallDedupConfig.instanceNonce` (e.g. a
+   * deployment id). The default is a random UUID per process — safe
+   * across restarts at the cost of cold caches after each deploy.
+   */
+  readonly instanceNonce: string;
 }
 
 function isCacheable(s: DedupState, toolId: string): boolean {
@@ -166,6 +184,11 @@ async function executeAndStore(
         // during session teardown. Without this tombstone, a reused
         // sessionId could see stale cached output from the prior run.
         generation: s.sessionGen.get(sessionId) ?? 0,
+        // Stamp the runtime-instance nonce so a fresh middleware
+        // instance (post-restart) cannot trust entries written by a
+        // prior instance — the in-memory `generation` tombstone is
+        // empty after restart so it alone cannot detect this.
+        instance: s.instanceNonce,
       });
     } catch {
       // Same rationale: a failing store write must not surface as a tool
@@ -387,7 +410,15 @@ async function ddWrapToolCall(
     const liveGen = s.sessionGen.get(sessionId) ?? 0;
     const entryGen = cached.generation ?? 0;
     const generationMatch = entryGen === liveGen;
-    if (generationMatch && cached.expiresAt > s.now()) {
+    // Instance nonce check: persistent stores (Redis, SQLite, custom)
+    // outlive the runtime process. After a restart, `sessionGen` is
+    // empty so a generation match alone is meaningless — both the
+    // entry and the empty live state default to 0. The instance
+    // nonce is the only signal that distinguishes "written by THIS
+    // instance" from "written by a previous process". Mismatch ⇒
+    // miss + best-effort delete.
+    const instanceMatch = cached.instance === s.instanceNonce;
+    if (generationMatch && instanceMatch && cached.expiresAt > s.now()) {
       // Deep-clone so the cached entry is immune to caller-side mutation.
       // The cached entry was successfully cloned at write time, but a clone
       // failure here MUST NOT throw (the call already produced a valid hit) —
@@ -463,6 +494,7 @@ export function createCallDedupMiddleware(config?: CallDedupConfig): KoiMiddlewa
     keysBySession: new Map(),
     sessionGen: new Map(),
     inFlightBySession: new Map(),
+    instanceNonce: config?.instanceNonce ?? crypto.randomUUID(),
   };
   return {
     name: "koi:call-dedup",

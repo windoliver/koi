@@ -105,6 +105,21 @@ export interface CallDedupConfig {
   readonly now?: () => number;
   readonly store?: CallDedupStore;
   readonly onCacheHit?: (info: CacheHitInfo) => void;
+  /**
+   * Stable runtime-instance nonce stamped into every cache entry and
+   * verified on read. Defaults to a random UUID per process — old
+   * entries written by a prior process are then unreachable from the
+   * new process, even when the underlying store (Redis, SQLite, etc.)
+   * outlives the runtime. Without this, a persistent store would
+   * replay stale tool output across restarts because the in-memory
+   * `sessionGen` tombstone resets on process boot.
+   *
+   * Pin a stable value (e.g. a deployment id or release SHA) when you
+   * want the persistent cache to actually survive restarts. Changing
+   * the nonce invalidates every cached entry, so use a value that
+   * tracks the boundaries of "code/data shape that may have changed."
+   */
+  readonly instanceNonce?: string;
 }
 
 function validationError(message: string): { readonly ok: false; readonly error: KoiError } {
@@ -172,6 +187,12 @@ export function validateCallDedupConfig(config: unknown): Result<CallDedupConfig
   }
   if (c.onCacheHit !== undefined && typeof c.onCacheHit !== "function") {
     return validationError("'onCacheHit' must be a function");
+  }
+  if (
+    c.instanceNonce !== undefined &&
+    (typeof c.instanceNonce !== "string" || c.instanceNonce.length === 0)
+  ) {
+    return validationError("'instanceNonce' must be a non-empty string");
   }
 
   return { ok: true, value: config as CallDedupConfig };
