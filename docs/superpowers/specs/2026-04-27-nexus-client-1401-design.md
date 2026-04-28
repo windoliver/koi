@@ -361,15 +361,35 @@ interface KoiRuntimeFactoryConfig {
 }
 ```
 
-When `nexusAuditPoisonOnError === true`, the runtime hooks Nexus sink errors into a **per-sink poison latch** that is checked independently at every admission boundary — exactly matching the existing pre-PR NDJSON/SQLite semantics. **Per-sink fail-stop is preserved**: if ANY required sink poisons, admission denies. This is NOT a quorum gate — operators who configured both NDJSON and SQLite as required intentionally want both durable trails or no work to proceed.
+When `nexusAuditPoisonOnError === true`, the runtime hooks Nexus sink errors into a **per-sink poison latch** that is checked at every admission boundary. The per-sink latch + admission gate is the SAME machinery NDJSON/SQLite use, BUT the Nexus guarantee is intentionally **weaker than required-NDJSON/SQLite** in one important way (documented honestly here so operators do not over-trust the mode).
 
-**Per-sink state, per-sink fail-stop admission (matches pre-PR behavior exactly):**
+**Honest scoping — Nexus guarantee is POST-FAILURE CONTAINMENT, not synchronous-flush parity:**
+
+The pre-PR NDJSON/SQLite required-sink middleware does a **synchronous `flush()` + rethrow at every boundary** (onSessionStart, onSessionEnd, onPermissionDecision, wrapModelCall, wrapToolCall) so any flush error surfaces BEFORE the next side-effecting operation runs. That is achievable because both sinks are local-disk: a flush is a syscall, costs microseconds, and never blocks.
+
+Nexus is REMOTE and BUFFERED. A synchronous flush at every boundary would require a Nexus round-trip (10-200ms typically, can be seconds under degraded conditions) before every model call and tool call — wedging the agent loop. The Nexus poison mode therefore drops the synchronous-flush+rethrow part of the NDJSON/SQLite contract and ships ONLY the per-sink latch + admission-gate-at-next-boundary half:
+
+| Sink | Latch on error | Admission gate denies on latch | Synchronous flush+rethrow per boundary |
+|---|---|---|---|
+| NDJSON `required:true` | yes | yes | **yes** (local-disk, microsecond cost) |
+| SQLite `required:true` | yes | yes | **yes** (same) |
+| Nexus `poisonOnError:true` | yes | yes | **no** (remote round-trip would wedge the agent loop) |
+
+**Containment semantics this PR actually delivers (Nexus opt-in mode):**
+
+- The first failed Nexus write LATCHES `nexusPoison`.
+- The poisoned-sink wrapper REJECTS every subsequent `log()` so post-poison writes surface as observable failures (compliance recorder's `onError` fires).
+- The audit-middleware admission gate REFUSES new work at the NEXT boundary — but a side-effecting operation that is already in flight when Nexus first fails will COMPLETE before the gate fires.
+
+That is materially weaker than the local-sink contract. It is still meaningfully better than the pre-PR silent-drop default. Operators who need every audited operation to fail-stop synchronously on first remote-write failure are NOT served by this mode and should require a local sink (NDJSON or SQLite with `required:true`); the Nexus poison mode is for operators who want eventual fail-stop containment without paying remote round-trip cost on every loop iteration.
+
+**Per-sink state, per-sink admission boundary checks (machinery):**
 
 - Each sink gets its own poison latch (`ndjsonPoison`, `sqlitePoison`, `nexusPoison`).
-- Each required sink's latch is checked at every admission boundary (`onSessionStart`, `onBeforeTurn`, `wrapModelCall`, `wrapToolCall`, end-of-session flush). ANY poisoned required latch denies admission. This is the existing semantics for NDJSON and SQLite — Nexus joins on the same terms when `nexusAuditPoisonOnError === true`.
-- Optional sinks (e.g., NDJSON without the existing `required: true` config; Nexus with `nexusAuditPoisonOnError !== true`) log on failure but never block admission.
+- Each required-sink latch is checked at every admission boundary (`onSessionStart`, `onBeforeTurn`, `wrapModelCall`, `wrapToolCall`, end-of-session flush). ANY poisoned required latch denies admission. NDJSON/SQLite admission denial is paired with synchronous flush+rethrow at the boundary; Nexus admission denial is NOT (see scoping above).
+- Optional sinks (e.g., NDJSON without `required: true`; Nexus with `nexusAuditPoisonOnError !== true`) log on failure but never block admission.
 
-**Two-layer fail-stop mechanics (mirrors NDJSON/SQLite end-to-end — required for the documented guarantee):**
+**Two-layer containment mechanics (Nexus opt-in mode):**
 
 1. **Sink-side short-circuit (poisoned `log()` wrapper).** When `nexusAuditPoisonOnError === true`, the runtime wraps `createNexusAuditSink(...)` in a thin `poisonedSink(inner, latch)` adapter that, on every `log()` call, FIRST inspects the latch:
 
@@ -380,7 +400,7 @@ When `nexusAuditPoisonOnError === true`, the runtime hooks Nexus sink errors int
 
 2. **Middleware admission gate.** Per-sink admission check at every boundary (the `admissionAllowed()` helper sketched below). This is the existing NDJSON/SQLite gate; Nexus joins it via the per-sink latch. The gate fails the work item that crosses the boundary AFTER the wrapper has already stopped accepting writes.
 
-**Spec contract (the documented "fail-stop parity" guarantee covers BOTH layers):** once `nexusPoison.err` is set, (a) every subsequent `log()` is dropped at the sink wrapper (no internal buffering can absorb more records than the latch is aware of), AND (b) the next admission boundary refuses work. Layer (a) without (b) loses subsequent records silently to admission optimism; layer (b) without (a) loses records that arrive between boundaries. Both layers are required and both are tested.
+**Spec contract (Nexus post-failure containment — explicitly NOT NDJSON/SQLite parity):** once `nexusPoison.err` is set, (a) every subsequent `log()` is REJECTED at the sink wrapper (no internal buffering can absorb more records than the latch is aware of), AND (b) the NEXT admission boundary refuses work. The latch and gate are the same primitives NDJSON/SQLite use, but the synchronous flush+rethrow that NDJSON/SQLite perform AT EACH BOUNDARY is intentionally omitted for Nexus (would require a remote round-trip per boundary — agent loop wedge). This means a side-effecting operation in flight when the first Nexus write fails will complete; the gate fires only at the next boundary check. Both wrapper and gate are required for the containment guarantee documented above.
 
 **Implementation home:** the `poisonedSink` wrapper lives in `runtime-factory.ts` next to the existing NDJSON/SQLite wrapper code (no new package). It is sink-kind-agnostic — same closure shape works for all three sinks, only the latch object differs.
 
@@ -1031,17 +1051,27 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       //       skew between backend and runtime cannot reintroduce the hang.
       const bootSyncDeadlineMs =
         config.nexusBootSyncDeadlineMs ?? NEXUS_BOOT_SYNC_DEADLINE_MS_DEFAULT;
-      const deadlineSignal = AbortSignal.timeout(bootSyncDeadlineMs);
-      let timedOut = false;
+      // Pull the AbortController the backend was constructed with so timeout
+      // can ACTIVELY ABORT the in-flight first-sync transport.call instead of
+      // just abandoning the promise. Without this, a failed boot can leave a
+      // live `read` request hitting the shared transport and the backend's
+      // initializePolicy() can mutate state AFTER dispose() — both are
+      // shutdown hazards.
       const result = await Promise.race([
         nexusPermBackend.ready.then(() => "ready" as const),
         new Promise<"timeout">((resolve) => {
-          deadlineSignal.addEventListener("abort", () => {
-            timedOut = true;
-            resolve("timeout");
-          });
+          const t = setTimeout(() => resolve("timeout"), bootSyncDeadlineMs);
+          // unref so a quick-resolve `ready` doesn't keep the timer alive
+          if (typeof t === "object" && t !== null && "unref" in t) (t as { unref: () => void }).unref();
         }),
       ]);
+      if (result === "timeout") {
+        // ABORT the in-flight sync BEFORE we throw, so the transport.call
+        // settles (rejected with AbortError) instead of completing async after
+        // the caller has already failed boot. dispose() in the catch handler
+        // also clears poll timers, but only abort cancels the in-flight read.
+        nexusPermBackend.abortInFlightSync?.();
+      }
       if (result === "timeout") {
         throw new Error(
           `Nexus first-sync timed out after ${bootSyncDeadlineMs}ms; ` +
@@ -1217,7 +1247,7 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 | `packages/lib/fs-nexus/src/probe-transport.ts` | New: `createLocalBridgeProbeTransport(spawnConfig): HealthCapableNexusTransport` — spawns a fresh, short-lived bridge subprocess; the ONLY local-bridge variant that implements `health()`; closes itself after the call. spawnConfig is held in closure scope, never on the returned transport object (no credential leak). | +75 |
 | `packages/lib/fs-nexus/src/probe-transport.test.ts` | New: probe spawns isolated subprocess; health() returns ok when bridge healthy; health() returns error when bridge auth-blocked (nonInteractive); probe subprocess is killed after probe regardless of result; probe failure does NOT affect any concurrently-running session transport | +110 |
 | `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; long-lived session transport does NOT receive nonInteractive flag from runtime probe path; existing call/subscribe behavior unchanged | +80 |
-| `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior. (Round 10 trim: `deferInitialSync` and `triggerImmediateSync` REMOVED — both existed solely to soften local-bridge auth-wedge, which is now categorically rejected upstream.) **Add optional `bootSyncDeadlineMs` config field** — when set, the FIRST-sync `transport.call("read", ...)` calls pass `{deadlineMs: bootSyncDeadlineMs}` so they cannot inherit the transport's 45s default. Subsequent polls use the transport default unchanged. Without this, `assert-remote-policy-loaded-at-boot` could hang the CLI tens of seconds against a slow Nexus despite the 5s probe deadline. | +30 |
+| `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior. (Round 10 trim: `deferInitialSync` and `triggerImmediateSync` REMOVED — both existed solely to soften local-bridge auth-wedge, which is now categorically rejected upstream.) **Add optional `bootSyncDeadlineMs` config field** — when set, the FIRST-sync `transport.call("read", ...)` calls pass `{deadlineMs: bootSyncDeadlineMs}` so they cannot inherit the transport's 45s default. Subsequent polls use the transport default unchanged. **Add `abortInFlightSync()` method + internal `AbortController` threaded into the first-sync `transport.call(...)` `signal`** — when called, it aborts the in-flight read so `initializePolicy()` cannot mutate backend state after `dispose()`. State-mutation guard: any `initializePolicy()` resolution that lands AFTER `abortInFlightSync()` or `dispose()` is silently dropped (no skip-bad-update path triggered). Without these, the assert-remote-policy-loaded-at-boot timeout path leaves a live `read` request running against the shared transport. | +50 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.test.ts` | New tests: false before any sync; false when first sync fails (404/parse/rebuild mismatch — no last-known-good); true after first successful sync; stays true when subsequent sync fails (last-known-good preserved); stays true when subsequent sync produces incompatible policy (skipped, last-known-good preserved) | +60 |
 | `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as base `NexusTransport` (long-lived session has no health); add `nexusBootMode`, `nexusPolicyPath`, `nexusAuditPoisonOnError`, `nexusPermissionsEnabled`, `nexusAuditEnabled`, `nexusAuditMode`, `nexusSyncIntervalMs` config fields (Loop 3 Round 1: `nexusProbeFactory` REMOVED — was dead in runtime; standalone probe is caller-site only); **Phase 1 deprecation:** HTTP transport with unset `nexusPermissionsEnabled`/`nexusAuditEnabled` infers TRUE + warns (Phase 2 throws). Local-bridge with unset flags THROWS unconditionally (no inference) — fs-only sessions must use the tui-command.ts decoupling and not pass `nexusTransport` into the runtime. Local-bridge + explicit `nexusPermissionsEnabled=true` THROWS (security gate, both phases). **Probe + consumer wiring gated on resolved flags:** if both effective consumer flags are false, the entire Nexus startup block is SKIPPED — explicit fs-only HTTP configurations also unaffected. runtime probes HTTP transports only (in-place); local-bridge probing is caller-site responsibility via the exported `createLocalBridgeProbeTransport` and is never invoked from the runtime; preflight: throw on local-bridge + fail-closed-* (unsupported); thread `nexusPolicyPath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws on probe failure; in `assert-remote-policy-loaded-at-boot`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **preserve per-sink poison latches (NDJSON, SQLite, Nexus each independent) AND existing per-sink fail-stop admission semantics** — pre-PR NDJSON/SQLite required-sink behavior is unchanged; Nexus joins on the same terms when `nexusAuditPoisonOnError === true`. NO quorum gate. Optional sinks (default) log only; **add early-throw validation** when `local-bridge + telemetry + nexusSyncIntervalMs===0` (deferred sync would never fire, deadlocking `ready`); route Nexus sink errors into it ONLY when `nexusAuditPoisonOnError === true` (default best-effort); existing middleware admission guards now cover Nexus too via per-sink poison latch; **wire Nexus compliance-recorder `onError` to latch `nexusPoison` in opt-in mode (admission gate then refuses new work at next boundary; poisoned-sink wrapper rejects post-poison log() calls). NO `process.exit(1)` — Nexus is a remote dependency and the runtime exposes no coordinated shutdown primitive today, so synchronous hard-exit on async remote failure is explicitly out-of-scope. Best-effort logging in default mode (was silent — bug fix). Coordinated-shutdown follow-up tracked under "Out of scope".** | +145 |
 | `packages/security/audit-sink-nexus/src/config.ts` | **Add `onError?: (err: unknown) => void` to `NexusAuditSinkConfig`** — the field doesn't exist today; wrapper depends on it | +8 |
@@ -1352,6 +1382,9 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j28. `assert-remote-policy-loaded-at-boot isCentralizedPolicyActive()===false: same disposal path before the throw`
 7g16j29. `dispose() throwing during teardown is logged as warning + does NOT mask the original assert-* error (operator sees the actionable cause, not the disposal noise)`
 7g16j30. `Successful boot path: dispose() is NOT called from the assert-* try/catch (only from runtime's outer shutdown handle — regression guard against double-dispose)`
+7g16j31. `assert-remote-policy-loaded-at-boot timeout: abortInFlightSync() is called BEFORE the throw; in-flight transport.call("read", ...) settles with AbortError (proven via mock transport that records the AbortSignal it received)`
+7g16j32. `Backend's initializePolicy() resolving AFTER abortInFlightSync() does NOT mutate backend state (drops the late resolution; isCentralizedPolicyActive() does not flip from false to true post-abort)`
+7g16j33. `Backend's initializePolicy() resolving AFTER dispose() does NOT mutate state (state-mutation guard — same root cause coverage as 7g16j32 but driven by dispose path instead of timeout path)`
 7g16k. (REMOVED — local-bridge + permissions categorically rejected)
 7g16l. (REMOVED — same)
 7g16m. (REMOVED — same)
