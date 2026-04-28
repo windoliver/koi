@@ -511,4 +511,62 @@ describe("createCircuitBreakerMiddleware", () => {
     );
     expect(r?.content).toBe("ok");
   });
+
+  // Regression: tenant-scoped extractKey + maxKeys must NOT silently lose
+  // breaker coverage as sessions accumulate. `onSessionEnd` reclaims that
+  // session's CLOSED keys so a later tenant always gets a real breaker.
+  test("onSessionEnd reclaims tenant-scoped CLOSED breaker keys", async () => {
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 2 },
+      maxKeys: 2,
+      extractKey: (model, c) => `${model ?? "x"}|${c.session.sessionId}`,
+    });
+    const ctxA = turnCtx("tenant-a");
+    const ctxB = turnCtx("tenant-b");
+    await mw.wrapModelCall?.(ctxA, { messages: [], model: "openai/m" }, makeHandler("ok"));
+    await mw.wrapModelCall?.(ctxB, { messages: [], model: "openai/m" }, makeHandler("ok"));
+    await mw.onSessionEnd?.(ctxA.session);
+    // tenant-c must still get real breaker coverage, not passthrough.
+    const ctxC = turnCtx("tenant-c");
+    for (let i = 0; i < 2; i++) {
+      await expect(
+        mw.wrapModelCall?.(ctxC, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+      ).rejects.toThrow();
+    }
+    let runCount = 0;
+    const trace = async (): Promise<never> => {
+      runCount++;
+      throw new Error("should-not-run");
+    };
+    await expect(
+      mw.wrapModelCall?.(ctxC, { messages: [], model: "openai/m" }, trace),
+    ).rejects.toMatchObject({ code: "RATE_LIMIT" });
+    expect(runCount).toBe(0);
+  });
+
+  // Regression: onSessionEnd must NOT evict OPEN circuits — another
+  // session on the same shared key may still be relying on fail-fast.
+  test("onSessionEnd preserves OPEN circuits", async () => {
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 2 },
+      maxKeys: 4,
+    });
+    const ctx = turnCtx("tenant-a");
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    await mw.onSessionEnd?.(ctx.session);
+    let runCount = 0;
+    const trace = async (): Promise<never> => {
+      runCount++;
+      throw new Error("should-not-run");
+    };
+    await expect(
+      mw.wrapModelCall?.(turnCtx("tenant-b"), { messages: [], model: "openai/m" }, trace),
+    ).rejects.toMatchObject({ code: "RATE_LIMIT" });
+    expect(runCount).toBe(0);
+  });
 });

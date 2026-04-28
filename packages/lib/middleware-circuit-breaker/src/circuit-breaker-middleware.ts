@@ -173,6 +173,37 @@ interface CbState {
   readonly clock: (() => number) | undefined;
   readonly breakers: Map<string, CircuitBreaker>;
   readonly warnGuard: { warned: boolean };
+  /**
+   * Reverse index: each session-id to the set of breaker keys created on
+   * its behalf. Lets `onSessionEnd` reclaim keys derived from that session
+   * (typical pattern when `extractKey` scopes by tenant/session). Without
+   * this, tenant-scoped keys accumulate until `maxKeys` is reached and
+   * subsequent tenants silently lose breaker coverage during an outage.
+   * Only CLOSED entries are evicted on session end — an OPEN circuit may
+   * still be useful to other observers and must not be reset.
+   */
+  readonly keysBySession: Map<string, Set<string>>;
+}
+
+function trackSessionKey(s: CbState, sessionId: string, key: string): void {
+  const existing = s.keysBySession.get(sessionId);
+  if (existing !== undefined) {
+    existing.add(key);
+    return;
+  }
+  s.keysBySession.set(sessionId, new Set([key]));
+}
+
+function evictSessionKeys(s: CbState, sessionId: string): void {
+  const keys = s.keysBySession.get(sessionId);
+  if (keys === undefined) return;
+  s.keysBySession.delete(sessionId);
+  for (const k of keys) {
+    const b = s.breakers.get(k);
+    // Preserve OPEN/HALF_OPEN circuits — other sessions on the same
+    // tenant key (or future calls) may still need to fail-fast.
+    if (b !== undefined && b.getSnapshot().state === "CLOSED") s.breakers.delete(k);
+  }
 }
 
 function getOrCreateBreaker(s: CbState, key: string): CircuitBreaker | undefined {
@@ -235,6 +266,7 @@ async function cbWrapModelCall(
   // Pass through without coverage — preferable to silently growing the
   // map past its hard cap.
   if (breaker === undefined) return next(request);
+  trackSessionKey(s, ctx.session.sessionId, key);
   if (!breaker.isAllowed()) {
     throw createCircuitOpenError(key);
   }
@@ -262,6 +294,7 @@ function cbWrapModelStream(
   const breaker = getOrCreateBreaker(s, key);
   // No breaker available — pass through (see cbWrapModelCall for rationale).
   if (breaker === undefined) return next(request);
+  trackSessionKey(s, ctx.session.sessionId, key);
   // Snapshot before isAllowed so we can detect an OPEN→HALF_OPEN transition
   // that consumed our probe slot. The breaker primitive marks `probeInFlight`
   // when isAllowed returns true from OPEN or HALF_OPEN, so we MUST eventually
@@ -300,6 +333,7 @@ export function createCircuitBreakerMiddleware(
     clock: config?.clock,
     breakers: new Map(),
     warnGuard: { warned: false },
+    keysBySession: new Map(),
   };
   return {
     name: "koi:circuit-breaker",
@@ -307,6 +341,9 @@ export function createCircuitBreakerMiddleware(
     phase: "intercept",
     wrapModelCall: (ctx, request, next) => cbWrapModelCall(state, ctx, request, next),
     wrapModelStream: (ctx, request, next) => cbWrapModelStream(state, ctx, request, next),
+    onSessionEnd: async (ctx) => {
+      evictSessionKeys(state, ctx.sessionId);
+    },
     describeCapabilities: () => cbDescribe(state),
   } satisfies KoiMiddleware;
 }

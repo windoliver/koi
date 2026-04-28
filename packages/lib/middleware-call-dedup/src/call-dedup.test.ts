@@ -343,6 +343,27 @@ describe("createCallDedupMiddleware", () => {
   // is part of request identity. Replaying a cached response across
   // requests with different metadata would replay across different request
   // contexts. Bypass cache when metadata is present.
+  // Regression: callId is per-invocation correlation. Two calls with
+  // identical sessionId+toolId+input but distinct callIds must NOT
+  // share cached output — downstream middleware (checkpoint/debug)
+  // would otherwise miss the second invocation entirely.
+  test("requests with distinct callId values do not share cache", async () => {
+    const mw = createCallDedupMiddleware({ include: ["lookup"] });
+    const ctx = turnCtx();
+    const h = makeHandler("v");
+    await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "lookup", input: { q: 1 }, callId: "call-a" },
+      h.handler,
+    );
+    await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "lookup", input: { q: 1 }, callId: "call-b" },
+      h.handler,
+    );
+    expect(h.calls).toBe(2);
+  });
+
   test("requests with metadata bypass cache", async () => {
     const mw = createCallDedupMiddleware({ include: ["lookup"] });
     const ctx = turnCtx();

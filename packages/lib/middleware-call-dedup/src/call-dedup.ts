@@ -170,6 +170,13 @@ function isRequestCacheSafe(request: ToolRequest): boolean {
     // are semantically irrelevant.
     return false;
   }
+  // `callId` is the per-invocation correlation id used by checkpoint /
+  // debug / audit middleware to tie side effects back to the exact tool
+  // call. Replaying a cached response across distinct callIds would hide
+  // the second invocation from those downstream systems, breaking the
+  // per-invocation contract. Conservative bypass: when callId is set,
+  // every invocation runs fresh.
+  if (request.callId !== undefined) return false;
   return true;
 }
 
