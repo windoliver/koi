@@ -775,27 +775,6 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       dispose: async () => {
         // Unsubscribe approval sink to prevent leak on long-lived permission handles
         unsubApprovalSink?.();
-        // Step 0: When the runtime was constructed with a stable
-        // `RuntimeConfig.sessionId`, per-stream `onSessionEnd` was
-        // suppressed (so middleware state survives across turns). The
-        // session-end hooks must still fire EXACTLY ONCE at runtime
-        // teardown, otherwise audit/transcript/metrics middleware that
-        // rely on onSessionEnd never get their finalization callback.
-        // Synthesize a SessionContext from the stable id and run the
-        // hooks now, before adapter disposal. Errors are swallowed —
-        // dispose continues regardless so other resources still close.
-        if (config.sessionId !== undefined) {
-          try {
-            const sortedForFinalize = sortMiddlewareByPhase(middleware);
-            const finalizeSession = createMinimalTurnContext({
-              streamId: "runtime-dispose",
-              sessionId: config.sessionId,
-            }).session;
-            await runSessionHooks(sortedForFinalize, "onSessionEnd", finalizeSession).catch(noop);
-          } catch {
-            // Defensive: never block dispose on session-end failures.
-          }
-        }
         // Step 1: Dispose adapter first — this terminates active model streams,
         // which triggers their finally blocks (where flush + afterFlush run).
         // Without this, awaiting stream finalizations would deadlock because
@@ -818,6 +797,29 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         };
         await drainWithTimeout(activeStreamFinalizations);
         await drainWithTimeout(activeFlushes);
+        // Step 2.5: With a stable `RuntimeConfig.sessionId`, per-stream
+        // `onSessionEnd` was suppressed so middleware state survives
+        // across turns. Fire the deferred session-end hook EXACTLY ONCE
+        // here — AFTER adapter dispose has cancelled live streams and
+        // their finalizations have drained. Firing earlier would tear
+        // down session-scoped middleware state (call-dedup cache,
+        // call-limits counters, breaker history) while a stream from
+        // the same logical session was still unwinding through final
+        // model/tool activity, allowing late calls to escape limits or
+        // lose final accounting. Errors are swallowed so dispose
+        // continues to close other owned resources.
+        if (config.sessionId !== undefined) {
+          try {
+            const sortedForFinalize = sortMiddlewareByPhase(middleware);
+            const finalizeSession = createMinimalTurnContext({
+              streamId: "runtime-dispose",
+              sessionId: config.sessionId,
+            }).session;
+            await runSessionHooks(sortedForFinalize, "onSessionEnd", finalizeSession).catch(noop);
+          } catch {
+            // Defensive: never block dispose on session-end failures.
+          }
+        }
         // Step 3: Close trajectory Nexus transport AFTER all flushes complete.
         trajectoryTransport?.close();
         // Step 4: Release runtime-owned L2 resources wired from config.
@@ -2108,10 +2110,15 @@ function composeMiddlewareIntoAdapter(
       // dispose()). Otherwise generic middleware that allocates session-
       // scoped resources or writes session-open audit records would
       // duplicate work for every stream and never see a matching end.
+      // The "fired" flag flips only AFTER the hook resolves
+      // successfully — a transient onSessionStart failure must not
+      // permanently disable the hook so a later stream can retry
+      // initialization.
       const shouldFireSessionStart = runtimeSessionId === undefined || !stableSessionStartFired;
-      if (runtimeSessionId !== undefined) stableSessionStartFired = true;
       const sessionStartPromise = shouldFireSessionStart
-        ? runSessionHooks(sorted, "onSessionStart", ctx.session)
+        ? runSessionHooks(sorted, "onSessionStart", ctx.session).then(() => {
+            if (runtimeSessionId !== undefined) stableSessionStartFired = true;
+          })
         : Promise.resolve();
 
       const innerStream = adapter.stream(injectCallHandlers(input, callHandlers));

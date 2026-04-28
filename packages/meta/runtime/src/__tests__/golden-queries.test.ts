@@ -1752,6 +1752,48 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     expect(endCalls).toEqual(["stable-lifecycle"]);
   });
 
+  // Regression (#1419 round 27): a transient onSessionStart failure
+  // on the first stream must NOT permanently disable session-start
+  // hooks for subsequent streams under stable sessionId.
+  test("RuntimeConfig.sessionId retries onSessionStart after a transient failure", async () => {
+    let attempt = 0;
+    const startCalls: string[] = [];
+    const probe = {
+      name: "session-start-retry-probe",
+      phase: "observe" as const,
+      priority: 999,
+      describeCapabilities: () => ({ label: "probe", description: "probe" }),
+      onSessionStart: async (session: { sessionId: string }) => {
+        attempt++;
+        if (attempt === 1) throw new Error("transient-init-failure");
+        startCalls.push(session.sessionId);
+      },
+    } as unknown as import("@koi/core").KoiMiddleware;
+    const runtime = createRuntime({
+      adapter: createTerminalAdapter(),
+      sessionId: "stable-retry",
+      middleware: [probe],
+    });
+    // First stream: onSessionStart throws; the error surfaces to the caller.
+    let firstErr: unknown;
+    try {
+      for await (const _ of runtime.adapter.stream({ kind: "text", text: "first" })) {
+        // drain
+      }
+    } catch (e) {
+      firstErr = e;
+    }
+    expect(firstErr).toBeDefined();
+    // Second stream: onSessionStart MUST be re-attempted (the flag was
+    // not flipped on the failed first attempt). It succeeds this time.
+    for await (const _ of runtime.adapter.stream({ kind: "text", text: "second" })) {
+      // drain
+    }
+    expect(startCalls).toEqual(["stable-retry"]);
+    expect(attempt).toBe(2);
+    await runtime.dispose();
+  });
+
   test("RuntimeConfig without sessionId still finalizes per stream", async () => {
     const endCalls: string[] = [];
     const probe = {
