@@ -26,17 +26,25 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
-import { appendFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { join } from "node:path";
-import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
-import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
+import { dirname, join } from "node:path";
+import type { NdjsonRotationConfig } from "@koi/audit-sink-ndjson";
+import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit-sink-ndjson";
+import { createNexusAuditSink } from "@koi/audit-sink-nexus";
+import type { SqliteRetentionConfig } from "@koi/audit-sink-sqlite";
+import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type { BudgetConfig } from "@koi/context-manager";
 import type {
   Agent,
+  AgentId,
   ApprovalHandler,
+  AuditEntry,
+  AuditSink,
+  ComplianceRecorder,
   ComponentProvider,
   EngineAdapter,
   EngineEvent,
@@ -44,14 +52,24 @@ import type {
   FileSystemBackend,
   GovernanceBackend,
   GovernanceController,
+  GovernanceVerdict,
   InboundMessage,
   KoiMiddleware,
   ModelAdapter,
+  ModelChunk,
+  ModelRequest,
+  ModelStreamHandler,
   PermissionBackend,
+  PermissionDecision,
+  PermissionQuery,
+  PolicyRequest,
   RichTrajectoryStep,
   RuleDescriptor,
   SessionId,
   SessionTranscript,
+  TurnContext,
+  Violation,
+  ViolationStore,
 } from "@koi/core";
 import { COMPONENT_PRIORITY, GOVERNANCE, agentId as makeAgentId } from "@koi/core";
 import { DEFAULT_PRICING, resolvePricing } from "@koi/cost-aggregator";
@@ -59,24 +77,57 @@ import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
 import type { GovernanceConfig, KoiRuntime } from "@koi/engine";
 import { createGovernanceController, createKoi } from "@koi/engine";
+import {
+  createForgeDemandDetector,
+  type ForgeDemandConfig,
+  validateForgeDemandConfig,
+} from "@koi/forge-demand";
 import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
+import {
+  createJsonlApprovalStore,
+  createPersistSink,
+  createViolationAuditAdapter,
+  wrapBackendWithPersistedAllowlist,
+} from "@koi/governance-approval-tiers";
 import type { CostCalculator } from "@koi/governance-core";
 import { createGovernanceMiddleware } from "@koi/governance-core";
 import type { PatternRule } from "@koi/governance-defaults";
-import { createPatternBackend } from "@koi/governance-defaults";
+import {
+  createAuditSinkComplianceRecorder,
+  createPatternBackend,
+  fanOutComplianceRecorder,
+} from "@koi/governance-defaults";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import {
+  createFeedbackLoopMiddleware,
+  type FeedbackLoopConfig,
+} from "@koi/middleware-feedback-loop";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
-import type { ApprovalStore } from "@koi/middleware-permissions";
-import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import type { ApprovalStore, PermissionRules } from "@koi/middleware-permissions";
+import {
+  createPatternPermissionBackend,
+  createPermissionsMiddleware,
+} from "@koi/middleware-permissions";
 import { createPlanPersistMiddleware } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
-import type { SourcedRule } from "@koi/permissions";
-import { createPermissionBackend } from "@koi/permissions";
+import type { CompiledRule, SourcedRule } from "@koi/permissions";
+import {
+  compileGlob,
+  createPermissionBackend,
+  evaluateRules,
+  mapSettingsToSourcedRules,
+  SOURCE_PRECEDENCE,
+  widenCommandScopedRulesForTui,
+} from "@koi/permissions";
+import type { NexusPermissionBackend } from "@koi/permissions-nexus";
+import { createNexusPermissionBackend } from "@koi/permissions-nexus";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
+import { loadSettings } from "@koi/settings";
 import type { SkillsRuntime } from "@koi/skills-runtime";
+import { createSqliteViolationStore } from "@koi/violation-store-sqlite";
 import {
   buildInheritedMiddlewareForChildren,
   composeRuntimeMiddleware,
@@ -97,6 +148,7 @@ import { enforceRequiredMiddleware } from "./required-middleware.js";
 import {
   buildCoreMiddleware,
   buildCoreProviders,
+  loadUserMcpSetup,
   loadUserRegisteredHooks,
   mergeUserAndPluginHooks,
 } from "./shared-wiring.js";
@@ -583,7 +635,7 @@ export interface KoiRuntimeConfig {
    *   retries interactively.
    * - `false` → disables detection entirely. `koi tui` opts in
    *   because its per-submit iteration budget reset
-   *   (`resetIterationBudgetPerRun: true` below, combined with the
+   *   (`resetBudgetPerRun: true` below, combined with the
    *   governance caps) already bounds spirals and false positives
    *   are expensive inside an interactive session.
    * - `Partial<LoopDetectionConfig>` → custom thresholds for hosts
@@ -625,6 +677,12 @@ export interface KoiRuntimeConfig {
   /** Working directory for file tools (Glob, fs_read, Bash). Defaults to process.cwd(). */
   readonly cwd?: string | undefined;
   /**
+   * Absolute path to a settings file loaded as the `flag` layer — highest priority
+   * below `policy`. Enables per-invocation overrides via `--settings <path>`.
+   * When omitted the flag layer is empty (no per-invocation override).
+   */
+  readonly settingsFlagPath?: string | undefined;
+  /**
    * System prompt injected via createSystemPromptMiddleware.
    * Tells the model it has tools and should use them.
    * When omitted, no system prompt middleware is installed.
@@ -646,6 +704,19 @@ export interface KoiRuntimeConfig {
    * via createSkillsMcpBridge.
    */
   readonly skillsRuntime?: SkillsRuntime | undefined;
+  /**
+   * When true, the Skill meta-tool description omits the static skill listing
+   * and defers to the per-turn `<available_skills>` XML block injected by the
+   * progressive middleware. Must be forwarded into `earlyContextHost` so the
+   * `skillsStack` preset picks it up via `ctx.host.skillsProgressive`.
+   */
+  readonly skillsProgressive?: boolean | undefined;
+  /**
+   * Optional OAuthChannel for MCP server OAuth flows.
+   * When provided, wired into every MCP connection so auth_required /
+   * auth_complete events render inline as chat messages.
+   */
+  readonly mcpOAuthChannel?: import("@koi/core").OAuthChannel | undefined;
   /**
    * Persistent approval store for cross-session "always" grants.
    * When provided, durable approvals survive process restart.
@@ -709,6 +780,12 @@ export interface KoiRuntimeConfig {
    */
   readonly auditNdjsonPath?: string | undefined;
   /**
+   * Optional NDJSON rotation policy. When set, the sink archives the active file
+   * to `<auditNdjsonPath>.archive/` when the configured threshold is reached.
+   * Requires `auditNdjsonPath` to be set — ignored otherwise.
+   */
+  readonly auditNdjsonRotation?: NdjsonRotationConfig | undefined;
+  /**
    * Optional absolute path to a SQLite audit database file.
    *
    * The TUI surfaces this via the `KOI_AUDIT_SQLITE` environment variable
@@ -717,6 +794,47 @@ export interface KoiRuntimeConfig {
    * owned by the runtime and closed during shutdown.
    */
   readonly auditSqlitePath?: string | undefined;
+  /**
+   * Optional SQLite audit retention policy. When set, rows older than
+   * `maxAgeDays` are pruned on the configured interval.
+   * Requires `auditSqlitePath` to be set — ignored otherwise.
+   */
+  readonly auditSqliteRetention?: SqliteRetentionConfig | undefined;
+  /** Path to the SQLite DB backing the ViolationStore.
+   *  - `undefined` (default): auto-wires to `~/.koi/violations.db` when
+   *    governance is enabled — mirrors the `~/.koi/governance-alerts.jsonl`
+   *    convention from gov-9 so `/governance` history works out of the box.
+   *  - Non-empty string: explicit override path.
+   *  - Empty string `""`: disables the store entirely (violations only
+   *    surfaced in-memory via the governance bridge for the current session). */
+  readonly violationSqlitePath?: string | undefined;
+  /**
+   * Per-sink manifest provenance — set to the manifest file path when the
+   * corresponding audit path was derived from `manifest.audit.*` (not from an
+   * operator env var). `createKoiRuntime` calls `revalidateAuditPathContainment`
+   * immediately before opening each manifest-derived sink to narrow the TOCTOU
+   * window between the pre-runtime check in `tui-command.ts` and the actual
+   * filesystem open syscall.
+   *
+   * A residual race remains because Bun/Node do not expose `openat` /
+   * `O_NOFOLLOW` for intermediate path components — full atomicity would require
+   * L2 sink API changes. The narrowed window is the best-effort mitigation.
+   *
+   * Leave each field `undefined` for env-var-sourced paths: those are operator-
+   * trusted and are NOT subject to manifest containment revalidation.
+   */
+  readonly manifestNdjsonSourcePath?: string | undefined;
+  readonly manifestSqliteSourcePath?: string | undefined;
+  readonly manifestViolationsSourcePath?: string | undefined;
+  /**
+   * Nexus transport for permission policy sync and audit trail.
+   * When set (from the manifest filesystem nexus transport), the runtime:
+   *  - Wraps the assembled TUI permission backend with `createNexusPermissionBackend`
+   *    (local-first: TUI rules apply when Nexus has no policy or is unreachable)
+   *  - Adds a `createNexusAuditSink` alongside NDJSON/SQLite sinks
+   * Omit when no nexus filesystem is configured.
+   */
+  readonly nexusTransport?: import("@koi/nexus-client").NexusTransport | undefined;
   /**
    * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
    * session end. The TUI surfaces this via `KOI_REPORT_ENABLED=true`.
@@ -733,6 +851,24 @@ export interface KoiRuntimeConfig {
    * no-op default when it lands.
    */
   readonly planningEnabled?: boolean | undefined;
+  /**
+   * Opt-in: activate `@koi/middleware-feedback-loop` for model-response
+   * validation and tool-health tracking. When set, the middleware is wired
+   * into the outer middleware zone alongside the audit/report middlewares.
+   * Surface via `KOI_FEEDBACK_LOOP_ENABLED=true` in the TUI, which
+   * activates the middleware with an empty config (no validators, no
+   * quarantine thresholds — observe-only posture).
+   */
+  readonly feedbackLoop?: FeedbackLoopConfig | undefined;
+  /**
+   * Opt-in: activate `@koi/forge-demand` detector. Auto-wires
+   * feedback-loop's healthHandle when feedbackLoop is also configured
+   * with `forgeHealth`. Caller must supply `onSessionAttached` (F96/F101);
+   * the TUI env-var path provides a logging stub that captures scoped
+   * handles per session for later inspection.
+   * Surface via `KOI_FORGE_DEMAND_ENABLED=true` in the TUI.
+   */
+  readonly forgeDemand?: ForgeDemandConfig | undefined;
   /**
    * Subset of filesystem operations to expose (#1777). `undefined`
    * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
@@ -762,6 +898,26 @@ export interface KoiRuntimeConfig {
    * tools backed by a host-owned ArtifactStore). Order preserved.
    */
   readonly extraProviders?: readonly ComponentProvider[] | undefined;
+  /**
+   * Host-provided middleware appended to the `presetExtras` slot (phase
+   * "resolve", after stack middleware). Used to wire host-owned middleware
+   * that doesn't fit a preset stack. Order preserved.
+   */
+  readonly extraMiddleware?: readonly KoiMiddleware[] | undefined;
+  /**
+   * Progressive skill injector middleware for the root agent.
+   * Placed in the post-permissions slot (zone C-bottom, after planPersist and
+   * before systemPrompt) so `request.tools` is permissions-filtered when the
+   * injector checks whether the Skill tool is active.
+   */
+  readonly skillInjector?: KoiMiddleware | undefined;
+  /**
+   * Skill injector middleware to propagate into spawned child agents.
+   * When set, child model calls receive the same `<available_skills>` injection
+   * as the root agent. The middleware reads from its original agent reference
+   * (typically the root agent's ECS), which reflects the global skill set.
+   */
+  readonly childSkillInjector?: KoiMiddleware | undefined;
 }
 
 export interface KoiRuntimeHandle {
@@ -879,6 +1035,22 @@ export interface KoiRuntimeHandle {
    */
   readonly getMcpStatus: () => Promise<readonly McpServerStatus[]>;
   /**
+   * Trigger interactive OAuth for an MCP server using the live auth provider
+   * wired into the existing connection. This is the correct path for nav:mcp-auth
+   * — it reuses the same provider instance so in-memory token caches are cleared
+   * before startAuthFlow(), rather than creating a parallel provider that only
+   * updates storage.
+   *
+   * "success-live" — auth succeeded and the live session can use the server now.
+   * "success-reload-required" — auth succeeded in storage but the server was not
+   *   wired into this session's resolver; the user must reload to connect.
+   * "failed" — auth did not complete.
+   */
+  readonly triggerMcpServerAuth: (
+    serverName: string,
+    channel: import("@koi/core").OAuthChannel,
+  ) => Promise<"success-live" | "success-reload-required" | "failed">;
+  /**
    * Plugin discovery summary — loaded plugins + any errors.
    * Static for the lifetime of the runtime. Used by the TUI to populate
    * the /plugins view and inject plugin awareness into the system prompt.
@@ -909,6 +1081,23 @@ export interface KoiRuntimeHandle {
    * `--no-governance` fails open on the TUI toast + alerts-file paths.
    */
   readonly governanceEnabled: boolean;
+  /**
+   * Optional SQLite violation store — present when `config.violationSqlitePath`
+   * is set. Passed to `createGovernanceBridge` so the TUI governance view can
+   * query recent persisted violations via `bridge.loadRecentViolations()`.
+   * Undefined when violations persistence is not configured.
+   */
+  readonly violationStore: ViolationStore | undefined;
+  /**
+   * The assembled governance backend — present when governance is enabled
+   * (`governanceEnabled === true`). Exposes `.compliance` (ComplianceRecorder)
+   * when `auditSqlitePath` is set, and `.violations` (ViolationStore) when
+   * `violationSqlitePath` is set. Undefined when `governanceDisabled: true`.
+   *
+   * Integration tests use this field to verify wiring without synthesising
+   * a full verdict (Task 13 / #1393).
+   */
+  readonly governanceBackend: GovernanceBackend | undefined;
 }
 
 /** Status entry for a single MCP server (used by /mcp TUI command). */
@@ -1133,8 +1322,27 @@ export function resolveMaxDurationMs(hostDefault?: number): number {
   return Math.min(n, MAX_SETTIMEOUT_SAFE_MS);
 }
 
+/**
+ * Thrown when the policy settings file fails to parse or load.
+ * `start.ts` catches this specifically to emit `bail(msg, 2)` — the documented
+ * policy-failure exit code — instead of a generic runtime-assembly error.
+ */
+export class PolicyLoadError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "PolicyLoadError";
+  }
+}
+
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
-  const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
+  const {
+    modelAdapter,
+    modelName,
+    approvalHandler,
+    cwd = process.cwd(),
+    settingsFlagPath,
+    skillsRuntime,
+  } = config;
   // Stable host identifier — used as the persistentAgentId for permissions,
   // the agentName in trajectory metadata, and the [koi/X] log prefix.
   // Pulled up from below so preset stack activation (which runs early so
@@ -1312,6 +1520,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
   const earlyContextHost: Record<string, unknown> = {
     ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
+    ...(config.skillsProgressive === true ? { skillsProgressive: true } : {}),
+    ...(config.mcpOAuthChannel !== undefined ? { mcpOAuthChannel: config.mcpOAuthChannel } : {}),
     ...(config.otel !== undefined ? { otelConfig: config.otel } : {}),
     approvalHandler,
     agentId: precomputedAgentId,
@@ -1424,40 +1634,210 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // `coreSlots.hook` instead.
 
   // --- @koi/permissions + @koi/middleware-permissions ---
-  // Static rules from TUI_ALLOW_RULES + dynamic fs_read rules scoped to cwd.
-  // See TUI_ALLOW_RULES (above) for allowlist reasoning. The
-  // write_plan rule is appended only when planning is opted in so
-  // hosts that do not install @koi/middleware-planning cannot have
-  // a third-party same-named tool silently approved.
-  const tuiAllowRules: readonly SourcedRule[] = [
-    ...TUI_ALLOW_RULES,
-    ...(config.planningEnabled === true
-      ? [TUI_WRITE_PLAN_ALLOW_RULE, ...TUI_PLAN_PERSIST_ALLOW_RULES]
-      : []),
-    {
-      pattern: "fs_read",
-      action: "invoke",
-      effect: "allow",
-      source: "policy",
-      context: { path: `${cwd}/**` },
-    },
-    {
-      pattern: "fs_read",
-      action: "invoke",
-      effect: "ask",
-      source: "policy",
-      reason: "File is outside the workspace — approve to read",
-    },
-  ] as const;
-  // Permission backend: caller may override (koi start passes an
-  // auto-allow pattern backend). Default to the TUI's tiered default
-  // mode so existing TUI behavior is preserved.
-  const permBackend =
-    config.permissionBackend ??
-    createPermissionBackend({
-      mode: "default",
-      rules: tuiAllowRules,
+  // Always load settings — policy-layer rules must be enforced on every startup
+  // path, including koi start which supplies its own custom backend.
+  // Non-policy parse/schema errors are logged and skipped (fail-open for user
+  // layers); a policy-layer error is re-thrown so the top-level handler can
+  // exit with the fail-closed error code rather than produce a generic crash.
+  const settingsRules: SourcedRule[] = [];
+  const settingsDefaultMode = "default" as const;
+  try {
+    const { sources, errors: settingsErrors } = await loadSettings({
+      cwd,
+      ...(settingsFlagPath !== undefined ? { flagPath: settingsFlagPath } : {}),
     });
+    for (const err of settingsErrors) {
+      console.warn(`[koi/${hostId}] settings validation warning: ${err.file}: ${err.message}`);
+    }
+    for (const source of SOURCE_PRECEDENCE) {
+      const layerSettings = sources[source];
+      if (layerSettings != null) {
+        const rules = mapSettingsToSourcedRules(layerSettings, source);
+        // Policy layer is tightening-only: allow entries are dropped to prevent
+        // policy from re-opening tools that lower-precedence layers deny.
+        const filtered = source === "policy" ? rules.filter((r) => r.effect !== "allow") : rules;
+        settingsRules.push(...filtered);
+      }
+    }
+  } catch (err) {
+    // Policy or explicit --settings file is malformed or unreadable — rethrow
+    // so the caller can exit with code 2 (fail-closed).
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new PolicyLoadError(`[koi/${hostId}] fatal: settings failed to load — ${msg}`, {
+      cause: err,
+    });
+  }
+
+  // Sort helpers: highest-precedence source first, then deny < ask < allow.
+  const EFFECT_ORDER: Readonly<Record<string, number>> = { deny: 0, ask: 1, allow: 2 };
+  const precedenceIdx = (r: SourcedRule): number => SOURCE_PRECEDENCE.indexOf(r.source);
+  const sortRules = (rules: readonly SourcedRule[]): readonly SourcedRule[] =>
+    [...rules].sort((a, b) => {
+      const srcDiff = precedenceIdx(a) - precedenceIdx(b);
+      if (srcDiff !== 0) return srcDiff;
+      return (EFFECT_ORDER[a.effect] ?? 3) - (EFFECT_ORDER[b.effect] ?? 3);
+    });
+
+  // Build the permission backend:
+  //   Custom backend path (koi start): enforce policy-layer rules first, then
+  //     delegate to the caller's marker-aware backend.  No widening needed —
+  //     the custom backend evaluates enriched command-scoped resources directly.
+  //   TUI path: widen command-scoped rules fail-closed (the TUI backend only
+  //     receives plain tool ids), then add built-in TUI allows as fallback.
+  let permBackend: PermissionBackend;
+  if (config.permissionBackend !== undefined) {
+    const inner = config.permissionBackend;
+    // Settings may only TIGHTEN on the custom-backend path (koi start).
+    // Allow rules would bypass the caller's explicit whitelist (e.g. --allow-tool);
+    // only deny/ask rules are applied so operators stay in control.
+    const droppedAllowCount = settingsRules.filter((r) => r.effect === "allow").length;
+    if (droppedAllowCount > 0) {
+      console.warn(
+        `[koi/${hostId}] ${droppedAllowCount} settings allow rule(s) are not enforced when a ` +
+          `custom permission backend is active (koi start). ` +
+          `Only deny and ask rules take effect on this path. ` +
+          `Use \`koi tui\` or remove allow rules from settings.`,
+      );
+    }
+    const restrictingRules = sortRules(settingsRules.filter((r) => r.effect !== "allow"));
+    if (restrictingRules.length > 0) {
+      // Compile rules once at construction — never recompile per-query.
+      const compiledRules: readonly CompiledRule[] = restrictingRules.map((r) => ({
+        ...r,
+        compiled: compileGlob(r.pattern),
+      }));
+      const wrappedCheck = async (query: PermissionQuery): Promise<PermissionDecision> => {
+        const decision = evaluateRules(query, compiledRules);
+        // Sentinel "No matching permission rule" means settings have no deny/ask opinion.
+        // Delegate to the inner marker-aware backend (e.g. createPatternPermissionBackend).
+        if (decision.effect === "ask" && decision.reason === "No matching permission rule") {
+          return inner.check(query);
+        }
+        return decision;
+      };
+      // Preserve the marker-aware capability flag so koi start retains dual-key evaluation.
+      permBackend = {
+        check: wrappedCheck,
+        ...(inner.dispose != null ? { dispose: inner.dispose } : {}),
+        ...(inner.supportsDefaultDenyMarker === true
+          ? { supportsDefaultDenyMarker: true as const }
+          : {}),
+      };
+    } else {
+      permBackend = inner;
+    }
+  } else {
+    // TUI single-key mode: widen command-scoped rules (fail-closed).
+    const { rules: widenedRules, hadCommandScoped } = widenCommandScopedRulesForTui(settingsRules);
+    if (hadCommandScoped) {
+      console.warn(
+        `[koi/${hostId}] command-scoped settings rules are widened to tool-level in TUI mode ` +
+          `(deny/ask become tool-wide; allow rules are stripped). ` +
+          `Use \`koi start\` for precise command-scoped enforcement.`,
+      );
+    }
+    // Rule ordering: policy settings → non-policy restrict → built-in allows →
+    // fs_read workspace guard → non-policy allows.
+    //
+    // Non-policy deny/ask rules come before built-in TUI allows so that
+    // user/project/local/flag deny rules fire first. Non-policy allow rules come
+    // AFTER the out-of-workspace fs_read guard so that a broad "allow all" rule
+    // in project settings cannot bypass the workspace boundary prompt.
+    // Policy is tightening-only on TUI path as well: allows are already stripped at
+    // collection time, but guard here explicitly to prevent any future regression.
+    const policySettingsRules = sortRules(
+      widenedRules.filter((r) => r.source === "policy" && r.effect !== "allow"),
+    );
+    const subPolicyRestrictRules = sortRules(
+      widenedRules.filter((r) => r.source !== "policy" && r.effect !== "allow"),
+    );
+    const subPolicyAllowRules = sortRules(
+      widenedRules.filter((r) => r.source !== "policy" && r.effect === "allow"),
+    );
+    permBackend = createPermissionBackend({
+      mode: settingsDefaultMode,
+      rules: [
+        ...policySettingsRules,
+        ...subPolicyRestrictRules,
+        ...TUI_ALLOW_RULES,
+        ...(config.planningEnabled === true
+          ? [TUI_WRITE_PLAN_ALLOW_RULE, ...TUI_PLAN_PERSIST_ALLOW_RULES]
+          : []),
+        {
+          pattern: "fs_read",
+          action: "invoke",
+          effect: "allow",
+          source: "policy",
+          context: { path: `${cwd}/**` },
+        },
+        {
+          pattern: "fs_read",
+          action: "invoke",
+          effect: "ask",
+          source: "policy",
+          reason: "File is outside the workspace — approve to read",
+        },
+        ...subPolicyAllowRules,
+      ],
+    });
+  }
+  // --- Nexus permission backend (opt-in via config.nexusTransport) ---
+  // Wraps the fully-assembled TUI permBackend so nexus policy rules
+  // layer on top while TUI rules remain the local fallback.
+  // let: nexusPermBackend held for disposal
+  let nexusPermBackend: NexusPermissionBackend | undefined;
+  if (config.nexusTransport !== undefined) {
+    const transport = config.nexusTransport;
+    const tuiPermBackend = permBackend; // captured before wrapping
+    nexusPermBackend = createNexusPermissionBackend({
+      transport,
+      localBackend: tuiPermBackend,
+      rebuildBackend: (policy: unknown): PermissionBackend => {
+        // Parse nexus policy as { rules: { allow, deny, ask } }.
+        // If malformed or empty, fall back to TUI backend unchanged.
+        try {
+          if (typeof policy === "object" && policy !== null && "rules" in policy) {
+            const rawRules = (policy as { rules: unknown }).rules;
+            if (
+              typeof rawRules === "object" &&
+              rawRules !== null &&
+              "allow" in rawRules &&
+              "deny" in rawRules &&
+              "ask" in rawRules
+            ) {
+              const nexusPatternBackend = createPatternPermissionBackend({
+                rules: rawRules as PermissionRules,
+              });
+              // Chain: nexus first, TUI backend as fallback for no-opinion decisions.
+              return {
+                check: async (query: PermissionQuery): Promise<PermissionDecision> => {
+                  const decision = await Promise.resolve(nexusPatternBackend.check(query));
+                  if (
+                    decision.effect === "ask" &&
+                    decision.reason === "No matching permission rule"
+                  ) {
+                    return Promise.resolve(tuiPermBackend.check(query));
+                  }
+                  return decision;
+                },
+                ...(tuiPermBackend.dispose != null
+                  ? { dispose: tuiPermBackend.dispose.bind(tuiPermBackend) }
+                  : {}),
+                ...(tuiPermBackend.supportsDefaultDenyMarker === true
+                  ? { supportsDefaultDenyMarker: true as const }
+                  : {}),
+              };
+            }
+          }
+        } catch {
+          // fall through
+        }
+        return tuiPermBackend;
+      },
+    });
+    permBackend = nexusPermBackend;
+  }
+
   const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
 
   // Bash prefix enrichment (#1881). Feeds the raw command to
@@ -1474,11 +1854,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // so non-bash tools and malformed inputs fall through to the
   // plain tool id.
   //
-  // `allowLegacyBackendBashFallback: true` opts into single-key
-  // evaluation for the TUI's default `createPermissionBackend`,
-  // which is not marker-aware (see docs/L2/permissions.md). The
-  // pattern backend used by `koi start` advertises the marker and
-  // gets full dual-key enrichment automatically.
+  // createPermissionBackend now sets supportsDefaultDenyMarker: true and stamps
+  // fall-through ask decisions with IS_DEFAULT_ASK, enabling full dual-key semantic
+  // enforcement. allowLegacyBackendBashFallback is no longer needed here.
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionsDescription ?? "koi tui — default permission mode",
@@ -1489,7 +1867,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       toolId.toLowerCase() === "bash" && typeof input.command === "string"
         ? input.command
         : undefined,
-    allowLegacyBackendBashFallback: true,
+    enableBashSpecGuard: true,
     resolveToolPath: (
       toolId: string,
       input: import("@koi/core").JsonObject,
@@ -1515,7 +1893,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     | import("@koi/tools-bash").BashToolHandle
     | undefined;
   const sandboxActive = (earlyContribution.exports.sandboxActive as boolean | undefined) ?? false;
-  const _tuiAgentId = precomputedAgentId;
 
   // --- Core providers (search + fs + web + bash) via shared-wiring ---
   // The shared `buildCoreProviders` helper wires the exact same base set
@@ -1839,6 +2216,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // to intercept those calls with the parent's backend.
       ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
       ...(planPersistBundle !== undefined ? { planPersist: planPersistBundle.middleware } : {}),
+      // Thread skill injector into children so spawned agents also receive
+      // the <available_skills> XML block in progressive mode. The middleware
+      // reads from its original agent reference (root), whose skill set
+      // is global — the same skills apply to all children.
+      ...(config.childSkillInjector !== undefined
+        ? { skillInjector: config.childSkillInjector }
+        : {}),
     });
     // Build the per-child manifest-middleware factory. Each call
     // re-runs `resolveManifestMiddleware` with a fresh context so
@@ -2019,6 +2403,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
                 perChildManifestMiddlewareFactory,
             }
           : {}),
+        ...(earlyContribution.exports.getTaskBoard !== undefined
+          ? { [LATE_PHASE_HOST_KEYS.getTaskBoard]: earlyContribution.exports.getTaskBoard }
+          : {}),
+        ...(earlyContribution.exports.getStore !== undefined
+          ? { [LATE_PHASE_HOST_KEYS.getStore]: earlyContribution.exports.getStore }
+          : {}),
       },
     };
     const lateContribution = await activateStacks(lateContext, {
@@ -2050,6 +2440,27 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpOAuthCapableNames = stackContribution.exports.mcpOAuthCapableNames as
       | ReadonlySet<string>
       | undefined;
+    const mcpAuthProviders = stackContribution.exports.mcpAuthProviders as
+      | ReadonlyMap<string, import("@koi/mcp").OAuthAuthProvider>
+      | undefined;
+    const mcpConnections = stackContribution.exports.mcpConnections as
+      | ReadonlyMap<string, import("@koi/mcp").McpConnection>
+      | undefined;
+    const mcpPluginRejectedServers = stackContribution.exports.mcpPluginRejectedServers as
+      | ReadonlyMap<string, string>
+      | undefined;
+
+    // Hoisted above the audit/governance blocks: compliance recorders
+    // and the onViolation callback need a LIVE session id (rotates on
+    // cycleSession / rebindSessionId) rather than the static
+    // construction-time `config.session.sessionId`. Assigned at line
+    // ~2601 after createKoi returns; the getters below only dereference
+    // it when recordCompliance / onViolation fire, which happens after
+    // the runtime is built.
+    // let: justified — single mutable ref shared across closures.
+    let runtimeForRotation: import("@koi/engine").KoiRuntime | undefined;
+    const getLiveSessionId = (): string =>
+      runtimeForRotation?.sessionId ?? config.session?.sessionId ?? "no-session";
 
     // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
     // Build the NDJSON sink + hash-chained audit middleware when the host
@@ -2061,6 +2472,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       | { readonly flush: () => Promise<void>; readonly close: () => Promise<void> }
       | undefined;
     const auditPresetExtras: KoiMiddleware[] = [];
+    // Compliance recorders accumulated from each active audit sink.
+    // Used later to populate governanceBackend.compliance.
+    const complianceRecorders: ComplianceRecorder[] = [];
+    // Audit sink passed into createDecisionLedger so /trajectory shows
+    // audit:ok and surfaces compliance_event / permission_decision rows
+    // in the audit lane. Only the SQLite sink is captured: NDJSON's
+    // `.query(sessionId)` re-parses the entire file on every call, and
+    // the TUI refreshes the ledger after every settled turn — NDJSON
+    // would degrade to O(n²) cumulative work over a long session.
+    // NDJSON-only setups therefore see `audit:n/a` by design; enable
+    // SQLite for live ledger access.
+    let ledgerAuditSink: AuditSink | undefined;
     if (config.auditNdjsonPath !== undefined) {
       // Collision guard: refuse to start if the legacy host-level
       // audit path (env-driven KOI_AUDIT_NDJSON / config.auditNdjsonPath)
@@ -2092,9 +2515,250 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
         }
       }
-      const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
-      const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
-      auditPresetExtras.push(auditMw);
+      // manifest.audit.ndjson is rejected at tui-command.ts before this point —
+      // ancestor-symlink swaps between revalidation and open cannot be blocked
+      // without openat-style APIs unavailable in Node.js/Bun. All manifest-derived
+      // audit paths require env var overrides; manifestNdjsonSourcePath is therefore
+      // always undefined here. The guard below is defensive only.
+      if (config.manifestNdjsonSourcePath !== undefined) {
+        throw new Error(
+          "manifest.audit.ndjson: manifest-derived paths are not supported. " +
+            "Set KOI_AUDIT_NDJSON instead.",
+        );
+      }
+      const ndjsonSinkConfig = {
+        filePath: config.auditNdjsonPath,
+        ...(config.auditNdjsonRotation !== undefined
+          ? { rotation: config.auditNdjsonRotation }
+          : {}),
+      };
+      const ndjsonValidation = validateNdjsonAuditSinkConfig(ndjsonSinkConfig);
+      if (!ndjsonValidation.ok) {
+        throw new Error(`Invalid NDJSON audit sink config: ${ndjsonValidation.error.message}`);
+      }
+      const auditSink = createNdjsonAuditSink(ndjsonSinkConfig);
+      let ndjsonPoisonError: unknown;
+      const ndjsonOriginalLog = auditSink.log.bind(auditSink);
+      const poisonedNdjsonSink: typeof auditSink = {
+        ...auditSink,
+        log: async (entry: AuditEntry): Promise<void> => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink poisoned — previous write failure prevents further audit writes",
+              { cause: ndjsonPoisonError },
+            );
+          }
+          return ndjsonOriginalLog(entry);
+        },
+      };
+      const auditMw = createAuditMiddleware({
+        sink: poisonedNdjsonSink,
+        signing: true,
+        onError: (error: unknown) => {
+          if (ndjsonPoisonError === undefined) {
+            ndjsonPoisonError = error;
+            console.error(
+              "[koi/cli] audit sink write failed — sink poisoned, no further audit writes accepted:",
+              error,
+            );
+            process.exitCode = 1;
+          }
+          throw new Error("audit sink write failed — aborting to preserve audit trail integrity", {
+            cause: error,
+          });
+        },
+      });
+      complianceRecorders.push(
+        createAuditSinkComplianceRecorder(poisonedNdjsonSink, {
+          sessionId: getLiveSessionId,
+          onError: (error: unknown) => {
+            // Compliance writes are fire-and-forget by design; the only way to
+            // guarantee no further work runs after a compliance write failure is
+            // synchronous termination. process.exit(1) is correct here.
+            console.error("[koi/cli] compliance sink write failed — terminating:", error);
+            process.exit(1);
+          },
+        }),
+      );
+      const guardedAuditMw: KoiMiddleware = {
+        ...auditMw,
+        onSessionStart: async (ctx) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record session_start event", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          await auditMw.onSessionStart?.(ctx);
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after session_start — cannot proceed without durable audit record",
+              { cause: ndjsonPoisonError },
+            );
+          }
+        },
+        onBeforeTurn: async (ctx) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink poisoned — refusing new turn to preserve audit trail integrity",
+              { cause: ndjsonPoisonError },
+            );
+          }
+          return auditMw.onBeforeTurn?.(ctx);
+        },
+        onSessionEnd: async (ctx) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record session_end event", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          await auditMw.onSessionEnd?.(ctx);
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after session_end — audit record may be incomplete",
+              { cause: ndjsonPoisonError },
+            );
+          }
+        },
+        onPermissionDecision: async (ctx, query, decision) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record permission_decision event", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          await auditMw.onPermissionDecision?.(ctx, query, decision);
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after permission decision — cannot proceed without durable audit record",
+              { cause: ndjsonPoisonError },
+            );
+          }
+        },
+        wrapModelCall: async (ctx, request, next) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing model call", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          let modelError: unknown;
+          let modelThrew = false;
+          let modelResult: Awaited<ReturnType<typeof next>> | undefined;
+          try {
+            modelResult = await (auditMw.wrapModelCall
+              ? auditMw.wrapModelCall(ctx, request, next)
+              : next(request));
+          } catch (e: unknown) {
+            modelError = e;
+            modelThrew = true;
+          }
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink write failed mid-turn — turn aborted", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          if (modelThrew) throw modelError;
+          return modelResult as Awaited<ReturnType<typeof next>>;
+        },
+        wrapToolCall: async (ctx, request, next) => {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing tool call", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          let toolError: unknown;
+          let toolThrew = false;
+          let toolResult: Awaited<ReturnType<typeof next>> | undefined;
+          try {
+            toolResult = await (auditMw.wrapToolCall
+              ? auditMw.wrapToolCall(ctx, request, next)
+              : next(request));
+          } catch (e: unknown) {
+            toolError = e;
+            toolThrew = true;
+          }
+          await auditMw.flush().catch((flushErr: unknown) => {
+            if (ndjsonPoisonError === undefined) {
+              ndjsonPoisonError = flushErr;
+            }
+          });
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error(
+              "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
+              { cause: ndjsonPoisonError },
+            );
+          }
+          if (toolThrew) throw toolError;
+          return toolResult as Awaited<ReturnType<typeof next>>;
+        },
+        async *wrapModelStream(
+          ctx: TurnContext,
+          request: ModelRequest,
+          next: ModelStreamHandler,
+        ): AsyncIterable<ModelChunk> {
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing model stream", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          const inner = auditMw.wrapModelStream
+            ? auditMw.wrapModelStream(ctx, request, next)
+            : next(request);
+          let streamError: unknown;
+          let streamThrew = false;
+          try {
+            for await (const chunk of inner) {
+              if (ndjsonPoisonError !== undefined) {
+                throw new Error("audit sink write failed mid-stream — stream aborted", {
+                  cause: ndjsonPoisonError,
+                });
+              }
+              yield chunk;
+            }
+          } catch (e: unknown) {
+            streamError = e;
+            streamThrew = true;
+          } finally {
+            await auditMw.flush().catch((flushErr: unknown) => {
+              if (ndjsonPoisonError === undefined) {
+                ndjsonPoisonError = flushErr;
+              }
+            });
+          }
+          if (ndjsonPoisonError !== undefined) {
+            throw new Error("audit sink write failed after stream — turn aborted", {
+              cause: ndjsonPoisonError,
+            });
+          }
+          if (streamThrew) throw streamError;
+        },
+      };
+      auditPresetExtras.push(guardedAuditMw);
+      // Deliberately NOT captured into `ledgerAuditSink`. The ledger is
+      // refreshed after every settled turn; NDJSON `.query(sessionId)`
+      // re-parses the entire file on each call, so long sessions would
+      // degrade to O(n²) cumulative work. NDJSON-only setups accept
+      // `audit:n/a` in /trajectory — point KOI_AUDIT_SQLITE at a DB (or
+      // enable both) to get the live audit lane. NDJSON remains the
+      // right sink for offline compliance export and forensic replay.
       auditMwForShutdown = {
         flush: () => auditMw.flush(),
         close: () => auditSink.close(),
@@ -2148,13 +2812,273 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
         }
       }
-      const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
-      const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
-      auditPresetExtras.push(sqliteAuditMw);
+      // manifest.audit.sqlite is rejected at tui-command.ts before this point
+      // (manifest-derived SQLite paths are not supported — SQLite must open by
+      // pathname for WAL/SHM sidecars, making atomic containment impossible).
+      // manifestSqliteSourcePath is therefore always undefined here; the check
+      // below is a defensive belt-and-suspenders guard only.
+      if (config.manifestSqliteSourcePath !== undefined) {
+        throw new Error(
+          "manifest.audit.sqlite: manifest-derived SQLite paths are not supported. " +
+            "Set KOI_AUDIT_SQLITE instead.",
+        );
+      }
+      const sqliteSinkConfig = {
+        dbPath: config.auditSqlitePath,
+        agentId: precomputedAgentId,
+        ...(config.auditSqliteRetention !== undefined
+          ? { retention: config.auditSqliteRetention }
+          : {}),
+      };
+      if (sqliteSinkConfig.retention !== undefined) {
+        throw new Error(
+          "audit sink: SQLite retention cannot be used with the signed audit path. " +
+            "Session-granular pruning would break the signed hash chain. " +
+            "Remove the retention configuration to use signed SQLite auditing.",
+        );
+      }
+      const sqliteValidation = validateSqliteAuditSinkConfig(sqliteSinkConfig);
+      if (!sqliteValidation.ok) {
+        throw new Error(`Invalid SQLite audit sink config: ${sqliteValidation.error.message}`);
+      }
+      const sqliteSink = createSqliteAuditSink(sqliteSinkConfig);
+      let sqlitePoisonError: unknown;
+      const sqliteOriginalLog = sqliteSink.log.bind(sqliteSink);
+      const poisonedSqliteSink: typeof sqliteSink = {
+        ...sqliteSink,
+        log: async (entry: AuditEntry): Promise<void> => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink poisoned — previous write failure prevents further audit writes",
+              { cause: sqlitePoisonError },
+            );
+          }
+          return sqliteOriginalLog(entry);
+        },
+      };
+      const sqliteAuditMw = createAuditMiddleware({
+        sink: poisonedSqliteSink,
+        signing: true,
+        onError: (error: unknown) => {
+          if (sqlitePoisonError === undefined) {
+            sqlitePoisonError = error;
+            console.error(
+              "[koi/cli] audit sink write failed — sink poisoned, no further audit writes accepted:",
+              error,
+            );
+            process.exitCode = 1;
+          }
+          throw new Error("audit sink write failed — aborting to preserve audit trail integrity", {
+            cause: error,
+          });
+        },
+      });
+      complianceRecorders.push(
+        createAuditSinkComplianceRecorder(poisonedSqliteSink, {
+          sessionId: getLiveSessionId,
+          onError: (error: unknown) => {
+            console.error("[koi/cli] compliance sink write failed — terminating:", error);
+            process.exit(1);
+          },
+        }),
+      );
+      const guardedSqliteAuditMw: KoiMiddleware = {
+        ...sqliteAuditMw,
+        onSessionStart: async (ctx) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record session_start event", {
+              cause: sqlitePoisonError,
+            });
+          }
+          await sqliteAuditMw.onSessionStart?.(ctx);
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after session_start — cannot proceed without durable audit record",
+              { cause: sqlitePoisonError },
+            );
+          }
+        },
+        onBeforeTurn: async (ctx) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink poisoned — refusing new turn to preserve audit trail integrity",
+              { cause: sqlitePoisonError },
+            );
+          }
+          return sqliteAuditMw.onBeforeTurn?.(ctx);
+        },
+        onSessionEnd: async (ctx) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record session_end event", {
+              cause: sqlitePoisonError,
+            });
+          }
+          await sqliteAuditMw.onSessionEnd?.(ctx);
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after session_end — audit record may be incomplete",
+              { cause: sqlitePoisonError },
+            );
+          }
+        },
+        onPermissionDecision: async (ctx, query, decision) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — cannot record permission_decision event", {
+              cause: sqlitePoisonError,
+            });
+          }
+          await sqliteAuditMw.onPermissionDecision?.(ctx, query, decision);
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink flush failed after permission decision — cannot proceed without durable audit record",
+              { cause: sqlitePoisonError },
+            );
+          }
+        },
+        wrapModelCall: async (ctx, request, next) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing model call", {
+              cause: sqlitePoisonError,
+            });
+          }
+          let modelError: unknown;
+          let modelThrew = false;
+          let modelResult: Awaited<ReturnType<typeof next>> | undefined;
+          try {
+            modelResult = await (sqliteAuditMw.wrapModelCall
+              ? sqliteAuditMw.wrapModelCall(ctx, request, next)
+              : next(request));
+          } catch (e: unknown) {
+            modelError = e;
+            modelThrew = true;
+          }
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink write failed mid-turn — turn aborted", {
+              cause: sqlitePoisonError,
+            });
+          }
+          if (modelThrew) throw modelError;
+          return modelResult as Awaited<ReturnType<typeof next>>;
+        },
+        wrapToolCall: async (ctx, request, next) => {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing tool call", {
+              cause: sqlitePoisonError,
+            });
+          }
+          let toolError: unknown;
+          let toolThrew = false;
+          let toolResult: Awaited<ReturnType<typeof next>> | undefined;
+          try {
+            toolResult = await (sqliteAuditMw.wrapToolCall
+              ? sqliteAuditMw.wrapToolCall(ctx, request, next)
+              : next(request));
+          } catch (e: unknown) {
+            toolError = e;
+            toolThrew = true;
+          }
+          await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+            if (sqlitePoisonError === undefined) {
+              sqlitePoisonError = flushErr;
+            }
+          });
+          if (sqlitePoisonError !== undefined) {
+            throw new Error(
+              "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
+              { cause: sqlitePoisonError },
+            );
+          }
+          if (toolThrew) throw toolError;
+          return toolResult as Awaited<ReturnType<typeof next>>;
+        },
+        async *wrapModelStream(
+          ctx: TurnContext,
+          request: ModelRequest,
+          next: ModelStreamHandler,
+        ): AsyncIterable<ModelChunk> {
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink poisoned — refusing model stream", {
+              cause: sqlitePoisonError,
+            });
+          }
+          const inner = sqliteAuditMw.wrapModelStream
+            ? sqliteAuditMw.wrapModelStream(ctx, request, next)
+            : next(request);
+          let streamError: unknown;
+          let streamThrew = false;
+          try {
+            for await (const chunk of inner) {
+              if (sqlitePoisonError !== undefined) {
+                throw new Error("audit sink write failed mid-stream — stream aborted", {
+                  cause: sqlitePoisonError,
+                });
+              }
+              yield chunk;
+            }
+          } catch (e: unknown) {
+            streamError = e;
+            streamThrew = true;
+          } finally {
+            await sqliteAuditMw.flush().catch((flushErr: unknown) => {
+              if (sqlitePoisonError === undefined) {
+                sqlitePoisonError = flushErr;
+              }
+            });
+          }
+          if (sqlitePoisonError !== undefined) {
+            throw new Error("audit sink write failed after stream — turn aborted", {
+              cause: sqlitePoisonError,
+            });
+          }
+          if (streamThrew) throw streamError;
+        },
+      };
+      auditPresetExtras.push(guardedSqliteAuditMw);
+      ledgerAuditSink = sqliteSink;
       auditSqliteMwForShutdown = {
         flush: () => sqliteAuditMw.flush(),
         close: async () => sqliteSink.close(),
       };
+    }
+
+    // --- Nexus audit middleware (opt-in via config.nexusTransport) ---
+    // Batches audit entries to Nexus alongside any NDJSON/SQLite sinks.
+    // No signing: Nexus is an append-only store with its own integrity.
+    // let: retained so shutdown can flush.
+    let nexusAuditMwForShutdown: { readonly flush: () => Promise<void> } | undefined;
+    if (config.nexusTransport !== undefined) {
+      const nexusSink = createNexusAuditSink({ transport: config.nexusTransport });
+      const nexusAuditMw = createAuditMiddleware({ sink: nexusSink });
+      complianceRecorders.push(
+        createAuditSinkComplianceRecorder(nexusSink, { sessionId: getLiveSessionId }),
+      );
+      auditPresetExtras.push(nexusAuditMw);
+      // Use nexus sink for ledger query if SQLite is not already doing it
+      // (nexus supports .query() so /trajectory audit lane works)
+      if (ledgerAuditSink === undefined) {
+        ledgerAuditSink = nexusSink;
+      }
+      nexusAuditMwForShutdown = { flush: () => nexusAuditMw.flush() };
     }
 
     // --- Report middleware (opt-in via config.reportEnabled) ---
@@ -2177,6 +3101,66 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // TODO(#1858): expose reportHandle.getReport / getProgress on
       // KoiRuntimeHandle so the TUI can surface progress in a status
       // bar or /report command.
+    }
+
+    // --- Feedback-loop middleware (opt-in via config.feedbackLoop) ---
+    // Model-response validation + tool-health tracking. No shutdown resources.
+    const feedbackLoopMw =
+      config.feedbackLoop !== undefined
+        ? createFeedbackLoopMiddleware(config.feedbackLoop)
+        : undefined;
+    if (feedbackLoopMw !== undefined) {
+      auditPresetExtras.push(feedbackLoopMw);
+    }
+
+    // --- Forge-demand detector (opt-in via config.forgeDemand) ---
+    // Priority 445 — outer of feedback-loop (450) so the detector observes
+    // committed state. Auto-wires feedback-loop's healthHandle into
+    // forge-demand when feedbackLoop is configured with forgeHealth (F64/F66).
+    // Mirrors the auto-wire logic in @koi/runtime's createRuntime so the CLI
+    // and the standalone runtime stay behaviorally aligned.
+    if (config.forgeDemand !== undefined) {
+      const validated = validateForgeDemandConfig(config.forgeDemand);
+      if (!validated.ok) {
+        throw new Error(
+          `Invalid forgeDemand config: ${validated.error.message}` +
+            (validated.error.context !== undefined
+              ? ` (${JSON.stringify(validated.error.context)})`
+              : ""),
+        );
+      }
+      // F96/F101: onSessionAttached is the only surface that can dismiss
+      // signals; without it a re-emitting condition consumes the session
+      // budget and silently suppresses unrelated demand work.
+      if (validated.value.onSessionAttached === undefined) {
+        throw new Error(
+          "forgeDemand requires `config.forgeDemand.onSessionAttached`. " +
+            "Pass an onSessionAttached callback or set KOI_FORGE_DEMAND_ENABLED " +
+            "via the TUI which installs a logging stub.",
+        );
+      }
+      const baseForgeConfig = validated.value;
+      // Auto-wire feedback-loop's healthHandle when its forgeHealth is
+      // configured (live trackers exist). Suppressed otherwise so a
+      // dormant performance_degradation trigger emits a loud warning
+      // rather than a silent no-op (F64 regression).
+      const installedHandle =
+        feedbackLoopMw !== undefined && config.feedbackLoop?.forgeHealth !== undefined
+          ? feedbackLoopMw.healthHandle
+          : undefined;
+      const finalForgeConfig =
+        baseForgeConfig.healthTracker === undefined && installedHandle !== undefined
+          ? { ...baseForgeConfig, healthTracker: installedHandle }
+          : baseForgeConfig;
+      if (finalForgeConfig.healthTracker === undefined) {
+        console.warn(
+          "[forge-demand] performance_degradation trigger is dormant: " +
+            "no healthTracker on config.forgeDemand and no feedback-loop " +
+            "with forgeHealth to auto-wire.",
+        );
+      }
+      const forgeDemandHandle = createForgeDemandDetector(finalForgeConfig);
+      auditPresetExtras.push(forgeDemandHandle.middleware);
     }
 
     // --- Pre-build shared GovernanceController so it is shared between:
@@ -2248,28 +3232,274 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // in observer mode (observerOnly silences record() only, not
     // evaluator.evaluate()). Absent --policy-file, fall back to the default-
     // allow backend so /governance renders the synthetic descriptor.
-    const governanceBackend = governanceEnabled
+    // --- Violation store ---
+    // Auto-wires to ~/.koi/violations.db when governance is enabled (mirrors
+    // the governance-alerts.jsonl convention established by gov-9 — zero
+    // config required for /governance history backfill to work).
+    // Operators can override via --violation-sqlite=<path>.
+    // Explicit "" (empty string) disables the default.
+    // Violation store is a governance surface — if governance is
+    // disabled (`--no-governance`), we never open the DB even when an
+    // explicit `--violation-sqlite` path was passed. This prevents a
+    // configuration mismatch from hard-failing startup during incident
+    // mitigation: the operator disabling governance expects governance
+    // side-effects (including durable violation writes) to be off. An
+    // explicit path combined with `--no-governance` is ambiguous; we
+    // warn so the contradiction is visible and move on without the
+    // store.
+    let resolvedViolationPath: string | undefined;
+    if (!governanceEnabled) {
+      if (config.violationSqlitePath !== undefined && config.violationSqlitePath.length > 0) {
+        console.warn(
+          `[koi-runtime] ignoring --violation-sqlite="${config.violationSqlitePath}" — governance is disabled. ` +
+            "Enable governance to persist violations.",
+        );
+      }
+      resolvedViolationPath = undefined;
+    } else {
+      resolvedViolationPath =
+        config.violationSqlitePath !== undefined
+          ? config.violationSqlitePath.length > 0
+            ? config.violationSqlitePath
+            : undefined
+          : join(homedir(), ".koi", "violations.db");
+    }
+    // Degrade gracefully if the default DB path is unreachable. Auto-
+    // wiring runs whenever governance is enabled, but `~/.koi` may be
+    // unwritable (containers, read-only runners, restricted service
+    // users, missing $HOME). A hard failure here would abort runtime
+    // startup for a FEATURE — governance history backfill — that is
+    // strictly additive. Catch FS/SQLite open failures, continue with
+    // `violationStore: undefined`, and log a warning so operators can
+    // investigate without losing the rest of the runtime.
+    let violationStore: ReturnType<typeof createSqliteViolationStore> | undefined;
+    if (resolvedViolationPath !== undefined) {
+      try {
+        const parent = dirname(resolvedViolationPath);
+        const manifestDerived = config.manifestViolationsSourcePath !== undefined;
+        if (!existsSync(parent)) {
+          // Manifest-derived paths must already have their parent present —
+          // auto-creating directories for repo-authored paths expands the
+          // write-capability trust boundary. Operator-supplied explicit paths
+          // (--violation-sqlite flag) and the implicit default (~/.koi/)
+          // retain the previous auto-create behavior.
+          if (manifestDerived) {
+            throw new Error(
+              `manifest.audit.violations: parent directory "${parent}" does not exist. ` +
+                "Create it before starting koi tui, or remove the violations: key from manifest.audit.",
+            );
+          }
+          mkdirSync(parent, { recursive: true });
+        }
+        // manifest.audit.violations is rejected at tui-command.ts before this
+        // point (same WAL/SHM atomic-open limitation as manifest.audit.sqlite).
+        // manifestDerived is therefore always false here; the guard below is
+        // defensive only.
+        if (manifestDerived) {
+          throw new Error(
+            "manifest.audit.violations: manifest-derived SQLite paths are not supported. " +
+              "Set KOI_AUDIT_VIOLATIONS instead.",
+          );
+        }
+        violationStore = createSqliteViolationStore({ dbPath: resolvedViolationPath });
+        // Register close on manifest shutdown so `runtime.dispose()`
+        // drains the buffer and releases the SQLite handle. Without
+        // this, non-TUI embeddings that use `runtime.dispose()` as the
+        // terminal lifecycle boundary would leak the timer/handle and
+        // drop the final buffered entries — `shutdownBackgroundTasks()`
+        // below is TUI-specific. close() is idempotent so the parallel
+        // call paths are safe.
+        //
+        // Explicit-path fail-closed signaling: if close() reports a
+        // non-zero `droppedCount` AND the operator supplied the path
+        // explicitly, we throw so the aggregate shutdown surface marks
+        // dispose as failed. Operators who asked for durable violation
+        // logging must see the loss as an error, not a warn-line.
+        // The implicit default path still swallows with a warning —
+        // best-effort, same convention as the graceful-open branch.
+        const storeForHook = violationStore;
+        const explicitStorePath =
+          config.violationSqlitePath !== undefined && config.violationSqlitePath.length > 0;
+        manifestMiddlewareShutdownHooks.push(() => {
+          try {
+            const { droppedCount } = storeForHook.close();
+            if (droppedCount > 0 && explicitStorePath) {
+              throw new Error(
+                `violation store: ${droppedCount} violation(s) were dropped on shutdown for explicitly-configured path "${resolvedViolationPath}". ` +
+                  "Durable persistence failed during this run; inspect prior warnings for the underlying SQLite error.",
+              );
+            }
+          } catch (err) {
+            if (explicitStorePath) throw err;
+            console.warn(
+              `[koi/${hostId}] ViolationStore dispose-time close failed (default path, continuing): ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Explicit operator configuration is honored fail-closed: when
+        // `config.violationSqlitePath` was supplied and non-empty, a
+        // failure to open that path is a configuration error, not a
+        // best-effort degradation. Operators who asked for durable
+        // violation logging get a hard error rather than a silent
+        // downgrade that would hide compliance failures.
+        //
+        // The implicit default (~/.koi/violations.db) still degrades
+        // gracefully — missing $HOME, read-only runners, containers —
+        // because no one EXPLICITLY asked for persistence there.
+        const explicitPath =
+          config.violationSqlitePath !== undefined && config.violationSqlitePath.length > 0;
+        if (explicitPath) {
+          throw new Error(
+            `violation store: failed to open explicitly-configured path "${resolvedViolationPath}": ${message}. ` +
+              'Fix the path, make it writable, or pass --violation-sqlite="" to disable persistence explicitly.',
+            { cause: err },
+          );
+        }
+        console.warn(
+          `[koi-runtime] violation store disabled — could not open default "${resolvedViolationPath}": ${message}. ` +
+            'Pass --violation-sqlite=<path> to a writable location, or --violation-sqlite="" to silence this.',
+        );
+        violationStore = undefined;
+      }
+    }
+
+    const rawGovernanceBackend = governanceEnabled
       ? config.governanceRules !== undefined && config.governanceRules.length > 0
         ? createPatternBackend({ rules: config.governanceRules, defaultDeny: false })
         : createDefaultPatternBackend()
       : undefined;
+
+    const complianceRecorder =
+      complianceRecorders.length > 0 ? fanOutComplianceRecorder(complianceRecorders) : undefined;
+
+    const governanceBackend =
+      rawGovernanceBackend !== undefined
+        ? {
+            ...rawGovernanceBackend,
+            ...(complianceRecorder !== undefined ? { compliance: complianceRecorder } : {}),
+            ...(violationStore !== undefined ? { violations: violationStore } : {}),
+          }
+        : rawGovernanceBackend;
+
+    // gov-12: persistent approval allowlist. When governance is enabled, wrap
+    // the backend so `ok:"ask"` verdicts short-circuit to allow on a cached
+    // grant, and install a persistence sink that appends scope:"always"
+    // approvals to the store. Path defaults to ~/.koi/approvals.json; override
+    // with KOI_APPROVALS_PATH for tests and sandboxed invocations.
+    //
+    // Scope key for both writes and reads is `${hostId}:${cwdHash}:${actor}` so:
+    //   1. The same logical host matches across process restarts in the SAME
+    //      workspace. `actor = hostId` for the live host agent (whose pid.id
+    //      is `crypto.randomUUID()` and CHANGES every launch — hence we
+    //      rewrite it to the manifest-derived stable hostId before keying).
+    //   2. Sub-agents/spawned children DON'T replay the host's grants. Their
+    //      `request.agentId !== livePidId`, so we keep the unstable
+    //      pid.id as the actor — a child's grant is bounded to its own
+    //      lifetime (the random UUID won't collide with any future child or
+    //      with the next launch's host) — codex round-4 actor boundary.
+    //   3. Approvals do NOT cross workspaces: a user who approves
+    //      "Bash: echo X" in /home/alice/projectA is re-prompted when
+    //      they run the same command in /home/alice/projectB even with
+    //      the same hostId — codex round-3 workspace boundary.
+    const approvalStore =
+      governanceBackend !== undefined
+        ? createJsonlApprovalStore({
+            path: process.env.KOI_APPROVALS_PATH ?? join(homedir(), ".koi", "approvals.json"),
+          })
+        : undefined;
+    const workspaceFingerprint = createHash("sha256")
+      .update(config.cwd ?? process.cwd())
+      .digest("hex")
+      .slice(0, 16);
+    const scopePrefix = `${hostId}:${workspaceFingerprint}`;
+    // Captured by the resolver closure; populated immediately after
+    // `createKoi` returns and before any verdict can be evaluated.
+    // No verdict path runs during construction, so the read-after-set
+    // ordering is guaranteed by the engine itself.
+    let livePidId: string | undefined;
+    const resolveStableAgentId = (reqOrGrant: { readonly agentId: AgentId }): AgentId => {
+      const actor =
+        livePidId !== undefined && reqOrGrant.agentId === livePidId ? hostId : reqOrGrant.agentId;
+      return makeAgentId(`${scopePrefix}:${actor}`);
+    };
+    const wrappedGovernanceBackend =
+      governanceBackend !== undefined && approvalStore !== undefined
+        ? wrapBackendWithPersistedAllowlist(governanceBackend, approvalStore, {
+            resolveAgentId: resolveStableAgentId,
+          })
+        : governanceBackend;
+
     const governanceRules: readonly RuleDescriptor[] =
-      governanceBackend !== undefined ? await resolveGovernanceRules(governanceBackend) : [];
+      wrappedGovernanceBackend !== undefined
+        ? await resolveGovernanceRules(wrappedGovernanceBackend)
+        : [];
+    // Persist every violation to the SQLite store when configured.
+    // Handles both deny verdicts (ok:false + violations[]) and allow verdicts
+    // with info-level diagnostics (ok:true + diagnostics[]) so the gov-12
+    // `approval.persisted` audit signal emitted by `createViolationAuditAdapter`
+    // lands in violations.db alongside policy violations. sessionId is resolved
+    // from the live runtime at callback time so `cycleSession` /
+    // `rebindSessionId` keep persisted rows attributed to the current session.
+    const onGovernanceViolation =
+      violationStore !== undefined
+        ? (verdict: GovernanceVerdict, request: PolicyRequest): void => {
+            // ok:"ask" never reaches onViolation (middleware routes it through
+            // requestApproval instead). Handle only the two terminal variants.
+            const entries: readonly Violation[] =
+              verdict.ok === true
+                ? (verdict.diagnostics ?? [])
+                : verdict.ok === false
+                  ? verdict.violations
+                  : [];
+            if (entries.length === 0) return;
+            const sid = getLiveSessionId();
+            for (const v of entries) {
+              violationStore.record(v, request.agentId, sid, request.timestamp);
+            }
+          }
+        : undefined;
+
+    // gov-12 delta-audit: wrap the raw JSON-Lines sink so every persisted
+    // "always" grant also emits a synthetic `approval.persisted` info-violation
+    // through the host's onViolation channel. Without the wrap, persist is a
+    // silent disk append; with it, every grant is observable in violations.db
+    // and any downstream ndjson / sqlite audit sink.
+    const auditedPersistSink =
+      approvalStore !== undefined && onGovernanceViolation !== undefined
+        ? // Audit adapter calls store.append directly so the
+          // approval.persisted info-violation is emitted ONLY after a
+          // confirmed durable write. Failures are absorbed (fire-and-forget
+          // contract) but never produce a misleading audit row.
+          createViolationAuditAdapter({
+            store: approvalStore,
+            onViolation: onGovernanceViolation,
+            resolveAgentId: resolveStableAgentId,
+          })
+        : approvalStore !== undefined
+          ? createPersistSink(approvalStore, { resolveAgentId: resolveStableAgentId })
+          : undefined;
+
     const governanceMw =
       governanceEnabled &&
-      governanceBackend !== undefined &&
+      wrappedGovernanceBackend !== undefined &&
       sharedGovernanceController !== undefined
         ? createGovernanceMiddleware({
-            backend: governanceBackend,
+            backend: wrappedGovernanceBackend,
             controller: sharedGovernanceController,
             cost: createPricingCostCalculator(),
             observerOnly: true,
+            ...(auditedPersistSink !== undefined ? { onApprovalPersist: auditedPersistSink } : {}),
             // --alert-threshold overrides the default [0.8, 0.95]. Passed
             // unconditionally when set — governance-middleware validates the
             // list and falls back to its default when undefined.
             ...(config.governanceAlertThresholds !== undefined
               ? { alertThresholds: config.governanceAlertThresholds }
               : {}),
+            ...(onGovernanceViolation !== undefined ? { onViolation: onGovernanceViolation } : {}),
           })
         : undefined;
 
@@ -2305,8 +3535,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ...stackContribution.middleware,
         ...auditPresetExtras,
         ...(governanceMw !== undefined ? [governanceMw] : []),
+        ...(config.extraMiddleware ?? []),
       ],
       manifestMiddleware: zoneBMiddleware,
+      ...(config.skillInjector !== undefined ? { skillInjector: config.skillInjector } : {}),
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
       ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
     });
@@ -2372,8 +3604,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // returns; the engine never invokes `rotateSessionId` during
     // construction, only during a later `cycleSession()`, so the
     // ref is always populated by the time the callback fires.
-    // let justified: assigned on the line below
-    let runtimeForRotation: import("@koi/engine").KoiRuntime | undefined;
+    // (`runtimeForRotation` is declared above the audit wiring.)
     const runtime = await createKoi({
       manifest: { name: "koi-tui", version: "0.1.0", model: { name: modelName } },
       adapter: engineAdapter,
@@ -2439,7 +3670,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // and we don't have a model-aware pricing source wired in. When
       // a host wires real token pricing, also set `cost.maxCostUsd` here
       // for a stricter dollar-denominated cap.
-      resetIterationBudgetPerRun: true,
+      resetBudgetPerRun: true,
       // The iteration guard (wired by the default guard extension) and
       // the governance controller are separate enforcement paths. Both
       // must see the same resolved duration or the tighter of the two
@@ -2481,6 +3712,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // (only from a later `cycleSession()`), so this assignment
     // happens before any rotation can fire.
     runtimeForRotation = runtime;
+    // Publish the live host pid.id to the gov-12 scope resolver. The
+    // resolver rewrites only when `request.agentId === livePidId`, so
+    // sub-agents (which carry their own pid) keep their unstable UUID
+    // and stay isolated from the host's grants. No verdict path runs
+    // during `createKoi` itself, so this assignment lands before the
+    // first request can be evaluated.
+    livePidId = runtime.agent.pid.id;
 
     // Wrap runtime.dispose so manifest-middleware cleanup (audit sink
     // close, etc.) runs AFTER the engine's dispose path completes.
@@ -2602,6 +3840,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       governanceRules,
       governanceAlertThresholds: config.governanceAlertThresholds,
       governanceEnabled,
+      violationStore,
+      governanceBackend,
       createDecisionLedger: () =>
         createDecisionLedger({
           // The observability stack stores all trajectory data under a
@@ -2614,6 +3854,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
                 ? trajectoryStore.getDocument(trajectoryDocId)
                 : Promise.resolve([]),
           },
+          auditSink: ledgerAuditSink,
         }),
       getMcpStatus: async (): Promise<readonly McpServerStatus[]> => {
         // Merge user + plugin MCP resolvers — key by (source, name)
@@ -2637,10 +3878,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             label: "plugin",
             resolver: mcpPluginResolver,
             transportMap: mcpPluginTransportByName,
-            // Plugin servers authenticate via their own auth pseudo-tools, not
-            // via nav:mcp-auth (which only handles .mcp.json entries). Force
-            // hasOAuth false so AUTH_REQUIRED plugin servers render as error
-            // rather than needs-auth, preventing a misleading recovery prompt.
+            // Plugin servers do not surface as OAuth-capable via nav:mcp-auth —
+            // they authenticate through their own pseudo-tools, not through the
+            // same first-party browser flow as user-configured .mcp.json entries.
+            // Routing plugins through triggerMcpServerAuth would widen the trust
+            // boundary to plugin-supplied OAuth endpoints without a consent gate.
             oauthNames: undefined,
           });
         if (sources.length === 0) return [];
@@ -2686,7 +3928,99 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             });
           }
         }
+        // Append plugin servers rejected at setup time (e.g. OAuth without consent gate)
+        // as explicit error entries so /mcp shows them as blocked instead of invisible.
+        if (mcpPluginRejectedServers !== undefined) {
+          for (const [name, reason] of mcpPluginRejectedServers) {
+            const key = `plugin:${name}`;
+            if (seenByKey.has(key)) continue;
+            seenByKey.add(key);
+            entries.push({
+              name: `plugin:${name}`,
+              toolCount: 0,
+              failureCode: "PLUGIN_OAUTH_BLOCKED",
+              failureMessage: reason,
+              transport: undefined,
+              hasOAuth: false,
+            });
+          }
+        }
         return entries;
+      },
+      triggerMcpServerAuth: async (
+        qualifiedName: string,
+        channel: import("@koi/core").OAuthChannel,
+      ): Promise<"success-live" | "success-reload-required" | "failed"> => {
+        // Plugin-provided servers are not eligible for user-triggered auth via
+        // this path — they are blocked at load time (no host consent gate).
+        if (qualifiedName.startsWith("plugin:")) return "failed";
+
+        // Strip user: prefix if present for consistent map lookups.
+        const serverName = qualifiedName.startsWith("user:")
+          ? qualifiedName.slice(5)
+          : qualifiedName;
+        const provider = mcpAuthProviders?.get(serverName);
+        if (provider === undefined) {
+          // Server missing from startup map — likely added to .mcp.json after
+          // this session started. Re-read the current config to find it and
+          // attempt a live one-shot auth without requiring a full restart.
+          const freshSetup = await loadUserMcpSetup(cwd, undefined, channel).catch(() => undefined);
+          const freshProvider = freshSetup?.authProviders.get(serverName);
+          const freshConnection = freshSetup?.connections.get(serverName);
+          if (freshProvider === undefined || freshConnection === undefined) {
+            // Server genuinely not found or has no OAuth config — guide user to CLI.
+            void Promise.resolve(
+              channel.onAuthRequired({
+                provider: serverName,
+                message: `"${serverName}" was not found in the current MCP config. Run \`koi mcp auth ${serverName}\` in a terminal to authorize it, then reload the session.`,
+                mode: "local",
+                instructions: `On a remote or headless machine, run: \`koi mcp auth ${serverName}\``,
+              }),
+            ).catch(() => {});
+            freshSetup?.dispose();
+            return "failed";
+          }
+          // Auth through a temporary connection. The live resolver does not know
+          // about this server — return success-reload-required so the TUI can
+          // guide the user to reload rather than showing a failure message.
+          const authResult = await freshConnection.triggerAuth?.();
+          freshSetup?.dispose();
+          if (authResult?.ok) {
+            return "success-reload-required";
+          }
+          void Promise.resolve(
+            channel.onAuthFailure?.({
+              provider: serverName,
+              reason: authResult?.error.message ?? "Authorization did not complete.",
+            }),
+          ).catch(() => {});
+          return "failed";
+        }
+        const connection = mcpConnections?.get(serverName);
+        const resolver = mcpResolver;
+
+        // Route everything through connection.triggerAuth() so the singleflight
+        // serializes concurrent automatic 401-recovery and explicit user auth.
+        // triggerAuth tries silent token refresh first, then falls through to
+        // browser auth if tokens are stale — no separate handleUnauthorized call
+        // needed here. onAuthComplete fires internally after reconnect.
+        if (connection?.triggerAuth !== undefined) {
+          const result = await connection.triggerAuth();
+          if (!result.ok) {
+            void Promise.resolve(
+              channel.onAuthFailure?.({
+                provider: serverName,
+                reason: result.error.message,
+              }),
+            ).catch(() => {});
+            return "failed";
+          }
+          // Trigger resolver rediscovery so real tools replace pseudo-tools immediately.
+          await resolver?.discover().catch(() => {});
+          return "success-live";
+        }
+        // Fallback for connections without triggerAuth (non-OAuth connections).
+        return "failed";
       },
       getTrajectorySteps: async () => {
         if (trajectoryStore === undefined) return [];
@@ -2860,6 +4194,42 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               );
             }
           })();
+        }
+        if (nexusAuditMwForShutdown !== undefined) {
+          const nexusAudit = nexusAuditMwForShutdown;
+          void (async () => {
+            try {
+              await nexusAudit.flush();
+            } catch (err) {
+              console.warn(
+                `[koi/${hostId}] Nexus audit shutdown failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          })();
+        }
+        if (nexusPermBackend !== undefined) {
+          try {
+            nexusPermBackend.dispose();
+          } catch (err) {
+            console.warn(
+              `[koi/${hostId}] Nexus permission backend dispose failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        }
+        if (violationStore !== undefined) {
+          try {
+            violationStore.close();
+          } catch (err) {
+            console.warn(
+              `[koi/${hostId}] ViolationStore shutdown failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
         }
         return hadWork;
       },

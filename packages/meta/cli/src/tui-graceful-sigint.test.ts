@@ -346,3 +346,244 @@ describe("createTuiSigintHandler — idle foreground + live background (#1772)",
     expect(state.forceCount).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// createTuiSigintHandler — onWindowElapse function pass-through (#1999)
+// ---------------------------------------------------------------------------
+
+describe("createTuiSigintHandler — dynamic onWindowElapse (#1999 spawn regression)", () => {
+  test("second Ctrl+C after window becomes fresh first tap when spawn still running", () => {
+    // Regression: child spawn outlives the 2s double-tap window after Ctrl+C.
+    // Without the fix, stay-armed causes the second tap to force-exit.
+    // With the fix, onWindowElapse returns reset-to-idle while spawn active,
+    // so the second tap is treated as a fresh cancel, not a force.
+    const spawnActive = true;
+    const timers = createFakeTimers();
+    const forceCount = { n: 0 };
+    const abortCount = { n: 0 };
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => true,
+      hasActiveBackgroundTasks: () => false,
+      abortActiveStream: () => {
+        abortCount.n += 1;
+      },
+      onShutdown: () => {},
+      onForce: () => {
+        forceCount.n += 1;
+      },
+      write: () => {},
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+    });
+
+    // First Ctrl+C — abort active stream (model run + spawn in flight).
+    handler.handleSignal();
+    expect(abortCount.n).toBe(1);
+    expect(forceCount.n).toBe(0);
+
+    // Spawn still running past the 2s window.
+    timers.advance(2500);
+
+    // Second Ctrl+C — must NOT force-exit; spawn still active → reset-to-idle
+    // policy → handler went idle → this is a fresh first tap → abort again.
+    handler.handleSignal();
+    expect(abortCount.n).toBe(2);
+    expect(forceCount.n).toBe(0);
+  });
+
+  test("second Ctrl+C within window always forces regardless of spawn state", () => {
+    // The dynamic policy only changes what happens when the WINDOW ELAPSES.
+    // Within the window, a second tap must still force-exit.
+    const spawnActive = true;
+    const timers = createFakeTimers();
+    const forceCount = { n: 0 };
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => true,
+      hasActiveBackgroundTasks: () => false,
+      abortActiveStream: () => {},
+      onShutdown: () => {},
+      onForce: () => {
+        forceCount.n += 1;
+      },
+      write: () => {},
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+    });
+
+    handler.handleSignal();
+    timers.advance(500); // inside the window
+    handler.handleSignal(); // second tap within window → force
+    expect(forceCount.n).toBe(1);
+  });
+
+  test("when spawn finishes before window, policy switches back to stay-armed", () => {
+    // Spawn completes quickly — no special behavior needed; stay-armed applies
+    // and a post-window second Ctrl+C forces as normal.
+    const spawnActive = false; // spawn never active (or already done)
+    const timers = createFakeTimers();
+    const forceCount = { n: 0 };
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => true,
+      hasActiveBackgroundTasks: () => false,
+      abortActiveStream: () => {},
+      onShutdown: () => {},
+      onForce: () => {
+        forceCount.n += 1;
+      },
+      write: () => {},
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+    });
+
+    handler.handleSignal();
+    timers.advance(2500); // window elapses — no spawn → stay-armed
+    handler.handleSignal(); // still armed → force
+    expect(forceCount.n).toBe(1);
+  });
+
+  test("force-exit still reachable for wedged spawn: grace is one-shot, then stay-armed (#1999)", () => {
+    // Regression guard for the fix-of-the-fix: the grace reset-to-idle is
+    // consumed exactly once. After that, the window reverts to stay-armed so
+    // the user can force-exit a truly stuck drain with one more rapid double-tap.
+    const spawnActive = true;
+    let graceUsed = false;
+    const timers = createFakeTimers();
+    const forceCount = { n: 0 };
+    const abortCount = { n: 0 };
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => true,
+      hasActiveBackgroundTasks: () => false,
+      abortActiveStream: () => {
+        abortCount.n += 1;
+      },
+      onShutdown: () => {},
+      onForce: () => {
+        forceCount.n += 1;
+      },
+      write: () => {},
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => {
+        if (spawnActive && !graceUsed) {
+          graceUsed = true;
+          return "reset-to-idle"; // one-shot grace
+        }
+        return "stay-armed"; // all subsequent windows: stay armed
+      },
+    });
+
+    // First Ctrl+C — abort stream, child in flight.
+    handler.handleSignal();
+    expect(abortCount.n).toBe(1);
+    expect(forceCount.n).toBe(0);
+
+    // Grace period: 2s elapses, spawn still active → reset-to-idle (grace consumed).
+    timers.advance(2500);
+
+    // Second Ctrl+C — fresh first tap (grace was given). Child still stuck.
+    handler.handleSignal();
+    expect(abortCount.n).toBe(2);
+    expect(forceCount.n).toBe(0);
+
+    // Grace exhausted: 2s elapses again, spawn STILL active → stay-armed now.
+    timers.advance(2500);
+
+    // Third Ctrl+C — still armed → force-exit. Emergency escape is reachable.
+    handler.handleSignal();
+    expect(forceCount.n).toBe(1);
+  });
+});
+
+describe("createTuiSigintHandler — onInterruptHint + onBgExitHint routing (#1912)", () => {
+  test("bg-only first Ctrl+C: no raw write() when both hint overrides are provided", () => {
+    const timers = createFakeTimers();
+    const writes: string[] = [];
+    const interruptHints: string[] = [];
+    const bgHints: string[] = [];
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => false,
+      hasActiveBackgroundTasks: () => true,
+      abortActiveStream: () => {},
+      onShutdown: () => {},
+      onForce: () => {},
+      write: (msg) => {
+        writes.push(msg);
+      },
+      onInterruptHint: (msg) => {
+        interruptHints.push(msg);
+      },
+      onBgExitHint: (msg) => {
+        bgHints.push(msg);
+      },
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+    });
+
+    handler.handleSignal();
+
+    // Both hints routed through store callbacks, not raw write (#1912)
+    expect(interruptHints.join("")).toContain("Interrupting");
+    expect(bgHints.join("")).toContain("Background tasks still running");
+    expect(writes).toHaveLength(0);
+  });
+
+  test("onBgExitHint is called instead of write for the bg banner when provided", () => {
+    const timers = createFakeTimers();
+    const writes: string[] = [];
+    const bgHints: string[] = [];
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => false,
+      hasActiveBackgroundTasks: () => true,
+      abortActiveStream: () => {},
+      onShutdown: () => {},
+      onForce: () => {},
+      write: (msg) => {
+        writes.push(msg);
+      },
+      onBgExitHint: (msg) => {
+        bgHints.push(msg);
+      },
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+    });
+
+    handler.handleSignal();
+
+    expect(bgHints.length).toBe(1);
+    expect(bgHints[0]).toContain("Background tasks still running");
+    // write must not receive the bg banner — raw stderr is bypassed (#1912)
+    expect(writes.join("")).not.toContain("Background tasks still running");
+  });
+
+  test("falls back to write when hint overrides are absent", () => {
+    const timers = createFakeTimers();
+    const writes: string[] = [];
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => false,
+      hasActiveBackgroundTasks: () => true,
+      abortActiveStream: () => {},
+      onShutdown: () => {},
+      onForce: () => {},
+      write: (msg) => {
+        writes.push(msg);
+      },
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+    });
+
+    handler.handleSignal();
+
+    expect(writes.join("")).toContain("Interrupting");
+    expect(writes.join("")).toContain("Background tasks still running");
+  });
+});

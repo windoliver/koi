@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createBashTool } from "./bash-tool.js";
 import { buildSafeEnv, SAFE_ENV } from "./exec.js";
 
@@ -7,8 +9,15 @@ import { buildSafeEnv, SAFE_ENV } from "./exec.js";
 // Unit tests — security blocking
 // ---------------------------------------------------------------------------
 
+// Path-validator hardening requires workspaceRoot to exist and be a real
+// directory (fail-closed on missing base: otherwise an attacker could race
+// a symlink between validation and the subsequent open). Use a real temp
+// dir instead of the classic `/workspace` sentinel so tests exercise the
+// security classifier rather than the base-missing rejection.
+const workspaceRoot = realpathSync(mkdtempSync(join(tmpdir(), "koi-bash-tool-test-")));
+
 describe("createBashTool — security blocking", () => {
-  const tool = createBashTool({ workspaceRoot: "/workspace" });
+  const tool = createBashTool({ workspaceRoot });
 
   async function exec(
     command: string,
@@ -106,7 +115,7 @@ describe("createBashTool — security blocking", () => {
   });
 
   test("blocks cwd escaping workspace root (when workspaceRoot is set)", async () => {
-    const restricted = createBashTool({ workspaceRoot: "/workspace" });
+    const restricted = createBashTool({ workspaceRoot });
     const result = (await restricted.execute({ command: "ls", cwd: "/etc" }, {})) as Record<
       string,
       unknown
@@ -286,6 +295,31 @@ describe("createBashTool — cancellation and timeout", () => {
     expect(result.exitCode).not.toBe(0);
   });
 
+  test("rejects invalid timeoutMs before spawning", async () => {
+    const result = (await tool.execute(
+      { command: "echo should-not-run", timeoutMs: Number.NaN },
+      {},
+    )) as Record<string, unknown>;
+
+    expect(result.error).toMatch(/timeoutMs/i);
+    expect(result.exitCode).toBeUndefined();
+  });
+
+  test("clamps timeoutMs to the policy maximum", async () => {
+    const clampedTool = createBashTool({ policy: { maxTimeoutMs: 100 } });
+    const startTime = Date.now();
+
+    const result = (await clampedTool.execute(
+      { command: "sleep 2", timeoutMs: 1_000 },
+      {},
+    )) as Record<string, unknown>;
+
+    const elapsed = Date.now() - startTime;
+    expect(elapsed).toBeLessThan(750);
+    expect(result.timedOut).toBe(true);
+    expect(result.exitCode).not.toBe(0);
+  });
+
   test("pre-aborted signal prevents spawn", async () => {
     const controller = new AbortController();
     controller.abort();
@@ -381,6 +415,14 @@ describe("createBashTool — tool descriptor", () => {
   test("input schema requires command field", () => {
     const schema = createBashTool().descriptor.inputSchema;
     expect((schema as Record<string, unknown>).required).toContain("command");
+  });
+
+  test("timeoutMs schema exposes the policy minimum and maximum", () => {
+    const schema = createBashTool({ policy: { maxTimeoutMs: 1234 } }).descriptor
+      .inputSchema as Record<string, unknown>;
+    const properties = schema.properties as Record<string, Record<string, unknown>>;
+    expect(properties.timeoutMs?.minimum).toBe(1);
+    expect(properties.timeoutMs?.maximum).toBe(1234);
   });
 });
 

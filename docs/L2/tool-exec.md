@@ -1,293 +1,176 @@
-# @koi/tool-exec — Sandboxed Code Execution Tool
+# @koi/tool-exec
 
-`@koi/tool-exec` is an L2 package that provides the `exec` tool, enabling agents
-to run code in **any** `SandboxExecutor` backend (Docker, Cloudflare Workers, e2b,
-OS-level, etc.) with JSON input/output. It is a thin pass-through — no Wasm runtime,
-no tool bridging, no console capture.
+Programmatic tool orchestration — the `execute_code` tool runs multi-step TypeScript/JavaScript scripts in an isolated Bun Worker thread, calling registered tools via an RPC bridge and returning only the final result to the model's context window.
 
----
+## Layer
 
-## Why it exists
+L2 — depends on `@koi/core` (L0) and `@koi/tools-core` (L0u).
 
-Koi already has `execute_script` (@koi/code-executor) for tool orchestration in
-QuickJS Wasm. But some use cases don't need tool bridging — they need **compute**:
+## Purpose
 
-```
-Without exec (LLM guesses the answer):
+Every tool call costs a context turn. A 10-step pipeline (search → filter → write → commit) burns 10 model roundtrips plus 10 tool result injections into context. With `execute_code`, the model writes one script, the runtime executes all tool calls internally, and only the final summary returns to context — up to 90% context savings for repetitive multi-step work.
 
-  User:  "What's the average of these 500 salaries?"
-  Agent:  *tries mental math, makes rounding errors*
-  Agent:  "Approximately $87,400" ← wrong
+The isolation model:
 
-With exec (LLM delegates to a sandbox):
+- The script runs in a **Bun Worker thread** — separate thread, separate memory
+- Tool calls inside the script go through the same tool map (and optionally the same middleware chain) as direct calls
+- The worker is terminated after the script completes or times out
+- The model cannot access intermediate tool results — only the final `return` value reaches context
 
-  User:  "What's the average of these 500 salaries?"
-  Agent:  → exec({
-            code: "return input.salaries.reduce((a,b) => a+b, 0) / input.salaries.length",
-            input: { salaries: [...500 numbers...] }
-          })
-        ← { ok: true, output: 87450.50, durationMs: 3 }
-  Agent:  "The average salary is $87,450.50" ← correct
-```
+## Public API
 
-The key difference from `execute_script`:
+### `createExecuteCodeTool(config: ExecuteCodeToolConfig): Result<Tool, KoiError>`
 
-```
-              execute_script                    exec
-              ──────────────                    ────
-Sandbox       QuickJS Wasm (fixed)              Any SandboxExecutor (injected)
-Purpose       Orchestrate callTool() calls      Compute / transform / verify
-Tool access   callTool() RPC bridge             None
-Data input    None                              JSON via `input` parameter
-Console       Captured log/error/warn           None
-Language      JS/TS (transpiled)                Whatever the backend supports
-```
-
-`exec` is the **backend-agnostic** execution tool. The operator chooses which
-sandbox runs the code — Docker for heavy workloads, Cloudflare for edge, e2b
-for cloud dev environments — the agent doesn't care.
-
----
-
-## What this enables
-
-1. **Accurate computation** — LLMs delegate math, aggregation, filtering to real code
-   instead of hallucinating results
-
-2. **Backend-agnostic execution** — same tool interface regardless of whether code
-   runs in Docker, Cloudflare Workers, e2b, or an OS sandbox
-
-3. **Data transformation** — reshape JSON, validate schemas, sort/filter/aggregate
-   with guaranteed correctness
-
-4. **Code verification** — run a snippet to confirm it produces expected output
-   before writing it to a file
-
-5. **Isolated by default** — no filesystem, no network (unless operator allows),
-   no tool access. Pure compute in a sandbox.
-
----
-
-## Architecture
-
-### Layer position
-
-```
-L0  @koi/core              ─ SandboxExecutor, Tool, ToolDescriptor, SkillComponent
-                              (types + contracts only)
-L2  @koi/tool-exec         ─ this package (depends on L0 only)
-```
-
-Zero L0u dependencies. Zero external dependencies.
-
-### Internal module map
-
-```
-src/
-├── types.ts             ← ExecToolConfig, EXEC_TOOL_DESCRIPTOR, defaults
-├── exec-tool.ts         ← createExecTool() factory (validates, clamps, delegates)
-├── skill.ts             ← EXEC_SKILL companion skill (when to use exec vs execute_script)
-├── provider.ts          ← createExecProvider() attaches tool:exec + skill:exec-guide
-└── index.ts             ← public exports
-```
-
-### Execution flow
-
-```
-LLM calls exec({ code, input?, timeout_ms? })
-     │
-     ▼
-1. Validate input (code must be non-empty string)
-     │
-     ▼
-2. Clamp timeout
-     ├── Use timeout_ms if valid positive number
-     ├── Fall back to defaultTimeoutMs (5s)
-     └── Clamp to maxTimeoutMs (30s)
-     │
-     ▼
-3. Build ExecutionContext from config
-     ├── networkAllowed (default: false)
-     └── resourceLimits (optional maxMemoryMb, maxPids)
-     │
-     ▼
-4. Delegate to executor.execute(code, input, timeoutMs, context)
-     │
-     ▼
-5. Map result
-     ├── Success → { ok: true, output, durationMs }
-     ├── Expected error → { ok: false, error, code, durationMs }
-     └── Unexpected throw → { ok: false, error, code: "CRASH" }
-```
-
----
-
-## Quick start
-
-### Attach to an agent
+Create the `execute_code` tool. Returns `Result<Tool>` so callers can handle validation errors without throws.
 
 ```typescript
-import { createExecProvider } from "@koi/tool-exec";
-
-const provider = createExecProvider({
-  executor: myDockerSandbox,     // any SandboxExecutor implementation
-  defaultTimeoutMs: 5_000,       // optional (default: 5000)
-  maxTimeoutMs: 30_000,          // optional (default: 30000)
-  networkAllowed: false,         // optional (default: false)
-  resourceLimits: {              // optional
-    maxMemoryMb: 128,
-    maxPids: 10,
-  },
-});
-
-// provider.attach(agent) returns:
-//   tool:exec        → the callable tool
-//   skill:exec-guide → markdown injected into LLM context
+interface ExecuteCodeToolConfig {
+  /**
+   * REQUIRED trust gate. Scripts run in a Bun Worker that shares the host's
+   * ambient network and filesystem capabilities (fetch, Bun.file, timers),
+   * bypassing the `tools.*` permission middleware. Pass the exported
+   * `ACKNOWLEDGE_UNSANDBOXED_EXECUTION` sentinel to opt in. Without this
+   * field `createExecuteCodeTool` returns a `PERMISSION` error — the tool
+   * is not constructed and `execute_code` will not appear in the registry.
+   */
+  readonly acknowledgeUnsandboxedExecution: typeof ACKNOWLEDGE_UNSANDBOXED_EXECUTION;
+  /** Tools exposed to the script via tools.* */
+  readonly tools: ReadonlyMap<string, Tool>;
+  /**
+   * Optional middleware-aware call function injected by L3 runtime.
+   * When provided, inner tool calls go through the full permission and
+   * middleware chain. Falls back to direct tool.execute() when absent.
+   */
+  readonly callTool?: (name: string, args: JsonObject, signal?: AbortSignal) => Promise<unknown>;
+  /** Default timeout override (ms). Default: 30 000. */
+  readonly defaultTimeoutMs?: number;
+}
 ```
 
-### Use the tool factory directly
+**Trust gate (required from v0.1):** the `acknowledgeUnsandboxedExecution`
+field is a runtime-enforced opt-in. Because this package has not yet shipped a
+release without it, there is no compatibility shim — every caller is expected
+to pass the sentinel. The opt-in exists so a forgotten import or copy-paste
+from an unrelated example cannot silently grant a model-generated script
+ambient host privileges.
+
+**Tool schema for the model:**
 
 ```typescript
-import { createExecTool } from "@koi/tool-exec";
+{
+  name: "execute_code",
+  parameters: {
+    script: string,       // TypeScript or JavaScript. Use await tools.name(args).
+    timeout_ms?: number,  // Default: 30 000. Max: 300 000.
+  }
+}
+```
 
-const tool = createExecTool({ executor: mySandbox });
+### `executeScript(config: ScriptConfig): Promise<ScriptResult>`
 
-const result = await tool.execute({
-  code: "return input.items.filter(i => i.active).length",
-  input: { items: [{ active: true }, { active: false }, { active: true }] },
+Lower-level API — execute a script directly without going through the `execute_code` tool wrapper. Useful for testing or custom orchestration.
+
+```typescript
+interface ScriptConfig {
+  readonly code: string;
+  readonly language?: "javascript" | "typescript"; // Default: "typescript"
+  readonly timeoutMs?: number;      // Default: 30 000. Hard cap: 300 000.
+  readonly maxToolCalls?: number;   // Default: 50
+  readonly tools: ReadonlyMap<string, Tool>;
+  readonly callTool?: (name: string, args: JsonObject, signal?: AbortSignal) => Promise<unknown>;
+  readonly signal?: AbortSignal;
+}
+
+interface ScriptResult {
+  readonly ok: boolean;
+  readonly result: unknown;         // Final return value of the script
+  readonly toolCallCount: number;
+  readonly durationMs: number;
+  readonly error?: string;          // Present when ok is false
+}
+```
+
+## Script API (inside the script)
+
+The script receives a `tools` object. Each registered tool is available as an async method:
+
+```typescript
+// tools.* accepts any tool name registered with the execute_code tool
+const files = await tools.glob({ pattern: "**/*.ts" });
+const hits = await tools.grep({ pattern: "TODO", glob: "**/*.ts" });
+return { fileCount: files.length, todoCount: hits.length };
+```
+
+**Rules for scripts:**
+- `await` every tool call — all tool methods return `Promise<unknown>`
+- Sequential calls only — `Promise.all` across tools is not supported (worker message ordering)
+- `return` a value to pass it back to the model; no return means `null` result
+- Top-level TypeScript type annotations are stripped before execution
+- `import`/`export` statements are not allowed (script is a function body, not a module)
+- The script has access to standard JS globals (Promise, setTimeout, crypto, etc.)
+
+## Internals
+
+### Transpilation
+
+`transpileTs(source)` wraps the user code in `export default (async function(tools) { ... })` before calling `Bun.Transpiler.transformSync`. The `export default` prevents the transpiler from eliding the expression. The `export default` prefix is then stripped, leaving a bare function expression that the worker can `eval()`.
+
+### Worker isolation
+
+The worker is a Bun Worker thread (`new Worker(url)`). It:
+1. Receives the transpiled function expression via `postMessage`
+2. `eval()`s it to obtain the async function
+3. Calls it with a catch-all `Proxy` for the `tools` parameter
+4. Any `tools.name(args)` access on the Proxy sends a "call" message to the host
+5. The host executes the tool (via `callTool` or direct `tool.execute()`) and posts the result back
+6. The script resumes with the tool's return value
+
+The worker is terminated immediately after the script completes, errors, or times out.
+
+### Tool call budget
+
+The host tracks `toolCallCount` and fails the whole script when a call would
+exceed `maxToolCalls` (default 50). Budget exhaustion is host-authoritative:
+even if the worker script catches the rejected `tools.*` promise, the final
+`ScriptResult` is `ok: false` with `"Tool call budget exceeded"`. This matches
+the existing fail-closed handling for concurrent tool-call violations.
+
+### callTool middleware integration
+
+When `callTool` is provided in `ExecuteCodeToolConfig`, every `tools.*()` call inside the script goes through that function instead of calling `tool.execute()` directly. This lets the L3 runtime wire the full permission and middleware chain:
+
+```typescript
+// L3 wiring example
+import { ACKNOWLEDGE_UNSANDBOXED_EXECUTION, createExecuteCodeTool } from "@koi/tool-exec";
+
+const execCodeTool = createExecuteCodeTool({
+  acknowledgeUnsandboxedExecution: ACKNOWLEDGE_UNSANDBOXED_EXECUTION,
+  tools: registeredTools,
+  callTool: (name, args, signal) => middlewareChain.invoke(name, args, { signal }),
 });
-// { ok: true, output: 2, durationMs: 5 }
 ```
 
----
+## Constants
 
-## Companion skill
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `DEFAULT_TIMEOUT_MS` | `30_000` | Default script timeout |
+| `MAX_TIMEOUT_MS` | `300_000` | Hard cap on script timeout |
+| `DEFAULT_MAX_TOOL_CALLS` | `50` | Default tool call budget |
 
-The provider attaches a `skill:exec-guide` alongside the tool. This markdown
-is injected into the LLM's system context to teach it:
+## Security notes
 
-- **When to use `exec`** — compute, transform, verify with JSON input
-- **When to use `execute_script`** — orchestrate multiple `callTool()` calls
-- **When to skip both** — simple questions the LLM can answer directly
-- **Example calls** — concrete JSON showing code + input patterns
+- The `execute_code` tool has `sandbox: false` — its trust level is evaluated at the tool-call level by the permission middleware, not by OS sandbox
+- The script runs in a Worker thread (not a subprocess), so it shares the Bun process's network and filesystem access — rely on `callTool` middleware to enforce per-tool permissions
+- Scripts cannot access the agent's conversation history, model, or internal state — only the `tools` object is exposed
+- All tool calls are subject to the same permission middleware as direct model-issued calls (when `callTool` is wired)
+- Timeout is enforced by `worker.terminate()` — no graceful shutdown
 
-Without the skill, the LLM only sees the bare tool descriptor and must guess
-when to reach for `exec`. The skill eliminates that guesswork.
+## v1 reference
 
----
+Ported from `archive/v1/packages/virt/code-executor` and `archive/v1/packages/fs/tool-exec`. Key simplifications in v2:
 
-## Error handling
-
-All errors are returned as structured objects, never thrown to the caller.
-
-```
-Error source                     Result
-────────────                     ──────
-Missing/empty code            →  { ok: false, error: "...", code: "VALIDATION" }
-Non-string code               →  { ok: false, error: "...", code: "VALIDATION" }
-Executor returns TIMEOUT      →  { ok: false, error: "...", code: "TIMEOUT", durationMs }
-Executor returns OOM          →  { ok: false, error: "...", code: "OOM", durationMs }
-Executor returns PERMISSION   →  { ok: false, error: "...", code: "PERMISSION", durationMs }
-Executor returns CRASH        →  { ok: false, error: "...", code: "CRASH", durationMs }
-Executor throws (infra error) →  { ok: false, error: "...", code: "CRASH" }
-```
-
----
-
-## API reference
-
-### Factories
-
-| Export | Signature | Description |
-|--------|-----------|-------------|
-| `createExecTool` | `(config: ExecToolConfig) → Tool` | Creates the `exec` tool |
-| `createExecProvider` | `(config: ExecToolConfig) → ComponentProvider` | Attaches `tool:exec` + `skill:exec-guide` |
-
-### ExecToolConfig
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `executor` | `SandboxExecutor` | *required* | The sandbox backend |
-| `defaultTimeoutMs` | `number` | `5000` | Timeout when model omits `timeout_ms` |
-| `maxTimeoutMs` | `number` | `30000` | Hard upper bound for timeout |
-| `networkAllowed` | `boolean` | `false` | Whether code may make network requests |
-| `resourceLimits` | `{ maxMemoryMb?, maxPids? }` | `undefined` | OS-level resource limits |
-
-### Tool input schema
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `code` | `string` | Yes | Code to execute |
-| `input` | `any` | No | JSON data available as `input` variable |
-| `timeout_ms` | `number` | No | Execution timeout (clamped to server max) |
-
-### Exports
-
-| Export | Kind | Description |
-|--------|------|-------------|
-| `createExecTool` | factory | Creates the `exec` Tool directly |
-| `createExecProvider` | factory | ComponentProvider attaching tool + skill |
-| `EXEC_TOOL_DESCRIPTOR` | const | Tool descriptor (name, schema, description) |
-| `EXEC_SKILL` | const | SkillComponent for behavioral guidance |
-| `EXEC_SKILL_NAME` | const | `"exec-guide"` |
-| `EXEC_SKILL_CONTENT` | const | Skill markdown content |
-| `DEFAULT_TIMEOUT_MS` | const | `5000` |
-| `MAX_TIMEOUT_MS` | const | `30000` |
-| `ExecToolConfig` | type | Configuration interface |
-
----
-
-## Testing
-
-```bash
-bun run --filter @koi/tool-exec test
-```
-
-| File | Tests | Coverage |
-|------|-------|----------|
-| `exec-tool.test.ts` | 24 | Success path, timeout clamping, context passthrough, validation, error forwarding, executor throws |
-| `provider.test.ts` | 5 | Provider name, tool attachment, skill attachment, descriptor, caching |
-
-29 tests, 46 assertions.
-
----
-
-## Design decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| Delegate to injected `SandboxExecutor` | Backend-agnostic — operator chooses Docker, cloud, OS |
-| No tool bridging (`callTool`) | That's `execute_script`'s job. Keep `exec` simple. |
-| No console capture | Same — `execute_script` handles that. Minimal surface. |
-| JSON `input` parameter | Structured data in, structured data out. Safer than string interpolation. |
-| Clamp timeout silently | Don't reject valid requests — just enforce the server limit. |
-| Companion skill vs longer description | Skills are injected into system context; descriptions are truncated in tool lists. |
-| `trustTier: "sandbox"` | Code runs in isolation — highest sandboxing requirement. |
-| Try/catch around executor call | Infrastructure failures (network, deserialization) must not propagate unhandled. |
-
----
-
-## Layer compliance
-
-```
-L0  @koi/core ──────────────────────────────────────────────┐
-    SandboxExecutor, ExecutionContext, Tool, ToolDescriptor,  │
-    SkillComponent, ComponentProvider, skillToken              │
-                                                              ▼
-L2  @koi/tool-exec ◀─────────────────────────────────────────┘
-    imports from L0 only
-    ✗ never imports @koi/engine (L1)
-    ✗ never imports peer L2 packages
-    ✗ never imports external dependencies
-    ✓ all interface properties readonly
-    ✓ no enum, class, any, as-assertion, non-null assertion
-    ✓ import type for type-only imports
-```
-
----
-
-## Related
-
-- [@koi/code-executor](./code-executor.md) — QuickJS Wasm script execution with `callTool()` bridging
-- [@koi/sandbox-executor](./sandbox-executor.md) — trust-tiered executor for forge bricks
-- [@koi/core](../../packages/core/) — L0 contract definitions (SandboxExecutor, Tool)
+- **No Wasm/QuickJS** — uses Bun Workers instead; simpler, faster, no dependency on `@nicolo-ribaudo/quickjs-wasm`
+- **No Asyncify constraint** — Bun Workers with postMessage/Promise are naturally async; sequential tool calls work without suspension/resumption tricks
+- **No SandboxAdapter/SandboxProfile** — the Worker thread boundary provides the isolation; adapter abstraction deferred to a future package
+- **Catch-all Proxy** — the tools object accepts any name and routes to the host, enabling `callTool` middleware without pre-registration of tool names

@@ -752,7 +752,7 @@ describe("createOAuthAuthProvider", () => {
     const seedClient = (storage: ReturnType<typeof createMockStorage>): Promise<void> =>
       storage
         .set(
-          "mcp-oauth-client|revoked|" + "0".repeat(16), // hash placeholder, real one written by code
+          `mcp-oauth-client|revoked|${"0".repeat(16)}`, // hash placeholder, real one written by code
           "ignored",
         )
         .then(async () => {

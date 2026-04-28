@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/middleware-permissions API surface . has stable type surface 1`] = `
-"import { PermissionBackend, PermissionDecision } from '@koi/core/permission-backend';
+"import { PermissionDecision, PermissionBackend } from '@koi/core/permission-backend';
 export { PermissionBackend, PermissionDecision, PermissionQuery } from '@koi/core/permission-backend';
 import { ApprovalRequest, ApprovalDecision, KoiMiddleware } from '@koi/core/middleware';
 import { AuditSink } from '@koi/core';
@@ -51,6 +51,32 @@ interface ApprovalStore {
     readonly close: () => void;
 }
 declare function createApprovalStore(config: ApprovalStoreConfig): ApprovalStore;
+
+/**
+ * bash-spec-guard — wraps @koi/bash-ast spec evaluation and enforces two
+ * security properties:
+ *
+ * 1. **Exact-argv guard**: For any argv where the spec returns
+ *    \`kind: "partial" | "refused"\`, an existing \`allow\` decision from a
+ *    prefix \`Run(...)\` rule is downgraded to \`ask\` unless an explicit
+ *    exact-argv rule allows the full command (canary-suffix technique).
+ *
+ * 2. **Semantic rule evaluation**: For \`complete\`/\`partial\` specs, evaluates
+ *    \`Write(path)\`, \`Read(path)\`, and \`Network(host)\` rules against the
+ *    spec's \`writes\`, \`reads\`, and \`network[].host\` fields.
+ *    Only runs when \`backendSupportsDualKey: true\` — requires a backend that
+ *    marks fall-through decisions so unmatched resources are not mistaken for
+ *    explicit deny/ask rules.
+ */
+
+type SpecGuardOutcome = {
+    readonly kind: "skipped";
+    readonly reason: string;
+} | {
+    readonly kind: "spec-evaluated";
+    readonly decision: PermissionDecision;
+    readonly specKind: "complete" | "partial" | "refused";
+};
 
 /**
  * Pattern-based permission classifier.
@@ -280,6 +306,28 @@ interface PermissionsMiddlewareConfig {
      * turn boundary via \`onBeforeTurn\`. Default: 3. #1650.
      */
     readonly softDenyPerTurnCap?: number;
+    /**
+     * Enable bash-ast spec-aware enforcement. Must be explicitly set to \`true\`
+     * to activate — defaults to disabled to preserve existing bash-allow policy
+     * behavior on upgrade.
+     *
+     * When \`true\`, the guard enforces two additional properties at execution time:
+     *
+     * - **Exact-argv guard**: commands with \`partial\` or \`refused\` specs (e.g.
+     *   \`ssh\`, \`rm -r\`) downgrade broad-prefix \`allow\` to \`ask\` unless an
+     *   exact-argv rule explicitly allows the full command string. Prevents
+     *   broad \`allow: bash:*\` from silently authorizing dangerous forms.
+     *
+     * - **Semantic rules** (requires \`backendSupportsDualKey\`): evaluates
+     *   \`Write(path)\`, \`Read(path)\`, and \`Network(host)\` rules from \`@koi/permissions\`
+     *   against the command's actual filesystem/network effects.
+     *
+     * - **Complex-form ratchet**: commands the AST cannot analyze (\`too-complex\`,
+     *   pipelines, over-length) downgrade \`allow\` to \`ask\`.
+     *
+     * Set to \`false\` or leave unset for legacy prefix-only enforcement.
+     */
+    readonly enableBashSpecGuard?: boolean | undefined;
 }
 declare function validatePermissionsConfig(input: unknown): Result<PermissionsMiddlewareConfig>;
 
@@ -393,6 +441,6 @@ interface PermissionsMiddlewareHandle extends KoiMiddleware {
 }
 declare function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): PermissionsMiddlewareHandle;
 
-export { type ApprovalCacheConfig, type ApprovalGrant, type ApprovalStore, type ApprovalStoreConfig, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS, DEFAULT_APPROVAL_TIMEOUT_MS, DEFAULT_CACHE_CONFIG, DEFAULT_DENIAL_ESCALATION_THRESHOLD, DEFAULT_DENIAL_ESCALATION_WINDOW_MS, DEFAULT_DENY_MARKER, DEFAULT_GROUPS, DEFAULT_SOFT_DENY_PER_TURN_CAP, type DenialEscalationConfig, type DenialRecord, type DenialSource, type DenialTracker, IS_DEFAULT_DENY, type PatternBackendConfig, type PermissionCacheConfig, type PermissionRules, type PermissionsMiddlewareConfig, type PermissionsMiddlewareHandle, createApprovalStore, createAutoApprovalHandler, createDenialTracker, createPatternPermissionBackend, createPermissionsMiddleware, isDefaultDeny, validatePermissionsConfig };
+export { type ApprovalCacheConfig, type ApprovalGrant, type ApprovalStore, type ApprovalStoreConfig, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS, DEFAULT_APPROVAL_TIMEOUT_MS, DEFAULT_CACHE_CONFIG, DEFAULT_DENIAL_ESCALATION_THRESHOLD, DEFAULT_DENIAL_ESCALATION_WINDOW_MS, DEFAULT_DENY_MARKER, DEFAULT_GROUPS, DEFAULT_SOFT_DENY_PER_TURN_CAP, type DenialEscalationConfig, type DenialRecord, type DenialSource, type DenialTracker, IS_DEFAULT_DENY, type PatternBackendConfig, type PermissionCacheConfig, type PermissionRules, type PermissionsMiddlewareConfig, type PermissionsMiddlewareHandle, type SpecGuardOutcome, createApprovalStore, createAutoApprovalHandler, createDenialTracker, createPatternPermissionBackend, createPermissionsMiddleware, isDefaultDeny, validatePermissionsConfig };
 "
 `;

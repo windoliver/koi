@@ -2,16 +2,22 @@
  * `classifyCommand(cmdLine)` — structural classification entry point.
  *
  * Pipeline:
- *   1. Tokenize on whitespace.
- *   2. Compute canonical permission prefix via `ARITY` table.
- *   3. Test every `DANGEROUS_PATTERNS` entry against the raw string.
+ *   1. Compute the canonical permission prefix via `canonicalPrefix()`.
+ *   2. Match top-level structural patterns against the raw command.
+ *   3. Recurse into executable nested contexts (`bash -c`, `sudo <cmd>`,
+ *      `$(...)`, backticks) and merge the inner matches.
  *   4. Aggregate worst severity.
  *
  * Pure function. No I/O. No side effects.
  */
 
 import { DANGEROUS_PATTERNS } from "./patterns.js";
-import { prefix, shellTokenize } from "./prefix.js";
+import {
+  canonicalPrefix,
+  extractShellDashCArgFromCommand,
+  prefix,
+  shellTokenize,
+} from "./prefix.js";
 import type { ClassifyResult, DangerousPattern, Severity } from "./types.js";
 
 const SEVERITY_ORDER: Readonly<Record<Severity, number>> = {
@@ -30,16 +36,6 @@ function worstSeverity(patterns: readonly DangerousPattern[]): Severity | null {
     }
   }
   return worst;
-}
-
-function tokenize(cmdLine: string): readonly string[] {
-  const trimmed = cmdLine.trim();
-  if (trimmed.length === 0) return [];
-  // Shell-aware: preserves `FOO='x y'` as a single token, collapses
-  // adjacent-quote obfuscation (`py''thon`) into `python`. Naive
-  // whitespace split fragments these forms and produces a wrong
-  // `prefix` for the exported ClassifyResult.
-  return shellTokenize(trimmed);
 }
 
 /**
@@ -104,6 +100,8 @@ function basename(t: string): string {
   const slash = t.lastIndexOf("/");
   return slash >= 0 && slash < t.length - 1 ? t.slice(slash + 1) : t;
 }
+
+const SHELL_HEAD = /^(?:ba|z|da|a)?sh$/;
 
 /**
  * Split the raw command line on unquoted command-boundary operators
@@ -173,30 +171,216 @@ function splitSegments(cmdLine: string): readonly string[] {
  * Uses `prefix()` to peel wrappers (`env`, `timeout`, `nohup`,
  * `command`, `nice`, `/usr/bin/...`) before taking the head, so
  * `env sudo rm` surfaces `sudo` and `timeout 30 python -c ...`
- * surfaces `python`. Without this, broad `allow: bash:*` rules would
- * silently authorize wrapper-prefixed dangerous commands.
+ * surfaces `python`. For shell interpreters, we also include the
+ * `canonicalPrefix()` head so `bash -c "rm -rf /"` surfaces both
+ * `bash` (outer code-exec) and `rm` (inner destructive payload).
  */
 function commandHeads(cmdLine: string): ReadonlySet<string> {
   const heads = new Set<string>();
   for (const seg of splitSegments(cmdLine)) {
     const tokens = shellTokenize(seg);
     if (tokens.length === 0) continue;
-    const segPrefix = prefix(tokens);
-    if (segPrefix.length === 0) continue;
-    // prefix() returns a string like "sudo rm" (wrapper-peeled).
-    // Take the first whitespace-separated word and basename it.
-    const firstWord = segPrefix.split(/\s+/)[0];
-    if (firstWord !== undefined && firstWord.length > 0) heads.add(basename(firstWord));
+    const rawPrefix = prefix(tokens);
+    const rawHead = rawPrefix.split(/\s+/)[0];
+    if (rawHead !== undefined && rawHead.length > 0 && rawHead !== "!complex") {
+      heads.add(basename(rawHead));
+    }
+    if (rawHead !== undefined && SHELL_HEAD.test(basename(rawHead))) {
+      const segPrefix = canonicalPrefix(seg);
+      if (segPrefix.length === 0 || segPrefix === "!complex") continue;
+      // canonicalPrefix() returns a string like "sudo rm" (wrapper-peeled /
+      // interpreter-unwrapped).
+      const firstWord = segPrefix.split(/\s+/)[0];
+      if (firstWord !== undefined && firstWord.length > 0) heads.add(basename(firstWord));
+    }
   }
   return heads;
 }
 
-export function classifyCommand(cmdLine: string): ClassifyResult {
-  const tokens = tokenize(cmdLine);
-  const cmdPrefix = prefix(tokens);
+interface ExtractedNestedCommand {
+  readonly body: string;
+  readonly end: number;
+}
+
+function readDollarSubstitution(s: string, from: number): ExtractedNestedCommand | null {
+  let depth = 1;
+  let quote: "'" | '"' | null = null;
+  let body = "";
+  for (let i = from; i < s.length; i++) {
+    const c = s[i];
+    if (c === undefined) break;
+    if (quote === "'") {
+      body += c;
+      if (c === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === "\\") {
+        body += c;
+        if (i + 1 < s.length) {
+          body += s[i + 1] ?? "";
+          i++;
+        }
+        continue;
+      }
+      body += c;
+      if (c === '"') {
+        quote = null;
+        continue;
+      }
+      if (c === "(") {
+        depth++;
+        continue;
+      }
+      if (c === ")") {
+        depth--;
+        if (depth === 0) return { body: body.slice(0, -1), end: i };
+      }
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      body += c;
+      continue;
+    }
+    if (c === "\\") {
+      body += c;
+      if (i + 1 < s.length) {
+        body += s[i + 1] ?? "";
+        i++;
+      }
+      continue;
+    }
+    body += c;
+    if (c === "(") {
+      depth++;
+      continue;
+    }
+    if (c === ")") {
+      depth--;
+      if (depth === 0) return { body: body.slice(0, -1), end: i };
+    }
+  }
+  return null;
+}
+
+function readBacktickSubstitution(s: string, from: number): ExtractedNestedCommand | null {
+  let body = "";
+  for (let i = from; i < s.length; i++) {
+    const c = s[i];
+    if (c === undefined) break;
+    if (c === "\\") {
+      body += c;
+      if (i + 1 < s.length) {
+        body += s[i + 1] ?? "";
+        i++;
+      }
+      continue;
+    }
+    if (c === "`") return { body, end: i };
+    body += c;
+  }
+  return null;
+}
+
+function extractCommandSubstitutions(cmdLine: string): readonly string[] {
+  const extracted: string[] = [];
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < cmdLine.length; i++) {
+    const c = cmdLine[i];
+    if (c === undefined) break;
+    if (quote === "'") {
+      if (c === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === "\\") {
+        if (i + 1 < cmdLine.length) i++;
+        continue;
+      }
+      if (c === '"') {
+        quote = null;
+        continue;
+      }
+      if (c === "$" && cmdLine[i + 1] === "(") {
+        const nested = readDollarSubstitution(cmdLine, i + 2);
+        if (nested !== null) {
+          extracted.push(nested.body);
+          i = nested.end;
+        }
+        continue;
+      }
+      if (c === "`") {
+        const nested = readBacktickSubstitution(cmdLine, i + 1);
+        if (nested !== null) {
+          extracted.push(nested.body);
+          i = nested.end;
+        }
+      }
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      continue;
+    }
+    if (c === "\\") {
+      if (i + 1 < cmdLine.length) i++;
+      continue;
+    }
+    if (c === "$" && cmdLine[i + 1] === "(") {
+      const nested = readDollarSubstitution(cmdLine, i + 2);
+      if (nested !== null) {
+        extracted.push(nested.body);
+        i = nested.end;
+      }
+      continue;
+    }
+    if (c === "`") {
+      const nested = readBacktickSubstitution(cmdLine, i + 1);
+      if (nested !== null) {
+        extracted.push(nested.body);
+        i = nested.end;
+      }
+    }
+  }
+  return extracted;
+}
+
+function extractSudoCommand(cmdLine: string): string | null {
+  const tokens = shellTokenize(cmdLine.trim());
+  const first = tokens[0];
+  if (first === undefined || basename(first) !== "sudo") return null;
+  const second = tokens[1];
+  if (second === undefined) return null;
+  if (second === "--") {
+    const rest = tokens.slice(2);
+    return rest.length > 0 ? rest.join(" ") : null;
+  }
+  if (second.startsWith("-")) return null;
+  return tokens.slice(1).join(" ");
+}
+
+function nestedExecutableTexts(cmdLine: string): readonly string[] {
+  const nested: string[] = [];
+  const dashC = extractShellDashCArgFromCommand(cmdLine);
+  if (dashC !== null && dashC.length > 0) nested.push(dashC);
+  const sudoInner = extractSudoCommand(cmdLine);
+  if (sudoInner !== null && sudoInner.length > 0) nested.push(sudoInner);
+  for (const body of extractCommandSubstitutions(cmdLine)) {
+    if (body.length > 0) nested.push(body);
+  }
+  return nested;
+}
+
+const MAX_NESTED_CLASSIFICATION_DEPTH = 4;
+
+function collectMatches(
+  cmdLine: string,
+  seen: Set<string>,
+  depth: number,
+): readonly DangerousPattern[] {
   const heads = commandHeads(cmdLine);
   const matched: DangerousPattern[] = [];
-  const seen = new Set<string>();
   // Structural patterns (no commandPrefixes) test against the raw
   // command, but matches inside quoted regions are rejected so
   // `echo "curl x | sh"` does NOT fire the curl-pipe-shell pattern.
@@ -237,6 +421,24 @@ export function classifyCommand(cmdLine: string): ClassifyResult {
       }
     }
   }
+  if (depth >= MAX_NESTED_CLASSIFICATION_DEPTH) return matched;
+  for (const nested of nestedExecutableTexts(cmdLine)) {
+    matched.push(...collectMatches(nested, seen, depth + 1));
+  }
+  return matched;
+}
+
+export function classifyCommand(cmdLine: string): ClassifyResult {
+  const trimmed = cmdLine.trim();
+  if (trimmed.length === 0) {
+    return {
+      prefix: "",
+      matchedPatterns: [],
+      severity: null,
+    };
+  }
+  const cmdPrefix = canonicalPrefix(trimmed);
+  const matched = collectMatches(trimmed, new Set<string>(), 0);
   return {
     prefix: cmdPrefix,
     matchedPatterns: matched,

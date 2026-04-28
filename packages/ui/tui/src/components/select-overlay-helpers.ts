@@ -14,15 +14,20 @@ import { createMemo, createSignal } from "solid-js";
 // Keyboard handler
 // ---------------------------------------------------------------------------
 
+/** Shared callbacks accepted by both `handleSelectOverlayKey` and `consumeSelectOverlayKey`. */
+export interface SelectOverlayKeyCallbacks {
+  readonly onClose: () => void;
+  readonly onSelect?: (() => void) | undefined;
+  readonly onMoveUp?: (() => void) | undefined;
+  readonly onMoveDown?: (() => void) | undefined;
+  /** Called when Space is pressed — peek/preview the highlighted item without selecting. */
+  readonly onPeek?: (() => void) | undefined;
+}
+
 /** Process a key for any select overlay. Returns true if consumed. */
 export function handleSelectOverlayKey(
   key: KeyEvent,
-  callbacks: {
-    readonly onClose: () => void;
-    readonly onSelect?: (() => void) | undefined;
-    readonly onMoveUp?: (() => void) | undefined;
-    readonly onMoveDown?: (() => void) | undefined;
-  },
+  callbacks: SelectOverlayKeyCallbacks,
 ): boolean {
   if (key.name === "escape") {
     callbacks.onClose();
@@ -40,6 +45,10 @@ export function handleSelectOverlayKey(
     callbacks.onMoveDown?.();
     return true;
   }
+  if (key.name === "space" && callbacks.onPeek !== undefined) {
+    callbacks.onPeek();
+    return true;
+  }
   return false;
 }
 
@@ -53,12 +62,7 @@ export function handleSelectOverlayKey(
  */
 export function consumeSelectOverlayKey(
   key: KeyEvent,
-  callbacks: {
-    readonly onClose: () => void;
-    readonly onSelect?: (() => void) | undefined;
-    readonly onMoveUp?: (() => void) | undefined;
-    readonly onMoveDown?: (() => void) | undefined;
-  },
+  callbacks: SelectOverlayKeyCallbacks,
 ): boolean {
   const consumed = handleSelectOverlayKey(key, callbacks);
   if (consumed) key.preventDefault();

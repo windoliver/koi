@@ -66,14 +66,23 @@ export interface BashPolicy {
 
   /**
    * Default execution timeout in milliseconds.
-   * Can be overridden per-invocation via the tool's `timeoutMs` argument.
+   * Can be overridden per-invocation via the tool's `timeoutMs` argument,
+   * up to maxTimeoutMs.
    * @default 30_000 (30 seconds)
    */
   readonly defaultTimeoutMs?: number;
+
+  /**
+   * Maximum execution timeout in milliseconds.
+   * Per-invocation timeoutMs values above this are clamped.
+   * @default 300_000 (5 minutes)
+   */
+  readonly maxTimeoutMs?: number;
 }
 
-/** Default policy: no allowlist, 1 MB output cap, 30-second timeout. */
+/** Default policy: no allowlist, 1 MB output cap, 30-second default timeout, 5-minute max. */
 export const DEFAULT_BASH_POLICY: BashPolicy = {
   maxOutputBytes: 1_048_576,
   defaultTimeoutMs: 30_000,
+  maxTimeoutMs: 300_000,
 } as const satisfies BashPolicy;

@@ -26,11 +26,20 @@ import {
   MAX_ALERTS_IN_MEMORY,
   MAX_FINISHED_SPAWNS,
   MAX_MESSAGES,
+  MAX_SECURITY_FINDINGS_IN_MEMORY,
   MAX_SESSIONS,
   MAX_TOOL_RESULT_BYTES,
   MAX_VIOLATIONS_IN_MEMORY,
   MAX_VISIBLE_TOASTS,
 } from "./types.js";
+
+/**
+ * Hard cap on diagnostic notices for unmatched tool callIds (#1940). Keeps
+ * a backend retry / version-skew storm from filling the transcript and
+ * triggering history compaction. A handful of diagnostics is enough to
+ * surface the upstream bug.
+ */
+const MAX_UNMATCHED_TOOL_NOTICES = 5;
 
 // ---------------------------------------------------------------------------
 // Assistant message type (narrowed)
@@ -169,12 +178,25 @@ function finalizeAssistant(messages: readonly TuiMessage[]): {
   };
 }
 
-/** Apply hysteresis compaction if messages reach or exceed threshold. */
+/**
+ * Apply hysteresis compaction if real (non-diagnostic) messages reach or
+ * exceed threshold. Synthetic unmatched-tool diagnostics are excluded from
+ * BOTH the trigger count and the retained window (#1940): they are already
+ * capped at MAX_UNMATCHED_TOOL_NOTICES, so they ride alongside the last
+ * MAX_MESSAGES real entries instead of occupying real slots and evicting
+ * recoverable user/assistant history during a retry/version-skew storm.
+ */
 function maybeCompact(messages: readonly TuiMessage[]): readonly TuiMessage[] {
-  if (messages.length >= COMPACT_THRESHOLD) {
-    return messages.slice(-MAX_MESSAGES);
+  const isUnmatched = (m: TuiMessage): boolean =>
+    m.kind === "info" && m.id.startsWith("info-tool-unmatched-");
+  let realCount = 0;
+  for (const m of messages) {
+    if (!isUnmatched(m)) realCount++;
   }
-  return messages;
+  if (realCount < COMPACT_THRESHOLD) return messages;
+  const real = messages.filter((m) => !isUnmatched(m));
+  const keep = new Set<TuiMessage>(real.slice(-MAX_MESSAGES));
+  return messages.filter((m) => isUnmatched(m) || keep.has(m));
 }
 
 /** Cap a string to MAX characters via tail-slice. */
@@ -259,27 +281,68 @@ function findToolBlock(
  * Extracts the repeated findLastAssistant + findToolBlock + updateAssistant
  * pattern that was 4× duplicated across tool_call_* handlers (Issue 6).
  */
-function updateToolBlock(state: TuiState, callId: string, patch: Partial<ToolCallBlock>): TuiState {
-  const found = findLastAssistant(state.messages);
-  if (!found) return state;
+function findAssistantWithCallId(
+  messages: readonly TuiMessage[],
+  callId: string,
+): FoundAssistant | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.kind !== "assistant") continue;
+    if (msg.blocks.some((b) => b.kind === "tool_call" && b.callId === callId)) {
+      return { msg, idx: i };
+    }
+  }
+  return undefined;
+}
 
-  const tool = findToolBlock(found.msg.blocks, callId);
-  if (!tool) {
-    // Dev-mode warning: tool_result or tool_call_end for an unregistered callId.
-    // Possible causes: TUI missed tool_call_start (reconnect), or a bug upstream.
-    console.warn(`[tui/reduce] no tool_call block found for callId="${callId}"`);
-    return state;
+function updateToolBlock(state: TuiState, callId: string, patch: Partial<ToolCallBlock>): TuiState {
+  // Search across all assistant messages — out-of-order tool_result for an
+  // older turn must not be misattributed to the current/last turn.
+  const found = findAssistantWithCallId(state.messages, callId);
+  if (found) {
+    const tool = findToolBlock(found.msg.blocks, callId);
+    if (tool) {
+      const updatedBlocks = replaceAt(found.msg.blocks, tool.blockIdx, {
+        ...tool.block,
+        ...patch,
+      });
+      return {
+        ...state,
+        messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
+      };
+    }
   }
 
-  const updatedBlocks = replaceAt(found.msg.blocks, tool.blockIdx, {
-    ...tool.block,
-    ...patch,
-  });
-
-  return {
-    ...state,
-    messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
+  // Truly unmatched: emit a standalone info notice so the dropped event
+  // leaves a visible trace without participating in findLastAssistant or
+  // splitting an in-flight assistant turn.
+  //
+  // Bounded to MAX_UNMATCHED_TOOL_NOTICES total (and deduped by callId) so a
+  // backend retry / version-skew storm — even one with many distinct unknown
+  // IDs — cannot fill the transcript and force maybeCompact to evict real
+  // user/assistant history. The cap is intentionally small: a few diagnostics
+  // are enough to surface the upstream bug; more is noise.
+  const noticeId = `info-tool-unmatched-${callId}`;
+  if (state.messages.some((m) => m.kind === "info" && m.id === noticeId)) {
+    return state;
+  }
+  const unmatchedCount = state.messages.reduce(
+    (n, m) => (m.kind === "info" && m.id.startsWith("info-tool-unmatched-") ? n + 1 : n),
+    0,
+  );
+  if (unmatchedCount >= MAX_UNMATCHED_TOOL_NOTICES) {
+    return state;
+  }
+  const implicit: TuiMessage = {
+    kind: "info",
+    id: noticeId,
+    message: `Received tool update for unknown callId="${callId}"`,
   };
+  // Skip maybeCompact: these synthetic notices are already capped by
+  // MAX_UNMATCHED_TOOL_NOTICES, and routing them through compaction would
+  // let backend retry/version-skew noise evict real user/assistant history
+  // when the session sits near the compaction threshold.
+  return { ...state, messages: [...state.messages, implicit] };
 }
 
 /**
@@ -518,8 +581,10 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       // tool_result fires after the tool finishes executing — this is the
       // authoritative completion point. Mark the block complete, capture
       // duration from startedAt, store the result, and decrement running count.
-      const found = findLastAssistant(state.messages);
-      const tool = found ? findToolBlock(found.msg.blocks, event.callId as string) : undefined;
+      // Search all assistant messages — late tool_result for an older turn
+      // must still resolve the correct historical block to compute durationMs.
+      const owner = findAssistantWithCallId(state.messages, event.callId as string);
+      const tool = owner ? findToolBlock(owner.msg.blocks, event.callId as string) : undefined;
       const durationMs =
         tool?.block.startedAt !== undefined ? Date.now() - tool.block.startedAt : undefined;
       const patch: Partial<ToolCallBlock> = {
@@ -711,6 +776,15 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
 
     case "set_mcp_status":
       return { ...state, mcpServers: action.servers };
+
+    case "set_supervised_children":
+      // Reference-equality shortcut: the runtime bridge can push identical
+      // snapshots on no-op registry events (e.g. `watch` firing on
+      // observer-only listeners). Skip the state rebuild in that case so
+      // downstream effect hooks don't re-run for free.
+      return action.children === state.supervisedChildren
+        ? state
+        : { ...state, supervisedChildren: action.children };
 
     case "set_modal":
       return action.modal === null && state.modal === null
@@ -937,9 +1011,13 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         };
       }
 
-      const agentName = progress?.agentName ?? existingRecord!.agentName;
-      const description = progress?.description ?? existingRecord!.description;
-      const startedAt = progress?.startedAt ?? existingRecord!.startedAt;
+      // At least one of `progress`/`existingRecord` is defined — the
+      // `!progress && !existingRecord` branch above already returned.
+      const fallback = progress ?? existingRecord;
+      if (fallback === undefined) return state;
+      const agentName = fallback.agentName;
+      const description = fallback.description;
+      const startedAt = fallback.startedAt;
       const finishedAt = Date.now();
       const durationMs = finishedAt - startedAt;
       const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
@@ -1136,6 +1214,17 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         ...state,
         governance: { ...state.governance, capabilities: action.capabilities },
       };
+
+    case "add_security_finding": {
+      const next = [action.finding, ...state.governance.securityFindings].slice(
+        0,
+        MAX_SECURITY_FINDINGS_IN_MEMORY,
+      );
+      return { ...state, governance: { ...state.governance, securityFindings: next } };
+    }
+
+    case "clear_security_findings":
+      return { ...state, governance: { ...state.governance, securityFindings: [] } };
 
     case "add_toast": {
       const without = state.toasts.filter((t) => t.key !== action.toast.key);

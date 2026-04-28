@@ -105,6 +105,8 @@ describe("validateRouterConfig", () => {
     if (!result.ok) throw new Error();
     expect(result.value.circuitBreaker.failureThreshold).toBe(5);
     expect(result.value.circuitBreaker.cooldownMs).toBe(60_000);
+    // model-router uses 300s window to accommodate slow LLM turn latency (#2017)
+    expect(result.value.circuitBreaker.failureWindowMs).toBe(300_000);
   });
 
   test("healthProbe config preserved when provided", () => {

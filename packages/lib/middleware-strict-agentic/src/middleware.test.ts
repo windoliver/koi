@@ -306,11 +306,11 @@ describe("createStrictAgenticMiddleware", () => {
     expect(r2?.kind).toBe("continue");
     expect(decisions.length).toBe(1);
     const [decision] = decisions as [Record<string, unknown>];
-    expect(decision["event"]).toBe("strict-agentic:circuit-broken");
-    expect(decision["sessionId"]).toBe("s-cb");
-    expect(decision["runId"]).toBe("run-1");
-    expect(decision["consecutiveBlocks"]).toBe(2);
-    expect(decision["maxFillerRetries"]).toBe(1);
+    expect(decision.event).toBe("strict-agentic:circuit-broken");
+    expect(decision.sessionId).toBe("s-cb");
+    expect(decision.runId).toBe("run-1");
+    expect(decision.consecutiveBlocks).toBe(2);
+    expect(decision.maxFillerRetries).toBe(1);
   });
 
   test("block counter is run-scoped — fresh runId starts from zero, not poisoned by prior run", async () => {

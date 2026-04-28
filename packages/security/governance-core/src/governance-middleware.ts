@@ -8,6 +8,8 @@ import type {
 } from "@koi/core/governance-backend";
 import { GOVERNANCE_ALLOW } from "@koi/core/governance-backend";
 import type {
+  ApprovalDecision,
+  ApprovalRequest,
   CapabilityFragment,
   KoiMiddleware,
   ModelRequest,
@@ -18,8 +20,10 @@ import type {
 import { KoiRuntimeError } from "@koi/errors";
 import { createAlertTracker } from "./alert-tracker.js";
 import type { GovernanceMiddlewareConfig } from "./config.js";
-import { DEFAULT_ALERT_THRESHOLDS } from "./config.js";
+import { DEFAULT_ALERT_THRESHOLDS, DEFAULT_APPROVAL_TIMEOUT_MS } from "./config.js";
+import { computeGrantKey } from "./grant-key.js";
 import { normalizeUsage } from "./normalize-usage.js";
+import { isApprovalTimeout, withTimeout } from "./with-timeout.js";
 
 export const GOVERNANCE_MIDDLEWARE_NAME = "koi:governance-core";
 export const GOVERNANCE_MIDDLEWARE_PRIORITY = 150;
@@ -56,7 +60,8 @@ function redactForAudit(req: PolicyRequest): PolicyRequest {
 }
 
 export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): KoiMiddleware {
-  const { backend, controller, cost, onAlert, onViolation, onUsage } = config;
+  const { backend, controller, cost, onAlert, onViolation, onUsage, onApprovalPersist } = config;
+  const approvalTimeoutMs = config.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
   // observerOnly = true silences the four `controller.record(...)` sites in
   // this middleware (turn, token_usage, tool_success, tool_error). Hosts that
   // run alongside `createGovernanceExtension()` from `@koi/engine-reconcile`
@@ -86,6 +91,28 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
   // let justified: mutable latch — set on accounting failure, read by gate()
   let degraded = false;
   let degradedReason: string | undefined;
+
+  // Ask-verdict state (gov-11)
+  const sessionGrants = new Map<string, Set<string>>();
+  const inflightAsks = new Map<string, Promise<ApprovalDecision>>();
+  const sessionAborts = new Map<string, AbortController>();
+
+  function ensureSessionAbort(sId: string): AbortController {
+    const existing = sessionAborts.get(sId);
+    if (existing !== undefined) return existing;
+    const ctrl = new AbortController();
+    sessionAborts.set(sId, ctrl);
+    return ctrl;
+  }
+
+  function ensureSessionGrantSet(sId: string): Set<string> {
+    let set = sessionGrants.get(sId);
+    if (set === undefined) {
+      set = new Set();
+      sessionGrants.set(sId, set);
+    }
+    return set;
+  }
   function latchDegraded(reason: string, cause: unknown, payload: JsonObject): void {
     degraded = true;
     degradedReason = reason;
@@ -224,7 +251,12 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       });
     }
 
-    if (!verdict.ok) {
+    if (verdict.ok === "ask") {
+      await handleAskVerdict(ctx, kind, payload, verdict, request);
+      return;
+    }
+
+    if (verdict.ok === false) {
       onViolation?.(verdict, request);
       emitCompliance(request, kind, verdict);
       throw KoiRuntimeError.from("PERMISSION", joinMsgs(verdict), {
@@ -241,6 +273,152 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     }
 
     emitCompliance(request, kind, GOVERNANCE_ALLOW);
+  }
+
+  async function handleAskVerdict(
+    ctx: TurnContext,
+    kind: PolicyRequestKind,
+    payload: JsonObject,
+    verdict: Extract<GovernanceVerdict, { ok: "ask" }>,
+    request: PolicyRequest,
+  ): Promise<void> {
+    const sId = ctx.session.sessionId;
+    const grantKey = computeGrantKey(kind, payload);
+
+    // Session-scoped grant fast-path.
+    if (ensureSessionGrantSet(sId).has(grantKey)) {
+      emitCompliance(request, kind, GOVERNANCE_ALLOW);
+      return;
+    }
+
+    const handler = ctx.requestApproval;
+    if (handler === undefined) {
+      throw KoiRuntimeError.from(
+        "PERMISSION",
+        "Governance verdict requires approval but no handler is configured",
+        {
+          context: {
+            agentId: ctx.session.agentId,
+            sessionId: sId,
+            kind,
+            askId: verdict.askId,
+          },
+        },
+      );
+    }
+
+    // Inflight coalescing by askId.
+    let pending = inflightAsks.get(verdict.askId);
+    const isCreator = pending === undefined;
+    if (pending === undefined) {
+      const approvalReq: ApprovalRequest = {
+        toolId: `governance:${kind}`,
+        input: payload,
+        reason: verdict.prompt,
+        ...(verdict.metadata !== undefined
+          ? { metadata: { askId: verdict.askId, ...verdict.metadata } }
+          : { metadata: { askId: verdict.askId } }),
+      };
+      pending = withTimeout(
+        Promise.resolve(handler(approvalReq)),
+        approvalTimeoutMs,
+        ensureSessionAbort(sId).signal,
+      );
+      inflightAsks.set(verdict.askId, pending);
+      pending.finally(() => inflightAsks.delete(verdict.askId)).catch(() => {});
+    }
+
+    let decision: ApprovalDecision;
+    try {
+      decision = await pending;
+    } catch (e) {
+      if (isApprovalTimeout(e)) {
+        throw KoiRuntimeError.from("TIMEOUT", `Approval timed out after ${approvalTimeoutMs}ms`, {
+          cause: e,
+          context: {
+            agentId: ctx.session.agentId,
+            sessionId: sId,
+            kind,
+            askId: verdict.askId,
+          },
+        });
+      }
+      throw KoiRuntimeError.from("PERMISSION", "Approval handler failed", {
+        cause: e,
+        context: {
+          agentId: ctx.session.agentId,
+          sessionId: sId,
+          kind,
+          askId: verdict.askId,
+        },
+      });
+    }
+
+    switch (decision.kind) {
+      case "allow":
+        emitCompliance(request, kind, GOVERNANCE_ALLOW);
+        return;
+      case "always-allow":
+        ensureSessionGrantSet(sId).add(grantKey);
+        // Only the coalescing creator fires the persistence side-effect.
+        // Coalesced callers await the same decision but must not double-write,
+        // since `onApprovalPersist` backends are not documented as idempotent.
+        // The grant set add above is idempotent, so all callers still
+        // benefit from the session-scoped fast-path on subsequent gates.
+        if (isCreator && decision.scope === "always" && onApprovalPersist !== undefined) {
+          onApprovalPersist({
+            kind,
+            agentId: toAgentId(ctx.session.agentId),
+            sessionId: sId,
+            payload,
+            grantKey,
+            grantedAt: Date.now(),
+          });
+        }
+        emitCompliance(request, kind, GOVERNANCE_ALLOW);
+        return;
+      case "deny":
+        throw KoiRuntimeError.from("PERMISSION", decision.reason || verdict.prompt, {
+          context: {
+            agentId: ctx.session.agentId,
+            sessionId: sId,
+            kind,
+            askId: verdict.askId,
+          },
+        });
+      case "modify":
+        throw KoiRuntimeError.from(
+          "PERMISSION",
+          "Governance asks do not support input modification",
+          {
+            context: {
+              agentId: ctx.session.agentId,
+              sessionId: sId,
+              kind,
+              askId: verdict.askId,
+            },
+          },
+        );
+      default: {
+        // Exhaustiveness guard — fail closed on unknown decision kinds.
+        // If `ApprovalDecision` gains a new variant, this assignment
+        // breaks the build and forces explicit handling rather than
+        // silently falling through at a governance checkpoint.
+        const exhaustive: never = decision;
+        throw KoiRuntimeError.from(
+          "PERMISSION",
+          `Unknown approval decision: ${JSON.stringify(exhaustive)}`,
+          {
+            context: {
+              agentId: ctx.session.agentId,
+              sessionId: sId,
+              kind,
+              askId: verdict.askId,
+            },
+          },
+        );
+      }
+    }
   }
 
   async function recordModelUsage(ctx: TurnContext, response: ModelResponse): Promise<void> {
@@ -449,6 +627,15 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
       alertTracker.cleanup(ctx.sessionId);
+
+      // gov-11: abort pending asks and drop session grants.
+      const abort = sessionAborts.get(ctx.sessionId);
+      if (abort !== undefined) {
+        abort.abort();
+        sessionAborts.delete(ctx.sessionId);
+      }
+      sessionGrants.delete(ctx.sessionId);
+
       // Do NOT auto-clear the degraded latch here: session_reset preserves
       // cumulative cost/token/spawn counters across the boundary, so if
       // prior accounting failed those runtime-wide counters stay stale.

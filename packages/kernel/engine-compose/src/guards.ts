@@ -67,6 +67,11 @@ interface EffectiveTimeout {
   readonly source: "wall_clock" | "inactivity";
 }
 
+interface TimeoutRace {
+  readonly promise: Promise<never>;
+  readonly cancel: () => void;
+}
+
 /**
  * Compute the effective timeout for the next awaited operation based on both
  * wall-clock and inactivity limits. Returns the tighter of the two with its
@@ -106,14 +111,6 @@ function computeEffectiveTimeout(
 }
 
 /**
- * A timeout race handle with explicit cancellation for timer cleanup.
- */
-interface TimeoutRace {
-  readonly promise: Promise<never>;
-  readonly cancel: () => void;
-}
-
-/**
  * Create a cancellable promise that rejects after `ms` milliseconds with a
  * TIMEOUT error. The timer is unref'd so it doesn't keep the process alive.
  */
@@ -145,13 +142,13 @@ function createTimeoutRace(
       (timer as { unref: () => void }).unref();
     }
   });
-
   return {
     promise,
     cancel: () => {
       if (timer !== undefined) {
         clearTimeout(timer);
       }
+      timer = undefined;
     },
   };
 }
@@ -160,7 +157,64 @@ function createTimeoutRace(
 // Iteration Guard
 // ---------------------------------------------------------------------------
 
-export function createIterationGuard(config?: Partial<IterationLimits>): KoiMiddleware {
+/**
+ * Returned by `createIterationGuard`. Extends `KoiMiddleware` with a
+ * `resetForRun()` method that resets the per-run iteration budget (turns,
+ * wall-clock timer, inactivity timer). Called by the engine when
+ * `resetBudgetPerRun: true` is set, alongside the matching
+ * governance `run_reset`. Not wired automatically — callers must invoke
+ * it to keep guard and governance state in sync.
+ */
+export interface IterationGuardHandle extends KoiMiddleware {
+  /**
+   * Reset per-run budgets.
+   *
+   * `runStartedAt` — ms-since-epoch timestamp for the duration anchor (when
+   * `run()` was entered). Anchoring duration to run() entry means startup
+   * work (forge refresh, dynamic-mw recomposition) counts against the wall-
+   * clock budget, which prevents a slow startup from silently extending the
+   * effective duration window.
+   *
+   * `activityStartedAt` — ms-since-epoch timestamp for the inactivity anchor.
+   * Defaults to `runStartedAt` when omitted. The engine passes the post-
+   * startup timestamp here so the inactivity clock starts AFTER initialization,
+   * giving the first model call its full inactivity window regardless of how
+   * long forge/dynamic-mw took to settle.
+   */
+  readonly resetForRun: (runStartedAt?: number, activityStartedAt?: number) => void;
+}
+
+/**
+ * Cross-package brand symbol. Using Symbol.for ensures that guards produced
+ * by different installed copies or versions of @koi/engine-compose are still
+ * recognised by isIterationGuardHandle.
+ */
+export const ITERATION_GUARD_BRAND: symbol = Symbol.for(
+  "@koi/engine-compose:iteration-guard-handle",
+);
+
+/**
+ * Type predicate — true iff `mw` was produced by `createIterationGuard`.
+ * Requires the own ITERATION_GUARD_BRAND symbol so only explicitly branded guards
+ * trigger per-run resets; generic middleware with unrelated `resetForRun` methods
+ * are not affected. Symbol.for ensures brand equality across module copies.
+ */
+export function isIterationGuardHandle(mw: KoiMiddleware): mw is IterationGuardHandle {
+  if (!Object.hasOwn(mw, ITERATION_GUARD_BRAND)) return false;
+  const candidate = mw as KoiMiddleware & { readonly resetForRun?: unknown };
+  return typeof candidate.resetForRun === "function";
+}
+
+/**
+ * Returns true if `mw` carries ITERATION_GUARD_BRAND, regardless of whether
+ * it also implements resetForRun(). Use this to detect branded-but-broken
+ * guards (missing resetForRun) and fail closed at the reset boundary.
+ */
+export function hasIterationGuardBrand(mw: KoiMiddleware): boolean {
+  return Object.hasOwn(mw, ITERATION_GUARD_BRAND);
+}
+
+export function createIterationGuard(config?: Partial<IterationLimits>): IterationGuardHandle {
   const limits: IterationLimits = {
     ...DEFAULT_ITERATION_LIMITS,
     ...config,
@@ -232,7 +286,7 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
     totalTokens += inputTokens + outputTokens;
   }
 
-  return {
+  const guard: IterationGuardHandle = {
     name: "koi:iteration-guard",
     describeCapabilities: () => undefined,
     priority: 0,
@@ -242,6 +296,18 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
       totalTokens = 0;
       startedAt = Date.now();
       lastActivityMs = Date.now();
+    },
+
+    resetForRun: (runStartedAt?: number, activityStartedAt?: number): void => {
+      const now = Date.now();
+      // Clamp future anchors and reject non-finite values (NaN/Infinity would disable
+      // comparisons) — mirrors governance controller boundaryTimestamp validation.
+      const safeTs = (v: number | undefined, fallback: number): number =>
+        v !== undefined && Number.isFinite(v) ? Math.min(v, now) : fallback;
+      const t = safeTs(runStartedAt, now);
+      turns = 0;
+      startedAt = t;
+      lastActivityMs = safeTs(activityStartedAt, t);
     },
 
     wrapModelCall: async (_ctx, request, next) => {
@@ -355,6 +421,15 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
       return response;
     },
   };
+  // Set the cross-package brand so isIterationGuardHandle works across
+  // separate installed copies of @koi/engine-compose (version-skew scenario).
+  Object.defineProperty(guard, ITERATION_GUARD_BRAND, {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return guard;
 }
 
 // ---------------------------------------------------------------------------

@@ -44,6 +44,8 @@ export interface RemoteAgentTask extends RuntimeTaskBase {
   readonly kind: "remote_agent";
   readonly endpoint: string;
   readonly correlationId: string;
+  /** Per-start UUID. The board reuses taskId across retries; attemptId uniquely scopes each start() call for cancel routing and pipe tracking. */
+  readonly attemptId: string;
 }
 
 export interface InProcessTeammateTask extends RuntimeTaskBase {

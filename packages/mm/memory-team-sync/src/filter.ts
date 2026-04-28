@@ -23,6 +23,35 @@ function getRedactor(): ReturnType<typeof createRedactor> {
   return cachedRedactor;
 }
 
+/**
+ * Personal email pattern scoped to `reference` memories only.
+ *
+ * Matches `word@word.tld` tokens NOT followed by `:` (excludes SSH git
+ * remotes like `git@github.com:org/repo`). Applied only to `reference` as
+ * a fail-closed backstop against contact misclassification: if the LLM
+ * stores a personal contact (alice@example.com) as a `reference` pointer
+ * instead of `user`, we catch it here at the sync boundary.
+ *
+ * `feedback`/`project` are intentionally excluded: they may legitimately
+ * carry shared operational aliases (oncall-eng@company.com, team DLs) that
+ * constitute valid team guidance. Blocking those wholesale would silently
+ * drop useful runbook content with no sanitization path.
+ *
+ * Known limitations (follow-up issue for comprehensive PII detection):
+ * - Does not cover phone numbers, @slack handles, or pager aliases.
+ * - Cannot distinguish personal from shared service aliases on `reference`;
+ *   both are blocked on that type as a conservative choice.
+ */
+const PERSONAL_EMAIL_PATTERN = /\b[a-zA-Z][a-zA-Z0-9._%+-]*@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b(?!:)/;
+
+function referenceContainsEmail(memory: MemoryRecord): boolean {
+  return (
+    PERSONAL_EMAIL_PATTERN.test(memory.content) ||
+    PERSONAL_EMAIL_PATTERN.test(memory.name) ||
+    PERSONAL_EMAIL_PATTERN.test(memory.description)
+  );
+}
+
 /** Result of filtering a single memory. */
 export interface FilterResult {
   readonly passed: boolean;
@@ -33,8 +62,9 @@ export interface FilterResult {
  * Filters a memory for team sync eligibility.
  *
  * Checks in order:
- * 1. Type must be in allowedTypes (user is always denied)
- * 2. Content must pass secret scanning (fail-closed on error)
+ * 1. Type must be in allowedTypes (`user` is always denied — primary contact privacy boundary)
+ * 2. `reference` memories with email patterns are blocked (misclassification backstop)
+ * 3. Content must pass secret scanning (fail-closed on error)
  */
 export function filterMemoryForSync(
   memory: MemoryRecord,
@@ -60,6 +90,20 @@ export function filterMemoryForSync(
         memoryId: memory.id,
         reason: "type_denied",
         detail: `type "${memory.type}" not in allowed types`,
+      },
+    };
+  }
+
+  // Backstop for contact data mis-typed as `reference` — block email-bearing
+  // reference memories fail-closed. SSH git remotes (git@host:path) are excluded
+  // via the lookahead in PERSONAL_EMAIL_PATTERN.
+  if (memory.type === "reference" && referenceContainsEmail(memory)) {
+    return {
+      passed: false,
+      blocked: {
+        memoryId: memory.id,
+        reason: "secret_detected",
+        detail: "email address in reference memory — store personal contacts as user type",
       },
     };
   }

@@ -2,6 +2,8 @@
 
 Intercepts every model response and tool call. On model validation failure, injects structured error context back into the prompt and retries. Quality gates halt the pipeline without retry. For forged tools, tracks runtime health in a sliding-window ring buffer, quarantines tools that breach error thresholds, and demotes trust tiers on sustained failure. Zero LLM involvement for health tracking — pure arithmetic and state machine evaluation.
 
+**Public surface (#1346):** `FeedbackLoopMiddleware` and `FeedbackLoopHealthHandle` are now exported from the package index. The middleware returned by `createFeedbackLoopMiddleware(config)` exposes `healthHandle` (a `(sessionId, toolId) => ToolHealthSnapshot | undefined` accessor) so downstream consumers — notably `@koi/forge-demand` — can read tool-health state without depending on the internal `ToolHealthTracker`. The runtime auto-wires this handle into forge-demand's `healthTracker` slot when both packages are configured (see `docs/L3/runtime.md`); the handle returns live data only when `forgeHealth` is configured on the feedback-loop config, matching the existing tool-health contract.
+
 ---
 
 ## Why It Exists
@@ -62,11 +64,17 @@ This middleware is the feedback loop between model output → validation → err
 The middleware hooks into both model calls and tool calls:
 
 ```
-wrapModelCall  →  call LLM  →  validate  →  fail? inject error + retry
-                                          →  pass? run gates → return
-wrapToolCall   →  health check (quarantine?)  →  validate input
-               →  call tool  →  record health  →  run gates → return
+wrapModelCall   →  call LLM  →  validate  →  fail? inject error + retry
+                                           →  pass? run gates → return
+wrapModelStream →  buffer all chunks  →  validate response from done chunk
+                →  pass? re-yield buffered chunks  →  fail? yield error chunk
+wrapToolCall    →  health check (quarantine?)  →  validate input
+                →  call tool  →  record health  →  run gates → return
 ```
+
+`wrapModelStream` buffers the full chunk stream before validation. A `streamAsModel` adapter collects chunks, throws on `error` chunks (classified as `TRANSPORT_ERROR`), and returns the `ModelResponse` from the `done` chunk. `runWithRetry` runs validation on that response; on success the buffered chunks are re-yielded to the caller. If validation or a gate fails, a single `{ kind: "error" }` chunk is yielded. This gives stream consumers the same quality guarantees as non-streaming callers without imposing a different validation interface.
+
+Transport-only retry config (`retry.transport.maxAttempts >= 1`) routes both `wrapModelCall` and `wrapModelStream` through `runWithRetry` even when no validators or gates are configured.
 
 ### Model Call Flow
 
@@ -157,9 +165,13 @@ wrapToolCall   →  health check (quarantine?)  →  validate input
 
 ## Forge Tool Health Tracking
 
+### BrickId-First Keying
+
+All tool aliases that resolve to the same `BrickId` share a single ring buffer and flush state. The tracker uses `stateKey(toolId) = resolveBrickId(toolId) ?? toolId` as the map key. This means health failures from any alias of a brick (e.g., `"my-tool-v1"` and `"my-tool-v2"` both mapping to `"brick-abc"`) are pooled into one sliding window. When `resolveBrickId` returns `undefined` (config skew, unregistered tool), the tool ID is used as a fallback key and health is tracked locally to the session only — operator-side quarantine does not apply because there is no `BrickId` to look up.
+
 ### Ring Buffer
 
-Each forged tool gets a fixed-size ring buffer that records success/failure and latency for every invocation. Two sliding windows query the same buffer:
+Each forged tool (or alias group sharing a `BrickId`) gets a fixed-size ring buffer that records success/failure and latency for every invocation. Two sliding windows query the same buffer:
 
 ```
 Ring buffer (size = max(quarantine window, demotion window)):
@@ -289,6 +301,8 @@ These are **two independent axes**. Demotion lowers privileges; quarantine kills
 │  errors.         │    │  sandbox.        │    │  tool now.       │
 └──────────────────┘    └──────────────────┘    └──────────────────┘
 
+Note: `lastPromotedAt === 0` means the promotion time is unknown (new session, no history). The grace period is skipped in this case — demotion is allowed immediately based on error rate evidence. This prevents the grace period from accidentally protecting newly forged tools that were never actually promoted.
+
 ┌──────────────────┐    ┌──────────────────┐
 │  MIN SAMPLE SIZE │    │  AGENT vs SYSTEM │
 │                  │    │                  │
@@ -352,7 +366,7 @@ interface ToolHealthTracker {
   readonly recordSuccess: (toolId: string, latencyMs: number) => void;
   readonly recordFailure: (toolId: string, latencyMs: number, error: string) => void;
   readonly getSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
-  readonly isQuarantined: (toolId: string) => boolean;
+  readonly isQuarantined: (toolId: string) => Promise<boolean>;
   readonly checkAndQuarantine: (toolId: string) => Promise<boolean>;
   readonly checkAndDemote: (toolId: string) => Promise<boolean>;
   readonly getAllSnapshots: () => readonly ToolHealthSnapshot[];
@@ -362,6 +376,8 @@ interface ToolHealthTracker {
   readonly dispose: () => Promise<void>;
 }
 ```
+
+`isQuarantined` always rechecks the store — it does not cache negative results. This ensures operator-side quarantine actions take effect on the very next call without waiting for a session restart.
 
 ### Pure Function: `shouldFlush()`
 
@@ -610,7 +626,7 @@ toolValidators.length === 0 && toolGates.length === 0 && !isForgedTool → next(
 
 ```
 resolveBrickId(toolId)     O(1) — single lookup
-isQuarantined(toolId)      O(1) — Map.get + boolean check
+isQuarantined(toolId)      O(1) session check + O(1) in-memory set check + async store read (skipped when brickId unresolved)
 next(request)              O(tool execution time)
 recordSuccess(toolId)      O(1) — ring buffer write at cursor + cumulative counter increment
 shouldFlushTool(toolId)    O(1) — compare counters + error rate delta

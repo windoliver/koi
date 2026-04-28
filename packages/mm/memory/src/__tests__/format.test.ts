@@ -187,3 +187,42 @@ describe("formatMemorySection", () => {
     expect(result).toContain("second");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Low-confidence trust annotation
+// ---------------------------------------------------------------------------
+
+describe("formatSingleMemory trust annotation", () => {
+  function makeScoredWithConfidence(confidence: number | undefined): ScoredMemory {
+    const memory: ScannedMemory = {
+      record: {
+        id: "mem-trust-test" as MemoryRecordId,
+        name: "heuristic-memory",
+        description: "auto-inferred",
+        type: "feedback",
+        content: "prefer small functions",
+        filePath: "heuristic.md",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        ...(confidence !== undefined ? { confidence } : {}),
+      },
+      fileSize: 20,
+    };
+    return { memory, salienceScore: 1.0, decayScore: 1.0, typeRelevance: 1.0 };
+  }
+
+  test("low-confidence memory includes trust field in metadata JSON", () => {
+    const result = formatSingleMemory(makeScoredWithConfidence(0.7));
+    expect(result).toContain('"trust":0.7');
+  });
+
+  test("full-trust memory (undefined confidence) has no trust field in metadata", () => {
+    const result = formatSingleMemory(makeScoredWithConfidence(undefined));
+    expect(result).not.toContain("trust");
+  });
+
+  test("confidence=1.0 has no trust field (already at max)", () => {
+    const result = formatSingleMemory(makeScoredWithConfidence(1.0));
+    expect(result).not.toContain("trust");
+  });
+});

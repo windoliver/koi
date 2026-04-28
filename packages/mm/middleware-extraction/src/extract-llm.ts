@@ -9,9 +9,15 @@
  */
 
 import type { CollectiveMemoryCategory, MemoryType } from "@koi/core";
-import { mapCategoryToMemoryType } from "./extract-regex.js";
+import { CATEGORY_CONFIDENCE, mapCategoryToMemoryType } from "./extract-regex.js";
 import { sanitizeForExtraction } from "./sanitize.js";
 import type { ExtractionCandidate } from "./types.js";
+
+// LLM-extracted categories cannot be fully trusted: the model self-assigns the
+// category label, so "gotcha"/"correction" from LLM output could be hallucinated
+// or weak. Cap at 0.9 so the LLM path stays below human-authored markers (1.0)
+// while still ranking above uncategorized auto-extracted heuristics (0.7).
+const LLM_CONFIDENCE_CAP = 0.9;
 
 const VALID_CATEGORIES = new Set<string>([
   "gotcha",
@@ -28,9 +34,6 @@ function isValidCategory(value: string): value is CollectiveMemoryCategory {
 
 /** Maximum content length per extracted entry (characters). */
 const MAX_ENTRY_LENGTH = 500;
-
-/** Default confidence for LLM-extracted entries. */
-const LLM_CONFIDENCE = 0.9;
 
 /**
  * Builds the extraction prompt from accumulated tool outputs.
@@ -104,7 +107,7 @@ export function parseExtractionResponse(response: string): readonly ExtractionCa
         content: content.length > MAX_ENTRY_LENGTH ? content.slice(0, MAX_ENTRY_LENGTH) : content,
         memoryType,
         category,
-        confidence: LLM_CONFIDENCE,
+        confidence: Math.min(LLM_CONFIDENCE_CAP, CATEGORY_CONFIDENCE[category]),
       });
     }
 

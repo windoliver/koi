@@ -585,15 +585,22 @@ export type {
   SensorReading,
 } from "./governance.js";
 // governance — runtime values
-export { GOVERNANCE_VARIABLES, governanceContributorToken } from "./governance.js";
+export {
+  GOVERNANCE_VARIABLES,
+  governanceContributorToken,
+  RESET_BOUNDARIES,
+} from "./governance.js";
 // governance backend — pluggable rule-based policy evaluation contract
 export type {
+  AskId,
   ComplianceRecord,
   ComplianceRecorder,
   ConstraintChecker,
   ConstraintQuery,
   GovernanceBackend,
   GovernanceVerdict,
+  PersistentGrant,
+  PersistentGrantCallback,
   PolicyEvaluator,
   PolicyRequest,
   PolicyRequestKind,
@@ -605,8 +612,10 @@ export type {
   ViolationStore,
 } from "./governance-backend.js";
 export {
+  askId,
   DEFAULT_VIOLATION_QUERY_LIMIT,
   GOVERNANCE_ALLOW,
+  isAskVerdict,
   VIOLATION_SEVERITY_ORDER,
 } from "./governance-backend.js";
 // handoff — types
@@ -811,6 +820,13 @@ export { ANS_SCOPE_PRIORITY, DEFAULT_ANS_CONFIG } from "./name-service.js";
 // nexus-path — branded string type for Nexus namespace paths
 export type { NexusPath } from "./nexus-path.js";
 export { MAX_NEXUS_PATH_LENGTH, nexusPath } from "./nexus-path.js";
+// oauth-channel — shared OAuth authorization channel protocol
+export type {
+  AuthCompleteNotification,
+  AuthFailureNotification,
+  AuthRequiredNotification,
+  OAuthChannel,
+} from "./oauth-channel.js";
 // outcome-evaluator — rubric-graded LLM-as-judge iteration loop types
 export type {
   CriterionResult,
@@ -1084,12 +1100,13 @@ export {
 } from "./spawn.js";
 // supervision — Erlang/OTP-style hierarchical fault recovery
 export type {
+  ChildIsolation,
   ChildSpec,
   RestartType,
   SupervisionConfig,
   SupervisionStrategy,
 } from "./supervision.js";
-export { DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
+export { DEFAULT_CHILD_ISOLATION, DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
 // system signal — operational/system events for the proactive intelligence layer
 export type {
   CompositionSchedulerEvent,
@@ -1170,6 +1187,8 @@ export type {
   ToolHealthSnapshot,
   ToolHealthState,
 } from "./tool-health-types.js";
+// toolset — named composable tool presets (resolution logic in @koi/toolsets L2)
+export type { ToolsetDefinition, ToolsetRegistry, ToolsetResolution } from "./toolset.js";
 // transcript — append-only message log for crash recovery
 export type {
   CompactResult,
@@ -1194,6 +1213,7 @@ export type {
   UserSignal,
   UserSnapshot,
 } from "./user-model.js";
+export { validateSupervisionConfig } from "./validate-supervision.js";
 // validation utilities — runtime type guards and validators
 export {
   isModelChunk,
@@ -1240,6 +1260,17 @@ export type {
   WebhookPayload,
   WebhookSummary,
 } from "./webhook.js";
+// worker-ipc — Bun IPC envelope between parent supervisor and subprocess child
+export type {
+  WorkerIpcEngineEventMessage,
+  WorkerIpcHeartbeatMessage,
+  WorkerIpcMessage,
+  WorkerIpcMessageKind,
+  WorkerIpcMessageMessage,
+  WorkerIpcResultMessage,
+  WorkerIpcTerminateMessage,
+} from "./worker-ipc.js";
+export { validateWorkerIpcMessage } from "./worker-ipc.js";
 // workspace — workspace isolation contract types
 export type {
   CleanupPolicy,

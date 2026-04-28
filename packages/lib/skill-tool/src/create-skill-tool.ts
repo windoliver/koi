@@ -92,7 +92,7 @@ function internalError(
 // Tool description builder
 // ---------------------------------------------------------------------------
 
-function buildDescription(skillListing: string): string {
+function buildDescription(skillListing: string, progressive = false): string {
   const usage = [
     "Execute a skill by name. Skills provide specialized capabilities and domain knowledge.",
     "",
@@ -101,6 +101,12 @@ function buildDescription(skillListing: string): string {
   ].join("\n");
 
   if (skillListing.length === 0) {
+    // In progressive mode the middleware injects an <available_skills> XML block into the
+    // system prompt at each turn — that block is the authoritative catalog. Emitting "no
+    // skills available" here would contradict the system prompt and suppress Skill() calls.
+    if (progressive) {
+      return `${usage}Available skills are listed in the system prompt above.`;
+    }
     return `${usage}No skills are currently available.`;
   }
 
@@ -122,26 +128,35 @@ function buildDescription(skillListing: string): string {
  * @returns Result containing the Tool on success, or a KoiError if discovery fails.
  */
 export async function createSkillTool(config: SkillToolConfig): Promise<Result<Tool, KoiError>> {
-  // Discover skills for the tool description
+  // Always run discover() for a startup health check — if the skills runtime is broken
+  // at creation time, fail here so the host can omit the Skill tool rather than
+  // registering an advertised-but-broken tool that fails at invocation time.
+  //
+  // In progressive mode the host injects an <available_skills> XML block per model call
+  // from live ECS state, so the discovery result is not used for the tool description.
+  // In eager mode the result is used to build the static skill listing in the descriptor.
   const discoverResult = await config.resolver.discover();
   if (!discoverResult.ok) return discoverResult;
 
-  // Filter to only skills executable under the current config.
-  // Fork skills require spawnFn and valid spawn config to be executable.
-  const allSkills = [...discoverResult.value.values()];
-  const skills = allSkills.filter((skill) => {
-    const spawnResult = extractSpawnConfig(skill);
-    if (!spawnResult.ok && spawnResult.error.code === "NOT_FOUND") {
-      return true; // Inline-only skill — always executable
-    }
-    if (!spawnResult.ok) {
-      return false; // Spawn config validation failed — not executable
-    }
-    // Fork skill — only executable if spawnFn is configured
-    return config.spawnFn !== undefined;
-  });
-  const skillListing = formatSkillDescription(skills);
-  const description = buildDescription(skillListing);
+  let skillListing = "";
+  if (!config.progressive) {
+    // Filter to only skills executable under the current config.
+    // Fork skills require spawnFn and valid spawn config to be executable.
+    const allSkills = [...discoverResult.value.values()];
+    const skills = allSkills.filter((skill) => {
+      const spawnResult = extractSpawnConfig(skill);
+      if (!spawnResult.ok && spawnResult.error.code === "NOT_FOUND") {
+        return true; // Inline-only skill — always executable
+      }
+      if (!spawnResult.ok) {
+        return false; // Spawn config validation failed — not executable
+      }
+      // Fork skill — only executable if spawnFn is configured
+      return config.spawnFn !== undefined;
+    });
+    skillListing = formatSkillDescription(skills);
+  }
+  const description = buildDescription(skillListing, config.progressive);
 
   const tool: Tool = {
     descriptor: {

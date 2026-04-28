@@ -1,12 +1,16 @@
-import { describe, expect, test } from "bun:test";
-import { agentId } from "./ecs.js";
+import { describe, expect, it, test } from "bun:test";
+import type { JsonObject } from "./common.js";
+import { agentId, sessionId } from "./ecs.js";
 import type {
+  AskId,
   ComplianceRecord,
   ComplianceRecorder,
   ConstraintChecker,
   ConstraintQuery,
   GovernanceBackend,
   GovernanceVerdict,
+  PersistentGrant,
+  PersistentGrantCallback,
   PolicyEvaluator,
   PolicyRequest,
   PolicyRequestKind,
@@ -17,8 +21,10 @@ import type {
   ViolationStore,
 } from "./governance-backend.js";
 import {
+  askId,
   DEFAULT_VIOLATION_QUERY_LIMIT,
   GOVERNANCE_ALLOW,
+  isAskVerdict,
   VIOLATION_SEVERITY_ORDER,
 } from "./governance-backend.js";
 
@@ -184,7 +190,7 @@ describe("GOVERNANCE_ALLOW", () => {
   });
 
   test("has no diagnostics", () => {
-    if (GOVERNANCE_ALLOW.ok) {
+    if (GOVERNANCE_ALLOW.ok === true) {
       expect(GOVERNANCE_ALLOW.diagnostics).toBeUndefined();
     }
   });
@@ -374,5 +380,80 @@ describe("GovernanceBackend interface", () => {
       violations: { getViolations: () => ({ items: [] }) },
     };
     expect(withViolations.constraints).toBeUndefined();
+  });
+});
+
+describe("AskId brand", () => {
+  it("constructs a branded AskId from a string", () => {
+    const id: AskId = askId("ask-123");
+    expect(typeof id).toBe("string");
+    expect(String(id)).toBe("ask-123");
+  });
+});
+
+describe("GovernanceVerdict ask variant", () => {
+  it("narrows to ok: 'ask' via isAskVerdict", () => {
+    const v: GovernanceVerdict = {
+      ok: "ask",
+      prompt: "Allow shell:rm?",
+      askId: askId("ask-1"),
+    };
+    expect(isAskVerdict(v)).toBe(true);
+    if (isAskVerdict(v)) {
+      expect(v.prompt).toBe("Allow shell:rm?");
+      expect(String(v.askId)).toBe("ask-1");
+    }
+  });
+
+  it("isAskVerdict returns false for ok: true", () => {
+    expect(isAskVerdict(GOVERNANCE_ALLOW)).toBe(false);
+  });
+
+  it("isAskVerdict returns false for ok: false", () => {
+    const v: GovernanceVerdict = {
+      ok: false,
+      violations: [{ rule: "x", severity: "warning", message: "blocked" }],
+    };
+    expect(isAskVerdict(v)).toBe(false);
+  });
+
+  it("accepts optional metadata on ask variant", () => {
+    const v: GovernanceVerdict = {
+      ok: "ask",
+      prompt: "?",
+      askId: askId("a"),
+      metadata: { rule: "x.y", resource: "/tmp/foo" },
+    };
+    if (isAskVerdict(v)) {
+      expect(v.metadata).toEqual({ rule: "x.y", resource: "/tmp/foo" });
+    }
+  });
+});
+
+describe("PersistentGrant (L0)", () => {
+  it("accepts a structurally valid grant", () => {
+    const g: PersistentGrant = {
+      kind: "tool_call",
+      agentId: agentId("a1"),
+      sessionId: sessionId("s1"),
+      payload: { tool: "bash" } satisfies JsonObject,
+      grantKey: "deadbeef",
+      grantedAt: 1_713_974_400_000,
+    };
+    expect(g.kind).toBe("tool_call");
+  });
+
+  it("PersistentGrantCallback is a (grant) => void function type", () => {
+    const cb: PersistentGrantCallback = (grant) => {
+      expect(typeof grant.grantKey).toBe("string");
+    };
+    cb({
+      kind: "tool_call",
+      agentId: agentId("a1"),
+      sessionId: sessionId("s1"),
+      payload: {} satisfies JsonObject,
+      grantKey: "x",
+      grantedAt: 0,
+    });
   });
 });

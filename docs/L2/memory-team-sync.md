@@ -17,7 +17,9 @@ fail-closed sync stub. Transport deferred.
 
 ## Safety
 
-- `"user"` type always denied regardless of `allowedTypes` config
+- `"user"` type always denied regardless of `allowedTypes` config — primary contact privacy boundary
+- `"reference"` memories containing email addresses are blocked as a misclassification backstop: if the LLM stores a personal contact (e.g. `alice@example.com`) as a reference pointer instead of `user`, it is caught at the sync boundary. SSH git remotes (`git@host:path`) are excluded via a `(?!:)` lookahead in the email pattern. The regex uses unescaped hyphens in character classes per POSIX convention.
+- `feedback`/`project` memories may carry shared operational aliases (oncall DLs, team mailboxes) — these are intentionally not blocked at the email level to avoid silently dropping valid team guidance.
 - Secret scanning uses `@koi/redaction` (13 built-in detectors)
 - Fail-closed: scan errors block the memory, never pass through
 - Content, name, and description are all scanned

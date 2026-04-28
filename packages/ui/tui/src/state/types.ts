@@ -12,6 +12,7 @@ import type { GovernanceSnapshot } from "@koi/core/governance";
 import type { RuleDescriptor } from "@koi/core/governance-backend";
 import type { ContentBlock, InboundMessage } from "@koi/core/message";
 import type { ApprovalDecision } from "@koi/core/middleware";
+import type { RiskLevel } from "@koi/core/security-analyzer";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -50,6 +51,12 @@ export const MAX_VISIBLE_TOASTS = 3;
  * the /governance view only renders the last ~10 anyway.
  */
 export const MAX_VIOLATIONS_IN_MEMORY = 50;
+/**
+ * Cap on persisted in-memory security findings. Security events are
+ * higher-frequency than violations so the cap is higher, but still bounded
+ * to avoid unbounded memory growth in long-running sessions.
+ */
+export const MAX_SECURITY_FINDINGS_IN_MEMORY = 100;
 
 // ---------------------------------------------------------------------------
 // View & Modal
@@ -305,6 +312,26 @@ export interface SpawnRecord {
 /** Maximum number of finished spawns retained for the /agents view. */
 export const MAX_FINISHED_SPAWNS = 20;
 
+/**
+ * Summary entry for a supervised child declared via `manifest.supervision`
+ * (#1866 wire-up). Distinct from SpawnRecord/SpawnProgress which track ad-hoc
+ * sub-agents the user's agent spawns at runtime.
+ */
+export interface SupervisedChildEntry {
+  /** Stable agent identifier assigned by the supervision reconciler. */
+  readonly agentId: string;
+  /** Name from the originating ChildSpec — stable across restarts. */
+  readonly childSpecName: string;
+  /** Parent (supervisor) agent id. */
+  readonly parentId: string;
+  /**
+   * Lifecycle phase mirrored from the registry. Typical transitions:
+   *   created → running → terminated (on crash or parent-initiated stop).
+   * Restarts appear as a brand-new entry with a fresh agentId.
+   */
+  readonly phase: "created" | "running" | "terminated" | "waiting" | "suspended" | "idle";
+}
+
 /** A single block within an assistant message. */
 export type TuiAssistantBlock =
   | { readonly kind: "text"; readonly text: string }
@@ -420,12 +447,23 @@ export interface CapabilityFragmentLite {
   readonly description: string;
 }
 
+export interface SecurityFinding {
+  readonly id: string;
+  readonly ts: number;
+  readonly sessionId: string;
+  readonly toolName: string;
+  readonly riskLevel: RiskLevel;
+  readonly description: string;
+  readonly score: number;
+}
+
 export interface GovernanceSlice {
   readonly snapshot: GovernanceSnapshot | null;
   readonly alerts: readonly GovernanceAlert[];
   readonly violations: readonly GovernanceViolation[];
   readonly rules: readonly RuleDescriptor[];
   readonly capabilities: readonly CapabilityFragmentLite[];
+  readonly securityFindings: readonly SecurityFinding[];
 }
 
 export type ToastKind = "info" | "warn" | "error";
@@ -498,6 +536,13 @@ export interface TuiState {
    * otherwise disappear from activeSpawns the moment they finish.
    */
   readonly finishedSpawns: readonly SpawnRecord[];
+  /**
+   * Supervised children declared via manifest.supervision (#1866). The
+   * runtime bridge (wire-manifest-supervision.ts) pushes snapshots whenever
+   * the underlying AgentRegistry transitions. Empty when no manifest was
+   * loaded or when the manifest omits `supervision:`.
+   */
+  readonly supervisedChildren: readonly SupervisedChildEntry[];
   /** Max context tokens for the current model — used for context % indicator (#17). */
   readonly maxContextTokens: number | null;
   /** Live retry countdown — set by the bridge when the engine retries (#20). */
@@ -690,6 +735,15 @@ export type TuiAction =
       readonly agentName?: string | undefined;
       readonly description?: string | undefined;
     }
+  | {
+      /**
+       * Replace the supervised-children snapshot. The runtime bridge fires
+       * this on every registry transition, so the TUI always renders the
+       * current live set without needing its own diff logic.
+       */
+      readonly kind: "set_supervised_children";
+      readonly children: readonly SupervisedChildEntry[];
+    }
   | { readonly kind: "set_slash_query"; readonly query: string | null }
   | {
       /** Expand a single tool call block by callId. No-op if already expanded. */
@@ -777,6 +831,8 @@ export type TuiAction =
       readonly kind: "set_governance_capabilities";
       readonly capabilities: readonly CapabilityFragmentLite[];
     }
+  | { readonly kind: "add_security_finding"; readonly finding: SecurityFinding }
+  | { readonly kind: "clear_security_findings" }
   | { readonly kind: "add_toast"; readonly toast: Toast }
   | { readonly kind: "dismiss_toast"; readonly id: string }
   | { readonly kind: "model_picker_set_query"; readonly query: string }

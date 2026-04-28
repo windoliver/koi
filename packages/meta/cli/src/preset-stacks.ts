@@ -36,13 +36,16 @@ import type {
 } from "@koi/core";
 import type { CreateHookMiddlewareOptions } from "@koi/hooks";
 import { checkpointStack } from "./preset-stacks/checkpoint.js";
+import { codeExecStack } from "./preset-stacks/code-exec.js";
 import { dreamStack } from "./preset-stacks/dream.js";
 import { executionStack } from "./preset-stacks/execution.js";
+import { forgeStack } from "./preset-stacks/forge.js";
 import { mcpStack } from "./preset-stacks/mcp.js";
 import { memoryStack } from "./preset-stacks/memory.js";
 import { notebookStack } from "./preset-stacks/notebook.js";
 import { observabilityStack } from "./preset-stacks/observability.js";
 import { rulesStack } from "./preset-stacks/rules.js";
+import { schedulerStack } from "./preset-stacks/scheduler.js";
 import { skillsStack } from "./preset-stacks/skills.js";
 import { spawnStack } from "./preset-stacks/spawn.js";
 
@@ -227,6 +230,20 @@ export const LATE_PHASE_HOST_KEYS = {
    * system-prompt layers from `inheritedMiddleware`.
    */
   perChildManifestMiddlewareFactory: "perChildManifestMiddlewareFactory",
+  /**
+   * Getter for the current ManagedTaskBoard proxy (exported by
+   * executionStack). Late-phase stacks read this to create a
+   * TaskRunner that stays current across session resets — the
+   * proxy auto-delegates to boardRef.current after each swap.
+   */
+  getTaskBoard: "getTaskBoard",
+  /**
+   * Getter for the current TaskBoardStore (exported by executionStack).
+   * Late-phase stacks subscribe via store.watch() and must re-subscribe
+   * when the store rotates on session reset; calling getStore() at
+   * reset time yields the new store instance.
+   */
+  getStore: "getStore",
 } as const;
 
 /**
@@ -255,7 +272,10 @@ export const DEFAULT_STACKS: readonly PresetStack[] = [
   dreamStack,
   mcpStack,
   notebookStack,
+  codeExecStack,
+  forgeStack,
   rulesStack,
+  schedulerStack,
   skillsStack,
   // Late-phase: spawn needs already-composed middleware for child
   // inheritance. The factory runs two `activateStacks` passes —

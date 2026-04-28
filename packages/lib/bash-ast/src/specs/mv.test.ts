@@ -39,6 +39,13 @@ describe("specMv — -t DIR form (complete)", () => {
     expect(result.semantics.writes).toEqual(["src/", "out/src"]);
   });
 
+  test("normalizes trailing slash on destination prefix", () => {
+    const result = specMv(["mv", "-t", "out/", "a"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.writes).toEqual(["a", "out/a"]);
+  });
+
   test("src that is / refuses", () => {
     const result = specMv(["mv", "-t", "out", "/"]);
     expect(result.kind).toBe("refused");
@@ -61,6 +68,13 @@ describe("specMv — destination-last (partial)", () => {
     expect(result.kind).toBe("partial");
     if (result.kind !== "partial") return;
     expect(result.semantics.writes).toEqual(["a", "b", "out", "out/a", "out/b"]);
+  });
+
+  test("normalizes trailing slash when deriving destination-last basenames", () => {
+    const result = specMv(["mv", "a", "out/"]);
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
+    expect(result.semantics.writes).toEqual(["a", "out/", "out/a"]);
   });
 });
 

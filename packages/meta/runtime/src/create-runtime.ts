@@ -1,9 +1,10 @@
 import { createAgentResolver } from "@koi/agent-runtime";
-import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
-import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
+import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit-sink-ndjson";
+import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
 import { type Checkpoint, type CheckpointPayload, createCheckpoint } from "@koi/checkpoint";
 import type {
   ApprovalHandler,
+  AuditEntry,
   AuditSink,
   ChannelAdapter,
   ComponentProvider,
@@ -17,6 +18,7 @@ import type {
   ModelChunk,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   RetrySignalReader,
   RichTrajectoryStep,
   ToolDescriptor,
@@ -54,9 +56,11 @@ import {
   sortMiddlewareByPhase,
 } from "@koi/engine-compose";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
+import { createForgeDemandDetector, validateForgeDemandConfig } from "@koi/forge-demand";
 import { createHttpTransport, type NexusTransport } from "@koi/fs-nexus";
 import { createGovernanceMiddleware, GOVERNANCE_MIDDLEWARE_NAME } from "@koi/governance-core";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import { createFeedbackLoopMiddleware } from "@koi/middleware-feedback-loop";
 import { createOtelMiddleware, type OtelMiddlewareConfig } from "@koi/middleware-otel";
 import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
@@ -242,10 +246,136 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         ? [...baseMiddleware, createGovernanceMiddleware(config.governance)]
         : baseMiddleware;
 
+    // Install feedback-loop middleware when config.feedbackLoop is provided and not already
+    // present. Priority 450 — above model-level validators (100-300), below audit (300) boundary.
+    const hasFeedbackLoop = new Set(baseWithGovernance.map((mw) => mw.name)).has("feedback-loop");
+    const feedbackLoopMiddleware =
+      config.feedbackLoop !== undefined && !hasFeedbackLoop
+        ? createFeedbackLoopMiddleware(config.feedbackLoop)
+        : undefined;
+    const baseWithFeedbackLoop: readonly KoiMiddleware[] =
+      feedbackLoopMiddleware !== undefined
+        ? [...baseWithGovernance, feedbackLoopMiddleware]
+        : baseWithGovernance;
+
+    // Install forge-demand detector when config.forgeDemand is provided and not already
+    // present. Priority 445 — outer relative to feedback-loop (450) so the detector
+    // observes only AFTER feedback-loop has updated tool-health and run validators/retry.
+    // This prevents stale latency snapshots and rejected-attempt capability-gap noise.
+    //
+    // `performance_degradation` requires a (sessionId, toolId)-shaped health
+    // handle. When feedback-loop is also installed, auto-wire its
+    // `healthHandle` into forge-demand unless the caller passed an explicit
+    // healthTracker. Without auto-wiring, latency detection stays dormant
+    // and we warn loudly so callers do not mistake "no signal" for
+    // "no degradation".
+    let forgeDemandHandle: ReturnType<typeof createForgeDemandDetector> | undefined;
+    if (config.forgeDemand !== undefined) {
+      const validated = validateForgeDemandConfig(config.forgeDemand);
+      if (!validated.ok) {
+        throw new Error(
+          `Invalid forgeDemand config: ${validated.error.message}` +
+            (validated.error.context !== undefined
+              ? ` (${JSON.stringify(validated.error.context)})`
+              : ""),
+        );
+      }
+      // Require `onSessionAttached` specifically. The runtime
+      // intentionally does not expose a sessionId-keyed lookup (F67),
+      // and `onDemand` alone is NOT sufficient: it receives only a
+      // copied signal value with no dismiss capability, so once a
+      // signal is emitted there is no way to acknowledge it. A signal
+      // that survives cooldown can re-emit, advance sessionEmitCount,
+      // and eventually suppress unrelated demand work in the same
+      // session. The scoped handle delivered via `onSessionAttached`
+      // is the only surface that supports both read and dismiss.
+      // F96/F101 regression.
+      if (validated.value.onSessionAttached === undefined) {
+        throw new Error(
+          "forgeDemand requires `config.forgeDemand.onSessionAttached`. The " +
+            "runtime does not expose a sessionId-keyed lookup; the scoped " +
+            "handle delivered to onSessionAttached is the only surface that " +
+            "can dismiss pending signals. `onDemand` alone is insufficient — " +
+            "a signal it observes cannot be acknowledged, and the same " +
+            "condition can re-emit after cooldown until session budgets " +
+            "suppress unrelated demand work.",
+        );
+      }
+      const baseForgeConfig = validated.value;
+      // Auto-wire ONLY when an installed feedback-loop has live trackers.
+      // We look across the entire effective middleware list — including
+      // any caller-supplied feedback-loop in `config.middleware` — for a
+      // middleware exposing the typed `healthHandle` surface. Without
+      // forgeHealth (runtime-built variant) or an exposed handle
+      // (preinstalled variant), wiring would silently dormant
+      // performance_degradation while suppressing the warning that
+      // would otherwise flag the gap (F64 / F66 regression).
+      const installedFeedbackLoopHandle = (() => {
+        // Runtime-built path — inspect the original config rather than
+        // relying on healthHandle exposure (since healthHandle is set
+        // unconditionally by the factory but only has live trackers when
+        // forgeHealth is configured).
+        if (
+          feedbackLoopMiddleware !== undefined &&
+          config.feedbackLoop?.forgeHealth !== undefined
+        ) {
+          return feedbackLoopMiddleware.healthHandle;
+        }
+        // Preinstalled path — caller composed feedback-loop in
+        // config.middleware. We can only honor it when it actually
+        // exposes the typed healthHandle (newer API); legacy
+        // pre-handle middleware is treated as opaque and gets the
+        // dormant-trigger warning. Skip the runtime-built instance —
+        // it was already vetted (or rejected) by the forgeHealth
+        // check above; reaching here means it failed that check and
+        // must NOT be wired silently.
+        const preinstalled = baseWithFeedbackLoop.find(
+          (mw) => mw.name === "feedback-loop" && mw !== feedbackLoopMiddleware,
+        );
+        const handle = (preinstalled as { readonly healthHandle?: unknown } | undefined)
+          ?.healthHandle;
+        if (
+          handle !== undefined &&
+          typeof (handle as { getSnapshot?: unknown }).getSnapshot === "function"
+        ) {
+          return handle as NonNullable<typeof feedbackLoopMiddleware>["healthHandle"];
+        }
+        return undefined;
+      })();
+      const autoHealthHandle =
+        baseForgeConfig.healthTracker === undefined ? installedFeedbackLoopHandle : undefined;
+      const finalForgeConfig =
+        autoHealthHandle !== undefined
+          ? { ...baseForgeConfig, healthTracker: autoHealthHandle }
+          : baseForgeConfig;
+      if (finalForgeConfig.healthTracker === undefined) {
+        console.warn(
+          "[forge-demand] performance_degradation trigger is dormant: " +
+            "no healthTracker on config.forgeDemand and no feedback-loop " +
+            "with forgeHealth to auto-wire. Either install feedback-loop " +
+            "with `forgeHealth` configured, or supply a custom " +
+            "{ getSnapshot(sessionId, toolId) } handle on " +
+            "config.forgeDemand.healthTracker.",
+        );
+      }
+      forgeDemandHandle = createForgeDemandDetector(finalForgeConfig);
+    }
+    // Scoped-handle delivery is via `config.forgeDemand.onSessionAttached`
+    // (the detector fires it once per legitimate SessionContext on first
+    // sighting). No sessionId-keyed lookup is exposed at the runtime
+    // boundary — F67 regression.
+    const baseWithForgeDemand: readonly KoiMiddleware[] =
+      forgeDemandHandle !== undefined
+        ? [
+            ...baseWithFeedbackLoop.filter((mw) => mw.name !== "forge-demand-detector"),
+            forgeDemandHandle.middleware,
+          ]
+        : baseWithFeedbackLoop;
+
     // Install exfiltration guard by default when: (1) not explicitly disabled,
     // (2) not already provided, and (3) the adapter has terminals so the intercept
     // phase won't be silently bypassed. Stub adapters have no terminals.
-    const providedNames = new Set(baseWithGovernance.map((mw) => mw.name));
+    const providedNames = new Set(baseWithForgeDemand.map((mw) => mw.name));
     const exfiltrationRequested =
       config.exfiltrationGuard !== false && !providedNames.has("exfiltration-guard");
     const canInstallExfiltrationGuard = rawAdapter.terminals !== undefined;
@@ -266,10 +396,10 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     const afterExfiltration: readonly KoiMiddleware[] =
       exfiltrationRequested && canInstallExfiltrationGuard
         ? [
-            ...baseWithGovernance,
+            ...baseWithForgeDemand,
             createExfiltrationGuardMiddleware(config.exfiltrationGuard ?? undefined),
           ]
-        : baseWithGovernance;
+        : baseWithForgeDemand;
 
     // Append model-router as the innermost model-call interceptor (after exfiltration
     // guard and semantic-retry) so each retry attempt independently benefits from
@@ -691,6 +821,8 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       browserProvider,
       lspProvider,
       memoryStore,
+      forgeDemand:
+        forgeDemandHandle !== undefined ? { middleware: forgeDemandHandle.middleware } : undefined,
       createDecisionLedger: decisionLedgerFactory,
       dispose: async () => {
         // Unsubscribe approval sink to prevent leak on long-lived permission handles
@@ -948,24 +1080,47 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
   if (isAuditSink(sinkInput)) {
     sink = sinkInput;
   } else if (sinkInput.kind === "ndjson") {
-    const built = createNdjsonAuditSink({
+    const ndjsonConfig = {
       filePath: sinkInput.filePath,
       ...(sinkInput.flushIntervalMs !== undefined
         ? { flushIntervalMs: sinkInput.flushIntervalMs }
         : {}),
-    });
+      ...(sinkInput.rotation !== undefined ? { rotation: sinkInput.rotation } : {}),
+    };
+    const ndjsonValidation = validateNdjsonAuditSinkConfig(ndjsonConfig);
+    if (!ndjsonValidation.ok) {
+      throw new Error(`Invalid NDJSON audit sink config: ${ndjsonValidation.error.message}`);
+    }
+    const built = createNdjsonAuditSink(ndjsonConfig);
     sink = built;
     ownedSinkClose = async () => {
       await built.close();
     };
   } else if (sinkInput.kind === "sqlite") {
-    const built = createSqliteAuditSink({
+    const sqliteConfig = {
       dbPath: sinkInput.dbPath,
+      ...(sinkInput.agentId !== undefined ? { agentId: sinkInput.agentId } : {}),
       ...(sinkInput.flushIntervalMs !== undefined
         ? { flushIntervalMs: sinkInput.flushIntervalMs }
         : {}),
       ...(sinkInput.maxBufferSize !== undefined ? { maxBufferSize: sinkInput.maxBufferSize } : {}),
-    });
+      ...(sinkInput.retention !== undefined ? { retention: sinkInput.retention } : {}),
+    };
+    // Retention + signing are incompatible: session-granular pruning cannot preserve
+    // hash-chain validity, so enabling both would make retention a silent no-op that
+    // lets the DB grow unboundedly while the operator believes it is being pruned.
+    if (sqliteConfig.retention !== undefined && audit.signing === true) {
+      throw new Error(
+        "audit sink: SQLite retention and signing cannot be enabled simultaneously. " +
+          "Session-granular pruning would break the signed hash chain. " +
+          "Disable signing or remove the retention configuration.",
+      );
+    }
+    const sqliteValidation = validateSqliteAuditSinkConfig(sqliteConfig);
+    if (!sqliteValidation.ok) {
+      throw new Error(`Invalid SQLite audit sink config: ${sqliteValidation.error.message}`);
+    }
+    const built = createSqliteAuditSink(sqliteConfig);
     sink = built;
     ownedSinkClose = async () => {
       built.close();
@@ -976,23 +1131,242 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
     );
   }
 
+  // Poison the sink after the first write/rotation failure: subsequent log() calls
+  // throw immediately so the middleware queue never silently drops further audit records.
+  // onError logs once and sets process.exitCode so the failure is visible at shutdown.
+  let poisonError: unknown;
+  const originalLog = sink.log.bind(sink);
+  const poisonedSink: typeof sink = {
+    ...sink,
+    log: async (entry: AuditEntry): Promise<void> => {
+      if (poisonError !== undefined) {
+        throw new Error(
+          "audit sink poisoned — previous write failure prevents further audit writes",
+          { cause: poisonError },
+        );
+      }
+      return originalLog(entry);
+    },
+    flush: async (): Promise<void> => {
+      // Surface any recorded drain failure synchronously so callers (onSessionEnd,
+      // shutdown, close) cannot report clean completion with a truncated audit trail.
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — flush rejected; audit trail may be incomplete", {
+          cause: poisonError,
+        });
+      }
+      return sink.flush?.();
+    },
+  };
+
   const mw = createAuditMiddleware({
-    sink,
+    sink: poisonedSink,
     ...(audit.maxQueueDepth !== undefined ? { maxQueueDepth: audit.maxQueueDepth } : {}),
     ...(audit.signing !== undefined ? { signing: audit.signing } : {}),
     ...(audit.redactRequestBodies !== undefined
       ? { redactRequestBodies: audit.redactRequestBodies }
       : {}),
+    onError: (error: unknown, entry: AuditEntry) => {
+      if (poisonError === undefined) {
+        // First failure: record it. Subsequent log() calls throw from the poison wrapper.
+        // The guardedMw.onBeforeTurn check will reject all future turns.
+        // CLI entrypoints layer process termination on top; library code does not
+        // mutate global process state here — callers observe failure through turn errors.
+        poisonError = error;
+        console.error(
+          "[koi/runtime] audit sink write failed — sink poisoned, no further audit writes accepted:",
+          error,
+          "entry kind:",
+          entry.kind,
+        );
+      }
+    },
   });
 
+  // Wrap the audit middleware with a poison guard that blocks new turns synchronously.
+  // Without this, poisonError is only observed inside the async drain loop, leaving a
+  // window where the engine accepts new auditable work after the first write failure.
+  const guardedMw: KoiMiddleware = {
+    ...mw,
+    onSessionStart: async (ctx) => {
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — cannot record session_start event", {
+          cause: poisonError,
+        });
+      }
+      await mw.onSessionStart?.(ctx);
+      await mw.flush().catch((flushErr: unknown) => {
+        if (poisonError === undefined) {
+          poisonError = flushErr;
+        }
+      });
+      if (poisonError !== undefined) {
+        throw new Error(
+          "audit sink flush failed after session_start — cannot proceed without durable audit record",
+          { cause: poisonError },
+        );
+      }
+    },
+    onBeforeTurn: async (ctx: TurnContext) => {
+      if (poisonError !== undefined) {
+        throw new Error(
+          "audit sink poisoned — refusing new turn to preserve audit trail integrity",
+          { cause: poisonError },
+        );
+      }
+      return mw.onBeforeTurn?.(ctx);
+    },
+    onSessionEnd: async (ctx) => {
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — cannot record session_end event", {
+          cause: poisonError,
+        });
+      }
+      await mw.onSessionEnd?.(ctx);
+      await mw.flush().catch((flushErr: unknown) => {
+        if (poisonError === undefined) {
+          poisonError = flushErr;
+        }
+      });
+      if (poisonError !== undefined) {
+        throw new Error(
+          "audit sink flush failed after session_end — audit record may be incomplete",
+          { cause: poisonError },
+        );
+      }
+    },
+    onPermissionDecision: async (ctx, query, decision) => {
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — cannot record permission_decision event", {
+          cause: poisonError,
+        });
+      }
+      await mw.onPermissionDecision?.(ctx, query, decision);
+      // Force-flush the permission_decision entry so approved tool executions are
+      // never permitted without a durable audit record of the approval that allowed them.
+      await mw.flush().catch((flushErr: unknown) => {
+        if (poisonError === undefined) {
+          poisonError = flushErr;
+        }
+      });
+      if (poisonError !== undefined) {
+        throw new Error(
+          "audit sink flush failed after permission decision — cannot proceed without durable audit record",
+          { cause: poisonError },
+        );
+      }
+    },
+    wrapModelCall: async (ctx, request, next) => {
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — refusing model call", { cause: poisonError });
+      }
+      // Capture result/error so flush always runs — mirrors wrapToolCall pattern.
+      // Audit records a model_call entry even on failure, so it must be flushed
+      // before surfacing the model error.
+      let modelError: unknown;
+      let modelThrew = false;
+      let modelResult: Awaited<ReturnType<typeof next>> | undefined;
+      try {
+        modelResult = await (mw.wrapModelCall
+          ? mw.wrapModelCall(ctx, request, next)
+          : next(request));
+      } catch (e: unknown) {
+        modelError = e;
+        modelThrew = true;
+      }
+      await mw.flush().catch((flushErr: unknown) => {
+        if (poisonError === undefined) {
+          poisonError = flushErr;
+        }
+      });
+      if (poisonError !== undefined) {
+        throw new Error("audit sink write failed mid-turn — turn aborted", {
+          cause: poisonError,
+        });
+      }
+      if (modelThrew) throw modelError;
+      return modelResult as Awaited<ReturnType<typeof next>>;
+    },
+    wrapToolCall: async (ctx, request, next) => {
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — refusing tool call", { cause: poisonError });
+      }
+      // Capture tool result/error so we can force-flush regardless of outcome before
+      // re-throwing. A throw from finally would mask the original tool error in Biome.
+      let toolError: unknown;
+      let toolThrew = false;
+      let toolResult: Awaited<ReturnType<typeof next>> | undefined;
+      try {
+        toolResult = await (mw.wrapToolCall ? mw.wrapToolCall(ctx, request, next) : next(request));
+      } catch (e: unknown) {
+        toolError = e;
+        toolThrew = true;
+      }
+      // Force-flush: drain the tool_call audit entry so the poison check below is not racy.
+      await mw.flush().catch((flushErr: unknown) => {
+        // Propagate flush failures into the same poison channel as log failures so
+        // the check below surfaces any durability problem, not just log-path errors.
+        if (poisonError === undefined) {
+          poisonError = flushErr;
+        }
+      });
+      // Surface audit failure before returning; the tool has already executed.
+      // Callers MUST NOT retry this tool call on seeing this error.
+      if (poisonError !== undefined) {
+        throw new Error(
+          "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
+          { cause: poisonError },
+        );
+      }
+      if (toolThrew) throw toolError;
+      return toolResult as Awaited<ReturnType<typeof next>>;
+    },
+    async *wrapModelStream(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      if (poisonError !== undefined) {
+        throw new Error("audit sink poisoned — refusing model stream", { cause: poisonError });
+      }
+      const inner = mw.wrapModelStream ? mw.wrapModelStream(ctx, request, next) : next(request);
+      // Capture stream error so flush always runs on both success and failure paths,
+      // including early-cancel (generator .return()) from the consumer breaking out.
+      let streamError: unknown;
+      let streamThrew = false;
+      try {
+        for await (const chunk of inner) {
+          if (poisonError !== undefined) {
+            throw new Error("audit sink write failed mid-stream — stream aborted", {
+              cause: poisonError,
+            });
+          }
+          yield chunk;
+        }
+      } catch (e: unknown) {
+        streamError = e;
+        streamThrew = true;
+      } finally {
+        // finally runs on normal completion AND early-cancel — no throw here (noUnsafeFinally).
+        await mw.flush().catch((flushErr: unknown) => {
+          if (poisonError === undefined) {
+            poisonError = flushErr;
+          }
+        });
+      }
+      // Reached only on normal completion (not early-cancel).
+      if (poisonError !== undefined) {
+        throw new Error("audit sink write failed after stream — turn aborted", {
+          cause: poisonError,
+        });
+      }
+      if (streamThrew) throw streamError;
+    },
+  };
+
   return {
-    middleware: mw,
+    middleware: guardedMw,
     close: async () => {
-      // Best-effort: drain queued entries first, but ALWAYS release the
-      // runtime-owned sink resources (file/db handle, timer) — even if
-      // flush rejects due to an I/O or DB error. Otherwise a failing
-      // flush would leak the underlying descriptor on repeated
-      // startup/shutdown attempts. If both throw, aggregate.
       let flushErr: unknown;
       try {
         await mw.flush();
@@ -1014,6 +1388,14 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       }
       if (flushErr !== undefined) throw flushErr;
       if (closeErr !== undefined) throw closeErr;
+      // Surface any stored poison state after releasing all resources.
+      // A successful close after a known write failure is not trustworthy.
+      if (poisonError !== undefined) {
+        throw new Error(
+          "Audit sink closed but audit trail is incomplete: a prior write or flush failure was recorded",
+          { cause: poisonError },
+        );
+      }
     },
   };
 }

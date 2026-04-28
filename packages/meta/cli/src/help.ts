@@ -55,6 +55,8 @@ Options:
                                      Hard timeout: calls process.exit on expiry, so in-process
                                      embedders should invoke via subprocess if they need to
                                      survive the deadline.
+      --result-schema <path>       Path to a JSON Schema file; validates agent text output
+                                     (--headless only). Exits 6 on schema violation.
       --max-spend <usd>            Cumulative spend cap before governance fires (USD)
       --max-turns <n>              Turn cap per run before governance fires
       --max-spawn-depth <n>        Sub-agent spawn-depth cap before governance fires

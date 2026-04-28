@@ -578,8 +578,9 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         if (cached !== undefined) return { ok: true, value: cached };
       }
 
+      const timeout = Math.min(defaultTimeout, MAX_TIMEOUT_MS);
       const searchController = new AbortController();
-      const timer = setTimeout(() => searchController.abort(), defaultTimeout);
+      const timer = setTimeout(() => searchController.abort(), timeout);
 
       try {
         if (options?.signal) {

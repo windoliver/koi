@@ -7,7 +7,7 @@ import type {
   Violation,
   ViolationSeverity,
 } from "@koi/core/governance-backend";
-import { GOVERNANCE_ALLOW } from "@koi/core/governance-backend";
+import { askId, GOVERNANCE_ALLOW } from "@koi/core/governance-backend";
 
 export interface PatternMatch {
   readonly kind?: PolicyRequestKind | undefined;
@@ -17,10 +17,16 @@ export interface PatternMatch {
 
 export interface PatternRule {
   readonly match: PatternMatch;
-  readonly decision: "allow" | "deny";
+  readonly decision: "allow" | "deny" | "ask";
   readonly rule?: string | undefined;
   readonly severity?: ViolationSeverity | undefined;
   readonly message?: string | undefined;
+  /**
+   * Prompt shown to the user when `decision: "ask"` matches. Forwarded as
+   * the `prompt` field of the `ok:"ask"` verdict. Falls back to `message`
+   * or a synthetic default when omitted.
+   */
+  readonly prompt?: string | undefined;
 }
 
 export interface PatternBackendConfig {
@@ -140,10 +146,14 @@ function describeMatch(match: PatternMatch): string {
 // The "(no description)" literal is intentional user-facing fallback text.
 // TUI renderers should display it verbatim — do NOT treat it as a sentinel.
 function ruleToDescriptor(rule: PatternRule, idx: number): RuleDescriptor {
+  // RuleDescriptor.effect is typed "allow" | "deny" | "advise". Map ask → advise
+  // for the read-only /governance view; ask is a user-interactive variant of
+  // advise in intent.
+  const effect: RuleDescriptor["effect"] = rule.decision === "ask" ? "advise" : rule.decision;
   return {
     id: rule.rule ?? `pattern.${idx}`,
     description: rule.message ?? rule.rule ?? "(no description)",
-    effect: rule.decision,
+    effect,
     pattern: describeMatch(rule.match),
   };
 }
@@ -186,6 +196,14 @@ export function createPatternBackend(config: PatternBackendConfig): GovernanceBa
       return {
         ok: false,
         violations: [violationFromRule(decision.rule, decision.index)],
+      };
+    }
+    if (decision.rule.decision === "ask") {
+      const prompt = decision.rule.prompt ?? decision.rule.message ?? `Approve ${request.kind}?`;
+      return {
+        ok: "ask",
+        prompt,
+        askId: askId(crypto.randomUUID()),
       };
     }
     return GOVERNANCE_ALLOW;

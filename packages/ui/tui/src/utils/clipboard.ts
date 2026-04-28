@@ -1,37 +1,38 @@
 /**
  * Terminal clipboard utilities.
  *
- * Write: OSC 52 escape sequence (supported by most modern terminals).
+ * Write: use CliRenderer.copyToClipboardOSC52() — routes OSC 52 through the
+ * renderer's output path to avoid out-of-band stdout writes that corrupt TUI
+ * frame composition. Direct process.stdout.write is prohibited in active TUI
+ * contexts (issue #1940).
+ *
  * Read image: platform-native APIs (osascript/wl-paste/xclip/PowerShell).
  *
  * @see https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
  */
 
 import { platform } from "node:os";
+import { detectFromBytes } from "@koi/file-type";
+
+// ---------------------------------------------------------------------------
+// OSC 52 payload guard
+// ---------------------------------------------------------------------------
 
 /**
- * Safe upper bound for OSC 52 payload size in bytes.
- * Terminal-dependent; 100 KB is a conservative default that works
- * across iTerm2, Ghostty, WezTerm, and Kitty.
+ * Safe upper bound for OSC 52 base64 payload size in bytes.
+ * Terminal-dependent; 100 KB is a conservative default that works across
+ * iTerm2, Ghostty, WezTerm, and Kitty. Callers must check before invoking
+ * renderer.copyToClipboardOSC52() — the renderer does not cap size internally.
  */
 export const MAX_CLIPBOARD_BYTES = 100_000;
 
 /**
- * Copy text to the system clipboard via OSC 52 terminal escape sequence.
- *
- * Returns `true` if the sequence was written, `false` if stdout is not a TTY
- * or the text exceeds the safe OSC 52 payload limit.
+ * Returns true if `text` encodes to a base64 payload within the safe OSC 52
+ * limit. Call this before renderer.copyToClipboardOSC52() to avoid emitting
+ * arbitrarily large sequences that degrade or hang terminals.
  */
-export function copyToClipboard(text: string): boolean {
-  if (!process.stdout.isTTY) return false;
-
-  const base64 = Buffer.from(text).toString("base64");
-  // Enforce limit on the encoded payload (what the terminal actually receives).
-  // OSC 52 framing adds ~8 bytes; the base64 string is the dominant cost.
-  if (base64.length > MAX_CLIPBOARD_BYTES) return false;
-
-  process.stdout.write(`\x1b]52;c;${base64}\x07`);
-  return true;
+export function isBelowOsc52Limit(text: string): boolean {
+  return Buffer.from(text).toString("base64").length <= MAX_CLIPBOARD_BYTES;
 }
 
 // ---------------------------------------------------------------------------
@@ -40,10 +41,10 @@ export function copyToClipboard(text: string): boolean {
 
 /** Image read from the system clipboard. */
 export interface ClipboardImage {
-  /** Data URI: `data:image/png;base64,<base64>` */
+  /** Data URI: `data:<mime>;base64,<base64>` */
   readonly url: string;
-  /** MIME type (always image/png). */
-  readonly mime: "image/png";
+  /** Detected MIME type (e.g. "image/png", "image/jpeg", "image/webp"). */
+  readonly mime: string;
 }
 
 /**
@@ -90,7 +91,8 @@ async function readImageMacOS(): Promise<ClipboardImage | null> {
   const base64 = Buffer.from(bytes).toString("base64");
   if (base64.length === 0) return null;
 
-  return { url: `data:image/png;base64,${base64}`, mime: "image/png" };
+  const mime = detectFromBytes(bytes)?.mimeType ?? "image/png";
+  return { url: `data:${mime};base64,${base64}`, mime };
 }
 
 async function readImageLinux(): Promise<ClipboardImage | null> {
@@ -117,7 +119,9 @@ async function readImageWindows(): Promise<ClipboardImage | null> {
   const exitCode = await proc.exited;
   if (exitCode !== 0 || output.trim().length === 0) return null;
 
-  return { url: `data:image/png;base64,${output.trim()}`, mime: "image/png" };
+  const winBytes = new Uint8Array(Buffer.from(output.trim(), "base64"));
+  const winMime = detectFromBytes(winBytes)?.mimeType ?? "image/png";
+  return { url: `data:${winMime};base64,${output.trim()}`, mime: winMime };
 }
 
 /** Run a command that outputs raw PNG bytes to stdout, return as data URI. */
@@ -128,8 +132,10 @@ async function tryReadPng(cmd: readonly string[]): Promise<ClipboardImage | null
     const exitCode = await proc.exited;
     if (exitCode !== 0 || bytes.byteLength === 0) return null;
 
+    const buf = new Uint8Array(bytes);
+    const mime = detectFromBytes(buf)?.mimeType ?? "image/png";
     const base64 = Buffer.from(bytes).toString("base64");
-    return { url: `data:image/png;base64,${base64}`, mime: "image/png" };
+    return { url: `data:${mime};base64,${base64}`, mime };
   } catch {
     return null;
   }

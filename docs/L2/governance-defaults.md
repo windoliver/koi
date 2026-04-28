@@ -86,8 +86,9 @@ interface InMemoryControllerConfig {
 
 | Event | What resets |
 |-------|-------------|
-| `iteration_reset` | `turn_count`, `duration_ms` start. NOT token/cost/spawn/error-rate. |
-| `session_reset` | `turn_count`, `duration_ms`, rolling `error_rate` window. NOT token/cost/spawn. |
+| `run_reset` | `turn_count`, `duration_ms` start (anchored to `boundaryTimestamp`, clamped to now). NOT token/cost/spawn/error-rate. |
+| `session_reset` | `turn_count`, `duration_ms`, rolling `error_rate` window (anchored to `boundaryTimestamp`). NOT token/cost/spawn. |
+| `iteration_reset` | Deprecated alias for `run_reset` (renamed in #1939). Accepted for backward compat; no `boundaryTimestamp`. |
 
 **Turn rollback semantics** — `turn_refund` decrements `turn_count` by `count` and clamps at zero (no underflow). Non-finite counts are treated as `0`; negative counts are clamped before subtraction.
 
@@ -104,11 +105,16 @@ interface PatternRule {
     readonly toolId?: string | undefined; // matched against payload.toolId for tool_call
     readonly model?: string | undefined;  // matched against payload.model for model_call
   };
-  readonly decision: "allow" | "deny";
+  readonly decision: "allow" | "deny" | "ask";
   readonly rule?: string | undefined;     // default: "pattern.<idx>"
   readonly severity?: ViolationSeverity | undefined; // default: "critical"
   readonly message?: string | undefined;  // default: "denied by pattern backend"
+  readonly prompt?: string | undefined;   // ask-only: shown in the host approval UI
 }
+
+The `ask` decision (gov-11 bridge) emits `{ ok: "ask", prompt, askId }` so the
+governance middleware can route the request through `TurnContext.requestApproval`.
+The backend always mints a fresh UUID for `askId` per evaluation.
 
 interface PatternBackendConfig {
   readonly rules: readonly PatternRule[];
@@ -211,3 +217,50 @@ in the TUI view. Required for: `@koi/tui` `/governance` view.
 - [`@koi/governance-core`](./governance-core.md) — middleware that consumes this config
 - [`@koi/core/governance`](../../packages/kernel/core/src/governance.ts) — `GovernanceController`, `GovernanceEvent`, `GOVERNANCE_VARIABLES`
 - [`@koi/core/governance-backend`](../../packages/kernel/core/src/governance-backend.ts) — `GovernanceBackend`, `PolicyRequest`, `GovernanceVerdict`
+
+## Audit-Sink-Backed ComplianceRecorder
+
+`createAuditSinkComplianceRecorder(sink, ctx)` wraps any `AuditSink`
+(NDJSON, SQLite, Nexus) so that governance compliance records flow into the
+same audit stream as model and tool calls. Each `ComplianceRecord` is mapped
+to an `AuditEntry` with `kind: "compliance_event"`.
+
+### Factory
+
+```ts
+import { createAuditSinkComplianceRecorder } from "@koi/governance-defaults";
+import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
+
+const sink = createNdjsonAuditSink({ filePath: "/tmp/audit.ndjson" });
+const compliance = createAuditSinkComplianceRecorder(sink, {
+  sessionId: "sess-abc",
+});
+
+backend.compliance = compliance;
+```
+
+### Mapping
+
+| `ComplianceRecord` field | `AuditEntry` field |
+|--------------------------|--------------------|
+| `evaluatedAt`            | `timestamp`        |
+| (ctx) `sessionId`        | `sessionId`        |
+| `request.agentId`        | `agentId`          |
+| (constant `0`)           | `turnIndex`        |
+| (constant `"compliance_event"`) | `kind`      |
+| `request`                | `request`          |
+| `verdict`                | `response`         |
+| (constant `0`)           | `durationMs`       |
+| `{ requestId, policyFingerprint }` | `metadata` |
+
+### Error handling
+
+`recordCompliance()` returns the original record synchronously and fires
+`sink.log()` without awaiting. Rejections are routed to `ctx.onError` (default
+`console.warn`). The recorder never throws into the governance hot path.
+
+### Fan-out
+
+When multiple audit sinks are active, compose their recorders with
+`fanOutComplianceRecorder([a, b])`. Single-entry arrays pass through. Empty
+arrays return a no-op recorder.

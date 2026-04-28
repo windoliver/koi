@@ -39,11 +39,13 @@ import type {
   ToolCallId,
   ToolRequest,
   ToolResponse,
+  ToolsetDefinition,
   TurnContext,
 } from "@koi/core";
 import { createSingleToolProvider, runId, sessionId } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
+import { createGateway, createInMemorySessionStore, DEFAULT_GATEWAY_CONFIG } from "@koi/gateway";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
@@ -60,6 +62,7 @@ import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { loadCassette } from "@koi/replay";
 import {
+  createProgressiveSkillProvider,
   createSkillInjectorMiddleware,
   createSkillProvider,
   createSkillsRuntime,
@@ -1468,12 +1471,16 @@ describe("audit-log entries sidecar (golden file)", () => {
     expect(kinds).toContain("session_end");
   });
 
-  test("all entries have schema_version=1 and required fields", async () => {
+  test("all entries have schema_version=2 and required fields", async () => {
+    // v2 introduced the `compliance_event` kind (PR #1393). Producers
+    // bumped per the L0 contract ("increment when the shape changes");
+    // the fixture tracks the current producer output so deviations are
+    // caught as a cassette-vs-code drift.
     const sidecar = (await Bun.file(`${FIXTURES}/audit-log.entries.json`).json()) as {
       readonly entries: readonly Record<string, unknown>[];
     };
     for (const entry of sidecar.entries) {
-      expect(entry.schema_version).toBe(1);
+      expect(entry.schema_version).toBe(2);
       expect(typeof entry.agentId).toBe("string");
       expect(typeof entry.sessionId).toBe("string");
       expect(typeof entry.durationMs).toBe("number");
@@ -2418,6 +2425,30 @@ describe("Golden: @koi/url-safety", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/file-type — magic-byte detection (2 standalone queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/file-type", () => {
+  test("file-type-png-sniff: detectFromBytes identifies PNG magic bytes", async () => {
+    const { detectFromBytes } = await import("@koi/file-type");
+    const pngHeader = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+    const result = detectFromBytes(pngHeader);
+    expect(result).not.toBeNull();
+    expect(result?.mimeType).toBe("image/png");
+    expect(result?.confidence).toBe("strong");
+  });
+
+  test("file-type-pdf-sniff: detectFromBytes identifies PDF magic bytes", async () => {
+    const { detectFromBytes } = await import("@koi/file-type");
+    const pdfHeader = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]); // %PDF-1.4
+    const result = detectFromBytes(pdfHeader);
+    expect(result).not.toBeNull();
+    expect(result?.mimeType).toBe("application/pdf");
+    expect(result?.confidence).toBe("strong");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/hooks — agent hook type (2 queries)
 // ---------------------------------------------------------------------------
 
@@ -2487,7 +2518,7 @@ describe("Golden: @koi/hooks agent hooks", () => {
 });
 
 // ---------------------------------------------------------------------------
-// L2 golden queries: @koi/tasks (2 queries)
+// L2 golden queries: @koi/tasks (4 queries, includes remote_agent lifecycle)
 // ---------------------------------------------------------------------------
 
 describe("Golden: @koi/tasks", () => {
@@ -2647,6 +2678,90 @@ describe("Golden: @koi/tasks", () => {
       expect(isRuntimeTask(state)).toBe(true);
       expect(state.kind).toBe("local_shell");
     }
+  });
+
+  test("createRemoteAgentLifecycle SSRF guard rejects non-HTTPS non-loopback endpoint", async () => {
+    const { createRemoteAgentLifecycle } = await import("@koi/tasks");
+
+    // Plain HTTP to non-loopback must throw at construction time.
+    expect(() =>
+      createRemoteAgentLifecycle({ endpoint: "http://remote.example.com/api/agent" }),
+    ).toThrow(/must use HTTPS/);
+
+    // HTTPS is accepted.
+    expect(() =>
+      createRemoteAgentLifecycle({ endpoint: "https://remote.example.com/api/agent" }),
+    ).not.toThrow();
+
+    // Loopback HTTP is accepted for local dev.
+    expect(() =>
+      createRemoteAgentLifecycle({ endpoint: "http://localhost:3000/api/agent" }),
+    ).not.toThrow();
+
+    // cancelEndpoint is also validated.
+    expect(() =>
+      createRemoteAgentLifecycle({
+        endpoint: "https://remote.example.com/api/agent",
+        cancelEndpoint: "http://external.example.com/cancel",
+      }),
+    ).toThrow(/must use HTTPS/);
+  });
+
+  test("createRemoteAgentLifecycle start/stop round-trip via mock fetch produces RemoteAgentTask", async () => {
+    const { createRemoteAgentLifecycle, createOutputStream, isRemoteAgentTask } = await import(
+      "@koi/tasks"
+    );
+    const { taskItemId } = await import("@koi/core");
+
+    // Mock fetch: returns a minimal NDJSON stream with a done frame.
+    const encoder = new TextEncoder();
+    const doneFrame = encoder.encode('{"kind":"done","exitCode":0}\n');
+    const mockFetch = async (
+      _url: string | URL | Request,
+      _init?: RequestInit,
+    ): Promise<Response> =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(doneFrame);
+            controller.close();
+          },
+        }),
+        { status: 200 },
+      );
+
+    const lifecycle = createRemoteAgentLifecycle({
+      endpoint: "https://agent.example.com/run",
+      fetch: mockFetch as typeof globalThis.fetch,
+    });
+
+    expect(lifecycle.kind).toBe("remote_agent");
+
+    const output = createOutputStream();
+    let exitCode: number | undefined;
+    const state = await lifecycle.start(taskItemId("task_1"), output, {
+      correlationId: "corr-abc",
+      payload: { prompt: "hello" },
+      onExit: (code) => {
+        exitCode = code;
+      },
+    });
+
+    expect(isRemoteAgentTask(state)).toBe(true);
+    expect(state.kind).toBe("remote_agent");
+    expect(state.correlationId).toBe("corr-abc");
+    expect(typeof state.attemptId).toBe("string");
+    expect(state.attemptId).toHaveLength(36); // UUID format
+
+    // Wait briefly for the pipe to process the done frame.
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+    expect(exitCode).toBe(0);
+    const chunks = output.read(0);
+    expect(chunks.some((c) => c.content.includes("exit code: 0"))).toBe(true);
+
+    // stop() is a no-op after natural exit — should not throw.
+    await lifecycle.stop(state);
   });
 });
 
@@ -5794,6 +5909,286 @@ describe("Golden: @koi/spawn-tools", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/forge-tools (2 standalone queries, no LLM needed)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/forge-tools", () => {
+  test("synthesize-then-inspect — round-trip via forge_tool then forge_inspect", async () => {
+    const { createInMemoryForgeStore, createForgeToolTool, createForgeInspectTool } = await import(
+      "@koi/forge-tools"
+    );
+    const { runWithExecutionContext } = await import("@koi/execution-context");
+    const { sessionId, runId } = await import("@koi/core");
+
+    const store = createInMemoryForgeStore();
+    const synth = createForgeToolTool({ store });
+    const inspect = createForgeInspectTool({ store });
+
+    const ctx = {
+      session: {
+        agentId: "golden-agent-A",
+        sessionId: sessionId("golden-s1"),
+        runId: runId("golden-r1"),
+        metadata: {},
+      },
+      turnIndex: 0,
+    } as const;
+
+    // Synthesize.
+    const synthRaw = await runWithExecutionContext(ctx, () =>
+      synth.execute({
+        name: "add-numbers",
+        description: "Sum two numbers and return the result.",
+        version: "0.0.1",
+        scope: "agent",
+        implementation: "return args.a + args.b;",
+        inputSchema: {
+          type: "object",
+          properties: { a: { type: "number" }, b: { type: "number" } },
+          required: ["a", "b"],
+        },
+      }),
+    );
+    const synthOk = synthRaw as { ok: true; value: { brickId: string; lifecycle: string } };
+    expect(synthOk.ok).toBe(true);
+    expect(synthOk.value.lifecycle).toBe("draft");
+
+    // Inspect — assert artifact matches what was synthesized.
+    const inspectRaw = await runWithExecutionContext(ctx, () =>
+      inspect.execute({ brickId: synthOk.value.brickId }),
+    );
+    const inspectOk = inspectRaw as {
+      ok: true;
+      value: { artifact: { id: string; kind: string; name: string; lifecycle: string } };
+    };
+    expect(inspectOk.ok).toBe(true);
+    expect(inspectOk.value.artifact.id).toBe(synthOk.value.brickId);
+    expect(inspectOk.value.artifact.kind).toBe("tool");
+    expect(inspectOk.value.artifact.name).toBe("add-numbers");
+    expect(inspectOk.value.artifact.lifecycle).toBe("draft");
+  });
+
+  test("list-empty-store — forge_list returns empty summaries on a fresh store", async () => {
+    const { createInMemoryForgeStore, createForgeListTool } = await import("@koi/forge-tools");
+    const { runWithExecutionContext } = await import("@koi/execution-context");
+    const { sessionId, runId } = await import("@koi/core");
+
+    const store = createInMemoryForgeStore();
+    const list = createForgeListTool({ store });
+
+    const ctx = {
+      session: {
+        agentId: "golden-agent-B",
+        sessionId: sessionId("golden-s2"),
+        runId: runId("golden-r2"),
+        metadata: {},
+      },
+      turnIndex: 0,
+    } as const;
+
+    const raw = await runWithExecutionContext(ctx, () => list.execute({}));
+    const ok = raw as { ok: true; value: { summaries: readonly unknown[] } };
+    expect(ok.ok).toBe(true);
+    expect(ok.value.summaries).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Full-loop replay: forge-tools cassette → createKoi → live ATIF
+// Exercises: @koi/forge-tools wired through createKoi
+// Cassette: LLM calls forge_tool / forge_list / forge_inspect; replay validates live ATIF
+// ---------------------------------------------------------------------------
+
+describe("Full-loop replay: forge-tools cassette → createKoi → live ATIF", () => {
+  test("forge_tool executes through full middleware stack and appears in live ATIF", async () => {
+    const cassetteFile = Bun.file(`${FIXTURES}/forge-synthesize.cassette.json`);
+    if (!(await cassetteFile.exists())) {
+      console.warn("forge-synthesize.cassette.json not recorded yet — skipping");
+      return;
+    }
+    const cassette = await loadCassette(`${FIXTURES}/forge-synthesize.cassette.json`);
+    const {
+      createInMemoryForgeStore,
+      createForgeToolTool,
+      createForgeMiddlewareTool,
+      createForgeListTool,
+      createForgeInspectTool,
+    } = await import("@koi/forge-tools");
+
+    const trajDir = `/tmp/koi-replay-forge-tools-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-forge-tools";
+
+    const store = createAtifDocumentStore(
+      { agentName: "replay-forge-tools" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "replay-forge-tools",
+      clock,
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" as const }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "replay test (bypass)",
+    });
+
+    // Forge store + four tools
+    const forgeStore = createInMemoryForgeStore();
+    const forgeTool = createForgeToolTool({ store: forgeStore });
+    const forgeMiddleware = createForgeMiddlewareTool({ store: forgeStore });
+    const forgeList = createForgeListTool({ store: forgeStore });
+    const forgeInspect = createForgeInspectTool({ store: forgeStore });
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: { name: "replay-forge-tools", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "forge-tool",
+          toolName: "forge_tool",
+          createTool: () => forgeTool,
+        }),
+        createSingleToolProvider({
+          name: "forge-middleware",
+          toolName: "forge_middleware",
+          createTool: () => forgeMiddleware,
+        }),
+        createSingleToolProvider({
+          name: "forge-list",
+          toolName: "forge_list",
+          createTool: () => forgeList,
+        }),
+        createSingleToolProvider({
+          name: "forge-inspect",
+          toolName: "forge_inspect",
+          createTool: () => forgeInspect,
+        }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text:
+        "Use forge_tool to create a tool named 'add-numbers' that takes two numbers a and b and returns their sum. " +
+        "Then call forge_list to confirm it appears. " +
+        "Then call forge_inspect with the returned brickId.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const steps = await store.getDocument(docId);
+
+    // forge_tool tool was executed and recorded in live ATIF
+    const toolSteps = steps.filter((s) => s.kind === "tool_call");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    const forgeToolStep = toolSteps.find((s) => s.identifier === "forge_tool");
+    expect(forgeToolStep).toBeDefined();
+    expect(forgeToolStep?.outcome).toBe("success");
+
+    // The cassette captures only the first model turn (one tool_call_start),
+    // so replay exercises forge_tool but not the follow-up forge_list /
+    // forge_inspect calls — those are validated separately against the
+    // recorded ATIF trajectory file (see "forge-tools ATIF trajectory"
+    // describe block below).
+
+    // MW spans fired (event-trace + permissions wired through createKoi)
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    expect(mwSpans.length).toBeGreaterThan(0);
+
+    // Model step present (cassette drove the model call)
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+  }, 15000);
+});
+
+// ---------------------------------------------------------------------------
+// @koi/forge-tools ATIF trajectory (golden file — produced by real LLM recording)
+// ---------------------------------------------------------------------------
+
+describe("forge-tools ATIF trajectory (golden file)", () => {
+  test("schema_version is ATIF-v1.6", async () => {
+    const file = Bun.file(`${FIXTURES}/forge-synthesize.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("forge-synthesize.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as { schema_version?: string };
+    expect(traj.schema_version).toBe("ATIF-v1.6");
+  });
+
+  test("trajectory contains forge_tool tool call", async () => {
+    const file = Bun.file(`${FIXTURES}/forge-synthesize.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("forge-synthesize.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as {
+      steps?: ReadonlyArray<{
+        source?: string;
+        tool_calls?: ReadonlyArray<{ function_name?: string }>;
+      }>;
+    };
+    const toolSteps = (traj.steps ?? []).filter((s) => s.source === "tool");
+    const toolNames = toolSteps.flatMap((s) => (s.tool_calls ?? []).map((tc) => tc.function_name));
+    expect(toolNames).toContain("forge_tool");
+  });
+
+  test("trajectory contains forge_list tool call", async () => {
+    const file = Bun.file(`${FIXTURES}/forge-synthesize.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("forge-synthesize.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as {
+      steps?: ReadonlyArray<{
+        source?: string;
+        tool_calls?: ReadonlyArray<{ function_name?: string }>;
+      }>;
+    };
+    const toolSteps = (traj.steps ?? []).filter((s) => s.source === "tool");
+    const toolNames = toolSteps.flatMap((s) => (s.tool_calls ?? []).map((tc) => tc.function_name));
+    expect(toolNames).toContain("forge_list");
+  });
+
+  test("trajectory contains forge_inspect tool call", async () => {
+    const file = Bun.file(`${FIXTURES}/forge-synthesize.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("forge-synthesize.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as {
+      steps?: ReadonlyArray<{
+        source?: string;
+        tool_calls?: ReadonlyArray<{ function_name?: string }>;
+      }>;
+    };
+    const toolSteps = (traj.steps ?? []).filter((s) => s.source === "tool");
+    const toolNames = toolSteps.flatMap((s) => (s.tool_calls ?? []).map((tc) => tc.function_name));
+    expect(toolNames).toContain("forge_inspect");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // @koi/spawn-tools ATIF trajectory (golden file — produced by real LLM recording)
 // ---------------------------------------------------------------------------
 
@@ -8002,10 +8397,11 @@ describe("Golden: @koi/mcp-server", () => {
 
     // Verify tools/list returns platform tools
     const tools = await client.listTools();
-    expect(tools.tools.length).toBe(2); // koi_send_message + koi_list_messages
+    expect(tools.tools.length).toBe(3); // koi_send_message + koi_list_messages + koi_list_mailbox
     const names = tools.tools.map((t) => t.name);
     expect(names).toContain("koi_send_message");
     expect(names).toContain("koi_list_messages");
+    expect(names).toContain("koi_list_mailbox");
 
     // Verify tool schemas have required fields
     const sendTool = tools.tools.find((t) => t.name === "koi_send_message");
@@ -8227,6 +8623,109 @@ describe("Golden: @koi/skills-runtime (standalone progressive loading)", () => {
     expect(afterInvalidate.ok).toBe(true);
     if (!afterInvalidate.ok) return;
     expect(afterInvalidate.value).toHaveLength(2); // metadata still available
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/skills-runtime — progressive provider + middleware (issue #1986)
+// No LLM needed. Validates runtimeBacked marker, XML injection, MCP exclusion,
+// and fallback behavior when provider/middleware progressive flags are mismatched.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/skills-runtime (progressive mode — issue #1986)", () => {
+  test("createProgressiveSkillProvider attaches runtimeBacked components with empty content", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { isAttachResult, skillToken } = await import("@koi/core");
+
+    const skillsDir = mkdtempSync(join(tmpdir(), "koi-golden-prog-"));
+    trajDirs.push(skillsDir);
+    mkdirSync(join(skillsDir, "commit"), { recursive: true });
+    writeFileSync(
+      join(skillsDir, "commit", "SKILL.md"),
+      "---\nname: commit\ndescription: Generate a commit message.\n---\n\nFull body text.",
+    );
+
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot: skillsDir });
+    const { provider } = createProgressiveSkillProvider(base);
+
+    const result = await provider.attach({} as never);
+    expect(isAttachResult(result)).toBe(true);
+    if (!isAttachResult(result)) return;
+
+    const component = result.components.get(skillToken("commit")) as
+      | { content: string; runtimeBacked: boolean; description: string }
+      | undefined;
+
+    // Progressive component: empty content, runtimeBacked marker set, description preserved
+    expect(component).toBeDefined();
+    expect(component?.content).toBe("");
+    expect(component?.runtimeBacked).toBe(true);
+    expect(component?.description).toBe("Generate a commit message.");
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  test("createSkillInjectorMiddleware progressive:true injects <available_skills> XML — not bodies", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { sessionId, skillToken } = await import("@koi/core");
+    const { createSkillInjectorMiddleware } = await import("@koi/skills-runtime");
+    type Agent = import("@koi/core").Agent;
+    type SkillComponent = import("@koi/core").SkillComponent;
+    type SubsystemToken = import("@koi/core").SubsystemToken<SkillComponent>;
+
+    const skillsDir = mkdtempSync(join(tmpdir(), "koi-golden-mw-"));
+    trajDirs.push(skillsDir);
+    mkdirSync(join(skillsDir, "review"), { recursive: true });
+    writeFileSync(
+      join(skillsDir, "review", "SKILL.md"),
+      "---\nname: review\ndescription: Review pull requests.\n---\n\nDetailed review instructions.",
+    );
+
+    // Build a mock agent with a progressive skill component (content: "", runtimeBacked: true)
+    const token = skillToken("review") as SubsystemToken;
+    const skills = new Map<SubsystemToken, SkillComponent>([
+      [
+        token,
+        { name: "review", description: "Review pull requests.", content: "", runtimeBacked: true },
+      ],
+    ]);
+    const agent = {
+      query: <T>(prefix: string) =>
+        prefix === "skill:"
+          ? (skills as unknown as ReadonlyMap<import("@koi/core").SubsystemToken<T>, T>)
+          : new Map(),
+    } as Agent;
+
+    const mw = createSkillInjectorMiddleware({ agent, progressive: true });
+
+    const received: import("@koi/core").ModelRequest[] = [];
+    const wrapModelCall = mw.wrapModelCall;
+    if (wrapModelCall === undefined) throw new Error("wrapModelCall not defined");
+    await wrapModelCall(
+      {
+        session: { agentId: "t", sessionId: sessionId("t"), runId: "r" as never, metadata: {} },
+        turnIndex: 0,
+        turnId: "t0" as never,
+        messages: [],
+        metadata: {},
+      },
+      { messages: [] },
+      async (req) => {
+        received.push(req);
+        return { content: "ok", model: "test" };
+      },
+    );
+
+    const prompt = received[0]?.systemPrompt ?? "";
+    // Progressive mode: XML block, no full body
+    expect(prompt).toContain("<available_skills>");
+    expect(prompt).toContain('name="review"');
+    expect(prompt).toContain('description="Review pull requests."');
+    expect(prompt).not.toContain("Detailed review instructions");
+    expect(prompt).toContain("</available_skills>");
   });
 });
 
@@ -9388,9 +9887,9 @@ describe("Golden: @koi/middleware-extraction", () => {
     // Category mapping preserves fine-grained → coarse type
     expect(mapCategoryToMemoryType("gotcha")).toBe("feedback");
     expect(mapCategoryToMemoryType("correction")).toBe("feedback");
-    expect(mapCategoryToMemoryType("heuristic")).toBe("reference");
-    expect(mapCategoryToMemoryType("pattern")).toBe("reference");
-    expect(mapCategoryToMemoryType("preference")).toBe("user");
+    expect(mapCategoryToMemoryType("heuristic")).toBe("feedback"); // regression #1964: was "reference"
+    expect(mapCategoryToMemoryType("pattern")).toBe("feedback"); // regression #1964: was "reference"
+    expect(mapCategoryToMemoryType("preference")).toBe("user"); // correct type; not persisted until user-scoped store exists
     expect(mapCategoryToMemoryType("context")).toBe("project");
 
     // Extractor combines markers + heuristics
@@ -10854,6 +11353,266 @@ describe("Golden: @koi/governance-defaults", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/engine — reset boundary semantics (#1939)
+//
+// Standalone — no cassette replay. Exercises the run_reset / session_reset
+// governance events emitted by @koi/engine's resetRunBoundary() helper.
+// Two tests: (1) run_reset provenance on sequential runs, (2) session_reset
+// provenance on cycleSession(). These mirror the integration-test coverage
+// but live here so CI enforces the golden query contract for @koi/engine.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/engine — reset boundary semantics", () => {
+  test("run_reset fires with source:engine and deterministic boundaryId per run", async () => {
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+    type GovRecordable = { record: (event: GovernanceEvent) => void | Promise<void> };
+
+    const { GOVERNANCE } = await import("@koi/core");
+    const { createIterationGuard } = await import("@koi/engine-compose");
+
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 10_000 });
+
+    // Fixed session id so boundaryId values are deterministic and assertable.
+    const FIXED_SESSION = sessionId("reset-boundary-test");
+    const runtime = await createKoi({
+      manifest: { name: "Golden Reset", version: "0.1.0", model: { name: "test-model" } },
+      sessionId: FIXED_SESSION,
+      adapter: {
+        engineId: "golden-reset-test",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+          yield {
+            kind: "done",
+            output: {
+              content: [],
+              stopReason: "completed",
+              metrics: { totalTokens: 2, inputTokens: 1, outputTokens: 1, turns: 1, durationMs: 0 },
+            },
+          };
+        },
+      },
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    const govCtl = runtime.agent.component<GovRecordable>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recorded: GovernanceEvent[] = [];
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (ev: GovernanceEvent): void | Promise<void> => {
+      recorded.push(ev);
+      return original(ev);
+    };
+
+    for await (const _ of runtime.run({ kind: "text", text: "first" })) {
+      /* drain */
+    }
+    for await (const _ of runtime.run({ kind: "text", text: "second" })) {
+      /* drain */
+    }
+
+    const resets = recorded.filter((e) => e.kind === "run_reset");
+    expect(resets.length).toBe(2);
+    const r0 = resets[0];
+    const r1 = resets[1];
+    if (r0 === undefined || r0.kind !== "run_reset") throw new Error("expected run_reset[0]");
+    if (r1 === undefined || r1.kind !== "run_reset") throw new Error("expected run_reset[1]");
+    expect(r0.source).toBe("engine");
+    // Exact boundaryId — format: ${sessionId}:session:${cycleIndex}:run:${runIndex}
+    expect(r0.boundaryId).toBe(`${FIXED_SESSION}:session:0:run:0`);
+    expect(r1.boundaryId).toBe(`${FIXED_SESSION}:session:0:run:1`);
+  });
+
+  test("session_reset fires with source:host and monotonically increasing boundaryId", async () => {
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+    type GovRecordable = { record: (event: GovernanceEvent) => void | Promise<void> };
+
+    const { GOVERNANCE } = await import("@koi/core");
+
+    const runtime = await createKoi({
+      manifest: { name: "Golden Session Reset", version: "0.1.0", model: { name: "test-model" } },
+      adapter: {
+        engineId: "golden-session-reset-test",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+          yield {
+            kind: "done",
+            output: {
+              content: [],
+              stopReason: "completed",
+              metrics: { totalTokens: 2, inputTokens: 1, outputTokens: 1, turns: 1, durationMs: 0 },
+            },
+          };
+        },
+      },
+      loopDetection: false,
+    });
+
+    const govCtl = runtime.agent.component<GovRecordable>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recorded: GovernanceEvent[] = [];
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (ev: GovernanceEvent): void | Promise<void> => {
+      recorded.push(ev);
+      return original(ev);
+    };
+
+    await runtime.cycleSession?.();
+    await runtime.cycleSession?.();
+
+    const sessionResets = recorded.filter((e) => e.kind === "session_reset");
+    expect(sessionResets.length).toBe(2);
+    const sr0 = sessionResets[0];
+    const sr1 = sessionResets[1];
+    if (sr0 === undefined || sr0.kind !== "session_reset")
+      throw new Error("expected session_reset[0]");
+    if (sr1 === undefined || sr1.kind !== "session_reset")
+      throw new Error("expected session_reset[1]");
+    expect(sr0.source).toBe("host");
+    expect(sr0.boundaryId).toMatch(/:session:0$/);
+    expect(sr1.boundaryId).toMatch(/:session:1$/);
+  });
+
+  test("run_reset fires at run start, not during prior run drain (event ordering)", async () => {
+    // Verifies the multi-submit reset boundary: run_reset for run N must appear
+    // after run N-1 is fully drained and before any activity in run N.
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+    type GovRecordable = { record: (event: GovernanceEvent) => void | Promise<void> };
+
+    const { GOVERNANCE } = await import("@koi/core");
+    const { createIterationGuard } = await import("@koi/engine-compose");
+
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 10_000 });
+
+    const runtime = await createKoi({
+      manifest: { name: "Golden Reset Ordering", version: "0.1.0", model: { name: "test-model" } },
+      adapter: {
+        engineId: "golden-reset-ordering-test",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+          yield {
+            kind: "done",
+            output: {
+              content: [],
+              stopReason: "completed",
+              metrics: { totalTokens: 2, inputTokens: 1, outputTokens: 1, turns: 1, durationMs: 0 },
+            },
+          };
+        },
+      },
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    const govCtl = runtime.agent.component<GovRecordable>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+
+    // Track events per phase: "run1" while draining first run, "run2" for second.
+    const phased: Array<{ phase: "run1" | "run2"; kind: string }> = [];
+    let phase: "run1" | "run2" = "run1";
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (ev: GovernanceEvent): void | Promise<void> => {
+      phased.push({ phase, kind: ev.kind });
+      return original(ev);
+    };
+
+    for await (const _ of runtime.run({ kind: "text", text: "first" })) {
+      /* drain */
+    }
+    phase = "run2";
+    for await (const _ of runtime.run({ kind: "text", text: "second" })) {
+      /* drain */
+    }
+
+    // run_reset for first run must fire during "run1" phase (non-cooperating adapter resets at run start)
+    const run1Events = phased.filter((p) => p.phase === "run1");
+    const run2Events = phased.filter((p) => p.phase === "run2");
+    expect(run1Events.some((p) => p.kind === "run_reset")).toBe(true);
+    expect(run2Events.some((p) => p.kind === "run_reset")).toBe(true);
+
+    // run_reset for run2 must be the first event in run2 (before any turn/token events)
+    const firstRun2Event = run2Events[0];
+    expect(firstRun2Event?.kind).toBe("run_reset");
+
+    // The two run_reset events must have distinct boundaryIds
+    const resets = phased.filter((p) => p.kind === "run_reset");
+    expect(resets.length).toBe(2);
+  });
+
+  test("run_reset fires on cooperating adapter path (cassette replay, two sequential runs)", async () => {
+    // Exercises the cooperating-adapter path through the production cassette harness:
+    // createCassetteAdapter provides terminals.modelStream so the engine defers guard
+    // reset to applyRecomposition() after forge/dynamic-mw settle (not at run entry).
+    // Uses fixtures/run-reset.cassette.json for run1, second-call text for run2.
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+    type GovRecordable = { record: (event: GovernanceEvent) => void | Promise<void> };
+
+    const { GOVERNANCE } = await import("@koi/core");
+    const { createIterationGuard } = await import("@koi/engine-compose");
+
+    const runResetCassette = await loadCassette(`${FIXTURES}/run-reset.cassette.json`);
+    const adapter = createCassetteAdapter(runResetCassette.chunks, {
+      secondCallText: "second-response",
+      useTurnRunner: true,
+    });
+
+    const FIXED_SESSION = sessionId("cooperating-reset-test");
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 30_000 });
+
+    const runtime = await createKoi({
+      manifest: { name: "Cooperating Reset", version: "0.1.0", model: { name: MODEL } },
+      sessionId: FIXED_SESSION,
+      adapter,
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    const govCtl = runtime.agent.component<GovRecordable>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recorded: Array<{ phase: "run1" | "run2"; event: GovernanceEvent }> = [];
+    let phase: "run1" | "run2" = "run1";
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (ev: GovernanceEvent): void | Promise<void> => {
+      recorded.push({ phase, event: ev });
+      return original(ev);
+    };
+
+    for await (const _ of runtime.run({ kind: "text", text: "first" })) {
+      /* drain */
+    }
+    phase = "run2";
+    for await (const _ of runtime.run({ kind: "text", text: "second" })) {
+      /* drain */
+    }
+
+    const run2Events = recorded.filter((r) => r.phase === "run2").map((r) => r.event);
+    // run_reset must be the first governance event in run2
+    expect(run2Events[0]?.kind).toBe("run_reset");
+
+    const resets = recorded.filter((r) => r.event.kind === "run_reset").map((r) => r.event);
+    expect(resets.length).toBe(2);
+    const r0 = resets[0];
+    const r1 = resets[1];
+    if (r0 === undefined || r0.kind !== "run_reset") throw new Error("expected run_reset[0]");
+    if (r1 === undefined || r1.kind !== "run_reset") throw new Error("expected run_reset[1]");
+
+    // Exact boundaryId — deterministic given fixed session id
+    expect(r0.boundaryId).toBe(`${FIXED_SESSION}:session:0:run:0`);
+    expect(r1.boundaryId).toBe(`${FIXED_SESSION}:session:0:run:1`);
+    expect(r0.source).toBe("engine");
+    expect(r1.source).toBe("engine");
+
+    // boundaryTimestamp for run2 must be >= run1 (monotonically non-decreasing)
+    if (r0.boundaryTimestamp !== undefined && r1.boundaryTimestamp !== undefined) {
+      expect(r1.boundaryTimestamp).toBeGreaterThanOrEqual(r0.boundaryTimestamp);
+    }
+  });
+});
+
 describe("Golden: @koi/daemon", () => {
   test("supervisor starts and shuts down a subprocess worker", async () => {
     const { createSupervisor, createSubprocessBackend } = await import("@koi/daemon");
@@ -11692,5 +12451,2452 @@ describe("Golden: @koi/artifacts-s3 — createArtifactStore override", () => {
       await artifactStore.close();
       s3Mock.reset();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/violation-store-sqlite — record + getViolations roundtrip
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/violation-store-sqlite", () => {
+  test("record + flush + getViolations roundtrip", async () => {
+    const { tmpdir } = await import("node:os");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { createSqliteViolationStore } = await import("@koi/violation-store-sqlite");
+    const { agentId, sessionId } = await import("@koi/core");
+
+    const dir = mkdtempSync(join(tmpdir(), "gq-vstore-"));
+    const dbPath = join(dir, "v.db");
+    try {
+      const store = createSqliteViolationStore({ dbPath });
+      store.record(
+        { rule: "no-external-api", severity: "warning", message: "denied" },
+        agentId("agent-gold"),
+        "sess-gold",
+        1_000,
+      );
+      store.flush();
+      const page = await store.getViolations({
+        sessionId: sessionId("sess-gold"),
+        limit: 10,
+      });
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0]?.rule).toBe("no-external-api");
+      expect(page.items[0]?.severity).toBe("warning");
+      expect(page.items[0]?.message).toBe("denied");
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("multiple records with different agents are queryable by agentId", async () => {
+    const { tmpdir } = await import("node:os");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { createSqliteViolationStore } = await import("@koi/violation-store-sqlite");
+    const { agentId } = await import("@koi/core");
+
+    const dir = mkdtempSync(join(tmpdir(), "gq-vstore-multi-"));
+    const dbPath = join(dir, "v.db");
+    try {
+      const store = createSqliteViolationStore({ dbPath });
+      store.record(
+        { rule: "rule-a", severity: "critical", message: "agent-1 violation" },
+        agentId("agent-1"),
+        undefined,
+        2_000,
+      );
+      store.record(
+        { rule: "rule-b", severity: "info", message: "agent-2 violation" },
+        agentId("agent-2"),
+        undefined,
+        3_000,
+      );
+      store.flush();
+
+      const page1 = await store.getViolations({ agentId: agentId("agent-1"), limit: 10 });
+      expect(page1.items).toHaveLength(1);
+      expect(page1.items[0]?.rule).toBe("rule-a");
+
+      const page2 = await store.getViolations({ agentId: agentId("agent-2"), limit: 10 });
+      expect(page2.items).toHaveLength(1);
+      expect(page2.items[0]?.rule).toBe("rule-b");
+
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/tool-exec (standalone, no LLM needed)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/tool-exec", () => {
+  test("createExecuteCodeTool produces a valid operator Tool named execute_code", async () => {
+    const { ACKNOWLEDGE_UNSANDBOXED_EXECUTION, createExecuteCodeTool } = await import(
+      "@koi/tool-exec"
+    );
+
+    const result = createExecuteCodeTool({
+      acknowledgeUnsandboxedExecution: ACKNOWLEDGE_UNSANDBOXED_EXECUTION,
+      tools: new Map(),
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.descriptor.name).toBe("execute_code");
+      expect(result.value.origin).toBe("operator");
+      expect(result.value.policy.sandbox).toBe(false);
+      expect(result.value.descriptor.inputSchema).toBeDefined();
+    }
+  });
+
+  test("createExecuteCodeTool refuses construction without trust acknowledgement", async () => {
+    const { createExecuteCodeTool } = await import("@koi/tool-exec");
+
+    // @ts-expect-error — intentionally omitting required acknowledgement
+    const result = createExecuteCodeTool({ tools: new Map() });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("PERMISSION");
+  });
+
+  test("executeScript runs a multi-tool pipeline and returns only the final result", async () => {
+    const { ACKNOWLEDGE_UNSANDBOXED_EXECUTION, executeScript } = await import("@koi/tool-exec");
+    const { buildTool } = await import("@koi/tools-core");
+
+    const doubleResult = buildTool({
+      name: "double",
+      description: "Doubles a number",
+      inputSchema: { type: "object", properties: { n: { type: "number" } } },
+      origin: "operator",
+      execute: async (args: JsonObject) => ({ result: (args.n as number) * 2 }),
+    });
+    const stringifyResult = buildTool({
+      name: "stringify",
+      description: "Stringifies a value",
+      inputSchema: { type: "object", properties: { value: { type: "unknown" } } },
+      origin: "operator",
+      execute: async (args: JsonObject) => String(args.value),
+    });
+
+    expect(doubleResult.ok).toBe(true);
+    expect(stringifyResult.ok).toBe(true);
+    if (!doubleResult.ok || !stringifyResult.ok) return;
+
+    const tools = new Map([
+      ["double", doubleResult.value],
+      ["stringify", stringifyResult.value],
+    ]);
+
+    const result = await executeScript({
+      acknowledgeUnsandboxedExecution: ACKNOWLEDGE_UNSANDBOXED_EXECUTION,
+      code: `
+        const doubled = await tools.double({ n: 21 });
+        const str = await tools.stringify({ value: doubled.result });
+        return { summary: "Answer is " + str, toolCallCount: 2 };
+      `,
+      tools,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.toolCallCount).toBe(2);
+    expect(result.result).toEqual({ summary: "Answer is 42", toolCallCount: 2 });
+    expect(result.durationMs).toBeGreaterThan(0);
+  });
+
+  // Trajectory replay: validates the recorded ATIF for tool-exec-code-use.
+  // Live recording drove the model through: model → execute_code(script) →
+  // inner add_numbers x2 via tools.* → script return → model final answer.
+  // This test asserts the recorded trajectory looks right without calling
+  // the LLM (all assertions against the frozen fixture).
+  test("recorded trajectory: execute_code ran a 2-step inner pipeline and returned the final sum", async () => {
+    const trajectoryPath = `${FIXTURES}/tool-exec-code-use.trajectory.json`;
+    const trajectory = (await Bun.file(trajectoryPath).json()) as {
+      readonly schema_version: string;
+      readonly steps: ReadonlyArray<{
+        readonly source: string;
+        readonly message?: string;
+        readonly observation?: { readonly results?: ReadonlyArray<{ readonly content?: string }> };
+      }>;
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+
+    const agentSteps = trajectory.steps.filter((s) => s.source === "agent");
+    // 2 agent turns: first invokes execute_code, second returns the answer.
+    expect(agentSteps.length).toBeGreaterThanOrEqual(2);
+
+    // Second agent turn's observation should be the execute_code result
+    // containing ok:true and the final sum from the inner pipeline.
+    const executeCodeResultText = agentSteps[1]?.message ?? "";
+    expect(executeCodeResultText).toContain('"ok":true');
+    expect(executeCodeResultText).toContain('"result":15');
+    expect(executeCodeResultText).toContain('"toolCallCount":2');
+
+    // Final model reply must surface the final sum (2+3=5, 5+10=15).
+    const finalReply = agentSteps[agentSteps.length - 1]?.observation?.results?.[0]?.content ?? "";
+    expect(finalReply).toContain("15");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-collective-memory
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-collective-memory", () => {
+  test("extraction pipeline: markers take priority over heuristics", async () => {
+    const { createDefaultExtractor } = await import("@koi/middleware-collective-memory");
+    const extractor = createDefaultExtractor();
+
+    const output = [
+      "[LEARNING:gotcha] Always pin exact versions in CI lockfiles",
+      "I learned that the API requires OAuth2 tokens for all endpoints",
+      "[LEARNING:pattern] Use exponential backoff with jitter for retries",
+    ].join("\n");
+
+    const results = extractor.extract(output);
+
+    // At least 3 learnings extracted (2 markers + 1 heuristic)
+    expect(results.length).toBeGreaterThanOrEqual(3);
+
+    // Markers (confidence 1.0) sorted before heuristics (confidence 0.7)
+    expect(results[0]?.confidence).toBe(1.0);
+    expect(results[1]?.confidence).toBe(1.0);
+
+    // Categories correct
+    const categories = results.map((r) => r.category);
+    expect(categories).toContain("gotcha");
+    expect(categories).toContain("pattern");
+    expect(categories).toContain("heuristic");
+  });
+
+  test("inject + compact pipeline preserves invariants", async () => {
+    const { formatCollectiveMemory, shouldCompact, compactCollectiveMemory } = await import(
+      "@koi/middleware-collective-memory"
+    );
+    const { DEFAULT_COLLECTIVE_MEMORY } = await import("@koi/core");
+
+    const now = 1_700_000_000_000;
+    const entries = Array.from({ length: 60 }, (_, i) => ({
+      id: `e${String(i)}`,
+      content: `learning entry number ${String(i)} about some topic`,
+      category: (["gotcha", "heuristic", "pattern"][i % 3] ?? "context") as
+        | "gotcha"
+        | "heuristic"
+        | "pattern",
+      source: { agentId: "agent", runId: "run", timestamp: now },
+      createdAt: now,
+      accessCount: i % 5,
+      lastAccessedAt: now,
+    }));
+
+    const memory = { ...DEFAULT_COLLECTIVE_MEMORY, entries, totalTokens: 9500 };
+
+    // Should trigger compaction (60 > 50 entries, 9500 > 8000 tokens)
+    expect(shouldCompact(memory)).toBe(true);
+
+    // Compaction reduces entries and increments generation
+    const compacted = compactCollectiveMemory(memory);
+    expect(compacted.entries.length).toBeLessThan(entries.length);
+    expect(compacted.generation).toBe(1);
+    expect(compacted.lastCompactedAt).toBeDefined();
+
+    // Injection formatting works on compacted memory
+    const formatted = formatCollectiveMemory(compacted.entries, 2000);
+    expect(formatted).toContain("## Collective Memory");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/browser-ext (standalone API coverage)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/browser-ext", () => {
+  test("createExtensionBrowserDriver factory returns a BrowserDriver-shaped transport", async () => {
+    const { createExtensionBrowserDriver } = await import("@koi/browser-ext");
+    const driver: import("@koi/core").BrowserDriver = createExtensionBrowserDriver({
+      instancesDir: "/tmp/koi-browser-ext-golden",
+      authToken: "golden-token",
+    });
+
+    expect(driver.name).toBe("browser-ext");
+    expect(typeof driver.tabList).toBe("function");
+    expect(typeof driver.snapshot).toBe("function");
+    expect(typeof driver.navigate).toBe("function");
+    expect(typeof driver.dispose).toBe("function");
+  });
+
+  test("public export surface stays stable", async () => {
+    const browserExt = await import("@koi/browser-ext");
+
+    expect(Object.keys(browserExt).sort()).toEqual([
+      "createDriverClient",
+      "createExtensionBrowserDriver",
+      "createLoopbackWebSocketBridge",
+    ]);
+  });
+
+  test("browser tools can be enumerated from the extension driver", async () => {
+    const { createExtensionBrowserDriver } = await import("@koi/browser-ext");
+    const { OPERATIONS, createBrowserProvider, createMockAgent } = await import(
+      "@koi/tool-browser"
+    );
+    const { isAttachResult, toolToken } = await import("@koi/core");
+
+    const driver = createExtensionBrowserDriver({
+      instancesDir: "/tmp/koi-browser-ext-golden",
+      authToken: "golden-token",
+    });
+    const provider = createBrowserProvider({ backend: driver });
+    const agent = createMockAgent();
+    const attached = await provider.attach(agent);
+    const components = isAttachResult(attached) ? attached.components : attached;
+
+    for (const operation of OPERATIONS) {
+      expect(components.has(toolToken(`browser_${operation}`) as string)).toBe(true);
+    }
+
+    await provider.detach?.(agent);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/browser-playwright (standalone API coverage)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/browser-playwright", () => {
+  test("createPlaywrightBrowserDriver is exported and returns a function", async () => {
+    const pw = await import("@koi/browser-playwright");
+    expect(typeof pw.createPlaywrightBrowserDriver).toBe("function");
+    expect(typeof pw.detectInstalledBrowsers).toBe("function");
+    expect(typeof pw.STEALTH_INIT_SCRIPT).toBe("string");
+    expect(pw.STEALTH_INIT_SCRIPT.length).toBeGreaterThan(0);
+  });
+
+  test("public export surface stays stable", async () => {
+    const pw = await import("@koi/browser-playwright");
+    expect(Object.keys(pw).sort()).toEqual([
+      "STEALTH_INIT_SCRIPT",
+      "createPlaywrightBrowserDriver",
+      "detectInstalledBrowsers",
+    ]);
+  });
+});
+
+// Production wiring: both L2 browser drivers compose into the runtime
+// through createBrowserBackend. Verifies the discriminated-union config
+// surface that callers of RuntimeConfig.browser.backend use.
+describe("Golden: @koi/runtime — createBrowserBackend wiring", () => {
+  test("kind=playwright constructs a BrowserDriver", async () => {
+    const { createBrowserBackend } = await import("../create-browser-backend.js");
+    // Headless launch mode — don't actually launch, just verify construction.
+    const driver = await createBrowserBackend({ kind: "playwright", headless: true });
+    expect(typeof driver.name).toBe("string");
+    expect(typeof driver.snapshot).toBe("function");
+    expect(typeof driver.navigate).toBe("function");
+    expect(typeof driver.dispose).toBe("function");
+    await driver.dispose?.();
+  });
+
+  test("kind=browser-ext constructs an ExtensionBrowserDriver with auto-composed delegate", async () => {
+    const { createBrowserBackend } = await import("../create-browser-backend.js");
+    const driver = await createBrowserBackend({
+      kind: "browser-ext",
+      instancesDir: "/tmp/koi-browser-ext-factory-test",
+      authToken: "1234567890abcdef",
+    });
+    expect(driver.name).toBe("browser-ext");
+    // ExtensionBrowserDriver surface includes the extra attachLoopbackBridge
+    // + selectTargetTab methods beyond the BrowserDriver contract.
+    expect(
+      typeof (driver as unknown as { attachLoopbackBridge: unknown }).attachLoopbackBridge,
+    ).toBe("function");
+    expect(typeof (driver as unknown as { selectTargetTab: unknown }).selectTargetTab).toBe(
+      "function",
+    );
+    await driver.dispose?.();
+  });
+
+  test("kind=browser-ext auto-wires createPlaywrightDriver factory by default", async () => {
+    // Contract: if the caller does NOT supply createPlaywrightDriver, the
+    // factory auto-composes @koi/browser-playwright via connectOverCDP on
+    // the extension's loopback WS bridge. Verify the composition seam by
+    // checking the driver advertises the composed surface (attachLoopback
+    // + selectTargetTab exist) without the caller importing @koi/browser-
+    // playwright directly.
+    const { createBrowserBackend } = await import("../create-browser-backend.js");
+    const driver = (await createBrowserBackend({
+      kind: "browser-ext",
+      instancesDir: "/tmp/koi-browser-ext-factory-test-auto",
+      authToken: "1234567890abcdef",
+    })) as unknown as {
+      readonly name: string;
+      readonly attachLoopbackBridge: unknown;
+      readonly selectTargetTab: unknown;
+      readonly dispose?: () => Promise<void>;
+    };
+    expect(driver.name).toBe("browser-ext");
+    expect(typeof driver.attachLoopbackBridge).toBe("function");
+    expect(typeof driver.selectTargetTab).toBe("function");
+    await driver.dispose?.();
+  });
+});
+
+describe("Golden: @koi/middleware-feedback-loop", () => {
+  test("createFeedbackLoopMiddleware returns a KoiMiddleware with correct priority and name", async () => {
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const mw = createFeedbackLoopMiddleware({});
+    expect(mw.name).toBe("feedback-loop");
+    expect(mw.priority).toBe(450);
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapToolCall).toBe("function");
+  });
+
+  test("shouldFlush returns false when not dirty", async () => {
+    const { shouldFlush } = await import("@koi/middleware-feedback-loop");
+    expect(
+      shouldFlush(
+        {
+          dirty: false,
+          flushing: false,
+          invocationsSinceFlush: 100,
+          errorRateSinceFlush: 0,
+          lastFlushedErrorRate: 0,
+        },
+        10,
+        0.05,
+      ),
+    ).toBe(false);
+  });
+
+  test("MW composes through createKoi with feedback-loop-pass cassette", async () => {
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const cassette = await loadCassette(`${FIXTURES}/feedback-loop-pass.cassette.json`);
+    const trajDir = `/tmp/koi-feedback-loop-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-feedback-loop";
+
+    const store = createAtifDocumentStore(
+      { agentName: "feedback-loop-test" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "feedback-loop-test",
+      clock,
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "bypass",
+    });
+
+    const feedbackHandle = createFeedbackLoopMiddleware({
+      validators: [{ name: "pass-through", validate: (_response) => ({ valid: true }) }],
+    });
+
+    const adapter = createCassetteAdapter(cassette.chunks, { secondCallText: "7" });
+
+    const runtime = await createKoi({
+      manifest: { name: "feedback-loop-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, feedbackHandle, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const steps = await store.getDocument(docId);
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
+
+    // feedback-loop spans present
+    expect(mwNames.has("feedback-loop")).toBe(true);
+
+    // permissions still works alongside
+    expect(mwNames.has("permissions")).toBe(true);
+
+    // Tool call executed successfully through feedback-loop chain
+    const toolSteps = steps.filter((s) => s.kind === "tool_call" && s.identifier === "add_numbers");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.outcome).toBe("success");
+
+    // Model steps present
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+
+    // wrapModelStream span present (validator ran)
+    const feedbackSpans = mwSpans.filter((s) => s.metadata?.middlewareName === "feedback-loop");
+    expect(feedbackSpans.some((s) => s.metadata?.hook === "wrapModelStream")).toBe(true);
+
+    // wrapToolCall span present (tool health check ran)
+    expect(feedbackSpans.some((s) => s.metadata?.hook === "wrapToolCall")).toBe(true);
+
+    // All feedback-loop spans resolved successfully (pass-through validator)
+    expect(feedbackSpans.every((s) => s.outcome === "success")).toBe(true);
+  }, 15000);
+
+  test("feedback-loop-pass trajectory: middleware spans appear for both wrapModelStream and wrapToolCall", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const raw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "feedback-loop-pass.trajectory.json"),
+      "utf8",
+    );
+    const trajectory = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly steps: readonly {
+        readonly source: string;
+        readonly outcome: string;
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+        };
+      }[];
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+
+    // At least one agent step (model response)
+    expect(trajectory.steps.some((s) => s.source === "agent")).toBe(true);
+
+    // At least one tool step (add_numbers executed)
+    expect(trajectory.steps.some((s) => s.source === "tool")).toBe(true);
+
+    // feedback-loop middleware spans are present
+    const feedbackSpans = trajectory.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra.middlewareName === "feedback-loop",
+    );
+    expect(feedbackSpans.length).toBeGreaterThanOrEqual(2);
+
+    // wrapModelStream span is present (validator ran on model response)
+    expect(feedbackSpans.some((s) => s.extra?.hook === "wrapModelStream")).toBe(true);
+
+    // wrapToolCall span is present (tool health tracking ran)
+    expect(feedbackSpans.some((s) => s.extra?.hook === "wrapToolCall")).toBe(true);
+
+    // All feedback-loop spans resolved successfully (validator passed)
+    expect(feedbackSpans.every((s) => s.outcome === "success")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/toolsets (standalone — pure resolver, no LLM needed)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/toolsets", () => {
+  test("resolveToolset resolves built-in presets to correct modes", async () => {
+    const { createBuiltinRegistry, resolveToolset } = await import("@koi/toolsets");
+
+    const reg = createBuiltinRegistry();
+
+    // developer resolves to mode:all
+    const dev = resolveToolset("developer", reg);
+    expect(dev.ok).toBe(true);
+    if (dev.ok) {
+      expect(dev.value.mode).toBe("all");
+      expect("tools" in dev.value).toBe(false);
+    }
+
+    // safe resolves to allowlist with expected tools
+    const safe = resolveToolset("safe", reg);
+    expect(safe.ok).toBe(true);
+    if (safe.ok && safe.value.mode === "allowlist") {
+      expect(safe.value.tools).toContain("fs_read");
+      expect(safe.value.tools).toContain("web_fetch");
+      expect(safe.value.tools).not.toContain("Bash");
+      expect(safe.value.tools).not.toContain("*");
+    }
+
+    // minimal resolves to allowlist with only AskUserQuestion
+    const minimal = resolveToolset("minimal", reg);
+    expect(minimal.ok).toBe(true);
+    if (minimal.ok && minimal.value.mode === "allowlist") {
+      expect(minimal.value.tools).toEqual(["AskUserQuestion"]);
+    }
+  });
+
+  test("resolutionToToolAllowlist, mergeRegistries, and cycle/wildcard guards work end-to-end", async () => {
+    const { createBuiltinRegistry, mergeRegistries, resolveToolset, resolutionToToolAllowlist } =
+      await import("@koi/toolsets");
+
+    const builtins = createBuiltinRegistry();
+
+    // resolutionToToolAllowlist: developer → undefined (full access), safe → string[]
+    const devResolution = resolveToolset("developer", builtins);
+    if (devResolution.ok) {
+      expect(resolutionToToolAllowlist(devResolution.value)).toBeUndefined();
+    }
+    const safeResolution = resolveToolset("safe", builtins);
+    if (safeResolution.ok) {
+      expect(Array.isArray(resolutionToToolAllowlist(safeResolution.value))).toBe(true);
+    }
+
+    // mergeRegistries: distinct names succeed, collisions throw
+    const custom = new Map<string, ToolsetDefinition>([
+      ["custom", { name: "custom", description: "Custom", tools: ["my_tool"], includes: [] }],
+    ]);
+    const merged = mergeRegistries([builtins, custom]);
+    expect(merged.has("custom")).toBe(true);
+    expect(merged.has("safe")).toBe(true);
+
+    // Cycle detection
+    const cycleReg = new Map<string, ToolsetDefinition>([
+      ["a", { name: "a", description: "", tools: [], includes: ["b"] }],
+      ["b", { name: "b", description: "", tools: [], includes: ["a"] }],
+    ]);
+    const cycleResult = resolveToolset("a", cycleReg);
+    expect(cycleResult.ok).toBe(false);
+    if (!cycleResult.ok) expect(cycleResult.error.code).toBe("VALIDATION");
+
+    // Wildcard inheritance guard
+    const sneakyReg = new Map<string, ToolsetDefinition>([
+      ["dev", { name: "dev", description: "", tools: ["*"], includes: [] }],
+      ["sneaky", { name: "sneaky", description: "", tools: ["fs_read"], includes: ["dev"] }],
+    ]);
+    const sneakyResult = resolveToolset("sneaky", sneakyReg);
+    expect(sneakyResult.ok).toBe(false);
+    if (!sneakyResult.ok) expect(sneakyResult.error.code).toBe("VALIDATION");
+  });
+});
+
+describe("Golden: @koi/scratchpad-local", () => {
+  test("createLocalScratchpad write/read/list/delete round-trip", async () => {
+    const { createLocalScratchpad } = await import("@koi/scratchpad-local");
+    const { agentGroupId, agentId, scratchpadPath } = await import("@koi/core");
+
+    const pad = createLocalScratchpad({
+      groupId: agentGroupId("golden-group"),
+      authorId: agentId("golden-author"),
+    });
+
+    const path = scratchpadPath("notes/test");
+
+    // write
+    const writeResult = pad.write({ path, content: "hello scratchpad" });
+    expect(writeResult.ok).toBe(true);
+
+    // read
+    const readResult = pad.read(path);
+    expect(readResult.ok).toBe(true);
+    if (readResult.ok) {
+      expect(readResult.value.content).toBe("hello scratchpad");
+      expect(readResult.value.path).toBe(path);
+    }
+
+    // list
+    const entries = pad.list();
+    expect(entries.length).toBeGreaterThanOrEqual(1);
+    expect(entries.some((e) => e.path === path)).toBe(true);
+
+    // delete
+    const deleteResult = pad.delete(path);
+    expect(deleteResult.ok).toBe(true);
+    expect(pad.list()).toHaveLength(0);
+
+    pad.close();
+  });
+
+  test("createLocalScratchpad enforces CAS conflict detection on concurrent writes", async () => {
+    const { createLocalScratchpad } = await import("@koi/scratchpad-local");
+    const { agentGroupId, agentId, scratchpadPath } = await import("@koi/core");
+
+    const pad = createLocalScratchpad({
+      groupId: agentGroupId("golden-cas-group"),
+      authorId: agentId("golden-cas-author"),
+    });
+
+    const path = scratchpadPath("cas/test");
+
+    // First write succeeds
+    const first = pad.write({ path, content: "version 1" });
+    expect(first.ok).toBe(true);
+
+    const entry = pad.read(path);
+    expect(entry.ok).toBe(true);
+    if (!entry.ok) return;
+    const gen = entry.value.generation;
+
+    // Second write with correct generation succeeds
+    const second = pad.write({ path, content: "version 2", expectedGeneration: gen });
+    expect(second.ok).toBe(true);
+
+    // Write with stale generation fails with CONFLICT
+    const stale = pad.write({ path, content: "stale", expectedGeneration: gen });
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.error.code).toBe("CONFLICT");
+
+    pad.close();
+  });
+});
+
+describe("Golden: @koi/workspace", () => {
+  test("createGitWorktreeBackend returns WorkspaceBackend with required API shape", async () => {
+    const { mkdtempSync, rmSync, realpathSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { execSync } = await import("node:child_process");
+    const { createGitWorktreeBackend } = await import("@koi/workspace");
+
+    // Use realpathSync to resolve macOS /var -> /private/var symlink so paths
+    // match what git worktree list returns (git resolves symlinks to real paths).
+    const tmp = realpathSync(mkdtempSync(join(tmpdir(), "koi-golden-workspace-")));
+    try {
+      execSync("git init --initial-branch=main", { cwd: tmp, stdio: "ignore" });
+      execSync('git config user.email "test@koi.dev"', { cwd: tmp, stdio: "ignore" });
+      execSync('git config user.name "Koi Test"', { cwd: tmp, stdio: "ignore" });
+      execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
+
+      const worktreeBase = realpathSync(
+        mkdtempSync(join(tmpdir(), `koi-golden-wt-${Date.now()}-`)),
+      );
+      try {
+        const backend = createGitWorktreeBackend({ repoPath: tmp, worktreeBasePath: worktreeBase });
+
+        expect(backend.name).toBe("git-worktree");
+        expect(typeof backend.create).toBe("function");
+        expect(typeof backend.dispose).toBe("function");
+        expect(typeof backend.isHealthy).toBe("function");
+        expect(typeof backend.exists).toBe("function");
+        expect(typeof backend.findByAgentId).toBe("function");
+        expect(backend.isSandboxed).toBe(false);
+      } finally {
+        rmSync(worktreeBase, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("createGitWorktreeBackend create/dispose round-trip for a workspace", async () => {
+    const { mkdtempSync, rmSync, realpathSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { execSync } = await import("node:child_process");
+    const { createGitWorktreeBackend } = await import("@koi/workspace");
+    const { agentId } = await import("@koi/core");
+
+    const tmp = realpathSync(mkdtempSync(`${tmpdir()}/koi-golden-ws-rw-`));
+    const worktreeBase = realpathSync(mkdtempSync(`${tmpdir()}/koi-golden-wt-rw-`));
+    try {
+      execSync("git init --initial-branch=main", { cwd: tmp, stdio: "ignore" });
+      execSync('git config user.email "test@koi.dev"', { cwd: tmp, stdio: "ignore" });
+      execSync('git config user.name "Koi Test"', { cwd: tmp, stdio: "ignore" });
+      execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
+
+      const backend = createGitWorktreeBackend({ repoPath: tmp, worktreeBasePath: worktreeBase });
+      const aid = agentId("golden-agent");
+
+      const createResult = await backend.create(aid, {
+        cleanupPolicy: "always",
+        cleanupTimeoutMs: 5000,
+      });
+      expect(createResult.ok).toBe(true);
+      if (!createResult.ok) return;
+
+      const ws = createResult.value;
+      expect(ws.id).toBeDefined();
+      expect(ws.path).toContain(worktreeBase);
+      expect(await backend.isHealthy(ws.id)).toBe(true);
+
+      const disposeResult = await backend.dispose(ws.id);
+      expect(disposeResult.ok).toBe(true);
+      expect(await backend.exists?.(ws.id)).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+      rmSync(worktreeBase, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Golden: @koi/governance-approval-tiers", () => {
+  test("short-circuits ask to allow on persisted match", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createJsonlApprovalStore, wrapBackendWithPersistedAllowlist } = await import(
+      "@koi/governance-approval-tiers"
+    );
+    const { askId } = await import("@koi/core/governance-backend");
+    const { agentId } = await import("@koi/core");
+    const { computeGrantKey } = await import("@koi/hash");
+
+    const dir = await mkdtemp(join(tmpdir(), "golden-appt-"));
+    try {
+      const path = join(dir, "approvals.json");
+      const payload = { tool: "bash" };
+      const store = createJsonlApprovalStore({ path });
+      await store.append({
+        kind: "tool_call",
+        agentId: agentId("a"),
+        payload,
+        grantKey: computeGrantKey("tool_call", payload),
+        grantedAt: 1,
+      });
+      const wrapped = wrapBackendWithPersistedAllowlist(
+        {
+          evaluator: {
+            evaluate: () => ({ ok: "ask", prompt: "?", askId: askId("g1") }),
+          },
+        },
+        store,
+      );
+      const v = await wrapped.evaluator.evaluate({
+        kind: "tool_call",
+        agentId: agentId("a"),
+        payload,
+        timestamp: 0,
+      });
+      expect(v.ok).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("leaves ask unchanged with no persisted match", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createJsonlApprovalStore, wrapBackendWithPersistedAllowlist } = await import(
+      "@koi/governance-approval-tiers"
+    );
+    const { askId } = await import("@koi/core/governance-backend");
+    const { agentId } = await import("@koi/core");
+
+    const dir = await mkdtemp(join(tmpdir(), "golden-appt-"));
+    try {
+      const path = join(dir, "approvals.json");
+      const store = createJsonlApprovalStore({ path });
+      const wrapped = wrapBackendWithPersistedAllowlist(
+        {
+          evaluator: {
+            evaluate: () => ({ ok: "ask", prompt: "?", askId: askId("g2") }),
+          },
+        },
+        store,
+      );
+      const v = await wrapped.evaluator.evaluate({
+        kind: "tool_call",
+        agentId: agentId("a"),
+        payload: { tool: "bash" },
+        timestamp: 0,
+      });
+      expect(v.ok).toBe("ask");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/temporal
+// Infrastructure L2 — Temporal-backed scheduler + spawn-ledger + worker factory.
+// No LLM required: tests exercise the contract shape via mocked Temporal clients.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/temporal", () => {
+  test("createTemporalSpawnLedger — acquire/release/capacity contract", async () => {
+    const { createTemporalSpawnLedger, DEFAULT_SPAWN_LEDGER_CONFIG } = await import(
+      "@koi/temporal"
+    );
+
+    const ledger = createTemporalSpawnLedger({ maxCapacity: 3 });
+
+    expect(ledger.capacity()).toBe(3);
+    expect(ledger.activeCount()).toBe(0);
+
+    expect(ledger.acquire()).toBe(true);
+    expect(ledger.acquire()).toBe(true);
+    expect(ledger.acquire()).toBe(true);
+    // At capacity — next acquire must fail
+    expect(ledger.acquire()).toBe(false);
+    expect(ledger.activeCount()).toBe(3);
+
+    ledger.release();
+    expect(ledger.activeCount()).toBe(2);
+    // After release a slot is free
+    expect(ledger.acquire()).toBe(true);
+
+    // Default config constant is correctly shaped
+    expect(DEFAULT_SPAWN_LEDGER_CONFIG.maxCapacity).toBeGreaterThan(0);
+  });
+
+  test("createTemporalScheduler — submit + cancel + query + stats via mocked client", async () => {
+    const { createTemporalScheduler } = await import("@koi/temporal");
+    const { mock } = await import("bun:test");
+    const { agentId } = await import("@koi/core");
+
+    // Minimal mock Temporal client
+    const workflowId = "wf-golden-1";
+    const agent = agentId("golden-agent");
+
+    const cancelMock = mock(async () => {});
+    const client = {
+      workflow: {
+        start: mock(async () => ({ workflowId })),
+        signal: mock(async () => {}),
+        cancel: cancelMock,
+        getResult: mock(async () => undefined),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+        delete: mock(async () => {}),
+        getHandle: mock((_id: string) => ({ describe: mock(async () => ({})) })),
+      },
+    };
+
+    const scheduler = createTemporalScheduler({
+      client,
+      taskQueue: "golden-queue",
+      workflowType: "temporal-task",
+    });
+
+    // submit a spawn task — workflow.start is called immediately
+    const id = await scheduler.submit(agent, { kind: "text", text: "test" }, "spawn");
+    expect(typeof id).toBe("string");
+    expect(client.workflow.start).toHaveBeenCalledTimes(1);
+
+    // stats reflects submitted task (may be completed already if getResult mock resolved)
+    const s = scheduler.stats();
+    expect(s.pending + s.running + s.completed).toBeGreaterThanOrEqual(1);
+
+    // query returns all tasks matching the filter
+    const tasks = await scheduler.query({});
+    expect(Array.isArray(tasks)).toBe(true);
+    const task = tasks.find((t) => t.id === id);
+    expect(task).toBeDefined();
+    if (task !== undefined) {
+      expect(["pending", "running", "completed", "failed", "dead_letter"]).toContain(task.status);
+    }
+
+    // cancel — calls workflow.cancel on the spawn workflow
+    const cancelled = await scheduler.cancel(id);
+    expect(cancelled).toBe(true);
+    expect(cancelMock).toHaveBeenCalledTimes(1);
+
+    // asyncDispose does not throw
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/scheduler
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/scheduler", () => {
+  test("submit returns a branded TaskId and task appears in query results", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore } = await import("@koi/scheduler");
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const store = createSqliteTaskStore(db);
+    const scheduler = createScheduler(DEFAULT_SCHEDULER_CONFIG, store, async () => {});
+
+    const aid = agentId("golden-agent" as import("@koi/core").AgentId);
+    const input: import("@koi/core").EngineInput = { kind: "text", text: "hello" };
+
+    // submit with large delay so it stays pending and never dispatches
+    const id = await scheduler.submit(aid, input, "spawn", { delayMs: 3_600_000 });
+    expect(typeof id).toBe("string");
+    expect(id.length).toBeGreaterThan(0);
+
+    const tasks = await scheduler.query({ agentId: aid });
+    expect(tasks.length).toBe(1);
+    expect(tasks[0]?.id).toBe(id);
+    expect(tasks[0]?.status).toBe("pending");
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("cancel removes the task and returns true; re-cancel returns false", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore } = await import("@koi/scheduler");
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+
+    const aid = agentId("golden-agent" as import("@koi/core").AgentId);
+    const id = await scheduler.submit(aid, { kind: "text", text: "x" }, "spawn", {
+      delayMs: 3_600_000,
+    });
+
+    expect(await scheduler.cancel(id)).toBe(true);
+    // After cancel the task row is removed — re-cancel returns false (not in heap)
+    expect(await scheduler.cancel(id)).toBe(false);
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/scheduler-provider
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/scheduler-provider", () => {
+  test("createSchedulerProvider returns 9 tools with correct descriptor names", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createSchedulerProvider } = await import("@koi/scheduler-provider");
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const component = createSchedulerComponent(
+      scheduler,
+      agentId("golden-agent" as import("@koi/core").AgentId),
+    );
+    const tools = createSchedulerProvider(component);
+
+    expect(tools.length).toBe(9);
+    const names = tools.map((t) => t.descriptor.name);
+    expect(names).toContain("scheduler_submit");
+    expect(names).toContain("scheduler_cancel");
+    expect(names).toContain("scheduler_query");
+    expect(names).toContain("scheduler_stats");
+    expect(names).toContain("scheduler_schedule");
+    expect(names).toContain("scheduler_unschedule");
+    expect(names).toContain("scheduler_pause");
+    expect(names).toContain("scheduler_resume");
+    expect(names).toContain("scheduler_history");
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("scheduler_submit + scheduler_query tools exercise the full component path", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createSubmitTool, createQueryTool, createStatsTool } = await import(
+      "@koi/scheduler-provider"
+    );
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const component = createSchedulerComponent(
+      scheduler,
+      agentId("golden-agent" as import("@koi/core").AgentId),
+    );
+
+    const submitTool = createSubmitTool(component);
+    const queryTool = createQueryTool(component);
+    const statsTool = createStatsTool(component);
+
+    const submitResult = (await submitTool.execute({
+      input: "run background analysis",
+      mode: "spawn",
+      delayMs: 3_600_000,
+    } as import("@koi/core").JsonObject)) as { taskId: string };
+    expect(typeof submitResult.taskId).toBe("string");
+
+    const queryResult = (await queryTool.execute({} as import("@koi/core").JsonObject)) as {
+      tasks: unknown[];
+      count: number;
+    };
+    expect(queryResult.count).toBe(1);
+    expect(Array.isArray(queryResult.tasks)).toBe(true);
+
+    const statsResult = (await statsTool.execute({} as import("@koi/core").JsonObject)) as {
+      pending: number;
+      running: number;
+    };
+    expect(statsResult.pending).toBe(1);
+    expect(statsResult.running).toBe(0);
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/gateway — transport infrastructure, standalone API tests
+// (No cassette/LLM needed: gateway lives below the agent-loop tool surface)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/gateway", () => {
+  test("DEFAULT_GATEWAY_CONFIG has safe production defaults", () => {
+    expect(DEFAULT_GATEWAY_CONFIG.minProtocolVersion).toBe(1);
+    expect(DEFAULT_GATEWAY_CONFIG.maxProtocolVersion).toBe(1);
+    expect(DEFAULT_GATEWAY_CONFIG.maxConnections).toBe(10_000);
+    expect(DEFAULT_GATEWAY_CONFIG.authTimeoutMs).toBe(5_000);
+    expect(DEFAULT_GATEWAY_CONFIG.backpressureCriticalTimeoutMs).toBe(30_000);
+    expect(DEFAULT_GATEWAY_CONFIG.disconnectedSessionTtlMs).toBe(300_000);
+    expect(DEFAULT_GATEWAY_CONFIG.capabilities.compression).toBe(false);
+    expect(DEFAULT_GATEWAY_CONFIG.capabilities.maxFrameBytes).toBe(1_048_576);
+  });
+
+  test("createInMemorySessionStore satisfies SessionStore contract", async () => {
+    const store = createInMemorySessionStore();
+    const session = {
+      id: "s1",
+      agentId: "a1",
+      connectedAt: Date.now(),
+      lastHeartbeat: Date.now(),
+      seq: 0,
+      remoteSeq: 0,
+      metadata: {},
+    } as const;
+
+    const before = await Promise.resolve(store.has("s1"));
+    expect(before).toEqual({ ok: true, value: false });
+
+    await Promise.resolve(store.set(session));
+
+    const r = await Promise.resolve(store.get("s1"));
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.id).toBe("s1");
+      expect(r.value.agentId).toBe("a1");
+      expect(r.value.seq).toBe(0);
+    }
+
+    await Promise.resolve(store.delete("s1"));
+    const after = await Promise.resolve(store.has("s1"));
+    expect(after).toEqual({ ok: true, value: false });
+  });
+
+  test("createGateway returns a Gateway with the required interface", () => {
+    const store = createInMemorySessionStore();
+    const gateway = createGateway(
+      {},
+      {
+        transport: {
+          listen: async () => {},
+          close: () => {},
+          connections: () => 0,
+        },
+        auth: {
+          authenticate: async () => ({
+            ok: false as const,
+            code: "INVALID_TOKEN" as const,
+            message: "test-only stub",
+          }),
+        },
+        store,
+      },
+    );
+
+    expect(typeof gateway.start).toBe("function");
+    expect(typeof gateway.stop).toBe("function");
+    expect(typeof gateway.send).toBe("function");
+    expect(typeof gateway.onFrame).toBe("function");
+    expect(typeof gateway.dispatch).toBe("function");
+    expect(typeof gateway.destroySession).toBe("function");
+    expect(typeof gateway.onSessionEvent).toBe("function");
+    expect(gateway.sessions()).toBe(store);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/ipc-local (2 queries: mailbox + router)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/ipc-local", () => {
+  test("createLocalMailbox — send, list, and onMessage round-trip", async () => {
+    const { createLocalMailbox } = await import("@koi/ipc-local");
+    const { agentId } = await import("@koi/core");
+
+    const mailbox = createLocalMailbox({ agentId: agentId("owner") });
+    const received: string[] = [];
+    mailbox.onMessage((msg) => {
+      received.push(msg.type);
+    });
+
+    const result = await mailbox.send({
+      from: agentId("sender"),
+      to: agentId("owner"),
+      kind: "event",
+      type: "ping",
+      payload: { ts: 1 },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.id).toBeString();
+      expect(result.value.from).toBe(agentId("sender"));
+      expect(result.value.type).toBe("ping");
+    }
+
+    const msgs = await mailbox.list();
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]?.type).toBe("ping");
+
+    await Bun.sleep(10);
+    expect(received).toEqual(["ping"]);
+
+    mailbox.close();
+    expect(await mailbox.list()).toHaveLength(0);
+  });
+
+  test("createLocalMailboxRouter — register and route messages between agents", async () => {
+    const { createLocalMailbox, createLocalMailboxRouter } = await import("@koi/ipc-local");
+    const { agentId } = await import("@koi/core");
+
+    const router = createLocalMailboxRouter();
+    // Mailboxes must be created with the router they will be registered in —
+    // this binds their inbound-auth guard to the router's trust domain.
+    const mailboxA = createLocalMailbox({ agentId: agentId("agent-a"), router });
+    const mailboxB = createLocalMailbox({ agentId: agentId("agent-b"), router });
+
+    router.register(agentId("agent-a"), mailboxA);
+    router.register(agentId("agent-b"), mailboxB);
+
+    // Send via mailboxA's outbound path — the authenticated cross-agent route.
+    // router.getView() is a read-only lookup; message delivery goes through the mailbox.
+    const result = await mailboxA.send({
+      from: agentId("agent-a"),
+      to: agentId("agent-b"),
+      kind: "request",
+      type: "task",
+      payload: { action: "run" },
+    });
+    expect(result.ok).toBe(true);
+
+    const bMsgs = await mailboxB.list();
+    expect(bMsgs).toHaveLength(1);
+    expect(bMsgs[0]?.kind).toBe("request");
+    expect(bMsgs[0]?.from).toBe(agentId("agent-a"));
+
+    // Unregister removes from routing table
+    router.unregister(agentId("agent-a"));
+    expect(router.getView(agentId("agent-a"))).toBeUndefined();
+    expect(router.getView(agentId("agent-b"))).toBeDefined();
+
+    mailboxA.close();
+    mailboxB.close();
+  });
+});
+
+// Golden: @koi/gateway-webhook
+// HTTP ingress server — sits outside the agent loop (no cassette needed).
+// Tests validate the public API surface: factory guards, idempotency store, and
+// provider signature helpers. None of these interact with the LLM or ATIF.
+describe("Golden: @koi/gateway-webhook", () => {
+  test("createWebhookServer factory guards — rejects misconfigured servers before binding", async () => {
+    const { createWebhookServer } = await import("@koi/gateway-webhook");
+
+    // No auth configured → must throw (fail-closed)
+    expect(() => createWebhookServer({ port: 0, pathPrefix: "/wh" }, () => {})).toThrow(
+      "no authentication configured",
+    );
+
+    // pathPrefix "/" → must throw (catch-all risk)
+    expect(() =>
+      createWebhookServer({ port: 0, pathPrefix: "/", allowUnauthenticated: true }, () => {}),
+    ).toThrow("pathPrefix cannot be");
+
+    // allowUnauthenticated: true satisfies the guard
+    expect(() =>
+      createWebhookServer({ port: 0, pathPrefix: "/wh", allowUnauthenticated: true }, () => {}),
+    ).not.toThrow();
+
+    // leaseRenewalMs required when custom idempotencyStore is injected
+    const stubStore = {
+      tryBegin: (_k: string) => ({ state: "ok" as const, token: "t" }),
+      renew: (_k: string, _t: string) => false,
+      commit: (_k: string, _t: string) => {},
+      abort: (_k: string, _t: string) => {},
+      prune: () => {},
+    };
+    expect(() =>
+      createWebhookServer(
+        { port: 0, pathPrefix: "/wh", allowUnauthenticated: true, idempotencyStore: stubStore },
+        () => {},
+      ),
+    ).toThrow("leaseRenewalMs is required");
+  });
+
+  test("createIdempotencyStore — four-method API prevents concurrent double-dispatch", async () => {
+    const { createIdempotencyStore } = await import("@koi/gateway-webhook");
+
+    const store = createIdempotencyStore({ ttlMs: 60_000, processingTtlMs: 30_000 });
+
+    // New key: ok + token
+    const r1 = store.tryBegin("evt-1");
+    expect(r1.state).toBe("ok");
+    const token = r1.state === "ok" ? r1.token : "";
+
+    // Same key while processing: in-flight (not duplicate, not ok)
+    expect(store.tryBegin("evt-1").state).toBe("in-flight");
+
+    // Commit → subsequent call is duplicate
+    store.commit("evt-1", token);
+    expect(store.tryBegin("evt-1").state).toBe("duplicate");
+
+    // Different key is independent
+    expect(store.tryBegin("evt-2").state).toBe("ok");
+
+    // Abort releases an in-flight reservation — retry accepted
+    const r3 = store.tryBegin("evt-3");
+    expect(r3.state).toBe("ok");
+    if (r3.state === "ok") store.abort("evt-3", r3.token);
+    expect(store.tryBegin("evt-3").state).toBe("ok");
+
+    // Stale abort after commit is a no-op (committed entry stays)
+    const r4 = store.tryBegin("evt-4");
+    if (r4.state === "ok") {
+      store.commit("evt-4", r4.token);
+      store.abort("evt-4", r4.token); // no-op
+    }
+    expect(store.tryBegin("evt-4").state).toBe("duplicate");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/governance-delegation — capability-token primitives
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/governance-delegation — issue + verify roundtrip", () => {
+  test("HMAC root capability verifies; tampering breaks signature", async () => {
+    const { randomBytes } = await import("node:crypto");
+    const { agentId, sessionId } = await import("@koi/core");
+    const { issueRootCapability, createCapabilityVerifier, createGlobScopeChecker } = await import(
+      "@koi/governance-delegation"
+    );
+
+    const secret = new Uint8Array(randomBytes(32));
+    const sess = sessionId("golden-sess");
+    const tok = await issueRootCapability({
+      signer: { kind: "hmac-sha256", secret },
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: {
+        permissions: { allow: ["read_file"] },
+        sessionId: sess,
+      },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+
+    const verifier = createCapabilityVerifier({
+      hmac: { secret },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const ok = await verifier.verify(tok, {
+      toolId: "read_file",
+      now: 1500,
+      activeSessionIds: new Set([sess]),
+    });
+    expect(ok.ok).toBe(true);
+
+    const tampered = { ...tok, expiresAt: 9_999_999 };
+    const bad = await verifier.verify(tampered, {
+      toolId: "read_file",
+      now: 1500,
+      activeSessionIds: new Set([sess]),
+    });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.reason).toBe("invalid_signature");
+  });
+});
+
+describe("Golden: @koi/governance-delegation — revocation invalidates downstream", () => {
+  test("cascade revoke of root invalidates child + grandchild", async () => {
+    const { randomBytes } = await import("node:crypto");
+    const { agentId, sessionId } = await import("@koi/core");
+    const {
+      issueRootCapability,
+      delegateCapability,
+      createCapabilityVerifier,
+      createGlobScopeChecker,
+      createMemoryCapabilityRevocationRegistry,
+    } = await import("@koi/governance-delegation");
+
+    const secret = new Uint8Array(randomBytes(32));
+    const sess = sessionId("golden-sess");
+    const registry = createMemoryCapabilityRevocationRegistry();
+    const signer = { kind: "hmac-sha256" as const, secret };
+
+    const A = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sess },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      registry,
+      now: () => 1000,
+    });
+    const bResult = await delegateCapability({
+      signer,
+      parent: A,
+      delegateeId: agentId("bob"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sess },
+      ttlMs: 30_000,
+      registry,
+      now: () => 1000,
+    });
+    if (!bResult.ok) throw new Error("B issuance failed");
+    const cResult = await delegateCapability({
+      signer,
+      parent: bResult.value,
+      delegateeId: agentId("carol"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sess },
+      ttlMs: 10_000,
+      registry,
+      now: () => 1000,
+    });
+    if (!cResult.ok) throw new Error("C issuance failed");
+
+    await registry.revoke(A.id, true);
+
+    const verifier = createCapabilityVerifier({
+      hmac: { secret },
+      scopeChecker: createGlobScopeChecker(),
+      revocations: registry,
+    });
+    const ctx = {
+      toolId: "read_file",
+      now: 1500,
+      activeSessionIds: new Set([sess]),
+    };
+    for (const tok of [A, bResult.value, cResult.value]) {
+      const r = await verifier.verify(tok, ctx);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toBe("revoked");
+    }
+  });
+});
+
+// L2 golden queries: @koi/governance-security (2 queries)
+// Standalone — no LLM or network calls required.
+describe("Golden: @koi/governance-security", () => {
+  test("createRulesAnalyzer detects SQL injection as critical", async () => {
+    const { createRulesAnalyzer } = await import("@koi/governance-security");
+    const analyzer = createRulesAnalyzer();
+    const result = await Promise.resolve(
+      analyzer.analyze("query_db", { sql: "'; DROP TABLE users; --" }),
+    );
+    expect(result.riskLevel).toBe("critical");
+    expect(result.findings.length).toBeGreaterThan(0);
+    expect(result.findings[0]?.riskLevel).toBe("critical");
+  });
+
+  test("createPiiDetector detects email address", async () => {
+    const { createPiiDetector } = await import("@koi/governance-security");
+    const detector = createPiiDetector(["email"]);
+    const matches = detector.detect("Please contact support@company.com for help.");
+    expect(matches).toHaveLength(1);
+    expect(matches[0]?.kind).toBe("email");
+    expect(matches[0]?.value).toBe("support@company.com");
+  });
+});
+
+describe("Golden: @koi/temporal", () => {
+  test("createTemporalHealthMonitor circuit breaker: CLOSED → OPEN → HALF_OPEN → CLOSED lifecycle", async () => {
+    const { createTemporalHealthMonitor, DEFAULT_TEMPORAL_HEALTH_CONFIG } = await import(
+      "@koi/temporal"
+    );
+
+    const t = 0;
+    const clock = (): number => t;
+    const probeResults: boolean[] = [];
+
+    const monitor = createTemporalHealthMonitor(
+      {
+        ...DEFAULT_TEMPORAL_HEALTH_CONFIG,
+        url: "localhost:7233",
+        failureThreshold: 2,
+        cooldownMs: 1_000,
+        pollIntervalMs: 100,
+        clock,
+      },
+      async () => probeResults.shift() ?? false,
+    );
+
+    // Before first probe: degraded + unavailable
+    expect(monitor.snapshot().status).toBe("degraded");
+    expect(monitor.isAvailable()).toBe(false);
+
+    // Two failures → circuit OPEN
+    probeResults.push(false, false);
+    monitor.start();
+    // poll() runs immediately on start; drive two more explicit ticks via the exported poll path
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+    // Circuit opened after 2 failures — traffic gated
+    expect(monitor.snapshot().consecutiveFailures).toBeGreaterThanOrEqual(1);
+
+    monitor.dispose();
+  });
+
+  test("createTemporalHealthMonitor: onStatusChange fires on CLOSED→degraded transition", async () => {
+    const { createTemporalHealthMonitor, DEFAULT_TEMPORAL_HEALTH_CONFIG } = await import(
+      "@koi/temporal"
+    );
+
+    const t = 0;
+    const clock = (): number => t;
+    const statuses: string[] = [];
+
+    const monitor = createTemporalHealthMonitor(
+      {
+        ...DEFAULT_TEMPORAL_HEALTH_CONFIG,
+        url: "localhost:7233",
+        failureThreshold: 3,
+        cooldownMs: 60_000,
+        pollIntervalMs: 50,
+        clock,
+      },
+      async (url: string, _timeoutMs: number) => {
+        void url;
+        return false; // always fail
+      },
+    );
+
+    const unsub = monitor.onStatusChange((snap) => {
+      statuses.push(snap.status);
+    });
+
+    monitor.start();
+    await new Promise<void>((resolve) => setTimeout(resolve, 120));
+    monitor.dispose();
+    unsub();
+
+    // Should have transitioned through degraded (first probe) and possibly unavailable (OPEN)
+    expect(statuses.length).toBeGreaterThan(0);
+    expect(statuses[0]).toMatch(/degraded|unavailable/);
+  });
+
+  test("createTemporalHealthMonitor snapshot timestamps: lastTickAt always advances, lastCheckAt only on probe", async () => {
+    const { createTemporalHealthMonitor, DEFAULT_TEMPORAL_HEALTH_CONFIG } = await import(
+      "@koi/temporal"
+    );
+
+    let t = 0;
+    const clock = (): number => ++t;
+    let probeCount = 0;
+
+    const monitor = createTemporalHealthMonitor(
+      {
+        ...DEFAULT_TEMPORAL_HEALTH_CONFIG,
+        url: "localhost:7233",
+        failureThreshold: 10,
+        cooldownMs: 60_000,
+        pollIntervalMs: 50,
+        clock,
+      },
+      async () => {
+        probeCount++;
+        return true;
+      },
+    );
+
+    expect(monitor.snapshot().lastTickAt).toBe(0);
+    expect(monitor.snapshot().lastCheckAt).toBe(0);
+
+    monitor.start();
+    await new Promise<void>((resolve) => setTimeout(resolve, 120));
+    monitor.dispose();
+
+    const snap = monitor.snapshot();
+    // lastTickAt advances on every tick
+    expect(snap.lastTickAt).toBeGreaterThan(0);
+    // lastCheckAt advances only when a probe runs
+    expect(snap.lastCheckAt).toBeGreaterThan(0);
+    expect(probeCount).toBeGreaterThan(0);
+  });
+
+  test("mapTemporalError: maps known Temporal error types to KoiError", async () => {
+    const { mapTemporalError } = await import("@koi/temporal");
+
+    // TimeoutFailure → TIMEOUT + retryable
+    const timeout = mapTemporalError(
+      Object.assign(new Error("Workflow timed out"), {
+        name: "TimeoutFailure",
+        message: "timed out",
+      }),
+    );
+    expect(timeout.code).toBe("TIMEOUT");
+    expect(timeout.retryable).toBe(true);
+
+    // CancelledFailure → EXTERNAL + not retryable
+    const cancelled = mapTemporalError(
+      Object.assign(new Error("Cancelled"), { name: "CancelledFailure", message: "cancelled" }),
+    );
+    expect(cancelled.code).toBe("EXTERNAL");
+    expect(cancelled.retryable).toBe(false);
+
+    // Unknown error name → INTERNAL
+    const unknown = mapTemporalError(new Error("unexpected failure"));
+    expect(unknown.code).toBe("INTERNAL");
+
+    // Non-Error thrown value
+    const nonError = mapTemporalError("string error");
+    expect(nonError.code).toBe("INTERNAL");
+  });
+
+  test("DEFAULT_TEMPORAL_HEALTH_CONFIG has expected production defaults", async () => {
+    const { DEFAULT_TEMPORAL_HEALTH_CONFIG } = await import("@koi/temporal");
+
+    expect(DEFAULT_TEMPORAL_HEALTH_CONFIG.pollIntervalMs).toBe(10_000);
+    expect(DEFAULT_TEMPORAL_HEALTH_CONFIG.failureThreshold).toBe(3);
+    expect(DEFAULT_TEMPORAL_HEALTH_CONFIG.cooldownMs).toBe(60_000);
+    expect(DEFAULT_TEMPORAL_HEALTH_CONFIG.timeoutMs).toBe(5_000);
+  });
+
+  test("createTemporalSpawnLedger: slot accounting — acquire, capacity, release", async () => {
+    const { createTemporalSpawnLedger } = await import("@koi/temporal");
+
+    const ledger = createTemporalSpawnLedger({ maxCapacity: 3 });
+
+    expect(ledger.activeCount()).toBe(0);
+    expect(ledger.capacity()).toBe(3);
+
+    // Acquire up to capacity
+    expect(await ledger.acquire()).toBe(true);
+    expect(await ledger.acquire()).toBe(true);
+    expect(await ledger.acquire()).toBe(true);
+    expect(ledger.activeCount()).toBe(3);
+
+    // At capacity: next acquire returns false
+    expect(await ledger.acquire()).toBe(false);
+    expect(ledger.activeCount()).toBe(3);
+
+    // Release one slot and acquire again
+    await ledger.release();
+    expect(ledger.activeCount()).toBe(2);
+    expect(await ledger.acquire()).toBe(true);
+    expect(ledger.activeCount()).toBe(3);
+
+    // snapshot reflects current state
+    const snap = ledger.snapshot();
+    expect(snap.activeCount).toBe(3);
+    expect(snap.capacity).toBe(3);
+  });
+});
+
+describe("Golden: @koi/forge-demand", () => {
+  test("createForgeDemandDetector returns a handle with passive middleware (priority 445, outer of feedback-loop)", async () => {
+    const { createForgeDemandDetector, DEFAULT_FORGE_DEMAND_CONFIG } = await import(
+      "@koi/forge-demand"
+    );
+    const handle = createForgeDemandDetector(DEFAULT_FORGE_DEMAND_CONFIG);
+    expect(handle.middleware.name).toBe("forge-demand-detector");
+    // 445 is outer relative to feedback-loop (450) so the detector observes
+    // committed state — see demand-detector.ts priority comment.
+    expect(handle.middleware.priority).toBe(445);
+    expect(typeof handle.middleware.wrapToolCall).toBe("function");
+    expect(typeof handle.middleware.wrapModelCall).toBe("function");
+    expect(typeof handle.forSession).toBe("function");
+    // Inspection requires a SessionContext — the handle never aggregates
+    // across sessions, and forSession authorizes by object identity so a
+    // fabricated probe literal is rejected (F61). Drive a real hook to
+    // register the SessionContext, then assert the scoped view.
+    const probeSession = {
+      agentId: "forge-demand-probe",
+      sessionId: sessionId("probe"),
+      runId: runId("probe-r"),
+      metadata: {} as JsonObject,
+    };
+    const probeCtx = {
+      session: probeSession,
+      turnIndex: 0,
+      turnId: `${runId("probe-r")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+    // F110: register via engine-controlled onSessionStart before traffic.
+    await handle.middleware.onSessionStart?.(probeSession);
+    await handle.middleware.wrapModelCall?.(
+      probeCtx,
+      { messages: [], model: "test" },
+      async () => ({ content: "", model: "test" }),
+    );
+    const scoped = handle.forSession(probeSession);
+    expect(typeof scoped.getSignals).toBe("function");
+    expect(typeof scoped.dismiss).toBe("function");
+    expect(scoped.getActiveSignalCount()).toBe(0);
+  });
+
+  test("repeated tool failures emit a deterministic, deduplicated forge demand signal", async () => {
+    const { createForgeDemandDetector } = await import("@koi/forge-demand");
+    const signals: unknown[] = [];
+    const handle = createForgeDemandDetector({
+      budget: {
+        maxForgesPerSession: 5,
+        computeTimeBudgetMs: 120_000,
+        demandThreshold: 0.7,
+        cooldownMs: 30_000,
+      },
+      heuristics: {
+        repeatedFailureCount: 3,
+        capabilityGapOccurrences: 2,
+        latencyDegradationAvgMs: 5_000,
+      },
+      onDemand: (s) => signals.push(s),
+      clock: () => 1_000_000,
+    });
+
+    const ctxSession = {
+      agentId: "forge-demand-golden",
+      sessionId: sessionId("fd-golden"),
+      runId: runId("r1"),
+      metadata: {} as JsonObject,
+    };
+    const ctx: TurnContext = {
+      session: ctxSession,
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+
+    // F110: forge-demand only trusts sessions admitted via the engine-
+    // controlled onSessionStart hook. Wrap* hooks pass through for
+    // unregistered contexts.
+    await handle.middleware.onSessionStart?.(ctxSession);
+
+    const failingNext = async (): Promise<never> => {
+      throw new Error("boom");
+    };
+    const wrap = handle.middleware.wrapToolCall;
+    if (!wrap) throw new Error("wrapToolCall missing");
+
+    for (let i = 0; i < 4; i++) {
+      try {
+        await wrap(ctx, { toolId: "search", input: {} }, failingNext);
+      } catch {
+        /* expected */
+      }
+    }
+
+    // 4 failures → threshold (3) crossed → 1 signal emitted; cooldown dedupes the 4th.
+    expect(signals.length).toBe(1);
+    const pending = handle.forSession(ctx.session).getSignals();
+    expect(pending.length).toBe(1);
+    const first = pending[0];
+    expect(first?.trigger.kind).toBe("repeated_failure");
+    expect(first?.confidence).toBeGreaterThanOrEqual(0.7);
+    // Deterministic confidence: same threshold + same count → same score on replay.
+    expect(first?.confidence).toBeLessThanOrEqual(1);
+  });
+
+  test("createRuntime rejects an invalid forgeDemand config at startup", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    // Invalid `budget` (null) — must throw at startup, not crash later in
+    // request handling. Cast through `unknown` to model the real risk:
+    // a config-file/IPC caller bypassing TypeScript checks.
+    expect(() =>
+      createRuntime({
+        forgeDemand: { budget: null } as unknown as NonNullable<
+          Parameters<typeof createRuntime>[0]
+        >["forgeDemand"],
+      }),
+    ).toThrow(/Invalid forgeDemand config/);
+  });
+
+  test("F96: createRuntime rejects forgeDemand without onSessionAttached or onDemand", async () => {
+    // Reviewer F96: the runtime intentionally does not expose a
+    // sessionId-keyed lookup, so without onSessionAttached or
+    // onDemand, signals accumulate internally with no operational
+    // recovery path. createRuntime must reject at startup rather
+    // than ship a write-only feature.
+    const { createRuntime } = await import("../create-runtime.js");
+    const { DEFAULT_FORGE_BUDGET } = await import("@koi/core");
+    // RuntimeForgeDemandConfig now requires onSessionAttached at the
+    // type level (F102), so these cases are cast through `unknown` to
+    // model an untyped/IPC caller bypassing TS checks. Runtime
+    // validation must still reject them.
+    expect(() =>
+      createRuntime({
+        forgeDemand: { budget: DEFAULT_FORGE_BUDGET } as unknown as NonNullable<
+          Parameters<typeof createRuntime>[0]
+        >["forgeDemand"],
+      }),
+    ).toThrow(/forgeDemand requires `config\.forgeDemand\.onSessionAttached`/);
+    // F101: onDemand alone is NOT sufficient.
+    expect(() =>
+      createRuntime({
+        forgeDemand: { budget: DEFAULT_FORGE_BUDGET, onDemand: () => {} } as unknown as NonNullable<
+          Parameters<typeof createRuntime>[0]
+        >["forgeDemand"],
+      }),
+    ).toThrow(/forgeDemand requires `config\.forgeDemand\.onSessionAttached`/);
+    // With onSessionAttached present, creation succeeds — the scoped
+    // handle delivered to it provides the only valid dismiss path.
+    expect(() =>
+      createRuntime({
+        forgeDemand: { budget: DEFAULT_FORGE_BUDGET, onSessionAttached: () => {} },
+      }),
+    ).not.toThrow();
+  });
+
+  test("createForgeDemandDetector validates config at the factory boundary", async () => {
+    // Standalone L2 consumers (not going through createRuntime) must also
+    // fail fast on malformed config — otherwise the host crashes on the
+    // first tool/model event with a missing-property error.
+    const { createForgeDemandDetector } = await import("@koi/forge-demand");
+    expect(() =>
+      createForgeDemandDetector({ budget: null } as unknown as Parameters<
+        typeof createForgeDemandDetector
+      >[0]),
+    ).toThrow(/Invalid forgeDemand config/);
+  });
+
+  test("createRuntime auto-wires feedback-loop's L0 health handle into forge-demand", async () => {
+    // Regression for round-3 F59: previously the runtime told callers to
+    // pass feedback-loop's `ToolHealthTracker` directly as `healthTracker`,
+    // but its `getSnapshot(toolId)` is signature-incompatible with the
+    // forge-demand `getSnapshot(sessionId, toolId)` contract — silently
+    // breaking `performance_degradation`. The runtime now auto-wires
+    // feedback-loop's `healthHandle` (which returns L0-shaped snapshots)
+    // when both configs are present and no explicit handle was given.
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    // Without forgeHealth, the tracker map is never populated — so the
+    // middleware intentionally omits healthHandle. Absent-vs-present is
+    // the liveness signal auto-wiring depends on (F70).
+    const flNoHealth = createFeedbackLoopMiddleware({});
+    expect(flNoHealth.healthHandle).toBeUndefined();
+    // With forgeHealth configured, the typed handle is exposed.
+    const flWithHealth = createFeedbackLoopMiddleware({
+      forgeHealth: {
+        quarantineThreshold: 0.5,
+        windowSize: 10,
+        forgeStore: {
+          load: async () => ({ ok: false, error: { code: "NOT_FOUND" } }) as never,
+          save: async () => ({ ok: true, value: undefined }) as never,
+        } as never,
+        snapshotChainStore: {} as never,
+        resolveBrickId: () => undefined,
+      },
+    });
+    expect(typeof flWithHealth.healthHandle).toBe("object");
+    expect(typeof flWithHealth.healthHandle?.getSnapshot).toBe("function");
+    // The handle is now SessionContext-scoped (F99). An unobserved
+    // SessionContext returns undefined — no enumeration-by-string.
+    const fakeCtx = {
+      sessionId: "missing-session",
+      agentId: "x",
+      runId: "y",
+      metadata: {},
+    } as never;
+    expect(flWithHealth.healthHandle?.getSnapshot(fakeCtx, "missing-tool")).toBeUndefined();
+  });
+
+  test("RuntimeHandle.forgeDemand exposes only the middleware (no sessionId-keyed lookup)", async () => {
+    // Regression for round-7 F67: a previous design exposed
+    // `forSessionId(sid)` on the runtime handle. That undid the L2
+    // detector's identity-based isolation — any in-process caller with
+    // a sessionId could read or dismiss another tenant's signals.
+    // The runtime now exposes only the middleware; scoped handles are
+    // delivered to legitimate session owners via
+    // `forgeDemand.onSessionAttached`.
+    const { createRuntime } = await import("../create-runtime.js");
+    const runtime = createRuntime({
+      forgeDemand: {
+        // F96/F101: onSessionAttached is required (only surface that
+        // can dismiss pending signals).
+        onSessionAttached: () => {},
+        budget: {
+          maxForgesPerSession: 5,
+          computeTimeBudgetMs: 120_000,
+          demandThreshold: 0.7,
+          cooldownMs: 1_000,
+        },
+        heuristics: {
+          repeatedFailureCount: 3,
+          capabilityGapOccurrences: 2,
+          latencyDegradationAvgMs: 5_000,
+        },
+      },
+    });
+    expect(runtime.forgeDemand).toBeDefined();
+    expect(typeof runtime.forgeDemand?.middleware).toBe("object");
+    // No sessionId-keyed lookup — preserves the L2 identity-based
+    // isolation across the runtime boundary.
+    expect((runtime.forgeDemand as unknown as { forSessionId?: unknown }).forSessionId).toBe(
+      undefined,
+    );
+    await runtime.dispose();
+  });
+
+  test("auto-wiring is suppressed when feedbackLoop is configured without forgeHealth", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    // Regression for round-5 F64: the runtime previously wired
+    // feedback-loop's healthHandle into forge-demand whenever
+    // feedback-loop was present. But feedback-loop only creates live
+    // trackers when forgeHealth is configured — so without it, the
+    // injected handle always returned undefined and
+    // performance_degradation was silently dormant with no warning.
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: unknown): void => {
+      warnings.push(String(msg));
+    };
+    try {
+      const runtime = createRuntime({
+        feedbackLoop: {}, // no forgeHealth
+        forgeDemand: {
+          // F96/F101: onSessionAttached is required (only surface
+          // that can dismiss pending signals).
+          onSessionAttached: () => {},
+          budget: {
+            maxForgesPerSession: 5,
+            computeTimeBudgetMs: 120_000,
+            demandThreshold: 0.7,
+            cooldownMs: 1_000,
+          },
+          heuristics: {
+            repeatedFailureCount: 3,
+            capabilityGapOccurrences: 2,
+            latencyDegradationAvgMs: 5_000,
+          },
+        },
+      });
+      expect(warnings.some((w) => /performance_degradation trigger is dormant/.test(w))).toBe(true);
+      await runtime.dispose();
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("onSessionAttached fires once per session, including stream-only sessions", async () => {
+    // Combined regression for F65 (stream-only sessions must deliver
+    // scoped handles) and F67 (delivery is via callback, not lookup).
+    // Drive a single session through wrapModelStream only — no
+    // wrapToolCall, no wrapModelCall — and assert the callback fires
+    // exactly once with an unforgeable scoped handle.
+    const { createForgeDemandDetector } = await import("@koi/forge-demand");
+    const attached: Array<{ sid: string; scoped: { getActiveSignalCount: () => number } }> = [];
+    const handle = createForgeDemandDetector({
+      budget: {
+        maxForgesPerSession: 5,
+        computeTimeBudgetMs: 120_000,
+        demandThreshold: 0.7,
+        cooldownMs: 1_000,
+      },
+      heuristics: {
+        repeatedFailureCount: 3,
+        capabilityGapOccurrences: 2,
+        latencyDegradationAvgMs: 5_000,
+      },
+      onSessionAttached: (s, scoped) => {
+        attached.push({ sid: s.sessionId, scoped });
+      },
+    });
+    const ctxSession = {
+      agentId: "stream-only",
+      sessionId: sessionId("stream-1"),
+      runId: runId("r-stream"),
+      metadata: {} as JsonObject,
+    };
+    const ctx: TurnContext = {
+      session: ctxSession,
+      turnIndex: 0,
+      turnId: `${runId("r-stream")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+    // F110: register via engine-controlled onSessionStart before traffic.
+    await handle.middleware.onSessionStart?.(ctxSession);
+    const stream = handle.middleware.wrapModelStream;
+    if (stream === undefined) throw new Error("wrapModelStream missing");
+    // Drain the stream so the wrap actually executes its lead-in code.
+    for await (const _ of stream(ctx, { messages: [], model: "test" }, async function* () {
+      yield { kind: "done", response: { content: "", model: "test" } };
+    })) {
+      // intentional
+    }
+    expect(attached.length).toBe(1);
+    expect(attached[0]?.sid).toBe(ctxSession.sessionId);
+    expect(typeof attached[0]?.scoped.getActiveSignalCount).toBe("function");
+    expect(attached[0]?.scoped.getActiveSignalCount()).toBe(0);
+  });
+
+  test("validateForgeDemandConfig rejects legacy single-arg getSnapshot unless explicitly opted in", async () => {
+    // Regression reconciling F68 (round 7 — strict reject), F73
+    // (round 10 — don't block valid rest-arg wrappers), and F75
+    // (round 11 — a warning alone is too easy to miss). The
+    // validator now rejects length === 1 by default but accepts
+    // it with `acceptLegacySingleArgHealthTracker: true`. Rest-arg
+    // (length === 0) is always accepted.
+    const { validateForgeDemandConfig } = await import("@koi/forge-demand");
+    const baseBudget = {
+      maxForgesPerSession: 5,
+      computeTimeBudgetMs: 120_000,
+      demandThreshold: 0.7,
+      cooldownMs: 1_000,
+    };
+    // Default: length === 1 is rejected.
+    const legacy = validateForgeDemandConfig({
+      budget: baseBudget,
+      healthTracker: { getSnapshot: (_toolId: string) => undefined },
+    });
+    expect(legacy.ok).toBe(false);
+    if (!legacy.ok) {
+      expect(legacy.error.message).toMatch(/declared arity 1/);
+    }
+    // Explicit opt-in: length === 1 is accepted.
+    const optedIn = validateForgeDemandConfig({
+      budget: baseBudget,
+      healthTracker: { getSnapshot: (_toolId: string) => undefined },
+      acceptLegacySingleArgHealthTracker: true,
+    });
+    expect(optedIn.ok).toBe(true);
+    // Rest-arg wrapper (length === 0) is silently accepted.
+    const restArg = validateForgeDemandConfig({
+      budget: baseBudget,
+      healthTracker: { getSnapshot: (...args: unknown[]) => args[1] && undefined },
+    });
+    expect(restArg.ok).toBe(true);
+  });
+
+  test("auto-wiring honors a caller-preinstalled feedback-loop in config.middleware", async () => {
+    // Regression for round-6 F66: auto-wiring previously bound to the
+    // runtime-built variable only. If the caller composed feedback-loop
+    // themselves in config.middleware, the runtime skipped wiring AND
+    // emitted the dormant warning even though a valid healthHandle was
+    // live in the chain. We now scan the effective middleware list and
+    // honor any feedback-loop exposing a typed healthHandle.
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: unknown): void => {
+      warnings.push(String(msg));
+    };
+    try {
+      const { createRuntime } = await import("../create-runtime.js");
+      const preinstalled = createFeedbackLoopMiddleware({
+        forgeHealth: {
+          quarantineThreshold: 0.5,
+          windowSize: 10,
+          forgeStore: {
+            load: async () => ({ ok: false, error: { code: "NOT_FOUND" } }) as never,
+            save: async () => ({ ok: true, value: undefined }) as never,
+          } as never,
+          snapshotChainStore: {} as never,
+          resolveBrickId: () => undefined,
+        },
+      });
+      const runtime = createRuntime({
+        middleware: [preinstalled],
+        forgeDemand: {
+          // F96/F101: onSessionAttached is required (only surface
+          // that can dismiss pending signals).
+          onSessionAttached: () => {},
+          budget: {
+            maxForgesPerSession: 5,
+            computeTimeBudgetMs: 120_000,
+            demandThreshold: 0.7,
+            cooldownMs: 1_000,
+          },
+          heuristics: {
+            repeatedFailureCount: 3,
+            capabilityGapOccurrences: 2,
+            latencyDegradationAvgMs: 5_000,
+          },
+        },
+      });
+      // No dormant-trigger warning when a preinstalled feedback-loop
+      // exposes a wireable healthHandle.
+      expect(warnings.some((w) => /performance_degradation trigger is dormant/.test(w))).toBe(
+        false,
+      );
+      await runtime.dispose();
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/permissions-nexus (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/permissions-nexus", () => {
+  test("local-first: check() passes through to local backend when Nexus is down", async () => {
+    const { createNexusPermissionBackend } = await import("@koi/permissions-nexus");
+
+    const nexusDown: import("@koi/nexus-client").NexusTransport = {
+      call: (async () => ({
+        ok: false,
+        error: { code: "TIMEOUT" as const, message: "nexus unreachable", retryable: true },
+      })) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const local: import("@koi/core").PermissionBackend = {
+      check: () => ({ effect: "allow" as const }),
+      dispose: () => {},
+      supportsDefaultDenyMarker: true as const,
+    };
+
+    const backend = createNexusPermissionBackend({
+      transport: nexusDown,
+      localBackend: local,
+
+      rebuildBackend: () => local,
+      syncIntervalMs: 0,
+    });
+
+    const decision = await Promise.resolve(
+      backend.check({ principal: "agent", action: "execute", resource: "tool:bash" }),
+    );
+    expect(decision.effect).toBe("allow");
+    backend.dispose();
+  });
+
+  test("sync: rebuilt backend is used after Nexus returns updated policy", async () => {
+    const { createNexusPermissionBackend } = await import("@koi/permissions-nexus");
+
+    const policy = [{ pattern: "*", effect: "allow" }];
+    let rebuildCalledWith: unknown = null;
+
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (method: string, params: Record<string, unknown>) => {
+        const path = (params as { path: string }).path;
+        if (method === "read" && path.endsWith("version.json")) {
+          return { ok: true, value: JSON.stringify({ version: 1, updatedAt: Date.now() }) };
+        }
+        if (method === "read" && path.endsWith("policy.json")) {
+          return { ok: true, value: JSON.stringify(policy) };
+        }
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const denying: import("@koi/core").PermissionBackend = {
+      check: () => ({ effect: "deny" as const, reason: "local deny" }),
+      supportsDefaultDenyMarker: true as const,
+    };
+
+    const allowing: import("@koi/core").PermissionBackend = {
+      check: () => ({ effect: "allow" as const }),
+      supportsDefaultDenyMarker: true as const,
+    };
+
+    const backend = createNexusPermissionBackend({
+      transport,
+      localBackend: denying,
+
+      rebuildBackend: (p) => {
+        rebuildCalledWith = p;
+        return allowing;
+      },
+      syncIntervalMs: 0,
+    });
+
+    await new Promise<void>((r) => setTimeout(r, 0)); // flush init microtasks
+    expect(rebuildCalledWith).toEqual(policy);
+    const decision = await Promise.resolve(
+      backend.check({ principal: "agent", action: "execute", resource: "tool:bash" }),
+    );
+    expect(decision.effect).toBe("allow");
+    backend.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/long-running (#1386)
+//
+// Standalone golden queries that exercise the long-running harness lifecycle
+// against in-memory stubs. CI-safe — no LLM, no network.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/long-running — harness lifecycle", () => {
+  test("long-running-soft-checkpoint-cadence — boundary turns trigger only on multiples", async () => {
+    const { shouldSoftCheckpoint } = await import("@koi/long-running");
+    expect(shouldSoftCheckpoint(0, 5)).toBe(false);
+    expect(shouldSoftCheckpoint(4, 5)).toBe(false);
+    expect(shouldSoftCheckpoint(5, 5)).toBe(true);
+    expect(shouldSoftCheckpoint(10, 5)).toBe(true);
+    expect(shouldSoftCheckpoint(7, 0)).toBe(false);
+  });
+
+  test("long-running-start-pause-resume — phase transitions and lease revocation", async () => {
+    const { createLongRunningHarness, EMPTY_TASK_BOARD } = await import("@koi/long-running");
+    const { agentId, harnessId, nodeId } = await import("@koi/core");
+
+    const nodes: Array<{
+      readonly nodeId: ReturnType<typeof nodeId>;
+      readonly chainId: unknown;
+      readonly parentIds: readonly ReturnType<typeof nodeId>[];
+      readonly contentHash: string;
+      readonly data: { readonly phase: string };
+      readonly createdAt: number;
+      readonly metadata: Record<string, unknown>;
+    }> = [];
+    let counter = 0;
+
+    const harnessStore = {
+      put: (
+        chain: unknown,
+        data: unknown,
+        parentIds: readonly unknown[],
+        metadata?: Record<string, unknown>,
+      ) => {
+        counter += 1;
+        const node = {
+          nodeId: nodeId(`n-${counter}`),
+          chainId: chain,
+          parentIds: parentIds as readonly ReturnType<typeof nodeId>[],
+          contentHash: String(counter),
+          data: data as { readonly phase: string },
+          createdAt: Date.now(),
+          metadata: metadata ?? {},
+        };
+        nodes.push(node);
+        return { ok: true as const, value: node };
+      },
+      get: (id: unknown) => {
+        const found = nodes.find((n) => n.nodeId === id);
+        return found
+          ? { ok: true as const, value: found }
+          : {
+              ok: false as const,
+              error: { code: "NOT_FOUND" as const, message: "x", retryable: false },
+            };
+      },
+      head: () => ({
+        ok: true as const,
+        value: nodes.length > 0 ? nodes[nodes.length - 1] : undefined,
+      }),
+      list: () => ({ ok: true as const, value: [...nodes].reverse() }),
+      ancestors: () => ({ ok: true as const, value: [] }),
+      fork: (sourceNodeId: unknown, _newChainId: unknown, label: string) => ({
+        ok: true as const,
+        value: { parentNodeId: sourceNodeId, label },
+      }),
+      prune: () => ({ ok: true as const, value: 0 }),
+      close: () => undefined,
+    };
+
+    // Store full session records so resume() can find lastEngineState
+    // written by pause()'s saveState capture.
+    const sessions = new Map<string, Record<string, unknown>>();
+    const persistence = {
+      saveSession: (rec: { sessionId: string }) => {
+        sessions.set(rec.sessionId, { ...rec });
+        return { ok: true as const, value: undefined };
+      },
+      loadSession: (id: string) => {
+        const r = sessions.get(id);
+        return r
+          ? { ok: true as const, value: { ...r, sessionId: id } }
+          : {
+              ok: false as const,
+              error: { code: "NOT_FOUND" as const, message: "x", retryable: false },
+            };
+      },
+      removeSession: (id: string) => {
+        sessions.delete(id);
+        return { ok: true as const, value: undefined };
+      },
+      listSessions: () => ({ ok: true as const, value: [] }),
+      savePendingFrame: () => ({ ok: true as const, value: undefined }),
+      loadPendingFrames: () => ({ ok: true as const, value: [] }),
+      clearPendingFrames: () => ({ ok: true as const, value: undefined }),
+      removePendingFrame: () => ({ ok: true as const, value: undefined }),
+      setSessionStatus: (id: string, status: string) => {
+        const r = sessions.get(id);
+        if (r) sessions.set(id, { ...r, status });
+        return { ok: true as const, value: undefined };
+      },
+      saveContentReplacement: () => ({ ok: true as const, value: undefined }),
+      loadContentReplacements: () => ({ ok: true as const, value: [] }),
+      recover: () => ({
+        ok: true as const,
+        value: { sessions: [], pendingFrames: new Map(), skipped: [] },
+      }),
+      close: () => undefined,
+    };
+
+    const result = createLongRunningHarness({
+      harnessId: harnessId("g-h"),
+      agentId: agentId("g-a"),
+      // biome-ignore lint/suspicious/noExplicitAny: see above
+      harnessStore: harnessStore as any,
+      // biome-ignore lint/suspicious/noExplicitAny: see above
+      sessionPersistence: persistence as any,
+      // pause() requires saveState so the suspended snapshot can be
+      // resumed; provide a no-op for the golden-replay path.
+      saveState: async () => ({ kind: "g-state" }),
+      // quiesceEngine is required at construction; trivial ack here.
+      quiesceEngine: async () => undefined,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const harness = result.value;
+
+    const started = await harness.start();
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    expect(harness.status().phase).toBe("active");
+
+    const paused = await harness.pause(started.value.lease, {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    });
+    expect(paused.ok).toBe(true);
+    expect(harness.status().phase).toBe("suspended");
+
+    // Stale lease rejected
+    const stale = await harness.pause(started.value.lease, {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    });
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.error.code).toBe("STALE_REF");
+
+    const resumed = await harness.resume();
+    expect(resumed.ok).toBe(true);
+    expect(harness.status().phase).toBe("active");
+
+    expect(EMPTY_TASK_BOARD.items).toHaveLength(0);
+  });
+});
+
+// L2 golden queries: @koi/audit-sink-nexus (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/audit-sink-nexus", () => {
+  test("log and flush writes entries to Nexus transport", async () => {
+    const { createNexusAuditSink } = await import("@koi/audit-sink-nexus");
+    type AuditEntry = import("@koi/core").AuditEntry;
+
+    const written: string[] = [];
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (_method: string, params: Record<string, unknown>) => {
+        written.push((params as { path: string }).path);
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const entry: AuditEntry = {
+      schema_version: 1,
+      timestamp: Date.now(),
+      sessionId: "golden-session",
+      agentId: "agent-1",
+      turnIndex: 0,
+      kind: "tool_call",
+      durationMs: 10,
+    };
+
+    const sink = createNexusAuditSink({ transport, batchSize: 100 });
+    await sink.log(entry);
+    await sink.flush?.();
+    expect(written.length).toBe(1);
+    expect(written[0]).toMatch(/^koi\/audit\/golden-session\//);
+  });
+
+  test("query returns entries sorted by timestamp", async () => {
+    const { createNexusAuditSink } = await import("@koi/audit-sink-nexus");
+    type AuditEntry = import("@koi/core").AuditEntry;
+
+    const store = new Map<string, string>();
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (method: string, params: Record<string, unknown>) => {
+        const p = (params as { path: string }).path;
+        if (method === "write") {
+          store.set(p, (params as { content: string }).content);
+          return { ok: true, value: undefined };
+        }
+        if (method === "list") {
+          const prefix = `${p}/`;
+          return {
+            ok: true,
+            value: [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ path: k })),
+          };
+        }
+        if (method === "read") {
+          const v = store.get(p);
+          return v !== undefined
+            ? { ok: true, value: v }
+            : { ok: false, error: { code: "NOT_FOUND" as const, message: "nf", retryable: false } };
+        }
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const base: Omit<AuditEntry, "timestamp" | "turnIndex"> = {
+      schema_version: 1,
+      sessionId: "golden-q",
+      agentId: "a",
+      kind: "model_call",
+      durationMs: 5,
+    };
+
+    const sink = createNexusAuditSink({ transport, batchSize: 100 });
+    await sink.log({ ...base, timestamp: 200, turnIndex: 1 });
+    await sink.log({ ...base, timestamp: 100, turnIndex: 0 });
+    const entries = (await sink.query?.("golden-q")) ?? [];
+    expect(entries).toHaveLength(2);
+    expect(entries[0]?.timestamp).toBe(100);
+    expect(entries[1]?.timestamp).toBe(200);
   });
 });

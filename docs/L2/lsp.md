@@ -76,15 +76,21 @@ const tools = createLspTools(client, "typescript");
 
 ### Component provider (recommended for TUI/runtime)
 
+`servers` is optional — omit it when using `autoDetect: true` alone (#2005):
+
 ```typescript
 import { createLspComponentProvider } from "@koi/lsp";
 
+// Explicit servers
 const result = await createLspComponentProvider({
   servers: [
     { name: "ts", command: "typescript-language-server", args: ["--stdio"], rootUri: "file:///project" },
     { name: "py", command: "pyright-langserver", args: ["--stdio"], rootUri: "file:///project" },
   ],
 });
+
+// Auto-detect only — servers may be omitted entirely
+const result2 = await createLspComponentProvider({ autoDetect: true });
 
 // result.provider: ComponentProvider (attach to agent)
 // result.failures: LspServerFailure[] (servers that failed to start)

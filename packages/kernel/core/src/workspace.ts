@@ -71,6 +71,41 @@ export interface WorkspaceBackend {
   ) => Promise<Result<WorkspaceInfo, KoiError>>;
   readonly dispose: (workspaceId: WorkspaceId) => Promise<Result<void, KoiError>>;
   readonly isHealthy: (workspaceId: WorkspaceId) => boolean | Promise<boolean>;
+  /**
+   * Optional: scan for workspaces previously created for this agent (e.g. after process restart).
+   * Returns all survivors sorted newest-first so callers can try them in order and fall back to
+   * older candidates when the newest is unhealthy or setup-incomplete.
+   * Empty array (or absent method) means no survivors found.
+   */
+  readonly findByAgentId?: (agentId: AgentId) => Promise<ReadonlyArray<WorkspaceInfo>>;
+  /**
+   * Optional: durably record that setup (postCreate) completed for this workspace.
+   * Backends should use storage that workspace-process code cannot spoof (e.g. git refs).
+   * If absent, callers fall back to a filesystem marker which may be writable by the agent process.
+   */
+  readonly attestSetupComplete?: (wsId: WorkspaceId) => Promise<void>;
+  /**
+   * Optional: verify that setup attestation exists for this workspace.
+   * Pair with attestSetupComplete — if one is absent, both are absent.
+   */
+  readonly verifySetupComplete?: (wsId: WorkspaceId) => Promise<boolean>;
+  /**
+   * Optional: remove any existing setup attestation for this workspace.
+   * Must be implemented alongside attestSetupComplete/verifySetupComplete.
+   * Called before re-running postCreate on a crash survivor so that a mid-repair crash
+   * leaves the workspace unattested (preventing stale "setup complete" resurrection).
+   */
+  readonly invalidateSetupComplete?: (wsId: WorkspaceId) => Promise<void>;
+  /**
+   * Optional: check whether a workspace resource still exists as a physical entity, independent
+   * of whether it is healthy or in the expected state. Distinct from isHealthy — a workspace
+   * can exist (worktree on disk, container present) while being unhealthy (branch drifted,
+   * process crashed). Used as a post-disposal liveness oracle: if disposal fails, a backend
+   * with exists() can confirm the resource is truly gone before the caller proceeds to create
+   * a fresh workspace. When absent, callers fall back to isHealthy() which may produce false
+   * negatives for unhealthy-but-present resources on unsandboxed backends.
+   */
+  readonly exists?: (wsId: WorkspaceId) => boolean | Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------

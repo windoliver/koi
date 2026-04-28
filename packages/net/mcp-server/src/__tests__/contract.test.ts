@@ -85,6 +85,7 @@ function createMockMailbox(): MailboxComponent {
     }),
     onMessage: () => () => {},
     list: mock(async () => messages),
+    drain: () => [],
   };
 }
 
@@ -230,12 +231,13 @@ describe("tools/list", () => {
       },
     });
     const result = await client.listTools();
-    // 1 agent tool + 7 platform tools
-    expect(result.tools).toHaveLength(8);
+    // 1 agent tool + 8 platform tools
+    expect(result.tools).toHaveLength(9);
     const names = result.tools.map((t) => t.name);
     expect(names).toContain("read_file");
     expect(names).toContain("koi_send_message");
     expect(names).toContain("koi_list_messages");
+    expect(names).toContain("koi_list_mailbox");
     expect(names).toContain("koi_list_tasks");
     expect(names).toContain("koi_get_task");
     expect(names).toContain("koi_update_task");
@@ -254,10 +256,11 @@ describe("tools/list", () => {
       },
     });
     const result = await client.listTools();
-    expect(result.tools).toHaveLength(2);
+    expect(result.tools).toHaveLength(3);
     const names = result.tools.map((t) => t.name);
     expect(names).toContain("koi_send_message");
     expect(names).toContain("koi_list_messages");
+    expect(names).toContain("koi_list_mailbox");
     await server.stop();
   });
 
@@ -461,6 +464,7 @@ describe("tools/call — platform tools", () => {
     const result = await client.callTool({ name: "koi_list_agents", arguments: {} });
     // Verify visibility context was passed
     expect(registry.list).toHaveBeenCalledTimes(1);
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const [, visibility] = (registry.list as ReturnType<typeof mock>).mock.calls[0]!;
     expect(visibility).toEqual({ callerId: CALLER_ID });
     // Verify lean projection
@@ -480,8 +484,8 @@ describe("server lifecycle", () => {
       transport: serverTransport,
       platform: { callerId: CALLER_ID, mailbox: createMockMailbox() },
     });
-    // 2 agent tools + 2 mailbox platform tools
-    expect(server.toolCount()).toBe(4);
+    // 2 agent tools + 3 mailbox platform tools (send + list + drain)
+    expect(server.toolCount()).toBe(5);
     await server.stop();
   });
 

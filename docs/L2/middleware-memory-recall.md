@@ -1,5 +1,9 @@
 # @koi/middleware-memory-recall — Frozen Snapshot + Live Delta
 
+## Recent updates
+
+**Confidence display rounding fix (#1966)**: the relevance selector and format path now use `Math.floor(confidence * 10) / 10` when rendering confidence in formatted memory output. Previously `0.95` rounded to `"1.0"` via JavaScript's default `toFixed(1)` banker's rounding, making heuristic-scored memories appear identically trusted to author-declared ones in the injected prompt. The fix floors — `0.95` now displays as `"0.9"`, and `1.0` is reserved for genuinely full-trust records.
+
 `@koi/middleware-memory-recall` is an L2 middleware that injects persisted
 memories into every model call using a two-layer strategy: a **frozen snapshot**
 prepended once per session (prefix-cache stable) plus a **live delta** appended

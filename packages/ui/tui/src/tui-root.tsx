@@ -16,7 +16,17 @@
 import type { KeyEvent, SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import type { JSX } from "solid-js";
-import { Show, Switch, Match, createEffect, createMemo, createSignal, on, useContext } from "solid-js";
+import {
+  Show,
+  Switch,
+  Match,
+  createEffect,
+  createMemo,
+  createSignal,
+  on,
+  onCleanup,
+  useContext,
+} from "solid-js";
 import type { Accessor } from "solid-js";
 import type { ApprovalDecision } from "@koi/core/middleware";
 import { COMMAND_DEFINITIONS, type CommandDef } from "./commands/command-definitions.js";
@@ -46,11 +56,11 @@ import type {
   TuiModal,
   TuiView,
 } from "./state/types.js";
-import { copyToClipboard } from "./utils/clipboard.js";
 import {
   StoreContext,
   useTuiStore,
 } from "./store-context.js";
+import { isBelowOsc52Limit } from "./utils/clipboard.js";
 
 // ---------------------------------------------------------------------------
 // Nav command routing
@@ -250,10 +260,22 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   // primitive property changes in large state objects. Use a dedicated signal
   // that's explicitly updated via store subscription.
   const [viewSignal, setViewSignal] = createSignal(activeView());
-  store.subscribe(() => {
-    const current = store.getState().activeView;
-    setViewSignal((prev) => (prev === current ? prev : current));
-  });
+  // Critical: this is the sole production store subscriber and it drives the
+  // view-sync signal the renderer reads. If it throws, the TUI loses its
+  // refresh path — escalate to fatal teardown via the store's onFatal hook
+  // instead of leaving a silent dead UI (#1940).
+  const unsubscribeViewSync = store.subscribe(
+    () => {
+      const current = store.getState().activeView;
+      setViewSignal((prev) => (prev === current ? prev : current));
+    },
+    { critical: true },
+  );
+  // Restartable createTuiApp.stop() / start() cycles must not leak this
+  // subscription. Without cleanup, a stale callback from a previous mount
+  // would still be flagged critical and could escalate the new instance to
+  // fatal teardown on a later dispatch.
+  onCleanup(unsubscribeViewSync);
 
   const hasModal = () => modal() !== null;
 
@@ -315,7 +337,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         // copy-on-select in MessageList.
         const sel = renderer.getSelection();
         const text = sel?.getSelectedText();
-        if (text && text.length > 0 && copyToClipboard(text)) {
+        if (text && text.length > 0 && process.stdout.isTTY && isBelowOsc52Limit(text) && renderer.copyToClipboardOSC52(text)) {
           renderer.clearSelection();
           // clearSelection() doesn't emit a null selection event, so
           // MessageList's onSelectionEnd never fires. Dispatch resume_follow
@@ -577,6 +599,8 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
             prompt={m().prompt}
             onRespond={props.onPermissionRespond}
             focused={true}
+            terminalWidth={terminalDimensions().width}
+            terminalHeight={terminalDimensions().height}
           />
         )}
       </Show>

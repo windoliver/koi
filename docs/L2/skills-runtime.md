@@ -446,6 +446,86 @@ system prompt. The passthrough guard uses reference equality
 (`injected !== request`) on the `ModelRequest` object, which avoids a second
 `sortedSkills()` call per hook invocation.
 
+## Progressive Mode
+
+By default the provider eagerly loads every skill body into `systemPrompt` at session start.
+Progressive mode keeps the same startup I/O (both modes call `loadAll()` for full validation and
+blocked-skill visibility in `AttachResult.skipped`), but dramatically reduces **per-call token cost**:
+instead of concatenating full bodies into `systemPrompt` on every model call, the middleware injects
+a compact `<available_skills>` XML block (~100 tokens). Skill bodies are loaded from the LRU cache
+only when the model explicitly invokes the `Skill` tool.
+
+### Phase 1 — Discovery (session start, ~100 tokens per model call)
+
+```typescript
+import { createProgressiveSkillProvider, createSkillInjectorMiddleware } from "@koi/skills-runtime";
+import { createSkillTool } from "@koi/skill-tool";
+
+// createProgressiveSkillProvider bundles session-snapshot pinning automatically.
+// Use this instead of createSkillProvider(..., { progressive: true }) — the latter
+// requires you to manually wrap the runtime with createProgressivePinnedRuntime()
+// and pass the same pinned runtime to both the provider and the Skill tool.
+const { provider, pinnedRuntime } = createProgressiveSkillProvider(createSkillsRuntime());
+
+const ref: { current?: Agent } = {};
+const mw = createSkillInjectorMiddleware({ agent: () => ref.current!, progressive: true });
+const skillTool = await createSkillTool({ resolver: pinnedRuntime, signal: new AbortController().signal });
+
+const koi = await createKoi({ providers: [provider], middleware: [mw], tools: [skillTool.value] });
+ref.current = koi.agent;
+```
+
+The middleware injects an `<available_skills>` XML block into `systemPrompt` instead of concatenated bodies:
+
+```xml
+<available_skills>
+  <skill name="commit" description="Generate a conventional commit message from staged changes." />
+  <skill name="review" description="Review a pull request for correctness and style." />
+</available_skills>
+```
+
+### Phase 2 — Invocation (on-demand, ~2–5K tokens per skill)
+
+The model calls `Skill({ skill: "commit" })`. The `@koi/skill-tool` handler calls `runtime.load("commit")`,
+returns the full body as a tool result, and the LRU cache (bounded by `cacheMaxBodies`) serves
+subsequent invocations without a disk read.
+
+### Token savings
+
+| Metric | Eager (default) | Progressive |
+|--------|----------------|-------------|
+| Startup I/O | loadAll() (both modes equal) | loadAll() (both modes equal) |
+| systemPrompt tokens per call | ~30K (10 × 3K bodies) | ~100 (XML metadata only) |
+| Cost per turn | 30K × N turns | 100 × N turns |
+| Body token cost | injected at every turn | 3K when Skill() called |
+
+### Fork-mode skills
+
+Skills with `executionMode: "fork"` require a `spawnFn` to execute. In progressive mode, the
+middleware excludes them from `<available_skills>` by default (`hasForkSupport: false`). If your
+agent has fork support wired, pass `hasForkSupport: true`:
+
+```typescript
+const mw = createSkillInjectorMiddleware({
+  agent: () => ref.current!,
+  progressive: true,
+  hasForkSupport: true,        // advertise fork skills when spawnFn is configured
+});
+const skillTool = await createSkillTool({
+  resolver: runtime,
+  spawnFn: mySpawnFn,          // required for fork execution
+  signal: new AbortController().signal,
+});
+```
+
+Without `spawnFn` on the tool, fork skills will fail with a `VALIDATION` error at invocation time.
+The `hasForkSupport` flag on the middleware must be set consistently with the Skill tool's `spawnFn`.
+
+### Backward compatibility
+
+Both `progressive` flags default to `false`. Existing callers that omit the flag continue to use
+the eager path unchanged.
+
 ## Dependencies
 
 - `@koi/core` (L0) — `KoiError`, `Result`, `Agent`, `SkillComponent`, `KoiMiddleware`

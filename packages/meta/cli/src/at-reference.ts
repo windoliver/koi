@@ -17,8 +17,9 @@
  *   @"path with spaces.ts"    — quoted path
  */
 
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { detectFromBytes, detectFromPath } from "@koi/file-type";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,12 +39,26 @@ export interface AtReference {
   readonly lineEnd: number | undefined;
 }
 
+/** A binary file that cannot be injected as text — sent as a content block instead. */
+export interface BinaryInjection {
+  /** File path (relative to cwd). */
+  readonly filePath: string;
+  /** Base64-encoded file content. */
+  readonly base64: string;
+  /** Detected MIME type (strong or weak confidence). */
+  readonly mimeType: string;
+  /** True when magic bytes matched (vs. extension fallback). */
+  readonly strongDetection: boolean;
+}
+
 /** Result of resolving @-references in a message. */
 export interface ResolvedAtReferences {
   /** User text with @-references stripped (the actual question). */
   readonly cleanText: string;
-  /** Successfully resolved file contents, formatted for injection. */
+  /** Successfully resolved text file contents, formatted for injection. */
   readonly injections: readonly FileInjection[];
+  /** Binary files (images, PDFs, etc.) to send as content blocks. */
+  readonly binaryInjections: readonly BinaryInjection[];
 }
 
 /** A resolved file ready for injection into model context. */
@@ -92,6 +107,7 @@ export function parseAtReferences(text: string): readonly AtReference[] {
 
   // Quoted paths first (higher priority)
   for (const match of text.matchAll(AT_QUOTED_RE)) {
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const filePath = match[1]!;
     const lineStart = match[2] !== undefined ? Number.parseInt(match[2], 10) : undefined;
     const lineEnd = match[3] !== undefined ? Number.parseInt(match[3], 10) : undefined;
@@ -109,6 +125,7 @@ export function parseAtReferences(text: string): readonly AtReference[] {
   for (const match of text.matchAll(AT_UNQUOTED_RE)) {
     // Skip if this position was already captured by a quoted match
     if (quotedStarts.has(match.index)) continue;
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const filePath = match[1]!;
     // Skip if it starts with a quote (partial match of a quoted ref)
     if (filePath.startsWith('"')) continue;
@@ -143,10 +160,11 @@ export function resolveAtReferences(text: string, cwd: string): ResolvedAtRefere
   const refs = parseAtReferences(text);
 
   if (refs.length === 0) {
-    return { cleanText: text, injections: [] };
+    return { cleanText: text, injections: [], binaryInjections: [] };
   }
 
   const injections: FileInjection[] = [];
+  const binaryInjections: BinaryInjection[] = [];
 
   // Strip @-references from text by index (reverse order to preserve positions).
   // Using indices instead of String.replace avoids removing the wrong occurrence
@@ -183,11 +201,57 @@ export function resolveAtReferences(text: string, cwd: string): ResolvedAtRefere
     }
 
     try {
-      // Stat check: reject files exceeding 10x the cap to avoid reading
-      // multi-GB files into memory. Files between 1x-10x cap are read and
-      // truncated; files over 10x are skipped entirely.
       const MAX_READ_BYTES = MAX_FILE_BYTES * 10;
       const stat = statSync(validatedPath);
+
+      // Sniff the first 4 KB ALWAYS — binary detection runs before line-range
+      // handling so that @video.mp4#L1 can never fall through to a UTF-8 read.
+      const HEAD_SIZE = 4096;
+      const head = new Uint8Array(Math.min(stat.size, HEAD_SIZE));
+      const fd = openSync(validatedPath, "r");
+      try {
+        readSync(fd, head, 0, head.length, 0);
+      } finally {
+        closeSync(fd);
+      }
+      // Use byte evidence only for the binary/text gate — never the filename
+      // extension. A file named foo.json with binary content must go the binary
+      // path; detectFromPath's extension fallback would label it application/json
+      // and send binary bytes through the UTF-8 read path.
+      // UTF-16 files (detected by BOM) are intentionally excluded from the text
+      // path even though they are technically text: readFileSync with utf8 would
+      // produce mojibake. Transcoding is not yet implemented; treat as binary.
+      const detectedByBytes = detectFromBytes(head);
+      const hasUtf16Bom =
+        (head[0] === 0xff && head[1] === 0xfe) || (head[0] === 0xfe && head[1] === 0xff);
+      const isText =
+        !hasUtf16Bom &&
+        detectedByBytes !== null &&
+        (detectedByBytes.mimeType === "text/plain" ||
+          detectedByBytes.mimeType.startsWith("text/") ||
+          detectedByBytes.mimeType === "application/json" ||
+          detectedByBytes.mimeType === "application/xml" ||
+          detectedByBytes.mimeType === "application/yaml" ||
+          detectedByBytes.mimeType === "application/toml" ||
+          detectedByBytes.mimeType === "image/svg+xml"); // SVG is XML text
+
+      if (!isText) {
+        // Binary file: line ranges are meaningless. Enforce size cap regardless.
+        if (stat.size > MAX_READ_BYTES) continue;
+        const base64 = readFileSync(validatedPath).toString("base64");
+        // Use detectFromPath for display mimeType — extension fallback is fine
+        // for the human-readable note; it's not a trust boundary here.
+        const detectedForDisplay = detectFromPath(ref.filePath, head);
+        binaryInjections.push({
+          filePath: ref.filePath,
+          base64,
+          mimeType: detectedForDisplay.mimeType,
+          strongDetection: detectedByBytes !== null && detectedByBytes.confidence === "strong",
+        });
+        continue;
+      }
+
+      // Text file: apply the size cap only for full-file reads.
       if (stat.size > MAX_READ_BYTES && ref.lineStart === undefined) continue;
 
       const raw = readFileSync(validatedPath, { encoding: "utf8" });
@@ -229,7 +293,7 @@ export function resolveAtReferences(text: string, cwd: string): ResolvedAtRefere
     }
   }
 
-  return { cleanText, injections };
+  return { cleanText, injections, binaryInjections };
 }
 
 // ---------------------------------------------------------------------------

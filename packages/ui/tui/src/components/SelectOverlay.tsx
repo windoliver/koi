@@ -12,7 +12,7 @@
 import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
-import { For, Show } from "solid-js";
+import { For, Show, createEffect } from "solid-js";
 import { COLORS } from "../theme.js";
 import {
   consumeSelectOverlayKey,
@@ -47,6 +47,10 @@ export interface SelectOverlayProps<T> {
   readonly focused: boolean;
   /** Shown when items is empty. */
   readonly emptyText?: string | undefined;
+  /** Called when Space is pressed on the highlighted item — peek without selecting. */
+  readonly onPeek?: ((item: T) => void) | undefined;
+  /** Called after every Up/Down navigation with the newly highlighted item. */
+  readonly onNavigate?: ((item: T) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +60,15 @@ export interface SelectOverlayProps<T> {
 export function SelectOverlay<T>(props: SelectOverlayProps<T>): JSX.Element {
   const list = createScrollableList(() => props.items, MAX_VISIBLE);
 
+  // Keep onNavigate in sync whenever the highlighted item changes — whether from
+  // a keypress or a list refresh (e.g. set_session_list reorders sessions).
+  // This prevents the peek preview from showing a different session than Enter would resume.
+  createEffect(() => {
+    if (props.onNavigate === undefined) return;
+    const item = props.items[list.selectedIdx()];
+    if (item !== undefined) props.onNavigate(item);
+  });
+
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
     consumeSelectOverlayKey(key, {
@@ -64,8 +77,19 @@ export function SelectOverlay<T>(props: SelectOverlayProps<T>): JSX.Element {
         const item = props.items[list.selectedIdx()];
         if (item !== undefined) props.onSelect(item);
       },
-      onMoveUp: list.moveUp,
-      onMoveDown: list.moveDown,
+      onMoveUp: (): void => {
+        list.moveUp();
+      },
+      onMoveDown: (): void => {
+        list.moveDown();
+      },
+      onPeek:
+        props.onPeek !== undefined
+          ? (): void => {
+              const item = props.items[list.selectedIdx()];
+              if (item !== undefined) props.onPeek!(item);
+            }
+          : undefined,
     });
   });
 

@@ -28,6 +28,7 @@
  *   @koi/fs-local             — local filesystem backend
  *   @koi/skills-runtime       — skill discovery + SkillComponent attach
  *   @koi/outcome-evaluator    — LLM-as-judge rubric iteration loop
+ *   @koi/middleware-feedback-loop — model validation + tool-health MW (feedback-loop-pass)
  */
 
 import { createAgentResolver } from "@koi/agent-runtime";
@@ -56,6 +57,7 @@ import type {
 import {
   artifactId,
   createSingleToolProvider,
+  DEFAULT_SCHEDULER_CONFIG,
   memoryRecordId,
   sessionId,
   taskItemId,
@@ -63,6 +65,13 @@ import {
 } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
+import {
+  createForgeInspectTool,
+  createForgeListTool,
+  createForgeMiddlewareTool,
+  createForgeToolTool,
+  createInMemoryForgeStore,
+} from "@koi/forge-tools";
 import { createLocalFileSystem } from "@koi/fs-local";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
@@ -81,6 +90,7 @@ import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import { createFeedbackLoopMiddleware } from "@koi/middleware-feedback-loop";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
@@ -116,7 +126,10 @@ import {
   validatePluginManifest,
 } from "@koi/plugins";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
+import type { Cassette } from "@koi/replay";
 import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
+import { createScheduler, createSchedulerComponent, createSqliteTaskStore } from "@koi/scheduler";
+import { createSchedulerProvider } from "@koi/scheduler-provider";
 import {
   createInMemoryTranscript,
   createSessionTranscriptMiddleware,
@@ -124,6 +137,7 @@ import {
 } from "@koi/session";
 import { createSkillTool } from "@koi/skill-tool";
 import {
+  createProgressiveSkillProvider,
   createSkillInjectorMiddleware,
   createSkillProvider,
   createSkillsRuntime,
@@ -136,6 +150,7 @@ import {
   createBrowserSnapshotTool,
   createMockDriver,
 } from "@koi/tool-browser";
+import { ACKNOWLEDGE_UNSANDBOXED_EXECUTION, createExecuteCodeTool } from "@koi/tool-exec";
 import type { NotebookToolConfig } from "@koi/tool-notebook";
 import { createNotebookAddCellTool, createNotebookReadTool } from "@koi/tool-notebook";
 import { createBashBackgroundTool, createBashTool } from "@koi/tools-bash";
@@ -155,7 +170,6 @@ import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.j
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server as McpSdkServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { Cassette } from "../src/cassette/types.js";
 import { createInteractionProvider } from "../src/create-interaction-provider.js";
 import { createHookObserver } from "../src/middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../src/middleware/mcp-lifecycle.js";
@@ -239,6 +253,22 @@ if (!addToolResult.ok) {
   process.exit(1);
 }
 const addTool = addToolResult.value;
+
+// @koi/tool-exec — exercised by the tool-exec-code-use golden. The LLM calls
+// execute_code with a small TS script that calls add_numbers twice through
+// tools.*, returning only the final sum. Validates the full L2 surface:
+// createExecuteCodeTool → permissions → Bun Worker spawn → worker-entry
+// tools proxy → host-side callTool/tool.execute → sequential-only guard →
+// script return → single tool result to model context.
+const execCodeToolResult = createExecuteCodeTool({
+  acknowledgeUnsandboxedExecution: ACKNOWLEDGE_UNSANDBOXED_EXECUTION,
+  tools: new Map([["add_numbers", addTool]]),
+});
+if (!execCodeToolResult.ok) {
+  console.error(`createExecuteCodeTool failed: ${execCodeToolResult.error.message}`);
+  process.exit(1);
+}
+const execCodeTool = execCodeToolResult.value;
 
 // @koi/artifacts — exercised by the artifacts-roundtrip golden. The LLM
 // calls artifact_save to persist a small blob via the real ArtifactStore
@@ -488,6 +518,34 @@ const planningBundle = createPlanMiddleware({
 });
 
 // ---------------------------------------------------------------------------
+// @koi/scheduler + @koi/scheduler-provider — 9 agent-facing scheduler tools
+// Uses in-memory SQLite and a no-op dispatcher (no real agents are spawned).
+// All submitted tasks use a 1-hour delay so they stay pending during recording.
+// ---------------------------------------------------------------------------
+
+const { Database: SchedulerDatabase } = await import("bun:sqlite");
+const schedulerDb = new SchedulerDatabase(":memory:");
+const schedulerStore = createSqliteTaskStore(schedulerDb);
+const schedulerInstance = createScheduler(DEFAULT_SCHEDULER_CONFIG, schedulerStore, async () => {});
+const schedulerComponent = createSchedulerComponent(
+  schedulerInstance,
+  "golden-recorder" as import("@koi/core").AgentId,
+);
+const schedulerTools = createSchedulerProvider(schedulerComponent);
+// createSchedulerProvider returns [submit, cancel, schedule, unschedule, pause, resume, query, stats, history]
+const [stSubmit, , , , , , stQuery, stStats] = schedulerTools as [
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+];
+
+// ---------------------------------------------------------------------------
 // @koi/spawn-tools — agent_spawn tool with stub SpawnFn
 // Stub returns immediately without launching a real child agent.
 // The cassette captures the LLM's tool-call interaction pattern.
@@ -507,6 +565,41 @@ const spawnToolsAll = createSpawnTools({
 });
 // createSpawnTools returns [agent_spawn]
 const [stAgentSpawn] = spawnToolsAll as [import("@koi/core").Tool];
+
+// ---------------------------------------------------------------------------
+// @koi/forge-tools — synthesize / list / inspect tools backed by an in-memory store.
+// Used by the `forge-synthesize` cassette + trajectory recording.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a fresh in-memory forge store + tool quartet. Each cassette and
+ * standalone-query recording must use its own instance so cross-run
+ * residue cannot satisfy a flow that should require a real save.
+ */
+function createForgeToolSet(): {
+  readonly store: ReturnType<typeof createInMemoryForgeStore>;
+  readonly forgeToolTool: import("@koi/core").Tool;
+  readonly forgeMiddlewareTool: import("@koi/core").Tool;
+  readonly forgeListTool: import("@koi/core").Tool;
+  readonly forgeInspectTool: import("@koi/core").Tool;
+} {
+  const store = createInMemoryForgeStore();
+  return {
+    store,
+    forgeToolTool: createForgeToolTool({ store }),
+    forgeMiddlewareTool: createForgeMiddlewareTool({ store }),
+    forgeListTool: createForgeListTool({ store }),
+    forgeInspectTool: createForgeInspectTool({ store }),
+  };
+}
+
+// One quartet for query-config providers (reused across non-forge cassettes
+// where forge tools are part of the descriptor list but not invoked).
+const initialForgeSet = createForgeToolSet();
+const forgeToolTool = initialForgeSet.forgeToolTool;
+const forgeMiddlewareTool = initialForgeSet.forgeMiddlewareTool;
+const forgeListTool = initialForgeSet.forgeListTool;
+const forgeInspectTool = initialForgeSet.forgeInspectTool;
 
 // ---------------------------------------------------------------------------
 // Memory tools (backed by @koi/memory-tools with in-memory backend)
@@ -772,7 +865,13 @@ async function recordCassette(
   await Bun.write(
     path,
     JSON.stringify(
-      { name, model: cassModel, recordedAt: Date.now(), chunks } satisfies Cassette,
+      {
+        schemaVersion: "cassette-v1",
+        name,
+        model: cassModel,
+        recordedAt: Date.now(),
+        chunks,
+      } satisfies Cassette,
       null,
       2,
     ),
@@ -1222,6 +1321,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
       if (agentRef.current === undefined) throw new Error("Agent not yet wired");
       return agentRef.current;
     },
+    progressive: true,
   });
 
   const tracedMiddleware = [
@@ -1573,16 +1673,17 @@ console.log(
   `Skills registry query verified: tags=["formatting"] → [${queryResult.value.map((s) => s.name).join(", ")}]`,
 );
 
-const skillProvider = createSkillProvider(skillRuntime);
+const { provider: skillProvider, pinnedRuntime: pinnedSkillRuntime } =
+  createProgressiveSkillProvider(skillRuntime);
 console.log(`Skills golden query: dir=${skillsTmpDir}, skill=bullet-points`);
 
 // ---------------------------------------------------------------------------
 // @koi/skill-tool — SkillTool meta-tool golden query setup
-// Uses the same skillRuntime to create a Skill tool the model can invoke.
+// Uses the pinned runtime so Skill tool loads match what was advertised.
 // ---------------------------------------------------------------------------
 
 const skillToolResult = await createSkillTool({
-  resolver: skillRuntime,
+  resolver: pinnedSkillRuntime,
   signal: AbortSignal.timeout(300_000),
 });
 if (!skillToolResult.ok) {
@@ -2095,6 +2196,45 @@ const queries: readonly QueryConfig[] = [
         name: "artifact-get",
         toolName: "artifact_get",
         createTool: () => artifactGetTool,
+      }),
+    ],
+    maxTurns: 3,
+  },
+
+  // tool-exec-code-use: exercises @koi/tool-exec via the execute_code tool.
+  // The model writes a short TS script that calls add_numbers twice through
+  // tools.* and returns the final sum. Only the script's return value is
+  // injected into the model's context — intermediate tool results stay in
+  // the worker. Proves the Bun Worker sandbox, sequential-only proxy,
+  // per-call AbortController, and trust-gate path all work end-to-end.
+  {
+    name: "tool-exec-code-use",
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+    prompt:
+      "Call the execute_code tool with its `script` argument set to the following TypeScript source. " +
+      "The script runs inside a worker where `tools.add_numbers` is available even though add_numbers is not a separate top-level tool — the execute_code tool handles that internally. " +
+      "Script source:\n" +
+      "const a = await tools.add_numbers({ a: 2, b: 3 });\n" +
+      "const b = await tools.add_numbers({ a: a.result, b: 10 });\n" +
+      "return b.result;\n" +
+      "After execute_code returns, reply with just the final number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "execute-code",
+        toolName: "execute_code",
+        createTool: () => execCodeTool,
       }),
     ],
     maxTurns: 3,
@@ -3360,6 +3500,54 @@ const queries: readonly QueryConfig[] = [
     modelName: SONNET_MODEL,
   },
 
+  // forge-synthesize: @koi/forge-tools — forge_tool synthesizes a draft tool,
+  //   forge_list confirms it appears in the store, forge_inspect retrieves the
+  //   artifact by brickId. Backed by an in-memory ForgeStore.
+  {
+    name: "forge-synthesize",
+    prompt:
+      "Use forge_tool to create a tool named 'add-numbers' that takes two numbers a and b and returns their sum. " +
+      "Then call forge_list to confirm it appears. " +
+      "Then call forge_inspect with the returned brickId to retrieve the artifact.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+    // Fresh ForgeStore per trajectory run so cassette/test residue cannot
+    // satisfy the synthesize -> list -> inspect flow without an actual save.
+    providerFactory: () => {
+      const fresh = createForgeToolSet();
+      return [
+        createSingleToolProvider({
+          name: "forge-tool",
+          toolName: "forge_tool",
+          createTool: () => fresh.forgeToolTool,
+        }),
+        createSingleToolProvider({
+          name: "forge-middleware",
+          toolName: "forge_middleware",
+          createTool: () => fresh.forgeMiddlewareTool,
+        }),
+        createSingleToolProvider({
+          name: "forge-list",
+          toolName: "forge_list",
+          createTool: () => fresh.forgeListTool,
+        }),
+        createSingleToolProvider({
+          name: "forge-inspect",
+          toolName: "forge_inspect",
+          createTool: () => fresh.forgeInspectTool,
+        }),
+      ];
+    },
+    maxTurns: 4,
+    // Use Sonnet 4.6 — multi-tool sequences benefit from the more reliable
+    // function-call token emission, same rationale as spawn-tools.
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+  },
+
   // hook-redaction: agent hook on tool.succeeded with forwardRawPayload + default redaction.
   //   Parent calls get_credentials which returns a mix of secrets (apiKey, password)
   //   and a safe field (host). The @koi/hooks redaction pipeline masks secrets
@@ -4133,6 +4321,88 @@ const queries: readonly QueryConfig[] = [
     providers: [],
     afterRecord: recordAgentSummarySidecar,
   },
+
+  // run-reset: records a single run with resetBudgetPerRun=true active so
+  // the run_reset event fires at trajectory index 0 (non-cooperating adapter path).
+  // Two-submit sequential ordering and provenance (guard+governance alignment,
+  // boundaryId stability) are covered by the cassette-harness test in golden-replay.test.ts
+  // ("run_reset fires on cooperating adapter path (cassette replay, two sequential runs)")
+  // using fixtures/run-reset.cassette.json and the createCassetteAdapter two-call pattern.
+  // To record with a real LLM, add OPENROUTER_API_KEY to the environment.
+  {
+    name: "run-reset",
+    prompt: "Say 'hello' in exactly one word.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+  },
+
+  // @koi/middleware-feedback-loop — model validation + tool-health middleware.
+  // Exercises wrapModelCall with a pass-through validator and wrapToolCall
+  // health tracking path. The validator always passes so the trajectory captures
+  // a normal tool-use turn with the feedback-loop middleware in the chain.
+  // Proves the middleware is correctly installed and does not block normal flow.
+  {
+    name: "feedback-loop-pass",
+    prompt:
+      "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+    ],
+    maxTurns: 2,
+    extraMiddleware: [
+      createFeedbackLoopMiddleware({
+        validators: [
+          {
+            name: "pass-through",
+            validate: (_response) => ({ valid: true }),
+          },
+        ],
+      }),
+    ],
+  },
+
+  // @koi/scheduler + @koi/scheduler-provider — scheduler_submit + scheduler_query flow.
+  // Submits a delayed task (1 hour) so it stays pending during the test, then queries.
+  {
+    name: "scheduler-tools",
+    prompt:
+      "Use the scheduler_submit tool to submit a delayed task with input 'run nightly report' in spawn mode with a 3600000ms delay. " +
+      "Then use scheduler_query to list all pending tasks. " +
+      "Finally use scheduler_stats to report the current queue statistics.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "scheduler-submit",
+        toolName: "scheduler_submit",
+        createTool: () => stSubmit,
+      }),
+      createSingleToolProvider({
+        name: "scheduler-query",
+        toolName: "scheduler_query",
+        createTool: () => stQuery,
+      }),
+      createSingleToolProvider({
+        name: "scheduler-stats",
+        toolName: "scheduler_stats",
+        createTool: () => stStats,
+      }),
+    ],
+    maxTurns: 4,
+  },
 ];
 
 // =========================================================================
@@ -4291,6 +4561,41 @@ await recordCassette(
     }),
   { model: SONNET_MODEL },
 );
+
+// forge-synthesize uses Sonnet 4.6 — same rationale as spawn-tools for
+// reliable multi-tool function-call token emission. Use a FRESH forge
+// store + tools quartet so cross-run residue cannot mask a missing save.
+{
+  const fresh = createForgeToolSet();
+  await recordCassette(
+    "forge-synthesize",
+    () =>
+      sonnetAdapter.stream({
+        messages: [
+          {
+            senderId: "user",
+            timestamp: Date.now(),
+            content: [
+              {
+                kind: "text",
+                text:
+                  "Use forge_tool to create a tool named 'add-numbers' that takes two numbers a and b and returns their sum. " +
+                  "Then call forge_list with name: 'add-numbers' to confirm it appears. " +
+                  "Then call forge_inspect with the returned brickId to retrieve the artifact.",
+              },
+            ],
+          },
+        ],
+        tools: [
+          fresh.forgeToolTool.descriptor,
+          fresh.forgeMiddlewareTool.descriptor,
+          fresh.forgeListTool.descriptor,
+          fresh.forgeInspectTool.descriptor,
+        ],
+      }),
+    { model: SONNET_MODEL },
+  );
+}
 
 await recordCassette("memory-store", () =>
   modelAdapter.stream({
@@ -4661,6 +4966,27 @@ await recordCassette("skills-mcp-bridge", () =>
   }),
 );
 
+// feedback-loop-pass: @koi/middleware-feedback-loop — tool-use turn through
+// feedback-loop MW (pass-through validator). Cassette captures first model call
+// (tool request); replay drives the wrapModelStream + wrapToolCall hooks.
+await recordCassette("feedback-loop-pass", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
+          },
+        ],
+      },
+    ],
+    tools: [addTool.descriptor],
+  }),
+);
+
 await recordCassette("exfiltration-guard-block", () =>
   modelAdapter.stream({
     messages: [
@@ -4884,11 +5210,12 @@ await mcpPlatformServer.stop();
 nexusTransport?.close();
 await artifactStore.close();
 
-console.log(`\nDone. ${12 + queries.length} fixture files ready:`);
+console.log(`\nDone. ${13 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
 console.log("  fixtures/task-tools.cassette.json");
 console.log("  fixtures/spawn-tools.cassette.json");
+console.log("  fixtures/forge-synthesize.cassette.json");
 console.log("  fixtures/hook-redaction.cassette.json");
 console.log("  fixtures/todo-write.cassette.json");
 console.log("  fixtures/plan-mode.cassette.json");
@@ -4899,6 +5226,7 @@ console.log("  fixtures/notebook-read.cassette.json");
 console.log("  fixtures/notebook-add-cell.cassette.json");
 console.log("  fixtures/lsp-hover.cassette.json");
 console.log("  fixtures/browser-snapshot.cassette.json");
+console.log("  fixtures/feedback-loop-pass.cassette.json");
 for (const q of queries) {
   console.log(`  fixtures/${q.name}.trajectory.json`);
 }

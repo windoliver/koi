@@ -6,6 +6,7 @@
  */
 
 import type { BrowserConsoleLevel, JsonObject } from "@koi/core";
+import { detectFromBytes, detectFromPath } from "@koi/file-type";
 
 interface ValidationError {
   readonly error: string;
@@ -251,11 +252,21 @@ export function parseUploadFiles(
         err: { error: `${key}[${i}].mimeType must be a string`, code: "VALIDATION" },
       };
     }
-    files.push({
-      content,
-      name,
-      ...(mimeType !== undefined && { mimeType }),
-    });
+    // Upload MIME priority:
+    //  1. Strong magic-byte detection — always authoritative; prevents mislabeling
+    //     arbitrary bytes as image/png to bypass accept filters/MIME validators.
+    //  2. Extension-based detection via detectFromPath — derives MIME from the
+    //     caller-supplied filename; grounded in the file's stated type rather
+    //     than an arbitrary opaque string.
+    //  3. application/octet-stream — safe final default (via detectFromPath).
+    // The caller-supplied `mimeType` field is intentionally not used: it is
+    // an unvalidated string that could be used to bypass accept filters/MIME
+    // validators on the server side.
+    const bytes = new Uint8Array(Buffer.from(content, "base64"));
+    const detected = detectFromBytes(bytes);
+    const resolvedMime =
+      detected?.confidence === "strong" ? detected.mimeType : detectFromPath(name, bytes).mimeType;
+    files.push({ content, name, mimeType: resolvedMime });
   }
   return { ok: true, value: files };
 }

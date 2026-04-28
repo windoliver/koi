@@ -22,6 +22,7 @@ import type {
   JsonObject,
   KoiMiddleware,
   ModelChunk,
+  ModelHandler,
   ModelRequest,
   ModelResponse,
   RunId,
@@ -42,12 +43,20 @@ import {
   sessionId,
   toolToken,
 } from "@koi/core";
-import type { DebugInstrumentation, TerminalHandlers } from "@koi/engine-compose";
+import type {
+  DebugInstrumentation,
+  IterationGuardHandle,
+  MiddlewareSource,
+  TerminalHandlers,
+} from "@koi/engine-compose";
 import {
   composeExtensions,
+  composeModelChain,
   computeCapabilityBanner,
   createDebugInstrumentation,
   createDefaultGuardExtension,
+  hasIterationGuardBrand,
+  isIterationGuardHandle,
   recomposeChains,
   resolveActiveMiddleware,
   runPermissionDecisionHooks,
@@ -140,12 +149,79 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   const debugInstrumentation: DebugInstrumentation | undefined =
     options.debug?.enabled === true ? createDebugInstrumentation(options.debug) : undefined;
 
+  // Honor the renamed option so untyped JS/JSON hosts that set the old key still get
+  // per-run reset behavior. TypeScript callers see a compile warning from the deprecated
+  // field. A host that sets both keys gets the explicit value of the new key.
+  const legacyOpts = options as unknown as Record<string, unknown>;
+  // Treat the new key as "explicitly set" only when its value is not `undefined`.
+  // A host that spreads defaults including `resetBudgetPerRun: undefined` (e.g. from
+  // JSON deserialization or option merging) would otherwise mask a legacy
+  // `resetIterationBudgetPerRun: true` — silently regressing to cumulative budgets.
+  const newKeyExplicitlySet =
+    "resetBudgetPerRun" in legacyOpts && legacyOpts.resetBudgetPerRun !== undefined;
+  const usingLegacyOption = "resetIterationBudgetPerRun" in legacyOpts && !newKeyExplicitlySet;
+  if (usingLegacyOption) {
+    console.warn(
+      "[koi] createKoi: `resetIterationBudgetPerRun` was renamed to `resetBudgetPerRun` in #1939. " +
+        "The value has been remapped. Update your config to silence this warning.",
+    );
+  }
+  // Warn when both keys are present with conflicting values so the override is not silent.
+  // Most dangerous case: resetBudgetPerRun=false overrides resetIterationBudgetPerRun=true,
+  // silently disabling per-run resets for a host that set the legacy key.
+  if (
+    newKeyExplicitlySet &&
+    "resetIterationBudgetPerRun" in legacyOpts &&
+    Boolean(legacyOpts.resetIterationBudgetPerRun) !== Boolean(legacyOpts.resetBudgetPerRun)
+  ) {
+    console.warn(
+      `[koi] createKoi: both resetBudgetPerRun (${String(legacyOpts.resetBudgetPerRun)}) and ` +
+        `resetIterationBudgetPerRun (${String(legacyOpts.resetIterationBudgetPerRun)}) are set ` +
+        `with different values. resetBudgetPerRun takes precedence. ` +
+        `Remove resetIterationBudgetPerRun from your config.`,
+    );
+  }
+  const resetBudgetPerRun =
+    options.resetBudgetPerRun === true ||
+    (legacyOpts.resetIterationBudgetPerRun === true && usingLegacyOption);
+
   // Runtime warning for JS consumers that omit describeCapabilities (TS catches at compile time)
   for (const mw of allMiddleware) {
     if (mw.describeCapabilities === undefined) {
       console.warn(
         `[koi] Middleware "${mw.name}" does not implement describeCapabilities(). ` +
           `This will be a hard error in a future release.`,
+      );
+    }
+  }
+
+  // #1939: fail closed if any iteration guard cannot be reset — prevents silent
+  // stale-state bugs when resetBudgetPerRun (or its deprecated alias) is enabled.
+  // Fail closed for ALL incompatible guard shapes — warn-and-continue would emit
+  // run_reset while stale guard state survives, creating split-brain enforcement
+  // (governance says "fresh budget" but the guard still enforces the old one).
+  // Scan the full array and report all offending guards in a single error.
+  if (resetBudgetPerRun) {
+    const optionName = usingLegacyOption ? "resetIterationBudgetPerRun" : "resetBudgetPerRun";
+    const broken: string[] = [];
+    for (const mw of allMiddleware) {
+      if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
+        broken.push(
+          `"${mw.name ?? "(unnamed)"}" (carries ITERATION_GUARD_BRAND but missing resetForRun())`,
+        );
+      } else if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
+        // Pre-#1917 legacy guard: still participates in turn/duration enforcement but
+        // cannot be reset per-run — emitting run_reset with stale guard state creates
+        // split-brain. Reject at construction so runtime never sees this combination.
+        broken.push(`"koi:iteration-guard" (pre-#1917 legacy guard, missing resetForRun())`);
+      }
+    }
+    if (broken.length > 0) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        `[koi] ${optionName} is enabled but the following guards cannot be reset per-run: ` +
+          `${broken.join(", ")}. ` +
+          `Upgrade @koi/engine-compose or remove ${optionName} from options.`,
       );
     }
   }
@@ -357,6 +433,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // let justified: mutable so cycleSession can rotate the identity
   let factorySessionId: SessionId =
     options.sessionId ?? sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
+  // let justified: monotonic counters for deterministic boundaryId derivation (#1939)
+  let runIndex = 0;
+  let sessionCycleIndex = 0;
   // let justified: tracks the active run's AbortController so runtime.interrupt()
   // can operate without a registry. Set in streamEvents at the start of each
   // run, cleared in finally. Undefined when no run is active.
@@ -399,6 +478,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   }
   function commitFactorySessionId(next: SessionId): void {
     factorySessionId = next;
+    runIndex = 0;
   }
 
   // --- Session lifecycle (runtime-scoped, NOT per-run) ---
@@ -446,6 +526,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // Reset to undefined on cycleSession so the next session captures fresh.
   // let justified: mutable per-session ctx, captured in streamEvents
   let activeSessionCtx: SessionContext | undefined;
+  // let justified: run() call timestamp — set synchronously in run() before the RunHandle
+  // is returned so duration budgets include any queue gap before first iterator pull.
+  let runEntryAt = 0;
 
   // --- 6. Async generator: produces EngineEvents for a single run() invocation ---
   async function* streamEvents(
@@ -570,8 +653,25 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // let justified: mutable ref for identity-based dynamic middleware skip
     let previousDynamicMw: readonly KoiMiddleware[] | undefined;
 
+    // let justified: guards already reset for the current run — prevents double-resets across recompositions
+    let resetGuardsCurrentRun: Set<IterationGuardHandle> | undefined;
+
     // let justified: cached terminals created once at session start, reused across turns
     let cachedTerminals: TerminalHandlers | undefined;
+
+    // let justified: rebuilt by applyRecomposition() so the stream synth picks up
+    // forge/dynamic call-only middleware on subsequent calls (#review-round15-F1).
+    // The synth getter passed to createTerminalHandlers reads this on every call.
+    let activeSynthCallTerminal: ModelHandler | undefined;
+    // let justified: closure that knows how to rebuild activeSynthCallTerminal from
+    // a sorted middleware snapshot. Initialized in inner scope where rawModelTerminal
+    // is available.
+    let rebuildSynthCallTerminal:
+      | ((
+          sorted: readonly KoiMiddleware[],
+          provenanceHints: ReadonlyMap<string, MiddlewareSource>,
+        ) => void)
+      | undefined;
 
     // let justified: previous forge middleware ref for identity-based skip
     let previousForgedMw: readonly KoiMiddleware[] | undefined;
@@ -614,21 +714,157 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       }
     }
 
-    /** Re-compose chains when dynamic sources change. Updates mutable chain refs in-place. */
-    function applyRecomposition(
+    /**
+     * Reset all branded iteration guards in the given set and record a run_reset
+     * governance event. Falls back to no governance record when govCtl is absent.
+     * Throws KoiRuntimeError if a branded guard lacks resetForRun() — the
+     * construction-time gate (above) should have already caught this for static middleware.
+     * Dynamic/forged guards added after construction are validated here as a second defense.
+     *
+     * Async so that governance controllers with async record() implementations
+     * are properly awaited; guard/governance state cannot diverge on failure.
+     * run_reset is only emitted if every participating iteration guard was
+     * actually reset — a legacy unbranded guard suppresses the emit.
+     */
+    async function resetRunBoundary(
+      guards: ReadonlySet<KoiMiddleware> | readonly KoiMiddleware[],
+      governance: GovernanceController,
+      boundaryId: string,
+    ): Promise<void> {
+      // Validate all guards first — throw before mutating any state.
+      // Covers both static (construction-gate) and dynamic (forge/dynamicMiddleware)
+      // guards: same rules apply regardless of when the middleware was added.
+      for (const mw of guards) {
+        if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
+          throw KoiRuntimeError.from(
+            "VALIDATION",
+            `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND but does ` +
+              `not implement resetForRun(). All branded iteration guards must implement IterationGuardHandle.`,
+          );
+        }
+        if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
+          throw KoiRuntimeError.from(
+            "VALIDATION",
+            `[koi] "koi:iteration-guard" does not implement resetForRun(). ` +
+              `Upgrade @koi/engine-compose to fix split-brain enforcement across runs.`,
+          );
+        }
+      }
+      // Duration anchor uses run() call time so startup work (forge refresh,
+      // dynamic-mw recomposition) counts against maxDurationMs.
+      const durationAnchor = runEntryAt > 0 ? runEntryAt : Date.now();
+      // Record governance FIRST with the duration anchor. If governance rejects,
+      // we poison before touching guard state — guards stay at prior-run values,
+      // engine is dead, no split-brain possible.
+      try {
+        await governance.record({
+          kind: "run_reset",
+          source: "engine",
+          boundaryId,
+          boundaryTimestamp: durationAnchor,
+        });
+      } catch (e) {
+        poisoned = true;
+        throw e;
+      }
+      // Anchor inactivity AFTER governance.record() completes so that slow async
+      // governance (remote persistence, I/O) does not eat into the first-turn
+      // inactivity window. The duration anchor (runEntryAt) is unaffected.
+      // Deduplication: middleware is composed additively (static + forged + dynamic),
+      // so the same guard instance can appear multiple times. Track by identity so each
+      // guard is reset exactly once.
+      const activityAnchor = Date.now();
+      try {
+        const seen = new Set<IterationGuardHandle>();
+        for (const mw of guards) {
+          if (isIterationGuardHandle(mw) && !seen.has(mw)) {
+            seen.add(mw);
+            mw.resetForRun(durationAnchor, activityAnchor);
+          }
+        }
+      } catch (e) {
+        poisoned = true;
+        throw e;
+      }
+    }
+
+    /** Re-compose chains when dynamic sources change. Updates mutable chain refs in-place.
+     *
+     * `consumeReset` must be `true` only at the deliberate run-start recomposition
+     * (cooperating-adapter path, after the full forge + dynamic snapshot is ready).
+     * Mid-run forge-refresh and dynamic-middleware recompositions pass `false` so they
+     * cannot prematurely consume the pending run-start reset before dynamic middleware
+     * has been sampled — which would leave guards unreset for the actual run.
+     */
+    async function applyRecomposition(
       forgedMw: readonly KoiMiddleware[] | undefined,
       dynamicMw: readonly KoiMiddleware[] | undefined,
       terminals: TerminalHandlers,
-    ): void {
+      consumeReset: boolean = false,
+    ): Promise<void> {
       const { sorted, provenanceHints } = resolveActiveMiddleware(
         allMiddleware,
         forgedMw ?? undefined,
         dynamicMw ?? undefined,
       );
+      // #1939: reset all branded iteration guards after building the final middleware
+      // snapshot (includes forge + dynamic guards). runIndex incremented here so
+      // boundaryId is stable and deterministic.
+      // Only execute when explicitly asked (consumeReset=true) to prevent forge-refresh
+      // or dynamic-mw recompositions from consuming the pending reset prematurely.
+      if (consumeReset && resetGuardsCurrentRun !== undefined) {
+        runIndex++;
+        const boundaryId = `${factorySessionId}:session:${sessionCycleIndex}:run:${runIndex - 1}`;
+        const govCtl = agent.component<GovernanceController>(GOVERNANCE);
+        if (govCtl !== undefined) {
+          await resetRunBoundary(sorted, govCtl, boundaryId);
+        } else {
+          // No governance — same validation/anchoring as the governed path so
+          // fail-closed and duration semantics are identical regardless of whether
+          // a controller is installed.
+          for (const mw of sorted) {
+            if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
+              throw KoiRuntimeError.from(
+                "VALIDATION",
+                `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND but does ` +
+                  `not implement resetForRun(). All branded iteration guards must implement IterationGuardHandle.`,
+              );
+            }
+            if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
+              throw KoiRuntimeError.from(
+                "VALIDATION",
+                `[koi] "koi:iteration-guard" does not implement resetForRun(). ` +
+                  `Upgrade @koi/engine-compose to fix split-brain enforcement across runs.`,
+              );
+            }
+          }
+          const resetAt = Date.now();
+          const durationAnchor = runEntryAt > 0 ? runEntryAt : resetAt;
+          const seen = new Set<IterationGuardHandle>();
+          try {
+            for (const mw of sorted) {
+              if (isIterationGuardHandle(mw) && !seen.has(mw)) {
+                seen.add(mw);
+                mw.resetForRun(durationAnchor, resetAt);
+              }
+            }
+          } catch (e: unknown) {
+            poisoned = true;
+            throw e;
+          }
+        }
+        resetGuardsCurrentRun = undefined;
+      }
+
       const chains = recomposeChains(sorted, terminals, debugInstrumentation, provenanceHints);
       activeToolChain = chains.toolChain;
       activeModelChain = chains.modelChain;
       activeStreamChain = chains.streamChain;
+      // Rebuild the inner call-only chain used by the stream synth so
+      // forged/dynamic call-only middleware added after startup fire on
+      // non-streaming adapters (#review-round15-F1). Safe no-op when
+      // never initialized (no run yet).
+      rebuildSynthCallTerminal?.(sorted, provenanceHints);
     }
 
     /**
@@ -679,7 +915,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         if (mySeq === forgeRefreshLastCommittedSeq && forgedMw !== previousForgedMw) {
           middlewareRecomposed = true;
           previousForgedMw = forgedMw;
-          applyRecomposition(forgedMw, previousDynamicMw ?? undefined, terminals);
+          await applyRecomposition(forgedMw, previousDynamicMw ?? undefined, terminals);
         }
       }
 
@@ -736,6 +972,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // factorySessionId block above (#1742) — and uses a separate
       // runtime-scoped ctx because dispose may happen long after any run.
       agent.transition({ kind: "start" });
+
       if (!lifecycleSessionStarted) {
         // #1742: capture this run's sessionCtx so the matching
         // onSessionEnd (fired from cycleSession or dispose) reuses the
@@ -758,17 +995,59 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         activeSessionCtx = candidateCtx;
       }
 
-      // #1742: per-run iteration budget reset. Opt-in via
-      // `options.resetIterationBudgetPerRun` so cumulative session-level
-      // budget enforcement remains the default for batch/headless hosts.
-      // Interactive hosts (TUI) opt in to give each user submit a fresh
-      // turn/token/cost/duration budget. Spawn counts and rolling
-      // error-rate windows are NOT reset (runtime-scoped resources).
-      if (options.resetIterationBudgetPerRun === true) {
-        const govCtl = agent.component<GovernanceController>(GOVERNANCE);
-        if (govCtl !== undefined) {
-          await govCtl.record({ kind: "iteration_reset" });
+      // #1939: arm the per-run guard reset. Non-cooperating adapters reset here
+      // (static middleware set is final at run entry). Cooperating adapters defer
+      // to applyRecomposition() so forge/dynamic guards are included.
+      resetGuardsCurrentRun = undefined;
+
+      if (resetBudgetPerRun) {
+        resetGuardsCurrentRun = new Set();
+        if (!adapter.terminals) {
+          // Non-cooperating adapters: reset immediately at run entry (guard set is fixed).
+          runIndex++;
+          const boundaryId = `${factorySessionId}:session:${sessionCycleIndex}:run:${runIndex - 1}`;
+          const govCtl = agent.component<GovernanceController>(GOVERNANCE);
+          if (govCtl !== undefined) {
+            await resetRunBoundary(allMiddleware, govCtl, boundaryId);
+          } else {
+            // No governance component — still validate guards and apply dual-anchor
+            // reset so duration/inactivity semantics are identical to the governed path.
+            // Fail closed on broken guards: same invariants must hold whether or not
+            // a controller is installed.
+            for (const mw of allMiddleware) {
+              if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
+                throw KoiRuntimeError.from(
+                  "VALIDATION",
+                  `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND but does ` +
+                    `not implement resetForRun(). All branded iteration guards must implement IterationGuardHandle.`,
+                );
+              }
+              if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
+                throw KoiRuntimeError.from(
+                  "VALIDATION",
+                  `[koi] "koi:iteration-guard" does not implement resetForRun(). ` +
+                    `Upgrade @koi/engine-compose to fix split-brain enforcement across runs.`,
+                );
+              }
+            }
+            const resetAt = Date.now();
+            const durationAnchor = runEntryAt > 0 ? runEntryAt : resetAt;
+            const seen = new Set<IterationGuardHandle>();
+            try {
+              for (const g of allMiddleware) {
+                if (isIterationGuardHandle(g) && !seen.has(g)) {
+                  seen.add(g);
+                  g.resetForRun(durationAnchor, resetAt);
+                }
+              }
+            } catch (e: unknown) {
+              poisoned = true;
+              throw e;
+            }
+          }
         }
+        // Cooperating adapter: applyRecomposition() calls resetRunBoundary() after
+        // building the final middleware snapshot.
       }
 
       // Wire registry watcher → engine events for child agent visibility.
@@ -887,16 +1166,8 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             signal: runSignal,
             approvalHandler: options.approvalHandler,
             sendStatus: options.sendStatus,
-            dispatchPermissionDecision: (query, decision) => {
-              void runPermissionDecisionHooks(
-                allMiddleware,
-                getTurnContext(),
-                query,
-                decision,
-              ).catch((e: unknown) => {
-                console.warn("[koi] onPermissionDecision hook error:", e);
-              });
-            },
+            dispatchPermissionDecision: (query, decision) =>
+              runPermissionDecisionHooks(allMiddleware, getTurnContext(), query, decision),
           });
           return cachedTurnCtx;
         };
@@ -945,6 +1216,31 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         };
         const rawModelStreamTerminal = adapter.terminals.modelStream;
 
+        // Compose a CALL-ONLY middleware chain (wrapModelCall but no
+        // wrapModelStream) around the raw terminal. The stream synth
+        // (in createTerminalHandlers, when no native modelStream) uses
+        // this so call-only hooks still fire on non-streaming adapters
+        // without dual-hook middleware double-firing — each middleware
+        // fires exactly once per logical request (#review-round14-F1).
+        //
+        // Rebuilt by applyRecomposition() whenever the active middleware
+        // set changes (forge/dynamic), and the synth resolves it via the
+        // getter on every call so newly added call-only middleware fires
+        // on subsequent stream requests (#review-round15-F1).
+        rebuildSynthCallTerminal = (sorted, provenanceHints) => {
+          const callOnly = sorted.filter(
+            (mw) => mw.wrapModelCall !== undefined && mw.wrapModelStream === undefined,
+          );
+          const chain = composeModelChain(
+            callOnly,
+            rawModelTerminal,
+            debugInstrumentation,
+            provenanceHints,
+          );
+          activeSynthCallTerminal = (request) => chain(getTurnContext(), request);
+        };
+        rebuildSynthCallTerminal(allMiddleware, staticProvenanceHints);
+
         // Create lifecycle-aware terminal handlers (cached for reuse across turns)
         cachedTerminals = createTerminalHandlers(
           agent,
@@ -953,6 +1249,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           rawModelStreamTerminal,
           debugInstrumentation,
           () => currentTurnIndex,
+          () => activeSynthCallTerminal ?? rawModelTerminal,
         );
 
         // Initial chain composition (allMiddleware is already phase-sorted)
@@ -977,6 +1274,24 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
         // Initial forge state (descriptors + forged middleware)
         await refreshForgeState(cachedTerminals);
+
+        // #1939: reset all iteration guards exactly once at the pre-turn boundary
+        // using the complete snapshot (static + forge + dynamic). applyRecomposition
+        // handles the reset and governance record via resetRunBoundary(), then clears
+        // resetGuardsCurrentRun so mid-run recompositions cannot re-issue fresh budgets.
+        // Setting previousDynamicMw to the snapshot avoids a redundant identity-skip
+        // recomposition at the first turn boundary.
+        if (resetGuardsCurrentRun !== undefined) {
+          const runStartDynamic = options.dynamicMiddleware?.() ?? [];
+          previousDynamicMw = runStartDynamic;
+          await applyRecomposition(
+            previousForgedMw ?? undefined,
+            runStartDynamic,
+            cachedTerminals,
+            true,
+          );
+          // applyRecomposition clears resetGuardsCurrentRun; nothing more needed here.
+        }
 
         // Subscribe to forge push notifications for mid-session tool visibility.
         //
@@ -1322,7 +1637,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             const dynamicMw = options.dynamicMiddleware();
             if (dynamicMw !== previousDynamicMw) {
               previousDynamicMw = dynamicMw;
-              applyRecomposition(
+              await applyRecomposition(
                 previousForgedMw ?? undefined,
                 dynamicMw ?? undefined,
                 cachedTerminals,
@@ -1987,6 +2302,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         activeRunSignal = undefined;
         currentRunIdRef = undefined;
       };
+      // Anchor duration budget to run() call time (not first iterator pull) so
+      // hosts that queue RunHandles before consuming them cannot exclude the
+      // queue gap from maxDurationMs. runEntryAt is safe to set here because
+      // only one run() can be active at a time (enforced by the running flag
+      // and epoch mechanism above), and the value is a plain number with no
+      // cleanup requirements for abandoned (never-iterated) handles.
+      runEntryAt = Date.now();
       running = true;
       runningEpoch = sessionEpoch;
 
@@ -2248,9 +2570,35 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // inherited from the previous one. Token usage, accumulated cost,
           // and spawn counts remain CUMULATIVE so process-level safety/
           // spend ceilings still hold across the runtime lifetime.
+          // Increment unconditionally so boundaryId remains unique even when no
+          // governance controller is installed. govCtl block below uses the pre-bump
+          // value captured in sessionBoundaryId for the emitted event.
+          const sessionBoundaryId = `${factorySessionId}:session:${sessionCycleIndex}`;
+          sessionCycleIndex++;
           const govCtl = agent.component<GovernanceController>(GOVERNANCE);
           if (govCtl !== undefined) {
-            await govCtl.record({ kind: "session_reset" });
+            // boundaryTimestamp captured after teardown so the new session's
+            // enforcement window doesn't inherit slow onSessionEnd latency.
+            try {
+              await govCtl.record({
+                kind: "session_reset",
+                source: "host",
+                boundaryId: sessionBoundaryId,
+                boundaryTimestamp: Date.now(),
+              });
+            } catch (govResetError: unknown) {
+              // session_reset record failure leaves the runtime half-cycled
+              // (onSessionEnd fired, counters not cleared). Poison so no subsequent
+              // run can proceed with stale state; same discipline as run_reset.
+              poisoned = true;
+              throw KoiRuntimeError.from(
+                "INTERNAL",
+                `cycleSession failed: governance session_reset record threw (${
+                  govResetError instanceof Error ? govResetError.message : String(govResetError)
+                }). Runtime is poisoned; dispose and recreate.`,
+                { cause: govResetError },
+              );
+            }
           }
           // #1742: rotate the engine sessionId and rebuild the runtime-scoped
           // lifecycle ctx so checkpoint chains, persistent approval keys,
@@ -2333,6 +2681,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         );
       }
       factorySessionId = sessionId(id);
+      // Reset runIndex so the first run after rebind emits :run:0.
+      // Without this, the reboundrun_reset would inherit the old lineage's
+      // counter, making a fresh session identity look like a continuation.
+      runIndex = 0;
       lifecycleSessionCtx = buildLifecycleSessionCtx();
       // Bump epoch so any pre-existing iterable created before the
       // rebind is rejected on first iteration — same invariant as

@@ -98,7 +98,6 @@ beforeAll(() => {
             return Response.json({ error: "invalid_client" }, { status: 401 });
           case "rate_limited":
             return Response.json({ error: "too_many_requests" }, { status: 429 });
-          case "ok":
           default: {
             if (grantType === "authorization_code") {
               const accessToken = `access-${state.tokenRequestCount}`;

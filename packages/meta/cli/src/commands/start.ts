@@ -40,14 +40,17 @@ import {
   emitHeadlessSessionStart,
   emitPreRunTimeoutResult,
   HEADLESS_EXIT,
+  redactEngineBanners,
   runHeadless,
 } from "../headless/run.js";
+import { validateLoadedSchema, validateResultSchema } from "../headless/validate-schema.js";
 import { loadManifestConfig } from "../manifest.js";
 import { initOtelSdk } from "../otel-bootstrap.js";
 import { loadPolicyFile } from "../policy-file.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
-import { createKoiRuntime } from "../runtime-factory.js";
-import { resumeSessionFromJsonl } from "../shared-wiring.js";
+import { resolveManifestPath } from "../resolve-manifest-path.js";
+import { createKoiRuntime, PolicyLoadError } from "../runtime-factory.js";
+import { readSessionMeta, resumeSessionFromJsonl, writeSessionMeta } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
 
@@ -244,7 +247,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // by graceMs while disposers drain). Bootstrap itself must honor
   // --max-duration-ms exactly — there's no teardown during setup to justify
   // grace, and adding it would silently extend the advertised hard timeout.
-  const SHUTDOWN_GRACE_MS = 10_000;
+  const _SHUTDOWN_GRACE_MS = 10_000;
 
   // Absolute deadline anchored at process entry. Every phase (bootstrap,
   // engine run, teardown) computes its remaining budget from this single
@@ -309,6 +312,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // Absolute-deadline accessor used by both the engine run and the
   // post-run backstop to keep total runtime under --max-duration-ms.
   // (deadlineAt + remainingBudget defined above.)
+  // Code 6 (SCHEMA_VALIDATION) is intentionally excluded: it is only set
+  // post-run by the schema-validation block, never via the bail() path.
   const bail = async (message: string, headlessCode: 1 | 2 | 3 | 4 | 5 = 5): Promise<ExitCode> => {
     // Latch BEFORE clearing so any already-queued bootstrap timer callback
     // sees the phase-complete flag and no-ops. clearTimeout alone cannot
@@ -382,8 +387,56 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   let manifestFilesystemBackend: FileSystemBackend | undefined;
   let manifestMiddleware: import("../manifest.js").ManifestMiddlewareEntry[] | undefined;
   let manifestGovernance: import("../manifest.js").ManifestGovernanceConfig | undefined;
-  if (flags.manifest !== undefined) {
-    const manifestResult = await loadManifestConfig(flags.manifest);
+  // When resuming without an explicit --manifest, bypass auto-discovery
+  // entirely so the cwd's manifest cannot silently override the model, stacks,
+  // plugins, filesystem scope, or governance that produced the original session.
+  // The operator must explicitly provide --manifest to apply a manifest on resume.
+  const skipManifestDiscovery =
+    flags.noManifest || (flags.resume !== undefined && flags.manifest === undefined);
+  const resolvedManifestResult = resolveManifestPath(
+    process.cwd(),
+    flags.manifest,
+    skipManifestDiscovery,
+  );
+  if (!resolvedManifestResult.ok) {
+    // Redact filesystem paths from the structured error in headless mode —
+    // hard discovery errors (EACCES/EPERM/ELOOP) include the candidate path
+    // which would leak workspace layout into machine-consumed NDJSON logs.
+    const discoveryErr = flags.headless
+      ? resolvedManifestResult.error.replace(
+          /:\s*(?:\/|[A-Za-z]:[/\\])[^\s]*/g,
+          ": <path-redacted>",
+        )
+      : resolvedManifestResult.error;
+    return bail(discoveryErr);
+  }
+  // Fail closed whenever discovery was requested and found nothing — this
+  // applies both inside and outside a project boundary so that markerless
+  // deployments (tarballs, containers, CI workspaces) cannot silently skip
+  // a parent manifest. Pass --no-manifest to explicitly opt into built-in defaults.
+  // Resume without an explicit manifest skips discovery (skipManifestDiscovery above)
+  // so it can never trigger this guard.
+  if (
+    resolvedManifestResult.path === undefined &&
+    flags.manifest === undefined &&
+    !skipManifestDiscovery
+  ) {
+    const tried =
+      !flags.headless && resolvedManifestResult.searched.length > 0
+        ? `\n  Searched:\n${resolvedManifestResult.searched.map((p) => `    ${p}`).join("\n")}`
+        : "";
+    return bail(
+      `no koi.yaml found — pass --manifest <path>, create one with koi init, or pass --no-manifest to run with built-in defaults${tried}`,
+    );
+  }
+  const resolvedManifestPath = resolvedManifestResult.path;
+  if (resolvedManifestPath !== undefined) {
+    // Skip strict audit path validation — koi start never opens audit sinks,
+    // so host-local filesystem state (missing ./logs, stale symlinks, etc.)
+    // must not block startup. Presence of the audit: block is checked below.
+    const manifestResult = await loadManifestConfig(resolvedManifestPath, {
+      skipAuditValidation: true,
+    });
     if (!manifestResult.ok) {
       // Manifest error can include filesystem paths, user-provided values,
       // or schema diagnostics. Safe to classify but don't forward raw text
@@ -418,6 +471,15 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           "long-running background subprocesses (3-in-8 threshold). Remove " +
           "`backgroundSubprocesses: true` from the manifest to run under koi start, or use " +
           "`koi tui`.",
+      );
+    }
+
+    if (manifestResult.value.audit !== undefined) {
+      return bail(
+        "manifest.audit is not supported on this host. " +
+          "koi start does not wire audit sinks — remove the audit: block from the manifest " +
+          "to run under koi start, or use koi tui (which honors manifest.audit when " +
+          "KOI_ALLOW_MANIFEST_FILE_SINKS=1 is set).",
       );
     }
 
@@ -616,6 +678,37 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     process.stdout.write("── End of history ──\n\n");
   }
 
+  // Persist manifest provenance so future resumes can enforce audit intent
+  // against the original session's manifest, not the cwd at resume time.
+  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
+    await writeSessionMeta(SESSIONS_DIR, String(sid), { manifestPath: resolvedManifestPath });
+  }
+
+  // Resume-path audit check using stored session provenance.
+  // koi start hard-rejects manifest.audit — check the original session's manifest.
+  if (flags.resume !== undefined) {
+    const resumeMeta = await readSessionMeta(SESSIONS_DIR, String(sid));
+    if (resumeMeta.manifestPath !== undefined) {
+      const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
+        skipAuditValidation: true,
+      });
+      if (!resumeAuditResult.ok) {
+        return bail(
+          "original session manifest cannot be parsed during resume — " +
+            "refusing to start because manifest.audit presence cannot be verified. " +
+            "Fix the manifest to run under koi start, or use koi tui.",
+        );
+      }
+      if (resumeAuditResult.value.audit !== undefined) {
+        return bail(
+          "original session manifest.audit is not supported on this host. " +
+            "koi start does not wire audit sinks — use koi tui to resume this session, " +
+            "or remove the audit: block from the manifest.",
+        );
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // 4. Runtime assembly via shared factory
   // ---------------------------------------------------------------------------
@@ -671,6 +764,25 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     }
   }
 
+  // Boot-time schema load: validate and parse --result-schema before
+  // assembling the runtime so a malformed schema file refuses to start
+  // with exit 5, rather than surfacing a parse error mid-run.
+  let resultSchemaObj: Record<string, unknown> | undefined;
+  if (flags.resultSchema !== undefined) {
+    try {
+      const raw = await Bun.file(flags.resultSchema).text();
+      const parsed: unknown = JSON.parse(raw);
+      const check = validateLoadedSchema(parsed);
+      if (!check.ok) {
+        return bail(`result-schema rejected: ${check.message}`, 5);
+      }
+      resultSchemaObj = check.schema;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return bail(`result-schema rejected: ${msg}`, 5);
+    }
+  }
+
   let runtimeHandle: Awaited<ReturnType<typeof createKoiRuntime>>;
   try {
     runtimeHandle = await createKoiRuntime({
@@ -702,6 +814,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         ? createHeadlessApprovalHandler(flags.allowTools)
         : autoApproveHandler,
       cwd: process.cwd(),
+      ...(flags.settingsFlagPath !== undefined ? { settingsFlagPath: flags.settingsFlagPath } : {}),
       engineId: "koi-cli",
       hostId: "koi-cli",
       permissionBackend: createPatternPermissionBackend({
@@ -815,6 +928,13 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   } catch (e: unknown) {
     // Ensure OTel provider is shut down even if runtime assembly fails.
     await otelHandle?.shutdown();
+    // Policy settings failures exit with code 2 — both in headless and interactive
+    // mode. Automated policy deployments key off exit 2 to distinguish
+    // "config invalid" from "unexpected crash".
+    if (e instanceof PolicyLoadError) {
+      const msg = e.message;
+      return bail(msg, 2);
+    }
     // In headless mode, route runtime-assembly throws through the same
     // NDJSON envelope as every other setup failure, so CI consumers see
     // a parseable `result` rather than an uncaught exception. Throws are
@@ -1093,6 +1213,27 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       flags.maxDurationMs !== undefined
         ? setTimeout(() => onDeadlineExceeded(), remainingForRunAndShutdown + shutdownGraceMs)
         : undefined;
+    // Raw assistant text accumulator for --result-schema validation.
+    // Only active when a schema was loaded; capped at 1 MB to prevent
+    // unbounded memory growth on large model outputs.
+    const RAW_PARTS_CAP_BYTES = 1 * 1024 * 1024; // 1 MB
+    // let: mutable accumulators updated by the callback below
+    const rawAssistantParts: string[] = [];
+    let rawAssistantPartsBytes = 0;
+    let rawAssistantOverflow = false;
+    // When --result-schema is set, suppress assistant_text NDJSON lines during the run.
+    // On validation success, a single synthesized assistant_text event is emitted that
+    // contains the exact raw validated bytes (rawAssistantParts.join("")), bypassing
+    // banner redaction so consumers receive the exact payload the schema checked.
+    // On any failure, buffered lines are discarded — no unvalidated output reaches stdout.
+    // Other event kinds (tool_call, tool_result, session_start) are emitted in real-time.
+    const writeStdoutFn = (s: string): void => {
+      if (resultSchemaObj !== undefined && s.includes('"kind":"assistant_text"')) {
+        return; // suppress — replaced by synthesized raw-text event on success
+      }
+      process.stdout.write(s);
+    };
+
     // runHeadless does not throw — it converts all errors into a typed
     // exit code and an `emitResult` callback. We keep `emitResult` in outer
     // scope so that a later teardown throw can still emit a terminal NDJSON
@@ -1104,10 +1245,33 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       // give the engine a fresh full-duration clock even though bootstrap
       // already consumed some of it.
       maxDurationMs: flags.maxDurationMs !== undefined ? remainingForRunAndShutdown : undefined,
-      writeStdout: (s) => process.stdout.write(s),
+      writeStdout: writeStdoutFn,
       writeStderr: (s) => process.stderr.write(s),
       runtime,
       externalSignal: controller.signal,
+      onRawAssistantText:
+        resultSchemaObj !== undefined
+          ? (text) => {
+              if (rawAssistantOverflow) return;
+              const chunkBytes = Buffer.byteLength(text, "utf8");
+              if (rawAssistantPartsBytes + chunkBytes > RAW_PARTS_CAP_BYTES) {
+                rawAssistantOverflow = true;
+                return;
+              }
+              rawAssistantParts.push(text); // let — streaming accumulation bounded by 1 MB cap above
+              rawAssistantPartsBytes += chunkBytes;
+            }
+          : undefined,
+      // Reset the accumulation buffer after each tool result so schema validation
+      // targets only the final answer segment, not intermediate narration.
+      onToolResult:
+        resultSchemaObj !== undefined
+          ? () => {
+              rawAssistantParts.length = 0; // let — reset on each tool completion
+              rawAssistantPartsBytes = 0;
+              rawAssistantOverflow = false;
+            }
+          : undefined,
     });
     // Upgrade the deadline finalizer now that we can emit a terminal result.
     onDeadlineExceeded = (): void => {
@@ -1125,40 +1289,162 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     let finalCode: number = headlessCode;
     try {
       await shutdownRuntime();
-      // Latch BEFORE clearing the timer so a callback already on the
-      // Node timer queue sees postRunPhaseComplete=true and no-ops
-      // instead of racing the normal-exit path with a spurious exit 4.
-      postRunPhaseComplete = true;
-      if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
-      // Any teardown failure is machine-visible as INTERNAL, regardless of
-      // the run's own exit code. Preserving, e.g., PERMISSION_DENIED when
-      // the session transcript was not flushed would hide exactly the
-      // failure mode CI retry/recovery logic needs to detect. The original
-      // code is preserved in the NDJSON result's error string for
-      // diagnostics.
-      if (shutdownFailed) {
-        finalCode = HEADLESS_EXIT.INTERNAL;
+      // If teardown consumed the remaining budget before schema validation could run,
+      // emit SCHEMA_VALIDATION (exit 6) with validationSkipped:true so CI does NOT retry.
+      // The agent ran to completion — side effects already ran. This is distinct from
+      // INTERNAL (exit 5, retry-safe) and from true schema failures (validationFailed:true).
+      if (
+        deadlineAt !== undefined &&
+        Date.now() >= deadlineAt &&
+        headlessCode === HEADLESS_EXIT.SUCCESS &&
+        resultSchemaObj !== undefined &&
+        !shutdownFailed
+      ) {
+        postRunPhaseComplete = true;
+        if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
+        finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
         emitResult({
-          exitCode: HEADLESS_EXIT.INTERNAL,
-          error: `teardown failure (run exited ${headlessCode}); see stderr for disposer / transcript errors`,
+          exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+          validationSkipped: true,
+          error:
+            "schema validation skipped: teardown exhausted max-duration-ms — check stderr for timing details",
         });
+      } else if (shutdownFailed) {
+        // When --result-schema is active and the agent succeeded, use exit 6 + validationSkipped:true:
+        // schema validation never ran, but side effects already ran — CI must NOT retry.
+        // Without --result-schema, INTERNAL (exit 5) preserves the published contract;
+        // non-retry guidance is in the error message on stderr.
+        // When the agent already failed (non-SUCCESS), INTERNAL is always appropriate —
+        // tool work didn't complete, so retrying after fixing teardown is safe.
+        postRunPhaseComplete = true;
+        if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
+        if (headlessCode === HEADLESS_EXIT.SUCCESS && resultSchemaObj !== undefined) {
+          finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
+          emitResult({
+            exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+            validationSkipped: true,
+            error:
+              "teardown failed after agent completed — do not retry; check stderr for disposer / transcript errors",
+          });
+        } else {
+          finalCode = HEADLESS_EXIT.INTERNAL;
+          emitResult({
+            exitCode: HEADLESS_EXIT.INTERNAL,
+            error:
+              headlessCode === HEADLESS_EXIT.SUCCESS
+                ? "teardown failed after agent completed — do not retry; check stderr for disposer / transcript errors"
+                : `teardown failure (run exited ${headlessCode}); see stderr for disposer / transcript errors`,
+          });
+        }
+      } else if (resultSchemaObj !== undefined && headlessCode === HEADLESS_EXIT.SUCCESS) {
+        let schemaResult: { readonly ok: true } | { readonly ok: false; readonly error: string };
+        // skippedByDeadline:true → budget ran out; validationSkipped on the result event.
+        // skippedByDeadline:false → validation ran (or failed for non-deadline reason);
+        //   validationFailed on the result event.
+        let skippedByDeadline = false;
+        if (rawAssistantOverflow) {
+          schemaResult = {
+            ok: false,
+            error: "schema validation failed: assistant output exceeded 1 MB limit",
+          };
+        } else if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
+          // Pre-validation budget check: validation never started.
+          // CI must NOT retry — agent completed all tool calls, side effects already ran.
+          skippedByDeadline = true;
+          schemaResult = {
+            ok: false,
+            error:
+              "schema validation skipped: max-duration-ms exhausted before validation could start",
+          };
+        } else {
+          try {
+            schemaResult = validateResultSchema(rawAssistantParts.join(""), resultSchemaObj);
+          } catch (_e: unknown) {
+            if (_e instanceof RangeError) {
+              schemaResult = {
+                ok: false,
+                error: "schema validation failed: validator encountered deeply nested structure",
+              };
+            } else {
+              throw _e;
+            }
+          }
+        }
+        // validateResultSchema is synchronous. A timer cannot preempt synchronous JS work,
+        // so check the wall clock after validation to enforce the deadline if it expired
+        // while the event loop was blocked by a large payload.
+        // Use SCHEMA_VALIDATION (exit 6), not TIMEOUT (exit 4): the agent already completed
+        // all tool calls before this check, so CI must NOT retry (side effects already ran).
+        if (deadlineAt !== undefined && Date.now() > deadlineAt) {
+          postRunPhaseComplete = true;
+          if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
+          finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
+          emitResult({
+            exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+            validationSkipped: true,
+            error: "schema validation skipped: max-duration-ms exceeded during schema validation",
+          });
+        } else {
+          postRunPhaseComplete = true;
+          if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
+          if (!schemaResult.ok) {
+            finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
+            emitResult({
+              exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+              ...(skippedByDeadline ? { validationSkipped: true } : { validationFailed: true }),
+              error: schemaResult.error,
+            });
+          } else {
+            // Validate against raw text, but emit banner-redacted bytes to stdout so
+            // engine-internal error text never reaches CI logs on the happy path.
+            // JSON payloads that contain banner-shaped strings as content values are
+            // unaffected: redactEngineBanners only strips top-level engine annotations
+            // (e.g. "[Turn failed: ...]"), not content inside JSON strings.
+            process.stdout.write(
+              `${ndjsonSafeStringify({ kind: "assistant_text", sessionId: String(sid), text: redactEngineBanners(rawAssistantParts.join("")) })}\n`,
+            );
+            emitResult();
+          }
+        }
       } else {
+        // Non-schema exit (AGENT_FAILURE, PERMISSION_DENIED, TIMEOUT, INTERNAL, or schema not
+        // requested). When --result-schema is active, validation did not complete — discard the
+        // buffer. When schema is not active, the buffer is always empty (writeStdoutFn never
+        // pushed to it), so the loop is a no-op anyway.
+        // The --result-schema contract: model output only appears when validation passed.
+        postRunPhaseComplete = true;
+        if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
         emitResult();
       }
     } catch (e: unknown) {
       postRunPhaseComplete = true;
       if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
-      finalCode = HEADLESS_EXIT.INTERNAL;
       const raw = e instanceof Error ? e.message : String(e);
       // Redaction: shutdown errors can carry disposer / transport URIs /
       // transcript flush paths / session-end hook exception text. CI
       // captures stderr alongside stdout, so emit classification-only on
       // both streams in headless mode.
       process.stderr.write(`koi headless: shutdown failed (${raw.length} chars redacted)\n`);
-      emitResult({
-        exitCode: HEADLESS_EXIT.INTERNAL,
-        error: `shutdown failed (${raw.length} chars redacted)`,
-      });
+      // When --result-schema is active and the agent succeeded, use exit 6 + validationSkipped:true.
+      // Without --result-schema, INTERNAL preserves the published contract; non-retry guidance is
+      // in the error message. When the agent already failed, INTERNAL is always appropriate.
+      if (headlessCode === HEADLESS_EXIT.SUCCESS && resultSchemaObj !== undefined) {
+        finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
+        emitResult({
+          exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+          validationSkipped: true,
+          error: `teardown threw after agent completed (${raw.length} chars redacted) — do not retry`,
+        });
+      } else {
+        finalCode = HEADLESS_EXIT.INTERNAL;
+        emitResult({
+          exitCode: HEADLESS_EXIT.INTERNAL,
+          error:
+            headlessCode === HEADLESS_EXIT.SUCCESS
+              ? `teardown threw after agent completed (${raw.length} chars redacted) — do not retry`
+              : `shutdown failed (${raw.length} chars redacted)`,
+        });
+      }
     }
     // Flush stdout/stderr before returning so the final NDJSON `result`
     // line (and any teardown diagnostics on stderr) isn't lost when the

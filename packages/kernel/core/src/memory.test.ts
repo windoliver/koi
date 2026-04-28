@@ -157,6 +157,36 @@ describe("parseMemoryFrontmatter", () => {
     expect(result).toBeDefined();
     expect(result?.frontmatter.type).toBe("project");
   });
+
+  test("parses optional confidence field", () => {
+    const raw = "---\nname: n\ndescription: d\ntype: feedback\nconfidence: 0.7\n---\ncontent";
+    const result = parseMemoryFrontmatter(raw);
+    expect(result?.frontmatter.confidence).toBe(0.7);
+  });
+
+  test("parses without confidence field (undefined)", () => {
+    const raw = "---\nname: n\ndescription: d\ntype: feedback\n---\ncontent";
+    const result = parseMemoryFrontmatter(raw);
+    expect(result?.frontmatter.confidence).toBeUndefined();
+  });
+
+  test("rejects confidence out of [0,1] range", () => {
+    expect(
+      parseMemoryFrontmatter(
+        "---\nname: n\ndescription: d\ntype: feedback\nconfidence: 1.5\n---\ncontent",
+      ),
+    ).toBeUndefined();
+    expect(
+      parseMemoryFrontmatter(
+        "---\nname: n\ndescription: d\ntype: feedback\nconfidence: -0.1\n---\ncontent",
+      ),
+    ).toBeUndefined();
+  });
+
+  test("rejects non-numeric confidence value", () => {
+    const raw = "---\nname: n\ndescription: d\ntype: feedback\nconfidence: high\n---\ncontent";
+    expect(parseMemoryFrontmatter(raw)).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -192,6 +222,25 @@ describe("serializeMemoryFrontmatter", () => {
     expect(parsed).toBeDefined();
     expect(parsed?.frontmatter).toEqual(fm);
     expect(parsed?.content).toContain(content);
+  });
+
+  test("serializes and roundtrips confidence field", () => {
+    const fm: MemoryFrontmatter = {
+      name: "auto-extracted learning",
+      description: "extracted by regex",
+      type: "feedback",
+      confidence: 0.7,
+    };
+    const serialized = serializeMemoryFrontmatter(fm, "Use builder pattern.");
+    expect(serialized).toContain("confidence: 0.7");
+    const parsed = parseMemoryFrontmatter(defined(serialized));
+    expect(parsed?.frontmatter.confidence).toBe(0.7);
+  });
+
+  test("omits confidence line when undefined", () => {
+    const fm: MemoryFrontmatter = { name: "n", description: "d", type: "feedback" };
+    const serialized = serializeMemoryFrontmatter(fm, "content");
+    expect(serialized).not.toContain("confidence");
   });
 });
 

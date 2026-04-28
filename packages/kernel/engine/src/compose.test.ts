@@ -1452,7 +1452,10 @@ describe("createComposedCallHandlers streaming", () => {
     expect(typeof handlers.modelStream).toBe("function");
   });
 
-  test("omits modelStream when rawModelStreamTerminal not provided", async () => {
+  test("synthesizes modelStream from modelCall when rawModelStreamTerminal not provided", async () => {
+    // Round 9: engine fallback. Adapters with only a modelCall terminal
+    // get a synthesized stream pipeline so wrapModelStream middleware
+    // (e.g. tool-recovery) runs uniformly across all adapters.
     const agent = await createStartedAgent();
     const rawModel = mock(() => Promise.resolve(mockModelResponse()));
     const rawTool = mock(() => Promise.resolve(mockToolResponse()));
@@ -1465,7 +1468,239 @@ describe("createComposedCallHandlers streaming", () => {
       rawTool,
     );
 
-    expect(handlers.modelStream).toBeUndefined();
+    const stream = handlers.modelStream;
+    if (stream === undefined) throw new Error("expected synthesized modelStream");
+    const chunks = [];
+    for await (const c of stream({ messages: [] })) chunks.push(c);
+    expect(chunks.some((c) => c.kind === "done")).toBe(true);
+    expect(rawModel).toHaveBeenCalled();
+  });
+
+  test("synthesized modelStream emits tool_call_* chunks from response.richContent — round 45 F1", async () => {
+    // Non-streaming adapters (e.g. @koi/model-openai-compat's complete())
+    // surface tool calls via ModelResponse.richContent rather than
+    // streamed chunks. Without converting them to tool_call_* events the
+    // synthesized stream would silently drop the call because
+    // consumeModelStream only executes from streamed events.
+    const agent = await createStartedAgent();
+    const { toolCallId } = await import("@koi/core");
+    const callId = toolCallId("call-abc");
+    const rawModel = mock(() =>
+      Promise.resolve({
+        content: "",
+        model: "test-model",
+        stopReason: "tool_use" as const,
+        richContent: [
+          {
+            kind: "tool_call" as const,
+            id: callId,
+            name: "calc",
+            arguments: { a: 1, b: 2 },
+          },
+        ],
+      } satisfies ModelResponse),
+    );
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+
+    const handlers = createComposedCallHandlers(
+      [],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    const stream = handlers.modelStream;
+    if (stream === undefined) throw new Error("expected synthesized modelStream");
+    const chunks = [];
+    for await (const c of stream({ messages: [] })) chunks.push(c);
+
+    const start = chunks.find((c) => c.kind === "tool_call_start");
+    const delta = chunks.find((c) => c.kind === "tool_call_delta");
+    const end = chunks.find((c) => c.kind === "tool_call_end");
+    expect(start).toBeDefined();
+    expect(delta).toBeDefined();
+    expect(end).toBeDefined();
+    if (start?.kind !== "tool_call_start") throw new Error("bad chunk");
+    expect(start.toolName).toBe("calc");
+    expect(start.callId).toBe(callId);
+    if (delta?.kind !== "tool_call_delta") throw new Error("bad chunk");
+    expect(JSON.parse(delta.delta)).toEqual({ a: 1, b: 2 });
+  });
+
+  test("synthesized modelStream emits thinking_delta from richContent thinking blocks — round 46 F2", async () => {
+    // Non-streaming adapters can return thinking blocks in
+    // richContent; synth must surface them as thinking_delta chunks
+    // so chunk-consuming middleware (e.g. transcript / debug) sees
+    // them on the same stream contract as native streamers.
+    const agent = await createStartedAgent();
+    const rawModel = mock(() =>
+      Promise.resolve({
+        content: "hi",
+        model: "test-model",
+        richContent: [
+          { kind: "thinking" as const, text: "let me reason about this" },
+          { kind: "text" as const, text: "hi" },
+        ],
+      } satisfies ModelResponse),
+    );
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+
+    const handlers = createComposedCallHandlers(
+      [],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    const stream = handlers.modelStream;
+    if (stream === undefined) throw new Error("expected synthesized modelStream");
+    const chunks = [];
+    for await (const c of stream({ messages: [] })) chunks.push(c);
+
+    const thinking = chunks.find((c) => c.kind === "thinking_delta");
+    expect(thinking).toBeDefined();
+    if (thinking?.kind !== "thinking_delta") throw new Error("bad chunk");
+    expect(thinking.delta).toBe("let me reason about this");
+  });
+
+  test("synthesized modelStream preserves richContent block order — round 48 F2", async () => {
+    // text → tool_call → text ordering must be preserved on the
+    // stream so chunk consumers see chronological structure. The
+    // earlier round-46 implementation flushed response.content first,
+    // then replayed richContent — flattening interleaved text +
+    // tool_call patterns and breaking observability semantics.
+    const agent = await createStartedAgent();
+    const { toolCallId } = await import("@koi/core");
+    const callId = toolCallId("call-mid");
+    const rawModel = mock(() =>
+      Promise.resolve({
+        content: "before-after",
+        model: "test-model",
+        richContent: [
+          { kind: "text" as const, text: "before-" },
+          {
+            kind: "tool_call" as const,
+            id: callId,
+            name: "calc",
+            arguments: { a: 1 },
+          },
+          { kind: "text" as const, text: "after" },
+        ],
+      } satisfies ModelResponse),
+    );
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+
+    const handlers = createComposedCallHandlers(
+      [],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    const stream = handlers.modelStream;
+    if (stream === undefined) throw new Error("expected synthesized modelStream");
+    const chunks: ModelChunk[] = [];
+    for await (const c of stream({ messages: [] })) chunks.push(c);
+
+    const orderedKinds = chunks.map((c) => c.kind);
+    const idxBefore = chunks.findIndex((c) => c.kind === "text_delta" && c.delta === "before-");
+    const idxStart = orderedKinds.indexOf("tool_call_start");
+    const idxAfter = chunks.findIndex((c) => c.kind === "text_delta" && c.delta === "after");
+    expect(idxBefore).toBeGreaterThanOrEqual(0);
+    expect(idxStart).toBeGreaterThan(idxBefore);
+    expect(idxAfter).toBeGreaterThan(idxStart);
+  });
+
+  test("synthesized modelStream fires dual-hook middleware exactly once via wrapModelStream (round 14)", async () => {
+    // Round 13 (critical): a single logical request must traverse only
+    // one composed model chain. Dual-hook middleware (implements both
+    // wrapModelCall AND wrapModelStream) must fire exactly once — not
+    // twice — to avoid concurrency-guard self-deadlock and budget
+    // double-charge.
+    //
+    // Round 14 (high): call-only middleware (only wrapModelCall) MUST
+    // still fire on non-streaming adapters. The synth runs a chain
+    // composed of just call-only middleware around the raw terminal,
+    // so dual-hook middleware is excluded from the synth path and
+    // fires exactly once via the outer wrapModelStream chain. See
+    // "synthesized modelStream still runs call-only middleware".
+    const agent = await createStartedAgent();
+    const callCount = { call: 0, stream: 0 };
+    const mw: KoiMiddleware = {
+      name: "double-hook-observer",
+      describeCapabilities: () => undefined,
+      wrapModelCall: async (_ctx, req, next) => {
+        callCount.call += 1;
+        return next(req);
+      },
+      wrapModelStream: (_ctx, req, next) => ({
+        async *[Symbol.asyncIterator]() {
+          callCount.stream += 1;
+          yield* next(req);
+        },
+      }),
+    };
+    const rawModel = mock(() => Promise.resolve(mockModelResponse()));
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+    const handlers = createComposedCallHandlers(
+      [mw],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    const stream = handlers.modelStream;
+    if (stream === undefined) throw new Error("expected synthesized modelStream");
+    for await (const _ of stream({ messages: [] })) {
+      // drain
+    }
+
+    expect(callCount.stream).toBe(1);
+    expect(callCount.call).toBe(0);
+    expect(rawModel).toHaveBeenCalledTimes(1);
+  });
+
+  test("synthesized modelStream still runs call-only middleware (round 14)", async () => {
+    // Round 14 regression (high): call-only middleware (wrapModelCall
+    // implemented, wrapModelStream NOT implemented) was silently
+    // bypassed on non-streaming adapters after the round-13 synth
+    // change. Examples in the wild include collective-memory's prompt
+    // injection. The synth must run a call-only middleware chain
+    // around the raw terminal so these hooks fire exactly once on
+    // non-streaming adapters.
+    const agent = await createStartedAgent();
+    let callOnlyHits = 0;
+    const callOnlyMw: KoiMiddleware = {
+      name: "call-only-injector",
+      describeCapabilities: () => undefined,
+      wrapModelCall: async (_ctx, req, next) => {
+        callOnlyHits += 1;
+        return next(req);
+      },
+    };
+    const rawModel = mock(() => Promise.resolve(mockModelResponse()));
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+    // No rawStream — forces synth path
+    const handlers = createComposedCallHandlers(
+      [callOnlyMw],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    const stream = handlers.modelStream;
+    if (stream === undefined) throw new Error("expected synthesized modelStream");
+    for await (const _ of stream({ messages: [] })) {
+      // drain
+    }
+
+    expect(callOnlyHits).toBe(1);
+    expect(rawModel).toHaveBeenCalledTimes(1);
   });
 
   test("streaming middleware fires through composed handlers", async () => {
@@ -1970,7 +2205,14 @@ describe("recomposeChains", () => {
     expect(typeof chains.streamChain).toBe("function");
   });
 
-  test("returns toolChain + modelChain only when no stream terminal", () => {
+  test("returns undefined streamChain when no stream terminal (round 13)", () => {
+    // Round 13: recomposeChains does NOT synthesize from the composed
+    // modelChain. Doing so caused wrapModelStream + wrapModelCall
+    // middleware to double-fire (concurrency-guard self-deadlock,
+    // budget double-charge). Synthesis lives at the terminal layer in
+    // createTerminalHandlers, where it bridges from the RAW terminal
+    // (not the composed chain) so exactly one composed chain governs
+    // each logical request.
     const sorted: readonly KoiMiddleware[] = [];
     const terminals = {
       modelHandler: async () => mockModelResponse(),

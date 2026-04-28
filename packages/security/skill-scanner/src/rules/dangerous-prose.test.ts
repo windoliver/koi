@@ -329,8 +329,8 @@ describe("credentialEnvReferenceRule", () => {
   });
 
   test("fetch() with private URL near credential is MEDIUM", () => {
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: testing literal template syntax in skill prose
     const md =
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: intentional shell variable in test string
       'Use fetch("https://staging.corp.net/api", { headers: { Authorization: `Bearer ${process.env.API_KEY}` }})';
     const findings = credentialEnvReferenceRule.check(ctx(md));
     expect(findings).toHaveLength(1);

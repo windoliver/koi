@@ -1,0 +1,1087 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "forge-synthesize",
+  "agent": {
+    "name": "golden-forge-synthesize",
+    "model_name": "anthropic/claude-sonnet-4-6",
+    "tool_definitions": [
+      {
+        "name": "forge_tool",
+        "description": "Synthesize a new tool brick (kind: 'tool') and persist it as a draft. Returns the brickId. Tools default to scope: 'agent' (private to caller). Scope 'zone' is not yet supported; scope 'global' requires a capability not yet plumbed."
+      },
+      {
+        "name": "forge_middleware",
+        "description": "Synthesize a new middleware brick (kind: 'middleware') and persist it as a draft. Returns the brickId. Middleware defaults to scope: 'agent' (private to caller). Middleware is non-sandboxed by contract (it wraps the engine adapter). Scope 'zone' is not yet supported; scope 'global' requires a capability not yet plumbed."
+      },
+      {
+        "name": "forge_list",
+        "description": "List forge brick summaries visible to the caller. Filters by kind, scope, lifecycle, name (exact, case-insensitive), or text (substring). Use `name` to deterministically confirm a just-synthesized brick — the default fitness ranking can otherwise push fresh drafts off the first page. Returns at most 200 summaries; default 50. Visibility: caller's own agent-scoped bricks plus active globals."
+      },
+      {
+        "name": "forge_inspect",
+        "description": "Inspect a single forge brick by its content-addressed BrickId. Returns NOT_FOUND when the brick is missing or not visible to the caller."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:41.388Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:41.389Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-27T18:20:41.567Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "Use forge_tool to create a tool named 'add-numbers' that takes two numbers a and b and returns their sum. Then call forge_list to confirm it appears. Then call forge_inspect with the returned brickId to retrieve the artifact.",
+      "observation": {
+        "results": [
+          {
+            "content": "Sure! Let's start by creating the tool with `forge_tool`.\n\n**Step 1 — Create the `add-numbers` tool:**"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1817,
+        "completion_tokens": 334
+      },
+      "duration_ms": 4318,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "forge_tool",
+            "description": "Synthesize a new tool brick (kind: 'tool') and persist it as a draft. Returns the brickId. Tools default to scope: 'agent' (private to caller). Scope 'zone' is not yet supported; scope 'global' requires a capability not yet plumbed."
+          },
+          {
+            "name": "forge_middleware",
+            "description": "Synthesize a new middleware brick (kind: 'middleware') and persist it as a draft. Returns the brickId. Middleware defaults to scope: 'agent' (private to caller). Middleware is non-sandboxed by contract (it wraps the engine adapter). Scope 'zone' is not yet supported; scope 'global' requires a capability not yet plumbed."
+          },
+          {
+            "name": "forge_list",
+            "description": "List forge brick summaries visible to the caller. Filters by kind, scope, lifecycle, name (exact, case-insensitive), or text (substring). Use `name` to deterministically confirm a just-synthesized brick — the default fitness ranking can otherwise push fresh drafts off the first page. Returns at most 200 summaries; default 50. Visibility: caller's own agent-scoped bricks plus active globals."
+          },
+          {
+            "name": "forge_inspect",
+            "description": "Inspect a single forge brick by its content-addressed BrickId. Returns NOT_FOUND when the brick is missing or not visible to the caller."
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6",
+        "promptPrefixFingerprint": "9b9b404c15537a249df0e683132e5b7c66ba74ef54982a34fff37064eef4c7f0",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-04-27T18:20:45.900Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_forge_tool_3",
+          "function_name": "forge_tool",
+          "arguments": {
+            "name": "add-numbers",
+            "description": "Takes two numbers, a and b, and returns their sum.",
+            "version": "0.0.1",
+            "scope": "agent",
+            "implementation": "return { sum: a + b };",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "a": {
+                  "type": "number",
+                  "description": "The first number."
+                },
+                "b": {
+                  "type": "number",
+                  "description": "The second number."
+                }
+              },
+              "required": ["a", "b"]
+            },
+            "outputSchema": {
+              "type": "object",
+              "properties": {
+                "sum": {
+                  "type": "number",
+                  "description": "The sum of a and b."
+                }
+              },
+              "required": ["sum"]
+            }
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_forge_tool_3",
+            "content": "{\"ok\":true,\"value\":{\"brickId\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\",\"lifecycle\":\"draft\"}}"
+          }
+        ]
+      },
+      "duration_ms": 6,
+      "outcome": "success"
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:45.901Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 4475.092915999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1777314045896,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:45.910Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "forge_tool({\"name\":\"add-numbers\",\"description\":\"Takes two numbers, a and b, and returns their sum.\",\"version\":\"0.0.1\",\"scope\":\"agent\",\"implementation\":\"return { sum: a + b };\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"number\",\"description\":\"The first number.\"},\"b\":{\"type\":\"number\",\"description\"…)",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 14.187791999996989,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "forge_tool",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:45.911Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 4342.530624999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 4,
+            "allowedCount": 4,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777314045895,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:45.912Z",
+      "model_name": "middleware:permissions",
+      "message": "forge_tool({\"name\":\"add-numbers\",\"description\":\"Takes two numbers, a and b, and returns their sum.\",\"version\":\"0.0.1\",\"scope\":\"agent\",\"implementation\":\"return { sum: a + b };\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"number\",\"description\":\"The first number.\"},\"b\":{\"type\":\"number\",\"description\"…)",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 12.1374590000014,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "forge_tool",
+            "resource": "forge_tool",
+            "toolInput": "{\"name\":\"add-numbers\",\"description\":\"Takes two numbers, a and b, and returns their sum.\",\"version\":\"0.0.1\",\"scope\":\"agent\",\"implementation\":\"return { sum: a + b };\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"number\",\"description\":\"The first number.\"},\"b\":{\"type\":\"number\",\"description\"…",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1777314045909,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:45.913Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 4331.068375000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777314045894,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:45.914Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 4328.8116249999985,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777314045893,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:45.915Z",
+      "model_name": "middleware:hooks",
+      "message": "forge_tool({\"name\":\"add-numbers\",\"description\":\"Takes two numbers, a and b, and returns their sum.\",\"version\":\"0.0.1\",\"scope\":\"agent\",\"implementation\":\"return { sum: a + b };\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"number\",\"description\":\"The first number.\"},\"b\":{\"type\":\"number\",\"description\"…)",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 8.770500000002357,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "forge_tool",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777314045908,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:45.916Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 4327.080291999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777314045892,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:45.917Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "forge_tool({\"name\":\"add-numbers\",\"description\":\"Takes two numbers, a and b, and returns their sum.\",\"version\":\"0.0.1\",\"scope\":\"agent\",\"implementation\":\"return { sum: a + b };\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"number\",\"description\":\"The first number.\"},\"b\":{\"type\":\"number\",\"description\"…)",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 7.376667000000452,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777314045907,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "agent",
+      "timestamp": "2026-04-27T18:20:45.924Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "{\"ok\":true,\"value\":{\"brickId\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\",\"lifecycle\":\"draft\"}}",
+      "observation": {
+        "results": [
+          {
+            "content": "The tool was created successfully with `brickId: sha256:c96b25...`. Now let's **simultaneously** confirm it appears in the list and inspect it directly using the returned brickId!"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 2156,
+        "completion_tokens": 191
+      },
+      "duration_ms": 4199,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "forge_tool",
+            "description": "Synthesize a new tool brick (kind: 'tool') and persist it as a draft. Returns the brickId. Tools default to scope: 'agent' (private to caller). Scope 'zone' is not yet supported; scope 'global' requires a capability not yet plumbed."
+          },
+          {
+            "name": "forge_middleware",
+            "description": "Synthesize a new middleware brick (kind: 'middleware') and persist it as a draft. Returns the brickId. Middleware defaults to scope: 'agent' (private to caller). Middleware is non-sandboxed by contract (it wraps the engine adapter). Scope 'zone' is not yet supported; scope 'global' requires a capability not yet plumbed."
+          },
+          {
+            "name": "forge_list",
+            "description": "List forge brick summaries visible to the caller. Filters by kind, scope, lifecycle, name (exact, case-insensitive), or text (substring). Use `name` to deterministically confirm a just-synthesized brick — the default fitness ranking can otherwise push fresh drafts off the first page. Returns at most 200 summaries; default 50. Visibility: caller's own agent-scoped bricks plus active globals."
+          },
+          {
+            "name": "forge_inspect",
+            "description": "Inspect a single forge brick by its content-addressed BrickId. Returns NOT_FOUND when the brick is missing or not visible to the caller."
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6",
+        "promptPrefixFingerprint": "9b9b404c15537a249df0e683132e5b7c66ba74ef54982a34fff37064eef4c7f0",
+        "turnIndex": 1
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "tool",
+      "timestamp": "2026-04-27T18:20:50.131Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_forge_list_14",
+          "function_name": "forge_list",
+          "arguments": {
+            "name": "add-numbers",
+            "kind": "tool"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_forge_list_14",
+            "content": "{\"ok\":true,\"value\":{\"summaries\":[{\"id\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\",\"kind\":\"tool\",\"name\":\"add-numbers\",\"description\":\"Takes two numbers, a and b, and returns their sum.\",\"tags\":[]}]}}"
+          }
+        ]
+      },
+      "duration_ms": 38,
+      "outcome": "success"
+    },
+    {
+      "step_id": 15,
+      "source": "tool",
+      "timestamp": "2026-04-27T18:20:50.178Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_forge_inspect_15",
+          "function_name": "forge_inspect",
+          "arguments": {
+            "brickId": "sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_forge_inspect_15",
+            "content": "{\"ok\":true,\"value\":{\"artifact\":{\"id\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\",\"kind\":\"tool\",\"name\":\"add-numbers\",\"description\":\"Takes two numbers, a and b, and returns their sum.\",\"scope\":\"agent\",\"origin\":\"forged\",\"policy\":{\"sandbox\":true,\"capabilities\":{\"network\":{\"allow\":false},\"filesystem\":{\"read\":[\"/usr\",\"/bin\",\"/lib\",\"/etc\",\"/tmp\"],\"write\":[\"/tmp/koi-sandbox-*\"]},\"resources\":{\"maxMemoryMb\":512,\"timeoutMs\":30000,\"maxPids\":64,\"maxOpenFiles\":256}}},\"lifecycle\":\"draft\",\"provenance\":{\"source\":{\"origin\":\"forged\",\"forgedBy\":\"9596e37e-06a9-4d6a-873f-a0362d1e55e4\",\"sessionId\":\"agent:9596e37e-06a9-4d6a-873f-a0362d1e55e4:6ee8fcc0-5dd7-43f6-8068-d2155128caec\"},\"buildDefinition\":{\"buildType\":\"https://koi.dev/forge-tools/v1\",\"externalParameters\":{}},\"builder\":{\"id\":\"@koi/forge-tools\"},\"metadata\":{\"invocationId\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\",\"startedAt\":1777314045902,\"finishedAt\":1777314045905,\"sessionId\":\"agent:9596e37e-06a9-4d6a-873f-a0362d1e55e4:6ee8fcc0-5dd7-43f6-8068-d2155128caec\",\"agentId\":\"9596e37e-06a9-4d6a-873f-a0362d1e55e4\",\"depth\":0},\"verification\":{\"passed\":false,\"sandbox\":true,\"totalDurationMs\":0,\"stageResults\":[]},\"classification\":\"internal\",\"contentMarkers\":[],\"contentHash\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\"},\"version\":\"0.0.1\",\"tags\":[],\"usageCount\":0,\"implementation\":\"return { sum: a + b };\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"number\",\"description\":\"The first number.\"},\"b\":{\"type\":\"number\",\"description\":\"The second number.\"}},\"required\":[\"a\",\"b\"]},\"outputSchema\":{\"type\":\"object\",\"properties\":{\"sum\":{\"type\":\"number\",\"description\":\"The sum of a and b.\"}},\"required\":[\"sum\"]},\"storeVersion\":1}}}"
+          }
+        ]
+      },
+      "duration_ms": 2,
+      "outcome": "success"
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:50.179Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 4203.593666000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1777314050130,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:50.180Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "forge_list({\"name\":\"add-numbers\",\"kind\":\"tool\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 48.080666000001656,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "forge_list",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "_original_timestamp": 1777314050177,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:50.184Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "forge_inspect({\"brickId\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 3.701082999999926,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "forge_inspect",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:50.185Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 4203.436666999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 4,
+            "allowedCount": 4,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777314050129,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:50.186Z",
+      "model_name": "middleware:permissions",
+      "message": "forge_list({\"name\":\"add-numbers\",\"kind\":\"tool\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 47.810833999999886,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "forge_list",
+            "resource": "forge_list",
+            "toolInput": "{\"name\":\"add-numbers\",\"kind\":\"tool\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1777314050176,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:50.187Z",
+      "model_name": "middleware:permissions",
+      "message": "forge_inspect({\"brickId\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 2.8465829999986454,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "forge_inspect",
+            "resource": "forge_inspect",
+            "toolInput": "{\"brickId\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1777314050183,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:50.188Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 4202.932625000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777314050128,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:50.189Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 4202.833083000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777314050127,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:50.190Z",
+      "model_name": "middleware:hooks",
+      "message": "forge_list({\"name\":\"add-numbers\",\"kind\":\"tool\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 47.472334000001865,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "forge_list",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777314050175,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:50.191Z",
+      "model_name": "middleware:hooks",
+      "message": "forge_inspect({\"brickId\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 2.5504579999978887,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "forge_inspect",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777314050182,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 26,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:50.192Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 4202.5505840000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777314050126,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 27,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:50.193Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "forge_list({\"name\":\"add-numbers\",\"kind\":\"tool\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 41.826834000003146,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777314050170,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 28,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:50.194Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "forge_inspect({\"brickId\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 2.264000000002852,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777314050181,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 29,
+      "source": "agent",
+      "timestamp": "2026-04-27T18:20:50.208Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "{\"ok\":true,\"value\":{\"artifact\":{\"id\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\",\"kind\":\"tool\",\"name\":\"add-numbers\",\"description\":\"Takes two numbers, a and b, and returns their sum.\",\"scope\":\"agent\",\"origin\":\"forged\",\"policy\":{\"sandbox\":true,\"capabilities\":{\"network\":{\"allow\":false},\"filesystem\":{\"read\":[\"/usr\",\"/bin\",\"/lib\",\"/etc\",\"/tmp\"],\"write\":[\"/tmp/koi-sandbox-*\"]},\"resources\":{\"maxMemoryMb\":512,\"timeoutMs\":30000,\"maxPids\":64,\"maxOpenFiles\":256}}},\"lifecycle\":\"draft\",\"provenance\":{\"source\":{\"origin\":\"forged\",\"forgedBy\":\"9596e37e-06a9-4d6a-873f-a0362d1e55e4\",\"sessionId\":\"agent:9596e37e-06a9-4d6a-873f-a0362d1e55e4:6ee8fcc0-5dd7-43f6-8068-d2155128caec\"},\"buildDefinition\":{\"buildType\":\"https://koi.dev/forge-tools/v1\",\"externalParameters\":{}},\"builder\":{\"id\":\"@koi/forge-tools\"},\"metadata\":{\"invocationId\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\",\"startedAt\":1777314045902,\"finishedAt\":1777314045905,\"sessionId\":\"agent:9596e37e-06a9-4d6a-873f-a0362d1e55e4:6ee8fcc0-5dd7-43f6-8068-d2155128caec\",\"agentId\":\"9596e37e-06a9-4d6a-873f-a0362d1e55e4\",\"depth\":0},\"verification\":{\"passed\":false,\"sandbox\":true,\"totalDurationMs\":0,\"stageResults\":[]},\"classification\":\"internal\",\"contentMarkers\":[],\"contentHash\":\"sha256:c96b25197bce28391773112f5b7cd83c983f76343e68fe055a631f5a2726168d\"},\"version\":\"0.0.1\",\"tags\":[],\"usageCount\":0,\"implementation\":\"return { sum: a + b };\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"number\",\"description\":\"The first number.\"},\"b\":{\"type\":\"number\",\"description\":\"The second number.\"}},\"required\":[\"a\",\"b\"]},\"outputSchema\":{\"type\":\"object\",\"properties\":{\"sum\":{\"type\":\"number\",\"description\":\"The sum of a and b.\"}},\"required\":[\"sum\"]},\"storeVersion\":1}}}",
+      "observation": {
+        "results": [
+          {
+            "content": "All three steps completed successfully! Here's a full summary of what happened:\n\n---\n\n### ✅ Step 1 — `forge_tool`: Tool Created\nThe `add-numbers` tool was synthesized and persisted as a draft brick.\n\n| Field | Value |\n|---|---|\n| **Name** | `add-numbers` |\n| **BrickId** | `sha256:c96b25197b...168d` |\n| **Lifecycle** | `draft` |\n| **Scope** | `agent` |\n| **Version** | `0.0.1` |\n| **Implementation** | `return { sum: a + b };` |\n\n---\n\n### ✅ Step 2 — `forge_list`: Tool Confirmed\nThe listing query filtered by `name: add-numbers` and `kind: tool` and returned exactly **one matching entry** — confirming the brick is visible and registered correctly.\n\n---\n\n### ✅ Step 3 — `forge_inspect`: Full Artifact Retrieved\nThe full artifact was fetched by `brickId`. Key highlights:\n\n- **Input Schema**: Two required `number` fields — `a` and `b`\n- **Output Schema**: A single `number` field — `sum`\n- **Sandbox Policy**: Enabled ✅ (network access disabled, memory capped at 512 MB, 30s timeout)\n- **Usage Count**: `0` (freshly created)\n- **Provenance**: Forged by agent `9596e37e-...` in the current session\n\nThe tool is ready to be promoted from `draft` to `active` whenever verification passes! 🎉"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 3114,
+        "completion_tokens": 383
+      },
+      "duration_ms": 7980,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 7,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "forge_tool",
+            "description": "Synthesize a new tool brick (kind: 'tool') and persist it as a draft. Returns the brickId. Tools default to scope: 'agent' (private to caller). Scope 'zone' is not yet supported; scope 'global' requires a capability not yet plumbed."
+          },
+          {
+            "name": "forge_middleware",
+            "description": "Synthesize a new middleware brick (kind: 'middleware') and persist it as a draft. Returns the brickId. Middleware defaults to scope: 'agent' (private to caller). Middleware is non-sandboxed by contract (it wraps the engine adapter). Scope 'zone' is not yet supported; scope 'global' requires a capability not yet plumbed."
+          },
+          {
+            "name": "forge_list",
+            "description": "List forge brick summaries visible to the caller. Filters by kind, scope, lifecycle, name (exact, case-insensitive), or text (substring). Use `name` to deterministically confirm a just-synthesized brick — the default fitness ranking can otherwise push fresh drafts off the first page. Returns at most 200 summaries; default 50. Visibility: caller's own agent-scoped bricks plus active globals."
+          },
+          {
+            "name": "forge_inspect",
+            "description": "Inspect a single forge brick by its content-addressed BrickId. Returns NOT_FOUND when the brick is missing or not visible to the caller."
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6",
+        "promptPrefixFingerprint": "9b9b404c15537a249df0e683132e5b7c66ba74ef54982a34fff37064eef4c7f0",
+        "turnIndex": 2
+      }
+    },
+    {
+      "step_id": 30,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:58.197Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 7985.973457999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 31,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:58.198Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 7985.845250000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 4,
+            "allowedCount": 4,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777314058196,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 32,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:58.199Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 7985.536374999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777314058195,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 33,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:58.200Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 7985.434458,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777314058194,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 34,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:58.201Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 7984.9521669999995,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777314058193,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 35,
+      "source": "system",
+      "timestamp": "2026-04-27T18:20:58.214Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.26375000000552973,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

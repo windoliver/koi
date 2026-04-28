@@ -63,7 +63,7 @@ index.ts                     ← public re-exports
 ├── tool-cache.ts            ← event-driven tool cache (agent + platform tools)
 ├── transport.ts             ← createStdioServerTransport()
 ├── config.ts                ← McpServerConfig, PlatformCapabilities
-├── platform-tools.ts        ← 7 platform tool builders (real Koi Tools)
+├── platform-tools.ts        ← 8 platform tool builders (real Koi Tools)
 └── errors.ts                ← error sanitization for MCP boundary
 ```
 
@@ -76,12 +76,13 @@ Both modes are capability-gated and composable. Platform tools pass through the 
 
 ---
 
-## Platform Tools (7)
+## Platform Tools (8)
 
 | MCP Tool | Subsystem | Security |
 |----------|-----------|----------|
 | `koi_send_message` | MailboxComponent | `from` = callerId enforced, `kind` = "event" only |
 | `koi_list_messages` | MailboxComponent | Max 100, lean projections |
+| `koi_list_mailbox` | MailboxComponent | Headers-only (no payloads), max 100, non-destructive |
 | `koi_list_tasks` | ManagedTaskBoard | Status filter, lean projections, max 100 |
 | `koi_get_task` | ManagedTaskBoard | Full task details by ID |
 | `koi_update_task` | ManagedTaskBoard | Atomic `startTask()`, owned `completeOwnedTask`/`failOwnedTask` |
@@ -192,3 +193,5 @@ surface touched.
 type error before the default applies — only `undefined` or empty string triggers the
 fallback. This aligns both task-completion surfaces (library tools and MCP platform
 tools) so callers get consistent behavior regardless of entry point.
+
+<!-- biome lint suppression pass: noNonNullAssertion / noTemplateCurlyInString (pre-existing patterns; no behavioral change) -->

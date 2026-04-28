@@ -72,7 +72,7 @@ owned mutations atomically (#1241 follow-up).
 
 | Tool | Notes |
 |------|-------|
-| `agent_spawn` | Spawns a named child agent via injected `SpawnFn`. Returns `{ ok, output }`. Input: `{ agent_name, description, context? }`. Does NOT accept `task_id` — coupling to the task board is the responsibility of the autonomous bridge (#1553), not the tool itself. |
+| `agent_spawn` | Spawns a named child agent via injected `SpawnFn`. Returns `{ ok, output }`. Input: `{ agent_name, description, context? }`. Optional `context` is forwarded on the L0 `SpawnRequest` and also appended to the child task description as a formatted `Structured context:` block so existing spawn implementations that only read `description` still receive the data. Does NOT accept `task_id` — coupling to the task board is the responsibility of the autonomous bridge (#1553), not the tool itself. |
 
 ## Key Design Decisions
 
@@ -95,6 +95,13 @@ owned mutations atomically (#1241 follow-up).
 `agent_spawn` wraps the L0 `SpawnFn` contract rather than a concrete implementation.
 The runtime injects the real spawn function; tests inject a stub. This keeps the package
 free of L1 engine dependencies.
+
+### Structured context is forwarded losslessly
+
+`agent_spawn` accepts an optional `context` object for coordinator metadata such
+as task IDs, file scopes, or constraints. The tool forwards that object as
+`SpawnRequest.context` and mirrors it into the child description for spawn
+implementations that have not yet adopted the structured field.
 
 ### TaskCascade reuses @koi/task-board dag utilities
 

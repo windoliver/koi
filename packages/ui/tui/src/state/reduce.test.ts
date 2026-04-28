@@ -877,7 +877,7 @@ describe("reduce — engine_event — tool result cap", () => {
     }
   });
 
-  test("tool_result for unknown callId warns and returns same state", () => {
+  test("tool_result for unknown callId emits standalone info notice (not silent)", () => {
     const state = stateWith({
       messages: [assistantMsg("text", { id: "assistant-0" })],
     });
@@ -885,8 +885,15 @@ describe("reduce — engine_event — tool result cap", () => {
       state,
       engineEvent({ kind: "tool_result", callId: testCallId("unknown-id"), output: "data" }),
     );
-    // No matching block — state unchanged (modulo reference equality via warn path)
-    expect(next.messages).toEqual(state.messages);
+    // Original assistant message untouched — not corrupted by the diagnostic.
+    expect(next.messages[0]).toEqual(state.messages[0] as TuiMessage);
+    // Diagnostic appears as a standalone info notice (does not participate in
+    // findLastAssistant routing, so it cannot split a streaming turn).
+    const last = next.messages.at(-1);
+    expect(last?.kind).toBe("info");
+    if (last?.kind === "info") {
+      expect(last.message).toContain("unknown-id");
+    }
   });
 });
 
@@ -1133,6 +1140,40 @@ describe("reduce — set_view", () => {
   test("same view returns same reference", () => {
     const state = createInitialState();
     const next = reduce(state, { kind: "set_view", view: "conversation" });
+    expect(next).toBe(state);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// set_supervised_children (#1866)
+// ---------------------------------------------------------------------------
+
+describe("reduce — set_supervised_children", () => {
+  test("replaces supervisedChildren with the new snapshot", () => {
+    const state = createInitialState();
+    const children = [
+      {
+        agentId: "worker-a-1",
+        childSpecName: "worker-a",
+        parentId: "supervisor",
+        phase: "running" as const,
+      },
+    ];
+    const next = reduce(state, { kind: "set_supervised_children", children });
+    expect(next.supervisedChildren).toEqual(children);
+  });
+
+  test("same reference returns same state (reference-equality shortcut)", () => {
+    const children = [
+      {
+        agentId: "a1",
+        childSpecName: "a",
+        parentId: "p",
+        phase: "running" as const,
+      },
+    ];
+    const state = { ...createInitialState(), supervisedChildren: children };
+    const next = reduce(state, { kind: "set_supervised_children", children });
     expect(next).toBe(state);
   });
 });
@@ -1912,6 +1953,43 @@ describe("reduce — message compaction", () => {
       state = reduce(state, engineEvent({ kind: "turn_end", turnIndex: i }));
     }
     expect(state.messages.length).toBeLessThanOrEqual(COMPACT_THRESHOLD);
+  });
+
+  test("compaction preserves real history when unmatched-tool diagnostics are present (#1940)", () => {
+    // Sit just below threshold with real user messages, then sprinkle a few
+    // unmatched-tool diagnostics. A real append should still trigger
+    // compaction without evicting older real messages — the diagnostics
+    // ride alongside, not in the retained MAX_MESSAGES window.
+    const real: readonly TuiMessage[] = Array.from({ length: COMPACT_THRESHOLD - 1 }, (_, i) =>
+      userMsg(`msg-${i}`, `user-${i}`),
+    );
+    const diagnostics: readonly TuiMessage[] = Array.from({ length: 3 }, (_, i) => ({
+      kind: "info" as const,
+      id: `info-tool-unmatched-call-${i}`,
+      message: `Received tool update for unknown callId="call-${i}"`,
+    }));
+    const state = stateWith({ messages: [...real, ...diagnostics] });
+    const next = reduce(state, {
+      kind: "add_user_message",
+      id: "user-final",
+      blocks: [{ kind: "text", text: "trigger" }],
+    });
+    // Compaction trims real history to MAX_MESSAGES — the protection is
+    // that diagnostics do NOT occupy any of those retained slots. Without
+    // the fix, diagnostics in the tail would force older real messages out
+    // of the retained window. With the fix, all MAX_MESSAGES kept entries
+    // are real, and diagnostics ride alongside.
+    const realInResult = next.messages.filter(
+      (m) => !(m.kind === "info" && m.id.startsWith("info-tool-unmatched-")),
+    );
+    expect(realInResult).toHaveLength(MAX_MESSAGES);
+    // The newest real message ("user-final") survives at the tail.
+    expect(realInResult.at(-1)?.kind).toBe("user");
+    // All diagnostics survive (already capped by MAX_UNMATCHED_TOOL_NOTICES).
+    const diagsInResult = next.messages.filter(
+      (m) => m.kind === "info" && m.id.startsWith("info-tool-unmatched-"),
+    );
+    expect(diagsInResult).toHaveLength(3);
   });
 });
 
@@ -2726,7 +2804,7 @@ describe("reduce — engine_event — tool_result", () => {
     }
   });
 
-  test("tool_result for unknown callId returns same state reference", () => {
+  test("tool_result for unknown callId appends a standalone info notice (not silent)", () => {
     const state = stateWith({
       messages: [assistantMsg("text", { id: "assistant-0" })],
     });
@@ -2734,8 +2812,11 @@ describe("reduce — engine_event — tool_result", () => {
       state,
       engineEvent({ kind: "tool_result", callId: testCallId("no-such-call"), output: "data" }),
     );
-    // No matching block — same messages array (reducer returns same state on warn path)
-    expect(next.messages).toEqual(state.messages);
+    // Original assistant message preserved; diagnostic appended as info kind so
+    // findLastAssistant routing is not affected (no transcript hijack).
+    expect(next.messages.length).toBe(state.messages.length + 1);
+    const last = next.messages.at(-1);
+    expect(last?.kind).toBe("info");
   });
 });
 

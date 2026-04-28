@@ -124,7 +124,11 @@ function updateToolBlock(state: Draft, callId: string, patch: Partial<ToolCallBl
   if (!msg) return;
   const blockIdx = findToolBlockIdx(msg.blocks, callId);
   if (blockIdx < 0) {
-    console.warn(`[tui/mutate] no tool_call block found for callId="${callId}"`);
+    // tui-single-writer-exception: inside produce() — cannot dispatch back to store.
+    // Only write when stderr is not the same terminal as the TUI renderer (#1940).
+    if (!process.stderr.isTTY) {
+      process.stderr.write(`[tui/mutate] no tool_call block found for callId="${callId}"\n`);
+    }
     return;
   }
   const block = msg.blocks[blockIdx] as ToolCallBlock;
@@ -524,6 +528,15 @@ export function mutate(state: Draft, action: TuiAction): void {
       }
       break;
 
+    case "set_supervised_children":
+      // Reference-equal shortcut — matches the reducer path so both state
+      // engines (proxy + pure) behave identically for supervisor snapshots.
+      if (action.children !== state.supervisedChildren) {
+        (state as { supervisedChildren: typeof action.children }).supervisedChildren =
+          action.children;
+      }
+      break;
+
     case "set_modal":
       (state as { modal: typeof action.modal }).modal = action.modal;
       break;
@@ -685,9 +698,15 @@ export function mutate(state: Draft, action: TuiAction): void {
         break;
       }
 
-      const agentName = progress?.agentName ?? existingRecord!.agentName;
-      const description = progress?.description ?? existingRecord!.description;
-      const startedAt = progress?.startedAt ?? existingRecord!.startedAt;
+      // At least one of `progress`/`existingRecord` is defined here; the
+      // `!progress && !existingRecord` branch above already returned. Pick
+      // the available source explicitly so Biome's noNonNullAssertion lint
+      // stays clean without widening the fallback chain.
+      const fallback = progress ?? existingRecord;
+      if (fallback === undefined) break;
+      const agentName = fallback.agentName;
+      const description = fallback.description;
+      const startedAt = fallback.startedAt;
       const finishedAt = Date.now();
       const durationMs = finishedAt - startedAt;
       const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };

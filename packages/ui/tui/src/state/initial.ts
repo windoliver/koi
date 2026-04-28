@@ -35,6 +35,7 @@ export function createInitialState(modelName = ""): TuiState {
     expandedBodyToolCallIds: new Set(),
     activeSpawns: new Map(),
     finishedSpawns: [],
+    supervisedChildren: [],
     maxContextTokens: null,
     retryState: null,
     agentDepth: 0,
@@ -52,7 +53,14 @@ export function createInitialState(modelName = ""): TuiState {
     costBreakdown: null,
     tokenRate: null,
     mcpServers: [],
-    governance: { snapshot: null, alerts: [], violations: [], rules: [], capabilities: [] },
+    governance: {
+      snapshot: null,
+      alerts: [],
+      violations: [],
+      rules: [],
+      capabilities: [],
+      securityFindings: [],
+    },
     toasts: [],
   };
 }

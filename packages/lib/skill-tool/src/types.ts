@@ -62,6 +62,16 @@ export interface SkillToolConfig {
   readonly signal: AbortSignal;
   /** Session ID for `${SESSION_ID}` variable substitution. */
   readonly sessionId?: string;
+  /**
+   * When true: omit the skill listing from the tool description. Use when the
+   * host injects an `<available_skills>` XML block into the system prompt via
+   * the progressive skill injector middleware — that block is authoritative and
+   * stays current across session resets, so duplicating a startup-time snapshot
+   * in the tool descriptor would produce conflicting model-visible catalogs.
+   *
+   * Default: false (include skill listing in tool description).
+   */
+  readonly progressive?: boolean;
 }
 
 // ---------------------------------------------------------------------------

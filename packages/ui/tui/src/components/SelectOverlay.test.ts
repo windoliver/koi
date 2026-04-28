@@ -151,4 +151,31 @@ describe("handleSelectOverlayKey", () => {
     expect(cb.upCount()).toBe(0);
     expect(cb.downCount()).toBe(0);
   });
+
+  test("space calls onPeek and returns true", () => {
+    let peekCalls = 0;
+    const cb = {
+      ...mockCallbacks(),
+      onPeek: () => {
+        peekCalls++;
+      },
+    };
+    const consumed = handleSelectOverlayKey(mockKey("space"), cb);
+    expect(consumed).toBe(true);
+    expect(peekCalls).toBe(1);
+    expect(cb.selectCount()).toBe(0);
+    expect(cb.closeCount()).toBe(0);
+  });
+
+  test("space without onPeek is not consumed (returns false)", () => {
+    const cb = { onClose: () => {} };
+    expect(() => handleSelectOverlayKey(mockKey("space"), cb)).not.toThrow();
+    expect(handleSelectOverlayKey(mockKey("space"), cb)).toBe(false);
+  });
+
+  test("space does not trigger select", () => {
+    const cb = mockCallbacks();
+    handleSelectOverlayKey(mockKey("space"), cb);
+    expect(cb.selectCount()).toBe(0);
+  });
 });

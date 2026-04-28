@@ -85,12 +85,30 @@ const sink = createSqliteAuditSink({
 ### Config
 
 ```typescript
+interface SqliteRetentionConfig {
+  /** Delete entries older than this many days. */
+  readonly maxAgeDays: number;
+  /** How often to run the pruning pass. Default: 3600000 (1 hour). */
+  readonly pruneIntervalMs?: number;
+}
+
 interface SqliteAuditSinkConfig {
   readonly dbPath: string;
   readonly flushIntervalMs?: number;  // default: 2000
   readonly maxBufferSize?: number;    // default: 100
+  readonly retention?: SqliteRetentionConfig;
 }
 ```
+
+---
+
+## Retention / Pruning
+
+When `retention` is configured, the sink periodically deletes rows older than `maxAgeDays` and runs `VACUUM` to reclaim space.
+
+Pruning runs on a background interval (`pruneIntervalMs`, default 1 hour). It also runs once at sink creation to clear stale data from a previous session.
+
+**Note:** Pruning permanently removes rows from the database. This is an explicit ops trade-off — only enable retention when long-term record preservation is not required. For compliance deployments, omit `retention` and manage archiving externally (e.g., copy the DB file before rotation).
 
 ---
 
@@ -113,6 +131,15 @@ WHERE kind = 'permission_decision'
   AND json_extract(response, '$.effect') = 'deny'
   AND timestamp > unixepoch('now', 'start of day') * 1000;
 ```
+
+---
+
+## Compliance events
+
+When this sink is wired via `--audit-sqlite`, `runtime-factory.ts` also wraps
+it in `createAuditSinkComplianceRecorder` from `@koi/governance-defaults`.
+Every governance verdict produces an additional row with
+`kind = 'compliance_event'`, discoverable via the existing time+kind index.
 
 ---
 

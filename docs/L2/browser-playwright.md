@@ -188,9 +188,26 @@ Agent calls browser_click(ref=e3, snapshotId="old-abc")
 │  Dependencies                                       │
 │                                                     │
 │  @koi/core       (L0)   BrowserDriver, Result, etc. │
+│  @koi/browser-a11y (L0u) parseAriaYaml,             │
+│                         translatePlaywrightError,   │
+│                         VALID_ROLES (v2 change —    │
+│                         imports moved out of this   │
+│                         package into its own L0u)    │
 │  playwright      (ext)  chromium.launch(), Page API  │
 └─────────────────────────────────────────────────────┘
 ```
+
+**v2 note — a11y helpers live in `@koi/browser-a11y`**. Prior versions of this package re-exported `serializeA11yTree`, `parseAriaYaml`, `translatePlaywrightError`, `VALID_ROLES`, `isAriaRole`. In v2 those symbols were extracted into the L0u package `@koi/browser-a11y` so the new `@koi/browser-ext` driver can share them without pulling Playwright. Update imports:
+
+```typescript
+// OLD (v1)
+import { parseAriaYaml, translatePlaywrightError } from "@koi/browser-playwright";
+
+// NEW (v2)
+import { parseAriaYaml, translatePlaywrightError } from "@koi/browser-a11y";
+```
+
+`@koi/browser-playwright` now exports only the driver + detection surface: `createPlaywrightBrowserDriver`, `detectInstalledBrowsers`, `STEALTH_INIT_SCRIPT`, `PlaywrightDriverConfig`, `DetectedBrowser`.
 
 ### Module Responsibilities
 
@@ -583,7 +600,7 @@ const driver = createPlaywrightBrowserDriver({
 });
 ```
 
-### Connect to Existing Chrome via CDP
+### Connect to Existing Chrome via CDP HTTP endpoint
 
 ```typescript
 const driver = createPlaywrightBrowserDriver({
@@ -593,6 +610,42 @@ const driver = createPlaywrightBrowserDriver({
 // Reuse an already-running Chrome instance
 // (e.g., launched with --remote-debugging-port=9222)
 ```
+
+### Connect via CDP WebSocket endpoint (`wsEndpoint`)
+
+New in v2. Lets a third party (notably `@koi/browser-ext`) provide a loopback WebSocket that bridges CDP frames to a Chrome extension's `chrome.debugger` API through a Koi native-messaging host. Takes precedence over `cdpEndpoint` when both are set (a one-time warning is logged).
+
+```typescript
+const driver = createPlaywrightBrowserDriver({
+  wsEndpoint: "ws://127.0.0.1:45678/devtools/browser/abcd",
+});
+
+// Playwright calls chromium.connectOverCDP({ wsEndpoint })
+// No HTTP endpoint needed; caller owns the WebSocket server.
+```
+
+`browser`, `cdpEndpoint`, `wsEndpoint` are the three transport paths. Exactly one wins: `browser` > `wsEndpoint` > `cdpEndpoint` > (default: launch own Chromium). Stealth / userDataDir / launch options apply only to the default launch path.
+
+---
+
+## Private-address guard — Phase 1 scope and known limitations
+
+`blockPrivateAddresses: true` (default) blocks agent navigations to private / loopback / link-local addresses at two enforcement points:
+
+1. **Pre-navigation URL check** in `navigate()` / `tabNew(url)` — rejects literal private IPs (IPv4, IPv6-mapped IPv4 like `::ffff:127.0.0.1`, link-local `fe80::/10`, unique-local `fc00::/7`), `localhost`, `*.localhost`, and hostnames that resolve via DNS to any of the above.
+2. **Per-page route guard** (`page.route()`) on every page the driver creates — aborts document navigation requests at commit time. Works on both owned and borrowed contexts. Also catches server-side 30x redirects that would otherwise reach a private target.
+3. **Context-level route guard** (`ctx.route()`) on owned contexts — covers pages spawned by site code (`window.open`, `target=_blank`) within a driver-owned context.
+4. **Post-navigation final-URL check** — verifies `page.url()` didn't land on a private address after all redirects. Defense-in-depth; parks the page at `about:blank` on mismatch.
+
+### Known limitations (Phase 1)
+
+- **Subresource requests are NOT guarded.** The route handlers intercept only main-frame document navigations. Page-initiated `fetch()`, XHR, form POSTs, images, scripts, and WebSocket handshakes to private addresses still fire. This matches the spec's §7.4 "Layer 2 only" scope — Layer 1 (full `Fetch.requestPaused` request interception with DNS pinning) is explicitly deferred to Phase 2.
+- **Popup pages on borrowed contexts are NOT guarded.** The per-page guard is installed on pages the driver creates via `ctx.newPage()`. On borrowed contexts (cdpEndpoint/wsEndpoint paths reusing the caller's default context), any page the caller's code opens (via `window.open`, `target=_blank`, or its own `ctx.newPage()`) is outside our scope — we intentionally do NOT install route handlers on caller-created pages because that would mutate caller-visible state. The caller owns security policy for pages they create.
+- **Phase 2 plan**: Layer 1 interception via `Fetch.enable` at the CDP level will close both gaps by routing every request (subresources + popup navigations) through a single extension-side blocklist. Tracked separately from Phase 1 PRs.
+
+### Concurrent-call caveat
+
+The driver uses mutable global state (`currentTabId`) to track which tab is active. Under overlapping async tool calls — e.g. two simultaneous `browser.click` invocations while `browser.tabFocus` is in-flight — the global can shift between await points, causing `checkSnapshotId` / `getLocator` to validate refs against one tab while the action lands on another. This is a pre-existing v1 architecture concern that single-caller agents (the common case in Koi's tool-calling loop) do not hit. A targeted refactor to thread `tabId` through action methods is tracked as a follow-up; Phase 1 PRs preserve v1 behavior verbatim.
 
 ### Multi-Tab Workflow
 

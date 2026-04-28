@@ -22,6 +22,7 @@ import type { GovernanceBackend } from "./governance-backend.js";
 import type { HandoffComponent } from "./handoff.js";
 import type { InboxComponent } from "./inbox.js";
 import type { MailboxComponent } from "./mailbox.js";
+import type { MemoryType } from "./memory.js";
 import type { NameServiceReader } from "./name-service.js";
 import type { ReputationBackend } from "./reputation-backend.js";
 import type { SchedulerComponent } from "./scheduler.js";
@@ -340,6 +341,22 @@ export interface SkillMetadata {
 export interface SkillComponent extends SkillMetadata {
   readonly content: string;
   readonly requires?: BrickRequires;
+  /**
+   * True when this component was attached by the skills-runtime progressive
+   * provider (content: "" with body deferred to on-demand load via Skill tool).
+   * Distinguishes runtime-backed progressive skills from other empty-content
+   * components (e.g. MCP metadata-only stubs) that must not appear in
+   * the <available_skills> XML block.
+   */
+  readonly runtimeBacked?: boolean;
+  /**
+   * True when this component was attached by the skills-runtime provider for
+   * an MCP-sourced skill (source === "mcp"). Used to distinguish MCP-backed
+   * skills from body-backed root skills (e.g. browser, memory) during session
+   * reset: MCP skills absent from the refreshed catalog must not survive the
+   * merge, while body-backed root skills from other providers should be preserved.
+   */
+  readonly mcpBacked?: boolean;
 }
 
 /**
@@ -468,6 +485,10 @@ export interface MemoryStoreOptions {
   readonly tags?: readonly string[];
   /** Semantic category for fact classification (e.g., "milestone", "preference"). */
   readonly category?: string | undefined;
+  /** Storage type — controls privacy boundaries and recall scoring weights. */
+  readonly type?: MemoryType | undefined;
+  /** Extraction confidence in [0, 1]. Absent means fully trusted (equivalent to 1.0). */
+  readonly confidence?: number | undefined;
   /** Entity IDs this memory relates to — enables graph-aware retrieval. */
   readonly relatedEntities?: readonly string[] | undefined;
   /** When true and a near-duplicate exists, increment its accessCount instead of skipping. */
