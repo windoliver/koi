@@ -865,6 +865,51 @@ describe("createCircuitBreakerMiddleware", () => {
     ).rejects.toMatchObject({ code: "RATE_LIMIT" });
   });
 
+  // Regression (#1419 round 43): shared-key retention preserves
+  // cross-session outage history — but if the breaker map fills
+  // entirely with ownerless unhealthy entries (every owner has
+  // departed), refusing every new key is worse than reclaiming an
+  // idle ownerless entry. The fallback eviction must kick in so
+  // the map cannot wedge forever.
+  test("ownerless unhealthy shared breakers are reclaimed under capacity pressure", async () => {
+    const mw = createCircuitBreakerMiddleware({
+      // Provider-only key (shared) so multiple sessions register on
+      // the same breaker.
+      extractKey: (m): string => m ?? "unknown",
+      breaker: { failureThreshold: 2 },
+      maxKeys: 2,
+    });
+    // Trip TWO distinct shared keys OPEN, then end every owner so
+    // both breakers become ownerless unhealthy retained entries.
+    const ctxA = turnCtx("session-a");
+    for (let i = 0; i < 2; i++) {
+      await expect(
+        mw.wrapModelCall?.(ctxA, { messages: [], model: "openai/m1" }, makeHandler("fail-500")),
+      ).rejects.toThrow();
+    }
+    const ctxB = turnCtx("session-b");
+    for (let i = 0; i < 2; i++) {
+      await expect(
+        mw.wrapModelCall?.(ctxB, { messages: [], model: "openai/m2" }, makeHandler("fail-500")),
+      ).rejects.toThrow();
+    }
+    await mw.onSessionEnd?.(ctxA.session);
+    await mw.onSessionEnd?.(ctxB.session);
+    // Map is now at capacity with two ownerless OPEN entries. A
+    // third unrelated key arrives. Without fallback eviction, the
+    // call would be locally rejected RATE_LIMIT despite the new
+    // key never having seen the provider. With fallback eviction,
+    // an ownerless OPEN entry is reclaimed and the new call
+    // executes.
+    const ctxC = turnCtx("session-c");
+    const r = await mw.wrapModelCall?.(
+      ctxC,
+      { messages: [], model: "openai/m3" },
+      makeHandler("ok"),
+    );
+    expect(r?.content).toBe("ok");
+  });
+
   // Regression (#1419 round 18): eviction must prefer victims with no
   // accumulated failure history. Otherwise a noisy session driving many
   // distinct keys can erase another live session's almost-tripped

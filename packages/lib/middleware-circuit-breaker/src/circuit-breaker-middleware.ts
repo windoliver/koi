@@ -462,7 +462,31 @@ function getOrCreateBreaker(s: CbState, key: string): CircuitBreaker | undefined
         for (const sid of owners) s.keysBySession.get(sid)?.delete(bestVictim);
         s.keyOwners.delete(bestVictim);
       }
+      s.sharedKeys.delete(bestVictim);
       evicted = true;
+    }
+    if (!evicted) {
+      // Last-resort: ownerless unhealthy entries. After session
+      // teardown in shared-key mode (provider/tenant `extractKey`),
+      // an OPEN/HALF_OPEN/CLOSED-with-failures breaker is retained
+      // ownerless to preserve cross-session outage history. That is
+      // the right safety posture under normal load — but if the
+      // map is now wedged at capacity with NOTHING reclaimable,
+      // refusing every new key is a worse failure than discarding
+      // an idle ownerless unhealthy entry whose owners have all
+      // departed. Pick the oldest such entry (Map insertion order)
+      // and reclaim it. New incoming traffic for the same key will
+      // simply get a fresh CLOSED breaker — the trade is "lose
+      // stale outage history" vs. "wedge entire breaker map".
+      for (const [k] of s.breakers) {
+        const owners = s.keyOwners.get(k);
+        if (owners !== undefined && owners.size > 0) continue;
+        s.breakers.delete(k);
+        s.keyOwners.delete(k);
+        s.sharedKeys.delete(k);
+        evicted = true;
+        break;
+      }
     }
     if (!evicted) {
       console.warn(

@@ -109,6 +109,84 @@ describe("createModelCallLimitMiddleware", () => {
     expect(threw).toBe(true);
   });
 
+  // Regression: failed/abandoned model attempts must NOT consume quota.
+  // Otherwise a short burst of provider failures exhausts the budget and
+  // every recovery attempt is hard-blocked with RATE_LIMIT.
+  test("failed call refunds the counter", async () => {
+    const mw = createModelCallLimitMiddleware({ limit: 2 });
+    const ctx = turnCtx("refund-call");
+    const failHandler: ModelHandler = async () => {
+      throw new Error("transient provider failure");
+    };
+    // Two failed attempts should not burn the budget.
+    for (let i = 0; i < 2; i++) {
+      try {
+        await mw.wrapModelCall?.(ctx, { messages: [] }, failHandler);
+      } catch {}
+    }
+    // Both successful calls must still go through.
+    const r1 = await mw.wrapModelCall?.(ctx, { messages: [] }, okHandler());
+    const r2 = await mw.wrapModelCall?.(ctx, { messages: [] }, okHandler());
+    expect(r1?.content).toBe("ok");
+    expect(r2?.content).toBe("ok");
+  });
+
+  test("upstream error chunk refunds the streaming counter", async () => {
+    const mw = createModelCallLimitMiddleware({ limit: 1 });
+    const ctx = turnCtx("refund-error-chunk");
+    async function* errStream(): AsyncIterable<import("@koi/core").ModelChunk> {
+      yield {
+        kind: "error",
+        code: "INTERNAL",
+        message: "upstream blew up",
+        retryable: true,
+      };
+    }
+    const s1 = mw.wrapModelStream?.(ctx, { messages: [] }, errStream);
+    if (s1 === undefined) throw new Error("no stream");
+    for await (const _c of s1) {
+      // drain
+    }
+    // Counter refunded: subsequent successful call must succeed.
+    const r = await mw.wrapModelCall?.(ctx, { messages: [] }, okHandler());
+    expect(r?.content).toBe("ok");
+  });
+
+  test("abandoned stream (consumer break before done) refunds the counter", async () => {
+    const mw = createModelCallLimitMiddleware({ limit: 1 });
+    const ctx = turnCtx("refund-abandoned");
+    async function* slowStream(): AsyncIterable<import("@koi/core").ModelChunk> {
+      yield { kind: "text_delta", delta: "x" };
+      yield { kind: "text_delta", delta: "y" };
+      yield {
+        kind: "done",
+        response: { content: "xy", model: "m" },
+      };
+    }
+    const s1 = mw.wrapModelStream?.(ctx, { messages: [] }, slowStream);
+    if (s1 === undefined) throw new Error("no stream");
+    for await (const _c of s1) {
+      // Break early — never reach `done`.
+      break;
+    }
+    // Counter refunded: subsequent successful call must succeed.
+    const r = await mw.wrapModelCall?.(ctx, { messages: [] }, okHandler());
+    expect(r?.content).toBe("ok");
+  });
+
+  test("upstream sync throw before iterator refunds the counter", async () => {
+    const mw = createModelCallLimitMiddleware({ limit: 1 });
+    const ctx = turnCtx("refund-sync-throw");
+    const throwingNext = (() => {
+      throw new Error("sync upstream failure");
+    }) as unknown as Parameters<NonNullable<typeof mw.wrapModelStream>>[2];
+    try {
+      mw.wrapModelStream?.(ctx, { messages: [] }, throwingNext);
+    } catch {}
+    const r = await mw.wrapModelCall?.(ctx, { messages: [] }, okHandler());
+    expect(r?.content).toBe("ok");
+  });
+
   test("onSessionEnd resets counter so fresh session can run", async () => {
     const mw = createModelCallLimitMiddleware({ limit: 1 });
     const ctx = turnCtx("model-cleanup");

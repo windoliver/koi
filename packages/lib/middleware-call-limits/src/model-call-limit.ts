@@ -67,8 +67,20 @@ async function mlWrapModelCall(
   request: ModelRequest,
   next: ModelHandler,
 ): Promise<ModelResponse> {
-  checkAndIncrement(s, ctx.session.sessionId);
-  return next(request);
+  const sessionId = ctx.session.sessionId;
+  checkAndIncrement(s, sessionId);
+  try {
+    return await next(request);
+  } catch (err: unknown) {
+    // Roll back the attempt. A transient provider failure must not
+    // burn session quota — otherwise a short outage burst exhausts
+    // the entire model budget and locks the session out for every
+    // subsequent recovery attempt, even after the provider is
+    // healthy again. Local KoiError emissions (e.g. validators) are
+    // also rolled back: the call did not reach the provider.
+    s.store.decrement(modelKey(sessionId));
+    throw err;
+  }
 }
 
 function mlWrapModelStream(
@@ -77,12 +89,59 @@ function mlWrapModelStream(
   request: ModelRequest,
   next: ModelStreamHandler,
 ): AsyncIterable<ModelChunk> {
-  // Counter must be charged before yielding from the upstream stream;
-  // otherwise the streaming path silently bypasses the cap. We count the
-  // attempt synchronously (as soon as the iterator is requested) so the
-  // limit applies whether the consumer drains the stream or aborts early.
-  checkAndIncrement(s, ctx.session.sessionId);
-  return next(request);
+  const sessionId = ctx.session.sessionId;
+  checkAndIncrement(s, sessionId);
+  // Wrap the upstream iterator so we can roll back the attempt if
+  // it terminates without a successful `done` chunk (sync-throw,
+  // upstream `error` chunk, consumer abandonment, or async-throw
+  // before terminal). Quota is committed only when the stream
+  // produces a complete response.
+  let upstream: AsyncIterable<ModelChunk>;
+  try {
+    upstream = next(request);
+  } catch (err: unknown) {
+    s.store.decrement(modelKey(sessionId));
+    throw err;
+  }
+  return wrapStreamWithRollback(s, sessionId, upstream);
+}
+
+async function* wrapStreamWithRollback(
+  s: ModelLimitState,
+  sessionId: string,
+  upstream: AsyncIterable<ModelChunk>,
+): AsyncIterable<ModelChunk> {
+  let committed = false;
+  try {
+    for await (const chunk of upstream) {
+      if (chunk.kind === "error") {
+        // Upstream-classified error chunk: refund the attempt.
+        s.store.decrement(modelKey(sessionId));
+        committed = true;
+        yield chunk;
+        return;
+      }
+      if (chunk.kind === "done") {
+        committed = true;
+        yield chunk;
+        return;
+      }
+      yield chunk;
+    }
+    // Iterator exhausted without `done` — upstream truncation. Refund.
+    if (!committed) s.store.decrement(modelKey(sessionId));
+    committed = true;
+  } catch (err: unknown) {
+    if (!committed) {
+      s.store.decrement(modelKey(sessionId));
+      committed = true;
+    }
+    throw err;
+  } finally {
+    // Consumer abandoned the iterator (broke early before terminal).
+    // Refund — the call did not produce a full response.
+    if (!committed) s.store.decrement(modelKey(sessionId));
+  }
 }
 
 async function mlOnSessionEnd(s: ModelLimitState, ctx: SessionContext): Promise<void> {
