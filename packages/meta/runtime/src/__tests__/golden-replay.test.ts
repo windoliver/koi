@@ -14198,7 +14198,10 @@ describe("Golden: @koi/nexus-delegation", () => {
     const { agentId } = await import("@koi/core");
 
     let capturedBody: Record<string, unknown> | undefined;
-    const mockFetch: typeof fetch = async (_input, init) => {
+    const mockFetch = async (
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
       capturedBody = JSON.parse((init?.body as string) ?? "{}") as Record<string, unknown>;
       return new Response(
         JSON.stringify({
@@ -14211,7 +14214,10 @@ describe("Golden: @koi/nexus-delegation", () => {
       );
     };
 
-    const api = createNexusDelegationApi({ url: "http://nexus.test", fetch: mockFetch });
+    const api = createNexusDelegationApi({
+      url: "http://nexus.test",
+      fetch: mockFetch as unknown as typeof fetch,
+    });
     const backend = createNexusDelegationBackend({ api, agentId: agentId("parent-golden") });
 
     const grant = await backend.grant(
@@ -14235,7 +14241,10 @@ describe("Golden: @koi/nexus-delegation", () => {
     const { agentId, delegationId } = await import("@koi/core");
 
     const calls: { method: string; url: string }[] = [];
-    const mockFetch: typeof fetch = async (input, init) => {
+    const mockFetch = async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
       calls.push({ method: (init?.method ?? "GET").toUpperCase(), url: input as string });
       if ((init?.method ?? "").toUpperCase() === "POST") {
         return new Response(
@@ -14251,7 +14260,10 @@ describe("Golden: @koi/nexus-delegation", () => {
       return new Response(null, { status: 204 });
     };
 
-    const api = createNexusDelegationApi({ url: "http://nexus.test", fetch: mockFetch });
+    const api = createNexusDelegationApi({
+      url: "http://nexus.test",
+      fetch: mockFetch as unknown as typeof fetch,
+    });
     const backend = createNexusDelegationBackend({
       api,
       agentId: agentId("parent-revoke"),
