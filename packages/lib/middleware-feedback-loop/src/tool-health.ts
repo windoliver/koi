@@ -8,7 +8,12 @@
  * All store writes are best-effort — session state is authoritative; store is async.
  */
 
-import type { ChainId, NodeId, TrustTier } from "@koi/core";
+import type {
+  ChainId,
+  ToolHealthSnapshot as L0ToolHealthSnapshot,
+  NodeId,
+  TrustTier,
+} from "@koi/core";
 import { chainId } from "@koi/core";
 import type { BrickId, BrickSnapshot } from "@koi/core/brick-snapshot";
 import { snapshotId } from "@koi/core/brick-snapshot";
@@ -208,6 +213,13 @@ export interface ToolHealthTracker {
   readonly recordFailure: (toolId: string, latencyMs: number, reason: string) => void;
   readonly isQuarantined: (toolId: string) => Promise<boolean>;
   readonly getSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
+  /**
+   * L0-shaped snapshot for cross-package consumers (e.g. `@koi/forge-demand`)
+   * that read from `@koi/core/tool-health-types`. Computes `avgLatencyMs`
+   * from the rolling ring entries — feedback-loop's own snapshot does not
+   * carry latency, so this view exists purely for L0 interop.
+   */
+  readonly getL0Snapshot: (toolId: string) => L0ToolHealthSnapshot | undefined;
   /** Check error rate against quarantine threshold; quarantine in-session + persist if triggered. */
   readonly checkAndQuarantine: (toolId: string) => Promise<boolean>;
   /** Check demotion criteria; demote trust tier in store if triggered. */
@@ -667,6 +679,32 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
         errorRate,
         totalCount: metrics.totalCount,
         flushSuspended: clock() < state.flushSuspendedUntil,
+      };
+    },
+
+    getL0Snapshot(toolId: string): L0ToolHealthSnapshot | undefined {
+      const state = stateMap.get(stateKey(toolId));
+      if (state === undefined) return undefined;
+      const bId = resolveBrickId(toolId);
+      const metrics = computeWindowMetrics(state, windowSize);
+      const usageCount = metrics.totalCount;
+      const errorRate = usageCount > 0 ? metrics.errorCount / usageCount : 0;
+      const successRate = 1 - errorRate;
+      let latencyTotal = 0;
+      for (const e of metrics.entries) latencyTotal += e.latencyMs;
+      const avgLatencyMs = usageCount > 0 ? latencyTotal / usageCount : 0;
+      return {
+        // brickId on L0 is required string — fall back to toolId when
+        // resolution fails so consumers always see a stable identifier.
+        brickId: bId ?? toolId,
+        toolId,
+        metrics: { successRate, errorRate, usageCount, avgLatencyMs },
+        state: state.healthState,
+        // Latency-based observers in L0 don't need failure detail; an
+        // empty list keeps the L0 contract intact without leaking the
+        // raw failure-reason strings cross-package.
+        recentFailures: [],
+        lastUpdatedAt: clock(),
       };
     },
 

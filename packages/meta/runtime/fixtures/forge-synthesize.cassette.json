@@ -1,0 +1,454 @@
+{
+  "schemaVersion": "cassette-v1",
+  "name": "forge-synthesize",
+  "model": "anthropic/claude-sonnet-4-6",
+  "recordedAt": 1777314041330,
+  "chunks": [
+    {
+      "kind": "text_delta",
+      "delta": "Sure"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "! Let"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "'s"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " start"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " by creating the `"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "add-numbers` tool using `"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "forge_tool`."
+    },
+    {
+      "kind": "text_delta",
+      "delta": "\n\n**"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "Step"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " 1: Create the tool"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "**"
+    },
+    {
+      "kind": "tool_call_start",
+      "toolName": "forge_tool",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "{\"name\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": ": \"add-numbe"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "rs"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": ", \"descri"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "ption\": \"Tak"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "es two numbe"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "rs, a an"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "d b, "
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "and retur"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "ns t"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "heir su"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "m.\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": ", \"ve"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "rsion"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "\":"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": " \"0"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": ".0.1\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": ", \"scope"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "\": \"agent\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": ", \"implemen"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "tation\": \""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "return "
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "{ sum: a"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": " + "
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "b };\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": ", \"inpu"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "tSchem"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "a\": {\"type\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": ":\"objec"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "t\",\"prope"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "rties\":{\"a\":"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "{\"ty"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "pe\":\"number"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "\",\"descrip"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "tion\":\"The "
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "fi"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "rst numb"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "er\"},\"b\":{"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "\"type\":\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "number\",\"d"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "escriptio"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "n\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": ":\"The s"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "econd num"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "ber\"}},\"req"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "uired\":[\"a"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "\",\"b"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "\"]}"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": ", \"out"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "put"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "Schema\": {"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "\"ty"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "pe\":\"objec"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "t\","
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "\"proper"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "ties\":{\"sum"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "\":{\"t"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "ype\":\"number"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "\",\"d"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "escript"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "ion"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "\":\"The sum o"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "f a and b\"}}"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": ",\"requir"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+      "delta": "ed\":[\"sum\"]}}"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 1724,
+      "outputTokens": 333
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG"
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "Sure! Let's start by creating the `add-numbers` tool using `forge_tool`.\n\n**Step 1: Create the tool**",
+        "model": "anthropic/claude-sonnet-4-6",
+        "stopReason": "tool_use",
+        "responseId": "gen-1777314037-SWDjei1AdPeXbc9jO3E9",
+        "richContent": [
+          {
+            "kind": "text",
+            "text": "Sure! Let's start by creating the `add-numbers` tool using `forge_tool`.\n\n**Step 1: Create the tool**"
+          },
+          {
+            "kind": "tool_call",
+            "id": "toolu_vrtx_01QLqtTi3sEnkqxs5GmsYLuG",
+            "name": "forge_tool",
+            "arguments": {
+              "name": "add-numbers",
+              "description": "Takes two numbers, a and b, and returns their sum.",
+              "version": "0.0.1",
+              "scope": "agent",
+              "implementation": "return { sum: a + b };",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "a": {
+                    "type": "number",
+                    "description": "The first number"
+                  },
+                  "b": {
+                    "type": "number",
+                    "description": "The second number"
+                  }
+                },
+                "required": ["a", "b"]
+              },
+              "outputSchema": {
+                "type": "object",
+                "properties": {
+                  "sum": {
+                    "type": "number",
+                    "description": "The sum of a and b"
+                  }
+                },
+                "required": ["sum"]
+              }
+            }
+          }
+        ],
+        "usage": {
+          "inputTokens": 1724,
+          "outputTokens": 333
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "7b5e2f21111e57f8220d3a93b87013c03acff49954dadbb1df3a67df6234faff"
+        }
+      }
+    }
+  ]
+}

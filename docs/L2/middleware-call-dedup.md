@@ -4,6 +4,54 @@
 
 ---
 
+## ⚠️ Opt-in (v2): caching requires an explicit `include` allowlist
+
+**Without `include`, this middleware is a passthrough — nothing is cached.**
+
+This is a deliberate safety choice. A default-on cache would silently:
+
+- **Drop side-effecting writes** — `task_create`, `task_update`, `koi_send_message`, `notebook_delete_cell`, etc. Returning a cached "success" without re-executing means the second write never happens. Caller thinks the operation succeeded; reality says otherwise.
+- **Serve stale stateful reads** — `task_list`, `notebook_read`, `*_read` reflect ambient state. If another tool mutates the resource between two reads, the second read returns up to TTL-old data while the agent makes decisions on it.
+
+The cache key (`{sessionId, toolId, input}`) cannot detect ambient state changes, so the only safe default is to require the caller to declare which tools they have proven deterministic against immutable inputs.
+
+`DEFAULT_EXCLUDE` (mutating shell/file/agent tools) is a hard floor: even tools mistakenly added to `include` are still bypassed if they appear in the exclude list.
+
+### Session lifecycle
+
+The middleware exposes `onSessionEnd` to evict the cache and in-flight coalescing entries for a terminated session. Reused session ids are an expected lifecycle pattern: without this, a fresh run reusing the same `sessionId` could receive cached responses from — or coalesce onto a still-running tool call belonging to — the prior session.
+
+### Per-request bypass conditions
+
+Even for allowlisted tools, dedup bypasses when the `ToolRequest` carries:
+
+- **`signal: AbortSignal`** — coalescing across cancellable requests would let one caller's abort cascade to every waiter sharing the in-flight execution. Until per-waiter fan-out is implemented, signal-bearing requests run independently with no caching.
+
+`callId` and `metadata` (notably `metadata.traceCallId`) are observability/correlation fields stamped on every runtime request — they are deliberately NOT identity-relevant for the cache key. Dedup's contract is "two identical tool calls return the same result", and that statement must hold across distinct trace ids. Cached responses are marked `metadata.cached = true` so downstream observability can distinguish hits from real executions.
+
+### Cache-hit observability (`onCacheHit`)
+
+dedup runs at intercept phase and short-circuits when it serves a cache hit, so observe-phase middleware (audit, transcript, event-trace) does NOT see those calls. This is intentional — cache hits skip downstream quota (`call-limits`) and billing (`pay`) which is a key feature — but it means cache hits are invisible to in-band audit middleware.
+
+The `onCacheHit` callback is the explicit observability seam: it fires on every hit with the full `{sessionId, toolId, cacheKey, request, response}`. Wire it to your audit / transcript / metrics sink so cache hits remain visible to ops and compliance:
+
+```typescript
+createCallDedupMiddleware({
+  include: ["lookup"],
+  onCacheHit: ({ request, response, sessionId }) => {
+    auditSink.append({
+      kind: "tool_call_cache_hit",
+      sessionId,
+      toolId: request.toolId,
+      input: request.input,
+      output: response.output,
+    });
+  },
+});
+```
+
+---
+
 ## Why It Exists
 
 Agents frequently call the same deterministic tool multiple times per session with identical arguments. Each call executes fully — file I/O, network requests, token counting, billing. The loop guard detects *patterns* but still executes each call. This middleware caches *results*.
@@ -122,6 +170,8 @@ These tools are excluded from caching by default because they are side-effecting
 | `file_create` | Creates files |
 | `agent_send` | Sends messages to other agents |
 | `agent_spawn` | Spawns new agent processes |
+| `file_read`, `fs_read` | Ambient-state filesystem reads (file may be mutated externally between calls) |
+| `task_list`, `notebook_read` | Stateful reads that observe other tools' writes |
 
 User-supplied `exclude` entries are merged with these defaults.
 

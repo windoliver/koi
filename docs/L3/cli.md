@@ -6,6 +6,12 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **Phase-2 bug-bash fixes (#2072)**: TUI / runtime-factory wiring tidied up — no L2 dep set changes. `tui-command.ts` defers `microcompact`, `createAgentSummary`, `createArgvGate` + `runUntilPass`, and the browser provider behind dynamic `await import()` in their respective use sites so cold-start no longer pays for post-paint features eagerly. `runtime-factory.ts` now installs the audit-middleware compliance recorder (`createAuditMiddlewareComplianceRecorder`) so governance events share the chained signing path, and moves the audit-sink close into a manifest-middleware shutdown hook so it runs **after** `runtime.dispose()` fires `audit.onSessionEnd` (otherwise the closing `session_end` record was silently dropped at /quit). `bin.ts` removed the one-off `KOI_BOOT_TRACE` probe to keep the post-fast-path purity gate (#1637) green. The `@koi/middleware-permissions` fix (out-of-workspace `fs_read` no longer bypassed by stored grants) flows through unchanged wiring.
+
+- **Optimization middlewares not auto-wired into TUI (#1420)**: `@koi/middleware-reflex`, `@koi/middleware-turn-ack`, and `@koi/middleware-prompt-cache` ship in `@koi/runtime` for golden-query coverage but are intentionally absent from the CLI/TUI dependency stack. All three are `koi.optional: true` and require explicit configuration: reflex needs a user-supplied `rules[]` array, turn-ack would conflict with the TUI's existing status indicator, and prompt-cache has no model adapter consuming `CACHE_HINTS_KEY` yet. They are listed in `EXEMPT` in `scripts/check-cli-wiring.ts` with justification. Adding them later requires no API changes — instantiate `createReflexMiddleware({ rules })` / `createTurnAckMiddleware({ debounceMs })` / `createPromptCacheMiddleware()` and pass into the TUI runtime middleware list.
+
+- **`@koi/forge-tools` wired into TUI preset stacks (#2068)**: `@koi/forge-tools` added as a direct CLI dependency and registered as a `forge` preset stack in `DEFAULT_STACKS` (`packages/meta/cli/src/preset-stacks/forge.ts`). The stack constructs a single in-memory `ForgeStore` per process and exposes four `createSingleToolProvider`-backed tools — `forge_tool`, `forge_middleware`, `forge_list`, `forge_inspect` — so the TUI agent can synthesize and inspect content-addressed bricks at runtime. The store is process-scoped and ephemeral; bricks are lost on restart. No TUI rendering changes — the tools surface through the standard tool-call UI and permission flow.
+
 - **TUI single-writer policy enforcement (#1940)**: `@koi/tui` now forbids direct `process.stdout.write` / `console.log` while the renderer owns the terminal — both corrupt frame composition. CLI integration: `tui-command.ts` does not need code changes for this (no direct stdout writes from CLI-side rendering paths), but the new `scripts/check-tui-single-writer.ts` CI gate runs alongside `bun run test` / `bun run lint` and hard-fails the workflow on policy violations. Clipboard writes (Ctrl+C selection copy, message-list copy) flow through `renderer.copyToClipboardOSC52()` instead of raw OSC 52 escape sequences. See `docs/L2/tui.md` for the full policy + exception-marker rules. No new CLI dependencies introduced.
 
 - **Doc-wiring sync for lib review fixes (#2063)**: refreshed CLI-facing notes for
@@ -260,6 +266,7 @@ koi tui
 | `KOI_REPORT_ENABLED` | no | unset | Set to `true` to activate `@koi/middleware-report`. Emits a RunReport to stderr at session end with turn count, action count, duration, and token usage. (#1858) |
 | `KOI_PLANNING_ENABLED` | no | unset | Set to `true` to activate `@koi/middleware-planning` AND `@koi/middleware-plan-persist`. Installs the `koi_plan_write` tool + auto-allow policy rules so the model can maintain a structured multi-step plan across turns (CC-parity). Plan-persist auto-wires its `onPlanUpdate` hook into planning so every successful `koi_plan_write` is mirrored to `<cwd>/.koi/plans/_active/<sha256(sessionId)>.md`. The `koi_plan_save` and `koi_plan_load` tools also become available for git-diffable named checkpoints under `.koi/plans/<ts>-<slug>.md`. Plan-persist's `restoreFromJournal` API is exposed on the runtime handle for hosts that want to recover a prior incarnation's plan after restart. (#1836, #1842) |
 | `KOI_FEEDBACK_LOOP_ENABLED` | no | unset | Set to `true` to activate `@koi/middleware-feedback-loop` in observe-only mode (`feedbackLoop: {}`). The middleware intercepts every model response and tool call: validators run against each response chunk sequence (pass-through by default), transport errors are classified and counted against per-category retry budgets, and tool health is tracked via a ring-buffer quarantine tracker. No validators are registered by default so the middleware is a no-op fence until validators or a custom `FeedbackLoopConfig` are supplied at the programmatic API level. |
+| `KOI_FORGE_DEMAND_ENABLED` | no | unset | Set to `true` to activate `@koi/forge-demand`. Wires the demand detector with `createDefaultForgeDemandConfig()`; `onSessionAttached` and `onDemand` are stubbed to log scoped-handle delivery and emitted signals to stderr. Auto-wires feedback-loop's `healthHandle` when `KOI_FEEDBACK_LOOP_ENABLED=true` AND a programmatic caller has supplied `forgeHealth` on the feedback-loop config; otherwise the `performance_degradation` trigger stays dormant with a startup warning (the other three triggers — `repeated_failure`, `capability_gap`, `user_correction` — work without it). |
 | `KOI_WEB_CACHE_TTL_MS` | no | `60000` | Response-cache TTL (milliseconds) for `web_fetch` GET/HEAD without custom headers and without a request body. `@koi/tools-web` ships disabled (TTL `0`) as an L2 opt-in contract; the CLI opts in with a 60 s default so back-to-back identical fetches within a session return `cached: true` instead of re-issuing live network calls. Only `200` responses without revalidation directives (`no-store`, `no-cache`, `private`, `must-revalidate`, `max-age=0`, `Pragma: no-cache`, past `Expires`, or any `Vary`) are stored; each entry's lifetime is capped to origin's remaining freshness (`max-age − Age`). `web_fetch` also accepts a per-call `noCache: true` that forces a live fetch with no stale fallback (evicts the entry; failures leave the key empty). Web fetch and web search abort timers are capped at 60 s by `@koi/tools-web`. Accepts any non-negative integer; `0` disables the cache for a run. **Malformed values (non-integer, negative, non-numeric) fail startup loudly** — an operator fixing staleness during an incident deserves an obvious error, not a silent 60 s stale-read window. (#1903) |
 
 **Manifest `audit:` block (#1994):** Audit sinks can be configured in `koi.yaml` so projects enable
@@ -540,6 +547,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/middleware-report` | L2 | Run report middleware — opt-in via `KOI_REPORT_ENABLED=true`. Accumulates model/tool call metrics and emits a RunReport at session end (#1858) |
 | `@koi/middleware-task-anchor` | L2 | CC-parity `<system-reminder>` injection that re-anchors the model on the live task board after K idle turns with no task-tool activity (#1837). Wired in the `execution` preset stack alongside the `task_*` tool surface (same `taskBoardToolsEnabled` gate). Priority-ordered render, hard task cap with per-status overflow counts, stop-gate retry rollback, hook-blocked / `{ ok: false }` task-tool failure detection. Empty-board `task_create` nudge gated on successful task-tool engagement so shell-only sessions never receive unsolicited nudges. Emits `ctx.reportDecision` on every observed board with structured inject/suppress metadata for trajectory observability (#2015); `reportDecision` failures are swallowed via `swallowError` so telemetry faults cannot abort the model turn |
 | `@koi/middleware-feedback-loop` | L2 | Model-response validation + tool-health tracking — opt-in via `KOI_FEEDBACK_LOOP_ENABLED=true`. Intercepts model stream and tool calls; validators classify response quality, transport errors count against per-category retry budgets, and a ring-buffer quarantine tracker promotes unhealthy tools to quarantine. In observe-only mode (default, no validators) the middleware is a transparent fence. See `docs/L2/middleware-feedback-loop.md` |
+| `@koi/forge-demand` | L2 | Demand-triggered forge detection — opt-in via `KOI_FORGE_DEMAND_ENABLED=true`. Priority-445 middleware (outer of feedback-loop) that observes committed tool/model state and emits `ForgeDemandSignal` on four triggers: `repeated_failure`, `capability_gap`, `latency_degradation` (`performance_degradation`), `user_correction`. Auto-wires feedback-loop's `healthHandle` for the latency trigger when feedback-loop's `forgeHealth` is configured (otherwise dormant with a startup warning). The CLI logs `onSessionAttached` and `onDemand` to stderr; programmatic callers supply their own subscribers. |
 | `@koi/middleware-semantic-retry` | L2 | Semantic retry middleware — retry signal coordination with event-trace for retry step annotations |
 | `@koi/model-router` | L2 | LLM provider fallback chain — `createModelRouterMiddleware()` + `createModelRouter()`. Opt-in via `KOI_FALLBACK_MODEL` env var (comma-separated fallback model list). Routes model calls through a circuit-breaker-guarded fallback sequence; decision metadata surfaced in ATIF trajectory via `ctx.reportDecision`. When omitted, calls go directly to the primary model adapter. See `tui-command.ts` for construction and `TuiRuntimeConfig.modelRouterMiddleware` for injection point. **CB window fix (#2017):** default `failureWindowMs` raised to 300s (from shared-library 60s) so 5 consecutive failures at slow LLM turn latencies (~13–15s/turn) reliably open the circuit. |
 | `@koi/memory` | L0u | Session-start memory recall — scan, score by salience, budget to 8K tokens, format with `<memory-data>` trust boundary |
@@ -836,3 +844,28 @@ Replaced `conn.triggerAuth!()` non-null assertions in `connection.test.ts` with 
 ## @koi/scheduler `RunStoreFilter` update (PR #2052)
 
 `RunStoreFilter.status` now accepts `"dead_letter"` in addition to `"completed"` and `"failed"`, aligning with `TaskHistoryFilter.status` from `@koi/core`.
+
+---
+
+## Resilience preset stack (#1419)
+
+Three new L2 dependencies added to `packages/meta/cli`:
+`@koi/middleware-circuit-breaker`, `@koi/middleware-call-limits`,
+`@koi/middleware-call-dedup`. A new `resilienceStack` is registered in
+`DEFAULT_STACKS` and contributes three intercept-phase middlewares with
+TUI-tuned defaults:
+
+- `koi:circuit-breaker` — failureThreshold 5 within a 60s window, 30s
+  cooldown, default per-provider keying.
+- `koi:model-call-limit` — 200 model calls per session, refunded on
+  failed/abandoned attempts.
+- `koi:tool-call-limit` — 500 global tool calls per session,
+  exitBehavior `error`.
+
+`@koi/middleware-call-dedup` is a dependency but **not** auto-instantiated
+by the stack — dedup requires an explicit `include` allowlist of
+deterministic tools and is opt-in via `RuntimeConfig.callDedup`.
+
+End-to-end verified via TUI: glob tool call shows
+`koi:circuit-breaker` + `koi:model-call-limit` + `koi:tool-call-limit`
+spans on both model and tool paths in `/trajectory`.

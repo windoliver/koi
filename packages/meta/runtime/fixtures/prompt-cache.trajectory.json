@@ -1,0 +1,578 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "prompt-cache",
+  "agent": {
+    "name": "golden-prompt-cache",
+    "model_name": "anthropic/claude-sonnet-4-6",
+    "tool_definitions": [
+      {
+        "name": "add_numbers",
+        "description": "Add two numbers together"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:54.597Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:54.598Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-28T05:54:54.614Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "Use the add_numbers tool to compute 2 + 3, then reply with just the number.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 720,
+        "completion_tokens": 71
+      },
+      "duration_ms": 1242,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6",
+        "promptPrefixFingerprint": "fb42880665164bef5b77888f393a3549bd326c1c83ec50cc3fb78b9a77f99231",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-04-28T05:54:55.866Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_add_numbers_3",
+          "function_name": "add_numbers",
+          "arguments": {
+            "a": 2,
+            "b": 3
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_add_numbers_3",
+            "content": "{\"result\":5}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:55.867Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 1251.617541,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1777355695864,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:55.871Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "add_numbers({\"a\":2,\"b\":3})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 6.753416999999899,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "add_numbers",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:55.872Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 1249.406958,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 1,
+            "allowedCount": 1,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777355695863,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:55.873Z",
+      "model_name": "middleware:permissions",
+      "message": "add_numbers({\"a\":2,\"b\":3})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 5.811958000000004,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "add_numbers",
+            "resource": "add_numbers",
+            "toolInput": "{\"a\":2,\"b\":3}",
+            "action": "allow",
+            "durationMs": 1,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1777355695870,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:55.874Z",
+      "model_name": "middleware:prompt-cache",
+      "duration_ms": 1247.2977919999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "prompt-cache",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 150,
+        "nextCalled": true,
+        "_original_timestamp": 1777355695862,
+        "__koi": {
+          "identifier": "middleware:prompt-cache"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:55.875Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 1247.195459,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777355695861,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:55.876Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 1246.891916,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777355695860,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:55.877Z",
+      "model_name": "middleware:hooks",
+      "message": "add_numbers({\"a\":2,\"b\":3})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 3.0443330000000515,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "add_numbers",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777355695869,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:55.878Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 1246.050416,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777355695859,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:55.879Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "add_numbers({\"a\":2,\"b\":3})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 1.9559999999999036,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777355695868,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "agent",
+      "timestamp": "2026-04-28T05:54:55.880Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "{\"result\":5}",
+      "observation": {
+        "results": [
+          {
+            "content": "5"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 807,
+        "completion_tokens": 4
+      },
+      "duration_ms": 1914,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6",
+        "promptPrefixFingerprint": "fb42880665164bef5b77888f393a3549bd326c1c83ec50cc3fb78b9a77f99231",
+        "turnIndex": 1
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:57.800Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 1915.526208,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:57.801Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 1915.497875,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 1,
+            "allowedCount": 1,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777355697799,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:57.802Z",
+      "model_name": "middleware:prompt-cache",
+      "duration_ms": 1915.2637919999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "prompt-cache",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 150,
+        "nextCalled": true,
+        "_original_timestamp": 1777355697798,
+        "__koi": {
+          "identifier": "middleware:prompt-cache"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:57.803Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 1915.2405420000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777355697797,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:57.804Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 1915.1822919999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777355697796,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:57.805Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 1915.1079590000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777355697795,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-28T05:54:57.806Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.1307499999998072,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "_original_timestamp": 1777355697802,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

@@ -293,7 +293,14 @@ describe("bash prefix — backward compatibility", () => {
     const mw = createPermissionsMiddleware({
       backend: {
         supportsDefaultDenyMarker: true,
-        check: () => ({ effect: "ask", reason: "review" }),
+        check: () =>
+          ({
+            effect: "ask",
+            reason: "review",
+            // IS_DEFAULT_ASK marker — required so persistent / session-allow grant
+            // overrides apply (matches real `createPermissionBackend` fall-through).
+            [Symbol.for("@koi/permissions/default-fallthrough-ask")]: true,
+          }) as PermissionDecision,
       },
       persistentApprovals,
       resolveBashCommand: (_toolId, input) => input.command as string,
@@ -324,7 +331,14 @@ describe("bash prefix — backward compatibility", () => {
     const mw = createPermissionsMiddleware({
       backend: {
         supportsDefaultDenyMarker: true,
-        check: () => ({ effect: "ask", reason: "review" }),
+        check: () =>
+          ({
+            effect: "ask",
+            reason: "review",
+            // IS_DEFAULT_ASK marker — required so persistent / session-allow grant
+            // overrides apply (matches real `createPermissionBackend` fall-through).
+            [Symbol.for("@koi/permissions/default-fallthrough-ask")]: true,
+          }) as PermissionDecision,
       },
       persistentApprovals,
       resolveBashCommand: (_toolId, input) => input.command as string,
@@ -399,7 +413,14 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     // Backend returns ask for everything → forces the approval flow.
     const backend: PermissionBackend & { readonly supportsDefaultDenyMarker: true } = {
       supportsDefaultDenyMarker: true,
-      check: () => ({ effect: "ask", reason: "review" }),
+      check: () =>
+        ({
+          effect: "ask",
+          reason: "review",
+          // IS_DEFAULT_ASK marker — required so persistent / session-allow grant
+          // overrides apply (matches real `createPermissionBackend` fall-through).
+          [Symbol.for("@koi/permissions/default-fallthrough-ask")]: true,
+        }) as PermissionDecision,
     };
 
     // Approval handler grants always-allow for the FIRST call only. If the
@@ -480,7 +501,14 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     const mw = createPermissionsMiddleware({
       backend: {
         supportsDefaultDenyMarker: true,
-        check: () => ({ effect: "ask", reason: "review" }),
+        check: () =>
+          ({
+            effect: "ask",
+            reason: "review",
+            // IS_DEFAULT_ASK marker — required so persistent / session-allow grant
+            // overrides apply (matches real `createPermissionBackend` fall-through).
+            [Symbol.for("@koi/permissions/default-fallthrough-ask")]: true,
+          }) as PermissionDecision,
       },
       persistentApprovals,
       resolveBashCommand: (_toolId, input) => input.command as string,
@@ -550,7 +578,14 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     const mw = createPermissionsMiddleware({
       backend: {
         supportsDefaultDenyMarker: true,
-        check: () => ({ effect: "ask", reason: "review" }),
+        check: () =>
+          ({
+            effect: "ask",
+            reason: "review",
+            // IS_DEFAULT_ASK marker — required so persistent / session-allow grant
+            // overrides apply (matches real `createPermissionBackend` fall-through).
+            [Symbol.for("@koi/permissions/default-fallthrough-ask")]: true,
+          }) as PermissionDecision,
       },
       persistentApprovals,
       resolveBashCommand: (_toolId, input) => input.command as string,
@@ -586,7 +621,14 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
 
     const backend: PermissionBackend & { readonly supportsDefaultDenyMarker: true } = {
       supportsDefaultDenyMarker: true,
-      check: () => ({ effect: "ask", reason: "review" }),
+      check: () =>
+        ({
+          effect: "ask",
+          reason: "review",
+          // IS_DEFAULT_ASK marker — required so persistent / session-allow grant
+          // overrides apply (matches real `createPermissionBackend` fall-through).
+          [Symbol.for("@koi/permissions/default-fallthrough-ask")]: true,
+        }) as PermissionDecision,
     };
 
     const approvalHandler = mock(
@@ -693,7 +735,14 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     const mw = createPermissionsMiddleware({
       backend: {
         supportsDefaultDenyMarker: true,
-        check: () => ({ effect: "ask", reason: "review" }),
+        check: () =>
+          ({
+            effect: "ask",
+            reason: "review",
+            // IS_DEFAULT_ASK marker — required so persistent / session-allow grant
+            // overrides apply (matches real `createPermissionBackend` fall-through).
+            [Symbol.for("@koi/permissions/default-fallthrough-ask")]: true,
+          }) as PermissionDecision,
       },
       persistentApprovals,
       resolveBashCommand: (_toolId, input) => input.command as string,
@@ -830,7 +879,14 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
   test("session always-allow on one complex command does NOT auto-approve a different one", async () => {
     const backend: PermissionBackend & { readonly supportsDefaultDenyMarker: true } = {
       supportsDefaultDenyMarker: true,
-      check: () => ({ effect: "ask", reason: "review" }),
+      check: () =>
+        ({
+          effect: "ask",
+          reason: "review",
+          // IS_DEFAULT_ASK marker — required so persistent / session-allow grant
+          // overrides apply (matches real `createPermissionBackend` fall-through).
+          [Symbol.for("@koi/permissions/default-fallthrough-ask")]: true,
+        }) as PermissionDecision,
     };
 
     const approvals: string[] = [];

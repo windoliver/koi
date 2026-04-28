@@ -1,0 +1,28 @@
+{
+  "name": "@koi/forge-tools",
+  "description": "Primordial forge tools and in-memory ForgeStore (L2)",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/execution-context": "workspace:*",
+    "@koi/forge-types": "workspace:*",
+    "@koi/hash": "workspace:*",
+    "@koi/validation": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "koi": {}
+}

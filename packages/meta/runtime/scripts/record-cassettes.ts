@@ -65,6 +65,13 @@ import {
 } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
+import {
+  createForgeInspectTool,
+  createForgeListTool,
+  createForgeMiddlewareTool,
+  createForgeToolTool,
+  createInMemoryForgeStore,
+} from "@koi/forge-tools";
 import { createLocalFileSystem } from "@koi/fs-local";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
@@ -92,6 +99,7 @@ import {
   PLAN_SAVE_TOOL_NAME,
 } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware, WRITE_PLAN_DESCRIPTOR } from "@koi/middleware-planning";
+import { createPromptCacheMiddleware } from "@koi/middleware-prompt-cache";
 import {
   createRetrySignalBroker,
   createSemanticRetryMiddleware,
@@ -558,6 +566,41 @@ const spawnToolsAll = createSpawnTools({
 });
 // createSpawnTools returns [agent_spawn]
 const [stAgentSpawn] = spawnToolsAll as [import("@koi/core").Tool];
+
+// ---------------------------------------------------------------------------
+// @koi/forge-tools — synthesize / list / inspect tools backed by an in-memory store.
+// Used by the `forge-synthesize` cassette + trajectory recording.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a fresh in-memory forge store + tool quartet. Each cassette and
+ * standalone-query recording must use its own instance so cross-run
+ * residue cannot satisfy a flow that should require a real save.
+ */
+function createForgeToolSet(): {
+  readonly store: ReturnType<typeof createInMemoryForgeStore>;
+  readonly forgeToolTool: import("@koi/core").Tool;
+  readonly forgeMiddlewareTool: import("@koi/core").Tool;
+  readonly forgeListTool: import("@koi/core").Tool;
+  readonly forgeInspectTool: import("@koi/core").Tool;
+} {
+  const store = createInMemoryForgeStore();
+  return {
+    store,
+    forgeToolTool: createForgeToolTool({ store }),
+    forgeMiddlewareTool: createForgeMiddlewareTool({ store }),
+    forgeListTool: createForgeListTool({ store }),
+    forgeInspectTool: createForgeInspectTool({ store }),
+  };
+}
+
+// One quartet for query-config providers (reused across non-forge cassettes
+// where forge tools are part of the descriptor list but not invoked).
+const initialForgeSet = createForgeToolSet();
+const forgeToolTool = initialForgeSet.forgeToolTool;
+const forgeMiddlewareTool = initialForgeSet.forgeMiddlewareTool;
+const forgeListTool = initialForgeSet.forgeListTool;
+const forgeInspectTool = initialForgeSet.forgeInspectTool;
 
 // ---------------------------------------------------------------------------
 // Memory tools (backed by @koi/memory-tools with in-memory backend)
@@ -2131,6 +2174,36 @@ const queries: readonly QueryConfig[] = [
     extraMiddleware: [createStrictAgenticMiddleware({}).middleware],
   },
 
+  // prompt-cache: exercises @koi/middleware-prompt-cache. The middleware reorders
+  // system messages to a stable prefix and writes CacheHints into request.metadata.
+  // The trajectory captures the MW span (proves it's wired) and the standard
+  // permissions+model lifecycle. Uses Sonnet (anthropic) so extractProvider
+  // resolves to a known allow-listed provider; staticPrefixMinTokens is low so
+  // the default kernel system prefix easily clears it.
+  {
+    name: "prompt-cache",
+    prompt: "Use the add_numbers tool to compute 2 + 3, then reply with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+    ],
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+    extraMiddleware: [
+      createPromptCacheMiddleware({
+        providers: ["anthropic", "openai"],
+        staticPrefixMinTokens: 1,
+      }),
+    ],
+  },
+
   // artifacts-roundtrip: exercises @koi/artifacts via two tools backed by a
   // real ArtifactStore. The LLM saves content, then fetches it back by id.
   // Validates the full L2 surface: buildTool → permissions → artifact_save →
@@ -3458,6 +3531,54 @@ const queries: readonly QueryConfig[] = [
     modelName: SONNET_MODEL,
   },
 
+  // forge-synthesize: @koi/forge-tools — forge_tool synthesizes a draft tool,
+  //   forge_list confirms it appears in the store, forge_inspect retrieves the
+  //   artifact by brickId. Backed by an in-memory ForgeStore.
+  {
+    name: "forge-synthesize",
+    prompt:
+      "Use forge_tool to create a tool named 'add-numbers' that takes two numbers a and b and returns their sum. " +
+      "Then call forge_list to confirm it appears. " +
+      "Then call forge_inspect with the returned brickId to retrieve the artifact.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+    // Fresh ForgeStore per trajectory run so cassette/test residue cannot
+    // satisfy the synthesize -> list -> inspect flow without an actual save.
+    providerFactory: () => {
+      const fresh = createForgeToolSet();
+      return [
+        createSingleToolProvider({
+          name: "forge-tool",
+          toolName: "forge_tool",
+          createTool: () => fresh.forgeToolTool,
+        }),
+        createSingleToolProvider({
+          name: "forge-middleware",
+          toolName: "forge_middleware",
+          createTool: () => fresh.forgeMiddlewareTool,
+        }),
+        createSingleToolProvider({
+          name: "forge-list",
+          toolName: "forge_list",
+          createTool: () => fresh.forgeListTool,
+        }),
+        createSingleToolProvider({
+          name: "forge-inspect",
+          toolName: "forge_inspect",
+          createTool: () => fresh.forgeInspectTool,
+        }),
+      ];
+    },
+    maxTurns: 4,
+    // Use Sonnet 4.6 — multi-tool sequences benefit from the more reliable
+    // function-call token emission, same rationale as spawn-tools.
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+  },
+
   // hook-redaction: agent hook on tool.succeeded with forwardRawPayload + default redaction.
   //   Parent calls get_credentials which returns a mix of secrets (apiKey, password)
   //   and a safe field (host). The @koi/hooks redaction pipeline masks secrets
@@ -4472,6 +4593,41 @@ await recordCassette(
   { model: SONNET_MODEL },
 );
 
+// forge-synthesize uses Sonnet 4.6 — same rationale as spawn-tools for
+// reliable multi-tool function-call token emission. Use a FRESH forge
+// store + tools quartet so cross-run residue cannot mask a missing save.
+{
+  const fresh = createForgeToolSet();
+  await recordCassette(
+    "forge-synthesize",
+    () =>
+      sonnetAdapter.stream({
+        messages: [
+          {
+            senderId: "user",
+            timestamp: Date.now(),
+            content: [
+              {
+                kind: "text",
+                text:
+                  "Use forge_tool to create a tool named 'add-numbers' that takes two numbers a and b and returns their sum. " +
+                  "Then call forge_list with name: 'add-numbers' to confirm it appears. " +
+                  "Then call forge_inspect with the returned brickId to retrieve the artifact.",
+              },
+            ],
+          },
+        ],
+        tools: [
+          fresh.forgeToolTool.descriptor,
+          fresh.forgeMiddlewareTool.descriptor,
+          fresh.forgeListTool.descriptor,
+          fresh.forgeInspectTool.descriptor,
+        ],
+      }),
+    { model: SONNET_MODEL },
+  );
+}
+
 await recordCassette("memory-store", () =>
   modelAdapter.stream({
     messages: [
@@ -5090,6 +5246,7 @@ console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
 console.log("  fixtures/task-tools.cassette.json");
 console.log("  fixtures/spawn-tools.cassette.json");
+console.log("  fixtures/forge-synthesize.cassette.json");
 console.log("  fixtures/hook-redaction.cassette.json");
 console.log("  fixtures/todo-write.cassette.json");
 console.log("  fixtures/plan-mode.cassette.json");
