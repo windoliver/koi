@@ -1,9 +1,10 @@
 # Nexus Client — Health Check (issue #1401)
 
-**Status:** Design approved 2026-04-27
-**Branch:** `feat/nexus-client-1401`
+**Status:** **DESIGN-ONLY (this PR).** Implementation lands in a follow-up PR. This document specifies what the implementation must do; merging this branch alone does NOT close #1401 and does NOT change runtime behavior.
+**Branch:** `feat/nexus-client-1401` — currently docs-only
 **Issue:** [#1401](https://github.com/windoliver/koi/issues/1401) — v2 Phase 3-nexus-1: nexus-client + nexus-transport
 **Layer:** L2 (`@koi/nexus-client`, depends on `@koi/core` only)
+**Implementation PR:** to be opened separately; will contain all source/test changes listed in the Files section below and will be the PR that closes #1401.
 
 ## Context
 
@@ -99,7 +100,7 @@ The probe targets the **exact methods consumers actually call**. Audit of v2 cal
 | `permissions-nexus/nexus-permission-backend.ts:59,80,116,129` | `read` of `koi/permissions/version.json` and `koi/permissions/policy.json` |
 | `permissions-nexus/nexus-revocation-registry.ts:25,67` | `read`, `write` of revocations |
 | `audit-sink-nexus/nexus-sink.ts` | `write` (audit append) |
-| `permissions.check` | **NOT USED in v2** — was a v1 artifact still in `RETRYABLE_METHODS`; remove from probe |
+| `permissions.check` (v1 RPC) | **NOT USED in v2** — v1 artifact still in `RETRYABLE_METHODS`; not the right probe |
 
 Sequence:
 
@@ -131,7 +132,7 @@ The `probed` field on `NexusHealth` is exposed so callers know which subsystems 
 
 ### Local-bridge specifics
 
-The fs-nexus `local-bridge` transport is a spawned Python subprocess speaking JSON-RPC over stdin/stdout. Its `health()` MUST execute the same `version` + `permissions.check` calls **through `transport.call(...)`** so the subprocess startup, IPC handshake, line parsing, and notification routing are all exercised. Direct in-process calls to bridge handlers are explicitly forbidden (would create false-positive readiness).
+The fs-nexus `local-bridge` transport is a spawned Python subprocess speaking JSON-RPC over stdin/stdout. Its `health()` MUST execute the same `version` + `read("koi/permissions/version.json")` calls **through `transport.call(...)`** so the subprocess startup, IPC handshake, line parsing, and notification routing are all exercised. Direct in-process calls to bridge handlers are explicitly forbidden (would create false-positive readiness).
 
 ### Future server change (out of scope)
 
@@ -201,12 +202,12 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
 | File | Change | Est LOC |
 |---|---|---|
 | `packages/lib/nexus-client/src/types.ts` | Add `NexusHealth`, optional `health` on `NexusTransport`, required `health` on new `HealthCapableNexusTransport` | +18 |
-| `packages/lib/nexus-client/src/transport.ts` | Implement `health()` (version + permissions.check); per-call deadline override; return type narrowed to `HealthCapableNexusTransport` | +45 |
-| `packages/lib/nexus-client/src/health.test.ts` | New: both probes ok; version 5xx; permissions.check 5xx; auth failure (401); timeout; network error; malformed response | +130 |
+| `packages/lib/nexus-client/src/transport.ts` | Implement `health()` (version + read("koi/permissions/version.json")); per-call deadline override; return type narrowed to `HealthCapableNexusTransport` | +45 |
+| `packages/lib/nexus-client/src/health.test.ts` | New: both probes ok; version 5xx; read("koi/permissions/version.json") 5xx; auth failure (401); timeout; network error; malformed response | +130 |
 | `packages/lib/nexus-client/src/assert-health-capable.ts` | New: `assertHealthCapable` assertion function | +15 |
 | `packages/lib/nexus-client/src/assert-health-capable.test.ts` | New: present narrows; missing throws | +25 |
 | `packages/lib/nexus-client/src/index.ts` | Re-export `NexusHealth`, `HealthCapableNexusTransport`, `assertHealthCapable` | +3 |
-| `packages/lib/fs-nexus/src/local-transport.ts` | Implement `health()` on local-bridge — calls `transport.call("version")` + `transport.call("permissions.check")` through the real subprocess stdio channel (NOT direct handler calls); return type → `HealthCapableNexusTransport` | +35 |
+| `packages/lib/fs-nexus/src/local-transport.ts` | Implement `health()` on local-bridge — calls `transport.call("version", {})` + `transport.call("read", { path: "koi/permissions/version.json" })` through the real subprocess stdio channel (NOT direct handler calls); return type → `HealthCapableNexusTransport` | +35 |
 | `packages/lib/fs-nexus/src/local-transport.test.ts` | New tests: health success through subprocess; failure when subprocess dead; failure when stdio handshake broken | +60 |
 | `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as `HealthCapableNexusTransport`; add `nexusBootMode` config field; wire preflight that logs (telemetry default) or throws (fail-closed opt-in); runs before `createNexusPermissionBackend`/`createNexusAuditSink` | +30 |
 | `packages/meta/cli/src/__tests__/runtime-factory-health.test.ts` | New tests covering telemetry + fail-closed modes (see Tests section) | +110 |
@@ -217,16 +218,15 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
 
 (Larger than the original ~170 estimate because reviews correctly demanded real integration, type-system enforcement, and a readiness probe — not just a dead liveness API.)
 
-(Larger than the original ~170 estimate because the review correctly demanded real integration, not just a dead API.)
-
 ## Tests (TDD — written before code)
 
 `packages/lib/nexus-client/src/health.test.ts`:
 
-1. `health() returns ok with version, latency, probed=[version,permissions.check] when both probes succeed`
-2. `health() returns error when version probe returns 503` — fail at liveness step
-3. `health() returns error when permissions.check returns 503` — fail at readiness step (proves we don't stop at version)
-4. `health() returns error when permissions.check returns 401 (auth failure)` — proves auth path is exercised
+1. `health() returns ok with version, latency, probed=["version","read:koi/permissions/version.json"] when both probes succeed`
+2. `health() returns ok when read returns 404 (path-not-found mapped to ok)` — proves missing-policy is not a transport failure
+3. `health() returns error when version probe returns 503` — fail at liveness step
+4. `health() returns error when read probe returns 503` — fail at readiness step (proves we don't stop at version)
+5. `health() returns error when read probe returns 401 (auth failure)` — proves auth path is exercised
 5. `health() returns error on timeout shorter than default deadline`
 6. `health() returns error on network failure`
 7. `health() returns error on malformed response`
