@@ -53,10 +53,22 @@ export interface NexusTransport {
     method: string,
     params: Record<string, unknown>,
   ) => Promise<Result<T, KoiError>>;
-  readonly health: () => Promise<Result<NexusHealth, KoiError>>;  // NEW
+  /** OPTIONAL — implementers opt in; callers must check for `undefined`. */
+  readonly health?: () => Promise<Result<NexusHealth, KoiError>>;  // NEW (optional)
   readonly close: () => void;
 }
 ```
+
+### Why optional, not required
+
+Audit shows 12+ structural implementers of `NexusTransport` across the repo (production: `audit-sink-nexus`, `permissions-nexus`, `meta/runtime`, `meta/cli`; tests/fixtures: `fs-nexus/test-helpers.ts`, `testing.ts`, plus per-package test mocks). Making `health` required would force every fixture to grow a no-op stub purely to satisfy the type — a breaking source change with no caller-visible benefit.
+
+Optional is the right shape because:
+
+1. **Minimal-surface contracts** (CLAUDE.md L0 principle) — only `stream()`-style required methods; everything else opt-in
+2. **Async-by-default symmetry** — same pattern as other L0 contracts that allow sync-or-async via union
+3. **Caller cost is one line:** `if (transport.health === undefined) { /* skip */ } else { await transport.health() }`
+4. **`createHttpTransport` always provides it** — production callers always get a real implementation; only test fixtures opt out
 
 ## Implementation
 
