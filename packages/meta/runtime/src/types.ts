@@ -141,6 +141,25 @@ export interface RuntimeConfig {
     | undefined;
 
   /**
+   * Fallback sink for approval steps that the per-stream relay cannot
+   * route. Fires only when (1) `RuntimeConfig.sessionId` is set so
+   * multiple concurrent streams share one sessionId, AND (2) an
+   * approval step arrives without `step.metadata.runId` so the
+   * originating stream cannot be identified. Without this hook, the
+   * runtime drops the step (logging per event) to prevent
+   * cross-stream audit corruption / data leak from broadcast — wire
+   * a session-level audit sink here to capture those records
+   * instead of losing them.
+   *
+   * The typical cause is a version-skewed
+   * `@koi/middleware-permissions` that does not stamp `runId` yet.
+   * Upgrading the producer eliminates the fallback firing.
+   */
+  readonly onUnroutedApprovalStep?:
+    | ((sessionId: string, step: RichTrajectoryStep) => void)
+    | undefined;
+
+  /**
    * Fixed session ID threaded into TurnContext.session.sessionId for every
    * stream() call. When provided, all turns in this runtime share the same
    * session routing key so middleware (e.g. transcript) writes to a single
@@ -454,6 +473,70 @@ export interface RuntimeConfig {
    * already present in `config.middleware`.
    */
   readonly feedbackLoop?: import("@koi/middleware-feedback-loop").FeedbackLoopConfig | undefined;
+
+  /**
+   * Circuit breaker middleware configuration. When provided, wires
+   * `@koi/middleware-circuit-breaker` which fails fast on unhealthy
+   * model providers (CLOSED → OPEN → HALF_OPEN state machine).
+   *
+   * Pass an object to customize (`breaker.failureThreshold`, `cooldownMs`,
+   * `extractKey` for tenant-scoped keys, `maxKeys`). Pass `false` to
+   * explicitly disable. Default (omitted): not installed.
+   *
+   * Skipped if a middleware named "koi:circuit-breaker" is already in
+   * `config.middleware`.
+   */
+  readonly circuitBreaker?:
+    | import("@koi/middleware-circuit-breaker").CircuitBreakerMiddlewareConfig
+    | false
+    | undefined;
+
+  /**
+   * Call-limits middleware configuration. When provided, wires
+   * `@koi/middleware-call-limits` — independent per-tool/global tool
+   * and model-call budgets per session. Provide either or both.
+   *
+   * Skipped per-name if a middleware named "koi:tool-call-limit" or
+   * "koi:model-call-limit" is already in `config.middleware`.
+   */
+  readonly callLimits?:
+    | {
+        readonly tool?: import("@koi/middleware-call-limits").ToolCallLimitConfig | undefined;
+        readonly model?: import("@koi/middleware-call-limits").ModelCallLimitConfig | undefined;
+      }
+    | false
+    | undefined;
+
+  /**
+   * Call-dedup middleware configuration. When provided, wires
+   * `@koi/middleware-call-dedup` to cache identical deterministic tool
+   * call results within a session.
+   *
+   * Opt-in: requires an explicit `include` allowlist of tool ids the
+   * caller has proven deterministic against immutable inputs. Without
+   * `include`, the middleware is a passthrough.
+   *
+   * Skipped if a middleware named "koi:call-dedup" is already in
+   * `config.middleware`.
+   */
+  readonly callDedup?: import("@koi/middleware-call-dedup").CallDedupConfig | false | undefined;
+
+  /**
+   * Acknowledgement that cache-hit observability is wired even when
+   * `koi:call-dedup` is injected via `config.middleware` rather than
+   * the auto-install path. Set to `true` only after confirming that
+   * the caller-injected dedup middleware forwards cache hits to your
+   * audit / event-trace / OTel pathway (e.g., via its own
+   * `onCacheHit` callback).
+   *
+   * Without this acknowledgement, the runtime refuses to compose a
+   * caller-injected dedup alongside observe-phase middleware or
+   * runtime-added observers (audit / trajectory store / otel),
+   * because dedup short-circuits the observe-phase chain on cache
+   * hits and coalesced waiters — leaving those observers silently
+   * blind otherwise.
+   */
+  readonly callDedupObservabilityAck?: boolean | undefined;
 
   /**
    * Forge-demand detector configuration. When provided, wires

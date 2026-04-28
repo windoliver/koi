@@ -44,6 +44,7 @@ import { mcpStack } from "./preset-stacks/mcp.js";
 import { memoryStack } from "./preset-stacks/memory.js";
 import { notebookStack } from "./preset-stacks/notebook.js";
 import { observabilityStack } from "./preset-stacks/observability.js";
+import { resilienceStack } from "./preset-stacks/resilience.js";
 import { rulesStack } from "./preset-stacks/rules.js";
 import { schedulerStack } from "./preset-stacks/scheduler.js";
 import { skillsStack } from "./preset-stacks/skills.js";
@@ -274,6 +275,11 @@ export const DEFAULT_STACKS: readonly PresetStack[] = [
   notebookStack,
   codeExecStack,
   forgeStack,
+  // Resilience stack: bounds runaway loops + degrades gracefully under
+  // provider failure. Sits early-phase so its intercept-phase middleware
+  // wraps the model/tool call from the outermost position before
+  // observability or any other layer sees the request.
+  resilienceStack,
   rulesStack,
   schedulerStack,
   skillsStack,

@@ -432,6 +432,31 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/middleware-call-dedup": {
+      "name": "@koi/middleware-call-dedup",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-call-limits": {
+      "name": "@koi/middleware-call-limits",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-circuit-breaker": {
+      "name": "@koi/middleware-circuit-breaker",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/lib/middleware-feedback-loop": {
       "name": "@koi/middleware-feedback-loop",
       "version": "0.0.0",
@@ -877,6 +902,9 @@
         "@koi/memory-fs": "workspace:*",
         "@koi/memory-tools": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
+        "@koi/middleware-call-dedup": "workspace:*",
+        "@koi/middleware-call-limits": "workspace:*",
+        "@koi/middleware-circuit-breaker": "workspace:*",
         "@koi/middleware-collective-memory": "workspace:*",
         "@koi/middleware-dream": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
@@ -887,12 +915,9 @@
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-plan-persist": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
-        "@koi/middleware-prompt-cache": "workspace:*",
-        "@koi/middleware-reflex": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
-        "@koi/middleware-turn-ack": "workspace:*",
         "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -1009,6 +1034,9 @@
         "@koi/memory-team-sync": "workspace:*",
         "@koi/memory-tools": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
+        "@koi/middleware-call-dedup": "workspace:*",
+        "@koi/middleware-call-limits": "workspace:*",
+        "@koi/middleware-circuit-breaker": "workspace:*",
         "@koi/middleware-collective-memory": "workspace:*",
         "@koi/middleware-dream": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
@@ -1905,6 +1933,12 @@
     "@koi/memory-tools": ["@koi/memory-tools@workspace:packages/mm/memory-tools"],
 
     "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/security/middleware-audit"],
+
+    "@koi/middleware-call-dedup": ["@koi/middleware-call-dedup@workspace:packages/lib/middleware-call-dedup"],
+
+    "@koi/middleware-call-limits": ["@koi/middleware-call-limits@workspace:packages/lib/middleware-call-limits"],
+
+    "@koi/middleware-circuit-breaker": ["@koi/middleware-circuit-breaker@workspace:packages/lib/middleware-circuit-breaker"],
 
     "@koi/middleware-collective-memory": ["@koi/middleware-collective-memory@workspace:packages/mm/middleware-collective-memory"],
 

@@ -21,6 +21,7 @@ import type {
   ModelStreamHandler,
   RetrySignalReader,
   RichTrajectoryStep,
+  SessionContext,
   ToolDescriptor,
   ToolRequest,
   ToolResponse,
@@ -36,6 +37,12 @@ import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
 import { createLspComponentProvider } from "@koi/lsp";
 import { createMemoryStore, type MemoryStore } from "@koi/memory-fs";
 import { createAuditMiddleware } from "@koi/middleware-audit";
+import { createCallDedupMiddleware } from "@koi/middleware-call-dedup";
+import {
+  createModelCallLimitMiddleware,
+  createToolCallLimitMiddleware,
+} from "@koi/middleware-call-limits";
+import { createCircuitBreakerMiddleware } from "@koi/middleware-circuit-breaker";
 import { createBrowserProvider } from "@koi/tool-browser";
 import { createArtifactToolProvider } from "./artifact-tool-provider.js";
 
@@ -399,10 +406,43 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // guard and semantic-retry) so each retry attempt independently benefits from
     // provider failover. Skip when already provided in config.middleware by name.
     const hasModelRouter = new Set(afterExfiltration.map((mw) => mw.name)).has("model-router");
-    const middleware: readonly KoiMiddleware[] =
+    const afterModelRouter: readonly KoiMiddleware[] =
       config.modelRouterMiddleware !== undefined && !hasModelRouter
         ? [...afterExfiltration, config.modelRouterMiddleware]
         : afterExfiltration;
+
+    // Resilience trio (#1419) — opt-in via explicit config:
+    //   * circuitBreaker — fail-fast on unhealthy providers (priority 175 model-side)
+    //   * callLimits     — per-tool / per-model session budgets
+    //   * callDedup      — cache identical deterministic tool calls (opt-in include allowlist)
+    // Each is skipped when explicitly disabled (`false`), unconfigured
+    // (`undefined`), or already provided by name in `config.middleware`.
+    const resilienceNames = new Set(afterModelRouter.map((mw) => mw.name));
+    const resilienceAdds: KoiMiddleware[] = [];
+    if (
+      config.circuitBreaker !== undefined &&
+      config.circuitBreaker !== false &&
+      !resilienceNames.has("koi:circuit-breaker")
+    ) {
+      resilienceAdds.push(createCircuitBreakerMiddleware(config.circuitBreaker));
+    }
+    if (config.callLimits !== undefined && config.callLimits !== false) {
+      if (config.callLimits.tool !== undefined && !resilienceNames.has("koi:tool-call-limit")) {
+        resilienceAdds.push(createToolCallLimitMiddleware(config.callLimits.tool));
+      }
+      if (config.callLimits.model !== undefined && !resilienceNames.has("koi:model-call-limit")) {
+        resilienceAdds.push(createModelCallLimitMiddleware(config.callLimits.model));
+      }
+    }
+    if (
+      config.callDedup !== undefined &&
+      config.callDedup !== false &&
+      !resilienceNames.has("koi:call-dedup")
+    ) {
+      resilienceAdds.push(createCallDedupMiddleware(config.callDedup));
+    }
+    const middleware: readonly KoiMiddleware[] =
+      resilienceAdds.length > 0 ? [...afterModelRouter, ...resilienceAdds] : afterModelRouter;
 
     const activityTimeoutConfig = resolveActivityTimeoutConfig(
       config.activityTimeout,
@@ -478,17 +518,150 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // dispose() awaits these so transport is not closed under a stream still flushing.
     const activeStreamFinalizations = new Set<Promise<void>>();
 
-    // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to the
-    // correct per-stream EventTraceHandle.emitExternalStep by sessionId.
+    // Compatibility guard: under stable RuntimeConfig.sessionId, the
+    // approval relay fails closed when an approval step arrives
+    // without `step.metadata.runId` (cross-stream leak prevention).
+    // Older `@koi/middleware-permissions` versions do not stamp
+    // runId, so a partial rollout / version skew silently drops
+    // those records — a real audit hole on a security-sensitive
+    // path. Require operators to explicitly opt out by either
+    //   (a) confirming the producer stamps runId (no-op at runtime
+    //       — operators audit by upgrading the dep), AND/OR
+    //   (b) wiring `onUnroutedApprovalStep` to a session-level
+    //       fallback sink so unrouted records are captured.
+    // Fail fast at construction when the unsafe combination is
+    // detected: stable sessionId + approvalStepHandle present +
+    // no fallback hook. Operators that have verified their
+    // permissions producer stamps runId can pass a no-op
+    // `onUnroutedApprovalStep: () => {}` to acknowledge.
+    if (
+      config.sessionId !== undefined &&
+      config.approvalStepHandle !== undefined &&
+      config.onUnroutedApprovalStep === undefined
+    ) {
+      console.warn(
+        "[runtime] RuntimeConfig.sessionId is set with approvalStepHandle but no " +
+          "onUnroutedApprovalStep fallback sink. Under stable sessionId, an approval step " +
+          "missing step.metadata.runId cannot be routed safely (broadcasting would leak one " +
+          "stream's approval decision into other concurrent streams' trajectories). The relay " +
+          "will fail closed and drop such steps with a per-event warning. Configure " +
+          "RuntimeConfig.onUnroutedApprovalStep to capture session-level fallback records, or " +
+          "verify your @koi/middleware-permissions version stamps runId on every approval step.",
+      );
+    }
+
+    // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to
+    // the per-stream EventTraceHandle that originated the call. With
+    // `RuntimeConfig.sessionId`, multiple concurrent streams share one
+    // sessionId — keying by sessionId alone and fanning out would write
+    // each approval into every concurrent stream's trajectory (cross-talk).
+    //
+    // Routing strategy: each stream registers its emitter under its own
+    // per-stream `runId` (runId is allocated per stream even under stable
+    // sessionId — see createMinimalTurnContext). The permissions middleware
+    // stamps `step.metadata.runId` on each approval step. The relay then
+    // delivers the step to the single owning emitter.
+    //
+    // Fan-out fallback: if step metadata is missing a runId (older
+    // permissions versions), broadcast to all emitters under the sessionId
+    // — preserves prior behavior on a best-effort basis rather than dropping
+    // the step entirely.
     const approvalDispatch = new Map<
       string,
-      (sessionId: string, step: RichTrajectoryStep) => void
+      Map<string, (sessionId: string, step: RichTrajectoryStep) => void>
     >();
     const unsubApprovalSink =
       config.approvalStepHandle !== undefined
         ? config.approvalStepHandle.setApprovalStepSink(
             (sid: string, step: RichTrajectoryStep): void => {
-              approvalDispatch.get(sid)?.(sid, step);
+              const byRunId = approvalDispatch.get(sid);
+              const md = step.metadata as { readonly runId?: unknown } | undefined;
+              const runIdValue = typeof md?.runId === "string" ? md.runId : undefined;
+              // No active emitters for this session: stream(s) have
+              // already finalized and deregistered. The step is a
+              // late or orphaned approval — route to the configured
+              // fallback sink (audit hole otherwise). Never broadcast.
+              if (byRunId === undefined) {
+                if (config.onUnroutedApprovalStep !== undefined) {
+                  try {
+                    config.onUnroutedApprovalStep(sid, step);
+                  } catch (e: unknown) {
+                    console.warn(
+                      `[runtime] onUnroutedApprovalStep threw for sessionId "${sid}":`,
+                      e,
+                    );
+                  }
+                  return;
+                }
+                console.warn(
+                  `[runtime] approval-step relay: dropping step — no active emitter ` +
+                    `registered for sessionId "${sid}" (late or orphaned approval). ` +
+                    `Configure RuntimeConfig.onUnroutedApprovalStep to capture these.`,
+                );
+                return;
+              }
+              if (runIdValue !== undefined) {
+                const emit = byRunId.get(runIdValue);
+                if (emit !== undefined) {
+                  emit(sid, step);
+                  return;
+                }
+                // runId is stamped but its emitter has already
+                // deregistered — same audit-hole risk. Route to
+                // fallback rather than dropping.
+                if (config.onUnroutedApprovalStep !== undefined) {
+                  try {
+                    config.onUnroutedApprovalStep(sid, step);
+                  } catch (e: unknown) {
+                    console.warn(
+                      `[runtime] onUnroutedApprovalStep threw for sessionId "${sid}":`,
+                      e,
+                    );
+                  }
+                  return;
+                }
+                console.warn(
+                  `[runtime] approval-step relay: dropping step — runId "${runIdValue}" ` +
+                    `has no active emitter under sessionId "${sid}". Configure ` +
+                    `RuntimeConfig.onUnroutedApprovalStep to capture these.`,
+                );
+                return;
+              }
+              // No runId on the step. Routing rule:
+              //   * Non-stable mode (each stream has its own
+              //     sessionId): a sessionId NEVER hosts more than
+              //     one emitter at a time, so byRunId.size === 1
+              //     is unambiguous — fan out.
+              //   * Stable mode (RuntimeConfig.sessionId set):
+              //     the same sessionId hosts many streams across
+              //     its lifetime. A delayed approval step from a
+              //     now-deregistered stream A could arrive while
+              //     stream B is the only emitter still registered
+              //     — forwarding A's record into B's trajectory
+              //     is audit corruption + cross-stream leak on a
+              //     security-sensitive path. Always fail closed
+              //     in stable mode.
+              if (config.sessionId === undefined && byRunId.size === 1) {
+                const only = byRunId.values().next().value;
+                if (only !== undefined) only(sid, step);
+                return;
+              }
+              if (config.onUnroutedApprovalStep !== undefined) {
+                try {
+                  config.onUnroutedApprovalStep(sid, step);
+                } catch (e: unknown) {
+                  console.warn(`[runtime] onUnroutedApprovalStep threw for sessionId "${sid}":`, e);
+                }
+                return;
+              }
+              console.warn(
+                `[runtime] approval-step relay: dropping step — step.metadata.runId is ` +
+                  `missing under stable sessionId "${sid}" with ${String(byRunId.size)} ` +
+                  `concurrent streams. Broadcasting would leak one stream's approval ` +
+                  `decision into unrelated trajectories. Upgrade @koi/middleware-permissions ` +
+                  `to stamp runId, or configure RuntimeConfig.onUnroutedApprovalStep to ` +
+                  `capture session-level fallback records.`,
+              );
             },
           )
         : undefined;
@@ -537,6 +710,89 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
           ? config.otel
           : undefined;
 
+    // Dedup short-circuits cached AND coalesced tool calls in the
+    // intercept phase, bypassing the entire observe-phase chain. Any
+    // observe-phase telemetry middleware (audit, event-trace,
+    // session-transcript, metrics) is therefore blind to those calls.
+    // Runtime-added per-stream observers (event-trace bound to
+    // trajectory storage, OTel) are appended INSIDE
+    // composeMiddlewareIntoAdapter and so don't appear in `middleware`;
+    // their config flags trigger the gate equivalently.
+    //
+    // The gate inspects the EFFECTIVE middleware chain (auto-install
+    // OR caller-injected via `config.middleware`). Both wirings share
+    // the same blind spot: dedup short-circuits the observe-phase
+    // chain on cache hits and coalesced waiters, so any observer
+    // (audit / event-trace / trajectory / otel / metrics) needs an
+    // explicit acknowledgement that cache hits are forwarded into
+    // its pathway. For the auto-install path, the ack is
+    // `config.callDedup.onCacheHit`. For caller-injected dedup, the
+    // ack is `config.callDedupObservabilityAck = true` (the runtime
+    // cannot inspect the caller's MW internals to verify hookup).
+    const hasObserveMw = middleware.some((mw) => mw.phase === "observe");
+    const hasTrajectoryObserver = trajectoryStore !== undefined;
+    const hasOtelObserver = otelConfig !== undefined;
+    const dedupInChain = middleware.some((mw) => mw.name === "koi:call-dedup");
+    // Auto-install dedup is only capable of short-circuiting calls
+    // when its `include` allowlist is non-empty — without it the
+    // middleware is a passthrough and the observability gate would
+    // otherwise hard-fail callers that stage config (e.g.
+    // `callDedup: {}`) before populating an allowlist.
+    const dedupAutoInstalled =
+      config.callDedup !== undefined &&
+      config.callDedup !== false &&
+      !resilienceNames.has("koi:call-dedup") &&
+      config.callDedup.include !== undefined &&
+      config.callDedup.include.length > 0;
+    const autoInstallAck =
+      config.callDedup !== undefined &&
+      config.callDedup !== false &&
+      config.callDedup.onCacheHit !== undefined;
+    const callerInjectedAck = config.callDedupObservabilityAck === true;
+    const dedupActive = dedupAutoInstalled || dedupInChain;
+    const dedupAck = (dedupAutoInstalled && autoInstallAck) || callerInjectedAck;
+    if (
+      dedupActive &&
+      (config.audit !== undefined || hasObserveMw || hasTrajectoryObserver || hasOtelObserver) &&
+      !dedupAck
+    ) {
+      throw new Error(
+        "[runtime] koi:call-dedup is active alongside observe-phase middleware or runtime-added " +
+          "observers (audit / event-trace / trajectory store / otel / transcript / metrics) but " +
+          "no cache-hit observability acknowledgement is configured. Cached and coalesced tool " +
+          "calls short-circuit the observe-phase chain and would be invisible to those observers. " +
+          "Auto-install path: provide config.callDedup.onCacheHit. Caller-injected path " +
+          "(koi:call-dedup in config.middleware): set config.callDedupObservabilityAck=true after " +
+          "wiring cache hits into your observability pathway.",
+      );
+    }
+
+    // Stable-session lifecycle ref: compose populates `capturedSession`
+    // when onSessionStart succeeds for the first stream under stable
+    // sessionId; dispose() reuses it to fire the matching onSessionEnd
+    // with the SAME SessionContext (so middleware that correlates by
+    // runId sees a paired close).
+    const stableLifecycleRef: { capturedSession?: SessionContext } = {};
+
+    // Allow-list of middleware names that opt into the stable-session
+    // lifecycle contract (1-start / 1-end across many `stream()` calls
+    // sharing one `RuntimeConfig.sessionId`). Custom caller-supplied
+    // middleware keeps the original per-stream contract by default —
+    // only the resilience trio actually advertises per-session state
+    // that must survive across turns.
+    const STABLE_LIFECYCLE_NAMES: ReadonlySet<string> = new Set([
+      "koi:circuit-breaker",
+      "koi:tool-call-limit",
+      "koi:model-call-limit",
+      "koi:call-dedup",
+      // Shipped session-scoped middleware whose onSessionStart/End
+      // aggregate session-wide counters (totalSessions, sessionsUsed/
+      // Available). Without inclusion, stable sessionId would count
+      // one logical session as N (one per `stream()` call), skewing
+      // audit metrics. See packages/lib/middleware-tool-audit.
+      "koi:tool-audit",
+    ]);
+
     // Compose middleware around adapter terminals, then apply timeout
     const composedAdapter = composeMiddlewareIntoAdapter(
       adapterWithFsTools,
@@ -555,6 +811,9 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       activeFlushes,
       activeStreamFinalizations,
       otelConfig,
+      config.sessionId,
+      stableLifecycleRef,
+      STABLE_LIFECYCLE_NAMES,
     );
     const adapter = applyActivityTimeout(composedAdapter, activityTimeoutConfig);
 
@@ -828,6 +1087,42 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         };
         await drainWithTimeout(activeStreamFinalizations);
         await drainWithTimeout(activeFlushes);
+        // Step 2.5: With a stable `RuntimeConfig.sessionId`, per-stream
+        // `onSessionEnd` was suppressed so middleware state survives
+        // across turns. Fire the deferred session-end hook EXACTLY ONCE
+        // here — AFTER adapter dispose has cancelled live streams and
+        // their finalizations have drained. Firing earlier would tear
+        // down session-scoped middleware state (call-dedup cache,
+        // call-limits counters, breaker history) while a stream from
+        // the same logical session was still unwinding through final
+        // model/tool activity, allowing late calls to escape limits or
+        // lose final accounting. We only fire if onSessionStart
+        // actually succeeded (stableLifecycleRef.capturedSession is
+        // set) — otherwise there is no matching start to pair with.
+        // The captured SessionContext is reused so middleware that
+        // correlates start/end by runId sees the SAME object on close.
+        if (config.sessionId !== undefined && stableLifecycleRef.capturedSession !== undefined) {
+          try {
+            // Only the resilience trio opts into the deferred 1-end
+            // semantics — custom user middleware was already finalized
+            // per-stream and must not receive a second `onSessionEnd`
+            // here. Filter to stable-lifecycle names so user MW that
+            // allocates stream-scoped state isn't double-closed.
+            const stableMwForFinalize = middleware.filter((mw) =>
+              STABLE_LIFECYCLE_NAMES.has(mw.name),
+            );
+            if (stableMwForFinalize.length > 0) {
+              const sortedForFinalize = sortMiddlewareByPhase(stableMwForFinalize);
+              await runSessionHooks(
+                sortedForFinalize,
+                "onSessionEnd",
+                stableLifecycleRef.capturedSession,
+              ).catch(noop);
+            }
+          } catch {
+            // Defensive: never block dispose on session-end failures.
+          }
+        }
         // Step 3: Close trajectory Nexus transport AFTER all flushes complete.
         trajectoryTransport?.close();
         // Step 4: Release runtime-owned L2 resources wired from config.
@@ -1749,7 +2044,10 @@ function composeMiddlewareIntoAdapter(
   middleware: readonly KoiMiddleware[],
   instrumentation?: DebugInstrumentation,
   store?: TrajectoryDocumentStore,
-  approvalDispatch?: Map<string, (sessionId: string, step: RichTrajectoryStep) => void>,
+  approvalDispatch?: Map<
+    string,
+    Map<string, (sessionId: string, step: RichTrajectoryStep) => void>
+  >,
   requestApproval?: ApprovalHandler,
   userId?: string,
   channelId?: string,
@@ -1761,7 +2059,29 @@ function composeMiddlewareIntoAdapter(
   flushTracker?: Set<Promise<void>>,
   streamFinalizationTracker?: Set<Promise<void>>,
   otelConfig?: OtelMiddlewareConfig,
+  runtimeSessionId?: string,
+  stableLifecycleRef?: { capturedSession?: SessionContext },
+  stableLifecycleNames?: ReadonlySet<string>,
 ): EngineAdapter {
+  // Stable-session lifecycle: when a fixed `runtimeSessionId` is set,
+  // every stream() shares one logical session, so middleware lifecycle
+  // hooks must follow a 1-start / 1-end contract instead of N-per-stream.
+  //
+  // Implementation:
+  // - `stableSessionStartPromise` is a shared in-flight promise. The
+  //   FIRST stream to enter creates it and awaits onSessionStart;
+  //   concurrent streams await the same promise (no double-start).
+  //   On rejection, the promise is cleared so a later stream can retry
+  //   initialization (transient failure must not permanently disable).
+  // - `capturedStableSession` is the exact SessionContext that
+  //   completed onSessionStart. The deferred onSessionEnd at dispose
+  //   reuses it so middleware that correlates start/end by runId sees
+  //   a matched pair.
+  // - Per-stream observers (event-trace, otel) live ONLY for their
+  //   own stream and always run their own start/end pair regardless
+  //   of stable mode — they are not part of the shared session.
+  let stableSessionStartPromise: Promise<void> | undefined;
+  let capturedStableSession: SessionContext | undefined;
   if (adapter.terminals === undefined) {
     // Fail closed: if intercept-phase middleware is configured, refusing to silently
     // bypass it is a security requirement. Adapters without terminals cannot have
@@ -1793,6 +2113,12 @@ function composeMiddlewareIntoAdapter(
       const streamSignal = input.signal;
       const ctxOpts: MinimalContextOptions = {
         streamId,
+        // Forward the fixed RuntimeConfig.sessionId so per-session middleware
+        // (call-limits / call-dedup / circuit-breaker) keys off a stable id
+        // across multi-turn `stream()` invocations. Without this they reset
+        // on every stream — defeating the per-session contracts those
+        // packages advertise.
+        ...(runtimeSessionId !== undefined ? { sessionId: runtimeSessionId } : {}),
       };
       if (streamSignal !== undefined) (ctxOpts as Record<string, unknown>).signal = streamSignal;
       if (requestApproval !== undefined)
@@ -1827,11 +2153,19 @@ function composeMiddlewareIntoAdapter(
           : undefined;
 
       // Register per-stream emitter for approval trajectory capture.
-      // The dispatch relay (wired above) routes onApprovalStep by sessionId
-      // to the correct per-stream emitExternalStep.
+      // The dispatch relay (wired above) keys by `(sessionId, runId)` so a
+      // step originating in this stream lands only in this stream's
+      // trajectory, even when multiple concurrent streams share a stable
+      // RuntimeConfig.sessionId.
       const sid = ctx.session.sessionId as string;
+      const rid = ctx.session.runId as string;
       if (eventTraceHandle !== undefined && approvalDispatch !== undefined) {
-        approvalDispatch.set(sid, eventTraceHandle.emitExternalStep);
+        let byRunId = approvalDispatch.get(sid);
+        if (byRunId === undefined) {
+          byRunId = new Map();
+          approvalDispatch.set(sid, byRunId);
+        }
+        byRunId.set(rid, eventTraceHandle.emitExternalStep);
       }
 
       const perStreamMiddleware = [
@@ -2090,7 +2424,89 @@ function composeMiddlewareIntoAdapter(
       // Await session start so middleware state is initialized before the first call.
       // Wrapped in an async generator so the synchronous stream() method can return
       // immediately while initialization happens on the first next() call.
-      const sessionStartPromise = runSessionHooks(sorted, "onSessionStart", ctx.session);
+      // Under a stable `runtimeSessionId`, fire onSessionStart EXACTLY ONCE
+      // across the runtime's lifetime — paired with the deferred
+      // onSessionEnd in dispose(). The base `middleware` chain is
+      // shared, so its lifecycle hooks must NOT duplicate per stream.
+      // Per-stream observers (event-trace, otel) are NOT part of this
+      // contract: each stream creates its own instances and so each
+      // stream runs its own start+end pair below.
+      //
+      // Concurrency: a shared in-flight promise dedupes concurrent
+      // streams onto a single onSessionStart invocation. On rejection
+      // the promise is cleared so a later stream can retry — a
+      // transient init failure must not permanently disable the hook.
+      // On success we capture the originating SessionContext so the
+      // deferred onSessionEnd at dispose can reuse it (matched runId).
+      // Split base middleware into two lifecycle groups under stable
+      // sessionId. Custom caller-supplied middleware retains the
+      // per-stream onSessionStart/onSessionEnd contract — only the
+      // resilience trio (whose state must survive across `stream()`
+      // calls under one stable sessionId) defers to the 1-start/1-end
+      // semantics. Without this split, any user-supplied middleware
+      // that allocates per-stream state, writes open/close audit
+      // records, or correlates lifecycle by runId would leak state
+      // and misattribute later streams under the first stream's
+      // session lifecycle.
+      const stableNames = stableLifecycleNames ?? new Set<string>();
+      const stableMw =
+        runtimeSessionId !== undefined
+          ? middleware.filter((mw) => stableNames.has(mw.name))
+          : ([] as readonly KoiMiddleware[]);
+      const userPerStreamMw =
+        runtimeSessionId !== undefined
+          ? middleware.filter((mw) => !stableNames.has(mw.name))
+          : middleware;
+      const baseSorted = sortMiddlewareByPhase(stableMw);
+      let baseStartPromise: Promise<void>;
+      if (runtimeSessionId === undefined) {
+        // No stable mode — fall through to per-stream lifecycle on the
+        // full middleware chain (handled via perStreamLifecycleMw below).
+        baseStartPromise = Promise.resolve();
+      } else if (stableMw.length === 0) {
+        // Stable mode but no resilience MW present — nothing to defer.
+        baseStartPromise = Promise.resolve();
+      } else if (capturedStableSession !== undefined) {
+        // Already initialized — skip.
+        baseStartPromise = Promise.resolve();
+      } else if (stableSessionStartPromise !== undefined) {
+        // Initialization in flight on another concurrent stream — join it.
+        baseStartPromise = stableSessionStartPromise;
+      } else {
+        // First stream — kick off shared init.
+        const initSession = ctx.session;
+        const inflight = runSessionHooks(baseSorted, "onSessionStart", initSession).then(
+          () => {
+            capturedStableSession = initSession;
+            if (stableLifecycleRef !== undefined) {
+              stableLifecycleRef.capturedSession = initSession;
+            }
+          },
+          (err) => {
+            stableSessionStartPromise = undefined;
+            throw err;
+          },
+        );
+        stableSessionStartPromise = inflight;
+        baseStartPromise = inflight;
+      }
+      // Per-stream observers always run their own start/end pair.
+      // Custom caller-supplied middleware (userPerStreamMw) is also
+      // included here so its onSessionStart / onSessionEnd contract is
+      // preserved even when a stable RuntimeConfig.sessionId is set —
+      // only the resilience trio (in `stableMw` above) opts into the
+      // 1-start/1-end semantics.
+      const perStreamLifecycleMw: KoiMiddleware[] = [...userPerStreamMw];
+      if (eventTraceHandle !== undefined) perStreamLifecycleMw.push(eventTraceHandle.middleware);
+      if (otelHandle !== undefined) perStreamLifecycleMw.push(otelHandle.middleware);
+      const perStreamSorted = sortMiddlewareByPhase(perStreamLifecycleMw);
+      const perStreamStartPromise =
+        perStreamLifecycleMw.length > 0
+          ? runSessionHooks(perStreamSorted, "onSessionStart", ctx.session)
+          : Promise.resolve();
+      const sessionStartPromise = Promise.all([baseStartPromise, perStreamStartPromise]).then(
+        () => undefined,
+      );
 
       const innerStream = adapter.stream(injectCallHandlers(input, callHandlers));
       const initializedStream = (async function* (): AsyncIterable<EngineEvent> {
@@ -2145,15 +2561,43 @@ function composeMiddlewareIntoAdapter(
           }
         },
         async () => {
-          // Deregister per-stream approval dispatch entry
-          approvalDispatch?.delete(sid);
+          // Deregister per-stream approval dispatch entry. Multiple
+          // concurrent streams may share the same sessionId (under
+          // RuntimeConfig.sessionId), so remove only THIS stream's
+          // emitter and drop the sessionId entry only when no streams
+          // remain registered.
+          if (approvalDispatch !== undefined && eventTraceHandle !== undefined) {
+            const byRunId = approvalDispatch.get(sid);
+            if (byRunId !== undefined) {
+              byRunId.delete(rid);
+              if (byRunId.size === 0) approvalDispatch.delete(sid);
+            }
+          }
           // Run lifecycle hooks on ALL middleware for session end.
           // NB: onAfterTurn here is the stream-level catch-all — it fires
           // for direct `runtime.adapter.stream()` consumers that do not
           // sit behind an engine layer dispatching onAfterTurn per-turn.
           // Middleware like checkpoint relies on this invocation.
           await runTurnHooks(sorted, "onAfterTurn", ctx).catch(noop);
-          await runSessionHooks(sorted, "onSessionEnd", ctx.session).catch(noop);
+          // Per-stream observers (event-trace, otel) ALWAYS get their
+          // own onSessionEnd here — they are stream-scoped instances
+          // whose start fired in this same stream. Running their end
+          // here is required even under stable sessionId, otherwise
+          // the first stream's per-stream MW never sees a matching end
+          // and span/lifecycle state leaks.
+          if (perStreamLifecycleMw.length > 0) {
+            await runSessionHooks(perStreamSorted, "onSessionEnd", ctx.session).catch(noop);
+          }
+          // Resilience-trio lifecycle. Under stable sessionId, defer
+          // to dispose() so per-session state (call-dedup cache,
+          // call-limits counters, breaker history) survives across
+          // turns. Without a stable sessionId, this branch runs the
+          // full middleware chain via perStreamLifecycleMw above (which
+          // includes user middleware) — there is no separate stable
+          // group, so nothing to finalize here.
+          if (runtimeSessionId === undefined) {
+            // Already finalized above as part of perStreamLifecycleMw.
+          }
         },
         onFlushError,
         flushTracker,

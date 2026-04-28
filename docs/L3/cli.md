@@ -844,3 +844,28 @@ Replaced `conn.triggerAuth!()` non-null assertions in `connection.test.ts` with 
 ## @koi/scheduler `RunStoreFilter` update (PR #2052)
 
 `RunStoreFilter.status` now accepts `"dead_letter"` in addition to `"completed"` and `"failed"`, aligning with `TaskHistoryFilter.status` from `@koi/core`.
+
+---
+
+## Resilience preset stack (#1419)
+
+Three new L2 dependencies added to `packages/meta/cli`:
+`@koi/middleware-circuit-breaker`, `@koi/middleware-call-limits`,
+`@koi/middleware-call-dedup`. A new `resilienceStack` is registered in
+`DEFAULT_STACKS` and contributes three intercept-phase middlewares with
+TUI-tuned defaults:
+
+- `koi:circuit-breaker` — failureThreshold 5 within a 60s window, 30s
+  cooldown, default per-provider keying.
+- `koi:model-call-limit` — 200 model calls per session, refunded on
+  failed/abandoned attempts.
+- `koi:tool-call-limit` — 500 global tool calls per session,
+  exitBehavior `error`.
+
+`@koi/middleware-call-dedup` is a dependency but **not** auto-instantiated
+by the stack — dedup requires an explicit `include` allowlist of
+deterministic tools and is opt-in via `RuntimeConfig.callDedup`.
+
+End-to-end verified via TUI: glob tool call shows
+`koi:circuit-breaker` + `koi:model-call-limit` + `koi:tool-call-limit`
+spans on both model and tool paths in `/trajectory`.
