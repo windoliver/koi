@@ -8,6 +8,15 @@
 
 import type { AuditEntry, AuditSink, ComplianceRecord, ComplianceRecorder } from "@koi/core";
 
+/**
+ * Minimal subset of AuditMiddleware's `append` surface — accepting the
+ * middleware itself would require a circular dependency, so we type-erase
+ * to just the method we need.
+ */
+export interface AuditAppender {
+  readonly append: (entry: Omit<AuditEntry, "schema_version">) => void;
+}
+
 /** Default AuditEntry.schema_version for compliance events when ctx omits
  *  one. v2 matches the audit middleware's current default after
  *  `compliance_event` was added to AuditEntry.kind. */
@@ -60,6 +69,50 @@ export function createAuditSinkComplianceRecorder(
 
       // Fire-and-forget — never await, never throw back to caller.
       sink.log(entry).catch(onError);
+      return record;
+    },
+  };
+}
+
+/**
+ * Like {@link createAuditSinkComplianceRecorder}, but routes entries through
+ * an AuditMiddleware's signing + hash-chain pipeline via `append()`. Use this
+ * whenever the audit middleware is configured with `signing: true` — direct
+ * sink writes bypass the signer and break chain integrity for verifiers that
+ * interleave compliance entries with signed entries.
+ */
+export function createAuditMiddlewareComplianceRecorder(
+  appender: AuditAppender,
+  ctx: AuditSinkComplianceRecorderCtx,
+): ComplianceRecorder {
+  const schemaVersion = ctx.schemaVersion ?? DEFAULT_AUDIT_SCHEMA_VERSION;
+  const resolveSessionId =
+    typeof ctx.sessionId === "function" ? ctx.sessionId : (): string => ctx.sessionId as string;
+
+  return {
+    recordCompliance(record: ComplianceRecord): ComplianceRecord {
+      appender.append({
+        timestamp: record.evaluatedAt,
+        sessionId: resolveSessionId(),
+        agentId: record.request.agentId,
+        turnIndex: 0,
+        kind: "compliance_event",
+        request: record.request,
+        response: record.verdict,
+        durationMs: 0,
+        metadata: {
+          requestId: record.requestId,
+          policyFingerprint: record.policyFingerprint,
+        },
+      });
+      // schema_version is filled in by the middleware's append.
+      // appender.append builds the entry and stamps it before enqueue, so
+      // verifiers see compliance_event with prev_hash + signature like every
+      // other entry. We deliberately accept overrides to schemaVersion via
+      // ctx so callers can pin a specific version, but `append` itself only
+      // honours the middleware's SCHEMA_VERSION constant. If those diverge,
+      // future work should plumb schemaVersion through `append`.
+      void schemaVersion;
       return record;
     },
   };

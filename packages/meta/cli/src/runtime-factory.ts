@@ -93,6 +93,7 @@ import type { CostCalculator } from "@koi/governance-core";
 import { createGovernanceMiddleware } from "@koi/governance-core";
 import type { PatternRule } from "@koi/governance-defaults";
 import {
+  createAuditMiddlewareComplianceRecorder,
   createAuditSinkComplianceRecorder,
   createPatternBackend,
   fanOutComplianceRecorder,
@@ -2464,13 +2465,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
     // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
     // Build the NDJSON sink + hash-chained audit middleware when the host
-    // host opted in (KOI_AUDIT_NDJSON env var in the TUI). The runtime
+    // opted in (KOI_AUDIT_NDJSON env var in the TUI). The runtime
     // owns both the middleware and the underlying sink's writer/timer;
-    // `shutdownBackgroundTasks` below flushes and closes on shutdown.
-    // let: retained so shutdown can flush+close.
-    let auditMwForShutdown:
-      | { readonly flush: () => Promise<void>; readonly close: () => Promise<void> }
-      | undefined;
+    // shutdown is wired through a manifest-middleware hook so it runs
+    // AFTER runtime.dispose() fires audit.onSessionEnd → logSync.
     const auditPresetExtras: KoiMiddleware[] = [];
     // Compliance recorders accumulated from each active audit sink.
     // Used later to populate governanceBackend.compliance.
@@ -2569,15 +2567,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         },
       });
       complianceRecorders.push(
-        createAuditSinkComplianceRecorder(poisonedNdjsonSink, {
+        // Route through the audit middleware's `append` so compliance_event
+        // entries pass through the same hash-chain + signing pipeline as
+        // model_call / tool_call / permission_decision rows. Direct sink
+        // writes would land unsigned and break verifier chain integrity.
+        createAuditMiddlewareComplianceRecorder(auditMw, {
           sessionId: getLiveSessionId,
-          onError: (error: unknown) => {
-            // Compliance writes are fire-and-forget by design; the only way to
-            // guarantee no further work runs after a compliance write failure is
-            // synchronous termination. process.exit(1) is correct here.
-            console.error("[koi/cli] compliance sink write failed — terminating:", error);
-            process.exit(1);
-          },
         }),
       );
       const guardedAuditMw: KoiMiddleware = {
@@ -2759,10 +2754,20 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // `audit:n/a` in /trajectory — point KOI_AUDIT_SQLITE at a DB (or
       // enable both) to get the live audit lane. NDJSON remains the
       // right sink for offline compliance export and forensic replay.
-      auditMwForShutdown = {
-        flush: () => auditMw.flush(),
-        close: () => auditSink.close(),
-      };
+      // Register flush+close as a manifest shutdown hook so it runs AFTER
+      // runtime.dispose() (which fires audit.onSessionEnd → logSync).
+      // shutdownBackgroundTasks fires before dispose; if it closed the
+      // sink there, closedFlag would be set and the session_end logSync
+      // would no-op, leaving the audit trail without a closing record.
+      const ndjsonSinkForHook = auditSink;
+      const ndjsonMwForHook = auditMw;
+      manifestMiddlewareShutdownHooks.push(async () => {
+        try {
+          await ndjsonMwForHook.flush();
+        } finally {
+          await ndjsonSinkForHook.close();
+        }
+      });
     }
 
     // --- SQLite audit middleware (opt-in via config.auditSqlitePath) ---
@@ -2874,12 +2879,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         },
       });
       complianceRecorders.push(
-        createAuditSinkComplianceRecorder(poisonedSqliteSink, {
+        // Route through the audit middleware's `append` so compliance_event
+        // entries pass through the same hash-chain + signing pipeline as the
+        // middleware's own events. (See ndjson branch above for full rationale.)
+        createAuditMiddlewareComplianceRecorder(sqliteAuditMw, {
           sessionId: getLiveSessionId,
-          onError: (error: unknown) => {
-            console.error("[koi/cli] compliance sink write failed — terminating:", error);
-            process.exit(1);
-          },
         }),
       );
       const guardedSqliteAuditMw: KoiMiddleware = {
@@ -4158,28 +4162,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         // configHotReload is factory-bootstrap, not a stack feature —
         // dispose directly.
         configHotReload?.dispose();
-        // Flush + close runtime-owned audit sink (opt-in via
-        // config.auditNdjsonPath). Fire-and-forget because
-        // shutdownBackgroundTasks is sync; any error is logged but does
-        // not block shutdown. The process exits after this returns, so
-        // the fire-and-forget close must complete synchronously relative
-        // to the event loop before exit — createNdjsonAuditSink drains
-        // its internal timer queue synchronously on close().
-        if (auditMwForShutdown !== undefined) {
-          const audit = auditMwForShutdown;
-          void (async () => {
-            try {
-              await audit.flush();
-              await audit.close();
-            } catch (err) {
-              console.warn(
-                `[koi/${hostId}] audit shutdown failed: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-              );
-            }
-          })();
-        }
+        // Audit sink close is registered as a manifest-middleware shutdown
+        // hook (see auditMwForShutdown setup) so it runs AFTER runtime.dispose()
+        // → audit.onSessionEnd → logSync. Closing here would set the sink's
+        // closedFlag before the session_end record is written, causing logSync
+        // to silently no-op and leaving the audit trail without a closing
+        // record. The hook path drains the writer chain and closes durably.
         if (auditSqliteMwForShutdown !== undefined) {
           const sqliteAudit = auditSqliteMwForShutdown;
           void (async () => {

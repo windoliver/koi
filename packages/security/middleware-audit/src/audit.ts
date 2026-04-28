@@ -46,6 +46,14 @@ export interface AuditMiddleware extends KoiMiddleware {
   readonly flush: () => Promise<void>;
   /** DER-encoded SPKI public key for signature verification. Undefined when signing disabled. */
   readonly signingPublicKey: Buffer | undefined;
+  /**
+   * Append an externally-built entry through the same hash-chain + signing
+   * pipeline as the middleware's internal events. External writers (e.g.,
+   * the compliance recorder) MUST use this instead of `sink.log` directly,
+   * otherwise their entries land unsigned and break chain integrity for any
+   * verifier that interleaves them with signed entries.
+   */
+  readonly append: (base: Omit<AuditEntry, "schema_version">) => void;
 }
 
 function truncate(text: string, maxLength: number): string {
@@ -145,17 +153,53 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): AuditMiddl
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
-      // Build and enqueue synchronously (preserves chain order), then await flush
-      buildAndEnqueue({
+      // Build + stamp the closing entry synchronously so it has a valid
+      // hash-chain link and signature before we enqueue or sync-write it.
+      const base = {
         timestamp: Date.now(),
         sessionId: ctx.sessionId,
         agentId: ctx.agentId,
-        turnIndex: -1,
-        kind: "session_end",
+        turnIndex: -1 as const,
+        kind: "session_end" as const,
         durationMs: 0,
         metadata: ctx.metadata,
-      });
-      await queue.flush();
+      };
+      const stampedEntry: AuditEntry =
+        signingHandle !== undefined
+          ? signingHandle.stamp({ schema_version: SCHEMA_VERSION, ...base })
+          : { schema_version: SCHEMA_VERSION, ...base };
+      // Drain in-flight async writes first so any pending entries land in
+      // chain order. Bound against a timeout — at shutdown the async write
+      // chain can wedge behind a stuck interval flush or a teardown-induced
+      // fd close. We don't depend on this completing for durability of the
+      // session_end record itself; that's handled by the sync write below.
+      const FLUSH_TIMEOUT_MS = 2000;
+      await Promise.race([
+        queue.flush().catch(() => {
+          /* sink errors flow through queue.onError */
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, FLUSH_TIMEOUT_MS)),
+      ]);
+      // Always sync-write session_end when the sink exposes a durable path.
+      // The async writer.flush() does NOT guarantee bytes reach disk before
+      // the process exits — they sit in Bun's internal buffer or the OS page
+      // cache and are dropped, leaving the trail without a closing record.
+      // fs.appendFileSync + fsync is the only path that survives the
+      // renderer/event-loop shutdown race. The entry was stamped above so
+      // its hash-chain link and signature match what a verifier expects.
+      if (config.sink.logSync !== undefined) {
+        try {
+          config.sink.logSync(stampedEntry);
+        } catch {
+          process.stderr.write(
+            "[audit] session_end sync write failed — audit trail may be missing closing record\n",
+          );
+        }
+      } else {
+        // No sync path — fall back to the async queue. Best-effort.
+        queue.enqueue(stampedEntry);
+        await queue.flush().catch(() => {});
+      }
     },
 
     async wrapModelCall(
@@ -285,5 +329,6 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): AuditMiddl
 
     flush: queue.flush,
     signingPublicKey: signingHandle?.publicKeyDer,
+    append: buildAndEnqueue,
   };
 }

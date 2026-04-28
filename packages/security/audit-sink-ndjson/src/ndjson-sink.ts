@@ -14,6 +14,7 @@
  * correction or VM clock rollback across process restarts.
  */
 
+import { appendFileSync, closeSync, fsyncSync, openSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { AuditEntry, AuditSink } from "@koi/core";
@@ -322,6 +323,33 @@ export function createNdjsonAuditSink(
   }
 
   return {
+    /**
+     * Synchronous append + fsync. Bypasses the writeChain so it survives
+     * shutdown paths where the async chain has wedged behind a stuck
+     * interval flush. Used by audit middleware on session_end to guarantee
+     * the closing record reaches disk. Does NOT update bytesWritten; only
+     * intended for tail-of-life writes (rotation no longer matters there).
+     */
+    logSync(entry: AuditEntry): void {
+      if (closedFlag || startupError !== undefined) return;
+      const line = `${JSON.stringify(entry)}\n`;
+      // appendFileSync opens, writes, and closes; fsync guarantees durability.
+      appendFileSync(config.filePath, line);
+      // Best-effort fsync — open the file again and sync. If it fails, the
+      // append already landed in the page cache; we accept that risk over
+      // throwing during shutdown.
+      try {
+        const fd = openSync(config.filePath, "r");
+        try {
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
+      } catch {
+        // Best-effort only — append succeeded, fsync is hardening.
+      }
+    },
+
     log(entry: AuditEntry): Promise<void> {
       if (closedFlag) {
         return Promise.reject(new Error("audit NDJSON sink is closed — log rejected"));
