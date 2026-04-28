@@ -85,6 +85,7 @@
     "@koi/bash-ast": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/nexus-client": "workspace:*",
+    "@koi/nexus-delegation": "workspace:*",
     "@koi/permissions-nexus": "workspace:*",
     "@koi/middleware-plan-persist": "workspace:*",
     "@koi/middleware-planning": "workspace:*",

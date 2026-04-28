@@ -14910,6 +14910,108 @@ describe("Golden: @koi/audit-sink-nexus", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/nexus-delegation (standalone — no LLM required)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/nexus-delegation", () => {
+  test("NexusDelegationBackend.grant() returns nexus proof with token", async () => {
+    const { createNexusDelegationBackend, createNexusDelegationApi } = await import(
+      "@koi/nexus-delegation"
+    );
+    const { agentId } = await import("@koi/core");
+
+    let capturedBody: Record<string, unknown> | undefined;
+    const mockFetch = async (
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      capturedBody = JSON.parse((init?.body as string) ?? "{}") as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          delegation_id: "del-golden-1",
+          worker_agent_id: "child-golden",
+          api_key: "golden-child-key",
+          mount_table: ["fs://workspace"],
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          delegation_mode: "copy",
+          warmup_success: true,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const api = createNexusDelegationApi({
+      url: "http://nexus.test",
+      fetch: mockFetch as unknown as typeof fetch,
+    });
+    const backend = createNexusDelegationBackend({ api, agentId: agentId("parent-golden") });
+
+    const grant = await backend.grant(
+      { permissions: { allow: ["read_file"], deny: [] } },
+      agentId("child-golden"),
+    );
+
+    expect(grant.proof.kind).toBe("nexus");
+    if (grant.proof.kind === "nexus") {
+      expect(grant.proof.token).toBe("golden-child-key");
+    }
+    expect(grant.issuerId).toBe(agentId("parent-golden"));
+    // Real Nexus v2 uses worker_id (parent inferred from API key auth)
+    expect(capturedBody?.worker_id).toBe(agentId("child-golden"));
+    expect(capturedBody?.worker_name).toBe(agentId("child-golden"));
+    expect(capturedBody?.namespace_mode).toBe("copy");
+    expect(capturedBody?.add_grants).toEqual(["read_file"]);
+  });
+
+  test("NexusDelegationBackend.revoke() removes grant and calls DELETE", async () => {
+    const { createNexusDelegationBackend, createNexusDelegationApi } = await import(
+      "@koi/nexus-delegation"
+    );
+    const { agentId, delegationId } = await import("@koi/core");
+
+    const calls: { method: string; url: string }[] = [];
+    const mockFetch = async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      calls.push({ method: (init?.method ?? "GET").toUpperCase(), url: input as string });
+      if ((init?.method ?? "").toUpperCase() === "POST") {
+        return new Response(
+          JSON.stringify({
+            delegation_id: "del-golden-revoke",
+            worker_agent_id: "child-revoke",
+            api_key: "key-to-revoke",
+            mount_table: ["fs://workspace"],
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            delegation_mode: "copy",
+            warmup_success: true,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(null, { status: 204 });
+    };
+
+    const api = createNexusDelegationApi({
+      url: "http://nexus.test",
+      fetch: mockFetch as unknown as typeof fetch,
+    });
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: agentId("parent-revoke"),
+      verifyCacheTtlMs: 0,
+    });
+
+    await backend.grant({ permissions: { allow: ["read_file"] } }, agentId("child-revoke"));
+    await backend.revoke(delegationId("del-golden-revoke"));
+
+    const deleteCall = calls.find((c) => c.method === "DELETE");
+    expect(deleteCall).toBeDefined();
+    expect(deleteCall?.url).toContain("del-golden-revoke");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/middleware-circuit-breaker (2 queries)
 //
 // Standalone — no cassette. The middleware shape and lifecycle hooks are

@@ -94,6 +94,7 @@
     { "path": "../../lib/session" },
     { "path": "../../lib/settings" },
     { "path": "../../lib/plugins" },
+    { "path": "../../security/nexus-delegation" },
     { "path": "../../security/permissions" },
     { "path": "../../security/permissions-nexus" },
     { "path": "../../security/skill-scanner" },

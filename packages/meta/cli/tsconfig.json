@@ -37,6 +37,7 @@
     { "path": "../../security/audit-sink-ndjson" },
     { "path": "../../security/audit-sink-sqlite" },
     { "path": "../../security/permissions-nexus" },
+    { "path": "../../security/nexus-delegation" },
     { "path": "../../lib/nexus-client" },
     { "path": "../../security/violation-store-sqlite" },
     { "path": "../../sched/scheduler" },

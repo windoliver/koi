@@ -302,6 +302,22 @@ export interface ManifestConfig {
    *     violations: ./logs/violations.db
    */
   readonly audit: ManifestAuditConfig | undefined;
+  /**
+   * Optional delegation backend selector. When `backend: "nexus"`, the host
+   * wires `NexusDelegationProvider` against `NEXUS_URL` (env var) so spawned
+   * children get per-child Nexus API keys instead of in-memory HMAC grants.
+   * When `undefined` or `backend: "memory"`, the in-memory backend (built
+   * into createKoi) is used.
+   *
+   *   delegation:
+   *     backend: nexus
+   */
+  readonly delegation: ManifestDelegationConfig | undefined;
+}
+
+/** Manifest-declared delegation backend selector. */
+export interface ManifestDelegationConfig {
+  readonly backend: "memory" | "nexus";
 }
 
 /**
@@ -512,6 +528,11 @@ export async function loadManifestConfig(
     return auditResult;
   }
 
+  const delegationResult = parseManifestDelegation(raw.delegation);
+  if (!delegationResult.ok) {
+    return delegationResult;
+  }
+
   // `trustedHost` is not an accepted manifest field. Earlier
   // designs exposed a per-layer security opt-out surface here, but
   // the runtime factory never actually omitted the corresponding
@@ -614,6 +635,7 @@ export async function loadManifestConfig(
       governance: governanceResult.value,
       supervision: supervisionResult.value,
       audit: auditResult.value,
+      delegation: delegationResult.value,
     },
   };
 }
@@ -629,6 +651,34 @@ export async function loadManifestConfig(
  * Returns `{ ok: true, value: undefined }` when the section is absent so
  * manifests without supervision stay opt-out.
  */
+function parseManifestDelegation(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: ManifestDelegationConfig | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error: 'manifest.delegation must be an object, e.g. delegation: { backend: "nexus" }',
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+  const backend = obj.backend;
+  if (backend === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (backend !== "memory" && backend !== "nexus") {
+    return {
+      ok: false,
+      error: `manifest.delegation.backend must be "memory" or "nexus" (got: ${JSON.stringify(backend)})`,
+    };
+  }
+  return { ok: true, value: { backend } };
+}
+
 function parseManifestSupervision(
   raw: unknown,
 ):

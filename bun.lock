@@ -922,6 +922,7 @@
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/nexus-client": "workspace:*",
+        "@koi/nexus-delegation": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
         "@koi/plugins": "workspace:*",
@@ -1058,6 +1059,7 @@
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/nexus-client": "workspace:*",
+        "@koi/nexus-delegation": "workspace:*",
         "@koi/outcome-evaluator": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
@@ -1373,6 +1375,19 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/hash": "workspace:*",
+      },
+    },
+    "packages/security/nexus-delegation": {
+      "name": "@koi/nexus-delegation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-compose": "workspace:*",
+        "@koi/engine-reconcile": "workspace:*",
       },
     },
     "packages/security/permissions": {
@@ -1989,6 +2004,8 @@
     "@koi/model-router": ["@koi/model-router@workspace:packages/lib/model-router"],
 
     "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/lib/nexus-client"],
+
+    "@koi/nexus-delegation": ["@koi/nexus-delegation@workspace:packages/security/nexus-delegation"],
 
     "@koi/outcome-evaluator": ["@koi/outcome-evaluator@workspace:packages/lib/outcome-evaluator"],
 
