@@ -123,12 +123,34 @@ export type NexusTransportKind = "http" | "local-bridge";
 //
 // Production callers MUST construct via one of the named factories
 // (createHttpTransport, createLocalBridgeTransport, fs-nexus HTTP wrapper,
-// createLocalBridgeProbeTransport) which always set it. The phased rollout
-// avoids taking working v2 deployments offline on upgrade — a docs-led
-// follow-up that immediately broke structural adapters would be a hostile
-// migration. `getTransportKind(t)` is RETIRED — use
-// `assertProductionTransport(t).kind` so runtime branches narrow correctly
-// (and so the Phase 2 throw is wired in exactly one place).
+// createLocalBridgeProbeTransport) which always set it.
+//
+// HONEST ROLLOUT FRAMING (recurring review concern, recorded across 6+
+// adversarial-review rounds): missing `kind` IS a breaking change for any
+// legacy structural adapter that does not stamp it. The "two-phase"
+// language elsewhere in this spec applies to the consumer-flag rollout
+// (HTTP unset perms/audit warns in Phase 1, throws in Phase 2). For
+// missing `kind` there is NO Phase-1 grace period — both phases throw at
+// the runtime boundary unless the caller takes the documented fs-only
+// opt-out (explicit `nexusPermissionsEnabled=false` AND
+// `nexusAuditEnabled=false`).
+//
+// Why no grace period for missing kind: every alternative considered was
+// worse than a loud break.
+//   - Skip + warn would silently DROP both Nexus consumers on upgrade for
+//     any structural adapter not yet migrated — pre-PR semantics implicitly
+//     wired both, so silent skip is an authorization/audit bypass.
+//   - Infer "http" from shape would silently MISROUTE a stale local-bridge
+//     adapter onto the in-place HTTP probe path — same security failure.
+//
+// The migration paths are explicit and documented: (a) construct via a
+// named factory before passing the transport, OR (b) for fs-only callers
+// that want to keep using a structural adapter for non-Nexus subsystems,
+// set both consumer flags to `false`. There is no third option that
+// preserves authorization/audit guarantees, and we will not ship one.
+// `getTransportKind(t)` is RETIRED — use `assertProductionTransport(t).kind`
+// so runtime branches narrow correctly (and so the throw is wired in
+// exactly one place).
 
 /** Base transport — minimal surface, satisfied by tests/mocks/fixtures. */
 export interface NexusTransport {
@@ -210,7 +232,7 @@ Sequence:
 1. Record `start = performance.now()`
 2. `transport.call("version", {}, { deadlineMs: HEALTH_DEADLINE_MS, nonInteractive: true })` — liveness: TCP+TLS+JSON-RPC reachable; capture version string.
 3. For each path in `opts.readPaths ?? DEFAULT_PROBE_PATHS`: `transport.call("read", { path }, { deadlineMs, nonInteractive: true })`. 200 with **valid payload shape** → success. 200 with malformed payload (not a string and not `{ content: string }`) → return error with `code: "VALIDATION"` — the permission backend would fail to parse this same payload on first sync, so a 200 alone is insufficient signal. 404 → returned in `value.notFound: true` (per-path field; not silently flattened to success). 5xx / network / auth → return error. Caller — runtime-factory — decides what to do with 404: in `telemetry` it's a warning; in `assert-transport-reachable-at-boot` AND `assert-remote-policy-loaded-at-boot` 404 on either default probe path is FATAL because the policy namespace is missing. (Custom `readPaths` keep the same per-path notFound semantics; caller can handle 404 differently if desired.)
-4. **Payload extractor parity**: the `read`-payload validator MUST be the SAME function the permission backend uses (`extractReadContent` in `@koi/permissions-nexus`). Sharing the extractor closes the false-negative gap where `health()` reports OK on a 200 with a malformed body that the permission backend would later reject as parse error and demote to local fallback. The extractor is exported from `@koi/permissions-nexus/payload` and re-imported by `@koi/nexus-client/health` (one-way dependency: nexus-client → permissions-nexus is forbidden by layering, so the extractor lives in a small shared utility package OR in `@koi/nexus-client` as the canonical owner; the implementation PR will pick the layer-clean home and update permissions-nexus to import it).
+4. **Payload extractor parity**: the `read`-payload validator MUST be the SAME function the permission backend uses. Sharing the extractor closes the false-negative gap where `health()` reports OK on a 200 with a malformed body that the permission backend would later reject as parse error and demote to local fallback. **The canonical `extractReadContent` lives in `@koi/nexus-client/extract-read-content`** (lowest layer that needs it; `@koi/permissions-nexus` is updated in this PR to import it instead of its current ad-hoc destructuring). One owner, one shape contract, no drift between probe and backend.
 5. All calls go through `transport.call(...)` — local-bridge included.
 6. **Local-bridge probing is constrained.** The fs-nexus `local-bridge` cannot be cleanly probed in-place without risk: its subprocess serializes one in-flight call, has no protocol-level cancel that doesn't poison the channel, and a wedged auth flow blocks every queued call. The two honest options for probing have unacceptable downsides under fail-closed semantics:
 
@@ -543,17 +565,23 @@ interface KoiRuntimeFactoryConfig {
    *
    * - "telemetry": log on transport failure; continue boot; preserves
    *   existing local-first contract for permissions.
-   * - "assert-transport-reachable-at-boot": throw on transport failure or
-   *   404 on default probe path (version.json / policy.json — namespace
-   *   absent is fatal). **Requires `nexusPermissionsEnabled=true`**: today's
-   *   probe is a `version` call plus a permission-namespace read; with
-   *   permissions disabled the gate collapses to `version` only and would
-   *   silently pass even when audit credentials are read-only or audit ACLs
-   *   are missing. Audit-only fail-fast is therefore unsupported — operators
-   *   must use telemetry mode until a non-side-effecting audit-write probe
-   *   exists on the Nexus server. Does NOT validate that centralized policy
-   *   activated — local-fallback may still apply. See security caveat in
-   *   design doc.
+   * - "assert-transport-reachable-at-boot": **DIAGNOSTIC ONLY — not a security
+   *   control.** Throws on transport failure or 404 on default probe path
+   *   (version.json / policy.json — namespace absent is fatal). **Requires
+   *   `nexusPermissionsEnabled=true`**: today's probe is a `version` call plus
+   *   a permission-namespace read; with permissions disabled the gate
+   *   collapses to `version` only and would silently pass even when audit
+   *   credentials are read-only or audit ACLs are missing. Audit-only
+   *   fail-fast is therefore unsupported — operators must use telemetry mode
+   *   until a non-side-effecting audit-write probe exists on the Nexus
+   *   server. **Does NOT prevent pre-sync authorization against local TUI
+   *   fallback** — early requests can be served by local rules before first
+   *   remote-policy activation, so this mode is unsuitable for compliance/
+   *   security deployments that require pre-sync centralized enforcement.
+   *   Use `assert-remote-policy-loaded-at-boot` (which awaits first sync) for
+   *   deployments that must not authorize before remote policy is loaded —
+   *   even that mode does NOT prevent local-rule fallback for queries the
+   *   remote policy doesn't cover. See security caveat in design doc.
    * - "assert-remote-policy-loaded-at-boot": throw on transport failure OR
    *   first-sync policy-load failure (awaits backend.ready and inspects
    *   isCentralizedPolicyActive()). STARTUP GATE, REMOTE-LOAD ONLY — proves
@@ -970,7 +998,7 @@ The function reports what the backend is *actually serving right now*, not the s
 - `assert-transport-reachable-at-boot` (was `fail-closed-transport`): proves the JSON-RPC transport carries `version` + the policy reads at boot. Does NOT block runtime exposure on first-sync completion, does NOT change permission composition.
 - `assert-remote-policy-loaded-at-boot` (was `fail-closed-remote-policy-loaded`): also asserts first sync produced a remote-policy backend at boot. Does NOT enforce freshness or revocation propagation post-boot — last-known-good remote policy is preserved indefinitely under partition / 404 / parse failure.
 
-**Both modes are STARTUP DIAGNOSTIC GATES, not authorization controls.** They do NOT guarantee:
+**Both modes are STARTUP DIAGNOSTIC GATES, not authorization controls. Neither mode is a security-facing control and neither should be configured to satisfy a compliance requirement.** Compliance/security deployments that need pre-sync authorization enforcement must wait for the follow-up control-plane work tracked as out-of-scope below — running this PR's modes in their place produces a false-safety signal. They do NOT guarantee:
 - That subsequent sync attempts succeed (network partition / Nexus down → node continues serving last-known-good remote policy indefinitely)
 - That central-side policy changes (revocations, tightened denies) propagate within any bounded time
 - That a withdrawn policy file (404 after first load) demotes the node — last-known-good is preserved by design (availability over consistency)
@@ -997,7 +1025,9 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 | File | Change | Est LOC |
 |---|---|---|
 | `packages/lib/nexus-client/src/types.ts` | Add `NexusCallOptions` (deadlineMs, nonInteractive), `NexusHealthOptions` (readPaths), `NexusHealth`, **optional** `kind?: NexusTransportKind` on `NexusTransport` (preserves source-compat for structural mocks), optional `health` on `NexusTransport`, required `health` on `HealthCapableNexusTransport`; extend `call` signature with optional `opts` (additive — existing call sites without opts still type-check); add `assertProductionTransport(t)` helper that THROWS unconditionally when `t.kind` is undefined (both phases). Skip-and-warn was rejected as Phase 1 behavior because pre-PR semantics implicitly wired both Nexus consumers — silent skip on upgrade would be an auth/audit bypass. Error message names every named factory (`createHttpTransport`, fs-nexus HTTP wrapper, `createLocalBridgeTransport`, `createLocalBridgeProbeTransport`) AND the explicit opt-out path (`nexusPermissionsEnabled=false` + `nexusAuditEnabled=false`). | +40 |
-| `packages/lib/nexus-client/src/transport.ts` | HTTP impl: thread `opts.deadlineMs` into existing `AbortSignal.timeout`; implement `health(opts?)` — version probe + one `read` per `opts.readPaths` (default `koi/permissions/version.json` + `koi/permissions/policy.json`); discard read result bodies; return `HealthCapableNexusTransport` | +55 |
+| `packages/lib/nexus-client/src/transport.ts` | HTTP impl: thread `opts.deadlineMs` into existing `AbortSignal.timeout`; implement `health(opts?)` — version probe + one `read` per `opts.readPaths` (default `koi/permissions/version.json` + `koi/permissions/policy.json`); **validate each read body with the canonical `extractReadContent` extractor (returns string from string OR `{content: string}`; rejects every other shape with VALIDATION error)** — bodies are NOT discarded so the probe matches the permission backend's parse contract and a malformed-but-200 payload fails health rather than later first-sync; return `HealthCapableNexusTransport` | +60 |
+| `packages/lib/nexus-client/src/extract-read-content.ts` | New: canonical `extractReadContent(payload: unknown): Result<string, KoiError>` extractor — single source of truth for how a `read` body decodes into the policy YAML/text. Owned by `@koi/nexus-client` (lowest layer that needs it). `@koi/permissions-nexus` is updated in this PR to import + use this extractor instead of its current ad-hoc destructuring, so health() and the backend can NEVER drift on payload shape | +35 |
+| `packages/lib/nexus-client/src/extract-read-content.test.ts` | New: accepts string body; accepts `{content: "..."}` body; rejects null / array / number / object-without-content / `{content: 42}` / `{content: undefined}` with `code: "VALIDATION"`; error message names the two accepted shapes | +60 |
 | `packages/lib/nexus-client/src/health.test.ts` | New: all probes ok → ok+probed lists each path; either read returns 404 → still ok; version 5xx → fail; any read 5xx → fail; read 401 → fail; per-call deadline honored; network error; malformed version response; nonInteractive flag set on all calls; **custom readPaths override default** (probes provided paths only) | +200 |
 | `packages/lib/nexus-client/src/assert-health-capable.ts` | New: `assertHealthCapable` assertion function | +15 |
 | `packages/lib/nexus-client/src/assert-health-capable.test.ts` | New: present narrows; missing throws | +25 |
