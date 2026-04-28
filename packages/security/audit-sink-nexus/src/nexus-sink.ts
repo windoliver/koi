@@ -1,4 +1,4 @@
-import type { AuditEntry, AuditSink } from "@koi/core";
+import type { AuditEntry, AuditSink, KoiError } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 import {
   DEFAULT_BASE_PATH,
@@ -6,6 +6,17 @@ import {
   DEFAULT_FLUSH_INTERVAL_MS,
   type NexusAuditSinkConfig,
 } from "./config.js";
+
+function isKoiError(v: unknown): v is KoiError {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    "code" in v &&
+    typeof (v as { code: unknown }).code === "string" &&
+    "message" in v &&
+    "retryable" in v
+  );
+}
 
 export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
   const basePath = config.basePath ?? DEFAULT_BASE_PATH;
@@ -71,10 +82,28 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
     return flushPromise;
   }
 
+  function reportError(err: unknown): void {
+    if (config.onError === undefined) return;
+    const koiErr = isKoiError(err)
+      ? err
+      : err instanceof Error && isKoiError((err as { cause?: unknown }).cause)
+        ? ((err as { cause: unknown }).cause as {
+            code: string;
+            message: string;
+            retryable: boolean;
+          })
+        : {
+            code: "EXTERNAL",
+            message: err instanceof Error ? err.message : String(err),
+            retryable: false,
+          };
+    config.onError(koiErr as Parameters<NonNullable<NexusAuditSinkConfig["onError"]>>[0]);
+  }
+
   function ensureTimer(): void {
     if (timer !== undefined) return;
     timer = setInterval(() => {
-      void startFlush().catch(() => {}); // fire-and-forget on interval
+      void startFlush().catch(reportError);
     }, flushIntervalMs);
     if (typeof timer === "object" && timer !== null && "unref" in timer) {
       (timer as { unref: () => void }).unref();
@@ -85,7 +114,7 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
     buffer = [...buffer, { entry, path: computePath(entry) }];
     ensureTimer();
     if (buffer.length >= batchSize) {
-      void startFlush().catch(() => {}); // fire-and-forget
+      void startFlush().catch(reportError);
     }
   };
 

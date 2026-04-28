@@ -6,6 +6,13 @@ export interface NexusAuditSinkConfig {
   readonly basePath?: string | undefined;
   readonly batchSize?: number | undefined;
   readonly flushIntervalMs?: number | undefined;
+  /**
+   * Invoked when a buffered or size-triggered flush fails. The legacy
+   * behavior silently swallowed these errors, hiding lost audit records.
+   * Runtime-factory wires this to the per-sink poison latch when
+   * `nexusAuditPoisonOnError === true`.
+   */
+  readonly onError?: ((err: KoiError) => void) | undefined;
 }
 
 export const DEFAULT_BASE_PATH = "koi/audit";

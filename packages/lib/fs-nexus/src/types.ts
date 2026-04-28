@@ -3,6 +3,14 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
+import type {
+  NexusCallOptions,
+  NexusHealth,
+  NexusHealthOptions,
+  NexusTransportKind,
+} from "@koi/nexus-client";
+
+export type { NexusCallOptions, NexusHealth, NexusHealthOptions, NexusTransportKind };
 
 // ---------------------------------------------------------------------------
 // Config
@@ -82,11 +90,25 @@ export type BridgeNotification =
 
 /** JSON-RPC 2.0 transport for Nexus server communication. */
 export interface NexusTransport {
+  /**
+   * Transport kind discriminator. Optional on the base type so test fixtures
+   * don't need stubs; `assertProductionTransport(t)` from `@koi/nexus-client`
+   * THROWS at the production runtime boundary if undefined.
+   */
+  readonly kind?: NexusTransportKind | undefined;
   /** Call a Nexus RPC method. Returns Result on all outcomes (never throws). */
   readonly call: <T>(
     method: string,
     params: Record<string, unknown>,
+    opts?: NexusCallOptions,
   ) => Promise<Result<T, KoiError>>;
+  /**
+   * OPTIONAL on the base type. HTTP transport implements it; long-lived
+   * local-bridge transport deliberately does NOT (probing the live subprocess
+   * is unsafe — auth wedge with no protocol-level cancel). Local-bridge probing
+   * happens via the disposable `createLocalBridgeProbeTransport` instead.
+   */
+  readonly health?: (opts?: NexusHealthOptions) => Promise<Result<NexusHealth, KoiError>>;
   /**
    * Subscribe to bridge notifications (auth_required, auth_complete, auth_progress).
    * Returns an unsubscribe function — call it to stop receiving notifications.

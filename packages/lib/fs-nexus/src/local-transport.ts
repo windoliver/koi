@@ -316,7 +316,11 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
   // call() — serialized via callQueue; one request in-flight at a time.
   // The background reader loop handles notifications that arrive mid-call.
   // ---------------------------------------------------------------------------
-  function call<T>(method: string, params: Record<string, unknown>): Promise<Result<T, KoiError>> {
+  function call<T>(
+    method: string,
+    params: Record<string, unknown>,
+    opts?: { readonly deadlineMs?: number | undefined; readonly signal?: AbortSignal | undefined },
+  ): Promise<Result<T, KoiError>> {
     if (closed) {
       return Promise.resolve({
         ok: false,
@@ -347,6 +351,7 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
         // NEXUS_AUTH_TIMEOUT_MS). Since calls are serialized, only this one
         // pending entry exists when auth_required fires, so clearing all timers
         // in pendingRequests is safe and scoped to exactly this call.
+        const effectiveTimeout = opts?.deadlineMs ?? callTimeout;
         const timer = setTimeout(() => {
           pendingRequests.delete(requestId);
           // Kill bridge so queued calls fail fast rather than waiting.
@@ -355,11 +360,34 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
             ok: false,
             error: {
               code: "TIMEOUT",
-              message: `Bridge call "${method}" timed out after ${String(callTimeout)}ms`,
+              message: `Bridge call "${method}" timed out after ${String(effectiveTimeout)}ms`,
               retryable: true,
             },
           });
-        }, callTimeout);
+        }, effectiveTimeout);
+
+        // Caller-provided signal: TRANSPORT RESET semantics. Kill the bridge
+        // and reject all pending; the next call will spawn a fresh subprocess.
+        const onAbort = (): void => {
+          pendingRequests.delete(requestId);
+          clearTimeout(timer);
+          close();
+          resolve({
+            ok: false,
+            error: {
+              code: "TIMEOUT",
+              message: `Bridge call "${method}" aborted by caller signal (transport reset)`,
+              retryable: false,
+            },
+          });
+        };
+        if (opts?.signal !== undefined) {
+          if (opts.signal.aborted) {
+            onAbort();
+            return;
+          }
+          opts.signal.addEventListener("abort", onAbort, { once: true });
+        }
 
         pendingRequests.set(requestId, {
           resolve: (line: string) => {
@@ -493,7 +521,7 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     }
   }
 
-  return { call, subscribe, submitAuthCode, close, mounts };
+  return { kind: "local-bridge", call, subscribe, submitAuthCode, close, mounts };
 }
 
 // ---------------------------------------------------------------------------
