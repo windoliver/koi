@@ -43,7 +43,19 @@ const GLOBAL_SCHEDULER: TurnAckScheduler = {
   },
 };
 
-function fireAndForget(promise: Promise<void> | undefined, onError: (e: unknown) => void): void {
+/**
+ * Invoke a status sender and route any failure (sync throw or async rejection)
+ * through `onError`. Synchronous throws inside `send` would otherwise escape
+ * past a `.catch()` on the returned Promise.
+ */
+function fireAndForget(send: () => Promise<void>, onError: (e: unknown) => void): void {
+  let promise: Promise<void> | undefined;
+  try {
+    promise = send();
+  } catch (e: unknown) {
+    onError(e);
+    return;
+  }
   if (promise === undefined) return;
   promise.catch((e: unknown) => onError(e));
 }
@@ -66,7 +78,8 @@ function clearPending(state: TurnAckState, sessionId: string): void {
 
 function emitStatus(state: TurnAckState, ctx: TurnContext, status: ChannelStatus): void {
   if (ctx.sendStatus === undefined) return;
-  fireAndForget(ctx.sendStatus(status), state.onError);
+  const send = ctx.sendStatus;
+  fireAndForget(() => send(status), state.onError);
 }
 
 async function handleBeforeTurn(state: TurnAckState, ctx: TurnContext): Promise<void> {
@@ -77,7 +90,7 @@ async function handleBeforeTurn(state: TurnAckState, ctx: TurnContext): Promise<
   clearPending(state, sid);
   const handle = state.scheduler.setTimeout(() => {
     state.pending.delete(sid);
-    fireAndForget(sendStatus({ kind: "processing", turnIndex }), state.onError);
+    fireAndForget(() => sendStatus({ kind: "processing", turnIndex }), state.onError);
   }, state.debounceMs);
   state.pending.set(sid, handle);
 }

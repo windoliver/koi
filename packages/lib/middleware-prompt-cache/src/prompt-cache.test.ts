@@ -274,3 +274,68 @@ describe("wrapModelStream", () => {
     expect(readCacheHints(first(captured).metadata)).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Corner cases — stability, threshold boundary, parity across hooks
+// ---------------------------------------------------------------------------
+
+describe("corner cases", () => {
+  test("reorder is stable across turns: same input → same output (cache-hit precondition)", async () => {
+    const mw = createPromptCacheMiddleware();
+    const { handler, captured } = captureHandler();
+    const requestA: ModelRequest = {
+      model: "claude-sonnet-4-5",
+      messages: [msg("user:1", "u"), bigSystem(), msg("assistant", "a")],
+    };
+    const requestB: ModelRequest = {
+      model: "claude-sonnet-4-5",
+      messages: [msg("user:1", "u"), bigSystem(), msg("assistant", "a")],
+    };
+
+    await callModel(mw, makeCtx(), requestA, handler);
+    await callModel(mw, makeCtx(), requestB, handler);
+
+    expect(captured).toHaveLength(2);
+    const a = first(captured);
+    const b = captured[1];
+    if (b === undefined) throw new Error("expected second capture");
+
+    expect(a.messages.map((m) => m.senderId)).toEqual(b.messages.map((m) => m.senderId));
+    expect(readCacheHints(a.metadata)).toEqual(readCacheHints(b.metadata));
+  });
+
+  test("wrapModelStream and wrapModelCall produce identical hints for the same input", async () => {
+    const mw = createPromptCacheMiddleware();
+    const callPath = captureHandler();
+    const streamPath = captureStream();
+    const request: ModelRequest = {
+      model: "claude-sonnet-4-5",
+      messages: [msg("user:1", "u"), bigSystem()],
+    };
+
+    await callModel(mw, makeCtx(), request, callPath.handler);
+    await drain(callStream(mw, makeCtx(), request, streamPath.handler));
+
+    const a = readCacheHints(first(callPath.captured).metadata);
+    const b = readCacheHints(first(streamPath.captured).metadata);
+    expect(a).toEqual(b);
+    expect(first(callPath.captured).messages).toEqual(first(streamPath.captured).messages);
+  });
+
+  test("downstream object spread preserves CACHE_HINTS_KEY across multiple cloning passes", async () => {
+    const mw = createPromptCacheMiddleware();
+    const { handler, captured } = captureHandler();
+    const request: ModelRequest = {
+      model: "claude-sonnet-4-5",
+      messages: [msg("user:1", "u"), bigSystem()],
+    };
+
+    await callModel(mw, makeCtx(), request, handler);
+    let r: ModelRequest = first(captured);
+    // Three nested spread passes simulate downstream MW chains
+    r = { ...r, metadata: { ...r.metadata } };
+    r = { ...r, metadata: { ...r.metadata } };
+    r = { ...r, metadata: { ...r.metadata } };
+    expect(readCacheHints(r.metadata)).toBeDefined();
+  });
+});

@@ -340,3 +340,80 @@ describe("cleanup", () => {
     expect(rec.statuses).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Corner cases
+// ---------------------------------------------------------------------------
+
+describe("corner cases", () => {
+  test("synchronous throw from sendStatus is routed through onError, not propagated", async () => {
+    const errors: unknown[] = [];
+    const mw = createTurnAckMiddleware({
+      onError: (e) => errors.push(e),
+      // Disable wrapToolCall path; we're testing the wrapToolCall emit path here.
+    });
+    // sendStatus throws synchronously rather than returning a rejecting Promise.
+    const syncSendStatus: (s: ChannelStatus) => Promise<void> = (_s: ChannelStatus) => {
+      throw new Error("channel exploded");
+    };
+    const syncThrowCtx: TurnContext = { ...makeCtx(), sendStatus: syncSendStatus };
+
+    // Must not throw — the call returns the tool result normally.
+    const res = await callTool(mw, syncThrowCtx, { toolId: "x", input: {} }, noopToolNext);
+    await flush();
+
+    expect(res.output).toEqual({ ok: true });
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("channel exploded");
+  });
+
+  test("two concurrent sessions do not cancel each other's debounce timers", async () => {
+    const m = makeScheduler();
+    const rec = makeRecorder();
+    const mw = createTurnAckMiddleware({ scheduler: m.scheduler });
+    const ctxA: TurnContext = {
+      ...makeCtx({ sendStatus: rec.sendStatus, turnIndex: 0 }),
+      session: {
+        agentId: "a",
+        sessionId: "session-A" as never,
+        runId: "ra" as never,
+        metadata: {},
+      },
+    };
+    const ctxB: TurnContext = {
+      ...makeCtx({ sendStatus: rec.sendStatus, turnIndex: 0 }),
+      session: {
+        agentId: "b",
+        sessionId: "session-B" as never,
+        runId: "rb" as never,
+        metadata: {},
+      },
+    };
+
+    await callBeforeTurn(mw, ctxA);
+    await callBeforeTurn(mw, ctxB);
+    expect(m.pendingCount()).toBe(2);
+
+    // Firing both timers must produce two "processing" notifications,
+    // proving that ctxB's onBeforeTurn did not cancel ctxA's timer.
+    m.fire();
+    await flush();
+    expect(rec.statuses.filter((s) => s.kind === "processing")).toHaveLength(2);
+  });
+
+  test("tool throws after wrapToolCall emits processing status", async () => {
+    const rec = makeRecorder();
+    const mw = createTurnAckMiddleware();
+    const ctx = makeCtx({ sendStatus: rec.sendStatus, turnIndex: 5 });
+    const failing: ToolHandler = async () => {
+      throw new Error("tool failed");
+    };
+
+    await expect(callTool(mw, ctx, { toolId: "search", input: {} }, failing)).rejects.toThrow(
+      "tool failed",
+    );
+    await flush();
+
+    expect(rec.statuses).toEqual([{ kind: "processing", turnIndex: 5, detail: "calling search" }]);
+  });
+});

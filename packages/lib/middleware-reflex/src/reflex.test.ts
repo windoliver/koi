@@ -390,3 +390,56 @@ describe("textOf", () => {
     expect(textOf(makeMessage("", [{ kind: "image", url: "x://y" }]))).toBe("");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Corner cases (cross-turn behavior + lifecycle)
+// ---------------------------------------------------------------------------
+
+describe("corner cases", () => {
+  test("cooldown persists across turns within the same session", async () => {
+    let t = 0;
+    const rule: ReflexRule = {
+      name: "throttled",
+      cooldownMs: 1000,
+      match: () => true,
+      respond: () => "fired",
+    };
+    const mw = createReflexMiddleware({ rules: [rule], now: () => t });
+    const { handler, called } = passthrough();
+
+    const ctx0: TurnContext = { ...makeCtx([makeMessage("hi")]), turnIndex: 0 };
+    const r1 = await callModel(mw, ctx0, makeRequest(), handler);
+    expect(r1.content).toBe("fired");
+
+    t = 500;
+    const ctx1: TurnContext = { ...makeCtx([makeMessage("hi")]), turnIndex: 1 };
+    const r2 = await callModel(mw, ctx1, makeRequest(), handler);
+    expect(r2).toBe(passthroughResponse);
+    expect(called()).toBe(true);
+  });
+
+  test("onSessionEnd clears cooldowns so the next session re-fires", async () => {
+    let t = 0;
+    const rule: ReflexRule = {
+      name: "throttled",
+      cooldownMs: 1_000_000,
+      match: () => true,
+      respond: () => "fired",
+    };
+    const mw = createReflexMiddleware({ rules: [rule], now: () => t });
+    const { handler } = passthrough();
+    const sessionCtx = {
+      agentId: "test",
+      sessionId: "s1" as never,
+      runId: "r1" as never,
+      metadata: {},
+    };
+
+    await callModel(mw, makeCtx([makeMessage("hi")]), makeRequest(), handler);
+    await mw.onSessionEnd?.(sessionCtx);
+
+    t = 500;
+    const r2 = await callModel(mw, makeCtx([makeMessage("hi")]), makeRequest(), handler);
+    expect(r2.content).toBe("fired");
+  });
+});
