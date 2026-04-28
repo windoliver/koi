@@ -427,6 +427,14 @@ interface KoiRuntimeFactoryConfig {
    */
   readonly nexusAuditMode?: "require" | "local-only" | "disabled" | undefined;
   /**
+   * Opt-in: wire `createNexusPermissionBackend` and route permission checks
+   * through Nexus. Default false → Nexus permissions are NOT wired even when
+   * `nexusTransport` is set (audit-only deployments work without taking on
+   * permission-sync risk). Independent of `nexusAuditMode` and all other
+   * Nexus consumer options.
+   */
+  readonly nexusPermissionsEnabled?: boolean | undefined;
+  /**
    * Acknowledgment to use Nexus permissions on local-bridge transport.
    * Default false → throws at config validation. The first policy sync issues
    * read(version.json|policy.json) on the shared subprocess; if auth is not
@@ -599,6 +607,18 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   //     unchanged so existing callers don't get false positives.
   //   - Auth state established by user activity (submitAuthCode) unblocks the
   //     deferred sync naturally
+  //   - **Immediate post-auth trigger (this PR):** when the local-bridge
+  //     transport emits its first auth-success signal (existing
+  //     `submitAuthCode` resolution path), the runtime invokes
+  //     `nexusPermBackend.triggerImmediateSync()` rather than waiting for the
+  //     next timer tick. This collapses the local-fallback window from
+  //     `nexusSyncIntervalMs` (default 30s) down to "first auth → first sync"
+  //     (typically <1s). Permission checks issued before that trigger still
+  //     fall back to local TUI rules — that is the explicit telemetry-mode
+  //     contract — but the window is no longer a full poll interval.
+  //     Operators wanting ZERO local-fallback window MUST use HTTP transport
+  //     + fail-closed-remote-policy-loaded; local-bridge cannot achieve this
+  //     without bridge-protocol changes.
   //
   // EXPLICIT TRUST-BOUNDARY ACKNOWLEDGMENT (telemetry mode contract):
   //   Telemetry mode is ADVISORY by design. Between boot and first successful
@@ -615,8 +635,13 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   //   supported strict mode for local-bridge is "do not use it for compliance
   //   workloads" — the runtime preflight rejects local-bridge + fail-closed-*
   //   precisely because of this gap.
+  // Nexus permissions are OPT-IN and INDEPENDENT of Nexus audit. A
+  // deployment can wire Nexus audit only (e.g., for centralized log
+  // aggregation) without taking on permission-sync risk. Default is
+  // permissions-disabled when `nexusPermissionsEnabled` is unset; existing
+  // callers that DO want permissions must opt in explicitly.
   let nexusPermBackend;
-  if (config.nexusTransport !== undefined) {
+  if (config.nexusTransport !== undefined && config.nexusPermissionsEnabled === true) {
     // HARD GATE: local-bridge + Nexus permissions is rejected by default.
     // The first policy sync issues read(version.json) + read(policy.json) on
     // the shared subprocess. If auth is not yet established, the call hits
@@ -790,7 +815,7 @@ Runtime config validation MAY warn (not throw) if `fail-closed-remote-policy-loa
 | `packages/lib/fs-nexus/src/probe-transport.ts` | New: `createLocalBridgeProbeTransport(spawnConfig): HealthCapableNexusTransport` — spawns a fresh, short-lived bridge subprocess; the ONLY local-bridge variant that implements `health()`; closes itself after the call. spawnConfig is held in closure scope, never on the returned transport object (no credential leak). | +75 |
 | `packages/lib/fs-nexus/src/probe-transport.test.ts` | New: probe spawns isolated subprocess; health() returns ok when bridge healthy; health() returns error when bridge auth-blocked (nonInteractive); probe subprocess is killed after probe regardless of result; probe failure does NOT affect any concurrently-running session transport | +110 |
 | `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; long-lived session transport does NOT receive nonInteractive flag from runtime probe path; existing call/subscribe behavior unchanged | +80 |
-| `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | (1) Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior. (2) Add `deferInitialSync?: boolean` config option (default false). When true, `initializePolicy()` is NOT called from the constructor; first sync runs on the regular timer instead. **`ready` semantics UNCHANGED** — still resolves only after first sync completes (or falls back); existing callers awaiting `ready` continue to get the original "first sync done" guarantee. Required by local-bridge telemetry path to avoid auth-wedge during boot. Existing HTTP / fail-closed-remote-policy-loaded paths leave it false. | +50 |
+| `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | (1) Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior. (2) Add `deferInitialSync?: boolean` config option (default false). When true, `initializePolicy()` is NOT called from the constructor; first sync runs on the regular timer instead. **`ready` semantics UNCHANGED** — still resolves only after first sync completes (or falls back); existing callers awaiting `ready` continue to get the original "first sync done" guarantee. Required by local-bridge telemetry path to avoid auth-wedge during boot. Existing HTTP / fail-closed-remote-policy-loaded paths leave it false. (3) Add `triggerImmediateSync(): Promise<void>` — runs an out-of-band sync immediately (in addition to the periodic timer) and updates `ready` / `isCentralizedPolicyActive()` if successful. Used by runtime-factory to collapse the local-fallback window after first auth-success on local-bridge. | +50 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.test.ts` | New tests: false before any sync; false when first sync fails (404/parse/rebuild mismatch — no last-known-good); true after first successful sync; stays true when subsequent sync fails (last-known-good preserved); stays true when subsequent sync produces incompatible policy (skipped, last-known-good preserved); **`deferInitialSync: true` skips constructor sync; `ready` is PENDING until first scheduled sync completes (semantics preserved — does NOT resolve immediately, that would be a stale-state hazard); first sync happens on timer; `isCentralizedPolicyActive()` is false until first scheduled sync completes; existing callers awaiting `ready` continue to get the first-sync-done guarantee they had before** | +130 |
 | `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as base `NexusTransport` (long-lived session has no health); add `nexusBootMode`, `nexusPolicyPath`, `nexusAuditPoisonOnError`, `nexusAuditMode`, `nexusPermissionsOnLocalBridgeAck`, `nexusSyncIntervalMs`, `nexusProbeFactory` config fields; preflight: throw on local-bridge + fail-closed-* (unsupported); local-bridge + telemetry without factory SKIPS probe (backward compat); probe via factory for local-bridge, in-place for HTTP; thread `nexusPolicyPath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws on probe failure; in `fail-closed-remote-policy-loaded`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **collapse the two existing accumulators (`ndjsonPoisonError` AND `sqlitePoisonError`) into a single shared `auditPoisonError`** — both NDJSON and SQLite sink `onError` callbacks write to the unified accumulator; admission boundaries check the single field; **add early-throw validation** when `local-bridge + telemetry + nexusSyncIntervalMs===0` (deferred sync would never fire, deadlocking `ready`); route Nexus sink errors into it ONLY when `nexusAuditPoisonOnError === true` (default best-effort); existing middleware admission guards now cover Nexus too via shared accumulator; **wire Nexus compliance-recorder `onError` to `process.exit(1)` in opt-in mode (matches NDJSON/SQLite at `runtime-factory.ts:3058-3059`); best-effort logging in default mode (was silent — bug fix)** | +145 |
 | `packages/security/audit-sink-nexus/src/config.ts` | **Add `onError?: (err: unknown) => void` to `NexusAuditSinkConfig`** — the field doesn't exist today; wrapper depends on it | +8 |
@@ -857,6 +882,13 @@ Runtime config validation MAY warn (not throw) if `fail-closed-remote-policy-loa
 7g16e. `local-bridge WITHOUT nexusPermissionsOnLocalBridgeAck: throws config error at boot` (Nexus permissions on local-bridge requires explicit ack)
 7g16f. `local-bridge WITH nexusPermissionsOnLocalBridgeAck=true: createNexusPermissionBackend wired; operator accepts wedge risk`
 7g16g. `HTTP transport: nexusPermissionsOnLocalBridgeAck has no effect`
+7g16h. `nexusPermissionsEnabled unset (default): createNexusPermissionBackend NOT wired even when transport configured` (decoupling — audit-only deployments boot without permission ack)
+7g16i. `nexusPermissionsEnabled=false explicitly: same as unset; permissions skipped`
+7g16j. `nexusPermissionsEnabled=true + HTTP: permissions wired normally`
+7g16k. `local-bridge + nexusPermissionsEnabled=true + nexusAuditMode="local-only": both gates apply independently — permissions ack required, audit local-only enforced`
+7g16l. `local-bridge + nexusPermissionsEnabled=true + telemetry: runtime subscribes to first-auth-success event and calls triggerImmediateSync() on resolution` (collapses local-fallback window from poll-interval to ~ms)
+7g16m. `triggerImmediateSync() success: ready resolves; isCentralizedPolicyActive() flips true; subsequent permission checks consult remote policy`
+7g16n. `triggerImmediateSync() failure: behavior matches a failed timer-driven sync (skipped, last-known-good preserved); local fallback continues`
 7g17. `fail-closed-remote-policy-loaded: post-boot 404 on policy file does NOT demote node — last-known-good preserved; isCentralizedPolicyActive stays true; no second gate trigger` (regression guard for naming claim — "loaded" not "fresh")
 7g18. `telemetry mode + deferInitialSync: explicit advisory contract documented in startup log — "permission checks served by local fallback until first sync completes"` (operator visibility for the trust-boundary acknowledgment)
 7g9. `HTTP transport without health() method: throws actionable error (not raw TypeError)`
@@ -883,9 +915,14 @@ Runtime config validation MAY warn (not throw) if `fail-closed-remote-policy-loa
 
 `packages/lib/fs-nexus/src/local-transport.test.ts` (additions):
 
-16. `local-bridge health() returns ok when subprocess + JSON-RPC channel are healthy`
-17. `local-bridge health() returns error when subprocess has exited`
-18. `local-bridge health() returns error when stdio handshake fails before probes complete`
+16. **NEGATIVE: long-lived local-bridge transport object does NOT have a `health` method** (regression guard against the spec contradiction caught in review — health belongs ONLY on the disposable probe variant)
+
+`packages/lib/fs-nexus/src/probe-transport.test.ts` (additions — moved from local-transport):
+
+20. `probe health() returns ok when freshly-spawned subprocess responds to version + reads`
+21. `probe health() returns error when subprocess has exited before probe`
+22. `probe health() returns error when stdio handshake fails before probes complete`
+23. `probe subprocess is killed after health() regardless of result`
 
 Existing `transport.test.ts` continues to pass unchanged.
 
@@ -904,7 +941,8 @@ Existing `transport.test.ts` continues to pass unchanged.
 - [ ] All existing `nexus-client`, `fs-nexus`, `meta/runtime` tests still pass
 - [ ] New `health.test.ts` passes (6 cases, ≥80% coverage on new code)
 - [ ] New `assert-health-capable.test.ts` passes
-- [ ] New `local-transport.test.ts` health case passes
+- [ ] `local-transport.test.ts` proves long-lived transport has NO `health` method (negative test)
+- [ ] New `probe-transport.test.ts` health cases pass (probe-only)
 - [ ] **New `runtime-factory-health.test.ts` proves both boot modes:**
   - telemetry default succeeds + logs on health failure (local-first preserved)
   - fail-closed opt-in throws on health failure
