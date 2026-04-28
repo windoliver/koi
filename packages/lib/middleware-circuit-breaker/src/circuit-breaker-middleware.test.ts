@@ -699,4 +699,45 @@ describe("createCircuitBreakerMiddleware", () => {
     );
     expect(r?.content).toBe("ok");
   });
+
+  // Regression (#1419 round 18): eviction must prefer victims with no
+  // accumulated failure history. Otherwise a noisy session driving many
+  // distinct keys can erase another live session's almost-tripped
+  // breaker, sending the next failure for that provider back to full
+  // upstream execution instead of fail-fast.
+  test("maxKeys eviction prefers CLOSED with zero failures over CLOSED with partial ring", async () => {
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 3 },
+      maxKeys: 2,
+      // Provider-only key so the test can assert on a specific key.
+      extractKey: (m) => (m ?? "x").split("/")[0] ?? "x",
+    });
+    const ctx = turnCtx();
+    // Accumulate 2 failures on `risky/m` (one short of threshold=3).
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "risky/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "risky/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    // Establish a CLOSED-no-failures `idle/m` to fill capacity.
+    await mw.wrapModelCall?.(ctx, { messages: [], model: "idle/m" }, makeHandler("ok"));
+    // New key `fresh/m` forces eviction. The eviction MUST pick `idle/m`
+    // (zero failures) over `risky/m` (partial ring buffer).
+    await mw.wrapModelCall?.(ctx, { messages: [], model: "fresh/m" }, makeHandler("ok"));
+    // One more failure on `risky/m` should now trip OPEN — the partial
+    // ring buffer was preserved.
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "risky/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    let runCount = 0;
+    const trace = async (): Promise<never> => {
+      runCount++;
+      throw new Error("should-not-run");
+    };
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "risky/m" }, trace),
+    ).rejects.toMatchObject({ code: "RATE_LIMIT" });
+    expect(runCount).toBe(0);
+  });
 });
