@@ -54,6 +54,20 @@ export interface NexusCallOptions {
    * startup stalls behind interactive auth. No-op for HTTP transport.
    */
   readonly nonInteractive?: boolean;
+  /**
+   * Caller-provided abort signal. When the signal aborts BEFORE the call
+   * settles, transport MUST reject the in-flight call with `KoiError`
+   * `code: "ABORTED"` AND release any subprocess/socket handles it owns
+   * for the cancelled call. HTTP transport piggybacks on `fetch`'s
+   * native `signal` plumbing; local-bridge transport adds an internal
+   * pending-request map keyed by JSON-RPC id and responds to abort by
+   * sending the bridge a cancel notification + rejecting the pending
+   * call's promise. Required by `permission-backend.abortInFlightSync()`
+   * (the assert-remote-policy-loaded-at-boot timeout path) — without
+   * this option, the timeout would only abandon the promise while the
+   * underlying read continued to mutate backend state after dispose.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -195,7 +209,7 @@ export interface NexusTransport {
   readonly call: <T>(
     method: string,
     params: Record<string, unknown>,
-    opts?: NexusCallOptions,  // per-call deadline / nonInteractive override
+    opts?: NexusCallOptions,  // per-call deadline / nonInteractive / signal
   ) => Promise<Result<T, KoiError>>;
   /** OPTIONAL on the base type so test fixtures don't need stubs. */
   readonly health?: (opts?: NexusHealthOptions) => Promise<Result<NexusHealth, KoiError>>;
@@ -529,7 +543,7 @@ Concretely in `runtime-factory.ts`:
 
 ```ts
 complianceRecorders.push(
-  createAuditSinkComplianceRecorder(nexusSink, {
+  createAuditSinkComplianceRecorder(nexusSinkForCompliance, {  // SAME wrapped instance as auditSinks.push above — never the bare inner sink
     sessionId: getLiveSessionId,
     onError: config.nexusAuditPoisonOnError === true
       ? (error) => {
@@ -1248,7 +1262,19 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
             logger.error({ err }, "nexus audit sink poisoned");
           }
         : (err: unknown) => logger.warn({ err }, "nexus audit write failed (best-effort)");
-      auditSinks.push(createNexusAuditSink({ transport: config.nexusTransport, onError }));
+      const inner = createNexusAuditSink({ transport: config.nexusTransport, onError });
+      // ALWAYS wrap with poisonedSink — even in default (poison-off) mode
+      // the wrapper is a pass-through closure when the latch is never set.
+      // In opt-in mode the wrapper rejects post-latch log() calls so
+      // post-poison records cannot enter the inner sink's buffer (closes
+      // the silent-loss window the Loop-4-R9 finding flagged in the prior
+      // wiring snippet that pushed the inner sink directly).
+      const wrappedNexusSink = poisonedSink(inner, nexusPoison);
+      auditSinks.push(wrappedNexusSink);
+      // Reuse THIS wrapped instance for the compliance-recorder + any
+      // ledger/query path so the wrapper applies uniformly to every
+      // consumer of the Nexus sink. Construct once, reuse everywhere.
+      nexusSinkForCompliance = wrappedNexusSink;
     }
   } // end Nexus audit gate
   // … continue with non-nexus runtime construction …
@@ -1302,14 +1328,14 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 | File | Change | Est LOC |
 |---|---|---|
 | `packages/lib/nexus-client/src/types.ts` | Add `NexusCallOptions` (deadlineMs, nonInteractive), `NexusHealthOptions` (readPaths), `NexusHealth`, **optional** `kind?: NexusTransportKind` on `NexusTransport` (preserves source-compat for structural mocks), optional `health` on `NexusTransport`, required `health` on `HealthCapableNexusTransport`; extend `call` signature with optional `opts` (additive — existing call sites without opts still type-check); add `assertProductionTransport(t)` helper that THROWS unconditionally when `t.kind` is undefined (both phases). Skip-and-warn was rejected as Phase 1 behavior because pre-PR semantics implicitly wired both Nexus consumers — silent skip on upgrade would be an auth/audit bypass. Error message names every named factory (`createHttpTransport`, fs-nexus HTTP wrapper, `createLocalBridgeTransport`, `createLocalBridgeProbeTransport`) AND the explicit opt-out path (`nexusPermissionsEnabled=false` + `nexusAuditEnabled=false`). | +40 |
-| `packages/lib/nexus-client/src/transport.ts` | HTTP impl: thread `opts.deadlineMs` into existing `AbortSignal.timeout`; implement `health(opts?)` — version probe + one `read` per `opts.readPaths` (default `koi/permissions/version.json` + `koi/permissions/policy.json`); **validate each read body with the canonical `extractReadContent` extractor (returns string from string OR `{content: string}`; rejects every other shape with VALIDATION error)** — bodies are NOT discarded so the probe matches the permission backend's parse contract and a malformed-but-200 payload fails health rather than later first-sync; return `HealthCapableNexusTransport` | +60 |
+| `packages/lib/nexus-client/src/transport.ts` | HTTP impl: thread `opts.deadlineMs` into existing `AbortSignal.timeout`; **thread `opts.signal` into `fetch(..., { signal })` via `AbortSignal.any([deadlineSignal, opts.signal])` so caller cancellation maps to fetch abort; reject with `KoiError code:"ABORTED"` distinct from deadline-driven `code:"TIMEOUT"`**; implement `health(opts?)` — version probe + one `read` per `opts.readPaths` (default `koi/permissions/version.json` + `koi/permissions/policy.json`); **validate each read body with the canonical `extractReadContent` extractor (returns string from string OR `{content: string}`; rejects every other shape with VALIDATION error)** — bodies are NOT discarded so the probe matches the permission backend's parse contract and a malformed-but-200 payload fails health rather than later first-sync; return `HealthCapableNexusTransport` | +75 |
 | `packages/lib/nexus-client/src/extract-read-content.ts` | New: canonical `extractReadContent(payload: unknown): Result<string, KoiError>` extractor — single source of truth for how a `read` body decodes into the policy YAML/text. Owned by `@koi/nexus-client` (lowest layer that needs it). `@koi/permissions-nexus` is updated in this PR to import + use this extractor instead of its current ad-hoc destructuring, so health() and the backend can NEVER drift on payload shape | +35 |
 | `packages/lib/nexus-client/src/extract-read-content.test.ts` | New: accepts string body; accepts `{content: "..."}` body; rejects null / array / number / object-without-content / `{content: 42}` / `{content: undefined}` with `code: "VALIDATION"`; error message names the two accepted shapes | +60 |
 | `packages/lib/nexus-client/src/health.test.ts` | New: all probes ok → ok+probed lists each path; either read returns 404 → still ok; version 5xx → fail; any read 5xx → fail; read 401 → fail; per-call deadline honored; network error; malformed version response; nonInteractive flag set on all calls; **custom readPaths override default** (probes provided paths only) | +200 |
 | `packages/lib/nexus-client/src/assert-health-capable.ts` | New: `assertHealthCapable` assertion function | +15 |
 | `packages/lib/nexus-client/src/assert-health-capable.test.ts` | New: present narrows; missing throws | +25 |
 | `packages/lib/nexus-client/src/index.ts` | Re-export `NexusHealth`, `HealthCapableNexusTransport`, `assertHealthCapable` | +3 |
-| `packages/lib/fs-nexus/src/local-transport.ts` | (1) Per-call `opts.deadlineMs` for use by the disposable probe. (2) Per-call `opts.nonInteractive` — on `auth_required`: reject in-flight call and kill the subprocess (disposable-probe path only). (3) Add `kind: "local-bridge"` discriminator. **Does NOT implement `health()`** — long-lived local-bridge transport stays at base `NexusTransport`. Probing the live session is unsafe (auth wedge); `health()` only exists on the disposable probe variant. | +60 |
+| `packages/lib/fs-nexus/src/local-transport.ts` | (1) Per-call `opts.deadlineMs` for use by the disposable probe. (2) Per-call `opts.nonInteractive` — on `auth_required`: reject in-flight call and kill the subprocess (disposable-probe path only). (3) **Per-call `opts.signal` — pending-request map keyed by JSON-RPC id; on signal abort send a `cancel` notification to the bridge, reject the pending call with `code:"ABORTED"`, free the slot. Required so `permission-backend.abortInFlightSync()` works on local-bridge as well as HTTP (HTTP gets it free via fetch).** (4) Add `kind: "local-bridge"` discriminator. **Does NOT implement `health()`** — long-lived local-bridge transport stays at base `NexusTransport`. Probing the live session is unsafe (auth wedge); `health()` only exists on the disposable probe variant. | +85 |
 | `packages/lib/fs-nexus/src/transport.ts` | **Forward `health` from the wrapped HTTP transport** (currently this fs-nexus HTTP wrapper drops it, returning only `{ call, close, subscribe, submitAuthCode }`). Add `health` passthrough so the type contract upgrade in runtime-factory works for HTTP path. Add `kind: "http"` discriminator. | +20 |
 | `packages/lib/fs-nexus/src/transport.test.ts` | New: HTTP wrapper forwards `health()` calls to underlying transport; result shape preserved; opts pass through | +50 |
 | `packages/lib/fs-nexus/src/probe-transport.ts` | New: `createLocalBridgeProbeTransport(spawnConfig): HealthCapableNexusTransport` — spawns a fresh, short-lived bridge subprocess; the ONLY local-bridge variant that implements `health()`; closes itself after the call. spawnConfig is held in closure scope, never on the returned transport object (no credential leak). | +75 |
@@ -1325,7 +1351,7 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 | `packages/meta/cli/src/__tests__/runtime-factory-health.test.ts` | New tests covering all three modes + activation race coverage (see Tests section) | +200 |
 | `packages/meta/cli/src/tui-command.ts` | Drop the `as unknown as NexusTransport` cast at line 1704 — fs-nexus local-bridge transport now structurally satisfies base `NexusTransport` directly (after fs-nexus adds `kind: "local-bridge"` discriminator). **Architectural decoupling (this PR):** when neither `nexusPermissionsEnabled` nor `nexusAuditEnabled` resolves to true, do NOT pass `nexusTransport` into `createKoiRuntime` at all — fs-only sessions use the local-bridge transport directly through the fs-nexus path and bypass the Nexus consumer block entirely. This eliminates the contradictory upgrade tradeoff (warn-and-infer-false vs hard-throw on no-flags): callers reaching the Nexus block always intentionally enabled at least one consumer. When constructed, the probe factory captures its own copy of the spawn config. | +20 |
 | `packages/meta/cli/src/nexus-config.ts` | **NEW shared module** — single source of truth for parsing `KOI_NEXUS_*` env vars and `--nexus-*` CLI flags into the `KoiRuntimeFactoryConfig` Nexus subset. Exported `parseNexusConfigFromEnvAndFlags(env, flags) → Pick<KoiRuntimeFactoryConfig, "nexusPermissionsEnabled" \| "nexusAuditEnabled" \| "nexusAuditMode" \| "nexusAuditPoisonOnError" \| "nexusBootMode" \| "nexusPolicyPath" \| "nexusSyncIntervalMs" \| "nexusBootSyncDeadlineMs">`. Used by BOTH `tui-command.ts` AND `commands/start.ts` so the new boot gate, consumer wiring, and assert-* preflight are uniform across interactive and headless entrypoints. Without this module, the headless path silently bypasses every new safety check. | +90 |
-| `packages/meta/cli/src/commands/start.ts` | **Wire shared `parseNexusConfigFromEnvAndFlags(...)`** into the existing headless boot path that calls `createKoiRuntime(...)`. Today `koi start` only supplies a filesystem backend (`packages/meta/cli/src/commands/start.ts:493-584` and `:786-896`); after this PR it ALSO threads through Nexus consumer flags + boot mode + (when `manifest.filesystem.backend === "nexus"` AND HTTP) assembles a `nexusTransport` so the same assert-*/poison/missing-kind contracts apply headlessly. Local-bridge headless boots remain telemetry-only (assert-* preflight will reject them, same as TUI). | +60 |
+| `packages/meta/cli/src/commands/start.ts` | **Wire shared `parseNexusConfigFromEnvAndFlags(...)`** into the existing headless boot path that calls `createKoiRuntime(...)`. Today `koi start` only supplies a filesystem backend (`packages/meta/cli/src/commands/start.ts:493-584` and `:786-896`); after this PR it ALSO threads Nexus consumer flags + boot mode through to runtime config. **Default-preserving rule:** `nexusTransport` is constructed and passed ONLY when the operator explicitly sets `nexusPermissionsEnabled=true` OR `nexusAuditEnabled=true`. With no `KOI_NEXUS_*` flags set (the existing-headless-deployment baseline), `nexusTransport` is NOT constructed and `koi start` keeps its current filesystem-only behavior — even when `manifest.filesystem.backend === "nexus"`. This avoids silently turning on Nexus permissions + audit for legacy headless HTTP Nexus filesystem deployments on upgrade (the HTTP unset-flags-infer-true rule fires only when the operator HAS chosen to pass `nexusTransport`; gating transport construction on explicit consumer flags makes the rule unreachable for legacy headless callers). Local-bridge headless boots that DO set explicit consumer flags follow the same assert-*/poison contracts as TUI. | +75 |
 | `packages/meta/cli/src/__tests__/start-nexus-wiring.test.ts` | New: headless `koi start` with `KOI_NEXUS_BOOT_MODE=assert-remote-policy-loaded-at-boot` + healthy HTTP transport boots; same with unreachable transport throws (proves headless honors the gate); `KOI_NEXUS_AUDIT_POISON=true` headless propagates to runtime config; legacy headless deployments without any `KOI_NEXUS_*` vars still boot with current behavior (regression guard) | +120 |
 | `packages/meta/cli/src/__tests__/nexus-config.test.ts` | New: tri-state parsing for every flag; mutual-exclusion enforcement for `--nexus-*` / `--no-nexus-*`; `KOI_NEXUS_BOOT_MODE` rejects unknown values with actionable message; legacy `require` audit-mode rejected; numeric fields parse + bound-check | +110 |
 | `docs/L2/nexus-client.md` | Document readiness probe semantics; `HealthCapableNexusTransport` contract; WS/gRPC/pool out-of-scope rationale | +60 |
@@ -1404,6 +1430,8 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g12c4b. `compliance-recorder onError observes the AUDIT_SINK_POISONED rejection (regression guard against the silent-resolve bug — confirms the rejection is the signal that surfaces post-poison failures)`
 7g12c5. `nexusAuditPoisonOnError=false: poisonedSink wrapper is no-op pass-through (latch never set, delegates every log() to inner)`
 7g12c6. `Same poisonedSink wrapper used for NDJSON, SQLite, and Nexus sinks (single implementation, no per-sink divergence)` — regression guard against drift
+7g12c7. `Compliance-recorder receives the SAME wrapped Nexus sink instance as auditSinks.push (NOT the bare inner sink)` — Loop 4 R9 closes the wiring drift where compliance-recorder bypassed the wrapper
+7g12c8. `Default mode (nexusAuditPoisonOnError unset/false): poisonedSink wrapper still wraps the Nexus sink as a pass-through closure (never sets latch); proves the wrapper is unconditional infrastructure, not opt-in glue that can be skipped` — regression guard against future wiring that "skips wrapping when poison-off"
 7g12d. `Nexus with nexusAuditPoisonOnError=false poisoned: admission CONTINUES; failure logged` (best-effort default has no admission impact)
 7g12e. `Pre-PR NDJSON+SQLite both required, NDJSON-only failure halts admission: behavior UNCHANGED` (regression guard against quorum drift)
 7g13. (REMOVED — superseded by 7g16o which throws rather than warns)
@@ -1458,6 +1486,10 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j31. `assert-remote-policy-loaded-at-boot timeout: abortInFlightSync() is called BEFORE the throw; in-flight transport.call("read", ...) settles with AbortError (proven via mock transport that records the AbortSignal it received)`
 7g16j32. `Backend's initializePolicy() resolving AFTER abortInFlightSync() does NOT mutate backend state (drops the late resolution; isCentralizedPolicyActive() does not flip from false to true post-abort)`
 7g16j33. `Backend's initializePolicy() resolving AFTER dispose() does NOT mutate state (state-mutation guard — same root cause coverage as 7g16j32 but driven by dispose path instead of timeout path)`
+7g16j34. `HTTP transport: opts.signal aborts mid-flight — fetch is cancelled, returns Result.error code="ABORTED" distinct from code="TIMEOUT"` (Loop 4 R9 — abortInFlightSync depends on this end-to-end)
+7g16j35. `Local-bridge transport: opts.signal aborts mid-flight — pending-request map removes the slot, sends cancel notification to bridge, returns code="ABORTED"`
+7g16j36. `Both transports: signal that aborts AFTER the call settles is a no-op (no double-reject, no resource leak)`
+7g16j37. `Permission backend: abortInFlightSync() observably aborts via the signal it threaded into transport.call (verified through a mock transport that records the AbortSignal it received)` — closes the Loop-4-R9 gap where the abort contract lacked an end-to-end transport API
 7g16k. (REMOVED — local-bridge + permissions categorically rejected)
 7g16l. (REMOVED — same)
 7g16m. (REMOVED — same)
@@ -1552,6 +1584,8 @@ KOI_NEXUS_PERMISSIONS=true KOI_NEXUS_AUDIT=false koi up
 ```
 
 **Shared parser module:** parsing lives in the new `packages/meta/cli/src/nexus-config.ts` (single source of truth — see file table). Both `tui-command.ts` (interactive) AND `commands/start.ts` (headless) import `parseNexusConfigFromEnvAndFlags(env, flags)` and pass the result into `createKoiRuntime(config)`. Without this shared module the headless path silently bypasses every new safety check (`nexusBootMode`, consumer wiring, assert-*/poison contracts) — a real Loop-4-R5 finding closed by uniform wiring.
+
+**Default-preserving rule for `commands/start.ts` (Loop 4 R9):** `nexusTransport` is constructed and threaded into `createKoiRuntime` ONLY when the operator explicitly sets `nexusPermissionsEnabled=true` OR `nexusAuditEnabled=true`. Existing headless deployments that don't set any `KOI_NEXUS_*` flags keep the pre-PR filesystem-only behavior — `koi start` does NOT construct a Nexus transport, so the HTTP-unset-flags-infer-true rule cannot trigger for them. This makes the headless rollout strictly opt-in and prevents the silent enablement that would otherwise turn legacy headless HTTP Nexus filesystem deployments into Nexus-permissions+audit deployments on upgrade.
 
 Existing flags/env keys are unchanged. `tui-command.ts` is also responsible for the fs-only decoupling: it does NOT pass `nexusTransport` into `createKoiRuntime` when no Nexus consumer is wanted, so local-bridge sessions used purely for fs reads bypass the runtime's Nexus block entirely. `commands/start.ts` follows the same rule: when both consumer flags are explicitly false AND the manifest filesystem backend is not Nexus-backed, no `nexusTransport` is constructed.
 
