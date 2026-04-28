@@ -490,37 +490,44 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // composeMiddlewareIntoAdapter and so don't appear in `middleware`;
     // their config flags trigger the gate equivalently.
     //
-    // Scope: this gate only fires for the runtime AUTO-INSTALL path
-    // (`config.callDedup`). When the caller injects `koi:call-dedup`
-    // directly through `config.middleware`, we trust them to have
-    // wired observability themselves — gating their MW would be a
-    // compatibility regression for stacks that already forward cache
-    // hits via their own pathway. The auto-install path is the one
-    // the runtime is responsible for; the caller-injected path is
-    // theirs.
+    // The gate inspects the EFFECTIVE middleware chain (auto-install
+    // OR caller-injected via `config.middleware`). Both wirings share
+    // the same blind spot: dedup short-circuits the observe-phase
+    // chain on cache hits and coalesced waiters, so any observer
+    // (audit / event-trace / trajectory / otel / metrics) needs an
+    // explicit acknowledgement that cache hits are forwarded into
+    // its pathway. For the auto-install path, the ack is
+    // `config.callDedup.onCacheHit`. For caller-injected dedup, the
+    // ack is `config.callDedupObservabilityAck = true` (the runtime
+    // cannot inspect the caller's MW internals to verify hookup).
     const hasObserveMw = middleware.some((mw) => mw.phase === "observe");
     const hasTrajectoryObserver = trajectoryStore !== undefined;
     const hasOtelObserver = otelConfig !== undefined;
+    const dedupInChain = middleware.some((mw) => mw.name === "koi:call-dedup");
     const dedupAutoInstalled =
       config.callDedup !== undefined &&
       config.callDedup !== false &&
       !resilienceNames.has("koi:call-dedup");
-    const dedupAck =
+    const autoInstallAck =
       config.callDedup !== undefined &&
       config.callDedup !== false &&
       config.callDedup.onCacheHit !== undefined;
+    const callerInjectedAck = config.callDedupObservabilityAck === true;
+    const dedupActive = dedupAutoInstalled || dedupInChain;
+    const dedupAck = (dedupAutoInstalled && autoInstallAck) || callerInjectedAck;
     if (
-      dedupAutoInstalled &&
+      dedupActive &&
       (config.audit !== undefined || hasObserveMw || hasTrajectoryObserver || hasOtelObserver) &&
       !dedupAck
     ) {
       throw new Error(
-        "[runtime] callDedup is enabled alongside observe-phase middleware or runtime-added " +
+        "[runtime] koi:call-dedup is active alongside observe-phase middleware or runtime-added " +
           "observers (audit / event-trace / trajectory store / otel / transcript / metrics) but " +
-          "no onCacheHit observer is configured. Cached and coalesced tool calls short-circuit " +
-          "the observe-phase chain and would be invisible to those observers. Provide " +
-          "config.callDedup.onCacheHit to acknowledge that cache hits are forwarded into your " +
-          "observability pathway, or remove call-dedup from the chain.",
+          "no cache-hit observability acknowledgement is configured. Cached and coalesced tool " +
+          "calls short-circuit the observe-phase chain and would be invisible to those observers. " +
+          "Auto-install path: provide config.callDedup.onCacheHit. Caller-injected path " +
+          "(koi:call-dedup in config.middleware): set config.callDedupObservabilityAck=true after " +
+          "wiring cache hits into your observability pathway.",
       );
     }
 

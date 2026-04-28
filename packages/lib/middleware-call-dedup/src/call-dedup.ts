@@ -336,22 +336,29 @@ function isRequestCacheSafe(request: ToolRequest): boolean {
 }
 
 /**
- * Allowlist of metadata fields known to be pure observability — safe to
- * keep out of the cache key without affecting correctness. Anything
- * outside this set is conservatively treated as policy-relevant and
- * forces dedup to bypass.
+ * Per-field shape validators for metadata fields known to be pure
+ * observability. A field whose value does NOT match the expected
+ * scalar shape is conservatively treated as policy-relevant — a
+ * caller could otherwise smuggle structured policy data under an
+ * allowlisted key (e.g. `traceCallId: { tenant: "..." }`) and
+ * bypass the permissions re-evaluation on a cached hit.
  */
-const OBSERVABILITY_METADATA_FIELDS: ReadonlySet<string> = new Set([
-  "traceCallId",
-  "cached",
-  "callId",
+const OBSERVABILITY_FIELD_VALIDATORS: ReadonlyMap<string, (v: unknown) => boolean> = new Map<
+  string,
+  (v: unknown) => boolean
+>([
+  ["traceCallId", (v): boolean => typeof v === "string"],
+  ["callId", (v): boolean => typeof v === "string"],
+  ["cached", (v): boolean => typeof v === "boolean"],
 ]);
 
 function hasPolicyRelevantMetadata(request: ToolRequest): boolean {
   const md = request.metadata;
   if (md === undefined) return false;
-  for (const key of Object.keys(md)) {
-    if (!OBSERVABILITY_METADATA_FIELDS.has(key)) return true;
+  for (const [key, value] of Object.entries(md)) {
+    const validator = OBSERVABILITY_FIELD_VALIDATORS.get(key);
+    // Unknown key, or known key with the wrong shape → policy-relevant.
+    if (validator === undefined || !validator(value)) return true;
   }
   return false;
 }

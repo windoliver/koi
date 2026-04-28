@@ -659,6 +659,37 @@ describe("createCallDedupMiddleware", () => {
     expect(r2?.output).toBe("v");
   });
 
+  // Regression (review round 8): a caller could smuggle policy data
+  // under an allowlisted observability key (e.g. `traceCallId` set to
+  // a structured object instead of a string). Shape-validate the
+  // observability fields — anything not matching the expected scalar
+  // shape is treated as policy-relevant and forces dedup to bypass.
+  test("non-scalar shape under allowlisted metadata key triggers bypass", async () => {
+    const mw = createCallDedupMiddleware({ include: ["lookup"] });
+    const ctx = turnCtx();
+    const h = makeHandler("v");
+    // `traceCallId` set to an object — must be treated as policy-relevant.
+    await mw.wrapToolCall?.(
+      ctx,
+      {
+        toolId: "lookup",
+        input: { q: 1 },
+        metadata: { traceCallId: { tenant: "a" } as unknown as string },
+      },
+      h.handler,
+    );
+    await mw.wrapToolCall?.(
+      ctx,
+      {
+        toolId: "lookup",
+        input: { q: 1 },
+        metadata: { traceCallId: { tenant: "b" } as unknown as string },
+      },
+      h.handler,
+    );
+    expect(h.calls).toBe(2);
+  });
+
   // Regression (review round 7): permissions folds `request.metadata`
   // into PermissionQuery.context and its decision/approval cache keys.
   // Dedup runs at intercept BEFORE permissions, so caching a result

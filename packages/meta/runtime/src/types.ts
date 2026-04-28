@@ -503,6 +503,23 @@ export interface RuntimeConfig {
   readonly callDedup?: import("@koi/middleware-call-dedup").CallDedupConfig | false | undefined;
 
   /**
+   * Acknowledgement that cache-hit observability is wired even when
+   * `koi:call-dedup` is injected via `config.middleware` rather than
+   * the auto-install path. Set to `true` only after confirming that
+   * the caller-injected dedup middleware forwards cache hits to your
+   * audit / event-trace / OTel pathway (e.g., via its own
+   * `onCacheHit` callback).
+   *
+   * Without this acknowledgement, the runtime refuses to compose a
+   * caller-injected dedup alongside observe-phase middleware or
+   * runtime-added observers (audit / trajectory store / otel),
+   * because dedup short-circuits the observe-phase chain on cache
+   * hits and coalesced waiters — leaving those observers silently
+   * blind otherwise.
+   */
+  readonly callDedupObservabilityAck?: boolean | undefined;
+
+  /**
    * Browser tool provider configuration. When provided, wires `@koi/tool-browser`
    * and exposes the resulting `ComponentProvider` on `RuntimeHandle.browserProvider`
    * so callers can pass it to `createKoi({ providers })`.

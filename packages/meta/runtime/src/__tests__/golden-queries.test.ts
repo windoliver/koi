@@ -1769,7 +1769,10 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     });
     const probe = {
       // Resilience-trio name → opts into stable 1-start/1-end lifecycle.
-      name: "koi:call-dedup",
+      // Avoid `koi:call-dedup` here so the runtime's cache-hit
+      // observability gate (round 33+) does not trigger on the bare
+      // observe-phase probe.
+      name: "koi:model-call-limit",
       phase: "observe" as const,
       priority: 999,
       describeCapabilities: () => ({ label: "probe", description: "probe" }),
@@ -1993,10 +1996,22 @@ describe("Golden: @koi/middleware-call-dedup", () => {
       priority: 999,
       describeCapabilities: () => ({ label: "audit", description: "audit" }),
     } as unknown as import("@koi/core").KoiMiddleware;
+    // Round 8 fix: caller-injected dedup also requires the cache-hit
+    // observability ack now that the gate inspects the effective
+    // chain. Without `callDedupObservabilityAck=true`, observe-phase
+    // MW would silently miss cache hits.
     expect(() =>
       createRuntime({
         adapter: createTerminalAdapter(),
         middleware: [fakeDedup, fakeAudit],
+      }),
+    ).toThrow(/callDedupObservabilityAck/);
+    // With the explicit ack, the runtime composes the chain.
+    expect(() =>
+      createRuntime({
+        adapter: createTerminalAdapter(),
+        middleware: [fakeDedup, fakeAudit],
+        callDedupObservabilityAck: true,
       }),
     ).not.toThrow();
   });
