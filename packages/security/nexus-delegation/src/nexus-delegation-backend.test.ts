@@ -135,7 +135,7 @@ describe("grant()", () => {
     expect(req?.remove_grants).toEqual(["exec"]);
   });
 
-  test("forwards idempotency key as second argument option", async () => {
+  test("forwards deterministic idempotency key when prefix is supplied", async () => {
     const api = makeMockApi();
     const backend = createNexusDelegationBackend({
       api,
@@ -143,18 +143,18 @@ describe("grant()", () => {
       idempotencyPrefix: "test-",
     });
     await backend.grant(SCOPE, CHILD_ID);
+    await backend.grant(SCOPE, CHILD_ID);
     const calls = (api.createDelegation as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    const opts = calls[0]?.[1] as { idempotencyKey?: string } | undefined;
-    // Format: `${prefix}${parent}:${child}:${uuid}` — the per-call UUID
-    // suffix prevents collisions between separate grant() invocations.
-    expect(opts?.idempotencyKey).toMatch(
-      new RegExp(
-        `^test-${PARENT_ID}:${CHILD_ID}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`,
-      ),
-    );
+    const key1 = (calls[0]?.[1] as { idempotencyKey?: string } | undefined)?.idempotencyKey;
+    const key2 = (calls[1]?.[1] as { idempotencyKey?: string } | undefined)?.idempotencyKey;
+    // Prefix mode is deterministic — caller opts into cross-call dedup so a
+    // retry after a lost POST response can reconcile a server-side-created
+    // delegation. Both calls must produce the same key.
+    expect(key1).toBe(`test-${PARENT_ID}:${CHILD_ID}`);
+    expect(key2).toBe(`test-${PARENT_ID}:${CHILD_ID}`);
   });
 
-  test("two grant() calls with same parent/child produce different idempotency keys", async () => {
+  test("no-prefix grant() calls produce fresh per-call idempotency keys", async () => {
     const api = makeMockApi();
     const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
     await backend.grant(SCOPE, CHILD_ID);
@@ -162,9 +162,12 @@ describe("grant()", () => {
     const calls = (api.createDelegation as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     const key1 = (calls[0]?.[1] as { idempotencyKey?: string } | undefined)?.idempotencyKey;
     const key2 = (calls[1]?.[1] as { idempotencyKey?: string } | undefined)?.idempotencyKey;
-    expect(key1).toBeDefined();
-    expect(key2).toBeDefined();
-    expect(key1).not.toBe(key2);
+    expect(key1).toMatch(
+      new RegExp(
+        `^${PARENT_ID}:${CHILD_ID}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`,
+      ),
+    );
+    expect(key2).not.toBe(key1);
   });
 
   test("falls back to ttl-derived expiresAt when response has null expires_at", async () => {

@@ -412,58 +412,67 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   if (parentHasDelegation && options.manifest.delegation?.enabled !== false) {
     const parentDelegation = options.parentAgent.component<DelegationComponent>(DELEGATION);
     if (parentDelegation !== undefined) {
-      const parentPermissions = options.parentAgent.manifest.permissions ?? {};
-      const childPermissions = options.manifest.permissions ?? {};
-      const childScope = computeChildDelegationScope(
-        { permissions: parentPermissions },
-        childPermissions,
-      );
-      delegationGrantProvider = {
-        name: "delegation-grant-env",
-        // GLOBAL_FORGED (50) wins ENV against the BUNDLED (100) agent-env-provider.
-        // Component assembly is first-write-wins ordered by priority ascending.
-        priority: COMPONENT_PRIORITY.GLOBAL_FORGED,
-        attach: async (agent): Promise<ReadonlyMap<string, unknown>> => {
-          let grant: DelegationGrant;
-          try {
-            grant = await parentDelegation.grant(childScope, agent.pid.id);
-          } catch (e: unknown) {
-            delegationGrantError = e;
-            return new Map();
-          }
-          childGrantId = grant.id;
-          if (grant.proof.kind !== "nexus") return new Map();
+      // Manifest ceiling check FIRST: if the manifest excludes NEXUS_API_KEY
+      // via spawn.env.exclude, the child must observe no Nexus credential —
+      // neither in its ENV component nor returned through SpawnChildResult.
+      // Skip grant() entirely so we don't mint a server-side key that would
+      // exist only to be revoked. If delegation is `required`, this becomes a
+      // hard failure handled by the post-createKoi setup catch.
+      const nexusKeyExcluded = envExcludeKeys.has("NEXUS_API_KEY");
+      if (nexusKeyExcluded) {
+        if (delegationRequired) {
+          delegationGrantError = new Error(
+            "delegation.required is true but spawn.env.exclude contains NEXUS_API_KEY — " +
+              "the child cannot receive a delegated Nexus credential. Remove NEXUS_API_KEY from " +
+              "spawn.env.exclude or set delegation.required to false.",
+          );
+        }
+        // Otherwise: silently skip Nexus grant; child runs without delegation.
+      } else {
+        const parentPermissions = options.parentAgent.manifest.permissions ?? {};
+        const childPermissions = options.manifest.permissions ?? {};
+        const childScope = computeChildDelegationScope(
+          { permissions: parentPermissions },
+          childPermissions,
+        );
+        delegationGrantProvider = {
+          name: "delegation-grant-env",
+          // GLOBAL_FORGED (50) wins ENV against the BUNDLED (100) agent-env-provider.
+          // Component assembly is first-write-wins ordered by priority ascending.
+          priority: COMPONENT_PRIORITY.GLOBAL_FORGED,
+          attach: async (agent): Promise<ReadonlyMap<string, unknown>> => {
+            let grant: DelegationGrant;
+            try {
+              grant = await parentDelegation.grant(childScope, agent.pid.id);
+            } catch (e: unknown) {
+              delegationGrantError = e;
+              return new Map();
+            }
+            childGrantId = grant.id;
+            if (grant.proof.kind !== "nexus") return new Map();
 
-          // If the manifest excludes NEXUS_API_KEY via spawn.env.exclude, the
-          // child must observe NO Nexus credential — neither in its ENV
-          // component nor passed back through `SpawnChildResult.nexusApiKey`
-          // for an out-of-process worker to install. Treat exclusion as
-          // "delegation key delivery is disabled for this child" so the
-          // manifest ceiling cannot be bypassed by callers that read the
-          // returned token.
-          if (envExcludeKeys.has("NEXUS_API_KEY")) return new Map();
+            childNexusApiKey = grant.proof.token;
 
-          childNexusApiKey = grant.proof.token;
+            // Inject NEXUS_API_KEY into the child's env so any agent-env-aware
+            // component observes the attenuated key, not the parent's. We layer
+            // the token on top of the SAME override stack the regular
+            // agent-env-provider uses (manifest exclusions + runtime overrides),
+            // so manifest exclusions for OTHER keys still win.
+            const parentEnv = options.parentAgent.component<AgentEnv>(ENV);
+            if (parentEnv === undefined) return new Map();
+            const parentValues = parentEnv.values;
+            if (!("NEXUS_API_KEY" in parentValues)) return new Map();
 
-          // Inject NEXUS_API_KEY into the child's env so any agent-env-aware
-          // component observes the attenuated key, not the parent's. We layer
-          // the token on top of the SAME override stack the regular
-          // agent-env-provider uses (manifest exclusions + runtime overrides),
-          // so manifest exclusions for OTHER keys still win.
-          const parentEnv = options.parentAgent.component<AgentEnv>(ENV);
-          if (parentEnv === undefined) return new Map();
-          const parentValues = parentEnv.values;
-          if (!("NEXUS_API_KEY" in parentValues)) return new Map();
-
-          const finalOverrides: Readonly<Record<string, string | undefined>> = {
-            ...baseEnvOverrides,
-            NEXUS_API_KEY: grant.proof.token,
-          };
-          const merged = mergeEnv(parentValues, finalOverrides);
-          const childEnv: AgentEnv = { values: merged, parentEnv };
-          return new Map([[ENV as string, childEnv]]);
-        },
-      };
+            const finalOverrides: Readonly<Record<string, string | undefined>> = {
+              ...baseEnvOverrides,
+              NEXUS_API_KEY: grant.proof.token,
+            };
+            const merged = mergeEnv(parentValues, finalOverrides);
+            const childEnv: AgentEnv = { values: merged, parentEnv };
+            return new Map([[ENV as string, childEnv]]);
+          },
+        };
+      }
     }
   }
 
