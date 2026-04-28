@@ -1,6 +1,6 @@
 {
   "name": "@koi/forge-demand",
-  "description": "Demand-triggered forge detection middleware — detects capability gaps, repeated failures, and latency degradation; emits ForgeDemandSignal.",
+  "description": "Demand-triggered forge detection: capability gaps, repeated failures, latency degradation, user corrections.",
   "version": "0.0.0",
   "private": true,
   "type": "module",
