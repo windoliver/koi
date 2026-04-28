@@ -204,15 +204,25 @@ async function trackKey(s: DedupState, sessionId: string, cacheKey: string): Pro
   // await the delete here rather than fire-and-forget. A late delete
   // failure would otherwise leave an orphan that no later cleanup can
   // see (the session index already moved on).
-  if (existing.size >= s.maxEntries) {
-    // Pick the oldest tracked key that is NOT currently in-flight.
-    // Evicting an unresolved coalescing slot would make a duplicate
-    // request miss `inFlight` and call `next()` again — defeating the
-    // single-execution guarantee under high-cardinality load. If every
-    // tracked entry is in-flight (rare), accept temporary overshoot
-    // rather than evict live work.
+  // Add the new key to the session index BEFORE any await. Without
+  // this, a concurrent `onSessionEnd` racing with eviction would only
+  // see the pre-eviction key set and miss the just-added cacheKey,
+  // leaving its `inFlight` promise un-cleared. A subsequent run
+  // reusing the same sessionId would then coalesce onto the orphaned
+  // promise — cross-session contamination by exactly the path
+  // `onSessionEnd` exists to prevent. Add first, then await deletes.
+  existing.add(cacheKey);
+  if (existing.size > s.maxEntries) {
+    // Pick the oldest tracked key that is NOT currently in-flight
+    // and is not the just-added cacheKey itself. Evicting an
+    // unresolved coalescing slot would make a duplicate request
+    // miss `inFlight` and call `next()` again — defeating the
+    // single-execution guarantee. If every tracked entry is
+    // in-flight (rare), accept temporary overshoot rather than
+    // evict live work.
     let victim: string | undefined;
     for (const k of existing) {
+      if (k === cacheKey) continue;
       if (!s.inFlight.has(k)) {
         victim = k;
         break;
@@ -228,7 +238,6 @@ async function trackKey(s: DedupState, sessionId: string, cacheKey: string): Pro
       await safeStoreDelete(s, victim);
     }
   }
-  existing.add(cacheKey);
 }
 
 async function safeStoreDelete(s: DedupState, key: string): Promise<void> {
@@ -307,14 +316,44 @@ function isRequestCacheSafe(request: ToolRequest): boolean {
   // implemented, signal-bearing requests run independently with no
   // caching.
   if (request.signal !== undefined) return false;
-  // `metadata` (notably `metadata.traceCallId`) and `callId` are
-  // observability/correlation fields stamped on every runtime request.
-  // They are deliberately NOT identity-relevant for the cache key:
-  // dedup's whole contract is "two identical tool calls return the same
-  // result", and that statement must hold across distinct trace ids.
-  // Cached responses are marked `metadata.cached = true` so downstream
-  // observability can tell hits apart from real executions.
+  // Metadata can be either:
+  //   (a) pure observability/correlation fields (`traceCallId`,
+  //       `cached`, etc.) that must NOT participate in cache identity
+  //       — otherwise no two trace-stamped calls ever hit cache; OR
+  //   (b) request-scoped policy inputs that DO participate in
+  //       authorization (the permissions middleware folds metadata
+  //       into `PermissionQuery.context` and its decision/approval
+  //       cache keys).
+  // Dedup runs at intercept phase BEFORE permissions in the chain, so
+  // a cached hit would short-circuit the policy check — a hard auth
+  // boundary issue if (b) is in play. We can't tell the two apart at
+  // the dedup layer, so we conservatively bypass any request whose
+  // metadata carries a field outside the known-observability allowlist.
+  // This preserves the "cache hits across distinct trace ids" property
+  // for plain runtime traffic and refuses to silently elide policy.
+  if (hasPolicyRelevantMetadata(request)) return false;
   return true;
+}
+
+/**
+ * Allowlist of metadata fields known to be pure observability — safe to
+ * keep out of the cache key without affecting correctness. Anything
+ * outside this set is conservatively treated as policy-relevant and
+ * forces dedup to bypass.
+ */
+const OBSERVABILITY_METADATA_FIELDS: ReadonlySet<string> = new Set([
+  "traceCallId",
+  "cached",
+  "callId",
+]);
+
+function hasPolicyRelevantMetadata(request: ToolRequest): boolean {
+  const md = request.metadata;
+  if (md === undefined) return false;
+  for (const key of Object.keys(md)) {
+    if (!OBSERVABILITY_METADATA_FIELDS.has(key)) return true;
+  }
+  return false;
 }
 
 async function ddWrapToolCall(

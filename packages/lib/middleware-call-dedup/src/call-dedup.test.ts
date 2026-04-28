@@ -659,6 +659,100 @@ describe("createCallDedupMiddleware", () => {
     expect(r2?.output).toBe("v");
   });
 
+  // Regression (review round 7): permissions folds `request.metadata`
+  // into PermissionQuery.context and its decision/approval cache keys.
+  // Dedup runs at intercept BEFORE permissions, so caching a result
+  // produced under one metadata context and replaying it under another
+  // would short-circuit a policy check — an auth boundary breach.
+  // Bypass dedup on any metadata field outside the observability
+  // allowlist (traceCallId / cached / callId).
+  test("request with policy-relevant metadata bypasses dedup (auth correctness)", async () => {
+    const mw = createCallDedupMiddleware({ include: ["lookup"] });
+    const ctx = turnCtx();
+    const h = makeHandler("v");
+    // First call carries a policy-relevant field.
+    await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "lookup", input: { q: 1 }, metadata: { policyScope: "elevated" } },
+      h.handler,
+    );
+    // Second call with SAME tool/input but different policy field.
+    // Must NOT hit cache — re-execute so permissions can re-evaluate.
+    const r2 = await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "lookup", input: { q: 1 }, metadata: { policyScope: "default" } },
+      h.handler,
+    );
+    expect(h.calls).toBe(2);
+    expect(r2?.metadata?.cached).not.toBe(true);
+  });
+
+  // Regression (review round 7): under FIFO eviction at capacity,
+  // the just-added key was previously appended AFTER awaiting the
+  // backend delete of the evicted victim. A concurrent onSessionEnd
+  // racing that await window would miss the new key, leaving its
+  // `inFlight` promise un-cleared. A reused sessionId would then
+  // coalesce onto the orphaned promise. Adding the new key BEFORE
+  // any await closes the window.
+  test("session-end during FIFO eviction await still clears in-flight for new key", async () => {
+    const m = new Map<string, { response: ToolResponse; expiresAt: number }>();
+    let releaseDelete: (() => void) | undefined;
+    const deleteGate = new Promise<void>((r) => {
+      releaseDelete = r;
+    });
+    let deleteCount = 0;
+    const store = {
+      async get(k: string) {
+        return m.get(k);
+      },
+      async set(k: string, v: { response: ToolResponse; expiresAt: number }) {
+        m.set(k, v);
+      },
+      async delete(k: string): Promise<boolean> {
+        deleteCount++;
+        // First delete (eviction victim) is gated to simulate slow
+        // backend, letting onSessionEnd race the trackKey await.
+        if (deleteCount === 1) await deleteGate;
+        m.delete(k);
+        return true;
+      },
+      size(): number {
+        return m.size;
+      },
+      clear(): void {
+        m.clear();
+      },
+    };
+    const mw = createCallDedupMiddleware({ include: ["lookup"], maxEntries: 1, store });
+    const sid = "s-race";
+    const ctx = turnCtx(sid);
+    // Fill cache to capacity.
+    await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: "a" } }, makeHandler("a").handler);
+    // Trigger eviction with a NEW key. trackKey will await the gated
+    // backend delete of the victim — meanwhile we end the session.
+    const second = mw.wrapToolCall?.(
+      ctx,
+      { toolId: "lookup", input: { q: "b" } },
+      makeHandler("b").handler,
+    );
+    // Yield once so trackKey has entered the eviction await path.
+    await Promise.resolve();
+    await Promise.resolve();
+    // End the session. With the fix, the new key was added to
+    // keysBySession BEFORE the await, so onSessionEnd sees it and
+    // clears its inFlight slot.
+    await mw.onSessionEnd?.(ctx.session);
+    // Release the gated delete so the second call can complete.
+    releaseDelete?.();
+    await second;
+    // A reused sessionId issuing the same key must NOT coalesce onto
+    // any prior in-flight promise — it must execute fresh.
+    const ctx2 = turnCtx(sid);
+    const h3 = makeHandler("c");
+    await mw.wrapToolCall?.(ctx2, { toolId: "lookup", input: { q: "b" } }, h3.handler);
+    expect(h3.calls).toBe(1);
+  });
+
   // Regression (review round 6): if a backend `store.delete()` fails during
   // `onSessionEnd` eviction (best-effort by design), the stale entry can
   // remain in the backend after the in-memory index is dropped. A reused
