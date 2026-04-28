@@ -65,32 +65,45 @@ export interface NexusCallOptions {
    *     (no socket left reading bytes server-side once the connection
    *     drops).
    *
-   *   - local-bridge transport: BEST-EFFORT abort. On signal, the
-   *     transport rejects the JS-side promise with `code: "ABORTED"` and
-   *     records the aborted JSON-RPC id in an `abandonedIds` set. It does
-   *     NOT release the single-flight slot — releasing would let the
-   *     next queued call start its deadline timer while it is still
-   *     blocked behind the abandoned in-flight Python work in `bridge.py`'s
-   *     serialized main loop, causing unrelated follow-up calls to time
-   *     out or kill the subprocess without ever being serviced (Loop 5 R3
-   *     finding). Instead, the slot stays held until the abandoned
-   *     reply naturally arrives from the bridge; on arrival the transport
-   *     looks up the id, finds it in `abandonedIds`, drops the payload
-   *     silently, removes the id, and only then releases the slot for
-   *     the next queued call. The next call's deadline starts ticking
-   *     from when it actually dispatches, not from when the previous
-   *     caller abandoned.
+   *   - local-bridge transport: ABORT IS A TRANSPORT RESET. On signal:
+   *     (1) reject the JS-side promise with `code: "ABORTED"`, (2) KILL
+   *     the bridge subprocess (SIGTERM with a short SIGKILL fallback),
+   *     (3) reject every other in-flight or queued call on this transport
+   *     with `code: "ABORTED"` carrying a `cause` of "transport reset by
+   *     peer abort", (4) RESPAWN a fresh bridge subprocess so subsequent
+   *     `transport.call(...)` invocations start cleanly with a new
+   *     auth handshake.
    *
-   *     Trade-off: a JS-side abort does NOT shorten the Python read
-   *     latency seen by subsequent callers either. They see the same
-   *     wall-clock latency as if no abort had happened, plus the
-   *     transport gate. This is acceptable because (a) abort is rare
-   *     (boot-time policy timeout path, not steady-state), and (b) the
-   *     alternative — silently letting follow-up calls inherit and
-   *     time out behind the abandoned work — is the bug. True
-   *     preemption requires a bridge concurrency redesign (out-of-band
-   *     cancellation channel + cooperative checks in long-running ops).
-   *     Out of scope this PR (see Out of scope).
+   *     This deliberately collapses the earlier "held-slot until
+   *     abandoned reply drains" design (Loop 5 R3) which had a fatal
+   *     edge case: local-bridge calls can park on `auth_required`
+   *     waiting for human input via `submitAuthCode`; the abandoned
+   *     reply might NEVER arrive, leaving the slot held forever and
+   *     starving every future call (Loop 5 R6 finding). A transport
+   *     reset guarantees recovery: subsequent callers always make
+   *     progress, even if they pay a respawn cost (~hundreds of ms,
+   *     plus a fresh auth challenge if credentials are absent).
+   *
+   *     Trade-offs (acceptable, declared, locked):
+   *       - Concurrent unrelated calls on the same transport: aborted.
+   *         Today the local-bridge transport is single-flight, so
+   *         "concurrent" really means "queued" and those callers are
+   *         in a degraded state already (waiting behind whatever the
+   *         abort target was). Surfacing an explicit ABORTED error is
+   *         strictly better than silently letting them time out.
+   *       - Auth state: the respawned subprocess starts unauthenticated.
+   *         The next caller will receive `auth_required` and the runtime
+   *         will replay the existing OAuth flow. This is the same
+   *         behavior as initial-boot auth — no new code path.
+   *       - Cost: subprocess spawn + first call's auth handshake. Abort
+   *         is rare (boot-time policy-load timeout, NOT steady-state),
+   *         so amortized cost is near zero.
+   *
+   *     True in-band preemption (cancel a single call without resetting
+   *     the transport) still requires a bridge concurrency redesign —
+   *     see Out of scope. Until that lands, transport-reset semantics
+   *     are the only design that gives `permission-backend.abortInFlightSync()`
+   *     a guaranteed-recovery contract on local-bridge.
    *
    * Required by `permission-backend.abortInFlightSync()` (the
    * assert-remote-policy-loaded-at-boot timeout path) so the JS-side
@@ -401,8 +414,8 @@ Earlier drafts proposed making audit-wired runtimes default to `assert-transport
 | Mode | Behavior |
 |---|---|
 | `telemetry` (default) | log on transport failure; log activation status; continue boot |
-| `assert-transport-reachable-at-boot` | throw on transport failure OR on `notFound: true` for either default probe path (`version.json` / `policy.json`) — missing policy namespace is fatal, not healths (version + version.json read + policy.json read); does NOT validate that policy files exist or that backend successfully activates remote policy |
-| `assert-remote-policy-loaded-at-boot` | throw on transport failure; throw on first-sync policy-activation failure (awaits `backend.ready`). **STARTUP GATE ONLY, REMOTE-LOAD ONLY** — proves remote policy was loaded at boot. Does NOT prove remote policy will be enforced for every check: per existing composition (`runtime-factory.ts:1797-1806`), Nexus backend chains to local TUI on `ask`/no-opinion results, so queries not matched by remote policy still execute under local rules. Does NOT enforce ongoing freshness either: last-known-good remote policy continues to be served after sync failures. Operators needing strict centralized enforcement (no local fallback for unmatched queries) need a permission-composition change tracked separately. |
+| `assert-transport-reachable-at-boot` | throw on transport failure (network unreachable, 5xx, auth failure, malformed payload). **DOES NOT throw on `missing-paths`** — a `version.json` / `policy.json` 404 means the Nexus store is empty (a documented bootstrap state — `nexus-permission-backend.ts:58-77` treats version.json `NOT_FOUND` as valid empty-state and falls back to local rules until the store is seeded). The earlier "404 fatal here" rule (Loop 4) turned a supported empty-store bootstrap into a startup outage (Loop 5 R6 finding); 404 is now logged as warning and boot continues. Reachability-only: this mode validates the JSON-RPC channel can carry read calls AND that read responses with content are parseable; it makes no claim about policy presence or backend activation. Operators wanting "remote policy must already exist" use `assert-remote-policy-loaded-at-boot`. |
+| `assert-remote-policy-loaded-at-boot` | throw on transport failure; throw on first-sync policy-activation failure (awaits `backend.ready` AND checks `isCentralizedPolicyActive()`). **404 on probe paths IS fatal here** — this mode's contract is "remote policy was loaded at boot", which empty-store explicitly does not satisfy. **STARTUP GATE ONLY, REMOTE-LOAD ONLY** — proves remote policy was loaded at boot. Does NOT prove remote policy will be enforced for every check: per existing composition (`runtime-factory.ts:1797-1806`), Nexus backend chains to local TUI on `ask`/no-opinion results, so queries not matched by remote policy still execute under local rules. Does NOT enforce ongoing freshness either: last-known-good remote policy continues to be served after sync failures. Operators needing strict centralized enforcement (no local fallback for unmatched queries) need a permission-composition change tracked separately. |
 
 **⚠️ Security caveat — no mode in this PR provides centralized-policy enforcement.** `assert-transport-reachable-at-boot` only proves the transport can carry read calls. `assert-remote-policy-loaded-at-boot` only proves remote policy was loaded at boot. Neither prevents local-rule fallback for queries the remote policy doesn't match (existing permission composition chains to local TUI on `ask`/no-opinion). The mode names deliberately reflect what they actually gate (`-transport`, `-remote-policy-loaded`) rather than implying enforcement they don't deliver. **Operators requiring strict centralized enforcement (no local fallback for unmatched queries) must wait for the permission-composition change tracked separately** — neither mode here is sufficient for that requirement.
 
@@ -722,8 +735,11 @@ interface KoiRuntimeFactoryConfig {
    * - "telemetry": log on transport failure; continue boot; preserves
    *   existing local-first contract for permissions.
    * - "assert-transport-reachable-at-boot": **DIAGNOSTIC ONLY — not a security
-   *   control.** Throws on transport failure or 404 on default probe path
-   *   (version.json / policy.json — namespace absent is fatal). **Requires
+   *   control.** Throws on transport failure (unreachable / 5xx / auth /
+   *   malformed payload). Does NOT throw on 404 — namespace-absent is a
+   *   documented bootstrap state in the existing permissions backend
+   *   (Loop 5 R6); use assert-remote-policy-loaded-at-boot if you need
+   *   policy presence enforced. **Requires
    *   `nexusPermissionsEnabled=true`**: today's probe is a `version` call plus
    *   a permission-namespace read; with permissions disabled the gate
    *   collapses to `version` only and would silently pass even when audit
@@ -1074,18 +1090,26 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       }
     } else if (health !== undefined && health.value.status === "missing-paths") {
       // status="missing-paths" means the policy NAMESPACE is missing — not
-      // a transport failure, but an absent control surface. Telemetry logs
-      // and continues; assert-transport-reachable-at-boot and
-      // assert-remote-policy-loaded-at-boot BOTH refuse to boot (the
-      // operator declared they want remote policy present at startup; an
-      // absent namespace contradicts that). The status discriminator forces
-      // us to handle this case explicitly — no boolean check could miss it.
+      // a transport failure, but an absent control surface. This represents
+      // a documented bootstrap state: nexus-permission-backend treats
+      // version.json NOT_FOUND as valid empty-state and falls back to
+      // local rules until the store is seeded. Earlier draft (Loop 4)
+      // failed boot here for BOTH assert-* modes; Loop 5 R6 narrowed:
+      //   - telemetry: warn + continue (unchanged)
+      //   - assert-transport-reachable-at-boot: warn + continue. The mode's
+      //     contract is reachability + parseability, NOT policy presence.
+      //     Failing on 404 here would convert a supported empty-store
+      //     bootstrap into a startup outage. Operators wanting "remote
+      //     policy must already exist" use the next mode.
+      //   - assert-remote-policy-loaded-at-boot: throw. THAT mode's
+      //     contract IS "remote policy was loaded at boot", which an
+      //     empty store explicitly does not satisfy.
       const missing = health.value.notFound.join(", ");
       const msg = `Nexus probe found missing policy paths: ${missing} (namespace absent)`;
-      if (mode === "telemetry") {
-        logger.warn({ notFound: health.value.notFound, probeKind: txKind }, msg);
+      if (mode === "assert-remote-policy-loaded-at-boot") {
+        throw new Error(msg);  // ONLY this mode treats namespace-absent as fatal
       } else {
-        throw new Error(msg);  // both assert-* modes
+        logger.warn({ notFound: health.value.notFound, probeKind: txKind, mode }, msg);
       }
     } else if (
       health !== undefined
@@ -1232,13 +1256,12 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
         // settles (rejected with AbortError) instead of completing async
         // after the caller has already failed boot. On HTTP this also
         // cancels the underlying fetch end-to-end. On local-bridge this
-        // is best-effort with HELD-SLOT semantics: the JS-side promise
-        // rejects but the single-flight slot stays held until the
-        // abandoned Python reply naturally drains, so the runtime's
-        // poll-timer follow-up reads do NOT inherit a deadline ticking
-        // behind abandoned work (see NexusCallOptions.signal JSDoc and
-        // Out of scope:bridge concurrency). The reply is dropped by
-        // the backend mutation guard before it can mutate state.
+        // is a TRANSPORT RESET (Loop 5 R6): SIGTERM the bridge subprocess
+        // + respawn, so any subsequent runtime poll-timer reads start
+        // against a fresh subprocess. Earlier held-slot design was rejected
+        // because auth_required parking could starve the transport forever.
+        // The respawned subprocess will require a fresh auth handshake on
+        // its first call, which is the same path as initial-boot auth.
         // dispose() in the catch handler also clears poll timers.
         nexusPermBackend.abortInFlightSync?.();
       }
@@ -1445,7 +1468,7 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 | `packages/lib/nexus-client/src/assert-health-capable.ts` | New: `assertHealthCapable` assertion function | +15 |
 | `packages/lib/nexus-client/src/assert-health-capable.test.ts` | New: present narrows; missing throws | +25 |
 | `packages/lib/nexus-client/src/index.ts` | Re-export `NexusHealth`, `HealthCapableNexusTransport`, `assertHealthCapable` | +3 |
-| `packages/lib/fs-nexus/src/local-transport.ts` | (1) Per-call `opts.deadlineMs` for use by the disposable probe. (2) Per-call `opts.nonInteractive` — on `auth_required`: reject in-flight call and kill the subprocess (disposable-probe path only). (3) **Per-call `opts.signal` — BEST-EFFORT abort with HELD-SLOT semantics. Pending-request map keyed by JSON-RPC id PLUS new `abandonedIds: Set<id>`. On signal abort: reject the pending call with `code:"ABORTED"`, REMOVE the id from the pending-request map, INSERT the id into `abandonedIds`, BUT KEEP the single-flight slot held. The slot is released only when the bridge's reply for the abandoned id naturally arrives — at that point, look up the id in `abandonedIds`, drop the payload silently (no callback fires), `delete` the id, then release the slot so the next queued call can dispatch. NO `cancel` notification is sent and NO change to `bridge.py` — the existing main-loop architecture (synchronous `await handle_request(...)` before draining the next stdin message) cannot interrupt the in-flight Python read. Releasing the slot on abort (the earlier proposed behavior) was wrong: it lets the next call's deadline tick while it is queued behind the abandoned Python work, causing unrelated follow-ups to time out or kill the subprocess (Loop 5 R3 finding). Held-slot semantics preserve correctness for `permission-backend.abortInFlightSync()` (state-mutation guard already drops late resolutions) AND prevent collateral damage to follow-up callers. True preemption requires a bridge concurrency redesign (see Out of scope).** (4) Add `kind: "local-bridge"` discriminator. **Does NOT implement `health()`** — long-lived local-bridge transport stays at base `NexusTransport`. Probing the live session is unsafe (auth wedge); `health()` only exists on the disposable probe variant. | +75 |
+| `packages/lib/fs-nexus/src/local-transport.ts` | (1) Per-call `opts.deadlineMs` for use by the disposable probe. (2) Per-call `opts.nonInteractive` — on `auth_required`: reject in-flight call and kill the subprocess (disposable-probe path only). (3) **Per-call `opts.signal` — TRANSPORT RESET semantics. On signal abort: (a) reject the targeted call with `code:"ABORTED"`, (b) reject every OTHER in-flight or queued call on this transport with `code:"ABORTED"` carrying `cause: "transport reset by peer abort"`, (c) SIGTERM the bridge subprocess with a short SIGKILL fallback, (d) RESPAWN a fresh subprocess so the next `call(...)` starts cleanly. The earlier "held-slot until abandoned reply drains" design (Loop 5 R3) had a fatal edge case: local-bridge calls can park on `auth_required` waiting for human input via `submitAuthCode`, and the abandoned reply might never arrive — held slot starves every future call (Loop 5 R6 finding). Transport reset guarantees recovery; subsequent callers always make progress (paying a respawn + fresh auth handshake cost, which is amortized near zero because abort is rare — boot-time policy-load timeout, not steady-state). Surfacing ABORTED on queued calls is strictly better than silently letting them time out behind the abandoned target.** (4) Add `kind: "local-bridge"` discriminator. **Does NOT implement `health()`** — long-lived local-bridge transport stays at base `NexusTransport`. Probing the live session is unsafe (auth wedge); `health()` only exists on the disposable probe variant. | +95 |
 | `packages/lib/fs-nexus/src/transport.ts` | **Forward `health` from the wrapped HTTP transport** (currently this fs-nexus HTTP wrapper drops it, returning only `{ call, close, subscribe, submitAuthCode }`). Add `health` passthrough so the type contract upgrade in runtime-factory works for HTTP path. Add `kind: "http"` discriminator. | +20 |
 | `packages/lib/fs-nexus/src/transport.test.ts` | New: HTTP wrapper forwards `health()` calls to underlying transport; result shape preserved; opts pass through | +50 |
 | `packages/lib/fs-nexus/src/probe-transport.ts` | New: `createLocalBridgeProbeTransport(spawnConfig): HealthCapableNexusTransport` — spawns a fresh, short-lived bridge subprocess; the ONLY local-bridge variant that implements `health()`; closes itself after the call. spawnConfig is held in closure scope, never on the returned transport object (no credential leak). | +75 |
@@ -1580,13 +1603,13 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j13e. `HTTP perms-only (audit explicitly disabled) telemetry probe success: logs INFO with msg "nexus probe ok: session-validated" + auditUnvalidated:false (the only path that gets the plain green log — audit isn't in scope for this deployment)`
 7g16j13f. `Probe log payload always includes auditUnvalidated boolean field for downstream alerting (true whenever audit consumer is wired OR audit-only path active; false only when permissions wired and audit explicitly disabled)`
 7g16j14. `local-bridge with nexusProbeFactory: probe is NOT executed by createKoiRuntime` (regression guard — local-bridge probe is caller-site responsibility, runtime block is HTTP-only)
-7g16j15. `assert-transport-reachable-at-boot + 404 on version.json or policy.json: throws with 'namespace absent' message` (Round 9 plumbing now reaches throw)
-7g16j16. `assert-remote-policy-loaded-at-boot + 404 on either default probe path: throws (same handling as assert-transport-reachable-at-boot)`
-7g16j17. `telemetry mode + 404: logs warning with notFound list; boot CONTINUES`
+7g16j15. `assert-transport-reachable-at-boot + 404 on version.json or policy.json: BOOTS with warning naming notFound list and mode (Loop 5 R6 — empty-store bootstrap is supported; this mode does not enforce policy presence). Regression guard: the earlier "throw on 404 here" behavior was an outage hazard for documented empty-store deployments`
+7g16j16. `assert-remote-policy-loaded-at-boot + 404 on either default probe path: THROWS — this mode's contract is "remote policy loaded at boot", which empty-store explicitly does not satisfy. ONLY this mode treats namespace-absent as fatal`
+7g16j17. `telemetry mode + 404: logs warning with notFound list and mode; boot CONTINUES`
 7g16j18. `assert-transport-reachable-at-boot probe success + no 404: boots normally`
 7g16j19. `assert-transport-reachable-at-boot + nexusPermissionsEnabled=false (audit-only HTTP): THROWS — version probe doesn't exercise audit write path, would be a false-negative gate. Error names "telemetry" as the only supported audit-only mode.`
 7g16j20. `assert-remote-policy-loaded-at-boot + nexusPermissionsEnabled=false: THROWS (no policy backend to await). Same root cause as 7g16j19; both assert-* modes require permissions wired.`
-7g16j21. `assert-transport-reachable-at-boot + nexusPermissionsEnabled=true: probe reads default policy paths; 404 still fatal` (regression guard — gating only loosens audit-only path, permissions path unchanged)
+7g16j21. `assert-transport-reachable-at-boot + nexusPermissionsEnabled=true + 404: BOOTS with warning (Loop 5 R6 — empty-store bootstrap is the documented behavior; warn-and-continue replaces the earlier throw). Operators wanting fatal-on-404 use assert-remote-policy-loaded-at-boot, which exists exactly for this requirement.`
 7g16j22. `assert-remote-policy-loaded-at-boot: backend.ready resolves within bootSyncDeadlineMs default (10s) → boots normally`
 7g16j23. `assert-remote-policy-loaded-at-boot: backend.ready stalls past bootSyncDeadlineMs → THROWS with "Nexus first-sync timed out after Xms" actionable message naming nexusBootSyncDeadlineMs as the tunable` (regression guard against the Loop-4-R4 unbounded-await bug — fail-fast assert mode must be bounded end-to-end)
 7g16j24. `assert-remote-policy-loaded-at-boot: custom bootSyncDeadlineMs=2000 enforces tighter bound; 3s simulated sync throws within ~2s (not 45s transport default)`
@@ -1603,9 +1626,11 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j32. `Backend's initializePolicy() resolving AFTER abortInFlightSync() does NOT mutate backend state (drops the late resolution; isCentralizedPolicyActive() does not flip from false to true post-abort)`
 7g16j33. `Backend's initializePolicy() resolving AFTER dispose() does NOT mutate state (state-mutation guard — same root cause coverage as 7g16j32 but driven by dispose path instead of timeout path)`
 7g16j34. `HTTP transport: opts.signal aborts mid-flight — fetch is cancelled, returns Result.error code="ABORTED" distinct from code="TIMEOUT"` (Loop 4 R9 — abortInFlightSync depends on this end-to-end)
-7g16j35. `Local-bridge transport: opts.signal aborts mid-flight (BEST-EFFORT, HELD-SLOT) — pending-request map removes the id, abandonedIds adds it, slot stays HELD, JS-side promise rejects with code="ABORTED"; bridge.py is unchanged and the in-flight Python read continues to completion; its eventual reply is silently dropped (no late callback fires, no double-reject), and only THEN is the slot released for the next queued call. Closes Loop 5 R3 finding`
-7g16j35b. `Local-bridge transport: while a previous call is abandoned-but-not-yet-replied, a follow-up transport.call(...) waits on the held slot; its deadline timer starts only when it actually dispatches (after the abandoned reply drains), NOT when it was queued. Verifies the held-slot fix: a follow-up call with deadlineMs=5000 issued during a 30-second abandoned operation does NOT time out at 5s — its 5s timer starts at the dispatch boundary`
-7g16j35c. `Local-bridge transport: abandoned reply that arrives after the subprocess was independently killed (e.g., process exit during boot abort path) does NOT crash the transport — abandonedIds is consulted defensively before any handler is invoked, and the slot release on shutdown is idempotent`
+7g16j35. `Local-bridge transport: opts.signal aborts mid-flight (TRANSPORT RESET) — targeted call rejects with code="ABORTED"; subprocess receives SIGTERM, SIGKILL fallback fires within ~250ms if no exit; respawn brings up a fresh bridge ready to accept calls. Loop 5 R6 supersedes Loop 5 R3 held-slot — guaranteed-recovery contract`
+7g16j35b. `Local-bridge transport: aborting a call that was parked on auth_required (Loop 5 R6 worst-case) does NOT wedge the transport. Without transport-reset semantics this case starved all future calls forever; with reset, the SIGTERM unblocks the bridge's stdin read, the subprocess exits, and the respawn handshake completes within the test timeout`
+7g16j35c. `Local-bridge transport: when targeted abort fires, OTHER in-flight or queued calls on the same transport ALSO reject with code="ABORTED" + cause="transport reset by peer abort". This is the documented declared trade-off — surfacing ABORTED to queued callers is strictly better than letting them silently time out behind the abandoned target`
+7g16j35d. `Local-bridge transport: post-respawn, the next call() that triggers auth_required is handled by the existing OAuth flow without any new code path. Verifies the design claim that respawn auth state matches initial-boot semantics`
+7g16j35e. `Local-bridge transport: abort-during-no-call (signal aborts when nothing is in flight) is a no-op (no subprocess kill, no respawn). Regression guard against accidental subprocess churn`
 7g16j36. `Both transports: signal that aborts AFTER the call settles is a no-op (no double-reject, no resource leak)`
 7g16j37. `Permission backend: abortInFlightSync() observably aborts via the signal it threaded into transport.call (verified through a mock transport that records the AbortSignal it received). On HTTP this manifests as fetch cancellation; on local-bridge as JS-side promise rejection only — the test fixture for local-bridge asserts that the late synthetic transport reply is dropped by the backend's mutation guard (not by transport-level cancellation), matching the documented best-effort contract`
 7g16k. (REMOVED — local-bridge + permissions categorically rejected)
@@ -1645,8 +1670,8 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 9. `telemetry: succeeds and logs info on transport ok`
 10. `telemetry: does NOT await backend.ready` — preserves existing async semantics
 11. `assert-transport-reachable-at-boot: throws on transport error`
-11b. `assert-transport-reachable-at-boot: throws when version.json or policy.json read returns 404 (notFound)` (Round 9 — missing namespace is fatal in fail-closed-* modes)
-11c. `telemetry mode: 404 on default probe path is logged + boot continues` (regression guard — fail-closed semantics do NOT leak into telemetry)
+11b. `assert-transport-reachable-at-boot: BOOTS with warning when version.json or policy.json read returns 404 (Loop 5 R6 — supersedes earlier throw; empty-store bootstrap is supported in this mode). assert-remote-policy-loaded-at-boot retains the throw (it explicitly requires policy presence).`
+11c. `telemetry mode: 404 on default probe path is logged + boot continues` (unchanged; regression guard)
 11d. `health() result includes per-path notFound: true field when 404 returned` (caller decides handling — health() itself remains transport-success-on-404 from nexus-client's pure-transport perspective)
 12. `assert-transport-reachable-at-boot: does NOT await backend.ready` — only transport gate, no policy gate
 13. `assert-remote-policy-loaded-at-boot: awaits backend.ready before exposing runtime`
@@ -1779,7 +1804,7 @@ Adversarial review recurringly observes that `opts.signal` cannot truly preempt 
 The spec embraces this asymmetry honestly rather than papering over it:
 
 - **HTTP transport: end-to-end abort.** `opts.signal` threads into `fetch`, the TCP read is cancelled mid-flight, and the call rejects with `code:"ABORTED"`. Remote work also stops once the connection drops.
-- **Local-bridge transport: BEST-EFFORT abort with HELD-SLOT semantics.** `opts.signal` rejects the JS-side promise with `code:"ABORTED"` and records the JSON-RPC id in `abandonedIds`, but KEEPS the single-flight slot held. The Python read continues to completion; its eventual reply is silently dropped (id found in `abandonedIds`); only then is the slot released so the next queued call can dispatch. No `cancel` notification is sent and `bridge.py` is unchanged. Releasing the slot on abort (the earlier proposed behavior) was incorrect — it let follow-up calls' deadlines tick while they were queued behind the abandoned Python work, causing unrelated subsequent calls to time out or kill the subprocess (Loop 5 R3 finding).
+- **Local-bridge transport: TRANSPORT RESET on abort (Loop 5 R6).** `opts.signal` rejects the targeted JS-side promise with `code:"ABORTED"`, rejects every other in-flight or queued call on the same transport with the same code (cause: "transport reset by peer abort"), SIGTERMs the bridge subprocess (SIGKILL fallback at ~250ms), and respawns a fresh subprocess. The earlier "held-slot until abandoned reply drains" design (Loop 5 R3) had a fatal edge case: local-bridge calls can park on `auth_required` waiting for human input, so the abandoned reply might never arrive and the held slot starved every future call forever. Transport reset guarantees recovery at the cost of (a) aborting unrelated queued calls and (b) a fresh auth handshake on the next call. Both costs are acceptable because abort is rare (boot-time policy-load timeout, not steady-state) and surfacing ABORTED on queued calls is strictly better than silently timing out behind abandoned work.
 
 `permission-backend.abortInFlightSync()` correctness does NOT depend on Python-side cancellation. The backend's state-mutation guard rejects any `initializePolicy()` resolution that lands after `abortInFlightSync()` or `dispose()`, regardless of whether the underlying read was preempted. This means the assert-remote-policy-loaded-at-boot timeout path is correct on both transports — just slower-to-release-resources on local-bridge.
 
@@ -1811,7 +1836,7 @@ Reviewers who continue to ask this PR's boot modes to provide centralized enforc
 - **Audit/fs/trajectory write probes** in `health()` — would be side-effecting; data-plane failures surface on first real call (documented contract)
 - **Server-side dedicated `health` RPC** — Nexus server change; future work
 - **Coordinated runtime shutdown API (`requestShutdown`)** — currently the runtime exposes only `shutdownBackgroundTasks()` (synchronous, fire-and-forget). A first-class coordinated-shutdown primitive that stops admission, flushes local audit sinks, closes channels/MCP servers/transports, and exits cleanly is required to honor a synchronous hard-exit guarantee for Nexus compliance failures. Tracked separately; until it lands, this PR's `nexusAuditPoisonOnError: true` mode terminates new admission via the latch and rejects post-poison sink writes via the wrapper, but does NOT abort the in-flight session.
-- **Bridge concurrency redesign for true local-bridge preemption** — `bridge.py`'s main loop awaits `handle_request(...)` synchronously before draining the next stdin message, so any in-band cancellation RPC would queue behind the very request it tried to cancel. True preemption requires (a) an out-of-band cancellation channel (e.g., dedicated stdin lane like `auth_submit`, or a control fd), (b) cooperative cancellation checks inside long-running ops in the bridge (file reads, NFS calls, OAuth waits), and (c) a JS-side handshake to confirm the cancel was observed. This is a substantial bridge-protocol change with its own test surface and is out of scope this PR. Until it lands, `opts.signal` on local-bridge is documented as best-effort with HELD-SLOT semantics: the JS-side wait is bounded but the single-flight slot stays held until the abandoned Python reply naturally drains. This means follow-up callers see the same wall-clock latency as if no abort had happened (no shortening of Python read latency) but they do NOT inherit a corrupted state where their own deadline ticks while queued behind abandoned work. The `permission-backend.abortInFlightSync()` correctness guarantee does not depend on Python-side cancellation — the backend's state-mutation guard drops late `initializePolicy()` resolutions regardless of whether the underlying read was preempted.
+- **Bridge concurrency redesign for in-band local-bridge preemption** — `bridge.py`'s main loop awaits `handle_request(...)` synchronously before draining the next stdin message, so any in-band cancellation RPC would queue behind the very request it tried to cancel. True per-call preemption (cancel ONE call without resetting the whole transport) requires (a) an out-of-band cancellation channel (e.g., dedicated stdin lane like `auth_submit`, or a control fd), (b) cooperative cancellation checks inside long-running ops in the bridge (file reads, NFS calls, OAuth waits), and (c) a JS-side handshake to confirm the cancel was observed. Substantial bridge-protocol change with its own test surface — out of scope this PR. Until it lands, `opts.signal` on local-bridge uses TRANSPORT RESET semantics (kill subprocess + respawn) so abort always recovers, at the cost of aborting concurrent queued calls and forcing a fresh auth handshake on the next call. Held-slot semantics (the Loop 5 R3 design) were rejected in Loop 5 R6 because they could wedge the transport forever when the abandoned call was parked on `auth_required` waiting for human input that might never arrive. The `permission-backend.abortInFlightSync()` correctness guarantee does not depend on per-call preemption — the backend's state-mutation guard drops late `initializePolicy()` resolutions regardless of whether the underlying read was preempted, and transport reset gives a guaranteed-recovery contract for follow-up callers.
 - **Centralized-policy enforcement (no local fallback for unmatched queries)** — current permission composition (`runtime-factory.ts:1797-1806`) chains the Nexus backend to local TUI on `ask`/no-opinion. Neither boot mode in this PR changes that composition. Enforcement-mode is a permission-composition change tracked separately and requires its own design (terminal-deny semantics, escape hatches for break-glass, operator UX for missing-rule failures). Mode names in this PR (`-transport-reachable`, `-remote-policy-loaded`) deliberately reflect what they actually gate so operators cannot mistake them for enforcement controls.
 - **Policy freshness / staleness bound for `assert-remote-policy-loaded-at-boot`** — the mode is a STARTUP gate, not a runtime freshness gate. After a successful first sync, a subsequent partition / 404 / parse failure / revoked-policy event leaves the node serving the last-known-good remote policy until the next successful sync. Adding a TTL ("reject queries when sync age > N"), a fail-closed-on-stale runtime mode, or a rolling-revocation channel is its own design (interacts with permission composition, audit semantics, and operator UX for partition recovery). Until those primitives exist, operators who require strict revocation propagation must use a different control plane and accept that this PR's modes are boot-time guarantees only. The mode name (`-loaded-at-boot`, not `-enforced-continuously`) reflects exactly this scope.
 - **Synchronous in-flight cancellation on Nexus audit failure** — `nexusAuditPoisonOnError: true` is post-failure containment of NEW admission, not in-flight rollback. Already-admitted tool/model calls run to natural completion; the triggering record may already be lost. This requires the coordinated-shutdown primitive above PLUS per-operation rollback semantics (which the Koi engine does not expose — tool side effects are not reversible in general). Operators requiring per-operation durable audit AND fail-stop on audit failure have ONE supported path today: a required local sink (NDJSON or SQLite with `required: true`). This is a global architectural choice, not a Nexus-specific gap.
