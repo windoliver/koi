@@ -248,6 +248,52 @@ describe("revoke()", () => {
     expect(calls).toBeGreaterThanOrEqual(3);
   });
 
+  test("regrant of same delegation id cancels stale pending revocation", async () => {
+    let revokeOk = false;
+    const api = makeMockApi({
+      revokeDelegation: mock(async () => {
+        if (revokeOk) return { ok: true as const, value: undefined };
+        return {
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "transient", retryable: true, context: {} },
+        };
+      }),
+    });
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    // Step 1: grant del-X, then revoke fails → del-X gets enqueued.
+    await backend.grant(SCOPE, CHILD_ID);
+    await expect(backend.revoke(GRANT_ID)).rejects.toThrow();
+
+    // Step 2: regrant returns the same delegation_id (deterministic
+    // idempotency / Nexus replay). The stale revoke entry must be cancelled
+    // so it does not later kill the freshly-issued credential.
+    await backend.grant(SCOPE, CHILD_ID);
+
+    // Step 3: trigger drainQueue (revokes now succeed). If the stale entry
+    // was NOT cancelled, drain would call revokeDelegation(GRANT_ID) and the
+    // grant we just installed would lose its grantStore entry.
+    revokeOk = true;
+    const id2 = delegationId("del-other");
+    (api.createDelegation as ReturnType<typeof mock>).mockResolvedValue({
+      ok: true as const,
+      value: makeGrantResponse({ delegation_id: id2, api_key: "k2" }),
+    });
+    await backend.grant(SCOPE, agentId("child-2"));
+    await backend.revoke(id2); // success path triggers drain
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Verify the regranted GRANT_ID is still authoritative (not silently
+    // revoked by a stale queue entry).
+    const verifyRes = await backend.verify(GRANT_ID, "tool-x");
+    expect(verifyRes.ok).toBe(false); // scope mismatch, not "revoked"
+    if (!verifyRes.ok) {
+      expect(verifyRes.reason).not.toBe("revoked");
+    }
+    errSpy.mockRestore();
+  });
+
   test("drops oldest entry when queue exceeds maxPendingRevocations", async () => {
     const errorSpy = spyOn(console, "error").mockImplementation(() => {});
     const api = makeMockApi({

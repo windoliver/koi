@@ -294,13 +294,20 @@ export function createNexusDelegationBackend(
     };
 
     grantStore.set(g.id, g);
-    // Clear any prior tombstone for this id. With deterministic
-    // (idempotencyPrefix-supplied) keys or Nexus replay semantics, a grant()
-    // can return the same delegation_id as a previously revoked one — without
-    // this, verify() would deny the freshly issued grant until the tombstone
-    // TTL expires. Also drop any stale verify cache entry for the same id.
+    // Clear any prior tombstone for this id, drop the stale verify cache
+    // entry, AND remove any matching `pendingRevocations` queue entry.
+    //
+    // The queue removal is the load-bearing fix: with deterministic
+    // idempotency or Nexus replay semantics, a `grant()` can return the same
+    // delegation_id as one that previously failed to revoke. Without dropping
+    // the queue entry, the next opportunistic `drainQueue()` would call
+    // `revokeDelegation` on the freshly-issued grant — silently killing a
+    // valid child credential. The current grant supersedes the stale revoke
+    // intent: the caller can call `revoke()` again if they want this grant
+    // gone.
     revokedTombstones.delete(g.id);
     verifyCache?.invalidate(g.id);
+    pendingRevocations = pendingRevocations.filter((entry) => entry.id !== g.id);
     return g;
   }
 

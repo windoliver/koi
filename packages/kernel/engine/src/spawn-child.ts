@@ -427,74 +427,75 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   if (parentHasDelegation && options.manifest.delegation?.enabled !== false) {
     const parentDelegation = options.parentAgent.component<DelegationComponent>(DELEGATION);
     if (parentDelegation !== undefined) {
-      // Manifest ceiling check FIRST: if the manifest excludes NEXUS_API_KEY
-      // via spawn.env.exclude, the child must observe no Nexus credential —
-      // neither in its ENV component nor returned through SpawnChildResult.
-      // Skip grant() entirely so we don't mint a server-side key that would
-      // exist only to be revoked.
       const nexusKeyExcluded = envExcludeKeys.has("NEXUS_API_KEY");
-      if (nexusKeyExcluded) {
-        if (delegationRequired) {
-          // Contradictory manifest: required + delivery disabled. Fail closed
-          // BEFORE createKoi runs — no point assembling a child runtime that
-          // is guaranteed to fail validation. Releases the spawn ledger slot
-          // we already acquired so capacity is not held against a doomed spawn.
-          const release = options.spawnLedger.release();
-          await release;
-          throw KoiRuntimeError.from(
-            "VALIDATION",
-            "delegation.required is true but spawn.env.exclude contains NEXUS_API_KEY — " +
-              "the child cannot receive a delegated Nexus credential. Remove NEXUS_API_KEY from " +
-              "spawn.env.exclude or set delegation.required to false.",
-            { retryable: false },
-          );
-        }
-        // Otherwise: silently skip Nexus grant; child runs without delegation.
-      } else {
-        const parentPermissions = options.parentAgent.manifest.permissions ?? {};
-        const childPermissions = options.manifest.permissions ?? {};
-        const childScope = computeChildDelegationScope(
-          { permissions: parentPermissions },
-          childPermissions,
-        );
-        delegationGrantProvider = {
-          name: "delegation-grant-env",
-          // GLOBAL_FORGED (50) wins ENV against the BUNDLED (100) agent-env-provider.
-          // Component assembly is first-write-wins ordered by priority ascending.
-          priority: COMPONENT_PRIORITY.GLOBAL_FORGED,
-          attach: async (agent): Promise<ReadonlyMap<string, unknown>> => {
-            let grant: DelegationGrant;
-            try {
-              grant = await parentDelegation.grant(childScope, agent.pid.id);
-            } catch (e: unknown) {
-              delegationGrantError = e;
-              return new Map();
+      const parentPermissions = options.parentAgent.manifest.permissions ?? {};
+      const childPermissions = options.manifest.permissions ?? {};
+      const childScope = computeChildDelegationScope(
+        { permissions: parentPermissions },
+        childPermissions,
+      );
+      delegationGrantProvider = {
+        name: "delegation-grant-env",
+        // GLOBAL_FORGED (50) wins ENV against the BUNDLED (100) agent-env-provider.
+        // Component assembly is first-write-wins ordered by priority ascending.
+        priority: COMPONENT_PRIORITY.GLOBAL_FORGED,
+        attach: async (agent): Promise<ReadonlyMap<string, unknown>> => {
+          let grant: DelegationGrant;
+          try {
+            grant = await parentDelegation.grant(childScope, agent.pid.id);
+          } catch (e: unknown) {
+            delegationGrantError = e;
+            return new Map();
+          }
+          childGrantId = grant.id;
+
+          // Backend-agnostic delegation: HMAC/Ed25519 proofs need no env
+          // injection and are unaffected by NEXUS_API_KEY exclusion. Only
+          // Nexus-proof grants depend on the env credential delivery path.
+          if (grant.proof.kind !== "nexus") return new Map();
+
+          // Manifest ceiling: when spawn.env.exclude contains NEXUS_API_KEY,
+          // the child must observe no Nexus credential — neither in ENV nor
+          // in the returned SpawnChildResult. We let grant() run because the
+          // backend type isn't known until we see proof.kind, but we suppress
+          // delivery here. The child grant id is kept so the dispose path
+          // revokes the (briefly-existing) server-side key on child end.
+          // If delegation.required is true and the proof is Nexus, this is a
+          // hard contradiction — surface it as a grant error so the
+          // post-createKoi catch fails closed.
+          if (nexusKeyExcluded) {
+            if (delegationRequired) {
+              delegationGrantError = new Error(
+                "delegation.required is true but spawn.env.exclude contains NEXUS_API_KEY " +
+                  "and the parent uses a Nexus delegation backend — the child cannot receive " +
+                  "the issued credential. Remove NEXUS_API_KEY from spawn.env.exclude, switch " +
+                  "to a non-Nexus delegation backend, or set delegation.required to false.",
+              );
             }
-            childGrantId = grant.id;
-            if (grant.proof.kind !== "nexus") return new Map();
+            return new Map();
+          }
 
-            childNexusApiKey = grant.proof.token;
+          childNexusApiKey = grant.proof.token;
 
-            // Inject NEXUS_API_KEY into the child's env so any agent-env-aware
-            // component observes the attenuated key, not the parent's. We layer
-            // the token on top of the SAME override stack the regular
-            // agent-env-provider uses (manifest exclusions + runtime overrides),
-            // so manifest exclusions for OTHER keys still win.
-            const parentEnv = options.parentAgent.component<AgentEnv>(ENV);
-            if (parentEnv === undefined) return new Map();
-            const parentValues = parentEnv.values;
-            if (!("NEXUS_API_KEY" in parentValues)) return new Map();
+          // Inject NEXUS_API_KEY into the child's env so any agent-env-aware
+          // component observes the attenuated key, not the parent's. We layer
+          // the token on top of the SAME override stack the regular
+          // agent-env-provider uses (manifest exclusions + runtime overrides),
+          // so manifest exclusions for OTHER keys still win.
+          const parentEnv = options.parentAgent.component<AgentEnv>(ENV);
+          if (parentEnv === undefined) return new Map();
+          const parentValues = parentEnv.values;
+          if (!("NEXUS_API_KEY" in parentValues)) return new Map();
 
-            const finalOverrides: Readonly<Record<string, string | undefined>> = {
-              ...baseEnvOverrides,
-              NEXUS_API_KEY: grant.proof.token,
-            };
-            const merged = mergeEnv(parentValues, finalOverrides);
-            const childEnv: AgentEnv = { values: merged, parentEnv };
-            return new Map([[ENV as string, childEnv]]);
-          },
-        };
-      }
+          const finalOverrides: Readonly<Record<string, string | undefined>> = {
+            ...baseEnvOverrides,
+            NEXUS_API_KEY: grant.proof.token,
+          };
+          const merged = mergeEnv(parentValues, finalOverrides);
+          const childEnv: AgentEnv = { values: merged, parentEnv };
+          return new Map([[ENV as string, childEnv]]);
+        },
+      };
     }
   }
 
