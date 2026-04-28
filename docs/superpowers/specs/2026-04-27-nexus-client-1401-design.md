@@ -83,15 +83,32 @@ export interface NexusHealth {
  */
 export type NexusTransportKind = "http" | "local-bridge";
 // `kind` is OPTIONAL on the public base interface (preserves source-compat
-// for test-only structural mocks). At the PRODUCTION runtime boundary
-// (createKoiRuntime), `assertProductionTransport(t)` THROWS if `kind` is
-// undefined — production callers MUST construct via one of the named
-// factories (createHttpTransport, createLocalBridgeTransport, fs-nexus
-// HTTP wrapper, createLocalBridgeProbeTransport) which always set it.
-// Failing closed on missing `kind` prevents a stale adapter from being
-// silently mis-classified as HTTP and routed down the in-place probe path.
-// `getTransportKind(t)` is RETIRED — use `assertProductionTransport(t).kind`
-// instead so runtime branches are guaranteed to hold a discriminated value.
+// for test-only structural mocks AND for legacy in-tree adapters not yet
+// migrated to set it). At the PRODUCTION runtime boundary (createKoiRuntime),
+// `assertProductionTransport(t)` follows a TWO-PHASE rollout matching the
+// permissions/audit flag rollout:
+//
+//   Phase 1 (this PR): missing `kind` → log a one-time deprecation warning
+//     and return `{ kind: undefined }`. The runtime then SKIPS the entire
+//     Nexus startup block (no probe, no consumer wiring) — same effect as
+//     `nexusPermissionsEnabled=false` + `nexusAuditEnabled=false`. This is
+//     safe because it cannot silently misroute a stale adapter onto the
+//     in-place HTTP probe path; the worst case is that an undiscriminated
+//     adapter loses Nexus consumer wiring until it is migrated. Operators
+//     get a loud warning naming the migration target and a clear behavior
+//     change (no probe firing).
+//
+//   Phase 2 (next release, same window as the consumer-flag throw):
+//     missing `kind` THROWS with the same actionable message.
+//
+// Production callers MUST construct via one of the named factories
+// (createHttpTransport, createLocalBridgeTransport, fs-nexus HTTP wrapper,
+// createLocalBridgeProbeTransport) which always set it. The phased rollout
+// avoids taking working v2 deployments offline on upgrade — a docs-led
+// follow-up that immediately broke structural adapters would be a hostile
+// migration. `getTransportKind(t)` is RETIRED — use
+// `assertProductionTransport(t).kind` so runtime branches narrow correctly
+// (and so the Phase 2 throw is wired in exactly one place).
 
 /** Base transport — minimal surface, satisfied by tests/mocks/fixtures. */
 export interface NexusTransport {
@@ -526,6 +543,11 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   //     explicit decision — silent disablement of a security control is
   //     not an option. Programmatic callers that miss the migration get a
   //     hard, actionable error instead of a quiet authorization downgrade.
+  // Phase 1: assertProductionTransport returns {kind: undefined} + logs a
+  // one-time deprecation warning when the transport is missing `kind`.
+  // Phase 2: throws with the same migration message. Either way, txKind===
+  // undefined here means "no Nexus startup work" — every gate below early-
+  // returns / no-ops on undefined, identical to nexusTransport===undefined.
   const txKind = config.nexusTransport !== undefined
     ? assertProductionTransport(config.nexusTransport).kind
     : undefined;
@@ -582,6 +604,24 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       "fallback (centralized-policy bypass). Use HTTP transport.",
     );
   }
+  // BOOT-MODE PREFLIGHT: validated UNCONDITIONALLY (not gated on
+  // anyEffectiveConsumer) so an operator who declares assert-* on a
+  // local-bridge transport gets a loud failure even when the consumer
+  // resolution would otherwise short-circuit the probe block.
+  // Without this hoist, `local-bridge + nexusAuditMode="local-only"` (which
+  // resolves effectiveAuditWired=false) silently accepts assert-* and boots
+  // with no probe — exactly the misconfiguration this gate exists to catch.
+  const declaredBootMode: NexusBootMode =
+    config.nexusBootMode ?? "telemetry";
+  if (txKind === "local-bridge" && declaredBootMode !== "telemetry") {
+    throw new Error(
+      `nexusBootMode=${declaredBootMode} is not supported for local-bridge transports. ` +
+      `Use HTTP transport or nexusBootMode="telemetry". ` +
+      `(Local-bridge cannot be probed without risking session wedge on auth challenges; ` +
+      `probing a disposable subprocess would not validate the live session, so the ` +
+      `fail-closed-* guarantee would be misleading.)`,
+    );
+  }
 
   // Probe + Nexus consumer wiring is GATED on resolved consumer flags.
   // A filesystem-only Nexus transport (both consumers explicitly false, OR
@@ -597,7 +637,7 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // it separately at the call site (e.g., `tui-command.ts`) before calling
   // `createKoiRuntime`. The runtime contract is HTTP-only for Nexus
   // consumer probing — single source of truth, no dead branches.
-  if (config.nexusTransport !== undefined && anyEffectiveConsumer) {
+  if (txKind !== undefined && anyEffectiveConsumer) {
     const mode: NexusBootMode = config.nexusBootMode ?? "telemetry";
     const policyBase = config.nexusPolicyPath ?? "koi/permissions";
 
@@ -610,19 +650,8 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     // validation for local-bridge is a caller-site responsibility (see
     // `createLocalBridgeProbeTransport` exported from fs-nexus).
     //
-    // Preflight: fail-closed-* + local-bridge is unsupported. We still throw
-    // here even though local-bridge would be skipped by the consumer gate,
-    // because operators may set fail-closed-* without enabling consumers and
-    // we want a loud, early error (not silent degradation to telemetry).
-    if (assertProductionTransport(config.nexusTransport).kind === "local-bridge" && mode !== "telemetry") {
-      throw new Error(
-        `nexusBootMode=${mode} is not supported for local-bridge transports. ` +
-        `Use HTTP transport or nexusBootMode="telemetry". ` +
-        `(Local-bridge cannot be probed without risking session wedge on auth challenges; ` +
-        `probing a disposable subprocess would not validate the live session, so the ` +
-        `fail-closed-* guarantee would be misleading.)`,
-      );
-    }
+    // (Local-bridge + assert-* preflight runs unconditionally above, before
+    // the anyEffectiveConsumer gate, so we don't repeat it here.)
     // assert-remote-policy-loaded-at-boot requires the permissions backend to
     // exist (it awaits backend.ready and checks isCentralizedPolicyActive()).
     // For audit-only deployments (nexusPermissionsEnabled=false), the mode
@@ -729,8 +758,11 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   //     centralized-policy bypass — see hard-reject below). Audit gated by
   //     nexusAuditMode (Round 5+ contract).
   // Telemetry-mode HTTP probe failure is advisory — wiring still proceeds.
+  // All Nexus consumer-wiring blocks below additionally require txKind!==undefined.
+  // Phase 1 missing-kind transports skip everything Nexus-related (matches the
+  // "treat as fs-only" rollout rule documented on assertProductionTransport).
   let nexusPermBackend;
-  if (config.nexusTransport !== undefined && permsEnabled === true) {
+  if (txKind !== undefined && permsEnabled === true) {
     // (REMOVED in Round 10: deferInitialSync + triggerImmediateSync mitigations.
     //  Their sole purpose was to soften the local-bridge auth-wedge during first
     //  policy sync; with local-bridge + permissions now categorically rejected,
@@ -780,7 +812,7 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // The previous "require" mode is REMOVED. Operators wanting Nexus audit
   // MUST use HTTP transport (no shared-session surface).
   // (audit deprecation warning emitted in shared block above with permissions)
-  if (config.nexusTransport !== undefined && auditEnabled === true) {
+  if (txKind !== undefined && auditEnabled === true) {
     const isLocalBridge = txKind === "local-bridge";
     // SECURITY GATE: local-bridge + nexusAuditPoisonOnError=true is unshippable
     // regardless of nexusAuditMode. Even when the Nexus sink is skipped, the
@@ -946,8 +978,10 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7d. `runtime-factory threads nexusPolicyPath into BOTH health() readPaths AND createNexusPermissionBackend` (mismatch is impossible)
 7e. `default nexusPolicyPath is "koi/permissions" when config field omitted`
 7f. (REMOVED Loop 3 Round 3 — runtime no longer probes local-bridge; spawn-config validation is caller-site only via `createLocalBridgeProbeTransport`)
-7g. `local-bridge + assert-transport-reachable-at-boot mode: throws config validation error (unsupported)`
-7h. `local-bridge + assert-remote-policy-loaded-at-boot mode: throws config validation error (unsupported)`
+7g. `local-bridge + assert-transport-reachable-at-boot mode: throws config validation error (unsupported) — fires UNCONDITIONALLY before consumer-resolution gate, so even no-op consumer combinations still get the loud rejection`
+7h. `local-bridge + assert-remote-policy-loaded-at-boot mode: throws config validation error (unsupported) — same unconditional path as 7g`
+7h_unc1. `local-bridge + nexusAuditMode="local-only" + assert-transport-reachable-at-boot: STILL throws (anyEffectiveConsumer=false would otherwise skip the block — regression guard against the Round 5 silent-skip bug)`
+7h_unc2. `local-bridge + nexusAuditEnabled=false + nexusPermissionsEnabled=false + assert-remote-policy-loaded-at-boot: STILL throws (no-consumer path must not silently accept assert-* on local-bridge)`
 7g2. (REMOVED Loop 3 — nexusProbeFactory removed from runtime config; no runtime test applies)
 7g2b. (REMOVED — same)
 7g3. (REMOVED — runtime no longer consumes nexusProbeFactory)
@@ -1008,7 +1042,10 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16r. (REMOVED — same)
 7g16s. (REMOVED — same)
 7g16t. (REMOVED — same)
-7g16u. `assertProductionTransport throws when transport.kind is undefined` (regression guard against silent HTTP misclassification of stale adapters)
+7g16u. `assertProductionTransport (Phase 1): missing transport.kind logs ONE-TIME deprecation warning and returns {kind: undefined}; runtime SKIPS Nexus block entirely (no probe, no consumer wiring)` (compat path — undiscriminated transports keep booting)
+7g16u2. `assertProductionTransport (Phase 1): warning fires exactly once across multiple createKoiRuntime calls in the same process` (no log spam)
+7g16u3. `assertProductionTransport (Phase 2): missing transport.kind THROWS with the SAME migration message Phase 1 logged` (deferred enforcement)
+7g16u4. `Phase 1: undiscriminated HTTP-shaped transport with explicit nexusPermissionsEnabled=true: still SKIPS wiring (no silent in-place HTTP probe); deprecation warning is the only signal until operator migrates`
 7g16v. `assertProductionTransport returns transport unchanged when kind is set` (positive narrowing)
 7g16w. `runtime-factory uses assertProductionTransport at every kind branch (no raw access to .kind)` (lint-style assertion via grep in test suite)
 7g16x. `KOI_NEXUS_AUDIT_MODE=require: CLI parser rejects with actionable error naming local-only/disabled` (legacy value handling — old automation fails loud, not silent)
@@ -1100,12 +1137,13 @@ Existing v2 callers that pass `nexusTransport` already get Nexus permissions and
 | `nexusTransport` + local-bridge + explicit `nexusAuditEnabled=true` + no `nexusAuditMode` | THROWS (security gate) | Set `nexusAuditMode: "local-only"` (with NDJSON/SQLite) or `"disabled"` |
 | `nexusTransport` + local-bridge + explicit `nexusAuditEnabled=true` without `nexusAuditMode` | THROWS (security gate) — `nexusAuditMode` required (note: "inferred" no longer reachable, since local-bridge no-flags now throws upstream) | Set `local-only` (with NDJSON/SQLite sink) or `disabled` |
 | `nexusAuditPoisonOnError=true` + local-bridge | THROWS (security gate) — known wedge fault | Use HTTP for fail-stop audit |
-| `nexusTransport.kind` undefined on a non-test transport | THROWS (security gate) — fail-closed assertion | Construct via named factory |
+| `nexusTransport.kind` undefined on a non-test transport | Phase 1: WARNS once + skips Nexus probe and consumer wiring (no in-place HTTP probe — never silently misroute). Phase 2: THROWS. | Construct via named factory (`createHttpTransport`, fs-nexus HTTP wrapper, `createLocalBridgeTransport`, `createLocalBridgeProbeTransport`) before Phase 2. |
 
 **Phase 2 — next release (separate issue, NOT this PR):**
 
 - All transports: unset `nexusPermissionsEnabled` / `nexusAuditEnabled` → throws (currently warns + infers).
 - Local-bridge + explicit `nexusPermissionsEnabled=true`: already throws in Phase 1; no change.
+- `nexusTransport.kind` undefined: throws (Phase 1 warns + skips Nexus block).
 - All other security gates unchanged across phases.
 
 The two-phase split keeps healthy v2 deployments running while giving operators and CI templates a release cycle to update. Security-relevant gates throw immediately; config-skew only warns.
