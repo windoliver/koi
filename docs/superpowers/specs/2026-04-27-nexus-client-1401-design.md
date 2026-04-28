@@ -1148,14 +1148,20 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       transport: config.nexusTransport,
       policyPath: config.nexusPolicyPath ?? "koi/permissions",  // existing backend field name
       syncIntervalMs: config.nexusSyncIntervalMs,
-      // First-sync deadline override (see nexusBootSyncDeadlineMs). The
-      // backend uses this opts.deadlineMs only for the initial sync; later
-      // polls keep the transport default. The field is OPTIONAL on the
-      // backend config — when absent, behavior matches pre-PR (transport
-      // default). Specifying it is the supported path for bounded
-      // assert-remote-policy-loaded-at-boot semantics.
+      // First-sync deadline override (see nexusBootSyncDeadlineMs).
+      // GATED on declaredBootMode === "assert-remote-policy-loaded-at-boot".
+      // The earlier unconditional pass was wrong (Loop 5 R4 finding): it
+      // tightened first-sync timing in telemetry / assert-transport-reachable-
+      // at-boot too, so a slow-but-healthy Nexus first sync would now time
+      // out at 10s and trigger local-fallback in modes that were supposed to
+      // preserve current pre-PR behavior. Restrict the override to the one
+      // mode that actually consumes the deadline (the backend.ready await
+      // path). In other modes, leave the field undefined so the backend
+      // uses its transport default exactly as pre-PR.
       bootSyncDeadlineMs:
-        config.nexusBootSyncDeadlineMs ?? NEXUS_BOOT_SYNC_DEADLINE_MS_DEFAULT,
+        declaredBootMode === "assert-remote-policy-loaded-at-boot"
+          ? (config.nexusBootSyncDeadlineMs ?? NEXUS_BOOT_SYNC_DEADLINE_MS_DEFAULT)
+          : undefined,
       // … existing config …
     });
 
@@ -1277,15 +1283,37 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // (audit deprecation warning emitted in shared block above with permissions)
   if (txKind !== undefined && auditEnabled === true) {
     const isLocalBridge = txKind === "local-bridge";
-    // SECURITY GATE: local-bridge + nexusAuditPoisonOnError=true is unshippable
-    // regardless of nexusAuditMode. Even when the Nexus sink is skipped, the
-    // operator declared fail-stop semantics that local-bridge cannot honor
-    // safely. Throw before any further audit gating runs.
-    if (isLocalBridge && config.nexusAuditPoisonOnError === true) {
+    // SECURITY GATE: local-bridge + nexusAuditPoisonOnError=true is
+    // incompatible IF the Nexus audit sink will actually be wired. Earlier
+    // drafts threw unconditionally on this combination, but that bricked
+    // rollback paths where the operator had explicitly disabled Nexus audit
+    // (nexusAuditMode="disabled" or "local-only") yet a stale poison flag
+    // remained in the env (Loop 5 R4 finding). With those modes the Nexus
+    // sink is skipped, so there is nothing to poison and nothing to fail-
+    // stop on — the inert flag should not become an availability outage.
+    // Gate the throw on nexusAuditMode being a value that would actually
+    // wire the Nexus sink. local-bridge's only such value is undefined-
+    // already-rejected below (line 1298 throws on undefined-mode anyway),
+    // so in practice the throw is unreachable on local-bridge — every
+    // legitimate local-bridge audit config explicitly sets disabled or
+    // local-only and the poison flag is inert. Emit a one-time WARN so the
+    // dead flag is visible without breaking boot.
+    const localBridgeNexusSinkWired =
+      isLocalBridge && config.nexusAuditMode !== "disabled" && config.nexusAuditMode !== "local-only";
+    if (localBridgeNexusSinkWired && config.nexusAuditPoisonOnError === true) {
       throw new Error(
         "Invalid Nexus config: nexusAuditPoisonOnError=true is incompatible " +
-        "with local-bridge transport. Use HTTP transport for fail-stop audit.",
+        "with a wired Nexus audit sink on local-bridge transport. Use HTTP " +
+        "transport for fail-stop audit, or set nexusAuditMode=\"disabled\" / " +
+        "\"local-only\" to skip the Nexus sink (the poison flag becomes inert).",
       );
+    }
+    if (isLocalBridge && config.nexusAuditPoisonOnError === true && !localBridgeNexusSinkWired) {
+      logger.warn({ nexusAuditMode: config.nexusAuditMode },
+        "nexusAuditPoisonOnError=true is set but ignored: nexusAuditMode " +
+        `("${String(config.nexusAuditMode)}") skips the Nexus sink on ` +
+        "local-bridge so there is nothing to poison. Clear the flag to " +
+        "remove this warning.");
     }
     // HARD REJECT: local-bridge audit always skips the Nexus sink — operator
     // must declare which fallback policy applies (local-only or disabled).
@@ -1551,6 +1579,9 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j24. `assert-remote-policy-loaded-at-boot: custom bootSyncDeadlineMs=2000 enforces tighter bound; 3s simulated sync throws within ~2s (not 45s transport default)`
 7g16j25. `Backend constructed with bootSyncDeadlineMs threads {deadlineMs} into FIRST-sync transport.call but NOT into subsequent poll calls` (regression guard — bound applies only to first sync)
 7g16j26. `telemetry / assert-transport-reachable-at-boot modes: backend.ready is NEVER awaited regardless of bootSyncDeadlineMs (no timeout path can fire)`
+7g16j26b. `telemetry mode: createNexusPermissionBackend is constructed with bootSyncDeadlineMs=undefined regardless of config.nexusBootSyncDeadlineMs value (verified via constructor-call mock recording the field). First sync inherits the transport default (e.g., 45s), preserving pre-PR slow-but-healthy Nexus tolerance. Closes Loop 5 R4 finding — telemetry must NOT silently tighten first-sync timing` (regression guard)
+7g16j26c. `assert-transport-reachable-at-boot mode: same as 7g16j26b — bootSyncDeadlineMs=undefined passed to backend, no first-sync deadline tightening. The assert-transport-reachable-at-boot gate validates transport reachability via the probe and does NOT depend on first-sync timing; tightening would change semantics without spec authority`
+7g16j26d. `assert-remote-policy-loaded-at-boot mode: bootSyncDeadlineMs is threaded as configured (default 10s OR config.nexusBootSyncDeadlineMs override). This is the ONLY mode that consumes the deadline and the ONLY mode that awaits backend.ready`
 7g16j27. `assert-remote-policy-loaded-at-boot first-sync timeout: nexusPermBackend.dispose() is called before the throw propagates (no live poll timer leak after createKoiRuntime rejects — Loop 4 R5)`
 7g16j28. `assert-remote-policy-loaded-at-boot isCentralizedPolicyActive()===false: same disposal path before the throw`
 7g16j29. `dispose() throwing during teardown is logged as warning + does NOT mask the original assert-* error (operator sees the actionable cause, not the disposal noise)`
@@ -1568,7 +1599,10 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16l. (REMOVED — same)
 7g16m. (REMOVED — same)
 7g16n. (REMOVED — same)
-7g16o. `local-bridge + nexusAuditPoisonOnError=true: throws config error at boot REGARDLESS of nexusAuditMode` (security gate fires before mode-specific gating — message names HTTP migration path)
+7g16o. `local-bridge + nexusAuditPoisonOnError=true + nexusAuditMode UNSET (or any wired-sink mode in future): throws config error naming the three resolution paths (HTTP migration / disabled / local-only). Message reflects that the throw fires only when the Nexus sink would actually be wired` (Loop 5 R4 — gate narrowed)
+7g16o2. `local-bridge + nexusAuditPoisonOnError=true + nexusAuditMode="disabled": BOOTS without throw + logs ONE WARN naming the dead flag. Rollback contract: stale poison flag does not brick a deployment that explicitly disabled Nexus audit` (Loop 5 R4 finding — closes the rollback availability hazard)
+7g16o3. `local-bridge + nexusAuditPoisonOnError=true + nexusAuditMode="local-only": BOOTS without throw + logs ONE WARN. Same rollback contract as 7g16o2 — local-only also skips the Nexus sink so there is nothing to poison`
+7g16o4. `HTTP + nexusAuditPoisonOnError=true: wired normally regardless of mode (HTTP can honor fail-stop audit, no warning needed)`
 7g16p. (REMOVED — single-flight contract no longer needed; triggerImmediateSync gone)
 7g16q. (REMOVED — same)
 7g16r. (REMOVED — same)
