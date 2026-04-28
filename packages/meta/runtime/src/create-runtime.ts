@@ -398,17 +398,24 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // dispose() awaits these so transport is not closed under a stream still flushing.
     const activeStreamFinalizations = new Set<Promise<void>>();
 
-    // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to the
-    // correct per-stream EventTraceHandle.emitExternalStep by sessionId.
+    // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to
+    // every per-stream EventTraceHandle registered for that sessionId. With
+    // `RuntimeConfig.sessionId`, multiple concurrent streams share one
+    // sessionId — keying by a single emitter would let the second stream
+    // overwrite the first, so approval steps from the original turn would be
+    // dropped or misrouted. Registering N emitters per sessionId and fanning
+    // out the dispatch keeps every concurrent stream's trajectory complete.
     const approvalDispatch = new Map<
       string,
-      (sessionId: string, step: RichTrajectoryStep) => void
+      Set<(sessionId: string, step: RichTrajectoryStep) => void>
     >();
     const unsubApprovalSink =
       config.approvalStepHandle !== undefined
         ? config.approvalStepHandle.setApprovalStepSink(
             (sid: string, step: RichTrajectoryStep): void => {
-              approvalDispatch.get(sid)?.(sid, step);
+              const emitters = approvalDispatch.get(sid);
+              if (emitters === undefined) return;
+              for (const emit of emitters) emit(sid, step);
             },
           )
         : undefined;
@@ -1737,7 +1744,7 @@ function composeMiddlewareIntoAdapter(
   middleware: readonly KoiMiddleware[],
   instrumentation?: DebugInstrumentation,
   store?: TrajectoryDocumentStore,
-  approvalDispatch?: Map<string, (sessionId: string, step: RichTrajectoryStep) => void>,
+  approvalDispatch?: Map<string, Set<(sessionId: string, step: RichTrajectoryStep) => void>>,
   requestApproval?: ApprovalHandler,
   userId?: string,
   channelId?: string,
@@ -1751,6 +1758,12 @@ function composeMiddlewareIntoAdapter(
   otelConfig?: OtelMiddlewareConfig,
   runtimeSessionId?: string,
 ): EngineAdapter {
+  // Stable-session lifecycle: when a fixed `runtimeSessionId` is set,
+  // every stream() shares one logical session, so middleware lifecycle
+  // hooks must follow a 1-start / 1-end contract instead of N-per-stream.
+  // We track whether onSessionStart has fired to ensure the start-end
+  // pair stays balanced; the deferred end runs once at runtime dispose.
+  let stableSessionStartFired = false;
   if (adapter.terminals === undefined) {
     // Fail closed: if intercept-phase middleware is configured, refusing to silently
     // bypass it is a security requirement. Adapters without terminals cannot have
@@ -1826,7 +1839,12 @@ function composeMiddlewareIntoAdapter(
       // to the correct per-stream emitExternalStep.
       const sid = ctx.session.sessionId as string;
       if (eventTraceHandle !== undefined && approvalDispatch !== undefined) {
-        approvalDispatch.set(sid, eventTraceHandle.emitExternalStep);
+        let emitters = approvalDispatch.get(sid);
+        if (emitters === undefined) {
+          emitters = new Set();
+          approvalDispatch.set(sid, emitters);
+        }
+        emitters.add(eventTraceHandle.emitExternalStep);
       }
 
       const perStreamMiddleware = [
@@ -2085,7 +2103,16 @@ function composeMiddlewareIntoAdapter(
       // Await session start so middleware state is initialized before the first call.
       // Wrapped in an async generator so the synchronous stream() method can return
       // immediately while initialization happens on the first next() call.
-      const sessionStartPromise = runSessionHooks(sorted, "onSessionStart", ctx.session);
+      // Under a stable `runtimeSessionId`, fire onSessionStart EXACTLY ONCE
+      // for the runtime's lifetime (paired with the deferred onSessionEnd in
+      // dispose()). Otherwise generic middleware that allocates session-
+      // scoped resources or writes session-open audit records would
+      // duplicate work for every stream and never see a matching end.
+      const shouldFireSessionStart = runtimeSessionId === undefined || !stableSessionStartFired;
+      if (runtimeSessionId !== undefined) stableSessionStartFired = true;
+      const sessionStartPromise = shouldFireSessionStart
+        ? runSessionHooks(sorted, "onSessionStart", ctx.session)
+        : Promise.resolve();
 
       const innerStream = adapter.stream(injectCallHandlers(input, callHandlers));
       const initializedStream = (async function* (): AsyncIterable<EngineEvent> {
@@ -2140,8 +2167,18 @@ function composeMiddlewareIntoAdapter(
           }
         },
         async () => {
-          // Deregister per-stream approval dispatch entry
-          approvalDispatch?.delete(sid);
+          // Deregister per-stream approval dispatch entry. Multiple
+          // concurrent streams may share the same sessionId (under
+          // RuntimeConfig.sessionId), so remove only THIS stream's
+          // emitter and drop the sessionId entry only when no streams
+          // remain registered.
+          if (approvalDispatch !== undefined && eventTraceHandle !== undefined) {
+            const emitters = approvalDispatch.get(sid);
+            if (emitters !== undefined) {
+              emitters.delete(eventTraceHandle.emitExternalStep);
+              if (emitters.size === 0) approvalDispatch.delete(sid);
+            }
+          }
           // Run lifecycle hooks on ALL middleware for session end.
           // NB: onAfterTurn here is the stream-level catch-all — it fires
           // for direct `runtime.adapter.stream()` consumers that do not

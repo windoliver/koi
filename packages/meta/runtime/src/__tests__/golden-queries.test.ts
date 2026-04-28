@@ -1708,6 +1708,50 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     expect(endCalls).toEqual(["stable-session-r24"]);
   });
 
+  // Regression (#1419 round 25): under stable sessionId, onSessionStart
+  // must fire EXACTLY ONCE, paired with the deferred onSessionEnd at
+  // dispose. Firing onSessionStart per stream while end fires once at
+  // dispose creates an N-start / 1-end imbalance that breaks any
+  // middleware that allocates session-scoped resources or writes
+  // session-open audit records.
+  test("RuntimeConfig.sessionId fires onSessionStart exactly once across streams", async () => {
+    const startCalls: string[] = [];
+    const endCalls: string[] = [];
+    const probe = {
+      name: "session-lifecycle-probe",
+      phase: "observe" as const,
+      priority: 999,
+      describeCapabilities: () => ({ label: "probe", description: "probe" }),
+      onSessionStart: (session: { sessionId: string }) => {
+        startCalls.push(session.sessionId);
+      },
+      onSessionEnd: (session: { sessionId: string }) => {
+        endCalls.push(session.sessionId);
+      },
+    } as unknown as import("@koi/core").KoiMiddleware;
+    const runtime = createRuntime({
+      adapter: createTerminalAdapter(),
+      sessionId: "stable-lifecycle",
+      middleware: [probe],
+    });
+    for await (const _ of runtime.adapter.stream({ kind: "text", text: "first" })) {
+      // drain
+    }
+    for await (const _ of runtime.adapter.stream({ kind: "text", text: "second" })) {
+      // drain
+    }
+    for await (const _ of runtime.adapter.stream({ kind: "text", text: "third" })) {
+      // drain
+    }
+    // Three streams, but onSessionStart must have fired exactly once.
+    expect(startCalls).toEqual(["stable-lifecycle"]);
+    expect(endCalls).toEqual([]);
+    await runtime.dispose();
+    // After dispose: 1-start / 1-end contract is satisfied.
+    expect(startCalls).toEqual(["stable-lifecycle"]);
+    expect(endCalls).toEqual(["stable-lifecycle"]);
+  });
+
   test("RuntimeConfig without sessionId still finalizes per stream", async () => {
     const endCalls: string[] = [];
     const probe = {
