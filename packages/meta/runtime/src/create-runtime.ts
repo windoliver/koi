@@ -420,14 +420,14 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       config.approvalStepHandle !== undefined &&
       config.onUnroutedApprovalStep === undefined
     ) {
-      throw new Error(
+      console.warn(
         "[runtime] RuntimeConfig.sessionId is set with approvalStepHandle but no " +
           "onUnroutedApprovalStep fallback sink. Under stable sessionId, an approval step " +
           "missing step.metadata.runId cannot be routed safely (broadcasting would leak one " +
-          "stream's approval decision into other concurrent streams' trajectories). Configure " +
-          "RuntimeConfig.onUnroutedApprovalStep to capture session-level fallback records, " +
-          "or pass a no-op `() => {}` after verifying your @koi/middleware-permissions " +
-          "version stamps runId on every approval step.",
+          "stream's approval decision into other concurrent streams' trajectories). The relay " +
+          "will fail closed and drop such steps with a per-event warning. Configure " +
+          "RuntimeConfig.onUnroutedApprovalStep to capture session-level fallback records, or " +
+          "verify your @koi/middleware-permissions version stamps runId on every approval step.",
       );
     }
 
@@ -456,12 +456,56 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         ? config.approvalStepHandle.setApprovalStepSink(
             (sid: string, step: RichTrajectoryStep): void => {
               const byRunId = approvalDispatch.get(sid);
-              if (byRunId === undefined) return;
               const md = step.metadata as { readonly runId?: unknown } | undefined;
               const runIdValue = typeof md?.runId === "string" ? md.runId : undefined;
+              // No active emitters for this session: stream(s) have
+              // already finalized and deregistered. The step is a
+              // late or orphaned approval — route to the configured
+              // fallback sink (audit hole otherwise). Never broadcast.
+              if (byRunId === undefined) {
+                if (config.onUnroutedApprovalStep !== undefined) {
+                  try {
+                    config.onUnroutedApprovalStep(sid, step);
+                  } catch (e: unknown) {
+                    console.warn(
+                      `[runtime] onUnroutedApprovalStep threw for sessionId "${sid}":`,
+                      e,
+                    );
+                  }
+                  return;
+                }
+                console.warn(
+                  `[runtime] approval-step relay: dropping step — no active emitter ` +
+                    `registered for sessionId "${sid}" (late or orphaned approval). ` +
+                    `Configure RuntimeConfig.onUnroutedApprovalStep to capture these.`,
+                );
+                return;
+              }
               if (runIdValue !== undefined) {
                 const emit = byRunId.get(runIdValue);
-                if (emit !== undefined) emit(sid, step);
+                if (emit !== undefined) {
+                  emit(sid, step);
+                  return;
+                }
+                // runId is stamped but its emitter has already
+                // deregistered — same audit-hole risk. Route to
+                // fallback rather than dropping.
+                if (config.onUnroutedApprovalStep !== undefined) {
+                  try {
+                    config.onUnroutedApprovalStep(sid, step);
+                  } catch (e: unknown) {
+                    console.warn(
+                      `[runtime] onUnroutedApprovalStep threw for sessionId "${sid}":`,
+                      e,
+                    );
+                  }
+                  return;
+                }
+                console.warn(
+                  `[runtime] approval-step relay: dropping step — runId "${runIdValue}" ` +
+                    `has no active emitter under sessionId "${sid}". Configure ` +
+                    `RuntimeConfig.onUnroutedApprovalStep to capture these.`,
+                );
                 return;
               }
               // No runId on the step. Routing rule:

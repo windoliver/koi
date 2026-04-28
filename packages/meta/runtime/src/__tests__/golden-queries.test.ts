@@ -7,7 +7,7 @@
  * Growth rule: each new package PR adds assertions here.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { readdir } from "node:fs/promises";
 import type { EngineAdapter, EngineEvent, EngineInput, ModelChunk } from "@koi/core";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
@@ -2110,13 +2110,13 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     expect(endCalls.length).toBe(2);
   });
 
-  // Regression (#1419 round 42): under stable RuntimeConfig.sessionId,
+  // Regression (#1419 round 43): under stable RuntimeConfig.sessionId,
   // approvalStepHandle without an explicit `onUnroutedApprovalStep`
-  // sink is a silent audit hole (older permissions producers that
-  // do not stamp runId would have their approval steps dropped).
-  // Fail at construction so operators wire a fallback or
-  // acknowledge with a noop.
-  test("createRuntime refuses stable sessionId + approvalStepHandle without onUnroutedApprovalStep", () => {
+  // sink is a silent audit hole risk. Construction succeeds (warns
+  // instead of throwing — no startup outage for callers whose
+  // permissions producer stamps runId), but unrouted steps still
+  // fail closed at runtime with a per-event warning.
+  test("createRuntime warns but does not throw for stable sessionId + approvalStepHandle", () => {
     const handle = {
       setApprovalStepSink:
         (
@@ -2124,22 +2124,81 @@ describe("Golden: @koi/middleware-call-dedup", () => {
         ): (() => void) =>
         () => {},
     };
-    expect(() =>
-      createRuntime({
-        adapter: createTerminalAdapter(),
-        sessionId: "stable-no-fallback",
-        approvalStepHandle: handle,
-      }),
-    ).toThrow(/onUnroutedApprovalStep/);
-    // With explicit ack noop, construction succeeds.
-    expect(() =>
-      createRuntime({
-        adapter: createTerminalAdapter(),
-        sessionId: "stable-with-noop",
-        approvalStepHandle: handle,
-        onUnroutedApprovalStep: () => {},
-      }),
-    ).not.toThrow();
+    const origWarn = console.warn;
+    let warned = false;
+    console.warn = (...args: unknown[]): void => {
+      if (typeof args[0] === "string" && args[0].includes("onUnroutedApprovalStep")) warned = true;
+    };
+    try {
+      expect(() =>
+        createRuntime({
+          adapter: createTerminalAdapter(),
+          sessionId: "stable-no-fallback",
+          approvalStepHandle: handle,
+        }),
+      ).not.toThrow();
+      expect(warned).toBe(true);
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
+  // Regression (#1419 round 43): late-arriving approval steps must
+  // route to onUnroutedApprovalStep even after every stream has
+  // deregistered. Early return when `byRunId === undefined` would
+  // silently drop these and create an audit hole.
+  test("late approval step (no active emitter) routes to onUnroutedApprovalStep", async () => {
+    const handle = {
+      setApprovalStepSink:
+        (
+          _sink: (sid: string, step: import("@koi/core").RichTrajectoryStep) => void,
+        ): (() => void) =>
+        () => {},
+    };
+    type StoredStep = import("@koi/core").RichTrajectoryStep;
+    let capturedSink: ((sid: string, step: StoredStep) => void) | undefined;
+    const captureHandle = {
+      setApprovalStepSink: (sink: (sid: string, step: StoredStep) => void): (() => void) => {
+        capturedSink = sink;
+        return () => {};
+      },
+    };
+    void handle;
+    const fallback = mock((_sid: string, _step: StoredStep): void => {});
+    const runtime = createRuntime({
+      adapter: createTerminalAdapter(),
+      sessionId: "stable-late-step",
+      approvalStepHandle: captureHandle,
+      onUnroutedApprovalStep: fallback,
+    });
+    expect(capturedSink).toBeDefined();
+    // No stream has ever registered an emitter for this sessionId.
+    capturedSink?.("stable-late-step", {
+      kind: "tool",
+      seq: 0,
+      ts: 0,
+      durationMs: 0,
+      callId: "c1",
+      toolName: "approval_request",
+      input: {},
+      output: { ok: true, value: "approved" },
+      metadata: { runId: "r-gone" },
+    } as unknown as StoredStep);
+    expect(fallback).toHaveBeenCalledTimes(1);
+    // Step without runId — same path, must also reach fallback.
+    capturedSink?.("stable-late-step", {
+      kind: "tool",
+      seq: 1,
+      ts: 0,
+      durationMs: 0,
+      callId: "c2",
+      toolName: "approval_request",
+      input: {},
+      output: { ok: true, value: "approved" },
+      metadata: {},
+    } as unknown as StoredStep);
+    expect(fallback).toHaveBeenCalledTimes(2);
+    await runtime.dispose();
   });
 
   // Regression (#1419 round 29): under stable RuntimeConfig.sessionId,
