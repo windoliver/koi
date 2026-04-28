@@ -14122,6 +14122,440 @@ describe("Golden: @koi/temporal", () => {
   });
 });
 
+describe("Golden: @koi/forge-demand", () => {
+  test("createForgeDemandDetector returns a handle with passive middleware (priority 445, outer of feedback-loop)", async () => {
+    const { createForgeDemandDetector, DEFAULT_FORGE_DEMAND_CONFIG } = await import(
+      "@koi/forge-demand"
+    );
+    const handle = createForgeDemandDetector(DEFAULT_FORGE_DEMAND_CONFIG);
+    expect(handle.middleware.name).toBe("forge-demand-detector");
+    // 445 is outer relative to feedback-loop (450) so the detector observes
+    // committed state — see demand-detector.ts priority comment.
+    expect(handle.middleware.priority).toBe(445);
+    expect(typeof handle.middleware.wrapToolCall).toBe("function");
+    expect(typeof handle.middleware.wrapModelCall).toBe("function");
+    expect(typeof handle.forSession).toBe("function");
+    // Inspection requires a SessionContext — the handle never aggregates
+    // across sessions, and forSession authorizes by object identity so a
+    // fabricated probe literal is rejected (F61). Drive a real hook to
+    // register the SessionContext, then assert the scoped view.
+    const probeSession = {
+      agentId: "forge-demand-probe",
+      sessionId: sessionId("probe"),
+      runId: runId("probe-r"),
+      metadata: {} as JsonObject,
+    };
+    const probeCtx = {
+      session: probeSession,
+      turnIndex: 0,
+      turnId: `${runId("probe-r")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+    // F110: register via engine-controlled onSessionStart before traffic.
+    await handle.middleware.onSessionStart?.(probeSession);
+    await handle.middleware.wrapModelCall?.(
+      probeCtx,
+      { messages: [], model: "test" },
+      async () => ({ content: "", model: "test" }),
+    );
+    const scoped = handle.forSession(probeSession);
+    expect(typeof scoped.getSignals).toBe("function");
+    expect(typeof scoped.dismiss).toBe("function");
+    expect(scoped.getActiveSignalCount()).toBe(0);
+  });
+
+  test("repeated tool failures emit a deterministic, deduplicated forge demand signal", async () => {
+    const { createForgeDemandDetector } = await import("@koi/forge-demand");
+    const signals: unknown[] = [];
+    const handle = createForgeDemandDetector({
+      budget: {
+        maxForgesPerSession: 5,
+        computeTimeBudgetMs: 120_000,
+        demandThreshold: 0.7,
+        cooldownMs: 30_000,
+      },
+      heuristics: {
+        repeatedFailureCount: 3,
+        capabilityGapOccurrences: 2,
+        latencyDegradationAvgMs: 5_000,
+      },
+      onDemand: (s) => signals.push(s),
+      clock: () => 1_000_000,
+    });
+
+    const ctxSession = {
+      agentId: "forge-demand-golden",
+      sessionId: sessionId("fd-golden"),
+      runId: runId("r1"),
+      metadata: {} as JsonObject,
+    };
+    const ctx: TurnContext = {
+      session: ctxSession,
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+
+    // F110: forge-demand only trusts sessions admitted via the engine-
+    // controlled onSessionStart hook. Wrap* hooks pass through for
+    // unregistered contexts.
+    await handle.middleware.onSessionStart?.(ctxSession);
+
+    const failingNext = async (): Promise<never> => {
+      throw new Error("boom");
+    };
+    const wrap = handle.middleware.wrapToolCall;
+    if (!wrap) throw new Error("wrapToolCall missing");
+
+    for (let i = 0; i < 4; i++) {
+      try {
+        await wrap(ctx, { toolId: "search", input: {} }, failingNext);
+      } catch {
+        /* expected */
+      }
+    }
+
+    // 4 failures → threshold (3) crossed → 1 signal emitted; cooldown dedupes the 4th.
+    expect(signals.length).toBe(1);
+    const pending = handle.forSession(ctx.session).getSignals();
+    expect(pending.length).toBe(1);
+    const first = pending[0];
+    expect(first?.trigger.kind).toBe("repeated_failure");
+    expect(first?.confidence).toBeGreaterThanOrEqual(0.7);
+    // Deterministic confidence: same threshold + same count → same score on replay.
+    expect(first?.confidence).toBeLessThanOrEqual(1);
+  });
+
+  test("createRuntime rejects an invalid forgeDemand config at startup", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    // Invalid `budget` (null) — must throw at startup, not crash later in
+    // request handling. Cast through `unknown` to model the real risk:
+    // a config-file/IPC caller bypassing TypeScript checks.
+    expect(() =>
+      createRuntime({
+        forgeDemand: { budget: null } as unknown as NonNullable<
+          Parameters<typeof createRuntime>[0]
+        >["forgeDemand"],
+      }),
+    ).toThrow(/Invalid forgeDemand config/);
+  });
+
+  test("F96: createRuntime rejects forgeDemand without onSessionAttached or onDemand", async () => {
+    // Reviewer F96: the runtime intentionally does not expose a
+    // sessionId-keyed lookup, so without onSessionAttached or
+    // onDemand, signals accumulate internally with no operational
+    // recovery path. createRuntime must reject at startup rather
+    // than ship a write-only feature.
+    const { createRuntime } = await import("../create-runtime.js");
+    const { DEFAULT_FORGE_BUDGET } = await import("@koi/core");
+    // RuntimeForgeDemandConfig now requires onSessionAttached at the
+    // type level (F102), so these cases are cast through `unknown` to
+    // model an untyped/IPC caller bypassing TS checks. Runtime
+    // validation must still reject them.
+    expect(() =>
+      createRuntime({
+        forgeDemand: { budget: DEFAULT_FORGE_BUDGET } as unknown as NonNullable<
+          Parameters<typeof createRuntime>[0]
+        >["forgeDemand"],
+      }),
+    ).toThrow(/forgeDemand requires `config\.forgeDemand\.onSessionAttached`/);
+    // F101: onDemand alone is NOT sufficient.
+    expect(() =>
+      createRuntime({
+        forgeDemand: { budget: DEFAULT_FORGE_BUDGET, onDemand: () => {} } as unknown as NonNullable<
+          Parameters<typeof createRuntime>[0]
+        >["forgeDemand"],
+      }),
+    ).toThrow(/forgeDemand requires `config\.forgeDemand\.onSessionAttached`/);
+    // With onSessionAttached present, creation succeeds — the scoped
+    // handle delivered to it provides the only valid dismiss path.
+    expect(() =>
+      createRuntime({
+        forgeDemand: { budget: DEFAULT_FORGE_BUDGET, onSessionAttached: () => {} },
+      }),
+    ).not.toThrow();
+  });
+
+  test("createForgeDemandDetector validates config at the factory boundary", async () => {
+    // Standalone L2 consumers (not going through createRuntime) must also
+    // fail fast on malformed config — otherwise the host crashes on the
+    // first tool/model event with a missing-property error.
+    const { createForgeDemandDetector } = await import("@koi/forge-demand");
+    expect(() =>
+      createForgeDemandDetector({ budget: null } as unknown as Parameters<
+        typeof createForgeDemandDetector
+      >[0]),
+    ).toThrow(/Invalid forgeDemand config/);
+  });
+
+  test("createRuntime auto-wires feedback-loop's L0 health handle into forge-demand", async () => {
+    // Regression for round-3 F59: previously the runtime told callers to
+    // pass feedback-loop's `ToolHealthTracker` directly as `healthTracker`,
+    // but its `getSnapshot(toolId)` is signature-incompatible with the
+    // forge-demand `getSnapshot(sessionId, toolId)` contract — silently
+    // breaking `performance_degradation`. The runtime now auto-wires
+    // feedback-loop's `healthHandle` (which returns L0-shaped snapshots)
+    // when both configs are present and no explicit handle was given.
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    // Without forgeHealth, the tracker map is never populated — so the
+    // middleware intentionally omits healthHandle. Absent-vs-present is
+    // the liveness signal auto-wiring depends on (F70).
+    const flNoHealth = createFeedbackLoopMiddleware({});
+    expect(flNoHealth.healthHandle).toBeUndefined();
+    // With forgeHealth configured, the typed handle is exposed.
+    const flWithHealth = createFeedbackLoopMiddleware({
+      forgeHealth: {
+        quarantineThreshold: 0.5,
+        windowSize: 10,
+        forgeStore: {
+          load: async () => ({ ok: false, error: { code: "NOT_FOUND" } }) as never,
+          save: async () => ({ ok: true, value: undefined }) as never,
+        } as never,
+        snapshotChainStore: {} as never,
+        resolveBrickId: () => undefined,
+      },
+    });
+    expect(typeof flWithHealth.healthHandle).toBe("object");
+    expect(typeof flWithHealth.healthHandle?.getSnapshot).toBe("function");
+    // The handle is now SessionContext-scoped (F99). An unobserved
+    // SessionContext returns undefined — no enumeration-by-string.
+    const fakeCtx = {
+      sessionId: "missing-session",
+      agentId: "x",
+      runId: "y",
+      metadata: {},
+    } as never;
+    expect(flWithHealth.healthHandle?.getSnapshot(fakeCtx, "missing-tool")).toBeUndefined();
+  });
+
+  test("RuntimeHandle.forgeDemand exposes only the middleware (no sessionId-keyed lookup)", async () => {
+    // Regression for round-7 F67: a previous design exposed
+    // `forSessionId(sid)` on the runtime handle. That undid the L2
+    // detector's identity-based isolation — any in-process caller with
+    // a sessionId could read or dismiss another tenant's signals.
+    // The runtime now exposes only the middleware; scoped handles are
+    // delivered to legitimate session owners via
+    // `forgeDemand.onSessionAttached`.
+    const { createRuntime } = await import("../create-runtime.js");
+    const runtime = createRuntime({
+      forgeDemand: {
+        // F96/F101: onSessionAttached is required (only surface that
+        // can dismiss pending signals).
+        onSessionAttached: () => {},
+        budget: {
+          maxForgesPerSession: 5,
+          computeTimeBudgetMs: 120_000,
+          demandThreshold: 0.7,
+          cooldownMs: 1_000,
+        },
+        heuristics: {
+          repeatedFailureCount: 3,
+          capabilityGapOccurrences: 2,
+          latencyDegradationAvgMs: 5_000,
+        },
+      },
+    });
+    expect(runtime.forgeDemand).toBeDefined();
+    expect(typeof runtime.forgeDemand?.middleware).toBe("object");
+    // No sessionId-keyed lookup — preserves the L2 identity-based
+    // isolation across the runtime boundary.
+    expect((runtime.forgeDemand as unknown as { forSessionId?: unknown }).forSessionId).toBe(
+      undefined,
+    );
+    await runtime.dispose();
+  });
+
+  test("auto-wiring is suppressed when feedbackLoop is configured without forgeHealth", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    // Regression for round-5 F64: the runtime previously wired
+    // feedback-loop's healthHandle into forge-demand whenever
+    // feedback-loop was present. But feedback-loop only creates live
+    // trackers when forgeHealth is configured — so without it, the
+    // injected handle always returned undefined and
+    // performance_degradation was silently dormant with no warning.
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: unknown): void => {
+      warnings.push(String(msg));
+    };
+    try {
+      const runtime = createRuntime({
+        feedbackLoop: {}, // no forgeHealth
+        forgeDemand: {
+          // F96/F101: onSessionAttached is required (only surface
+          // that can dismiss pending signals).
+          onSessionAttached: () => {},
+          budget: {
+            maxForgesPerSession: 5,
+            computeTimeBudgetMs: 120_000,
+            demandThreshold: 0.7,
+            cooldownMs: 1_000,
+          },
+          heuristics: {
+            repeatedFailureCount: 3,
+            capabilityGapOccurrences: 2,
+            latencyDegradationAvgMs: 5_000,
+          },
+        },
+      });
+      expect(warnings.some((w) => /performance_degradation trigger is dormant/.test(w))).toBe(true);
+      await runtime.dispose();
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("onSessionAttached fires once per session, including stream-only sessions", async () => {
+    // Combined regression for F65 (stream-only sessions must deliver
+    // scoped handles) and F67 (delivery is via callback, not lookup).
+    // Drive a single session through wrapModelStream only — no
+    // wrapToolCall, no wrapModelCall — and assert the callback fires
+    // exactly once with an unforgeable scoped handle.
+    const { createForgeDemandDetector } = await import("@koi/forge-demand");
+    const attached: Array<{ sid: string; scoped: { getActiveSignalCount: () => number } }> = [];
+    const handle = createForgeDemandDetector({
+      budget: {
+        maxForgesPerSession: 5,
+        computeTimeBudgetMs: 120_000,
+        demandThreshold: 0.7,
+        cooldownMs: 1_000,
+      },
+      heuristics: {
+        repeatedFailureCount: 3,
+        capabilityGapOccurrences: 2,
+        latencyDegradationAvgMs: 5_000,
+      },
+      onSessionAttached: (s, scoped) => {
+        attached.push({ sid: s.sessionId, scoped });
+      },
+    });
+    const ctxSession = {
+      agentId: "stream-only",
+      sessionId: sessionId("stream-1"),
+      runId: runId("r-stream"),
+      metadata: {} as JsonObject,
+    };
+    const ctx: TurnContext = {
+      session: ctxSession,
+      turnIndex: 0,
+      turnId: `${runId("r-stream")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+    // F110: register via engine-controlled onSessionStart before traffic.
+    await handle.middleware.onSessionStart?.(ctxSession);
+    const stream = handle.middleware.wrapModelStream;
+    if (stream === undefined) throw new Error("wrapModelStream missing");
+    // Drain the stream so the wrap actually executes its lead-in code.
+    for await (const _ of stream(ctx, { messages: [], model: "test" }, async function* () {
+      yield { kind: "done", response: { content: "", model: "test" } };
+    })) {
+      // intentional
+    }
+    expect(attached.length).toBe(1);
+    expect(attached[0]?.sid).toBe(ctxSession.sessionId);
+    expect(typeof attached[0]?.scoped.getActiveSignalCount).toBe("function");
+    expect(attached[0]?.scoped.getActiveSignalCount()).toBe(0);
+  });
+
+  test("validateForgeDemandConfig rejects legacy single-arg getSnapshot unless explicitly opted in", async () => {
+    // Regression reconciling F68 (round 7 — strict reject), F73
+    // (round 10 — don't block valid rest-arg wrappers), and F75
+    // (round 11 — a warning alone is too easy to miss). The
+    // validator now rejects length === 1 by default but accepts
+    // it with `acceptLegacySingleArgHealthTracker: true`. Rest-arg
+    // (length === 0) is always accepted.
+    const { validateForgeDemandConfig } = await import("@koi/forge-demand");
+    const baseBudget = {
+      maxForgesPerSession: 5,
+      computeTimeBudgetMs: 120_000,
+      demandThreshold: 0.7,
+      cooldownMs: 1_000,
+    };
+    // Default: length === 1 is rejected.
+    const legacy = validateForgeDemandConfig({
+      budget: baseBudget,
+      healthTracker: { getSnapshot: (_toolId: string) => undefined },
+    });
+    expect(legacy.ok).toBe(false);
+    if (!legacy.ok) {
+      expect(legacy.error.message).toMatch(/declared arity 1/);
+    }
+    // Explicit opt-in: length === 1 is accepted.
+    const optedIn = validateForgeDemandConfig({
+      budget: baseBudget,
+      healthTracker: { getSnapshot: (_toolId: string) => undefined },
+      acceptLegacySingleArgHealthTracker: true,
+    });
+    expect(optedIn.ok).toBe(true);
+    // Rest-arg wrapper (length === 0) is silently accepted.
+    const restArg = validateForgeDemandConfig({
+      budget: baseBudget,
+      healthTracker: { getSnapshot: (...args: unknown[]) => args[1] && undefined },
+    });
+    expect(restArg.ok).toBe(true);
+  });
+
+  test("auto-wiring honors a caller-preinstalled feedback-loop in config.middleware", async () => {
+    // Regression for round-6 F66: auto-wiring previously bound to the
+    // runtime-built variable only. If the caller composed feedback-loop
+    // themselves in config.middleware, the runtime skipped wiring AND
+    // emitted the dormant warning even though a valid healthHandle was
+    // live in the chain. We now scan the effective middleware list and
+    // honor any feedback-loop exposing a typed healthHandle.
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: unknown): void => {
+      warnings.push(String(msg));
+    };
+    try {
+      const { createRuntime } = await import("../create-runtime.js");
+      const preinstalled = createFeedbackLoopMiddleware({
+        forgeHealth: {
+          quarantineThreshold: 0.5,
+          windowSize: 10,
+          forgeStore: {
+            load: async () => ({ ok: false, error: { code: "NOT_FOUND" } }) as never,
+            save: async () => ({ ok: true, value: undefined }) as never,
+          } as never,
+          snapshotChainStore: {} as never,
+          resolveBrickId: () => undefined,
+        },
+      });
+      const runtime = createRuntime({
+        middleware: [preinstalled],
+        forgeDemand: {
+          // F96/F101: onSessionAttached is required (only surface
+          // that can dismiss pending signals).
+          onSessionAttached: () => {},
+          budget: {
+            maxForgesPerSession: 5,
+            computeTimeBudgetMs: 120_000,
+            demandThreshold: 0.7,
+            cooldownMs: 1_000,
+          },
+          heuristics: {
+            repeatedFailureCount: 3,
+            capabilityGapOccurrences: 2,
+            latencyDegradationAvgMs: 5_000,
+          },
+        },
+      });
+      // No dormant-trigger warning when a preinstalled feedback-loop
+      // exposes a wireable healthHandle.
+      expect(warnings.some((w) => /performance_degradation trigger is dormant/.test(w))).toBe(
+        false,
+      );
+      await runtime.dispose();
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // L2 golden queries: @koi/permissions-nexus (2 queries)
 // ---------------------------------------------------------------------------

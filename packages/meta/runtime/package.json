@@ -31,6 +31,7 @@
     "@koi/event-trace": "workspace:*",
     "@koi/execution-context": "workspace:*",
     "@koi/file-type": "workspace:*",
+    "@koi/forge-demand": "workspace:*",
     "@koi/forge-tools": "workspace:*",
     "@koi/gateway-webhook": "workspace:*",
     "@koi/fs-local": "workspace:*",
