@@ -114,8 +114,22 @@ function notifyHit(
  * middleware that mutates the first response mutates the cached entry,
  * silently corrupting every later hit.
  */
-function cloneResponse(response: ToolResponse): ToolResponse {
-  return structuredClone(response);
+/**
+ * Returns `undefined` when the response is not structuredClone-safe.
+ * `ToolResponse.output` is `unknown`, so an allowlisted tool can
+ * legally return a non-cloneable value (functions, class instances
+ * with private fields, DOM nodes in non-browser contexts, etc.).
+ * Failing inside dedup AFTER the underlying tool already executed
+ * would convert a successful call into a post-execution error and
+ * may duplicate side-effects on retry — degrade to cache-bypass
+ * instead.
+ */
+function tryCloneResponse(response: ToolResponse): ToolResponse | undefined {
+  try {
+    return structuredClone(response);
+  } catch {
+    return undefined;
+  }
 }
 
 async function executeAndStore(
@@ -137,11 +151,19 @@ async function executeAndStore(
     // sessionId could receive stale output from the prior run.
     if ((s.sessionGen.get(sessionId) ?? 0) !== generation) return response;
     // Snapshot the response into the cache so later mutation by the caller
-    // does not corrupt cached state.
-    await s.store.set(cacheKey, {
-      response: cloneResponse(response),
-      expiresAt: s.now() + s.ttlMs,
-    });
+    // does not corrupt cached state. Non-cloneable responses degrade to
+    // cache-bypass: returning the original is correct (the call succeeded),
+    // and converting a successful execution into a post-hoc throw is worse
+    // than skipping the cache.
+    const snapshot = tryCloneResponse(response);
+    if (snapshot === undefined) return response;
+    try {
+      await s.store.set(cacheKey, { response: snapshot, expiresAt: s.now() + s.ttlMs });
+    } catch {
+      // Same rationale: a failing store write must not surface as a tool
+      // failure. The call already completed; the cache is best-effort.
+      return response;
+    }
     await trackKey(s, sessionId, cacheKey);
     return response;
   } finally {
@@ -291,7 +313,10 @@ async function ddWrapToolCall(
   if (cached !== undefined) {
     if (cached.expiresAt > s.now()) {
       // Deep-clone so the cached entry is immune to caller-side mutation.
-      const cloned = cloneResponse(cached.response);
+      // The cached entry was successfully cloned at write time, but a clone
+      // failure here MUST NOT throw (the call already produced a valid hit) —
+      // fall back to the cached object directly.
+      const cloned = tryCloneResponse(cached.response) ?? cached.response;
       const stamped: ToolResponse = {
         ...cloned,
         metadata: { ...cloned.metadata, cached: true },
@@ -319,7 +344,10 @@ async function ddWrapToolCall(
     // and fire `onCacheHit` so the audit-wiring seam observes coalesced
     // waiters the same way it observes TTL cache hits.
     const upstream = await existing;
-    const cloned = cloneResponse(upstream);
+    // Non-cloneable upstream falls back to the original — the call did
+    // succeed (originator returned), so a cache-clone failure here must
+    // not surface as a tool failure for the coalesced waiter.
+    const cloned = tryCloneResponse(upstream) ?? upstream;
     const stamped: ToolResponse = {
       ...cloned,
       metadata: { ...cloned.metadata, cached: true },

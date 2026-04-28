@@ -93,6 +93,42 @@ function extractStatusCode(error: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * Heuristically detect a LOCAL/abort error that should NOT be counted
+ * as a provider fault. Anything else thrown without a status code is
+ * treated as a transport/network failure and counted unconditionally:
+ * provider SDKs frequently throw plain `Error` (e.g. `fetch failed`,
+ * `socket hang up`, ECONN*) with no `status`, and skipping those would
+ * leave the breaker permanently CLOSED during real outages.
+ */
+function isLocalAbortError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const e = error as Record<string, unknown>;
+  if (e.name === "AbortError") return true;
+  if (typeof e.code === "string" && (e.code === "ABORT_ERR" || e.code === "ERR_ABORTED")) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * A KoiError-shaped object thrown by downstream LOCAL middleware
+ * (call-limits, internal throttles, validators) carries a top-level
+ * `code` + `retryable` but no `cause` mapping to a provider status.
+ * Counting these as breaker failures would let one session's local
+ * quota poison the shared circuit for every other session on a
+ * healthy provider. Detecting this shape lets us treat bare
+ * provider/transport errors (plain `Error("fetch failed")`) as
+ * faults while still excluding KoiError local emissions.
+ */
+function isLocalKoiError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const e = error as Record<string, unknown>;
+  return (
+    typeof e.code === "string" && typeof e.retryable === "boolean" && typeof e.message === "string"
+  );
+}
+
 function createCircuitOpenError(key: string): KoiError {
   return {
     code: "RATE_LIMIT",
@@ -173,8 +209,12 @@ async function* trackedStream(
     consumerCancelled = false;
   } catch (err: unknown) {
     consumerCancelled = false;
+    // Same classification as cbWrapModelCall: status → record(status);
+    // local abort → ignore; bare provider/transport throw → record
+    // unconditionally so the breaker actually trips on real outages.
     const status = extractStatusCode(err);
     if (status !== undefined) breaker.recordFailure(status);
+    else if (!isLocalAbortError(err) && !isLocalKoiError(err)) breaker.recordFailure();
     throw err;
   } finally {
     // Cancellation handling has two cases:
@@ -354,11 +394,20 @@ async function cbWrapModelCall(
     breaker.recordSuccess();
     return response;
   } catch (err: unknown) {
-    // Only count failures with a provider-set HTTP status. Errors without one
-    // are local (validation, our own RATE_LIMIT, abort) and must not poison
-    // the shared circuit for a healthy provider.
+    // Failure classification:
+    //   - Status present (HTTP 4xx/5xx, RATE_LIMIT/TIMEOUT/EXTERNAL):
+    //     count via `recordFailure(status)` so `failureStatusCodes`
+    //     can suppress codes the operator doesn't want counted.
+    //   - Local abort (AbortError, ABORT_ERR): caller cancellation,
+    //     never a provider fault.
+    //   - Anything else (plain `Error` from a provider SDK or fetch:
+    //     "fetch failed", "socket hang up", ECONNRESET, etc.): count
+    //     UNCONDITIONALLY. Skipping these would leave the breaker
+    //     permanently CLOSED during real transport outages — exactly
+    //     the failure mode this middleware exists to contain.
     const status = extractStatusCode(err);
     if (status !== undefined) breaker.recordFailure(status);
+    else if (!isLocalAbortError(err) && !isLocalKoiError(err)) breaker.recordFailure();
     throw err;
   }
 }
@@ -401,6 +450,7 @@ function cbWrapModelStream(
         if (tookProbe) {
           const status = extractStatusCode(err);
           if (status !== undefined) breaker.recordFailure(status);
+          else if (!isLocalAbortError(err) && !isLocalKoiError(err)) breaker.recordFailure();
           else breaker.releaseProbe();
         }
         throw err;

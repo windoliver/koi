@@ -434,8 +434,13 @@ describe("createCircuitBreakerMiddleware", () => {
     // wrapModelStream where the inner handler throws synchronously
     // (no upstream status — purely local). The probe slot must be
     // released.
+    // Round-29 update: realistic local-setup throws come from
+    // downstream LOCAL middleware (call-limits, validators) and
+    // emit KoiError-shaped objects with `code`/`retryable`. Bare
+    // unstructured Errors are now treated as transport faults and
+    // counted; KoiError-shaped local emissions remain ignored.
     const throwingFactory = (): AsyncIterable<ModelChunk> => {
-      throw new Error("local-setup-error");
+      throw { code: "RATE_LIMIT", message: "local quota exhausted", retryable: false };
     };
     // Iterate the lazy stream — the gate now runs inside the iterator,
     // so the synchronous throw surfaces at iteration start.
@@ -447,7 +452,7 @@ describe("createCircuitBreakerMiddleware", () => {
         for await (const _ of stream) {
         }
       })(),
-    ).rejects.toThrow("local-setup-error");
+    ).rejects.toMatchObject({ code: "RATE_LIMIT" });
 
     // Immediate follow-up (no clock advance) must still get a probe.
     // If probeInFlight had leaked, isAllowed() would return false here
@@ -915,5 +920,59 @@ describe("createCircuitBreakerMiddleware", () => {
       mw.wrapModelCall?.(ctx, { messages: [], model: "a/m" }, traceA),
     ).rejects.toMatchObject({ code: "RATE_LIMIT" });
     expect(aRun).toBe(0);
+  });
+
+  // Regression (#1419 round 29): bare provider/transport errors
+  // (plain `Error` from a provider SDK or fetch with no `status`/
+  // `cause.code`) must trip the breaker. Skipping them would leave
+  // the breaker permanently CLOSED during real outages — the exact
+  // failure mode this middleware exists to contain.
+  test("bare transport errors with no status code trip the breaker", async () => {
+    const mw = createCircuitBreakerMiddleware({ breaker: { failureThreshold: 3 } });
+    const ctx = turnCtx();
+    const transport: ModelHandler = async () => {
+      throw new Error("fetch failed");
+    };
+    // Three bare transport errors in a row should trip OPEN.
+    for (let i = 0; i < 3; i++) {
+      await expect(
+        mw.wrapModelCall?.(ctx, { messages: [], model: "openai/gpt-4o" }, transport),
+      ).rejects.toThrow("fetch failed");
+    }
+    // Next call must be rejected fast with RATE_LIMIT (circuit OPEN),
+    // proving the bare errors were counted.
+    let runs = 0;
+    const trace: ModelHandler = async () => {
+      runs++;
+      throw new Error("should-not-run");
+    };
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "openai/gpt-4o" }, trace),
+    ).rejects.toMatchObject({ code: "RATE_LIMIT" });
+    expect(runs).toBe(0);
+  });
+
+  // Regression (#1419 round 29): AbortError must NOT count as a
+  // provider failure — it's a local control-flow event.
+  test("AbortError does not trip the breaker", async () => {
+    const mw = createCircuitBreakerMiddleware({ breaker: { failureThreshold: 2 } });
+    const ctx = turnCtx();
+    const aborter: ModelHandler = async () => {
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      throw err;
+    };
+    for (let i = 0; i < 5; i++) {
+      await expect(
+        mw.wrapModelCall?.(ctx, { messages: [], model: "openai/gpt-4o" }, aborter),
+      ).rejects.toThrow("aborted");
+    }
+    // Circuit must still allow traffic — aborts are not provider faults.
+    const ok = await mw.wrapModelCall?.(
+      ctx,
+      { messages: [], model: "openai/gpt-4o" },
+      makeHandler("ok"),
+    );
+    expect(ok?.content).toBe("ok");
   });
 });

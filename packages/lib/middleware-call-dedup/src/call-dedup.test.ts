@@ -536,6 +536,31 @@ describe("createCallDedupMiddleware", () => {
     expect(r2?.metadata?.cached).toBeUndefined();
   });
 
+  // Regression (#1419 round 29): a non-structuredClone-safe response
+  // (e.g. function fields) must NOT convert a successful tool call into
+  // a post-execution throw. The call already produced a valid result;
+  // the cache is best-effort. Degrade to passthrough on clone failure.
+  test("non-cloneable response degrades to cache-bypass instead of throwing", async () => {
+    const mw = createCallDedupMiddleware({ include: ["lookup"] });
+    const ctx = turnCtx();
+    let calls = 0;
+    const handler: ToolHandler = async () => {
+      calls++;
+      // Functions are NOT structuredClone-safe.
+      return { output: { value: 1, fn: () => 42 } };
+    };
+    // First call must NOT throw, even though the response is not cloneable.
+    const r1 = await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 1 } }, handler);
+    expect(r1).toBeDefined();
+    expect(calls).toBe(1);
+    // Second identical call must also succeed — the failed cache write
+    // means we passthrough to the handler (no false hit, no throw).
+    const r2 = await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 1 } }, handler);
+    expect(r2).toBeDefined();
+    // Either: cache miss (calls=2) OR cache hit served from a different
+    // cloneable path. We just assert no throw and a real result.
+  });
+
   test("describeCapabilities describes the cache", () => {
     const mw = createCallDedupMiddleware();
     expect(mw.describeCapabilities(turnCtx())?.label).toBe("call-dedup");
