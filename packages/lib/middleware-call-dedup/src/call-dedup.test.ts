@@ -658,4 +658,47 @@ describe("createCallDedupMiddleware", () => {
     expect(r1?.output).toBe("v");
     expect(r2?.output).toBe("v");
   });
+
+  // Regression (review round 4): a backend `store.delete()` failure during
+  // FIFO eviction or stale-TTL cleanup must not surface as a tool failure.
+  // The originating call already produced a valid response; surfacing a
+  // cache-eviction throw would convert success into a failure and invite
+  // retry-induced duplicate side effects — exactly what dedup exists to
+  // prevent.
+  test("backend store.delete rejection during eviction does not surface as tool failure", async () => {
+    const m = new Map<string, { response: ToolResponse; expiresAt: number }>();
+    const store = {
+      async get(k: string) {
+        return m.get(k);
+      },
+      async set(k: string, v: { response: ToolResponse; expiresAt: number }) {
+        m.set(k, v);
+      },
+      async delete(_k: string) {
+        throw new Error("backend offline");
+      },
+      size(): number {
+        return m.size;
+      },
+      clear(): void {
+        m.clear();
+      },
+    };
+    const mw = createCallDedupMiddleware({
+      include: ["lookup"],
+      maxEntries: 1,
+      store,
+    });
+    const ctx = turnCtx();
+    const h = makeHandler("v1");
+    // Fill cache to capacity, then issue a different key — eviction must
+    // call store.delete which rejects. The new call must still succeed.
+    await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: "a" } }, h.handler);
+    const r2 = await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "lookup", input: { q: "b" } },
+      makeHandler("v2").handler,
+    );
+    expect(r2?.output).toBe("v2");
+  });
 });

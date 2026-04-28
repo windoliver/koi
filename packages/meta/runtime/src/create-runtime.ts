@@ -400,23 +400,39 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     const activeStreamFinalizations = new Set<Promise<void>>();
 
     // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to
-    // every per-stream EventTraceHandle registered for that sessionId. With
+    // the per-stream EventTraceHandle that originated the call. With
     // `RuntimeConfig.sessionId`, multiple concurrent streams share one
-    // sessionId — keying by a single emitter would let the second stream
-    // overwrite the first, so approval steps from the original turn would be
-    // dropped or misrouted. Registering N emitters per sessionId and fanning
-    // out the dispatch keeps every concurrent stream's trajectory complete.
+    // sessionId — keying by sessionId alone and fanning out would write
+    // each approval into every concurrent stream's trajectory (cross-talk).
+    //
+    // Routing strategy: each stream registers its emitter under its own
+    // per-stream `runId` (runId is allocated per stream even under stable
+    // sessionId — see createMinimalTurnContext). The permissions middleware
+    // stamps `step.metadata.runId` on each approval step. The relay then
+    // delivers the step to the single owning emitter.
+    //
+    // Fan-out fallback: if step metadata is missing a runId (older
+    // permissions versions), broadcast to all emitters under the sessionId
+    // — preserves prior behavior on a best-effort basis rather than dropping
+    // the step entirely.
     const approvalDispatch = new Map<
       string,
-      Set<(sessionId: string, step: RichTrajectoryStep) => void>
+      Map<string, (sessionId: string, step: RichTrajectoryStep) => void>
     >();
     const unsubApprovalSink =
       config.approvalStepHandle !== undefined
         ? config.approvalStepHandle.setApprovalStepSink(
             (sid: string, step: RichTrajectoryStep): void => {
-              const emitters = approvalDispatch.get(sid);
-              if (emitters === undefined) return;
-              for (const emit of emitters) emit(sid, step);
+              const byRunId = approvalDispatch.get(sid);
+              if (byRunId === undefined) return;
+              const md = step.metadata as { readonly runId?: unknown } | undefined;
+              const runIdValue = typeof md?.runId === "string" ? md.runId : undefined;
+              if (runIdValue !== undefined) {
+                const emit = byRunId.get(runIdValue);
+                if (emit !== undefined) emit(sid, step);
+                return;
+              }
+              for (const emit of byRunId.values()) emit(sid, step);
             },
           )
         : undefined;
@@ -1758,7 +1774,10 @@ function composeMiddlewareIntoAdapter(
   middleware: readonly KoiMiddleware[],
   instrumentation?: DebugInstrumentation,
   store?: TrajectoryDocumentStore,
-  approvalDispatch?: Map<string, Set<(sessionId: string, step: RichTrajectoryStep) => void>>,
+  approvalDispatch?: Map<
+    string,
+    Map<string, (sessionId: string, step: RichTrajectoryStep) => void>
+  >,
   requestApproval?: ApprovalHandler,
   userId?: string,
   channelId?: string,
@@ -1863,16 +1882,19 @@ function composeMiddlewareIntoAdapter(
           : undefined;
 
       // Register per-stream emitter for approval trajectory capture.
-      // The dispatch relay (wired above) routes onApprovalStep by sessionId
-      // to the correct per-stream emitExternalStep.
+      // The dispatch relay (wired above) keys by `(sessionId, runId)` so a
+      // step originating in this stream lands only in this stream's
+      // trajectory, even when multiple concurrent streams share a stable
+      // RuntimeConfig.sessionId.
       const sid = ctx.session.sessionId as string;
+      const rid = ctx.session.runId as string;
       if (eventTraceHandle !== undefined && approvalDispatch !== undefined) {
-        let emitters = approvalDispatch.get(sid);
-        if (emitters === undefined) {
-          emitters = new Set();
-          approvalDispatch.set(sid, emitters);
+        let byRunId = approvalDispatch.get(sid);
+        if (byRunId === undefined) {
+          byRunId = new Map();
+          approvalDispatch.set(sid, byRunId);
         }
-        emitters.add(eventTraceHandle.emitExternalStep);
+        byRunId.set(rid, eventTraceHandle.emitExternalStep);
       }
 
       const perStreamMiddleware = [
@@ -2246,10 +2268,10 @@ function composeMiddlewareIntoAdapter(
           // emitter and drop the sessionId entry only when no streams
           // remain registered.
           if (approvalDispatch !== undefined && eventTraceHandle !== undefined) {
-            const emitters = approvalDispatch.get(sid);
-            if (emitters !== undefined) {
-              emitters.delete(eventTraceHandle.emitExternalStep);
-              if (emitters.size === 0) approvalDispatch.delete(sid);
+            const byRunId = approvalDispatch.get(sid);
+            if (byRunId !== undefined) {
+              byRunId.delete(rid);
+              if (byRunId.size === 0) approvalDispatch.delete(sid);
             }
           }
           // Run lifecycle hooks on ALL middleware for session end.

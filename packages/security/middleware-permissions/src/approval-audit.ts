@@ -112,6 +112,12 @@ export function createApprovalAudit(deps: ApprovalAuditDeps): {
     const meta: Record<string, unknown> = {
       approvalDecision: approval.kind,
       userId: ctx.session.userId ?? "__anonymous__",
+      // Per-stream identifier so a runtime fan-out relay can route this
+      // step back to the originating stream's trajectory rather than
+      // broadcasting to every concurrent stream that happens to share
+      // a `RuntimeConfig.sessionId`. `runId` is allocated per stream
+      // even under stable-sessionId mode.
+      runId: ctx.session.runId as string,
       ...(coalesced ? { coalesced: true } : {}),
     };
     if (approval.kind === "modify") {

@@ -2045,4 +2045,123 @@ describe("Golden: @koi/middleware-call-dedup", () => {
       }),
     ).toThrow(/onCacheHit/);
   });
+
+  // Regression (#1419 round 29): under stable RuntimeConfig.sessionId,
+  // multiple concurrent streams share one sessionId. The approval-step
+  // dispatch relay must route by per-stream `runId` (stamped onto
+  // `step.metadata.runId` by the permissions middleware) rather than
+  // fan-out to every emitter under the sessionId — otherwise an
+  // approval originating in stream A is broadcast into stream B's
+  // trajectory document, corrupting it.
+  test("approval dispatch with bogus runId is dropped (no cross-talk)", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const adapter: EngineAdapter = {
+      engineId: "t",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(): AsyncIterable<EngineEvent> {
+        await gate;
+        yield {
+          kind: "done",
+          output: {
+            content: [{ kind: "text", text: "ok" }],
+            stopReason: "completed",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: 0,
+            },
+          },
+        };
+      },
+      terminals: {
+        modelCall: async () => ({
+          content: "ok",
+          model: "test",
+          usage: { inputTokens: 0, outputTokens: 0 },
+        }),
+        toolCall: async (req: { toolId: string }) => ({ toolId: req.toolId, output: "ok" }),
+      },
+    } as unknown as EngineAdapter;
+
+    type StoredStep = import("@koi/core").RichTrajectoryStep;
+    let capturedSink: ((sid: string, step: StoredStep) => void) | undefined;
+    const approvalStepHandle = {
+      setApprovalStepSink: (sink: (sid: string, step: StoredStep) => void): (() => void) => {
+        capturedSink = sink;
+        return () => {};
+      },
+    };
+
+    const runtime = createRuntime({
+      adapter,
+      sessionId: "stable-routing",
+      trajectoryDir: `/tmp/koi-1419-r29-routing-${Date.now()}`,
+      approvalStepHandle,
+    });
+    const store = runtime.trajectoryStore;
+
+    const s1 = (async () => {
+      for await (const _ of runtime.adapter.stream({ kind: "text", text: "first" })) {
+        // drain
+      }
+    })();
+    const s2 = (async () => {
+      for await (const _ of runtime.adapter.stream({ kind: "text", text: "second" })) {
+        // drain
+      }
+    })();
+
+    // Yield enough microtasks for both streams to register their
+    // per-stream emitters in the dispatch relay.
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+
+    expect(capturedSink).toBeDefined();
+    const bogusStep: StoredStep = {
+      stepIndex: -1,
+      timestamp: 0,
+      source: "user",
+      kind: "tool_call",
+      identifier: "bash",
+      outcome: "success",
+      durationMs: 0,
+      metadata: { runId: "no-such-runid", approvalDecision: "allow" },
+    };
+    capturedSink?.("stable-routing", bogusStep);
+
+    release?.();
+    await Promise.all([s1, s2]);
+    await runtime.dispose();
+
+    // After dispose, scan every per-stream trajectory document. Under
+    // the old fan-out relay, the bogus step would have been broadcast
+    // to BOTH streams' docs; the new runId-keyed relay drops it
+    // because no emitter is registered under "no-such-runid".
+    expect(store).toBeDefined();
+    const fsMod = await import("node:fs/promises");
+    const pathMod = await import("node:path");
+    const readDir = async (dir: string): Promise<readonly string[]> => {
+      try {
+        return await fsMod.readdir(dir);
+      } catch {
+        return [];
+      }
+    };
+    // Discover trajectoryDir by listing /tmp for our prefix.
+    const candidates = (await readDir("/tmp")).filter((n) => n.startsWith("koi-1419-r29-routing-"));
+    let foundCount = 0;
+    for (const dir of candidates) {
+      const full = pathMod.join("/tmp", dir);
+      const files = await readDir(full);
+      for (const f of files) {
+        const body = await fsMod.readFile(pathMod.join(full, f), "utf8").catch(() => "");
+        if (body.includes("no-such-runid")) foundCount++;
+      }
+    }
+    expect(foundCount).toBe(0);
+  });
 });

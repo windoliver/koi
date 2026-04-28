@@ -212,10 +212,23 @@ async function trackKey(s: DedupState, sessionId: string, cacheKey: string): Pro
     }
     if (victim !== undefined) {
       existing.delete(victim);
-      await s.store.delete(victim);
+      // Best-effort eviction. The originating call already produced a
+      // successful response — surfacing a backend delete failure here
+      // would convert that success into a tool-error and could trigger
+      // retry-induced duplicate side effects. The orphan is bounded by
+      // the next sessionEnd / next eviction sweep.
+      await safeStoreDelete(s, victim);
     }
   }
   existing.add(cacheKey);
+}
+
+async function safeStoreDelete(s: DedupState, key: string): Promise<void> {
+  try {
+    await s.store.delete(key);
+  } catch {
+    // Swallow: see callers for rationale. Cache eviction is best-effort.
+  }
 }
 
 function bumpGeneration(s: DedupState, sessionId: string): number {
@@ -260,7 +273,7 @@ async function evictSession(s: DedupState, sessionId: string): Promise<void> {
   s.keysBySession.delete(sessionId);
   for (const key of keys) {
     s.inFlight.delete(key);
-    await s.store.delete(key);
+    await safeStoreDelete(s, key);
   }
 }
 
@@ -328,7 +341,10 @@ async function ddWrapToolCall(
       notifyHit(s, sessionId, toolId, cacheKey, request, stamped);
       return stamped;
     }
-    await s.store.delete(cacheKey);
+    // Stale TTL eviction: best-effort. A backend delete failure here
+    // does not change correctness — we already decided this entry is
+    // unusable, so we will fall through and re-execute below.
+    await safeStoreDelete(s, cacheKey);
   }
 
   // Coalesce concurrent identical misses onto a single execution. Safe here
