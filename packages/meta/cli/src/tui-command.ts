@@ -42,10 +42,12 @@ import type {
   ComponentProvider,
   ContentBlock,
   EngineEvent,
+  ForgeDemandSignal,
   GovernanceController,
   InboundMessage,
   JsonObject,
   RichTrajectoryStep,
+  SessionContext,
   SessionId,
   SessionTranscript,
   SkillComponent,
@@ -57,6 +59,8 @@ import { GOVERNANCE, sessionId } from "@koi/core";
 import { formatCost, formatTokens } from "@koi/core/cost-tracker";
 import type { DisplayableResumedMessage } from "@koi/core/message";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
+import type { SessionScopedForgeDemandHandle } from "@koi/forge-demand";
+import { createDefaultForgeDemandConfig } from "@koi/forge-demand";
 import { createAuthNotificationHandler } from "@koi/fs-nexus";
 import type { PatternRule } from "@koi/governance-defaults";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
@@ -2256,6 +2260,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Activates model-response validation + tool-health tracking with an
     // empty config (observe-only, no validators, no quarantine thresholds).
     ...(process.env.KOI_FEEDBACK_LOOP_ENABLED === "true" ? { feedbackLoop: {} } : {}),
+    // KOI_FORGE_DEMAND_ENABLED=true opts into @koi/forge-demand. Logs each
+    // emitted demand signal to stderr; performance_degradation stays dormant
+    // unless feedback-loop is also configured with forgeHealth.
+    ...(process.env.KOI_FORGE_DEMAND_ENABLED === "true"
+      ? {
+          forgeDemand: {
+            ...createDefaultForgeDemandConfig(),
+            onSessionAttached: (
+              session: SessionContext,
+              _scoped: SessionScopedForgeDemandHandle,
+            ): void => {
+              process.stderr.write(`[forge-demand] session attached: ${session.sessionId}\n`);
+            },
+            onDemand: (signal: ForgeDemandSignal): void => {
+              process.stderr.write(
+                `[forge-demand] demand: trigger=${signal.trigger.kind} ` +
+                  `confidence=${signal.confidence.toFixed(2)}\n`,
+              );
+            },
+          },
+        }
+      : {}),
     extraMiddleware: [securityBridge.middleware],
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
