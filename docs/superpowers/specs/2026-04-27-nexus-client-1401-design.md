@@ -187,7 +187,7 @@ Sequence:
    API surface:
    - `createLocalBridgeTransport(config)` → long-lived session transport (no probe support exposed)
    - `createLocalBridgeProbeTransport(spawnConfig)` → disposable transport that closes after one `health()` call. Caller passes spawn config; transport object does NOT retain it after spawn.
-   - `KoiRuntimeFactoryConfig.nexusProbeFactory?: () => HealthCapableNexusTransport` — caller-supplied factory for probe construction. Always optional. On local-bridge no Nexus consumer is wired (permissions rejected, audit always skips Nexus sink), so the probe is observability-only when supplied. Not stored on the runtime; called once during boot then discarded.
+   - `KoiRuntimeFactoryConfig.nexusProbeFactory?: () => HealthCapableNexusTransport` — RETIRED in Round 10 from runtime-factory consumption. The HTTP path probes its session in place; local-bridge wires no Nexus consumer in this PR, so factory-driven probing has no runtime caller. The factory and disposable-probe constructor (`createLocalBridgeProbeTransport`) remain exported for callers wanting standalone probe runs (e.g., `tui-command.ts` may invoke them directly for telemetry before calling `createKoiRuntime`), but `KoiRuntimeFactoryConfig` no longer accepts the field.
 
    This eliminates the credential-leak risk (transport is opaque; spawn secrets live in a sealed capability) AND avoids making misleading fail-closed claims for local-bridge.
 7. Per-call `deadlineMs: HEALTH_DEADLINE_MS = 5_000` overrides each transport's default.
@@ -571,9 +571,16 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // A filesystem-only Nexus transport (both consumers explicitly false, OR
   // local-bridge no-flags inferred-false) skips ALL Nexus startup probing
   // and consumer wiring — the transport is used elsewhere (fs reads etc.)
-  // and is none of this block's concern. Without this gate, `fail-closed-*`
-  // could block boot for an opted-out configuration on an unrelated
-  // permissions/audit readiness probe.
+  // and is none of this block's concern.
+  //
+  // POST-ROUND-10 OBSERVATION: `effectivePermsWired` and `effectiveAuditWired`
+  // both require `txKind === "http"`, so `anyEffectiveConsumer === true`
+  // implies HTTP transport here. Local-bridge never enters this block — its
+  // observability-only probe support is INTENTIONALLY DROPPED in this PR.
+  // Operators who want a local-bridge spawn-config validation probe can run
+  // it separately at the call site (e.g., `tui-command.ts`) before calling
+  // `createKoiRuntime`. The runtime contract is HTTP-only for Nexus
+  // consumer probing — single source of truth, no dead branches.
   if (config.nexusTransport !== undefined && anyEffectiveConsumer) {
     const mode: NexusBootMode = config.nexusBootMode ?? "telemetry";
     const policyBase = config.nexusPolicyPath ?? "koi/permissions";
@@ -630,24 +637,10 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
         );
       }
       probeTransport = config.nexusTransport as HealthCapableNexusTransport;
-    } else {
-      // local-bridge: probe-factory is OPTIONAL and ADVISORY. Wrap construction
-      // in try/catch so a synchronous spawn error (missing binary, permission
-      // denied, bad env) becomes a logged warning rather than a startup
-      // outage — matches the documented advisory contract.
-      if (config.nexusProbeFactory !== undefined) {
-        try {
-          probeTransport = config.nexusProbeFactory();
-        } catch (err: unknown) {
-          logger.warn({ err, kind: "local-bridge" },
-            "nexus probe-factory threw during construction; probe SKIPPED " +
-            "(telemetry mode is advisory — boot continues)");
-        }
-      } else {
-        logger.debug({ kind: "local-bridge" },
-          "nexus probe skipped: no factory provided (no Nexus consumer wired on local-bridge)");
-      }
     }
+    // (No local-bridge branch here — `anyEffectiveConsumer` gate above
+    // guarantees txKind === "http" at this point. Local-bridge probing is
+    // a separate caller-site responsibility, not a runtime-factory concern.)
 
     let health;
     if (probeTransport !== undefined) {
@@ -667,14 +660,25 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     if (health !== undefined && !health.ok) {
       const msg = `Nexus transport unhealthy: ${health.error.message} (code=${health.error.code})`;
       if (mode === "telemetry") {
-        logger.warn({ err: health.error, probeKind: config.nexusTransport.kind }, msg);
+        logger.warn({ err: health.error, probeKind: txKind }, msg);
       } else {
         throw new Error(msg, { cause: health.error });  // fail-closed-* throws
       }
+    } else if (health !== undefined && (health.value.notFound?.length ?? 0) > 0) {
+      // 404 on default probe paths means the policy NAMESPACE is missing —
+      // not a transport failure, but an absent control surface. Telemetry
+      // logs and continues; fail-closed-* and assert-remote-policy-loaded-at-boot
+      // BOTH refuse to boot (the operator declared they want remote policy
+      // present at startup; an absent namespace contradicts that).
+      const missing = health.value.notFound!.join(", ");
+      const msg = `Nexus probe found missing policy paths: ${missing} (namespace absent)`;
+      if (mode === "telemetry") {
+        logger.warn({ notFound: health.value.notFound, probeKind: txKind }, msg);
+      } else {
+        throw new Error(msg);  // fail-closed-transport AND assert-remote-policy-loaded-at-boot
+      }
     } else if (health !== undefined) {
-      // Distinct success log per probe target — operators must not mistake
-      // disposable-probe success for live-session validation on local-bridge.
-      const probeScope = assertProductionTransport(config.nexusTransport).kind === "local-bridge"
+      const probeScope = txKind === "local-bridge"
         ? "spawn-config-validated (disposable probe; live session NOT validated)"
         : "session-validated";
       logger.info({
@@ -787,10 +791,16 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       // local-bridge always skips the Nexus sink (no "require" path)
       logger.info({ mode: config.nexusAuditMode },
         "nexus audit sink not wired on local-bridge per nexusAuditMode");
+    } else if (config.nexusAuditMode === "disabled") {
+      // HTTP + nexusAuditMode=disabled: explicit opt-out; honor it.
+      // (Without this branch, HTTP would unconditionally wire the sink even
+      // though probe gating skipped probe work — a split-brain configuration.)
+      logger.info({ mode: "disabled" },
+        "nexus audit sink not wired on http per nexusAuditMode=disabled");
     } else {
       const onError = config.nexusAuditPoisonOnError === true
         ? (err: unknown) => {
-            if (nexusPoison.err === undefined) nexusPoison.err = err;  // per-sink latch (quorum gate)
+            if (nexusPoison.err === undefined) nexusPoison.err = err;  // per-sink fail-stop
             logger.error({ err }, "nexus audit sink poisoned");
           }
         : (err: unknown) => logger.warn({ err }, "nexus audit write failed (best-effort)");
@@ -943,7 +953,12 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j10. `nexusProbeFactory throws synchronously: caught + logged in telemetry mode; boot CONTINUES; probe SKIPPED` (advisory contract preserved against spawn errors)
 7g16j11. `local-bridge + auditEnabled=true + nexusAuditMode="disabled": probe + boot-mode preflight SKIPPED` (effective-consumer gating — disabled-by-mode does not trigger Nexus startup work)
 7g16j12. `local-bridge + auditEnabled=true + nexusAuditMode="local-only": same as above (no Nexus consumer effectively wired on local-bridge)`
-7g16j13. `HTTP + auditEnabled=true + nexusAuditMode="disabled": probe SKIPPED (effective-audit-wired is false even on HTTP when mode=disabled)`
+7g16j13. `HTTP + auditEnabled=true + nexusAuditMode="disabled": probe SKIPPED AND audit sink NOT wired (Round 10 — wiring honors disabled on HTTP, not just probe)`
+7g16j14. `local-bridge with nexusProbeFactory: probe is NOT executed by createKoiRuntime` (regression guard — local-bridge probe is caller-site responsibility, runtime block is HTTP-only)
+7g16j15. `fail-closed-transport + 404 on version.json or policy.json: throws with 'namespace absent' message` (Round 9 plumbing now reaches throw)
+7g16j16. `assert-remote-policy-loaded-at-boot + 404 on either default probe path: throws (same handling as fail-closed-transport)`
+7g16j17. `telemetry mode + 404: logs warning with notFound list; boot CONTINUES`
+7g16j18. `fail-closed-transport probe success + no 404: boots normally`
 7g16k. (REMOVED — local-bridge + permissions categorically rejected)
 7g16l. (REMOVED — same)
 7g16m. (REMOVED — same)
