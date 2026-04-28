@@ -110,6 +110,17 @@ export type NexusTransportKind = "http" | "local-bridge";
 //     to `assertProductionTransport(t)` and the throw message is the same
 //     in every case.
 //
+//   IMPORTANT — caller responsibility for the fs-only opt-out:
+//     assertProductionTransport(t) ALWAYS throws on missing kind when called.
+//     The fs-only escape hatch works by NOT calling the assertion at all.
+//     `runtime-factory.ts` checks `nexusPermissionsEnabled === false &&
+//     nexusAuditEnabled === false` BEFORE calling assertProductionTransport
+//     and skips the assertion (and the entire Nexus block) when the operator
+//     explicitly opted out of both consumers. This is the only place in the
+//     codebase that gets to bypass the assertion; library code that hands a
+//     transport off to the runtime must NOT call assertProductionTransport
+//     itself.
+//
 // Production callers MUST construct via one of the named factories
 // (createHttpTransport, createLocalBridgeTransport, fs-nexus HTTP wrapper,
 // createLocalBridgeProbeTransport) which always set it. The phased rollout
@@ -320,7 +331,7 @@ When `nexusAuditPoisonOnError === true`, the runtime hooks Nexus sink errors int
 1. **Sink-side short-circuit (poisoned `log()` wrapper).** When `nexusAuditPoisonOnError === true`, the runtime wraps `createNexusAuditSink(...)` in a thin `poisonedSink(inner, latch)` adapter that, on every `log()` call, FIRST inspects the latch:
 
    - latch unset → delegates to the inner sink's `log()` as normal
-   - latch set → drops the record, increments a `dropped` counter exposed in telemetry, and returns immediately (no buffering, no flush attempt)
+   - latch set → REJECTS the call with the latched error (returns a rejected `Promise<Result<void, KoiError>>` carrying `code: "AUDIT_SINK_POISONED"` and `cause: latch.err`). Increments a `dropped` counter exposed in telemetry. **Does NOT silently resolve** — silent resolution would defeat the fail-stop contract: `createAuditSinkComplianceRecorder` only fires its `onError` when `sink.log()` rejects, so a no-op success would let post-poison compliance events disappear with no observable signal. Rejecting matches the existing NDJSON/SQLite poison-wrapper behavior at `runtime-factory.ts:2526-2602` exactly.
 
    This closes the post-poison drop window the reviewer flagged: without the wrapper, the Nexus sink's internal buffer would keep accepting `log()` calls between latch-set and the next admission boundary, losing records the operator declared must be durable. The wrapper mirrors the existing NDJSON/SQLite poisoned-sink pattern (`runtime-factory.ts:2526-2602` already wraps those sinks the same way; the Nexus wiring extends that pattern with no behavior divergence).
 
@@ -1063,9 +1074,10 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g12. `Required SQLite sink failure latches sqlitePoison; admission DENIED on next boundary` (per-sink fail-stop, regardless of NDJSON state)
 7g12b. `Optional (non-required) sink poisoned: admission CONTINUES; failure logged only` (optional sinks never block)
 7g12c. `Nexus with nexusAuditPoisonOnError=true poisoned: admission DENIED on next boundary` (Nexus joins per-sink fail-stop; no quorum)
-7g12c2. `poisonedSink wrapper: post-latch log() calls are DROPPED at sink boundary (not buffered into inner sink)` — proves layer (a) of the two-layer fail-stop guarantee
-7g12c3. `poisonedSink wrapper exposes "dropped" counter incremented on each post-latch log() call` (telemetry visibility)
-7g12c4. `Records that arrive between sink-error and next admission boundary: ALL dropped at wrapper, NONE accepted by inner sink` — closes the silent-loss window the reviewer flagged
+7g12c2. `poisonedSink wrapper: post-latch log() calls REJECT with code="AUDIT_SINK_POISONED" carrying the latched error as cause (not silent resolve)` — proves layer (a) of the two-layer fail-stop guarantee AND that compliance-recorder's onError fires
+7g12c3. `poisonedSink wrapper exposes "dropped" counter incremented on each post-latch log() call` (telemetry visibility, complementary to the rejection)
+7g12c4. `Records that arrive between sink-error and next admission boundary: ALL rejected by wrapper (compliance-recorder onError fires for each), NONE accepted by inner sink` — closes the silent-loss window the reviewer flagged
+7g12c4b. `compliance-recorder onError observes the AUDIT_SINK_POISONED rejection (regression guard against the silent-resolve bug — confirms the rejection is the signal that surfaces post-poison failures)`
 7g12c5. `nexusAuditPoisonOnError=false: poisonedSink wrapper is no-op pass-through (latch never set, delegates every log() to inner)`
 7g12c6. `Same poisonedSink wrapper used for NDJSON, SQLite, and Nexus sinks (single implementation, no per-sink divergence)` — regression guard against drift
 7g12d. `Nexus with nexusAuditPoisonOnError=false poisoned: admission CONTINUES; failure logged` (best-effort default has no admission impact)
@@ -1115,11 +1127,13 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16r. (REMOVED — same)
 7g16s. (REMOVED — same)
 7g16t. (REMOVED — same)
-7g16u. `assertProductionTransport: missing transport.kind THROWS unconditionally (both phases)` — error message names every named factory and the explicit opt-out path
-7g16u2. `assertProductionTransport throw message includes nexusPermissionsEnabled=false AND nexusAuditEnabled=false as the documented opt-out for callers who supply a transport without wanting Nexus consumers`
+7g16u. `assertProductionTransport: missing transport.kind THROWS at the production runtime boundary (both phases)` — error message names every named factory AND the explicit fs-only opt-out (`nexusPermissionsEnabled=false` + `nexusAuditEnabled=false`)
+7g16u2. `Runtime caller-side check: when both consumer flags are explicitly false, runtime-factory SKIPS the assertProductionTransport call entirely; legacy structural adapter passes through unchanged for non-Nexus subsystems` (Round 8 ordering — assertion runs AFTER fs-only opt-out check)
 7g16u3. (REMOVED Loop 3 Round 7 — Phase 2 no longer differs from Phase 1 for missing-kind; same throw both phases)
-7g16u4. (REMOVED — no skip-and-warn path exists; missing-kind always throws)
-7g16u5. (REMOVED — same; the explicit-false combination cannot be used as a skip path because the throw fires before flag resolution)
+7g16u4. `Runtime: missing kind + explicit nexusPermissionsEnabled=true: THROWS at the runtime boundary (kind-assert reached because opt-out check failed)`
+7g16u5. `Runtime: missing kind + explicit nexusAuditEnabled=true (perms unset): THROWS at runtime boundary (any non-opt-out path reaches the assertion)`
+7g16u6. `Runtime: missing kind + explicit nexusPermissionsEnabled=false + explicit nexusAuditEnabled=false: BOOTS without Nexus block (fs-only opt-out path) — regression guard for the documented migration`
+7g16u7. `Runtime: missing kind + nexusPermissionsEnabled UNSET + nexusAuditEnabled UNSET: THROWS (unset flags do NOT satisfy the explicit opt-out — operator must explicitly write false)`
 7g16v. `assertProductionTransport returns transport unchanged when kind is set` (positive narrowing)
 7g16w. `runtime-factory uses assertProductionTransport at every kind branch (no raw access to .kind)` (lint-style assertion via grep in test suite)
 7g16x. `KOI_NEXUS_AUDIT_MODE=require: CLI parser rejects with actionable error naming local-only/disabled` (legacy value handling — old automation fails loud, not silent)
@@ -1211,7 +1225,8 @@ Existing v2 callers that pass `nexusTransport` already get Nexus permissions and
 | `nexusTransport` + local-bridge + explicit `nexusAuditEnabled=true` + no `nexusAuditMode` | THROWS (security gate) | Set `nexusAuditMode: "local-only"` (with NDJSON/SQLite) or `"disabled"` |
 | `nexusTransport` + local-bridge + explicit `nexusAuditEnabled=true` without `nexusAuditMode` | THROWS (security gate) — `nexusAuditMode` required (note: "inferred" no longer reachable, since local-bridge no-flags now throws upstream) | Set `local-only` (with NDJSON/SQLite sink) or `disabled` |
 | `nexusAuditPoisonOnError=true` + local-bridge | THROWS (security gate) — known wedge fault | Use HTTP for fail-stop audit |
-| `nexusTransport.kind` undefined on a non-test transport (any flag combination) | THROWS in both Phase 1 and Phase 2 — pre-PR semantics implicitly wired both consumers, so silent skip on upgrade would be an auth/audit bypass. The throw is the only safe option (no shape inference, no bifurcated rule). | Construct via named factory (`createHttpTransport`, fs-nexus HTTP wrapper, `createLocalBridgeTransport`, `createLocalBridgeProbeTransport`). If you want to keep passing the transport for fs-only/non-Nexus subsystems, the error message names the explicit opt-out: set both `nexusPermissionsEnabled=false` and `nexusAuditEnabled=false` AFTER constructing via a named factory. |
+| `nexusTransport.kind` undefined + at least one consumer flag UNSET or `true` | THROWS in both Phase 1 and Phase 2 — pre-PR semantics implicitly wired both consumers, so any path that doesn't explicitly opt out of both is an auth/audit bypass risk. | Construct via named factory (`createHttpTransport`, fs-nexus HTTP wrapper, `createLocalBridgeTransport`, `createLocalBridgeProbeTransport`). |
+| `nexusTransport.kind` undefined + EXPLICIT `nexusPermissionsEnabled=false` + EXPLICIT `nexusAuditEnabled=false` | BOOTS without Nexus block (fs-only opt-out path) — the runtime skips assertProductionTransport entirely when both consumers are explicitly disabled. Legacy structural adapter passes through for non-Nexus subsystems. | This IS the migration path for legacy structural adapters that pass `nexusTransport` purely for fs-only subsystems. Set both flags explicitly to `false`; you do not need to construct via a named factory unless you also want a Nexus consumer. |
 
 **Phase 2 — next release (separate issue, NOT this PR):**
 
