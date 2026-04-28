@@ -843,6 +843,7 @@
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/nexus-client": "workspace:*",
+        "@koi/nexus-delegation": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
         "@koi/plugins": "workspace:*",

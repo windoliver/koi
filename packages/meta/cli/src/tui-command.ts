@@ -1078,6 +1078,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestGovernance: import("./manifest.js").ManifestGovernanceConfig | undefined;
   let manifestSupervision: import("@koi/core").SupervisionConfig | undefined;
   let manifestAudit: import("./manifest.js").ManifestAuditConfig | undefined;
+  let manifestDelegation: import("./manifest.js").ManifestDelegationConfig | undefined;
   let manifestLoadPath: string | undefined; // tracks which path was loaded, for TOCTOU revalidation
   // Mirror start.ts: when resuming without an explicit --manifest, bypass
   // auto-discovery so the cwd manifest cannot silently override the model,
@@ -1133,6 +1134,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestGovernance = manifestResult.value.governance;
     manifestSupervision = manifestResult.value.supervision;
     manifestAudit = manifestResult.value.audit;
+    manifestDelegation = manifestResult.value.delegation;
     manifestLoadPath = resolvedManifestPath;
 
     // Fail-closed audit intent enforcement — applies regardless of KOI_ALLOW_MANIFEST_FILE_SINKS.
@@ -1995,6 +1997,32 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Nexus delegation provider — wired when manifest declares `delegation:
+  // backend: nexus` AND NEXUS_URL env var is set. Spawned children get a
+  // per-child Nexus API key that is revoked on termination. When omitted, the
+  // built-in in-memory delegation backend (HMAC/Ed25519 grants) is used.
+  // ---------------------------------------------------------------------------
+  let nexusDelegationProvider: import("@koi/core").ComponentProvider | undefined;
+  if (manifestDelegation?.backend === "nexus") {
+    const nexusUrl = process.env.NEXUS_URL;
+    if (nexusUrl === undefined || nexusUrl.trim() === "") {
+      process.stderr.write(
+        "koi tui: manifest declares delegation.backend: nexus but NEXUS_URL env var is not set. " +
+          "Set NEXUS_URL=http://host:port (e.g. http://localhost:2026) or change the manifest to backend: memory.\n",
+      );
+      process.exit(1);
+    }
+    const { createNexusDelegationApi, createNexusDelegationProvider } = await import(
+      "@koi/nexus-delegation"
+    );
+    const nexusDelegationApi = createNexusDelegationApi({
+      url: nexusUrl,
+      ...(process.env.NEXUS_API_KEY !== undefined ? { apiKey: process.env.NEXUS_API_KEY } : {}),
+    });
+    nexusDelegationProvider = createNexusDelegationProvider({ api: nexusDelegationApi });
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -2094,6 +2122,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     childSkillInjector: childSkillInjectorMw,
     extraProviders: [
       skillProvider,
+      ...(nexusDelegationProvider !== undefined ? [nexusDelegationProvider] : []),
       ...artifactExtraProviders,
       ...(process.env.KOI_BROWSER_MOCK === "1"
         ? [
