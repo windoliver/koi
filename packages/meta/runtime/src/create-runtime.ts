@@ -614,10 +614,17 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     const hasTrajectoryObserver = trajectoryStore !== undefined;
     const hasOtelObserver = otelConfig !== undefined;
     const dedupInChain = middleware.some((mw) => mw.name === "koi:call-dedup");
+    // Auto-install dedup is only capable of short-circuiting calls
+    // when its `include` allowlist is non-empty — without it the
+    // middleware is a passthrough and the observability gate would
+    // otherwise hard-fail callers that stage config (e.g.
+    // `callDedup: {}`) before populating an allowlist.
     const dedupAutoInstalled =
       config.callDedup !== undefined &&
       config.callDedup !== false &&
-      !resilienceNames.has("koi:call-dedup");
+      !resilienceNames.has("koi:call-dedup") &&
+      config.callDedup.include !== undefined &&
+      config.callDedup.include.length > 0;
     const autoInstallAck =
       config.callDedup !== undefined &&
       config.callDedup !== false &&
@@ -659,6 +666,12 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       "koi:tool-call-limit",
       "koi:model-call-limit",
       "koi:call-dedup",
+      // Shipped session-scoped middleware whose onSessionStart/End
+      // aggregate session-wide counters (totalSessions, sessionsUsed/
+      // Available). Without inclusion, stable sessionId would count
+      // one logical session as N (one per `stream()` call), skewing
+      // audit metrics. See packages/lib/middleware-tool-audit.
+      "koi:tool-audit",
     ]);
 
     // Compose middleware around adapter terminals, then apply timeout
