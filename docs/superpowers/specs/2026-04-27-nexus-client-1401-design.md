@@ -141,14 +141,17 @@ Audit shows 12+ structural implementers of `NexusTransport` across the repo. Two
 
 | Category | Examples | health() requirement |
 |---|---|---|
-| **Production transports** | `createHttpTransport` (this package); fs-nexus `local-bridge` transport (cast in `meta/cli/tui-command.ts:1704`) | **MUST implement** |
+| **HTTP production transport** | `createHttpTransport` (this package) and the fs-nexus HTTP wrapper | **MUST implement** (probed in-place by runtime) |
+| **Disposable local-bridge probe** | `createLocalBridgeProbeTransport` (fs-nexus) | **MUST implement** (constructed at caller-site only) |
+| **Long-lived local-bridge session** | fs-nexus `local-bridge` transport returned by `createFsNexusTransport({ kind: "local-bridge", ... })` (long-running subprocess used for fs reads, audit, etc.) | **MUST NOT implement** — probing the live session can wedge the shared subprocess on `auth_required` (no protocol-level cancel). Health is exercised via the disposable probe variant instead. Runtime never invokes `health()` on a long-lived local-bridge transport. |
 | **Test fixtures / mocks** | `fs-nexus/test-helpers.ts`, `testing.ts`, per-package test stubs | MAY omit (no startup path) |
 
-The interface keeps `health` optional so fixtures don't need no-op stubs, but startup code enforces it via a runtime guard (`assertHealthCapable`). This gives us:
+The interface keeps `health` optional so fixtures don't need no-op stubs and so the long-lived local-bridge transport stays at base `NexusTransport`. Startup code enforces the HTTP requirement via a runtime guard (`assertHealthCapable`) at the HTTP probe site. This gives us:
 
 1. Source compatibility for tests (no mass churn)
-2. Fail-closed enforcement at the single boundary that matters (runtime startup)
-3. Clear error message when a non-production transport is wired into production: "transport does not support health check"
+2. Fail-closed enforcement at the single HTTP boundary that the runtime actually probes
+3. Clear error message when a non-HealthCapable HTTP transport reaches startup: "HTTP nexus transport is missing required `health()` method"
+4. **Type-system enforcement that the unsafe in-place local-bridge probe path is impossible:** the long-lived local-bridge transport literally lacks `health()`, so an implementer cannot satisfy a misread "MUST implement" requirement by adding it to the live session — that contract row above is `MUST NOT`.
 
 ## Implementation
 
@@ -481,17 +484,24 @@ interface KoiRuntimeFactoryConfig {
    *
    * - "telemetry": log on transport failure; continue boot; preserves
    *   existing local-first contract for permissions.
-   * - "assert-transport-reachable-at-boot": throw on transport failure OR on missing
-   *   default probe path (404 on version.json / policy.json — namespace
-   *   absent is fatal, not health). Does NOT validate
-   *   that centralized policy activated — local-fallback may still apply.
-   *   See security caveat in design doc.
-   * - "assert-remote-policy-loaded-at-boot": throw on transport failure OR first-sync
-   *   policy-load failure (awaits backend.ready and inspects
+   * - "assert-transport-reachable-at-boot": throw on transport failure. When
+   *   `nexusPermissionsEnabled=true`, ALSO throw on missing default probe path
+   *   (404 on version.json / policy.json — namespace absent is fatal). When
+   *   permissions are disabled (audit-only), skips the policy-path read entirely
+   *   so the assertion is not coupled to an unrelated subsystem. Does NOT
+   *   validate that centralized policy activated — local-fallback may still
+   *   apply. See security caveat in design doc.
+   * - "assert-remote-policy-loaded-at-boot": throw on transport failure OR
+   *   first-sync policy-load failure (awaits backend.ready and inspects
    *   isCentralizedPolicyActive()). STARTUP GATE, REMOTE-LOAD ONLY — proves
-   *   remote policy was loaded at boot. Does NOT prevent local-rule fallback
-   *   for queries not matched by remote policy (existing composition chains
-   *   to local TUI on ask/no-opinion). Does NOT enforce ongoing freshness.
+   *   remote policy was loaded at boot. **Requires `nexusPermissionsEnabled=true`**:
+   *   the runtime throws at config validation if this mode is selected
+   *   without the permissions backend wired (no `ready` to await, no
+   *   `isCentralizedPolicyActive()` to call). Audit-only deployments wanting
+   *   a startup gate must use "assert-transport-reachable-at-boot". Does NOT
+   *   prevent local-rule fallback for queries not matched by remote policy
+   *   (existing composition chains to local TUI on ask/no-opinion). Does NOT
+   *   enforce ongoing freshness.
    */
   readonly nexusBootMode?: NexusBootMode | undefined;
 }
@@ -613,6 +623,19 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
         `fail-closed-* guarantee would be misleading.)`,
       );
     }
+    // assert-remote-policy-loaded-at-boot requires the permissions backend to
+    // exist (it awaits backend.ready and checks isCentralizedPolicyActive()).
+    // For audit-only deployments (nexusPermissionsEnabled=false), the mode
+    // would silently degrade to assert-transport-reachable-at-boot semantics —
+    // throw instead so the operator chooses a mode that matches their wiring.
+    if (mode === "assert-remote-policy-loaded-at-boot" && !effectivePermsWired) {
+      throw new Error(
+        `nexusBootMode="assert-remote-policy-loaded-at-boot" requires nexusPermissionsEnabled=true. ` +
+        `The mode awaits the permissions backend's first sync; without permissions wired ` +
+        `there is no policy to load. Use "assert-transport-reachable-at-boot" for ` +
+        `audit-only deployments that want a transport-reachability gate.`,
+      );
+    }
 
     // Pick probe transport: HTTP only.
     // The session itself satisfies HealthCapable; probe in place.
@@ -636,12 +659,27 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     // guarantees txKind === "http" at this point. Local-bridge probing is
     // a separate caller-site responsibility, not a runtime-factory concern.)
 
+    // Probe path selection: only read permission-policy paths when the
+    // permissions consumer is actually wired. Audit-only deployments must be
+    // able to use assert-transport-reachable-at-boot and
+    // assert-remote-policy-loaded-at-boot WITHOUT the permissions namespace
+    // existing at all — coupling the assert modes to an unrelated subsystem
+    // would force audit-only operators back to telemetry. When permissions
+    // are disabled, the probe still validates the transport via `version`
+    // (no readPaths), and the 404-namespace-absent gate is unreachable.
+    //
+    // (assert-remote-policy-loaded-at-boot is also gated on permsEnabled
+    //  below — without the permissions backend there is no `ready` to await
+    //  and no `isCentralizedPolicyActive()` to check, so the mode silently
+    //  degrades to assert-transport-reachable-at-boot semantics for audit-
+    //  only deployments. This is documented in the mode JSDoc.)
+    const probePolicyPaths = effectivePermsWired
+      ? [`${policyBase}/version.json`, `${policyBase}/policy.json`]
+      : [];
     let health;
     if (probeTransport !== undefined) {
       try {
-        health = await probeTransport.health({
-          readPaths: [`${policyBase}/version.json`, `${policyBase}/policy.json`],
-        });
+        health = await probeTransport.health({ readPaths: probePolicyPaths });
       } finally {
         if (probeTransport !== config.nexusTransport) probeTransport.close();
       }
@@ -957,6 +995,9 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j16. `assert-remote-policy-loaded-at-boot + 404 on either default probe path: throws (same handling as assert-transport-reachable-at-boot)`
 7g16j17. `telemetry mode + 404: logs warning with notFound list; boot CONTINUES`
 7g16j18. `assert-transport-reachable-at-boot probe success + no 404: boots normally`
+7g16j19. `assert-transport-reachable-at-boot + nexusPermissionsEnabled=false (audit-only HTTP): probe runs with EMPTY readPaths; missing koi/permissions/* does NOT cause boot failure` (decoupling — assert mode is not tied to an unwired subsystem)
+7g16j20. `assert-remote-policy-loaded-at-boot + nexusPermissionsEnabled=false: throws config validation error naming "assert-transport-reachable-at-boot" as the audit-only alternative` (no silent degradation)
+7g16j21. `assert-transport-reachable-at-boot + nexusPermissionsEnabled=true: probe reads default policy paths; 404 still fatal` (regression guard — gating only loosens audit-only path, permissions path unchanged)
 7g16k. (REMOVED — local-bridge + permissions categorically rejected)
 7g16l. (REMOVED — same)
 7g16m. (REMOVED — same)
