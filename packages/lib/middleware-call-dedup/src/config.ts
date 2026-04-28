@@ -51,6 +51,7 @@ export const DEFAULT_EXCLUDE: readonly string[] = [
   "fs_rename",
   "fs_update",
   "fs_patch",
+  "fs_edit",
   // agent / messaging control plane
   "agent_send",
   "agent_spawn",
@@ -58,6 +59,7 @@ export const DEFAULT_EXCLUDE: readonly string[] = [
   "agent_pause",
   "agent_resume",
   "koi_send_message",
+  "send_message",
   // notebook mutation + stateful read
   "notebook_add_cell",
   "notebook_replace_cell",

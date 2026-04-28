@@ -327,6 +327,45 @@ describe("createCircuitBreakerMiddleware", () => {
     expect(mw.describeCapabilities(ctx)?.description).toContain("healthy");
   });
 
+  // Regression: a consumer that cancels a HALF_OPEN probe must not leave
+  // the breaker stuck with `probeInFlight=true` forever. Without explicit
+  // probe-abandonment handling, every subsequent call rejects even after
+  // the upstream recovers — a permanent provider blackhole.
+  test("HALF_OPEN probe cancellation does not wedge the circuit", async () => {
+    let now = 1000;
+    const clock = (): number => now;
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 2, cooldownMs: 1000 },
+      clock,
+    });
+    const ctx = turnCtx();
+    const req: ModelRequest = { messages: [], model: "openai/gpt-4o" };
+
+    // Trip the circuit
+    await expect(mw.wrapModelCall?.(ctx, req, makeHandler("fail-500"))).rejects.toThrow();
+    await expect(mw.wrapModelCall?.(ctx, req, makeHandler("fail-500"))).rejects.toThrow();
+    // Advance past cooldown so the next stream call takes the HALF_OPEN probe
+    now += 2000;
+
+    // Probe stream that the consumer cancels mid-flight (no done/error).
+    async function* longStream(): AsyncIterable<ModelChunk> {
+      yield { kind: "text_delta", delta: "x" };
+      yield { kind: "text_delta", delta: "y" };
+      yield { kind: "done", response: modelResponse() };
+    }
+    const s = mw.wrapModelStream?.(ctx, req, longStream);
+    if (s === undefined) throw new Error("no stream");
+    for await (const _c of s) {
+      break; // consumer cancellation while in HALF_OPEN
+    }
+
+    // Advance past cooldown again. The breaker must allow another probe;
+    // if probeInFlight wasn't released, this call would reject forever.
+    now += 2000;
+    const ok = await mw.wrapModelCall?.(ctx, req, makeHandler("ok"));
+    expect(ok?.content).toBe("ok");
+  });
+
   // Regression: streamed RATE_LIMIT/TIMEOUT/EXTERNAL chunks come from the
   // model adapter, not local middleware (which throw, not yield). They
   // ARE provider failures and must count.

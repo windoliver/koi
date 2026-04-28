@@ -115,6 +115,7 @@ function streamErrorStatus(chunk: {
 async function* trackedStream(
   source: AsyncIterable<ModelChunk>,
   breaker: CircuitBreaker,
+  tookProbe: boolean,
 ): AsyncIterable<ModelChunk> {
   // Tracks whether the consumer broke out of the loop early (cancellation,
   // abort, downstream short-circuit). If they did, we MUST NOT count the
@@ -151,12 +152,16 @@ async function* trackedStream(
     if (status !== undefined) breaker.recordFailure(status);
     throw err;
   } finally {
-    // If the generator was closed early (consumer break / generator.return /
-    // abort), `consumerCancelled` stays true and we leave breaker state
-    // untouched. Without this guard, normal local cancellation would poison
-    // a healthy provider's circuit on the next request.
-    if (consumerCancelled) {
-      // intentional no-op — explicit branch documents the policy
+    // Cancellation handling has two cases:
+    //   - tookProbe=false: this invocation did not consume a HALF_OPEN probe
+    //     slot, so we leave breaker state untouched. (The CLOSED happy path.)
+    //   - tookProbe=true: this invocation consumed the HALF_OPEN probe.
+    //     Without an explicit recordSuccess/recordFailure, `probeInFlight`
+    //     stays true forever and isAllowed() rejects every future call,
+    //     wedging the provider. Treat an abandoned probe as a failure so
+    //     the circuit returns to OPEN and can re-arm on the next cooldown.
+    if (consumerCancelled && tookProbe) {
+      breaker.recordFailure();
     }
   }
 }
@@ -225,10 +230,21 @@ function cbWrapModelStream(
 ): AsyncIterable<ModelChunk> {
   const key = s.extractKey(request.model);
   const breaker = getOrCreateBreaker(s, key);
+  // Snapshot before isAllowed so we can detect an OPEN→HALF_OPEN transition
+  // that consumed our probe slot. The breaker primitive marks `probeInFlight`
+  // when isAllowed returns true from OPEN or HALF_OPEN, so we MUST eventually
+  // call recordSuccess/recordFailure or the circuit wedges (see #1419 round 5).
+  const stateBefore = breaker.getSnapshot().state;
   if (!breaker.isAllowed()) {
     return errorStream(createCircuitOpenError(key));
   }
-  return trackedStream(next(request), breaker);
+  // We took a probe slot iff the breaker is now HALF_OPEN. This is true after
+  // either OPEN→HALF_OPEN (cooldown elapsed) or HALF_OPEN remaining HALF_OPEN
+  // (we're the probe). CLOSED→CLOSED is the normal path; no probe consumed.
+  const tookProbe =
+    breaker.getSnapshot().state === "HALF_OPEN" &&
+    (stateBefore === "OPEN" || stateBefore === "HALF_OPEN");
+  return trackedStream(next(request), breaker, tookProbe);
 }
 
 function cbDescribe(s: CbState): CapabilityFragment {

@@ -116,6 +116,7 @@ describe("createCallDedupMiddleware", () => {
     const muting = [
       "fs_write",
       "fs_delete",
+      "fs_edit",
       "task_create",
       "task_update",
       "task_stop",
@@ -125,6 +126,7 @@ describe("createCallDedupMiddleware", () => {
       "notebook_delete_cell",
       "notebook_read", // stateful read
       "koi_send_message",
+      "send_message",
       "execute_code",
       "forge_agent",
     ];
