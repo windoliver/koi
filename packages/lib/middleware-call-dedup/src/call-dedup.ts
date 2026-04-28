@@ -138,14 +138,25 @@ function trackKey(s: DedupState, sessionId: string, cacheKey: string): void {
     s.keysBySession.set(sessionId, new Set([cacheKey]));
     return;
   }
-  // FIFO cap matches the store's `maxEntries`. The store silently
-  // LRU-evicts older entries above that cap, so any key tracked here
-  // beyond `maxEntries` must already be stale in the store. Capping
-  // prevents per-session bookkeeping from outgrowing the advertised
-  // cache size for long-lived sessions with high input churn.
-  if (existing.size >= s.maxEntries && !existing.has(cacheKey)) {
+  // Refresh: re-add to move to set tail, so promoted store hits also
+  // promote in our index — keeps eviction order aligned with the store.
+  if (existing.has(cacheKey)) {
+    existing.delete(cacheKey);
+    existing.add(cacheKey);
+    return;
+  }
+  // FIFO cap matches the store's `maxEntries`. When we drop the oldest
+  // tracked key we MUST also evict it from the store + in-flight map.
+  // Otherwise an `onSessionEnd` later sees only the truncated set and
+  // leaves the orphaned store entry behind — a fresh run reusing the
+  // sessionId would then receive stale cached output.
+  if (existing.size >= s.maxEntries) {
     const oldest = existing.values().next().value;
-    if (oldest !== undefined) existing.delete(oldest);
+    if (oldest !== undefined) {
+      existing.delete(oldest);
+      s.inFlight.delete(oldest);
+      void s.store.delete(oldest);
+    }
   }
   existing.add(cacheKey);
 }
@@ -237,6 +248,10 @@ async function ddWrapToolCall(
         ...cloned,
         metadata: { ...cloned.metadata, cached: true },
       };
+      // Refresh session index so the cache HIT promotes in our FIFO
+      // alongside its store-LRU promotion — without this, the index
+      // diverges from the store and `onSessionEnd` could miss the key.
+      trackKey(s, sessionId, cacheKey);
       notifyHit(s, sessionId, toolId, cacheKey, request, stamped);
       return stamped;
     }

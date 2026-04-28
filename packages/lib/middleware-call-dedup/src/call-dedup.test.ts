@@ -358,6 +358,44 @@ describe("createCallDedupMiddleware", () => {
     expect(calls).toBe(1);
   });
 
+  // Regression (#1419 round 15): when keysBySession FIFO-truncates an
+  // oldest entry, the corresponding store entry MUST also be evicted.
+  // Otherwise onSessionEnd later sees only the truncated set, leaves
+  // the orphan in the store, and a fresh run reusing the sessionId
+  // can receive stale cached output from the prior session.
+  test("FIFO truncation of session index also evicts the orphan store entry", async () => {
+    const mw = createCallDedupMiddleware({
+      maxEntries: 2,
+      include: ["lookup"],
+    });
+    const ctx = turnCtx("s-orphan");
+    let calls = 0;
+    const handler: ToolHandler = async (req) => {
+      calls++;
+      return { output: `out-${(req.input as { q: number }).q}` };
+    };
+    // Fill: q=1, q=2. session set holds [k1, k2].
+    await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 1 } }, handler);
+    await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 2 } }, handler);
+    // q=3 forces FIFO truncation of k1 from the session set AND from
+    // the store. session set holds [k2, k3].
+    await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 3 } }, handler);
+    expect(calls).toBe(3);
+    // End the session.
+    await mw.onSessionEnd?.(ctx.session);
+    // A fresh run reusing the same sessionId issues q=1 again. If the
+    // truncated-but-not-evicted scenario existed, this would hit the
+    // stale cache. With the lockstep eviction it must miss and execute.
+    const r = await mw.wrapToolCall?.(
+      turnCtx("s-orphan"),
+      { toolId: "lookup", input: { q: 1 } },
+      handler,
+    );
+    expect(r?.output).toBe("out-1");
+    expect(r?.metadata?.cached).toBeUndefined();
+    expect(calls).toBe(4);
+  });
+
   test("describeCapabilities describes the cache", () => {
     const mw = createCallDedupMiddleware();
     expect(mw.describeCapabilities(turnCtx())?.label).toBe("call-dedup");

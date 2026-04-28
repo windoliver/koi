@@ -542,31 +542,38 @@ describe("createCircuitBreakerMiddleware", () => {
     expect(runCount).toBe(0);
   });
 
-  // Regression: onSessionEnd must NOT evict OPEN circuits — another
-  // session on the same shared key may still be relying on fail-fast.
-  test("onSessionEnd preserves OPEN circuits", async () => {
-    // Explicit provider-level extractKey so the breaker is shared and
-    // tenant-a's failures can affect the tenant-b assertion.
+  // Regression: onSessionEnd must NOT evict an OPEN circuit while
+  // another live session still owns the key (refcount > 0). Round 15
+  // changed ownerless reclamation to ALSO drop OPEN entries so capacity
+  // can recover after outages, but shared-key OPEN must persist while
+  // any owner remains.
+  test("onSessionEnd preserves OPEN circuits while another owner remains", async () => {
     const mw = createCircuitBreakerMiddleware({
       breaker: { failureThreshold: 2 },
       maxKeys: 4,
       extractKey: (m) => (m ?? "x").split("/")[0] ?? "x",
     });
-    const ctx = turnCtx("tenant-a");
+    const ctxA = turnCtx("tenant-a");
+    const ctxB = turnCtx("tenant-b");
+    // tenant-b touches the shared key first (becomes an owner) so
+    // refcount > 0 when tenant-a ends below.
+    await mw.wrapModelCall?.(ctxB, { messages: [], model: "openai/m" }, makeHandler("ok"));
+    // tenant-a trips the shared OPEN.
     await expect(
-      mw.wrapModelCall?.(ctx, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+      mw.wrapModelCall?.(ctxA, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
     ).rejects.toThrow();
     await expect(
-      mw.wrapModelCall?.(ctx, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+      mw.wrapModelCall?.(ctxA, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
     ).rejects.toThrow();
-    await mw.onSessionEnd?.(ctx.session);
+    await mw.onSessionEnd?.(ctxA.session);
+    // tenant-b is still an owner — the OPEN must persist for it.
     let runCount = 0;
     const trace = async (): Promise<never> => {
       runCount++;
       throw new Error("should-not-run");
     };
     await expect(
-      mw.wrapModelCall?.(turnCtx("tenant-b"), { messages: [], model: "openai/m" }, trace),
+      mw.wrapModelCall?.(ctxB, { messages: [], model: "openai/m" }, trace),
     ).rejects.toMatchObject({ code: "RATE_LIMIT" });
     expect(runCount).toBe(0);
   });
@@ -648,5 +655,47 @@ describe("createCircuitBreakerMiddleware", () => {
       mw.wrapModelCall?.(ctx, { messages: [], model: "openX/m" }, trace),
     ).rejects.toMatchObject({ code: "RATE_LIMIT" });
     expect(runCount).toBe(0);
+  });
+
+  // Regression (#1419 round 15): ownerless OPEN circuits must be
+  // reclaimed on session end. Otherwise an outage that trips many
+  // session-scoped breakers can permanently wedge the map at capacity:
+  // those sessions terminate, the provider recovers, but new sessions
+  // forever hit RATE_LIMIT capacity-exhaustion because nothing closes
+  // the orphans.
+  test("ownerless OPEN circuits are reclaimed when last session ends", async () => {
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 2 },
+      maxKeys: 2,
+    });
+    // Trip session-A's session-scoped breaker to OPEN.
+    const ctxA = turnCtx("session-a");
+    for (let i = 0; i < 2; i++) {
+      await expect(
+        mw.wrapModelCall?.(ctxA, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+      ).rejects.toThrow();
+    }
+    // Trip session-B's session-scoped breaker to OPEN. Now both
+    // capacity slots are OPEN circuits owned by their own session only.
+    const ctxB = turnCtx("session-b");
+    for (let i = 0; i < 2; i++) {
+      await expect(
+        mw.wrapModelCall?.(ctxB, { messages: [], model: "openai/m" }, makeHandler("fail-500")),
+      ).rejects.toThrow();
+    }
+    // Both sessions end — owners drop to 0. OPEN circuits MUST be
+    // reclaimed, otherwise the next session below will see capacity
+    // exhausted and reject locally with RATE_LIMIT.
+    await mw.onSessionEnd?.(ctxA.session);
+    await mw.onSessionEnd?.(ctxB.session);
+    // Provider has recovered. session-c arrives — must succeed because
+    // capacity was reclaimed.
+    const ctxC = turnCtx("session-c");
+    const r = await mw.wrapModelCall?.(
+      ctxC,
+      { messages: [], model: "openai/m" },
+      makeHandler("ok"),
+    );
+    expect(r?.content).toBe("ok");
   });
 });

@@ -232,14 +232,17 @@ function evictSessionKeys(s: CbState, sessionId: string): void {
     const owners = s.keyOwners.get(k);
     if (owners === undefined) continue;
     owners.delete(sessionId);
-    // Refcount: only reclaim when the last live session releases the
-    // key AND the breaker is CLOSED. Shared provider breakers stay
-    // alive for every other concurrent session; OPEN/HALF_OPEN
-    // circuits are always preserved regardless of refcount.
+    // Refcount: keep the breaker alive while any session still owns it
+    // (e.g., shared provider-scoped extractKey). When the last owner
+    // leaves, reclaim regardless of state — including OPEN/HALF_OPEN.
+    // Holding ownerless OPEN circuits would let an outage permanently
+    // wedge the map at capacity: many session-scoped circuits trip to
+    // OPEN, sessions end, the provider recovers, but new sessions
+    // forever hit `RATE_LIMIT` capacity-exhaustion because nothing
+    // reclaims the orphaned OPEN entries.
     if (owners.size > 0) continue;
     s.keyOwners.delete(k);
-    const b = s.breakers.get(k);
-    if (b !== undefined && b.getSnapshot().state === "CLOSED") s.breakers.delete(k);
+    s.breakers.delete(k);
   }
 }
 
