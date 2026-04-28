@@ -433,19 +433,27 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
           }
           childGrantId = grant.id;
           if (grant.proof.kind !== "nexus") return new Map();
+
+          // If the manifest excludes NEXUS_API_KEY via spawn.env.exclude, the
+          // child must observe NO Nexus credential — neither in its ENV
+          // component nor passed back through `SpawnChildResult.nexusApiKey`
+          // for an out-of-process worker to install. Treat exclusion as
+          // "delegation key delivery is disabled for this child" so the
+          // manifest ceiling cannot be bypassed by callers that read the
+          // returned token.
+          if (envExcludeKeys.has("NEXUS_API_KEY")) return new Map();
+
           childNexusApiKey = grant.proof.token;
 
           // Inject NEXUS_API_KEY into the child's env so any agent-env-aware
           // component observes the attenuated key, not the parent's. We layer
           // the token on top of the SAME override stack the regular
           // agent-env-provider uses (manifest exclusions + runtime overrides),
-          // so a manifest spawn.env.exclude entry for NEXUS_API_KEY (or any
-          // other key) wins — delegation cannot bypass manifest env ceilings.
+          // so manifest exclusions for OTHER keys still win.
           const parentEnv = options.parentAgent.component<AgentEnv>(ENV);
           if (parentEnv === undefined) return new Map();
           const parentValues = parentEnv.values;
           if (!("NEXUS_API_KEY" in parentValues)) return new Map();
-          if (envExcludeKeys.has("NEXUS_API_KEY")) return new Map();
 
           const finalOverrides: Readonly<Record<string, string | undefined>> = {
             ...baseEnvOverrides,
@@ -514,52 +522,85 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
 
   const childPid = childRuntime.agent.pid;
 
-  // 5b. Resolve grant outcome captured during assembly. When delegation is
-  //     `required` and grant failed, dispose the partially-assembled child and
-  //     re-throw — fail-closed semantics; otherwise log and continue without
-  //     delegation (graceful degradation).
-  if (delegationGrantError !== undefined) {
-    if (delegationRequired) {
-      const release = options.spawnLedger.release();
-      await release;
-      void Promise.resolve(childRuntime.dispose()).catch(() => {});
-      throw KoiRuntimeError.from(
-        "PERMISSION",
-        `Delegation required but grant failed: ${delegationGrantError instanceof Error ? delegationGrantError.message : String(delegationGrantError)}`,
-        { retryable: false, context: { childId: childPid.id }, cause: delegationGrantError },
-      );
-    }
-    console.error(
-      `[spawn-child] delegation grant failed for child "${childPid.id}", continuing without delegation`,
-      delegationGrantError,
-    );
-  }
-
   // gov-8: resolve parent's GovernanceController (optional — engine works
   // without one). Captured once here so both cleanup paths (terminated
   // handler and dispose-override) read the same reference even if the
   // parent is later disposed.
   const parentGovController = options.parentAgent.component<GovernanceController>(GOVERNANCE);
 
-  // 6. Register child in registry (if provided)
-  if (options.registry !== undefined) {
-    const childAgentType = childPid.type;
-    await options.registry.register({
-      agentId: childPid.id,
-      status: {
-        phase: "created",
-        generation: 0,
-        conditions: [],
-        lastTransitionAt: Date.now(),
-      },
-      agentType: childAgentType,
-      metadata: { name: options.manifest.name },
-      registeredAt: Date.now(),
-      parentId: options.parentAgent.pid.id,
-      spawner: options.parentAgent.pid.id,
-      priority: childPriority,
-      ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
-    });
+  // 5b/6. Wrap all post-createKoi setup that runs BEFORE cleanup wiring (handle
+  //       onEvent / disposeOverride) is installed in a single try/catch that
+  //       revokes the child grant + disposes the runtime + releases the ledger
+  //       on failure. Without this, a `delegation: required` mismatch or a
+  //       `registry.register()` throw would leave the issued Nexus key live
+  //       with no handle to clean it up.
+  try {
+    // 5b. Resolve grant outcome captured during assembly. When delegation is
+    //     `required` and grant failed, fail closed; otherwise log and continue
+    //     without delegation (graceful degradation).
+    if (delegationGrantError !== undefined) {
+      if (delegationRequired) {
+        throw KoiRuntimeError.from(
+          "PERMISSION",
+          `Delegation required but grant failed: ${delegationGrantError instanceof Error ? delegationGrantError.message : String(delegationGrantError)}`,
+          { retryable: false, context: { childId: childPid.id }, cause: delegationGrantError },
+        );
+      }
+      console.error(
+        `[spawn-child] delegation grant failed for child "${childPid.id}", continuing without delegation`,
+        delegationGrantError,
+      );
+    }
+
+    // 6. Register child in registry (if provided)
+    if (options.registry !== undefined) {
+      const childAgentType = childPid.type;
+      await options.registry.register({
+        agentId: childPid.id,
+        status: {
+          phase: "created",
+          generation: 0,
+          conditions: [],
+          lastTransitionAt: Date.now(),
+        },
+        agentType: childAgentType,
+        metadata: { name: options.manifest.name },
+        registeredAt: Date.now(),
+        parentId: options.parentAgent.pid.id,
+        spawner: options.parentAgent.pid.id,
+        priority: childPriority,
+        ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
+      });
+    }
+  } catch (e: unknown) {
+    // Revoke before re-throwing — the grant is live and we have no handle to
+    // clean it up otherwise. Bounded by REVOKE_DISPOSE_TIMEOUT_MS so a hung
+    // Nexus cannot wedge spawn-child.
+    if (childGrantId !== undefined && parentHasDelegation) {
+      const parentDel = options.parentAgent.component<DelegationComponent>(DELEGATION);
+      if (parentDel !== undefined) {
+        try {
+          await Promise.race([
+            Promise.resolve(parentDel.revoke(childGrantId, false)),
+            new Promise<void>((_resolve, reject) => {
+              setTimeout(
+                () => reject(new Error("revoke timed out after 5000ms")),
+                REVOKE_DISPOSE_TIMEOUT_MS,
+              ).unref?.();
+            }),
+          ]);
+        } catch (revokeErr: unknown) {
+          console.warn(
+            `[spawn-child] post-setup-failure revoke failed — key may remain active. ` +
+              `delegationId="${childGrantId}", error: ${revokeErr instanceof Error ? revokeErr.message : String(revokeErr)}`,
+          );
+        }
+      }
+    }
+    void Promise.resolve(childRuntime.dispose()).catch(() => {});
+    const release = options.spawnLedger.release();
+    await release;
+    throw e;
   }
 
   // 7. Wrap runtime.run() to compose the abort signal from the child handle.

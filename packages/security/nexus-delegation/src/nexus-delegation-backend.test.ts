@@ -145,7 +145,26 @@ describe("grant()", () => {
     await backend.grant(SCOPE, CHILD_ID);
     const calls = (api.createDelegation as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     const opts = calls[0]?.[1] as { idempotencyKey?: string } | undefined;
-    expect(opts?.idempotencyKey).toBe(`test-${PARENT_ID}:${CHILD_ID}`);
+    // Format: `${prefix}${parent}:${child}:${uuid}` — the per-call UUID
+    // suffix prevents collisions between separate grant() invocations.
+    expect(opts?.idempotencyKey).toMatch(
+      new RegExp(
+        `^test-${PARENT_ID}:${CHILD_ID}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`,
+      ),
+    );
+  });
+
+  test("two grant() calls with same parent/child produce different idempotency keys", async () => {
+    const api = makeMockApi();
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    await backend.grant(SCOPE, CHILD_ID);
+    await backend.grant(SCOPE, CHILD_ID);
+    const calls = (api.createDelegation as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const key1 = (calls[0]?.[1] as { idempotencyKey?: string } | undefined)?.idempotencyKey;
+    const key2 = (calls[1]?.[1] as { idempotencyKey?: string } | undefined)?.idempotencyKey;
+    expect(key1).toBeDefined();
+    expect(key2).toBeDefined();
+    expect(key1).not.toBe(key2);
   });
 
   test("falls back to ttl-derived expiresAt when response has null expires_at", async () => {

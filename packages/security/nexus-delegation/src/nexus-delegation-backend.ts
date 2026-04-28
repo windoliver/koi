@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   AgentId,
   DelegationComponent,
@@ -118,6 +119,11 @@ export function createNexusDelegationBackend(
     verifyCacheTtlMs > 0 ? createTtlVerifyCache({ ttlMs: verifyCacheTtlMs }) : undefined;
 
   const grantStore = new Map<DelegationId, DelegationGrant>();
+  // Tombstones for grants whose revoke() was observed (succeeded OR throwing
+  // after enqueue). verify() must deny immediately for tombstoned ids even if
+  // a positive cache entry would otherwise authorize. Cleared only when the
+  // retry queue successfully reconciles with Nexus.
+  const revokedTombstones = new Set<DelegationId>();
   // let is justified: the retry queue is a mutable bounded list rebuilt after each drain
   let pendingRevocations: PendingRevocation[] = [];
 
@@ -153,6 +159,10 @@ export function createNexusDelegationBackend(
       if (result.ok) {
         grantStore.delete(entry.id);
         verifyCache?.invalidate(entry.id);
+        // Tombstone is no longer needed once Nexus has accepted the revoke —
+        // the canonical store agrees with our local denial. Drop it so the Set
+        // does not grow unbounded for long-lived backends.
+        revokedTombstones.delete(entry.id);
       } else if (entry.attempts >= maxRevocationRetries) {
         console.error(
           `[nexus-delegation] revocation failed after max retries — manual intervention required (delegationId=${entry.id})`,
@@ -181,15 +191,22 @@ export function createNexusDelegationBackend(
     ttlMs?: number,
   ): Promise<DelegationGrant> {
     const ttlSeconds = ttlMs !== undefined ? Math.ceil(ttlMs / 1000) : defaultTtlSeconds;
-    // Idempotency key is stable per (parent, child) pair so retries of the same
-    // logical spawn collapse onto a single Nexus delegation. Each child has a
-    // freshly-minted unique AgentId, so `${ownId}:${delegateeId}` is unique per
-    // spawn AND stable across retries — preventing partial-failure key leaks
-    // where a lost response would otherwise cause a duplicate active grant.
+    // Idempotency key is fresh per grant() invocation but reused across the
+    // internal retry loop below. This:
+    //   - lets Nexus deduplicate within-call retries (lost-response races)
+    //     onto a single delegation rather than creating duplicates;
+    //   - keeps separate grant() calls (e.g. same parent/child but different
+    //     scope or TTL — re-attenuation) from colliding against each other,
+    //     which would return stale authority for the second call.
+    // Hosts that need cross-call deduplication (true logical-spawn retries)
+    // can supply `idempotencyPrefix` to derive a stable key — the prefix is
+    // composed with the per-call UUID rather than replacing it, so the same
+    // host stays self-consistent without coupling unrelated callers.
+    const callId = randomUUID();
     const idempotencyKey =
       idempotencyPrefix !== undefined
-        ? `${idempotencyPrefix}${ownId}:${delegateeId}`
-        : `${ownId}:${delegateeId}`;
+        ? `${idempotencyPrefix}${ownId}:${delegateeId}:${callId}`
+        : `${ownId}:${delegateeId}:${callId}`;
 
     const adjustments = mapScopeToNexus(scope);
 
@@ -264,14 +281,18 @@ export function createNexusDelegationBackend(
     const result = await api.revokeDelegation(id);
 
     if (!result.ok) {
-      // Enqueue for retry on subsequent revokes, but surface the immediate
-      // failure to the awaiting caller. The spawn-child dispose path bounds
-      // its wait on revoke() — if we silently resolved on failure, the
-      // dispose path could declare cleanup complete while the delegated key
-      // remains active. Logging the first enqueue gives operators a hook to
-      // act on the leak even if the retry queue never drains.
+      // Fail closed locally even when the remote DELETE failed: the caller
+      // explicitly requested revocation, so any verify() against this grant
+      // must immediately deny. We delete from `grantStore`, invalidate the
+      // verify cache, AND record a tombstone so verify() returns "revoked"
+      // even if a fresh cache entry is set later by an in-flight verifyFromNexus
+      // refresh that races the revoke. The retry queue keeps reconciling in
+      // the background.
       const childId = storedGrant?.delegateeId ?? UNKNOWN_AGENT_ID;
       enqueueRevocation(id, childId);
+      grantStore.delete(id);
+      verifyCache?.invalidate(id);
+      revokedTombstones.add(id);
       console.error(
         `[nexus-delegation] revoke failed and queued for retry: ` +
           `delegationId="${id}", childId="${childId}", error: ${result.error.message}`,
@@ -283,6 +304,7 @@ export function createNexusDelegationBackend(
 
     grantStore.delete(id);
     verifyCache?.invalidate(id);
+    revokedTombstones.add(id);
   }
 
   // ---------------------------------------------------------------------------
@@ -354,6 +376,14 @@ export function createNexusDelegationBackend(
   }
 
   async function verify(id: DelegationId, toolId: string): Promise<DelegationVerifyResult> {
+    // Tombstone fast path: any grant whose revoke() was observed (succeeded
+    // OR failed-and-enqueued) MUST deny here, even if a positive verify cache
+    // entry would otherwise authorize. This closes the race between an
+    // in-flight verify refresh and a concurrent revoke.
+    if (revokedTombstones.has(id)) {
+      return { ok: false, reason: "revoked" };
+    }
+
     const stored = grantStore.get(id);
 
     // Local expiry fast path
