@@ -14206,9 +14206,12 @@ describe("Golden: @koi/nexus-delegation", () => {
       return new Response(
         JSON.stringify({
           delegation_id: "del-golden-1",
+          worker_agent_id: "child-golden",
           api_key: "golden-child-key",
-          created_at: new Date().toISOString(),
+          mount_table: ["fs://workspace"],
           expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          delegation_mode: "copy",
+          warmup_success: true,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
@@ -14230,8 +14233,11 @@ describe("Golden: @koi/nexus-delegation", () => {
       expect(grant.proof.token).toBe("golden-child-key");
     }
     expect(grant.issuerId).toBe(agentId("parent-golden"));
-    expect(capturedBody?.parent_agent_id).toBe(agentId("parent-golden"));
-    expect(capturedBody?.child_agent_id).toBe(agentId("child-golden"));
+    // Real Nexus v2 uses worker_id (parent inferred from API key auth)
+    expect(capturedBody?.worker_id).toBe(agentId("child-golden"));
+    expect(capturedBody?.worker_name).toBe(agentId("child-golden"));
+    expect(capturedBody?.namespace_mode).toBe("copy");
+    expect(capturedBody?.add_grants).toEqual(["read_file"]);
   });
 
   test("NexusDelegationBackend.revoke() removes grant and calls DELETE", async () => {
@@ -14250,9 +14256,12 @@ describe("Golden: @koi/nexus-delegation", () => {
         return new Response(
           JSON.stringify({
             delegation_id: "del-golden-revoke",
+            worker_agent_id: "child-revoke",
             api_key: "key-to-revoke",
-            created_at: new Date().toISOString(),
+            mount_table: ["fs://workspace"],
             expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            delegation_mode: "copy",
+            warmup_success: true,
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );

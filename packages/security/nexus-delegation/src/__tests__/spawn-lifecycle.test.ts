@@ -65,19 +65,22 @@ function makeMockApi(overrides?: Partial<NexusDelegationApi>): NexusDelegationAp
       ok: true as const,
       value: {
         delegation_id: "del-spawn-1",
+        worker_agent_id: "child-1",
         api_key: "child-api-key-xyz",
-        created_at: new Date().toISOString(),
+        mount_table: ["fs://workspace"],
         expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        delegation_mode: "copy",
+        warmup_success: true,
       },
     })),
     revokeDelegation: mock(async () => ({ ok: true as const, value: undefined })),
     verifyChain: mock(async () => ({
       ok: true as const,
-      value: { delegation_id: "del-spawn-1", valid: true, chain_depth: 0 },
+      value: { chain: [], total_depth: 0 },
     })),
     listDelegations: mock(async () => ({
       ok: true as const,
-      value: { delegations: [], total: 0 },
+      value: { delegations: [], total: 0, limit: 50, offset: 0 },
     })),
     ...overrides,
   };

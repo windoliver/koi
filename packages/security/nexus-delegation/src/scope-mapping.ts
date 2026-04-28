@@ -1,23 +1,53 @@
 import type { DelegationScope, NamespaceMode } from "@koi/core";
-import type { NexusDelegateScope, NexusNamespaceMode } from "./delegation-api.js";
+import type { NexusNamespaceMode } from "./delegation-api.js";
 
+/**
+ * Map Koi `NamespaceMode` to wire-format Nexus namespace_mode.
+ *
+ * Real Nexus v2 uses lowercase string literals.
+ */
 export function mapNamespaceMode(mode: NamespaceMode | undefined): NexusNamespaceMode {
   switch (mode) {
     case "clean":
-      return "CLEAN";
+      return "clean";
     case "shared":
-      return "SHARED";
+      return "shared";
     case "copy":
     case undefined:
-      return "COPY";
+      return "copy";
   }
 }
 
-export function mapScopeToNexus(scope: DelegationScope): NexusDelegateScope {
-  // scope_prefix not mapped: DelegationScope carries no namespace prefix concept
+/**
+ * Mapped grant adjustments derived from a Koi `DelegationScope`. These three
+ * fields live at the top level of the wire-format `DelegateRequest`.
+ *
+ * - `add_grants`: paths/operations explicitly allowed (clean mode subset)
+ * - `remove_grants`: paths/operations explicitly denied (copy mode exclusions)
+ * - `readonly_paths`: paths downgraded to read-only (copy mode)
+ */
+export interface NexusScopeAdjustments {
+  readonly add_grants: readonly string[];
+  readonly remove_grants: readonly string[];
+  readonly readonly_paths: readonly string[];
+}
+
+/**
+ * Translate a Koi `DelegationScope` into Nexus v2 grant adjustments.
+ *
+ * - `permissions.allow` → `add_grants`
+ * - `permissions.deny`  → `remove_grants`
+ * - `readonly`          → `readonly_paths` (when present in scope.permissions)
+ *
+ * `resources` (glob patterns) are intentionally not mapped here — Nexus
+ * carries them via the optional `scope` (DelegationScopeModel) object on the
+ * request, not these flat fields. Callers that need them should set
+ * `request.scope.resource_patterns` directly.
+ */
+export function mapScopeToNexus(scope: DelegationScope): NexusScopeAdjustments {
   return {
-    allowed_operations: scope.permissions.allow ?? [],
+    add_grants: scope.permissions.allow ?? [],
     remove_grants: scope.permissions.deny ?? [],
-    ...(scope.resources !== undefined ? { resource_patterns: scope.resources } : {}),
+    readonly_paths: [],
   };
 }

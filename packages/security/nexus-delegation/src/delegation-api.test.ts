@@ -11,36 +11,64 @@ function makeErrorFetch(status: number): typeof fetch {
     new Response(JSON.stringify({ error: "oops" }), { status })) as unknown as typeof fetch;
 }
 
+function makeOkResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      delegation_id: "del-abc",
+      worker_agent_id: "child-1",
+      api_key: "child-key-123",
+      mount_table: ["fs://workspace"],
+      expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      delegation_mode: "copy",
+      warmup_success: true,
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
+}
+
 describe("createNexusDelegationApi", () => {
   test("createDelegation sends POST with Authorization header", async () => {
     let captured: Request | undefined;
     const mockFetch = (async (input: string | URL | Request, init?: RequestInit) => {
       captured = new Request(input as string, init);
-      return new Response(
-        JSON.stringify({
-          delegation_id: "del-abc",
-          api_key: "child-key-123",
-          created_at: new Date().toISOString(),
-          expires_at: new Date(Date.now() + 3600_000).toISOString(),
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
+      return makeOkResponse();
     }) as unknown as typeof fetch;
     const api = createNexusDelegationApi({ url: BASE_URL, apiKey: TEST_KEY, fetch: mockFetch });
     const result = await api.createDelegation({
-      parent_agent_id: "parent-1",
-      child_agent_id: "child-1",
-      scope: { allowed_operations: ["read_file"], remove_grants: [] },
-      namespace_mode: "COPY",
-      max_depth: 3,
+      worker_id: "child-1",
+      worker_name: "child-1",
+      namespace_mode: "copy",
       ttl_seconds: 3600,
-      can_sub_delegate: true,
-      idempotency_key: "idem-1",
+      can_sub_delegate: false,
+      intent: "test",
     });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.value.api_key).toBe("child-key-123");
+    if (result.ok) {
+      expect(result.value.api_key).toBe("child-key-123");
+      expect(result.value.worker_agent_id).toBe("child-1");
+      expect(result.value.mount_table).toEqual(["fs://workspace"]);
+      expect(result.value.delegation_mode).toBe("copy");
+    }
     expect(captured?.method).toBe("POST");
     expect(captured?.headers.get("Authorization")).toBe(`Bearer ${TEST_KEY}`);
+  });
+
+  test("createDelegation forwards Idempotency-Key header when provided", async () => {
+    let capturedHeaders: Headers | undefined;
+    const mockFetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      capturedHeaders = new Headers(init?.headers);
+      return makeOkResponse();
+    }) as unknown as typeof fetch;
+    const api = createNexusDelegationApi({ url: BASE_URL, fetch: mockFetch });
+    await api.createDelegation(
+      {
+        worker_id: "c",
+        worker_name: "c",
+        namespace_mode: "copy",
+      },
+      { idempotencyKey: "idem-99" },
+    );
+    expect(capturedHeaders?.get("Idempotency-Key")).toBe("idem-99");
   });
 
   test("revokeDelegation sends DELETE to correct URL", async () => {
@@ -64,14 +92,9 @@ describe("createNexusDelegationApi", () => {
   test("createDelegation returns error result on 500", async () => {
     const api = createNexusDelegationApi({ url: BASE_URL, fetch: makeErrorFetch(500) });
     const result = await api.createDelegation({
-      parent_agent_id: "p",
-      child_agent_id: "c",
-      scope: { allowed_operations: [], remove_grants: [] },
-      namespace_mode: "COPY",
-      max_depth: 3,
-      ttl_seconds: 3600,
-      can_sub_delegate: false,
-      idempotency_key: "k",
+      worker_id: "c",
+      worker_name: "c",
+      namespace_mode: "copy",
     });
     expect(result.ok).toBe(false);
   });
@@ -82,10 +105,10 @@ describe("createNexusDelegationApi", () => {
       url: BASE_URL,
       fetch: (async (input: string | URL | Request) => {
         capturedUrl = input as string;
-        return new Response(
-          JSON.stringify({ delegation_id: GRANT_ID, valid: true, chain_depth: 1 }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
+        return new Response(JSON.stringify({ chain: [], total_depth: 0 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }) as unknown as typeof fetch,
     });
     const result = await api.verifyChain(GRANT_ID);
@@ -93,19 +116,36 @@ describe("createNexusDelegationApi", () => {
     expect(capturedUrl).toContain(`${GRANT_ID}/chain`);
   });
 
-  test("listDelegations paginates with cursor", async () => {
+  test("listDelegations paginates with limit & offset", async () => {
     let capturedUrl = "";
     const api = createNexusDelegationApi({
       url: BASE_URL,
       fetch: (async (input: string | URL | Request) => {
         capturedUrl = input as string;
-        return new Response(JSON.stringify({ delegations: [], total: 0 }), {
+        return new Response(JSON.stringify({ delegations: [], total: 0, limit: 25, offset: 50 }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
       }) as unknown as typeof fetch,
     });
-    await api.listDelegations("cursor-xyz");
-    expect(capturedUrl).toContain("cursor=cursor-xyz");
+    await api.listDelegations({ limit: 25, offset: 50 });
+    expect(capturedUrl).toContain("limit=25");
+    expect(capturedUrl).toContain("offset=50");
+  });
+
+  test("listDelegations omits query params when none provided", async () => {
+    let capturedUrl = "";
+    const api = createNexusDelegationApi({
+      url: BASE_URL,
+      fetch: (async (input: string | URL | Request) => {
+        capturedUrl = input as string;
+        return new Response(JSON.stringify({ delegations: [], total: 0, limit: 50, offset: 0 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    });
+    await api.listDelegations();
+    expect(capturedUrl).not.toContain("?");
   });
 });

@@ -20,19 +20,22 @@ function makeMockApi(): NexusDelegationApi {
       ok: true as const,
       value: {
         delegation_id: "d-1",
+        worker_agent_id: "child-1",
         api_key: "key-1",
-        created_at: "2026-01-01T00:00:00Z",
+        mount_table: ["fs://workspace"],
         expires_at: "2026-01-01T01:00:00Z",
+        delegation_mode: "copy",
+        warmup_success: true,
       },
     })),
     revokeDelegation: mock(async () => ({ ok: true as const, value: undefined })),
     verifyChain: mock(async () => ({
       ok: true as const,
-      value: { delegation_id: "d-1", valid: true, chain_depth: 0 },
+      value: { chain: [], total_depth: 0 },
     })),
     listDelegations: mock(async () => ({
       ok: true as const,
-      value: { delegations: [], total: 0 },
+      value: { delegations: [], total: 0, limit: 50, offset: 0 },
     })),
   };
 }
@@ -91,7 +94,7 @@ describe("createNexusDelegationProvider", () => {
     expect(provider.name).toBe("delegation-nexus");
   });
 
-  test("forwards backend config overrides (e.g. maxChainDepth)", async () => {
+  test("forwards backend config overrides (e.g. maxChainDepth, defaultTtlSeconds)", async () => {
     const api = makeMockApi();
     const provider = createNexusDelegationProvider({
       api,
@@ -103,20 +106,22 @@ describe("createNexusDelegationProvider", () => {
       | { readonly grant: (scope: unknown, delegateeId: AgentId) => Promise<unknown> }
       | undefined;
     expect(del).toBeDefined();
-    // Trigger grant() and verify that the backend used the parent_agent_id from agent.pid.id.
+    // Trigger grant() and verify the backend forwarded overrides into the request.
     await del?.grant({ permissions: { allow: ["*"] } }, agentId("child-1"));
     const createCall = (api.createDelegation as unknown as { mock: { calls: unknown[][] } }).mock
       .calls[0];
     expect(createCall).toBeDefined();
     const req = createCall?.[0] as
       | {
-          readonly parent_agent_id: string;
-          readonly max_depth: number;
-          readonly ttl_seconds: number;
+          readonly worker_id: string;
+          readonly worker_name: string;
+          readonly ttl_seconds?: number;
+          readonly namespace_mode: string;
         }
       | undefined;
-    expect(req?.parent_agent_id).toBe("agent-7");
-    expect(req?.max_depth).toBe(5);
+    expect(req?.worker_id).toBe("child-1");
+    expect(req?.worker_name).toBe("child-1");
     expect(req?.ttl_seconds).toBe(600);
+    expect(req?.namespace_mode).toBe("copy");
   });
 });

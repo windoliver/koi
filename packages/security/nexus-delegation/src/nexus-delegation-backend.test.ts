@@ -2,9 +2,12 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:
 import type { AgentId, DelegationScope } from "@koi/core";
 import { agentId, delegationId } from "@koi/core";
 import type {
-  NexusChainVerifyResponse,
   NexusDelegateResponse,
   NexusDelegationApi,
+  NexusDelegationChainItem,
+  NexusDelegationChainResponse,
+  NexusDelegationEntry,
+  NexusDelegationListParams,
 } from "./delegation-api.js";
 import { createNexusDelegationBackend } from "./nexus-delegation-backend.js";
 
@@ -20,20 +23,54 @@ const SCOPE: DelegationScope = { permissions: { allow: ["read_file"], deny: [] }
 function makeGrantResponse(overrides?: Partial<NexusDelegateResponse>): NexusDelegateResponse {
   return {
     delegation_id: GRANT_ID,
+    worker_agent_id: CHILD_ID,
     api_key: "child-key-xyz",
-    created_at: new Date().toISOString(),
+    mount_table: ["fs://workspace"],
     expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    delegation_mode: "copy",
+    warmup_success: true,
+    ...overrides,
+  };
+}
+
+function makeChainItem(overrides?: Partial<NexusDelegationChainItem>): NexusDelegationChainItem {
+  return {
+    delegation_id: GRANT_ID,
+    agent_id: CHILD_ID,
+    parent_agent_id: PARENT_ID,
+    delegation_mode: "copy",
+    status: "active",
+    depth: 0,
+    intent: "",
+    created_at: new Date().toISOString(),
     ...overrides,
   };
 }
 
 function makeChainResponse(
-  overrides?: Partial<NexusChainVerifyResponse>,
-): NexusChainVerifyResponse {
+  overrides?: Partial<NexusDelegationChainResponse>,
+): NexusDelegationChainResponse {
+  return {
+    chain: [makeChainItem()],
+    total_depth: 1,
+    ...overrides,
+  };
+}
+
+function makeListEntry(overrides?: Partial<NexusDelegationEntry>): NexusDelegationEntry {
   return {
     delegation_id: GRANT_ID,
-    valid: true,
-    chain_depth: 0,
+    agent_id: CHILD_ID,
+    parent_agent_id: PARENT_ID,
+    delegation_mode: "copy",
+    status: "active",
+    scope_prefix: null,
+    lease_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    zone_id: null,
+    intent: "",
+    depth: 0,
+    can_sub_delegate: false,
+    created_at: new Date().toISOString(),
     ...overrides,
   };
 }
@@ -45,7 +82,7 @@ function makeMockApi(overrides?: Partial<NexusDelegationApi>): NexusDelegationAp
     verifyChain: mock(async () => ({ ok: true as const, value: makeChainResponse() })),
     listDelegations: mock(async () => ({
       ok: true as const,
-      value: { delegations: [], total: 0 },
+      value: { delegations: [], total: 0, limit: 50, offset: 0 },
     })),
     ...overrides,
   };
@@ -65,6 +102,63 @@ describe("grant()", () => {
     if (grant.proof.kind === "nexus") expect(grant.proof.token).toBe("child-key-xyz");
     expect(grant.issuerId).toBe(PARENT_ID);
     expect(grant.delegateeId).toBe(CHILD_ID);
+  });
+
+  test("sends worker_id, worker_name, lowercase namespace_mode in request body", async () => {
+    const api = makeMockApi();
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: PARENT_ID,
+      namespaceMode: "clean",
+    });
+    await backend.grant(SCOPE, CHILD_ID);
+    const calls = (api.createDelegation as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const req = calls[0]?.[0] as Record<string, unknown> | undefined;
+    expect(req?.worker_id).toBe(CHILD_ID);
+    expect(req?.worker_name).toBe(CHILD_ID);
+    expect(req?.namespace_mode).toBe("clean");
+    // No legacy fields
+    expect(req?.parent_agent_id).toBeUndefined();
+    expect(req?.child_agent_id).toBeUndefined();
+    expect(req?.max_depth).toBeUndefined();
+    // Defaults: can_sub_delegate=false
+    expect(req?.can_sub_delegate).toBe(false);
+  });
+
+  test("emits add_grants/remove_grants for allow/deny", async () => {
+    const api = makeMockApi();
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    await backend.grant({ permissions: { allow: ["read_file"], deny: ["exec"] } }, CHILD_ID);
+    const calls = (api.createDelegation as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const req = calls[0]?.[0] as Record<string, unknown> | undefined;
+    expect(req?.add_grants).toEqual(["read_file"]);
+    expect(req?.remove_grants).toEqual(["exec"]);
+  });
+
+  test("forwards idempotency key as second argument option", async () => {
+    const api = makeMockApi();
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: PARENT_ID,
+      idempotencyPrefix: "test-",
+    });
+    await backend.grant(SCOPE, CHILD_ID);
+    const calls = (api.createDelegation as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const opts = calls[0]?.[1] as { idempotencyKey?: string } | undefined;
+    expect(opts?.idempotencyKey).toBe(`test-${PARENT_ID}:${CHILD_ID}`);
+  });
+
+  test("falls back to ttl-derived expiresAt when response has null expires_at", async () => {
+    const api = makeMockApi({
+      createDelegation: mock(async () => ({
+        ok: true as const,
+        value: makeGrantResponse({ expires_at: null }),
+      })),
+    });
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    const before = Date.now();
+    const grant = await backend.grant(SCOPE, CHILD_ID, 60_000);
+    expect(grant.expiresAt).toBeGreaterThanOrEqual(before + 59_000);
   });
 
   test("throws on createDelegation failure", async () => {
@@ -310,7 +404,7 @@ describe("verify()", () => {
     expect(chainCalls).toBe(2);
   });
 
-  test("fails closed when Nexus returns unknown_grant", async () => {
+  test("fails closed when Nexus returns unknown_grant (HTTP 404)", async () => {
     const api = makeMockApi({
       verifyChain: mock(async () => ({
         ok: false as const,
@@ -329,11 +423,27 @@ describe("verify()", () => {
     if (!result.ok) expect(result.reason).toBe("unknown_grant");
   });
 
-  test("maps 'revoked' chain reason to revoked result", async () => {
+  test("returns unknown_grant when chain is empty", async () => {
     const api = makeMockApi({
       verifyChain: mock(async () => ({
         ok: true as const,
-        value: makeChainResponse({ valid: false, reason: "revoked" }),
+        value: { chain: [], total_depth: 0 },
+      })),
+    });
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    await backend.grant(SCOPE, CHILD_ID);
+    const result = await backend.verify(GRANT_ID, "read_file");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unknown_grant");
+  });
+
+  test("maps 'revoked' chain status to revoked result", async () => {
+    const api = makeMockApi({
+      verifyChain: mock(async () => ({
+        ok: true as const,
+        value: makeChainResponse({
+          chain: [makeChainItem({ status: "revoked" })],
+        }),
       })),
     });
     const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
@@ -343,25 +453,47 @@ describe("verify()", () => {
     if (!result.ok) expect(result.reason).toBe("revoked");
   });
 
-  test("maps 'chain_depth_exceeded' chain reason to chain_depth_exceeded result", async () => {
+  test("maps 'expired' chain status to expired result", async () => {
     const api = makeMockApi({
       verifyChain: mock(async () => ({
         ok: true as const,
-        value: makeChainResponse({ valid: false, reason: "chain_depth_exceeded" }),
+        value: makeChainResponse({
+          chain: [makeChainItem({ status: "expired" })],
+        }),
       })),
     });
     const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
     await backend.grant(SCOPE, CHILD_ID);
     const result = await backend.verify(GRANT_ID, "read_file");
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("chain_depth_exceeded");
+    if (!result.ok) expect(result.reason).toBe("expired");
   });
 
-  test("maps unknown chain reason to invalid_signature result", async () => {
+  test("maps total_depth > maxChainDepth to chain_depth_exceeded", async () => {
     const api = makeMockApi({
       verifyChain: mock(async () => ({
         ok: true as const,
-        value: makeChainResponse({ valid: false, reason: "invalid_signature" }),
+        value: makeChainResponse({ total_depth: 99 }),
+      })),
+    });
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: PARENT_ID,
+      maxChainDepth: 3,
+    });
+    await backend.grant(SCOPE, CHILD_ID);
+    const result = await backend.verify(GRANT_ID, "read_file");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("chain_depth_exceeded");
+  });
+
+  test("maps unknown chain status to invalid_signature result", async () => {
+    const api = makeMockApi({
+      verifyChain: mock(async () => ({
+        ok: true as const,
+        value: makeChainResponse({
+          chain: [makeChainItem({ status: "weird-broken-state" })],
+        }),
       })),
     });
     const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
@@ -371,37 +503,19 @@ describe("verify()", () => {
     if (!result.ok) expect(result.reason).toBe("invalid_signature");
   });
 
-  test("verify on unknown grant id (not in local store) calls chain and enforces scope", async () => {
+  test("verify on unknown grant id (no local store) fails closed on scope", async () => {
     const api = makeMockApi({
       verifyChain: mock(async () => ({
         ok: true as const,
-        value: makeChainResponse({
-          valid: true,
-          scope: { allowed_operations: ["write_file"], remove_grants: [] },
-        }),
+        value: makeChainResponse(),
       })),
     });
     const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
-    // Do NOT call backend.grant() — verify an unknown ID directly
-    const result = await backend.verify(GRANT_ID, "read_file"); // read_file NOT in scope
+    // Do NOT call backend.grant() — verify an unknown ID directly. We have no
+    // local scope, and chain endpoint does not return scope, so we fail closed.
+    const result = await backend.verify(GRANT_ID, "read_file");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("scope_exceeded");
-  });
-
-  test("verify on unknown grant id returns ok when tool is in nexus scope", async () => {
-    const api = makeMockApi({
-      verifyChain: mock(async () => ({
-        ok: true as const,
-        value: makeChainResponse({
-          valid: true,
-          scope: { allowed_operations: ["read_file"], remove_grants: [] },
-        }),
-      })),
-    });
-    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
-    // Do NOT call backend.grant() — verify an unknown ID directly
-    const result = await backend.verify(GRANT_ID, "read_file");
-    expect(result.ok).toBe(true);
   });
 });
 
@@ -432,17 +546,10 @@ describe("list()", () => {
       listDelegations: mock(async () => ({
         ok: true as const,
         value: {
-          delegations: [
-            {
-              delegation_id: remoteId,
-              parent_agent_id: PARENT_ID,
-              child_agent_id: CHILD_ID,
-              namespace_mode: "COPY" as const,
-              created_at: new Date().toISOString(),
-              expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-            },
-          ],
+          delegations: [makeListEntry({ delegation_id: remoteId })],
           total: 1,
+          limit: 50,
+          offset: 0,
         },
       })),
     });
@@ -459,17 +566,10 @@ describe("list()", () => {
       listDelegations: mock(async () => ({
         ok: true as const,
         value: {
-          delegations: [
-            {
-              delegation_id: GRANT_ID,
-              parent_agent_id: PARENT_ID,
-              child_agent_id: CHILD_ID,
-              namespace_mode: "COPY" as const,
-              created_at: new Date().toISOString(),
-              expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-            },
-          ],
+          delegations: [makeListEntry()],
           total: 1,
+          limit: 50,
+          offset: 0,
         },
       })),
     });
@@ -479,6 +579,36 @@ describe("list()", () => {
     expect(grants.length).toBe(1);
     // Local grant has scope; Nexus list entry does not
     expect(grants[0]?.scope.permissions.allow).toEqual(["read_file"]);
+  });
+
+  test("paginates with limit/offset until offset >= total", async () => {
+    let callCount = 0;
+    const api = makeMockApi({
+      listDelegations: mock(async (params?: NexusDelegationListParams) => {
+        callCount++;
+        // Simulate 3 pages of 2 items each, total 6
+        const offset = params?.offset ?? 0;
+        const remaining = Math.max(0, 6 - offset);
+        const pageSize = Math.min(2, remaining);
+        return {
+          ok: true as const,
+          value: {
+            delegations: Array.from({ length: pageSize }, (_, i) =>
+              makeListEntry({ delegation_id: `del-${offset + i}` }),
+            ),
+            total: 6,
+            limit: params?.limit ?? 50,
+            offset,
+          },
+        };
+      }),
+    });
+    // Override DEFAULT_LIST_PAGE_SIZE indirectly: we trust default=50, but the
+    // mock returns 2 per call — we should keep calling until offset hits total.
+    const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
+    const grants = await backend.list();
+    expect(grants.length).toBe(6);
+    expect(callCount).toBeGreaterThanOrEqual(3);
   });
 });
 

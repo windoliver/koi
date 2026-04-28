@@ -1,71 +1,127 @@
 import type { DelegationId, KoiError, Result } from "@koi/core";
 
 // ---------------------------------------------------------------------------
-// Wire types (Nexus API shape)
+// Wire types (Nexus v2 API shape)
 // ---------------------------------------------------------------------------
 
-export type NexusNamespaceMode = "COPY" | "CLEAN" | "SHARED";
+export type NexusNamespaceMode = "copy" | "clean" | "shared";
 
-export interface NexusDelegateScope {
-  readonly allowed_operations: readonly string[];
-  readonly remove_grants: readonly string[];
-  readonly scope_prefix?: string | undefined;
+/**
+ * Optional fine-grained scope constraints (DelegationScopeModel in OpenAPI).
+ * Sent inside DelegateRequest.scope.
+ */
+export interface NexusDelegationScopeModel {
+  readonly allowed_operations?: readonly string[] | undefined;
   readonly resource_patterns?: readonly string[] | undefined;
+  readonly budget_limit?: string | null | undefined;
+  readonly max_depth?: number | undefined;
 }
 
+/**
+ * Wire-format request for POST /api/v2/agents/delegate.
+ *
+ * Parent identity is inferred from the API key — there is no `parent_agent_id`
+ * field. There is no `max_depth` at the top level (it lives on the optional
+ * scope object). Idempotency may be passed via header by the transport layer.
+ */
 export interface NexusDelegateRequest {
-  readonly parent_agent_id: string;
-  readonly child_agent_id: string;
-  readonly scope: NexusDelegateScope;
+  readonly worker_id: string;
+  readonly worker_name: string;
   readonly namespace_mode: NexusNamespaceMode;
-  readonly max_depth: number;
-  readonly ttl_seconds: number;
-  readonly can_sub_delegate: boolean;
-  readonly idempotency_key: string;
+  readonly remove_grants?: readonly string[] | null | undefined;
+  readonly add_grants?: readonly string[] | null | undefined;
+  readonly readonly_paths?: readonly string[] | null | undefined;
+  readonly scope_prefix?: string | null | undefined;
+  readonly ttl_seconds?: number | null | undefined;
+  readonly intent?: string | undefined;
+  readonly can_sub_delegate?: boolean | undefined;
+  readonly scope?: NexusDelegationScopeModel | null | undefined;
+  readonly auto_warmup?: boolean | undefined;
 }
 
+/**
+ * Wire-format response for POST /api/v2/agents/delegate.
+ */
 export interface NexusDelegateResponse {
   readonly delegation_id: string;
+  readonly worker_agent_id: string;
   readonly api_key: string;
-  readonly created_at: string;
-  readonly expires_at: string;
+  readonly mount_table: readonly string[];
+  readonly expires_at: string | null;
+  readonly delegation_mode: string;
+  readonly warmup_success?: boolean | null | undefined;
 }
 
-export interface NexusChainVerifyResponse {
+/**
+ * Single node in a delegation chain.
+ */
+export interface NexusDelegationChainItem {
   readonly delegation_id: string;
-  readonly valid: boolean;
-  readonly reason?: string | undefined;
-  readonly chain_depth: number;
-  readonly scope?: NexusDelegateScope | undefined;
+  readonly agent_id: string;
+  readonly parent_agent_id: string;
+  readonly delegation_mode: string;
+  readonly status: string;
+  readonly depth: number;
+  readonly intent: string;
+  readonly created_at: string;
 }
 
+/**
+ * Wire-format response for GET /api/v2/agents/delegate/{id}/chain.
+ */
+export interface NexusDelegationChainResponse {
+  readonly chain: readonly NexusDelegationChainItem[];
+  readonly total_depth: number;
+}
+
+/**
+ * Wire-format entry returned from GET /api/v2/agents/delegate (list).
+ */
 export interface NexusDelegationEntry {
   readonly delegation_id: string;
+  readonly agent_id: string;
   readonly parent_agent_id: string;
-  readonly child_agent_id: string;
-  readonly namespace_mode: NexusNamespaceMode;
+  readonly delegation_mode: string;
+  readonly status: string;
+  readonly scope_prefix: string | null;
+  readonly lease_expires_at: string | null;
+  readonly zone_id: string | null;
+  readonly intent: string;
+  readonly depth: number;
+  readonly can_sub_delegate: boolean;
   readonly created_at: string;
-  readonly expires_at: string;
 }
 
+/**
+ * Wire-format response for GET /api/v2/agents/delegate (paginated list).
+ */
 export interface NexusDelegationListResponse {
   readonly delegations: readonly NexusDelegationEntry[];
   readonly total: number;
-  readonly cursor?: string | undefined;
+  readonly limit: number;
+  readonly offset: number;
 }
 
 // ---------------------------------------------------------------------------
 // API interface
 // ---------------------------------------------------------------------------
 
+export interface NexusDelegationListParams {
+  readonly limit?: number | undefined;
+  readonly offset?: number | undefined;
+}
+
 export interface NexusDelegationApi {
   readonly createDelegation: (
     req: NexusDelegateRequest,
+    options?: { readonly idempotencyKey?: string | undefined } | undefined,
   ) => Promise<Result<NexusDelegateResponse, KoiError>>;
   readonly revokeDelegation: (id: DelegationId) => Promise<Result<void, KoiError>>;
-  readonly verifyChain: (id: DelegationId) => Promise<Result<NexusChainVerifyResponse, KoiError>>;
+  readonly verifyChain: (
+    id: DelegationId,
+  ) => Promise<Result<NexusDelegationChainResponse, KoiError>>;
   readonly listDelegations: (
-    cursor?: string,
+    params?: NexusDelegationListParams,
   ) => Promise<Result<NexusDelegationListResponse, KoiError>>;
 }
 
@@ -107,12 +163,17 @@ export function createNexusDelegationApi(config: NexusDelegationApiConfig): Nexu
     method: string,
     path: string,
     body?: unknown,
+    extraHeaders?: Record<string, string>,
   ): Promise<Result<T, KoiError>> {
     const signal = AbortSignal.timeout(deadlineMs);
     try {
       const res = await fetchFn(`${config.url}${path}`, {
         method,
-        headers: { "Content-Type": "application/json", ...authHeaders() },
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders(),
+          ...(extraHeaders ?? {}),
+        },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         signal,
       });
@@ -139,12 +200,21 @@ export function createNexusDelegationApi(config: NexusDelegationApiConfig): Nexu
   }
 
   return {
-    createDelegation: (req) => request<NexusDelegateResponse>("POST", BASE, req),
+    createDelegation: (req, options) => {
+      const headers =
+        options?.idempotencyKey !== undefined
+          ? { "Idempotency-Key": options.idempotencyKey }
+          : undefined;
+      return request<NexusDelegateResponse>("POST", BASE, req, headers);
+    },
     revokeDelegation: (id) => request<void>("DELETE", `${BASE}/${id}`),
-    verifyChain: (id) => request<NexusChainVerifyResponse>("GET", `${BASE}/${id}/chain`),
-    listDelegations: (cursor) => {
-      const q = cursor !== undefined ? `?cursor=${encodeURIComponent(cursor)}` : "";
-      return request<NexusDelegationListResponse>("GET", `${BASE}${q}`);
+    verifyChain: (id) => request<NexusDelegationChainResponse>("GET", `${BASE}/${id}/chain`),
+    listDelegations: (params) => {
+      const qs = new URLSearchParams();
+      if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+      if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+      const q = qs.toString();
+      return request<NexusDelegationListResponse>("GET", `${BASE}${q.length > 0 ? `?${q}` : ""}`);
     },
   };
 }

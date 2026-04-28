@@ -65,25 +65,27 @@ const DEFAULT_TTL_SECONDS = 3600;
 const DEFAULT_VERIFY_CACHE_TTL_MS = 30_000;
 const DEFAULT_MAX_PENDING = 100;
 const DEFAULT_MAX_RETRIES = 5;
+const DEFAULT_LIST_PAGE_SIZE = 50;
 const UNKNOWN_AGENT_ID: AgentId = agentId("unknown");
 
 // ---------------------------------------------------------------------------
-// Reason mapping (private helper)
+// Reason mapping (private helpers)
 // ---------------------------------------------------------------------------
 
-function mapNexusReason(reason: string | undefined): DelegationDenyReason {
-  switch (reason) {
+/**
+ * Map a Nexus chain item `status` string to a Koi deny reason. Active chain
+ * leaves are valid; everything else maps to a deny reason.
+ */
+function chainStatusToDenyReason(status: string): DelegationDenyReason | undefined {
+  switch (status) {
+    case "active":
+      return undefined;
     case "expired":
       return "expired";
     case "revoked":
       return "revoked";
-    case "scope_exceeded":
-      return "scope_exceeded";
-    case "chain_depth_exceeded":
-      return "chain_depth_exceeded";
-    case "not_found":
-    case "unknown":
-      return "unknown_grant";
+    case "completed":
+      return "revoked";
     default:
       return "invalid_signature";
   }
@@ -102,7 +104,7 @@ export function createNexusDelegationBackend(
     maxChainDepth = DEFAULT_MAX_CHAIN_DEPTH,
     defaultTtlSeconds = DEFAULT_TTL_SECONDS,
     namespaceMode,
-    canSubDelegate = true,
+    canSubDelegate = false,
     verifyCacheTtlMs = DEFAULT_VERIFY_CACHE_TTL_MS,
     idempotencyPrefix,
     maxPendingRevocations = DEFAULT_MAX_PENDING,
@@ -181,26 +183,39 @@ export function createNexusDelegationBackend(
         ? `${idempotencyPrefix}${ownId}:${delegateeId}`
         : randomUUID();
 
-    const result = await api.createDelegation({
-      parent_agent_id: ownId,
-      child_agent_id: delegateeId,
-      scope: mapScopeToNexus(scope),
-      namespace_mode: mapNamespaceMode(namespaceMode),
-      max_depth: maxChainDepth,
-      ttl_seconds: ttlSeconds,
-      can_sub_delegate: canSubDelegate && maxChainDepth > 0,
-      idempotency_key: idempotencyKey,
-    });
+    const adjustments = mapScopeToNexus(scope);
+
+    const result = await api.createDelegation(
+      {
+        worker_id: delegateeId,
+        worker_name: delegateeId,
+        namespace_mode: mapNamespaceMode(namespaceMode),
+        ttl_seconds: ttlSeconds,
+        intent: "",
+        can_sub_delegate: canSubDelegate && maxChainDepth > 0,
+        ...(adjustments.add_grants.length > 0 ? { add_grants: adjustments.add_grants } : {}),
+        ...(adjustments.remove_grants.length > 0
+          ? { remove_grants: adjustments.remove_grants }
+          : {}),
+        ...(adjustments.readonly_paths.length > 0
+          ? { readonly_paths: adjustments.readonly_paths }
+          : {}),
+        ...(scope.resources !== undefined && scope.resources.length > 0
+          ? { scope: { resource_patterns: scope.resources, max_depth: maxChainDepth } }
+          : {}),
+      },
+      { idempotencyKey },
+    );
 
     if (!result.ok) {
       throw new Error(`Nexus delegation grant failed: ${result.error.message}`);
     }
 
     const now = Date.now();
-    const parsedCreatedAt = Date.parse(result.value.created_at);
-    const parsedExpiresAt = Date.parse(result.value.expires_at);
-    const createdAt = Number.isFinite(parsedCreatedAt) ? parsedCreatedAt : now;
+    const expiresRaw = result.value.expires_at;
+    const parsedExpiresAt = expiresRaw !== null ? Date.parse(expiresRaw) : Number.NaN;
     const expiresAt = Number.isFinite(parsedExpiresAt) ? parsedExpiresAt : now + ttlSeconds * 1000;
+
     const g: DelegationGrant = {
       id: delegationId(result.value.delegation_id),
       issuerId: ownId,
@@ -208,7 +223,7 @@ export function createNexusDelegationBackend(
       scope,
       chainDepth: 0,
       maxChainDepth,
-      createdAt,
+      createdAt: now,
       expiresAt,
       proof: { kind: "nexus", token: result.value.api_key },
     };
@@ -258,57 +273,44 @@ export function createNexusDelegationBackend(
     }
 
     const chain = result.value;
-    if (!chain.valid) {
-      const reason = mapNexusReason(chain.reason);
-      const r: DelegationVerifyResult = { ok: false, reason };
+    // The chain endpoint traces from leaf (this delegation) → root. The first
+    // item is the delegation we asked about. An empty chain = unknown_grant.
+    const leaf = chain.chain[0];
+    if (leaf === undefined) {
+      const r: DelegationVerifyResult = { ok: false, reason: "unknown_grant" };
+      verifyCache?.set(id, toolId, r);
+      return r;
+    }
+
+    const denyReason = chainStatusToDenyReason(leaf.status);
+    if (denyReason !== undefined) {
+      const r: DelegationVerifyResult = { ok: false, reason: denyReason };
+      verifyCache?.set(id, toolId, r);
+      return r;
+    }
+
+    if (chain.total_depth > maxChainDepth) {
+      const r: DelegationVerifyResult = { ok: false, reason: "chain_depth_exceeded" };
       verifyCache?.set(id, toolId, r);
       return r;
     }
 
     const stored = grantStore.get(id);
-    let resolvedScope: DelegationScope | undefined;
-    if (stored !== undefined) {
-      resolvedScope = stored.scope;
-    } else if (chain.scope !== undefined) {
-      const baseScope: DelegationScope = {
-        permissions: {
-          allow: [...chain.scope.allowed_operations],
-          deny: [...chain.scope.remove_grants],
-        },
-      };
-      resolvedScope =
-        chain.scope.resource_patterns !== undefined
-          ? { ...baseScope, resources: [...chain.scope.resource_patterns] }
-          : baseScope;
-    }
-
-    // Fail-closed: no scope available
-    if (resolvedScope === undefined) {
+    // The chain endpoint does not return scope. Local store wins for scope
+    // enforcement; if we have no local entry, we fail closed on scope.
+    if (stored === undefined) {
       const r: DelegationVerifyResult = { ok: false, reason: "scope_exceeded" };
       verifyCache?.set(id, toolId, r);
       return r;
     }
 
-    // Cross-node scope enforcement (no local grant)
-    if (stored === undefined && !matchTool(toolId, resolvedScope)) {
+    if (!matchTool(toolId, stored.scope)) {
       const r: DelegationVerifyResult = { ok: false, reason: "scope_exceeded" };
       verifyCache?.set(id, toolId, r);
       return r;
     }
 
-    const g: DelegationGrant = stored ?? {
-      id,
-      issuerId: ownId,
-      delegateeId: ownId,
-      scope: resolvedScope,
-      chainDepth: chain.chain_depth,
-      maxChainDepth,
-      createdAt: 0,
-      expiresAt: 0,
-      proof: { kind: "nexus", token: "" },
-    };
-
-    const r: DelegationVerifyResult = { ok: true, grant: g };
+    const r: DelegationVerifyResult = { ok: true, grant: stored };
     verifyCache?.set(id, toolId, r);
     return r;
   }
@@ -351,10 +353,14 @@ export function createNexusDelegationBackend(
 
   async function list(): Promise<readonly DelegationGrant[]> {
     const grants: DelegationGrant[] = [];
-    let cursor: string | undefined;
+    const limit = DEFAULT_LIST_PAGE_SIZE;
+    // let justified: paging cursor mutated until we've consumed all `total` records
+    let offset = 0;
+    // let justified: continuation flag toggled by break-condition at end of body
+    let more = true;
 
-    do {
-      const result = await api.listDelegations(cursor);
+    while (more) {
+      const result = await api.listDelegations({ limit, offset });
       if (!result.ok) {
         throw new Error(`Nexus delegation list failed: ${result.error.message}`);
       }
@@ -366,21 +372,25 @@ export function createNexusDelegationBackend(
           grants.push(local);
           continue;
         }
+        const expiresMs =
+          entry.lease_expires_at !== null ? Date.parse(entry.lease_expires_at) : Number.NaN;
+        const createdMs = Date.parse(entry.created_at);
         grants.push({
           id: eid,
-          issuerId: ownId,
-          delegateeId: agentId(entry.child_agent_id),
+          issuerId: agentId(entry.parent_agent_id),
+          delegateeId: agentId(entry.agent_id),
           scope: { permissions: {} },
-          chainDepth: 0,
+          chainDepth: entry.depth,
           maxChainDepth,
-          createdAt: new Date(entry.created_at).getTime(),
-          expiresAt: new Date(entry.expires_at).getTime(),
+          createdAt: Number.isFinite(createdMs) ? createdMs : 0,
+          expiresAt: Number.isFinite(expiresMs) ? expiresMs : 0,
           proof: { kind: "nexus", token: "" },
         });
       }
 
-      cursor = result.value.cursor;
-    } while (cursor !== undefined);
+      offset += result.value.delegations.length;
+      more = offset < result.value.total && result.value.delegations.length > 0;
+    }
 
     return grants;
   }
