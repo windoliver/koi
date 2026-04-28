@@ -83,10 +83,17 @@ function isCacheable(s: DedupState, toolId: string): boolean {
   return s.includeSet.has(toolId);
 }
 
-function notifyHit(s: DedupState, sessionId: string, toolId: string, cacheKey: string): void {
+function notifyHit(
+  s: DedupState,
+  sessionId: string,
+  toolId: string,
+  cacheKey: string,
+  request: ToolRequest,
+  response: ToolResponse,
+): void {
   if (s.onCacheHit === undefined) return;
   try {
-    s.onCacheHit({ sessionId, toolId, cacheKey });
+    s.onCacheHit({ sessionId, toolId, cacheKey, request, response });
   } catch {
     // observer errors must not break cache behavior
   }
@@ -224,13 +231,14 @@ async function ddWrapToolCall(
   const cached = await s.store.get(cacheKey);
   if (cached !== undefined) {
     if (cached.expiresAt > s.now()) {
-      notifyHit(s, sessionId, toolId, cacheKey);
       // Deep-clone so the cached entry is immune to caller-side mutation.
       const cloned = cloneResponse(cached.response);
-      return {
+      const stamped: ToolResponse = {
         ...cloned,
         metadata: { ...cloned.metadata, cached: true },
       };
+      notifyHit(s, sessionId, toolId, cacheKey, request, stamped);
+      return stamped;
     }
     await s.store.delete(cacheKey);
   }

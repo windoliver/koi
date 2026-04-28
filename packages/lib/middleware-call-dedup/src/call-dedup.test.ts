@@ -204,6 +204,42 @@ describe("createCallDedupMiddleware", () => {
     expect(r?.metadata?.cached).toBe(true);
   });
 
+  // Regression (#1419 round 14): onCacheHit must include the request +
+  // cached response so callers can wire dedup to an external audit /
+  // transcript sink. dedup runs at intercept and short-circuits before
+  // observe-phase middleware — this hook is the explicit observability
+  // seam for cache hits.
+  test("onCacheHit receives request + cached response for audit wiring", async () => {
+    const captured: Array<{
+      sessionId: string;
+      toolId: string;
+      requestInput: unknown;
+      output: unknown;
+      cached: unknown;
+    }> = [];
+    const mw = createCallDedupMiddleware({
+      include: ["lookup"],
+      onCacheHit: (info) => {
+        captured.push({
+          sessionId: info.sessionId,
+          toolId: info.toolId,
+          requestInput: info.request.input,
+          output: info.response.output,
+          cached: info.response.metadata?.cached,
+        });
+      },
+    });
+    const ctx = turnCtx();
+    const h = makeHandler("hello");
+    await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 7 } }, h.handler);
+    await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 7 } }, h.handler);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.toolId).toBe("lookup");
+    expect(captured[0]?.requestInput).toEqual({ q: 7 });
+    expect(captured[0]?.output).toBe("hello");
+    expect(captured[0]?.cached).toBe(true);
+  });
+
   // Regression: ambient-state filesystem reads must be in DEFAULT_EXCLUDE.
   // If another tool mutates the file between two cached reads, the second
   // read returns up-to-TTL-old bytes — exactly the stale-read failure mode

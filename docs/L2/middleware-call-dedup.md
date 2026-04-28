@@ -29,6 +29,27 @@ Even for allowlisted tools, dedup bypasses when the `ToolRequest` carries:
 
 `callId` and `metadata` (notably `metadata.traceCallId`) are observability/correlation fields stamped on every runtime request — they are deliberately NOT identity-relevant for the cache key. Dedup's contract is "two identical tool calls return the same result", and that statement must hold across distinct trace ids. Cached responses are marked `metadata.cached = true` so downstream observability can distinguish hits from real executions.
 
+### Cache-hit observability (`onCacheHit`)
+
+dedup runs at intercept phase and short-circuits when it serves a cache hit, so observe-phase middleware (audit, transcript, event-trace) does NOT see those calls. This is intentional — cache hits skip downstream quota (`call-limits`) and billing (`pay`) which is a key feature — but it means cache hits are invisible to in-band audit middleware.
+
+The `onCacheHit` callback is the explicit observability seam: it fires on every hit with the full `{sessionId, toolId, cacheKey, request, response}`. Wire it to your audit / transcript / metrics sink so cache hits remain visible to ops and compliance:
+
+```typescript
+createCallDedupMiddleware({
+  include: ["lookup"],
+  onCacheHit: ({ request, response, sessionId }) => {
+    auditSink.append({
+      kind: "tool_call_cache_hit",
+      sessionId,
+      toolId: request.toolId,
+      input: request.input,
+      output: response.output,
+    });
+  },
+});
+```
+
 ---
 
 ## Why It Exists

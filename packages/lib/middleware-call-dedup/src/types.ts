@@ -2,7 +2,7 @@
  * Call dedup — cache types.
  */
 
-import type { ToolResponse } from "@koi/core";
+import type { ToolRequest, ToolResponse } from "@koi/core";
 
 export interface CacheEntry {
   readonly response: ToolResponse;
@@ -21,4 +21,19 @@ export interface CacheHitInfo {
   readonly sessionId: string;
   readonly toolId: string;
   readonly cacheKey: string;
+  /**
+   * The request that produced the cache hit. Included so callers can
+   * wire `onCacheHit` to an audit/transcript sink — dedup runs at
+   * intercept phase and short-circuits before downstream observe-phase
+   * middleware (audit, transcript, event-trace) gets a chance to record
+   * the call. This callback is the explicit observability seam for that
+   * gap.
+   */
+  readonly request: ToolRequest;
+  /**
+   * The cached response served to the caller (with `metadata.cached =
+   * true` already stamped). Wire this through the same audit/transcript
+   * pathway used for live tool results to keep cache hits visible.
+   */
+  readonly response: ToolResponse;
 }

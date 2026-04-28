@@ -28,10 +28,21 @@ import type { CircuitBreakerMiddlewareConfig } from "./types.js";
 
 const DEFAULT_MAX_KEYS = 50;
 
-function defaultExtractKey(model: string | undefined, _ctx: TurnContext): string {
+function providerPrefix(model: string | undefined): string {
   if (model === undefined || model.length === 0) return "default";
   const slash = model.indexOf("/");
   return slash > 0 ? model.slice(0, slash) : model;
+}
+
+/**
+ * Default key strategy: provider+session. Safe for shared/multi-tenant
+ * runtimes — one tenant's quota exhaustion or bad credential cannot
+ * blackhole every other session on the same provider. Single-tenant
+ * deployments that want a shared provider-level breaker should opt in
+ * with an explicit `extractKey: (m) => providerPrefix(m)`.
+ */
+function defaultExtractKey(model: string | undefined, ctx: TurnContext): string {
+  return `${providerPrefix(model)}|${ctx.session.sessionId}`;
 }
 
 /**
@@ -88,6 +99,17 @@ function createCircuitOpenError(key: string): KoiError {
     message: `Circuit breaker open for "${key}" — too many recent failures`,
     retryable: true,
     context: { key },
+  };
+}
+
+function createCapacityExhaustedError(key: string, maxKeys: number): KoiError {
+  return {
+    code: "RATE_LIMIT",
+    message:
+      `Circuit breaker capacity exhausted (${String(maxKeys)} keys, all active) — ` +
+      `refusing new key "${key}" to preserve fail-fast under high-cardinality outage`,
+    retryable: true,
+    context: { key, maxKeys },
   };
 }
 
@@ -286,10 +308,12 @@ async function cbWrapModelCall(
 ): Promise<ModelResponse> {
   const key = s.extractKey(request.model, ctx);
   const breaker = getOrCreateBreaker(s, key);
-  // No breaker available (maxKeys exhausted with all circuits active).
-  // Pass through without coverage — preferable to silently growing the
-  // map past its hard cap.
-  if (breaker === undefined) return next(request);
+  // Capacity exhausted with every existing entry active. Reject fast
+  // with a local RATE_LIMIT — passthrough would let the high-cardinality
+  // outage that filled the map degrade into full upstream timeouts for
+  // every new key, exactly the failure mode this middleware exists to
+  // contain.
+  if (breaker === undefined) throw createCapacityExhaustedError(key, s.maxKeys);
   trackSessionKey(s, ctx.session.sessionId, key);
   if (!breaker.isAllowed()) {
     throw createCircuitOpenError(key);
@@ -316,8 +340,9 @@ function cbWrapModelStream(
 ): AsyncIterable<ModelChunk> {
   const key = s.extractKey(request.model, ctx);
   const breaker = getOrCreateBreaker(s, key);
-  // No breaker available — pass through (see cbWrapModelCall for rationale).
-  if (breaker === undefined) return next(request);
+  // Capacity exhausted — reject the stream with the same local
+  // RATE_LIMIT used by cbWrapModelCall. See that path for rationale.
+  if (breaker === undefined) return errorStream(createCapacityExhaustedError(key, s.maxKeys));
   trackSessionKey(s, ctx.session.sessionId, key);
   // Snapshot before isAllowed so we can detect an OPEN→HALF_OPEN transition
   // that consumed our probe slot. The breaker primitive marks `probeInFlight`
