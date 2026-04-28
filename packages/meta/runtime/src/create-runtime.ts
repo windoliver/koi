@@ -531,6 +531,19 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // runId sees a paired close).
     const stableLifecycleRef: { capturedSession?: SessionContext } = {};
 
+    // Allow-list of middleware names that opt into the stable-session
+    // lifecycle contract (1-start / 1-end across many `stream()` calls
+    // sharing one `RuntimeConfig.sessionId`). Custom caller-supplied
+    // middleware keeps the original per-stream contract by default —
+    // only the resilience trio actually advertises per-session state
+    // that must survive across turns.
+    const STABLE_LIFECYCLE_NAMES: ReadonlySet<string> = new Set([
+      "koi:circuit-breaker",
+      "koi:tool-call-limit",
+      "koi:model-call-limit",
+      "koi:call-dedup",
+    ]);
+
     // Compose middleware around adapter terminals, then apply timeout
     const composedAdapter = composeMiddlewareIntoAdapter(
       adapterWithFsTools,
@@ -551,6 +564,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       otelConfig,
       config.sessionId,
       stableLifecycleRef,
+      STABLE_LIFECYCLE_NAMES,
     );
     const adapter = applyActivityTimeout(composedAdapter, activityTimeoutConfig);
 
@@ -838,12 +852,22 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         // correlates start/end by runId sees the SAME object on close.
         if (config.sessionId !== undefined && stableLifecycleRef.capturedSession !== undefined) {
           try {
-            const sortedForFinalize = sortMiddlewareByPhase(middleware);
-            await runSessionHooks(
-              sortedForFinalize,
-              "onSessionEnd",
-              stableLifecycleRef.capturedSession,
-            ).catch(noop);
+            // Only the resilience trio opts into the deferred 1-end
+            // semantics — custom user middleware was already finalized
+            // per-stream and must not receive a second `onSessionEnd`
+            // here. Filter to stable-lifecycle names so user MW that
+            // allocates stream-scoped state isn't double-closed.
+            const stableMwForFinalize = middleware.filter((mw) =>
+              STABLE_LIFECYCLE_NAMES.has(mw.name),
+            );
+            if (stableMwForFinalize.length > 0) {
+              const sortedForFinalize = sortMiddlewareByPhase(stableMwForFinalize);
+              await runSessionHooks(
+                sortedForFinalize,
+                "onSessionEnd",
+                stableLifecycleRef.capturedSession,
+              ).catch(noop);
+            }
           } catch {
             // Defensive: never block dispose on session-end failures.
           }
@@ -1791,6 +1815,7 @@ function composeMiddlewareIntoAdapter(
   otelConfig?: OtelMiddlewareConfig,
   runtimeSessionId?: string,
   stableLifecycleRef?: { capturedSession?: SessionContext },
+  stableLifecycleNames?: ReadonlySet<string>,
 ): EngineAdapter {
   // Stable-session lifecycle: when a fixed `runtimeSessionId` is set,
   // every stream() shares one logical session, so middleware lifecycle
@@ -2167,11 +2192,34 @@ function composeMiddlewareIntoAdapter(
       // transient init failure must not permanently disable the hook.
       // On success we capture the originating SessionContext so the
       // deferred onSessionEnd at dispose can reuse it (matched runId).
-      const baseSorted = sortMiddlewareByPhase(middleware);
+      // Split base middleware into two lifecycle groups under stable
+      // sessionId. Custom caller-supplied middleware retains the
+      // per-stream onSessionStart/onSessionEnd contract — only the
+      // resilience trio (whose state must survive across `stream()`
+      // calls under one stable sessionId) defers to the 1-start/1-end
+      // semantics. Without this split, any user-supplied middleware
+      // that allocates per-stream state, writes open/close audit
+      // records, or correlates lifecycle by runId would leak state
+      // and misattribute later streams under the first stream's
+      // session lifecycle.
+      const stableNames = stableLifecycleNames ?? new Set<string>();
+      const stableMw =
+        runtimeSessionId !== undefined
+          ? middleware.filter((mw) => stableNames.has(mw.name))
+          : ([] as readonly KoiMiddleware[]);
+      const userPerStreamMw =
+        runtimeSessionId !== undefined
+          ? middleware.filter((mw) => !stableNames.has(mw.name))
+          : middleware;
+      const baseSorted = sortMiddlewareByPhase(stableMw);
       let baseStartPromise: Promise<void>;
       if (runtimeSessionId === undefined) {
-        // Each stream IS its own session — straight per-stream start.
-        baseStartPromise = runSessionHooks(baseSorted, "onSessionStart", ctx.session);
+        // No stable mode — fall through to per-stream lifecycle on the
+        // full middleware chain (handled via perStreamLifecycleMw below).
+        baseStartPromise = Promise.resolve();
+      } else if (stableMw.length === 0) {
+        // Stable mode but no resilience MW present — nothing to defer.
+        baseStartPromise = Promise.resolve();
       } else if (capturedStableSession !== undefined) {
         // Already initialized — skip.
         baseStartPromise = Promise.resolve();
@@ -2197,7 +2245,12 @@ function composeMiddlewareIntoAdapter(
         baseStartPromise = inflight;
       }
       // Per-stream observers always run their own start/end pair.
-      const perStreamLifecycleMw: KoiMiddleware[] = [];
+      // Custom caller-supplied middleware (userPerStreamMw) is also
+      // included here so its onSessionStart / onSessionEnd contract is
+      // preserved even when a stable RuntimeConfig.sessionId is set —
+      // only the resilience trio (in `stableMw` above) opts into the
+      // 1-start/1-end semantics.
+      const perStreamLifecycleMw: KoiMiddleware[] = [...userPerStreamMw];
       if (eventTraceHandle !== undefined) perStreamLifecycleMw.push(eventTraceHandle.middleware);
       if (otelHandle !== undefined) perStreamLifecycleMw.push(otelHandle.middleware);
       const perStreamSorted = sortMiddlewareByPhase(perStreamLifecycleMw);
@@ -2289,13 +2342,15 @@ function composeMiddlewareIntoAdapter(
           if (perStreamLifecycleMw.length > 0) {
             await runSessionHooks(perStreamSorted, "onSessionEnd", ctx.session).catch(noop);
           }
-          // Base middleware lifecycle. Under stable sessionId, defer to
-          // dispose() so per-session state (call-dedup cache,
+          // Resilience-trio lifecycle. Under stable sessionId, defer
+          // to dispose() so per-session state (call-dedup cache,
           // call-limits counters, breaker history) survives across
-          // turns. Without a stable sessionId, each stream IS the
-          // session, so finalize the base chain here too.
+          // turns. Without a stable sessionId, this branch runs the
+          // full middleware chain via perStreamLifecycleMw above (which
+          // includes user middleware) — there is no separate stable
+          // group, so nothing to finalize here.
           if (runtimeSessionId === undefined) {
-            await runSessionHooks(baseSorted, "onSessionEnd", ctx.session).catch(noop);
+            // Already finalized above as part of perStreamLifecycleMw.
           }
         },
         onFlushError,

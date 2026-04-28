@@ -1680,7 +1680,10 @@ describe("Golden: @koi/middleware-call-dedup", () => {
   test("RuntimeConfig.sessionId defers onSessionEnd across stream() invocations", async () => {
     const endCalls: string[] = [];
     const probe = {
-      name: "session-end-probe",
+      // Use a resilience-trio name so this probe opts into the
+      // stable 1-start/1-end lifecycle (custom middleware now keeps
+      // the per-stream contract by default — see round 30 fix).
+      name: "koi:circuit-breaker",
       phase: "observe" as const,
       priority: 999,
       describeCapabilities: () => ({ label: "probe", description: "probe" }),
@@ -1718,7 +1721,8 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     const startCalls: string[] = [];
     const endCalls: string[] = [];
     const probe = {
-      name: "session-lifecycle-probe",
+      // Resilience-trio name → opts into stable 1-start/1-end lifecycle.
+      name: "koi:tool-call-limit",
       phase: "observe" as const,
       priority: 999,
       describeCapabilities: () => ({ label: "probe", description: "probe" }),
@@ -1764,7 +1768,8 @@ describe("Golden: @koi/middleware-call-dedup", () => {
       release = r;
     });
     const probe = {
-      name: "concurrent-start-probe",
+      // Resilience-trio name → opts into stable 1-start/1-end lifecycle.
+      name: "koi:call-dedup",
       phase: "observe" as const,
       priority: 999,
       describeCapabilities: () => ({ label: "probe", description: "probe" }),
@@ -2044,6 +2049,50 @@ describe("Golden: @koi/middleware-call-dedup", () => {
         callDedup: { include: ["lookup"] },
       }),
     ).toThrow(/onCacheHit/);
+  });
+
+  // Regression (#1419 round 30): custom caller-supplied middleware
+  // must keep the per-stream onSessionStart/onSessionEnd contract even
+  // when RuntimeConfig.sessionId is set. Only the resilience trio
+  // (koi:circuit-breaker / koi:tool-call-limit / koi:model-call-limit /
+  // koi:call-dedup) opts into the deferred 1-start/1-end semantics.
+  // Without this split, custom MW that allocates per-stream state or
+  // writes open/close audit records leaks state across streams under
+  // the first stream's session lifecycle.
+  test("custom middleware keeps per-stream lifecycle under stable sessionId", async () => {
+    const startCalls: string[] = [];
+    const endCalls: string[] = [];
+    const probe = {
+      name: "custom-user-probe",
+      phase: "observe" as const,
+      priority: 999,
+      describeCapabilities: () => ({ label: "probe", description: "probe" }),
+      onSessionStart: (session: { sessionId: string }) => {
+        startCalls.push(session.sessionId);
+      },
+      onSessionEnd: (session: { sessionId: string }) => {
+        endCalls.push(session.sessionId);
+      },
+    } as unknown as import("@koi/core").KoiMiddleware;
+    const runtime = createRuntime({
+      adapter: createTerminalAdapter(),
+      sessionId: "stable-custom",
+      middleware: [probe],
+    });
+    for await (const _ of runtime.adapter.stream({ kind: "text", text: "first" })) {
+      // drain
+    }
+    for await (const _ of runtime.adapter.stream({ kind: "text", text: "second" })) {
+      // drain
+    }
+    // Custom MW: per-stream contract preserved — start AND end fire
+    // exactly twice, paired per stream. NOT the deferred 1-start/1-end
+    // contract that the resilience trio uses.
+    expect(startCalls).toEqual(["stable-custom", "stable-custom"]);
+    expect(endCalls).toEqual(["stable-custom", "stable-custom"]);
+    await runtime.dispose();
+    // Dispose must not call a second onSessionEnd on custom MW.
+    expect(endCalls.length).toBe(2);
   });
 
   // Regression (#1419 round 29): under stable RuntimeConfig.sessionId,
