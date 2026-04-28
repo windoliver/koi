@@ -88,29 +88,27 @@ export type NexusTransportKind = "http" | "local-bridge";
 // `assertProductionTransport(t)` follows a TWO-PHASE rollout matching the
 // permissions/audit flag rollout:
 //
-//   Phase 1 (this PR): missing `kind` is handled in two paths to avoid
-//     silently dropping a security control the operator explicitly enabled:
+//   Phase 1 AND Phase 2: missing `kind` ALWAYS THROWS at the production
+//     runtime boundary. Pre-PR, passing a `nexusTransport` implicitly wired
+//     both Nexus permissions and audit. A "warn-and-skip" Phase 1 would
+//     silently DROP both consumers on upgrade for any structural adapter
+//     not yet migrated to set `kind` — exactly the auth/audit bypass we
+//     want to prevent. Inferring "http" or "local-bridge" from shape is
+//     equally unsafe (silent misroute). Failing loud is the only option
+//     that preserves authorization and audit guarantees during migration.
 //
-//       (a) NO explicit consumer flags set (neither `nexusPermissionsEnabled`
-//           nor `nexusAuditEnabled`): log a one-time deprecation warning and
-//           return `{ kind: undefined }`. The runtime then SKIPS the entire
-//           Nexus startup block (no probe, no consumer wiring). Safe because
-//           the operator did not request any Nexus consumer; no security
-//           control is being silently disabled.
+//     The error message names every named factory and the explicit
+//     opt-out path so operators have an immediate migration target:
+//       "construct via createHttpTransport / createLocalBridgeTransport /
+//        createLocalBridgeProbeTransport / fs-nexus HTTP wrapper, OR set
+//        nexusPermissionsEnabled=false AND nexusAuditEnabled=false to
+//        explicitly opt out of Nexus consumer wiring (transport will still
+//        be used by other subsystems)."
 //
-//       (b) ANY explicit consumer flag set to `true`
-//           (`nexusPermissionsEnabled === true` OR `nexusAuditEnabled === true`):
-//           THROW immediately with the migration message. Skip-and-warn would
-//           silently disable the security control the operator just asked for —
-//           an authorization/audit bypass with only a log line as signal.
-//           Failing closed forces the operator to migrate to a discriminated
-//           factory before they can ship the explicit-consumer config.
-//
-//     Either path: the in-place HTTP probe never fires on an undiscriminated
-//     adapter, so a stale adapter cannot be silently misrouted.
-//
-//   Phase 2 (next release, same window as the consumer-flag throw):
-//     missing `kind` THROWS with the same actionable message.
+//     The `explicitConsumerWanted` parameter is NO LONGER NEEDED — it
+//     existed for the bifurcated Phase 1 behavior. The signature collapses
+//     to `assertProductionTransport(t)` and the throw message is the same
+//     in every case.
 //
 // Production callers MUST construct via one of the named factories
 // (createHttpTransport, createLocalBridgeTransport, fs-nexus HTTP wrapper,
@@ -529,9 +527,12 @@ interface KoiRuntimeFactoryConfig {
    *   remote policy was loaded at boot. **Requires `nexusPermissionsEnabled=true`**:
    *   the runtime throws at config validation if this mode is selected
    *   without the permissions backend wired (no `ready` to await, no
-   *   `isCentralizedPolicyActive()` to call). Audit-only deployments wanting
-   *   a startup gate must use "assert-transport-reachable-at-boot". Does NOT
-   *   prevent local-rule fallback for queries not matched by remote policy
+   *   `isCentralizedPolicyActive()` to call). Audit-only deployments have
+   *   NO supported startup-gate mode — they must use "telemetry" until a
+   *   non-side-effecting audit-write readiness probe exists on the Nexus
+   *   server (see assert-transport-reachable-at-boot for the same
+   *   audit-only rejection rationale). Does NOT prevent local-rule fallback
+   *   for queries not matched by remote policy
    *   (existing composition chains to local TUI on ask/no-opinion). Does NOT
    *   enforce ongoing freshness.
    */
@@ -558,19 +559,18 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   //     explicit decision — silent disablement of a security control is
   //     not an option. Programmatic callers that miss the migration get a
   //     hard, actionable error instead of a quiet authorization downgrade.
-  // Phase 1: assertProductionTransport(t, { explicitConsumerWanted }) returns
-  // {kind: undefined} + logs a one-time deprecation warning when the transport
-  // is missing `kind` AND no explicit consumer was requested. When the caller
-  // explicitly set `nexusPermissionsEnabled===true` OR `nexusAuditEnabled===true`,
-  // the assertion THROWS immediately — silent skip would disable a security
-  // control the operator just asked for. Phase 2: throws unconditionally on
-  // missing `kind`. Either way, undefined here means "no Nexus startup work"
-  // and the explicit-consumer + missing-kind combination is impossible.
-  const explicitConsumerWanted =
-    config.nexusPermissionsEnabled === true || config.nexusAuditEnabled === true;
+  // assertProductionTransport(t) THROWS unconditionally when t.kind is
+  // undefined (Phase 1 and Phase 2 — see types.ts JSDoc for rationale).
+  // Skip-and-warn was an unsafe Phase 1 option because pre-PR behavior
+  // implicitly wired permissions+audit, and silent skip on upgrade would
+  // be an auth/audit bypass. Operators must construct via a named factory
+  // OR explicitly opt out of both consumers before the runtime boundary.
   const txKind = config.nexusTransport !== undefined
-    ? assertProductionTransport(config.nexusTransport, { explicitConsumerWanted }).kind
+    ? assertProductionTransport(config.nexusTransport).kind
     : undefined;
+  // POST-ASSERT INVARIANT: txKind is "http" | "local-bridge" | undefined
+  // where undefined ONLY means "no nexusTransport supplied". A supplied
+  // transport always narrows to a discriminated kind here.
   if (txKind === "local-bridge") {
     const missing: string[] = [];
     if (config.nexusPermissionsEnabled === undefined) missing.push("nexusPermissionsEnabled");
@@ -721,20 +721,12 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     // guarantees txKind === "http" at this point. Local-bridge probing is
     // a separate caller-site responsibility, not a runtime-factory concern.)
 
-    // Probe path selection: only read permission-policy paths when the
-    // permissions consumer is actually wired. Audit-only deployments must be
-    // able to use assert-transport-reachable-at-boot and
-    // assert-remote-policy-loaded-at-boot WITHOUT the permissions namespace
-    // existing at all — coupling the assert modes to an unrelated subsystem
-    // would force audit-only operators back to telemetry. When permissions
-    // are disabled, the probe still validates the transport via `version`
-    // (no readPaths), and the 404-namespace-absent gate is unreachable.
-    //
-    // (assert-remote-policy-loaded-at-boot is also gated on permsEnabled
-    //  below — without the permissions backend there is no `ready` to await
-    //  and no `isCentralizedPolicyActive()` to check, so the mode silently
-    //  degrades to assert-transport-reachable-at-boot semantics for audit-
-    //  only deployments. This is documented in the mode JSDoc.)
+    // Probe path selection: read permission-policy paths only when permissions
+    // are wired. With both assert-* modes now requiring permissions wired (see
+    // the rejection above), the empty-readPaths branch only applies in
+    // telemetry mode + audit-only deployments — purely advisory probe activity
+    // with no boot-blocking effect, so a 404 on the (skipped) policy paths
+    // can't strand audit-only operators.
     const probePolicyPaths = effectivePermsWired
       ? [`${policyBase}/version.json`, `${policyBase}/policy.json`]
       : [];
@@ -954,7 +946,7 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 
 | File | Change | Est LOC |
 |---|---|---|
-| `packages/lib/nexus-client/src/types.ts` | Add `NexusCallOptions` (deadlineMs, nonInteractive), `NexusHealthOptions` (readPaths), `NexusHealth`, **optional** `kind?: NexusTransportKind` on `NexusTransport` (preserves source-compat for structural mocks), optional `health` on `NexusTransport`, required `health` on `HealthCapableNexusTransport`; extend `call` signature with optional `opts` (additive — existing call sites without opts still type-check); add `assertProductionTransport(t, { explicitConsumerWanted })` helper. Phase 1: missing `t.kind` + no explicit consumer → log once, return `{kind: undefined}` (runtime skips Nexus block). Missing `t.kind` + explicit consumer flag set → THROW (refuses to silently disable a requested security control). Phase 2: missing `kind` throws unconditionally. Never defaults to "http" — would silently misroute stale adapters down in-place probe path. | +40 |
+| `packages/lib/nexus-client/src/types.ts` | Add `NexusCallOptions` (deadlineMs, nonInteractive), `NexusHealthOptions` (readPaths), `NexusHealth`, **optional** `kind?: NexusTransportKind` on `NexusTransport` (preserves source-compat for structural mocks), optional `health` on `NexusTransport`, required `health` on `HealthCapableNexusTransport`; extend `call` signature with optional `opts` (additive — existing call sites without opts still type-check); add `assertProductionTransport(t)` helper that THROWS unconditionally when `t.kind` is undefined (both phases). Skip-and-warn was rejected as Phase 1 behavior because pre-PR semantics implicitly wired both Nexus consumers — silent skip on upgrade would be an auth/audit bypass. Error message names every named factory (`createHttpTransport`, fs-nexus HTTP wrapper, `createLocalBridgeTransport`, `createLocalBridgeProbeTransport`) AND the explicit opt-out path (`nexusPermissionsEnabled=false` + `nexusAuditEnabled=false`). | +40 |
 | `packages/lib/nexus-client/src/transport.ts` | HTTP impl: thread `opts.deadlineMs` into existing `AbortSignal.timeout`; implement `health(opts?)` — version probe + one `read` per `opts.readPaths` (default `koi/permissions/version.json` + `koi/permissions/policy.json`); discard read result bodies; return `HealthCapableNexusTransport` | +55 |
 | `packages/lib/nexus-client/src/health.test.ts` | New: all probes ok → ok+probed lists each path; either read returns 404 → still ok; version 5xx → fail; any read 5xx → fail; read 401 → fail; per-call deadline honored; network error; malformed version response; nonInteractive flag set on all calls; **custom readPaths override default** (probes provided paths only) | +200 |
 | `packages/lib/nexus-client/src/assert-health-capable.ts` | New: `assertHealthCapable` assertion function | +15 |
@@ -1075,11 +1067,11 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16r. (REMOVED — same)
 7g16s. (REMOVED — same)
 7g16t. (REMOVED — same)
-7g16u. `assertProductionTransport (Phase 1): missing transport.kind logs ONE-TIME deprecation warning and returns {kind: undefined}; runtime SKIPS Nexus block entirely (no probe, no consumer wiring)` (compat path — undiscriminated transports keep booting)
-7g16u2. `assertProductionTransport (Phase 1): warning fires exactly once across multiple createKoiRuntime calls in the same process` (no log spam)
-7g16u3. `assertProductionTransport (Phase 2): missing transport.kind THROWS with the SAME migration message Phase 1 logged` (deferred enforcement)
-7g16u4. `Phase 1: undiscriminated transport + explicit nexusPermissionsEnabled=true: THROWS (refuses to silently disable a requested security control). Same for explicit nexusAuditEnabled=true.`
-7g16u5. `Phase 1: undiscriminated transport + explicit nexusPermissionsEnabled=false AND nexusAuditEnabled=false: warns + skips Nexus block (operator did not request any consumer)`
+7g16u. `assertProductionTransport: missing transport.kind THROWS unconditionally (both phases)` — error message names every named factory and the explicit opt-out path
+7g16u2. `assertProductionTransport throw message includes nexusPermissionsEnabled=false AND nexusAuditEnabled=false as the documented opt-out for callers who supply a transport without wanting Nexus consumers`
+7g16u3. (REMOVED Loop 3 Round 7 — Phase 2 no longer differs from Phase 1 for missing-kind; same throw both phases)
+7g16u4. (REMOVED — no skip-and-warn path exists; missing-kind always throws)
+7g16u5. (REMOVED — same; the explicit-false combination cannot be used as a skip path because the throw fires before flag resolution)
 7g16v. `assertProductionTransport returns transport unchanged when kind is set` (positive narrowing)
 7g16w. `runtime-factory uses assertProductionTransport at every kind branch (no raw access to .kind)` (lint-style assertion via grep in test suite)
 7g16x. `KOI_NEXUS_AUDIT_MODE=require: CLI parser rejects with actionable error naming local-only/disabled` (legacy value handling — old automation fails loud, not silent)
@@ -1171,14 +1163,13 @@ Existing v2 callers that pass `nexusTransport` already get Nexus permissions and
 | `nexusTransport` + local-bridge + explicit `nexusAuditEnabled=true` + no `nexusAuditMode` | THROWS (security gate) | Set `nexusAuditMode: "local-only"` (with NDJSON/SQLite) or `"disabled"` |
 | `nexusTransport` + local-bridge + explicit `nexusAuditEnabled=true` without `nexusAuditMode` | THROWS (security gate) — `nexusAuditMode` required (note: "inferred" no longer reachable, since local-bridge no-flags now throws upstream) | Set `local-only` (with NDJSON/SQLite sink) or `disabled` |
 | `nexusAuditPoisonOnError=true` + local-bridge | THROWS (security gate) — known wedge fault | Use HTTP for fail-stop audit |
-| `nexusTransport.kind` undefined on a non-test transport, NO explicit consumer flags | Phase 1: WARNS once + skips Nexus probe and consumer wiring (no in-place HTTP probe — never silently misroute). Phase 2: THROWS. | Construct via named factory (`createHttpTransport`, fs-nexus HTTP wrapper, `createLocalBridgeTransport`, `createLocalBridgeProbeTransport`) before Phase 2. |
-| `nexusTransport.kind` undefined + explicit `nexusPermissionsEnabled=true` OR `nexusAuditEnabled=true` | Phase 1 AND Phase 2: THROWS — silent skip would disable a security control the operator just requested. | Construct via named factory; do not request a Nexus consumer with an undiscriminated transport. |
+| `nexusTransport.kind` undefined on a non-test transport (any flag combination) | THROWS in both Phase 1 and Phase 2 — pre-PR semantics implicitly wired both consumers, so silent skip on upgrade would be an auth/audit bypass. The throw is the only safe option (no shape inference, no bifurcated rule). | Construct via named factory (`createHttpTransport`, fs-nexus HTTP wrapper, `createLocalBridgeTransport`, `createLocalBridgeProbeTransport`). If you want to keep passing the transport for fs-only/non-Nexus subsystems, the error message names the explicit opt-out: set both `nexusPermissionsEnabled=false` and `nexusAuditEnabled=false` AFTER constructing via a named factory. |
 
 **Phase 2 — next release (separate issue, NOT this PR):**
 
 - All transports: unset `nexusPermissionsEnabled` / `nexusAuditEnabled` → throws (currently warns + infers).
 - Local-bridge + explicit `nexusPermissionsEnabled=true`: already throws in Phase 1; no change.
-- `nexusTransport.kind` undefined: throws (Phase 1 warns + skips Nexus block).
+- `nexusTransport.kind` undefined: already throws in Phase 1; no change.
 - All other security gates unchanged across phases.
 
 The two-phase split keeps healthy v2 deployments running while giving operators and CI templates a release cycle to update. Security-relevant gates throw immediately; config-skew only warns.
