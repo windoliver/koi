@@ -33,9 +33,12 @@ import { readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { SummaryOk } from "@koi/agent-summary";
-import { createAgentSummary } from "@koi/agent-summary";
+// createAgentSummary is lazy-imported in the /summary handler — only
+// needed when the user requests a session summary (#1637 cold-start).
 import { type ArtifactStore, createArtifactStore } from "@koi/artifacts";
-import { microcompact } from "@koi/context-manager";
+// microcompact is lazy-imported in the /compact handler below — saves
+// ~tens of ms off cold start (#1637) since the context-manager package
+// is only needed when the user invokes /compact.
 import type {
   Agent,
   AuditEntry,
@@ -63,7 +66,9 @@ import type { SessionScopedForgeDemandHandle } from "@koi/forge-demand";
 import { createDefaultForgeDemandConfig } from "@koi/forge-demand";
 import { createAuthNotificationHandler } from "@koi/fs-nexus";
 import type { PatternRule } from "@koi/governance-defaults";
-import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
+import type { LoopRuntime } from "@koi/loop";
+// createArgvGate / runUntilPass are lazy-imported inside runTuiLoopTurn —
+// only loaded for --until-pass / --loop sessions (#1637 cold-start).
 import { createApprovalStore, createPatternPermissionBackend } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import {
@@ -80,7 +85,9 @@ import {
   createSkillsRuntime,
 } from "@koi/skills-runtime";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
-import { createBrowserProvider, createMockDriver } from "@koi/tool-browser";
+// @koi/tool-browser is lazy-imported below — only loaded when
+// KOI_BROWSER_MOCK=1 (mock dev/test path). Saves ~tens of ms off cold
+// start for the common case (#1637).
 import type {
   EventBatcher,
   LedgerAuditEntry,
@@ -1999,6 +2006,37 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
   }
 
+  // Lazy-load @koi/tool-browser only when the mock provider is requested
+  // (KOI_BROWSER_MOCK=1). The static import was a measurable cold-start
+  // contributor; this branch is dev/test only (#1637).
+  const browserExtraProviders: ComponentProvider[] = [];
+  if (process.env.KOI_BROWSER_MOCK === "1") {
+    const { createBrowserProvider, createMockDriver } = await import("@koi/tool-browser");
+    browserExtraProviders.push(
+      createBrowserProvider({
+        backend: createMockDriver(),
+        isUrlAllowed: (url) => {
+          try {
+            const { protocol, hostname } = new URL(url);
+            if (protocol !== "http:" && protocol !== "https:") return false;
+            const h = hostname
+              .replace(/^\[|\]$/g, "")
+              .toLowerCase()
+              .replace(/\.$/, "");
+            if (isBlockedIp(h)) return false;
+            if (BLOCKED_HOSTS.includes(h)) return false;
+            for (const s of BLOCKED_HOST_SUFFIXES) {
+              if (h === s.slice(1) || h.endsWith(s)) return false;
+            }
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      }),
+    );
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -2096,44 +2134,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // that only includes runtimeBacked skills — body-backed skills (browser,
     // memory) belong to root-only providers not available in children.
     childSkillInjector: childSkillInjectorMw,
-    extraProviders: [
-      skillProvider,
-      ...artifactExtraProviders,
-      ...(process.env.KOI_BROWSER_MOCK === "1"
-        ? [
-            createBrowserProvider({
-              backend: createMockDriver(),
-              // Mock driver never opens a real connection, so SSRF
-              // protection only needs to block IP literals and known
-              // metadata hostnames — no DNS resolution required.
-              // Note: BLOCKED_HOST_SUFFIXES includes .local/.internal,
-              // so mDNS/RFC6762 names are still rejected by design.
-              isUrlAllowed: (url) => {
-                try {
-                  const { protocol, hostname } = new URL(url);
-                  if (protocol !== "http:" && protocol !== "https:") return false;
-                  // Strip IPv6 brackets then lower-case + strip trailing DNS root
-                  // dot so `localhost.` / `metadata.google.internal.` can't
-                  // bypass suffix/host checks (same canonicalization as isSafeUrl).
-                  const h = hostname
-                    .replace(/^\[|\]$/g, "")
-                    .toLowerCase()
-                    .replace(/\.$/, "");
-                  if (isBlockedIp(h)) return false;
-                  if (BLOCKED_HOSTS.includes(h)) return false;
-                  // h === s.slice(1) blocks bare apex hosts: "internal" matches ".internal",
-                  // "local" matches ".local" — endsWith alone misses these.
-                  if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s) || h === s.slice(1)))
-                    return false;
-                  return true;
-                } catch {
-                  return false;
-                }
-              },
-            }),
-          ]
-        : []),
-    ],
+    extraProviders: [skillProvider, ...artifactExtraProviders, ...browserExtraProviders],
     // Zone B — manifest-declared middleware. Resolved inside the
     // factory via the default built-in registry. Runs INSIDE the
     // security guard so repo-authored content cannot observe raw
@@ -4991,6 +4992,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               // the 6 most recent messages so the active thread stays coherent.
               const targetTokens = Math.max(4000, Math.floor(originalTokens / 2));
               const preserveRecent = 6;
+              const { microcompact } = await import("@koi/context-manager");
               const result = await microcompact(
                 snapshot,
                 targetTokens,
@@ -5092,6 +5094,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 value: { entries: [], total: 0, hasMore: false },
               }),
             } as unknown as SessionTranscript;
+            const { createAgentSummary } = await import("@koi/agent-summary");
             const summarizer = createAgentSummary({
               transcript,
               modelCall: async (req) => {
@@ -5690,6 +5693,7 @@ async function* runTuiLoopTurn(
 
   // Verifier subprocess: minimal env by default, opt-in to inherit
   // parent env (minus Koi provider keys) via --verifier-inherit-env.
+  const { createArgvGate, runUntilPass } = await import("@koi/loop");
   const verifier = createArgvGate(argv, {
     cwd: process.cwd(),
     timeoutMs: flags.verifierTimeoutMs,

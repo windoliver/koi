@@ -1,5 +1,16 @@
 #!/usr/bin/env bun
 
+const __binStart = performance.now();
+const __bt = (label: string): void => {
+  if (process.env.KOI_BOOT_TRACE === "1") {
+    const role = process.env.KOI_TUI_BROWSER_SOLID === "1" ? "child" : "parent";
+    process.stderr.write(
+      `[boot ${role} ${(performance.now() - __binStart).toFixed(0).padStart(5)}ms] ${label}\n`,
+    );
+  }
+};
+__bt("bin.ts start");
+
 /**
  * CLI entry point.
  *
@@ -224,7 +235,9 @@ switch (result.kind) {
     // Early SIGUSR1 handler is already armed at the top of this file
     // for the browser-build child (#1906). runTuiCommand swaps it for
     // the full graceful-shutdown handler during bootstrap.
+    __bt("import tui-command — start");
     const { runTuiCommand } = await import("./tui-command.js");
+    __bt("import tui-command — done");
     await runTuiCommand(result.flags);
     process.exit(0);
     break;
