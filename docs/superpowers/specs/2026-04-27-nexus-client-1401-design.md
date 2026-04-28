@@ -416,6 +416,22 @@ interface KoiRuntimeFactoryConfig {
    */
   readonly nexusAuditPoisonOnError?: boolean | undefined;
   /**
+   * Operator acknowledgment to wire Nexus audit sink on a local-bridge
+   * transport. Default false → Nexus audit is SKIPPED on local-bridge with a
+   * warning log; local sinks (NDJSON/SQLite) are unaffected. Set true only
+   * after reading the audit-wedge limitation: a first audit write before
+   * user-driven auth can stall the shared bridge subprocess, taking permission
+   * sync and consumer calls down with it. Has no effect on HTTP transport.
+   */
+  readonly nexusAuditOnLocalBridgeAck?: boolean | undefined;
+  /**
+   * Polling interval for the Nexus permission backend (ms).
+   * Default: 30_000. Set 0 to disable (incompatible with local-bridge +
+   * telemetry, which defers initial sync to the timer — runtime throws at
+   * config validation).
+   */
+  readonly nexusSyncIntervalMs?: number | undefined;
+  /**
    * Behavior when startup health probe fails or policy fails to activate.
    * Default: "telemetry" (always — does NOT vary by configured consumers;
    * audit-write readiness is not probed and an audit-driven default would
@@ -570,6 +586,22 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   //     unchanged so existing callers don't get false positives.
   //   - Auth state established by user activity (submitAuthCode) unblocks the
   //     deferred sync naturally
+  //
+  // EXPLICIT TRUST-BOUNDARY ACKNOWLEDGMENT (telemetry mode contract):
+  //   Telemetry mode is ADVISORY by design. Between boot and first successful
+  //   sync, permission checks are answered by the LOCAL TUI fallback — Nexus
+  //   policy is not yet loaded and is not consulted. This is the same window
+  //   that exists today in v2 (pre-PR), and is the defined behavior of
+  //   "telemetry mode" since the design's first review pass. `deferInitialSync`
+  //   does NOT widen this window in any meaningful way: HTTP transport in
+  //   telemetry mode also does not block boot on `ready`, so the first turn
+  //   can begin before sync completes there too. Operators who require remote
+  //   policy to be loaded before any work runs MUST select
+  //   `fail-closed-remote-policy-loaded` (HTTP-only). On local-bridge,
+  //   blocking-first-sync is structurally unsafe (auth wedge), so the only
+  //   supported strict mode for local-bridge is "do not use it for compliance
+  //   workloads" — the runtime preflight rejects local-bridge + fail-closed-*
+  //   precisely because of this gap.
   let nexusPermBackend;
   if (config.nexusTransport !== undefined) {
     const deferInitialSync = config.nexusTransport.kind === "local-bridge"
@@ -613,18 +645,39 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     // telemetry / fail-closed-transport: do NOT await ready (preserves existing async semantics)
   }
 
-  // Step 5: wire Nexus audit sink. Hook into existing shared `auditPoisonError`
-  // accumulator (renamed from ndjsonPoisonError as part of this PR) ONLY when
-  // operator opts in. Best-effort default preserves telemetry-mode behavior.
-  // Existing middleware admission guards already check this accumulator.
+  // Step 5: wire Nexus audit sink. Hook into shared `auditPoisonError`
+  // accumulator (collapsed from ndjsonPoisonError + sqlitePoisonError as part
+  // of this PR) ONLY when operator opts in. Best-effort default preserves
+  // telemetry-mode behavior.
+  //
+  // LOCAL-BRIDGE SAFETY GATE: Nexus audit on local-bridge is UNSUPPORTED by
+  // default. The same long-lived subprocess carries permission sync, consumer
+  // calls, AND audit writes — a first audit write before user-driven auth can
+  // wedge the entire serialized session, taking down permission sync and
+  // consumer traffic with it. Operators who accept this risk MUST set
+  // `nexusAuditOnLocalBridgeAck: true` to acknowledge they have read the
+  // audit-wedge limitation; otherwise the runtime SKIPS audit-sink wiring on
+  // local-bridge (with a one-time warning log). HTTP transport has no such
+  // gate. This change makes the "knowingly wires a wedge-prone path" failure
+  // mode impossible without an explicit operator acknowledgment.
   if (config.nexusTransport !== undefined) {
-    const onError = config.nexusAuditPoisonOnError === true
-      ? (err: unknown) => {
-          if (auditPoisonError === undefined) auditPoisonError = err;  // share with NDJSON/SQLite
-          logger.error({ err }, "nexus audit sink poisoned");
-        }
-      : (err: unknown) => logger.warn({ err }, "nexus audit write failed (best-effort)");
-    auditSinks.push(createNexusAuditSink({ transport: config.nexusTransport, onError }));
+    const isLocalBridge = config.nexusTransport.kind === "local-bridge";
+    const localBridgeBlocked = isLocalBridge && config.nexusAuditOnLocalBridgeAck !== true;
+    if (localBridgeBlocked) {
+      logger.warn(
+        "nexus audit sink not wired: local-bridge transport requires " +
+        "nexusAuditOnLocalBridgeAck=true (audit-wedge risk — see spec). " +
+        "Local audit sinks (NDJSON/SQLite) continue normally.",
+      );
+    } else {
+      const onError = config.nexusAuditPoisonOnError === true
+        ? (err: unknown) => {
+            if (auditPoisonError === undefined) auditPoisonError = err;  // share with NDJSON/SQLite
+            logger.error({ err }, "nexus audit sink poisoned");
+          }
+        : (err: unknown) => logger.warn({ err }, "nexus audit write failed (best-effort)");
+      auditSinks.push(createNexusAuditSink({ transport: config.nexusTransport, onError }));
+    }
   }
   // … continue with non-nexus runtime construction …
 }
@@ -644,6 +697,16 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
 The function reports what the backend is *actually serving right now*, not the success of the latest sync attempt. This preserves the existing availability contract: a bad rollout that the backend rejects does not demote a node to local rules.
 
 `fail-closed-remote-policy-loaded` checks this **once at startup** after `await backend.ready` completes — i.e., it asserts that the first sync produced a remote backend. Post-boot transient failures do not re-trigger the gate. The new mode adds a startup guarantee without changing steady-state behavior.
+
+**Explicit non-claim — naming is precise:** the mode is named `fail-closed-remote-policy-LOADED`, not `fail-closed-remote-policy-FRESH`. It guarantees that remote policy was loaded once at boot. It does NOT guarantee:
+
+- That subsequent sync attempts succeed (network partition / Nexus down → node continues serving last-known-good remote policy indefinitely)
+- That central-side policy changes (revocations, tightened denies) propagate within any bounded time
+- That a withdrawn policy file (404 after first load) demotes the node — last-known-good is preserved by design (availability over consistency)
+
+Operators requiring **freshness** (bounded staleness, demotion on revocation) need a separate mode (`fail-closed-remote-policy-fresh` with TTL/heartbeat semantics) — explicitly out of scope for this PR and tracked as a follow-up. Conflating freshness with load-at-boot in this PR would invite operator surprise; calling them different modes preserves option-space for the freshness work without misrepresenting today's guarantee.
+
+Runtime config validation MAY warn (not throw) if `fail-closed-remote-policy-loaded` is selected without any out-of-band freshness mechanism (e.g., short `nexusSyncIntervalMs` + alerting on backend.lastSyncError) so operators don't conflate the two guarantees.
 
 **Type-system enforcement:** the runtime config field is typed as base `NexusTransport` (since long-lived local-bridge transports do not expose `health`). HTTP transports happen to also satisfy `HealthCapableNexusTransport` and are upcast at the probe site. The `as unknown as NexusTransport` cast in `tui-command.ts:1704` is dropped — fs-nexus local-bridge structurally satisfies `NexusTransport` directly once the `kind` discriminator is added. `assertHealthCapable` is exported for callers who hold a base `NexusTransport` and need to narrow before invoking `health()` themselves (e.g., custom probe wrappers); it is NOT used in the standard tui-command path.
 
@@ -674,7 +737,7 @@ The function reports what the backend is *actually serving right now*, not the s
 | `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; long-lived session transport does NOT receive nonInteractive flag from runtime probe path; existing call/subscribe behavior unchanged | +80 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | (1) Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior. (2) Add `deferInitialSync?: boolean` config option (default false). When true, `initializePolicy()` is NOT called from the constructor; first sync runs on the regular timer instead. **`ready` semantics UNCHANGED** — still resolves only after first sync completes (or falls back); existing callers awaiting `ready` continue to get the original "first sync done" guarantee. Required by local-bridge telemetry path to avoid auth-wedge during boot. Existing HTTP / fail-closed-remote-policy-loaded paths leave it false. | +50 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.test.ts` | New tests: false before any sync; false when first sync fails (404/parse/rebuild mismatch — no last-known-good); true after first successful sync; stays true when subsequent sync fails (last-known-good preserved); stays true when subsequent sync produces incompatible policy (skipped, last-known-good preserved); **`deferInitialSync: true` skips constructor sync; `ready` is PENDING until first scheduled sync completes (semantics preserved — does NOT resolve immediately, that would be a stale-state hazard); first sync happens on timer; `isCentralizedPolicyActive()` is false until first scheduled sync completes; existing callers awaiting `ready` continue to get the first-sync-done guarantee they had before** | +130 |
-| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as base `NexusTransport` (long-lived session has no health); add `nexusBootMode`, `nexusPolicyPath`, `nexusAuditPoisonOnError`, `nexusProbeFactory` config fields; preflight: throw on local-bridge + fail-closed-* (unsupported); local-bridge + telemetry without factory SKIPS probe (backward compat); probe via factory for local-bridge, in-place for HTTP; thread `nexusPolicyPath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws on probe failure; in `fail-closed-remote-policy-loaded`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **collapse the two existing accumulators (`ndjsonPoisonError` AND `sqlitePoisonError`) into a single shared `auditPoisonError`** — both NDJSON and SQLite sink `onError` callbacks write to the unified accumulator; admission boundaries check the single field; **add early-throw validation** when `local-bridge + telemetry + nexusSyncIntervalMs===0` (deferred sync would never fire, deadlocking `ready`); route Nexus sink errors into it ONLY when `nexusAuditPoisonOnError === true` (default best-effort); existing middleware admission guards now cover Nexus too via shared accumulator; **wire Nexus compliance-recorder `onError` to `process.exit(1)` in opt-in mode (matches NDJSON/SQLite at `runtime-factory.ts:3058-3059`); best-effort logging in default mode (was silent — bug fix)** | +145 |
+| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as base `NexusTransport` (long-lived session has no health); add `nexusBootMode`, `nexusPolicyPath`, `nexusAuditPoisonOnError`, `nexusAuditOnLocalBridgeAck`, `nexusProbeFactory` config fields; preflight: throw on local-bridge + fail-closed-* (unsupported); local-bridge + telemetry without factory SKIPS probe (backward compat); probe via factory for local-bridge, in-place for HTTP; thread `nexusPolicyPath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws on probe failure; in `fail-closed-remote-policy-loaded`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **collapse the two existing accumulators (`ndjsonPoisonError` AND `sqlitePoisonError`) into a single shared `auditPoisonError`** — both NDJSON and SQLite sink `onError` callbacks write to the unified accumulator; admission boundaries check the single field; **add early-throw validation** when `local-bridge + telemetry + nexusSyncIntervalMs===0` (deferred sync would never fire, deadlocking `ready`); route Nexus sink errors into it ONLY when `nexusAuditPoisonOnError === true` (default best-effort); existing middleware admission guards now cover Nexus too via shared accumulator; **wire Nexus compliance-recorder `onError` to `process.exit(1)` in opt-in mode (matches NDJSON/SQLite at `runtime-factory.ts:3058-3059`); best-effort logging in default mode (was silent — bug fix)** | +145 |
 | `packages/security/audit-sink-nexus/src/config.ts` | **Add `onError?: (err: unknown) => void` to `NexusAuditSinkConfig`** — the field doesn't exist today; wrapper depends on it | +8 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.ts` | Remove silent `.catch(() => {})` on `startFlush()`; invoke `config.onError?.(err)` on flush failure (interval-triggered AND size-triggered AND explicit-flush-triggered paths must all route through `onError`) | +12 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.test.ts` | New: interval-triggered flush failure invokes `onError`; size-triggered flush failure invokes `onError`; explicit `flush()` failure invokes `onError`; `onError` undefined doesn't crash (regression guard against silent swallowing) | +60 |
@@ -730,6 +793,11 @@ The function reports what the backend is *actually serving right now*, not the s
 7g11. `NDJSON sink failure latches shared auditPoisonError; SQLite admission boundary refuses next call` (proves accumulator unification — pre-PR, this would only block NDJSON path)
 7g12. `SQLite sink failure latches shared auditPoisonError; NDJSON admission boundary refuses next call` (same, reverse direction)
 7g13. `local-bridge + nexusAuditPoisonOnError=true: runtime logs warning at boot about audit-wedge limitation` (operator gets explicit signal)
+7g14. `local-bridge WITHOUT nexusAuditOnLocalBridgeAck: Nexus audit sink NOT wired; local NDJSON/SQLite sinks unaffected; one-time warning logged` (default-safe gate)
+7g15. `local-bridge WITH nexusAuditOnLocalBridgeAck=true: Nexus audit sink wired; operator has explicitly accepted wedge risk`
+7g16. `HTTP transport: nexusAuditOnLocalBridgeAck has no effect (gate only applies to local-bridge)`
+7g17. `fail-closed-remote-policy-loaded: post-boot 404 on policy file does NOT demote node — last-known-good preserved; isCentralizedPolicyActive stays true; no second gate trigger` (regression guard for naming claim — "loaded" not "fresh")
+7g18. `telemetry mode + deferInitialSync: explicit advisory contract documented in startup log — "permission checks served by local fallback until first sync completes"` (operator visibility for the trust-boundary acknowledgment)
 7g9. `HTTP transport without health() method: throws actionable error (not raw TypeError)`
 7h2. `transport object does NOT expose spawn config / credentials` (security regression guard)
 7i. `HTTP transport: always probes session directly regardless of mode (no auth flow risk)`
