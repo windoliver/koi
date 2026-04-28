@@ -141,6 +141,12 @@ describe("createCallDedupMiddleware", () => {
       "koi_update_task",
       "koi_task_output",
       "koi_list_agents",
+      // Scheduler mutations (#1419 r37): caching these would silently
+      // drop wakeup/cron registrations or cancellations.
+      "sleep",
+      "cancel_sleep",
+      "schedule_cron",
+      "cancel_schedule",
     ];
     const mw = createCallDedupMiddleware({ include: muting });
     const ctx = turnCtx();

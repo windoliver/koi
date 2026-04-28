@@ -94,6 +94,17 @@ export const DEFAULT_EXCLUDE: readonly string[] = [
   "forge_middleware",
   "forge_list",
   "forge_inspect",
+  // proactive scheduler — every call creates or cancels a persisted
+  // wakeup/cron entry. Caching the second identical call would
+  // silently elide the second mutation: a "sleep" that returns
+  // success without registering a new wakeup, a "cancel_schedule"
+  // that returns success without removing the schedule. The lost-
+  // work mode is invisible to the caller — exactly the failure
+  // dedup's safety floor exists to block.
+  "sleep",
+  "cancel_sleep",
+  "schedule_cron",
+  "cancel_schedule",
 ] as const;
 
 export interface CallDedupConfig {
