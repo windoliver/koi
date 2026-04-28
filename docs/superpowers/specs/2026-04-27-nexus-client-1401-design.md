@@ -198,7 +198,8 @@ Sequence:
 
 1. Record `start = performance.now()`
 2. `transport.call("version", {}, { deadlineMs: HEALTH_DEADLINE_MS, nonInteractive: true })` — liveness: TCP+TLS+JSON-RPC reachable; capture version string.
-3. For each path in `opts.readPaths ?? DEFAULT_PROBE_PATHS`: `transport.call("read", { path }, { deadlineMs, nonInteractive: true })`. 200 → success. 404 → returned in `value.notFound: true` (per-path field; not silently flattened to success). 5xx / network / auth → return error. Caller — runtime-factory — decides what to do with 404: in `telemetry` it's a warning; in `assert-transport-reachable-at-boot` AND `assert-remote-policy-loaded-at-boot` 404 on either default probe path is FATAL because the policy namespace is missing. (Custom `readPaths` keep the same per-path notFound semantics; caller can handle 404 differently if desired.)
+3. For each path in `opts.readPaths ?? DEFAULT_PROBE_PATHS`: `transport.call("read", { path }, { deadlineMs, nonInteractive: true })`. 200 with **valid payload shape** → success. 200 with malformed payload (not a string and not `{ content: string }`) → return error with `code: "VALIDATION"` — the permission backend would fail to parse this same payload on first sync, so a 200 alone is insufficient signal. 404 → returned in `value.notFound: true` (per-path field; not silently flattened to success). 5xx / network / auth → return error. Caller — runtime-factory — decides what to do with 404: in `telemetry` it's a warning; in `assert-transport-reachable-at-boot` AND `assert-remote-policy-loaded-at-boot` 404 on either default probe path is FATAL because the policy namespace is missing. (Custom `readPaths` keep the same per-path notFound semantics; caller can handle 404 differently if desired.)
+4. **Payload extractor parity**: the `read`-payload validator MUST be the SAME function the permission backend uses (`extractReadContent` in `@koi/permissions-nexus`). Sharing the extractor closes the false-negative gap where `health()` reports OK on a 200 with a malformed body that the permission backend would later reject as parse error and demote to local fallback. The extractor is exported from `@koi/permissions-nexus/payload` and re-imported by `@koi/nexus-client/health` (one-way dependency: nexus-client → permissions-nexus is forbidden by layering, so the extractor lives in a small shared utility package OR in `@koi/nexus-client` as the canonical owner; the implementation PR will pick the layer-clean home and update permissions-nexus to import it).
 5. All calls go through `transport.call(...)` — local-bridge included.
 6. **Local-bridge probing is constrained.** The fs-nexus `local-bridge` cannot be cleanly probed in-place without risk: its subprocess serializes one in-flight call, has no protocol-level cancel that doesn't poison the channel, and a wedged auth flow blocks every queued call. The two honest options for probing have unacceptable downsides under fail-closed semantics:
 
@@ -314,6 +315,21 @@ When `nexusAuditPoisonOnError === true`, the runtime hooks Nexus sink errors int
 - Each required sink's latch is checked at every admission boundary (`onSessionStart`, `onBeforeTurn`, `wrapModelCall`, `wrapToolCall`, end-of-session flush). ANY poisoned required latch denies admission. This is the existing semantics for NDJSON and SQLite — Nexus joins on the same terms when `nexusAuditPoisonOnError === true`.
 - Optional sinks (e.g., NDJSON without the existing `required: true` config; Nexus with `nexusAuditPoisonOnError !== true`) log on failure but never block admission.
 
+**Two-layer fail-stop mechanics (mirrors NDJSON/SQLite end-to-end — required for the documented guarantee):**
+
+1. **Sink-side short-circuit (poisoned `log()` wrapper).** When `nexusAuditPoisonOnError === true`, the runtime wraps `createNexusAuditSink(...)` in a thin `poisonedSink(inner, latch)` adapter that, on every `log()` call, FIRST inspects the latch:
+
+   - latch unset → delegates to the inner sink's `log()` as normal
+   - latch set → drops the record, increments a `dropped` counter exposed in telemetry, and returns immediately (no buffering, no flush attempt)
+
+   This closes the post-poison drop window the reviewer flagged: without the wrapper, the Nexus sink's internal buffer would keep accepting `log()` calls between latch-set and the next admission boundary, losing records the operator declared must be durable. The wrapper mirrors the existing NDJSON/SQLite poisoned-sink pattern (`runtime-factory.ts:2526-2602` already wraps those sinks the same way; the Nexus wiring extends that pattern with no behavior divergence).
+
+2. **Middleware admission gate.** Per-sink admission check at every boundary (the `admissionAllowed()` helper sketched below). This is the existing NDJSON/SQLite gate; Nexus joins it via the per-sink latch. The gate fails the work item that crosses the boundary AFTER the wrapper has already stopped accepting writes.
+
+**Spec contract (the documented "fail-stop parity" guarantee covers BOTH layers):** once `nexusPoison.err` is set, (a) every subsequent `log()` is dropped at the sink wrapper (no internal buffering can absorb more records than the latch is aware of), AND (b) the next admission boundary refuses work. Layer (a) without (b) loses subsequent records silently to admission optimism; layer (b) without (a) loses records that arrive between boundaries. Both layers are required and both are tested.
+
+**Implementation home:** the `poisonedSink` wrapper lives in `runtime-factory.ts` next to the existing NDJSON/SQLite wrapper code (no new package). It is sink-kind-agnostic — same closure shape works for all three sinks, only the latch object differs.
+
 ```ts
 const ndjsonPoison: { err?: unknown } = {};
 const sqlitePoison: { err?: unknown } = {};
@@ -334,7 +350,13 @@ if (config.nexusTransport !== undefined && txKind === "http" && auditEnabled ===
         logger.error({ err }, "nexus audit sink poisoned");
       }
     : (err: unknown) => logger.warn({ err }, "nexus audit write failed (best-effort)");
-  auditSinks.push(createNexusAuditSink({ transport: config.nexusTransport, onError }));
+  const inner = createNexusAuditSink({ transport: config.nexusTransport, onError });
+  // poisonedSink wrapper: short-circuits log() once the latch is set so
+  // post-poison records are dropped at the sink boundary instead of being
+  // accepted into the inner buffer (matches NDJSON/SQLite wrapper pattern
+  // already at runtime-factory.ts:2526-2602). When nexusAuditPoisonOnError
+  // is false, the latch is never set, so the wrapper is a no-op pass-through.
+  auditSinks.push(poisonedSink(inner, nexusPoison));
 }
 
 // Admission boundary check — per-sink fail-stop (matches pre-PR exactly):
@@ -559,18 +581,35 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   //     explicit decision — silent disablement of a security control is
   //     not an option. Programmatic callers that miss the migration get a
   //     hard, actionable error instead of a quiet authorization downgrade.
-  // assertProductionTransport(t) THROWS unconditionally when t.kind is
-  // undefined (Phase 1 and Phase 2 — see types.ts JSDoc for rationale).
-  // Skip-and-warn was an unsafe Phase 1 option because pre-PR behavior
-  // implicitly wired permissions+audit, and silent skip on upgrade would
-  // be an auth/audit bypass. Operators must construct via a named factory
-  // OR explicitly opt out of both consumers before the runtime boundary.
-  const txKind = config.nexusTransport !== undefined
-    ? assertProductionTransport(config.nexusTransport).kind
-    : undefined;
-  // POST-ASSERT INVARIANT: txKind is "http" | "local-bridge" | undefined
-  // where undefined ONLY means "no nexusTransport supplied". A supplied
-  // transport always narrows to a discriminated kind here.
+  // KIND ASSERTION ORDERING: assertProductionTransport runs ONLY after the
+  // explicit fs-only opt-out is checked. Pre-PR semantics implicitly wired
+  // both Nexus consumers when nexusTransport was supplied, so the safe
+  // upgrade path for legacy structural adapters is:
+  //
+  //   "construct via named factory" → kind set, no throw
+  //   OR
+  //   "set both nexusPermissionsEnabled=false AND nexusAuditEnabled=false"
+  //   → fs-only opt-out, kind assertion SKIPPED (legacy adapter keeps
+  //     working for non-Nexus subsystems without being rewritten)
+  //
+  // If we asserted kind first, the documented opt-out would be impossible
+  // to reach for legacy callers — they'd throw before flag resolution and
+  // the rollout would be a hard outage instead of a documented migration.
+  const explicitlyOptedOut =
+    config.nexusPermissionsEnabled === false
+    && config.nexusAuditEnabled === false;
+  let txKind: NexusTransportKind | undefined;
+  if (config.nexusTransport === undefined || explicitlyOptedOut) {
+    txKind = undefined;  // skip Nexus block entirely
+  } else {
+    // Any other path requires a discriminated transport. Throws with the
+    // factory + opt-out migration message when kind is missing.
+    txKind = assertProductionTransport(config.nexusTransport).kind;
+  }
+  // POST-ASSERT INVARIANT: txKind is "http" | "local-bridge" | undefined,
+  // where undefined means EITHER no transport was supplied OR the operator
+  // explicitly opted out of both Nexus consumers. Either way, no Nexus
+  // startup work runs below.
   if (txKind === "local-bridge") {
     const missing: string[] = [];
     if (config.nexusPermissionsEnabled === undefined) missing.push("nexusPermissionsEnabled");
@@ -987,7 +1026,11 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 8. `health() honors per-call deadline (rejects within HEALTH_DEADLINE_MS)`
 5. `health() returns error on timeout shorter than default deadline`
 6. `health() returns error on network failure`
-7. `health() returns error on malformed response`
+7. `health() returns error on malformed version response`
+7a. `health() returns VALIDATION error when read returns 200 with body that is neither string nor {content: string}` (closes false-negative: same extractor as permission backend, malformed payload would later cause sync parse-error demotion)
+7b. `health() accepts read 200 with body = "yaml content as string"` (string form)
+7c. `health() accepts read 200 with body = {content: "yaml content"}` (envelope form)
+7d. `health() rejects read 200 with body = {data: "..."}` (wrong field name — would parse-fail in backend)
 8. `health() probes execute within HEALTH_DEADLINE_MS not default deadline`
 
 `packages/lib/nexus-client/src/assert-health-capable.test.ts`:
@@ -1020,6 +1063,11 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g12. `Required SQLite sink failure latches sqlitePoison; admission DENIED on next boundary` (per-sink fail-stop, regardless of NDJSON state)
 7g12b. `Optional (non-required) sink poisoned: admission CONTINUES; failure logged only` (optional sinks never block)
 7g12c. `Nexus with nexusAuditPoisonOnError=true poisoned: admission DENIED on next boundary` (Nexus joins per-sink fail-stop; no quorum)
+7g12c2. `poisonedSink wrapper: post-latch log() calls are DROPPED at sink boundary (not buffered into inner sink)` — proves layer (a) of the two-layer fail-stop guarantee
+7g12c3. `poisonedSink wrapper exposes "dropped" counter incremented on each post-latch log() call` (telemetry visibility)
+7g12c4. `Records that arrive between sink-error and next admission boundary: ALL dropped at wrapper, NONE accepted by inner sink` — closes the silent-loss window the reviewer flagged
+7g12c5. `nexusAuditPoisonOnError=false: poisonedSink wrapper is no-op pass-through (latch never set, delegates every log() to inner)`
+7g12c6. `Same poisonedSink wrapper used for NDJSON, SQLite, and Nexus sinks (single implementation, no per-sink divergence)` — regression guard against drift
 7g12d. `Nexus with nexusAuditPoisonOnError=false poisoned: admission CONTINUES; failure logged` (best-effort default has no admission impact)
 7g12e. `Pre-PR NDJSON+SQLite both required, NDJSON-only failure halts admission: behavior UNCHANGED` (regression guard against quorum drift)
 7g13. (REMOVED — superseded by 7g16o which throws rather than warns)
