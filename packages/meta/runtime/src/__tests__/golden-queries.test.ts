@@ -1669,4 +1669,52 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     // is type-correct end-to-end.
     expect(handle.middleware.some((mw) => mw.name === "koi:tool-call-limit")).toBe(true);
   });
+
+  // Regression (#1419 round 20): when audit is configured, dedup must
+  // not be installed without an `onCacheHit` observer — otherwise
+  // cached/coalesced tool calls short-circuit the observe-phase chain
+  // and disappear from the audit sink. Strongly gate this misconfig at
+  // construction time.
+  test("createRuntime refuses callDedup + audit without onCacheHit", () => {
+    const sink = {
+      log: async (): Promise<void> => {},
+      flush: async (): Promise<void> => {},
+    };
+    expect(() =>
+      createRuntime({
+        adapter: createTerminalAdapter(),
+        audit: { sink },
+        callDedup: { include: ["lookup"] },
+      }),
+    ).toThrow(/onCacheHit/);
+  });
+
+  test("createRuntime accepts callDedup + audit when onCacheHit is provided", () => {
+    const sink = {
+      log: async (): Promise<void> => {},
+      flush: async (): Promise<void> => {},
+    };
+    const hits: number[] = [];
+    const handle = createRuntime({
+      adapter: createTerminalAdapter(),
+      audit: { sink },
+      callDedup: {
+        include: ["lookup"],
+        onCacheHit: () => {
+          hits.push(1);
+        },
+      },
+    });
+    const names = handle.middleware.map((mw) => mw.name);
+    expect(names).toContain("koi:call-dedup");
+    expect(names).toContain("audit");
+  });
+
+  test("createRuntime accepts callDedup without audit even when onCacheHit is omitted", () => {
+    const handle = createRuntime({
+      adapter: createTerminalAdapter(),
+      callDedup: { include: ["lookup"] },
+    });
+    expect(handle.middleware.map((mw) => mw.name)).toContain("koi:call-dedup");
+  });
 });

@@ -319,6 +319,21 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       config.callDedup !== false &&
       !resilienceNames.has("koi:call-dedup")
     ) {
+      // Dedup short-circuits cached AND coalesced tool calls in the
+      // intercept phase, so they bypass downstream observe-phase
+      // middleware (audit, transcript, metrics). When `audit` is wired
+      // and the caller does not supply an `onCacheHit` observer, the
+      // resulting audit blind spot is a real compliance gap rather than
+      // a documentation issue. Strongly gate that combination at
+      // construction time so the misconfiguration cannot ship silently.
+      if (config.audit !== undefined && config.callDedup.onCacheHit === undefined) {
+        throw new Error(
+          "[runtime] callDedup is enabled alongside audit but no onCacheHit observer is configured. " +
+            "Cached/coalesced tool calls short-circuit the observe-phase chain and would otherwise " +
+            "be invisible to the audit sink. Provide config.callDedup.onCacheHit to forward cache " +
+            "hits into your audit pathway, or disable callDedup.",
+        );
+      }
       resilienceAdds.push(createCallDedupMiddleware(config.callDedup));
     }
     const middleware: readonly KoiMiddleware[] =

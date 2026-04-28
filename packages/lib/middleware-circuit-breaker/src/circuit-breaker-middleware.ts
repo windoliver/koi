@@ -186,15 +186,12 @@ async function* trackedStream(
     //     wedging the provider. Treat an abandoned probe as a failure so
     //     the circuit returns to OPEN and can re-arm on the next cooldown.
     if (consumerCancelled && tookProbe) {
-      // Clearing probeInFlight is mandatory; without it, the circuit
-      // wedges and `isAllowed()` rejects every future call. The breaker
-      // primitive only clears the probe slot via record{Success,Failure},
-      // and recordSuccess would prematurely close the circuit. We
-      // therefore record an unclassified failure here even though it
-      // bypasses `failureStatusCodes` filtering — the alternative is
-      // unrecoverable. Documented as a known limitation in
-      // docs/L2/middleware-circuit-breaker.md.
-      breaker.recordFailure();
+      // Local cancellation (consumer aborted, downstream short-circuit,
+      // caller timeout) is NOT a provider fault. Use `releaseProbe()`
+      // to clear `probeInFlight` without mutating failure history —
+      // otherwise repeated client-side aborts would re-open a healthy
+      // circuit and block recovery indefinitely.
+      breaker.releaseProbe();
     }
   }
 }

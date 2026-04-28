@@ -357,3 +357,44 @@ describe("injectable clock", () => {
     expect(cb.getSnapshot().lastFailureAt).toBe(6000);
   });
 });
+
+describe("releaseProbe", () => {
+  test("clears HALF_OPEN probe slot without changing state or failure history", () => {
+    let now = 1000;
+    const cb = createCircuitBreaker(
+      { ...DEFAULT_CIRCUIT_BREAKER_CONFIG, failureThreshold: 2, cooldownMs: 1000 },
+      () => now,
+    );
+    // Trip OPEN.
+    cb.recordFailure(500);
+    cb.recordFailure(500);
+    expect(cb.getSnapshot().state).toBe("OPEN");
+    const failuresBefore = cb.getSnapshot().failureCount;
+    // Cooldown → HALF_OPEN, take probe.
+    now = 3000;
+    expect(cb.isAllowed()).toBe(true);
+    expect(cb.getSnapshot().state).toBe("HALF_OPEN");
+    // A second concurrent caller would be rejected (probe held).
+    expect(cb.isAllowed()).toBe(false);
+    // Release the probe — state stays HALF_OPEN, failures unchanged.
+    const snap = cb.releaseProbe();
+    expect(snap.state).toBe("HALF_OPEN");
+    expect(snap.failureCount).toBe(failuresBefore);
+    // Next caller may now take the probe slot immediately.
+    expect(cb.isAllowed()).toBe(true);
+  });
+
+  test("is a no-op in CLOSED and OPEN states", () => {
+    const cb = createCircuitBreaker(DEFAULT_CIRCUIT_BREAKER_CONFIG, () => 1000);
+    // CLOSED no-op.
+    expect(cb.releaseProbe().state).toBe("CLOSED");
+    // OPEN no-op (no probe taken yet — releaseProbe must not flip state).
+    cb.recordFailure(500);
+    cb.recordFailure(500);
+    cb.recordFailure(500);
+    cb.recordFailure(500);
+    cb.recordFailure(500);
+    expect(cb.getSnapshot().state).toBe("OPEN");
+    expect(cb.releaseProbe().state).toBe("OPEN");
+  });
+});

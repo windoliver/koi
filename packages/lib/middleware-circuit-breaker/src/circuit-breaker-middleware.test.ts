@@ -367,6 +367,50 @@ describe("createCircuitBreakerMiddleware", () => {
     expect(ok?.content).toBe("ok");
   });
 
+  // Regression (#1419 round 20): consumer cancellation of a HALF_OPEN
+  // probe must NOT count as a provider failure. Otherwise repeated
+  // client-side aborts would keep re-opening a healthy circuit and
+  // block recovery indefinitely.
+  test("HALF_OPEN probe cancellation does not record failure against the breaker", async () => {
+    let now = 1000;
+    const clock = (): number => now;
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 2, cooldownMs: 1000 },
+      clock,
+    });
+    const ctx = turnCtx();
+    const req: ModelRequest = { messages: [], model: "openai/gpt-4o" };
+
+    // Trip the circuit OPEN with two upstream failures.
+    await expect(mw.wrapModelCall?.(ctx, req, makeHandler("fail-500"))).rejects.toThrow();
+    await expect(mw.wrapModelCall?.(ctx, req, makeHandler("fail-500"))).rejects.toThrow();
+    now += 2000; // cooldown
+
+    // Cancel three HALF_OPEN probes in a row. Under the old behavior,
+    // each cancellation called recordFailure() and re-opened the
+    // circuit; the next call after cooldown would have been blocked
+    // OR would have succeeded only because the cooldown timer
+    // advanced. We assert here that NONE of the cancellations
+    // produced a recordFailure, by checking that an immediate
+    // (no-cooldown) follow-up call is allowed.
+    async function* longStream(): AsyncIterable<ModelChunk> {
+      yield { kind: "text_delta", delta: "x" };
+      yield { kind: "done", response: modelResponse() };
+    }
+    for (let i = 0; i < 3; i++) {
+      const s = mw.wrapModelStream?.(ctx, req, longStream);
+      if (s === undefined) throw new Error("no stream");
+      for await (const _c of s) break;
+      // No clock advance between iterations — if probe cancellation had
+      // recorded failure, the breaker would be OPEN and isAllowed() would
+      // be false until cooldown elapsed (cooldownMs=1000).
+    }
+    // Immediate call (no clock advance) must be allowed: circuit is
+    // still HALF_OPEN with a free probe slot.
+    const ok = await mw.wrapModelCall?.(ctx, req, makeHandler("ok"));
+    expect(ok?.content).toBe("ok");
+  });
+
   // Regression: streamed RATE_LIMIT/TIMEOUT/EXTERNAL chunks come from the
   // model adapter, not local middleware (which throw, not yield). They
   // ARE provider failures and must count.
