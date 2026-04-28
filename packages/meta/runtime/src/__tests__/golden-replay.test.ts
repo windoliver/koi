@@ -5908,6 +5908,286 @@ describe("Golden: @koi/spawn-tools", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/forge-tools (2 standalone queries, no LLM needed)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/forge-tools", () => {
+  test("synthesize-then-inspect — round-trip via forge_tool then forge_inspect", async () => {
+    const { createInMemoryForgeStore, createForgeToolTool, createForgeInspectTool } = await import(
+      "@koi/forge-tools"
+    );
+    const { runWithExecutionContext } = await import("@koi/execution-context");
+    const { sessionId, runId } = await import("@koi/core");
+
+    const store = createInMemoryForgeStore();
+    const synth = createForgeToolTool({ store });
+    const inspect = createForgeInspectTool({ store });
+
+    const ctx = {
+      session: {
+        agentId: "golden-agent-A",
+        sessionId: sessionId("golden-s1"),
+        runId: runId("golden-r1"),
+        metadata: {},
+      },
+      turnIndex: 0,
+    } as const;
+
+    // Synthesize.
+    const synthRaw = await runWithExecutionContext(ctx, () =>
+      synth.execute({
+        name: "add-numbers",
+        description: "Sum two numbers and return the result.",
+        version: "0.0.1",
+        scope: "agent",
+        implementation: "return args.a + args.b;",
+        inputSchema: {
+          type: "object",
+          properties: { a: { type: "number" }, b: { type: "number" } },
+          required: ["a", "b"],
+        },
+      }),
+    );
+    const synthOk = synthRaw as { ok: true; value: { brickId: string; lifecycle: string } };
+    expect(synthOk.ok).toBe(true);
+    expect(synthOk.value.lifecycle).toBe("draft");
+
+    // Inspect — assert artifact matches what was synthesized.
+    const inspectRaw = await runWithExecutionContext(ctx, () =>
+      inspect.execute({ brickId: synthOk.value.brickId }),
+    );
+    const inspectOk = inspectRaw as {
+      ok: true;
+      value: { artifact: { id: string; kind: string; name: string; lifecycle: string } };
+    };
+    expect(inspectOk.ok).toBe(true);
+    expect(inspectOk.value.artifact.id).toBe(synthOk.value.brickId);
+    expect(inspectOk.value.artifact.kind).toBe("tool");
+    expect(inspectOk.value.artifact.name).toBe("add-numbers");
+    expect(inspectOk.value.artifact.lifecycle).toBe("draft");
+  });
+
+  test("list-empty-store — forge_list returns empty summaries on a fresh store", async () => {
+    const { createInMemoryForgeStore, createForgeListTool } = await import("@koi/forge-tools");
+    const { runWithExecutionContext } = await import("@koi/execution-context");
+    const { sessionId, runId } = await import("@koi/core");
+
+    const store = createInMemoryForgeStore();
+    const list = createForgeListTool({ store });
+
+    const ctx = {
+      session: {
+        agentId: "golden-agent-B",
+        sessionId: sessionId("golden-s2"),
+        runId: runId("golden-r2"),
+        metadata: {},
+      },
+      turnIndex: 0,
+    } as const;
+
+    const raw = await runWithExecutionContext(ctx, () => list.execute({}));
+    const ok = raw as { ok: true; value: { summaries: readonly unknown[] } };
+    expect(ok.ok).toBe(true);
+    expect(ok.value.summaries).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Full-loop replay: forge-tools cassette → createKoi → live ATIF
+// Exercises: @koi/forge-tools wired through createKoi
+// Cassette: LLM calls forge_tool / forge_list / forge_inspect; replay validates live ATIF
+// ---------------------------------------------------------------------------
+
+describe("Full-loop replay: forge-tools cassette → createKoi → live ATIF", () => {
+  test("forge_tool executes through full middleware stack and appears in live ATIF", async () => {
+    const cassetteFile = Bun.file(`${FIXTURES}/forge-synthesize.cassette.json`);
+    if (!(await cassetteFile.exists())) {
+      console.warn("forge-synthesize.cassette.json not recorded yet — skipping");
+      return;
+    }
+    const cassette = await loadCassette(`${FIXTURES}/forge-synthesize.cassette.json`);
+    const {
+      createInMemoryForgeStore,
+      createForgeToolTool,
+      createForgeMiddlewareTool,
+      createForgeListTool,
+      createForgeInspectTool,
+    } = await import("@koi/forge-tools");
+
+    const trajDir = `/tmp/koi-replay-forge-tools-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-forge-tools";
+
+    const store = createAtifDocumentStore(
+      { agentName: "replay-forge-tools" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "replay-forge-tools",
+      clock,
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" as const }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "replay test (bypass)",
+    });
+
+    // Forge store + four tools
+    const forgeStore = createInMemoryForgeStore();
+    const forgeTool = createForgeToolTool({ store: forgeStore });
+    const forgeMiddleware = createForgeMiddlewareTool({ store: forgeStore });
+    const forgeList = createForgeListTool({ store: forgeStore });
+    const forgeInspect = createForgeInspectTool({ store: forgeStore });
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: { name: "replay-forge-tools", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "forge-tool",
+          toolName: "forge_tool",
+          createTool: () => forgeTool,
+        }),
+        createSingleToolProvider({
+          name: "forge-middleware",
+          toolName: "forge_middleware",
+          createTool: () => forgeMiddleware,
+        }),
+        createSingleToolProvider({
+          name: "forge-list",
+          toolName: "forge_list",
+          createTool: () => forgeList,
+        }),
+        createSingleToolProvider({
+          name: "forge-inspect",
+          toolName: "forge_inspect",
+          createTool: () => forgeInspect,
+        }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text:
+        "Use forge_tool to create a tool named 'add-numbers' that takes two numbers a and b and returns their sum. " +
+        "Then call forge_list to confirm it appears. " +
+        "Then call forge_inspect with the returned brickId.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const steps = await store.getDocument(docId);
+
+    // forge_tool tool was executed and recorded in live ATIF
+    const toolSteps = steps.filter((s) => s.kind === "tool_call");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    const forgeToolStep = toolSteps.find((s) => s.identifier === "forge_tool");
+    expect(forgeToolStep).toBeDefined();
+    expect(forgeToolStep?.outcome).toBe("success");
+
+    // The cassette captures only the first model turn (one tool_call_start),
+    // so replay exercises forge_tool but not the follow-up forge_list /
+    // forge_inspect calls — those are validated separately against the
+    // recorded ATIF trajectory file (see "forge-tools ATIF trajectory"
+    // describe block below).
+
+    // MW spans fired (event-trace + permissions wired through createKoi)
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    expect(mwSpans.length).toBeGreaterThan(0);
+
+    // Model step present (cassette drove the model call)
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+  }, 15000);
+});
+
+// ---------------------------------------------------------------------------
+// @koi/forge-tools ATIF trajectory (golden file — produced by real LLM recording)
+// ---------------------------------------------------------------------------
+
+describe("forge-tools ATIF trajectory (golden file)", () => {
+  test("schema_version is ATIF-v1.6", async () => {
+    const file = Bun.file(`${FIXTURES}/forge-synthesize.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("forge-synthesize.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as { schema_version?: string };
+    expect(traj.schema_version).toBe("ATIF-v1.6");
+  });
+
+  test("trajectory contains forge_tool tool call", async () => {
+    const file = Bun.file(`${FIXTURES}/forge-synthesize.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("forge-synthesize.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as {
+      steps?: ReadonlyArray<{
+        source?: string;
+        tool_calls?: ReadonlyArray<{ function_name?: string }>;
+      }>;
+    };
+    const toolSteps = (traj.steps ?? []).filter((s) => s.source === "tool");
+    const toolNames = toolSteps.flatMap((s) => (s.tool_calls ?? []).map((tc) => tc.function_name));
+    expect(toolNames).toContain("forge_tool");
+  });
+
+  test("trajectory contains forge_list tool call", async () => {
+    const file = Bun.file(`${FIXTURES}/forge-synthesize.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("forge-synthesize.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as {
+      steps?: ReadonlyArray<{
+        source?: string;
+        tool_calls?: ReadonlyArray<{ function_name?: string }>;
+      }>;
+    };
+    const toolSteps = (traj.steps ?? []).filter((s) => s.source === "tool");
+    const toolNames = toolSteps.flatMap((s) => (s.tool_calls ?? []).map((tc) => tc.function_name));
+    expect(toolNames).toContain("forge_list");
+  });
+
+  test("trajectory contains forge_inspect tool call", async () => {
+    const file = Bun.file(`${FIXTURES}/forge-synthesize.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("forge-synthesize.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as {
+      steps?: ReadonlyArray<{
+        source?: string;
+        tool_calls?: ReadonlyArray<{ function_name?: string }>;
+      }>;
+    };
+    const toolSteps = (traj.steps ?? []).filter((s) => s.source === "tool");
+    const toolNames = toolSteps.flatMap((s) => (s.tool_calls ?? []).map((tc) => tc.function_name));
+    expect(toolNames).toContain("forge_inspect");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // @koi/spawn-tools ATIF trajectory (golden file — produced by real LLM recording)
 // ---------------------------------------------------------------------------
 
@@ -14273,5 +14553,349 @@ describe("Golden: @koi/forge-demand", () => {
     } finally {
       console.warn = originalWarn;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/permissions-nexus (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/permissions-nexus", () => {
+  test("local-first: check() passes through to local backend when Nexus is down", async () => {
+    const { createNexusPermissionBackend } = await import("@koi/permissions-nexus");
+
+    const nexusDown: import("@koi/nexus-client").NexusTransport = {
+      call: (async () => ({
+        ok: false,
+        error: { code: "TIMEOUT" as const, message: "nexus unreachable", retryable: true },
+      })) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const local: import("@koi/core").PermissionBackend = {
+      check: () => ({ effect: "allow" as const }),
+      dispose: () => {},
+      supportsDefaultDenyMarker: true as const,
+    };
+
+    const backend = createNexusPermissionBackend({
+      transport: nexusDown,
+      localBackend: local,
+
+      rebuildBackend: () => local,
+      syncIntervalMs: 0,
+    });
+
+    const decision = await Promise.resolve(
+      backend.check({ principal: "agent", action: "execute", resource: "tool:bash" }),
+    );
+    expect(decision.effect).toBe("allow");
+    backend.dispose();
+  });
+
+  test("sync: rebuilt backend is used after Nexus returns updated policy", async () => {
+    const { createNexusPermissionBackend } = await import("@koi/permissions-nexus");
+
+    const policy = [{ pattern: "*", effect: "allow" }];
+    let rebuildCalledWith: unknown = null;
+
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (method: string, params: Record<string, unknown>) => {
+        const path = (params as { path: string }).path;
+        if (method === "read" && path.endsWith("version.json")) {
+          return { ok: true, value: JSON.stringify({ version: 1, updatedAt: Date.now() }) };
+        }
+        if (method === "read" && path.endsWith("policy.json")) {
+          return { ok: true, value: JSON.stringify(policy) };
+        }
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const denying: import("@koi/core").PermissionBackend = {
+      check: () => ({ effect: "deny" as const, reason: "local deny" }),
+      supportsDefaultDenyMarker: true as const,
+    };
+
+    const allowing: import("@koi/core").PermissionBackend = {
+      check: () => ({ effect: "allow" as const }),
+      supportsDefaultDenyMarker: true as const,
+    };
+
+    const backend = createNexusPermissionBackend({
+      transport,
+      localBackend: denying,
+
+      rebuildBackend: (p) => {
+        rebuildCalledWith = p;
+        return allowing;
+      },
+      syncIntervalMs: 0,
+    });
+
+    await new Promise<void>((r) => setTimeout(r, 0)); // flush init microtasks
+    expect(rebuildCalledWith).toEqual(policy);
+    const decision = await Promise.resolve(
+      backend.check({ principal: "agent", action: "execute", resource: "tool:bash" }),
+    );
+    expect(decision.effect).toBe("allow");
+    backend.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/long-running (#1386)
+//
+// Standalone golden queries that exercise the long-running harness lifecycle
+// against in-memory stubs. CI-safe — no LLM, no network.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/long-running — harness lifecycle", () => {
+  test("long-running-soft-checkpoint-cadence — boundary turns trigger only on multiples", async () => {
+    const { shouldSoftCheckpoint } = await import("@koi/long-running");
+    expect(shouldSoftCheckpoint(0, 5)).toBe(false);
+    expect(shouldSoftCheckpoint(4, 5)).toBe(false);
+    expect(shouldSoftCheckpoint(5, 5)).toBe(true);
+    expect(shouldSoftCheckpoint(10, 5)).toBe(true);
+    expect(shouldSoftCheckpoint(7, 0)).toBe(false);
+  });
+
+  test("long-running-start-pause-resume — phase transitions and lease revocation", async () => {
+    const { createLongRunningHarness, EMPTY_TASK_BOARD } = await import("@koi/long-running");
+    const { agentId, harnessId, nodeId } = await import("@koi/core");
+
+    const nodes: Array<{
+      readonly nodeId: ReturnType<typeof nodeId>;
+      readonly chainId: unknown;
+      readonly parentIds: readonly ReturnType<typeof nodeId>[];
+      readonly contentHash: string;
+      readonly data: { readonly phase: string };
+      readonly createdAt: number;
+      readonly metadata: Record<string, unknown>;
+    }> = [];
+    let counter = 0;
+
+    const harnessStore = {
+      put: (
+        chain: unknown,
+        data: unknown,
+        parentIds: readonly unknown[],
+        metadata?: Record<string, unknown>,
+      ) => {
+        counter += 1;
+        const node = {
+          nodeId: nodeId(`n-${counter}`),
+          chainId: chain,
+          parentIds: parentIds as readonly ReturnType<typeof nodeId>[],
+          contentHash: String(counter),
+          data: data as { readonly phase: string },
+          createdAt: Date.now(),
+          metadata: metadata ?? {},
+        };
+        nodes.push(node);
+        return { ok: true as const, value: node };
+      },
+      get: (id: unknown) => {
+        const found = nodes.find((n) => n.nodeId === id);
+        return found
+          ? { ok: true as const, value: found }
+          : {
+              ok: false as const,
+              error: { code: "NOT_FOUND" as const, message: "x", retryable: false },
+            };
+      },
+      head: () => ({
+        ok: true as const,
+        value: nodes.length > 0 ? nodes[nodes.length - 1] : undefined,
+      }),
+      list: () => ({ ok: true as const, value: [...nodes].reverse() }),
+      ancestors: () => ({ ok: true as const, value: [] }),
+      fork: (sourceNodeId: unknown, _newChainId: unknown, label: string) => ({
+        ok: true as const,
+        value: { parentNodeId: sourceNodeId, label },
+      }),
+      prune: () => ({ ok: true as const, value: 0 }),
+      close: () => undefined,
+    };
+
+    // Store full session records so resume() can find lastEngineState
+    // written by pause()'s saveState capture.
+    const sessions = new Map<string, Record<string, unknown>>();
+    const persistence = {
+      saveSession: (rec: { sessionId: string }) => {
+        sessions.set(rec.sessionId, { ...rec });
+        return { ok: true as const, value: undefined };
+      },
+      loadSession: (id: string) => {
+        const r = sessions.get(id);
+        return r
+          ? { ok: true as const, value: { ...r, sessionId: id } }
+          : {
+              ok: false as const,
+              error: { code: "NOT_FOUND" as const, message: "x", retryable: false },
+            };
+      },
+      removeSession: (id: string) => {
+        sessions.delete(id);
+        return { ok: true as const, value: undefined };
+      },
+      listSessions: () => ({ ok: true as const, value: [] }),
+      savePendingFrame: () => ({ ok: true as const, value: undefined }),
+      loadPendingFrames: () => ({ ok: true as const, value: [] }),
+      clearPendingFrames: () => ({ ok: true as const, value: undefined }),
+      removePendingFrame: () => ({ ok: true as const, value: undefined }),
+      setSessionStatus: (id: string, status: string) => {
+        const r = sessions.get(id);
+        if (r) sessions.set(id, { ...r, status });
+        return { ok: true as const, value: undefined };
+      },
+      saveContentReplacement: () => ({ ok: true as const, value: undefined }),
+      loadContentReplacements: () => ({ ok: true as const, value: [] }),
+      recover: () => ({
+        ok: true as const,
+        value: { sessions: [], pendingFrames: new Map(), skipped: [] },
+      }),
+      close: () => undefined,
+    };
+
+    const result = createLongRunningHarness({
+      harnessId: harnessId("g-h"),
+      agentId: agentId("g-a"),
+      // biome-ignore lint/suspicious/noExplicitAny: see above
+      harnessStore: harnessStore as any,
+      // biome-ignore lint/suspicious/noExplicitAny: see above
+      sessionPersistence: persistence as any,
+      // pause() requires saveState so the suspended snapshot can be
+      // resumed; provide a no-op for the golden-replay path.
+      saveState: async () => ({ kind: "g-state" }),
+      // quiesceEngine is required at construction; trivial ack here.
+      quiesceEngine: async () => undefined,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const harness = result.value;
+
+    const started = await harness.start();
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    expect(harness.status().phase).toBe("active");
+
+    const paused = await harness.pause(started.value.lease, {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    });
+    expect(paused.ok).toBe(true);
+    expect(harness.status().phase).toBe("suspended");
+
+    // Stale lease rejected
+    const stale = await harness.pause(started.value.lease, {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    });
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.error.code).toBe("STALE_REF");
+
+    const resumed = await harness.resume();
+    expect(resumed.ok).toBe(true);
+    expect(harness.status().phase).toBe("active");
+
+    expect(EMPTY_TASK_BOARD.items).toHaveLength(0);
+  });
+});
+
+// L2 golden queries: @koi/audit-sink-nexus (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/audit-sink-nexus", () => {
+  test("log and flush writes entries to Nexus transport", async () => {
+    const { createNexusAuditSink } = await import("@koi/audit-sink-nexus");
+    type AuditEntry = import("@koi/core").AuditEntry;
+
+    const written: string[] = [];
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (_method: string, params: Record<string, unknown>) => {
+        written.push((params as { path: string }).path);
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const entry: AuditEntry = {
+      schema_version: 1,
+      timestamp: Date.now(),
+      sessionId: "golden-session",
+      agentId: "agent-1",
+      turnIndex: 0,
+      kind: "tool_call",
+      durationMs: 10,
+    };
+
+    const sink = createNexusAuditSink({ transport, batchSize: 100 });
+    await sink.log(entry);
+    await sink.flush?.();
+    expect(written.length).toBe(1);
+    expect(written[0]).toMatch(/^koi\/audit\/golden-session\//);
+  });
+
+  test("query returns entries sorted by timestamp", async () => {
+    const { createNexusAuditSink } = await import("@koi/audit-sink-nexus");
+    type AuditEntry = import("@koi/core").AuditEntry;
+
+    const store = new Map<string, string>();
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (method: string, params: Record<string, unknown>) => {
+        const p = (params as { path: string }).path;
+        if (method === "write") {
+          store.set(p, (params as { content: string }).content);
+          return { ok: true, value: undefined };
+        }
+        if (method === "list") {
+          const prefix = `${p}/`;
+          return {
+            ok: true,
+            value: [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ path: k })),
+          };
+        }
+        if (method === "read") {
+          const v = store.get(p);
+          return v !== undefined
+            ? { ok: true, value: v }
+            : { ok: false, error: { code: "NOT_FOUND" as const, message: "nf", retryable: false } };
+        }
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const base: Omit<AuditEntry, "timestamp" | "turnIndex"> = {
+      schema_version: 1,
+      sessionId: "golden-q",
+      agentId: "a",
+      kind: "model_call",
+      durationMs: 5,
+    };
+
+    const sink = createNexusAuditSink({ transport, batchSize: 100 });
+    await sink.log({ ...base, timestamp: 200, turnIndex: 1 });
+    await sink.log({ ...base, timestamp: 100, turnIndex: 0 });
+    const entries = (await sink.query?.("golden-q")) ?? [];
+    expect(entries).toHaveLength(2);
+    expect(entries[0]?.timestamp).toBe(100);
+    expect(entries[1]?.timestamp).toBe(200);
   });
 });

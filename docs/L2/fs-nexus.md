@@ -37,12 +37,24 @@ AFTER: agents can read/write remote Nexus filesystems
 
 ---
 
+## Recent updates
+
+**Transport extracted to `@koi/nexus-client` (#1399):** The HTTP JSON-RPC transport is now a separate L0u package (`@koi/nexus-client`) shared with `@koi/permissions-nexus` and `@koi/audit-sink-nexus`. `@koi/fs-nexus` delegates to `createHttpTransport` re-exported from `@koi/nexus-client` instead of owning it directly. No public API change — manifests and hosts wire the same `url` + `apiKey` + `mountPoint` fields.
+
+**Nested bytes envelope fix (#1399):** When the Nexus server is called with `return_metadata: true`, it wraps the content in a nested envelope: `{ content: { __type__: "bytes", data: "<base64>" }, etag: "..." }`. `decodeNexusContent` now recurses into `obj.content` to handle this shape, fixing the zero-byte reads that occurred with HTTP transport.
+
+**String transport guard (#1399):** Manifest configs pass `transport: "http"` (a string selector) in the same config field used for injected test transports. `createNexusFileSystem` now guards with `typeof config.transport === "object"` before treating it as an injected `NexusTransport`, preventing the string value from reaching `transport.call(...)` at runtime.
+
+**`KOI_FS_NEXUS_DEBUG=1` logging:** Set this env var to emit step-by-step `[fs-nexus]` lines to stderr in the `read()` path — logs the full path sent to Nexus, the raw response shape, and the decoded character count. Useful for diagnosing content-decode issues without adding ad-hoc console calls.
+
+---
+
 ## Layer & Dependencies
 
 | Property | Value |
 |----------|-------|
 | Layer | L2 |
-| Imports from | `@koi/core` (L0), `@koi/errors` (L0u) |
+| Imports from | `@koi/core` (L0), `@koi/errors` (L0u), `@koi/nexus-client` (L0u) |
 | Does NOT import | `@koi/engine` (L1), peer L2 packages |
 | Runtime dependency | Nexus server (Docker or local daemon) |
 
@@ -78,7 +90,7 @@ interface NexusTransport {
   readonly mounts?: readonly string[];
 }
 
-/** Create an HTTP JSON-RPC transport to a Nexus server. Exported for reuse by non-filesystem consumers (e.g. trajectory persistence). TODO(#1469): extract to @koi/nexus-client when 3rd consumer exists. */
+/** Create an HTTP JSON-RPC transport to a Nexus server. Re-exported from @koi/nexus-client (L0u) — shared with @koi/permissions-nexus and @koi/audit-sink-nexus. */
 function createHttpTransport(config: NexusFileSystemConfig): NexusTransport;
 /** Spawns bridge.py subprocess for local/OAuth-gated mounts. */
 function createLocalTransport(config: LocalTransportConfig): Promise<NexusTransport>;

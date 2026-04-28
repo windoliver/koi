@@ -312,6 +312,18 @@
         "@koi/test": "workspace:*",
       },
     },
+    "packages/lib/forge-tools": {
+      "name": "@koi/forge-tools",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/execution-context": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/forge-types": {
       "name": "@koi/forge-types",
       "version": "0.0.0",
@@ -336,6 +348,7 @@
         "@koi/core": "workspace:*",
         "@koi/edit-match": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
       },
     },
     "packages/lib/fs-scoped": {
@@ -389,6 +402,15 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/long-running": {
+      "name": "@koi/long-running",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
       },
     },
     "packages/lib/loop": {
@@ -479,6 +501,30 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/middleware-tool-audit": {
+      "name": "@koi/middleware-tool-audit",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-tool-recovery": {
+      "name": "@koi/middleware-tool-recovery",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-tool-selector": {
+      "name": "@koi/middleware-tool-selector",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/lib/middleware-turn-prelude": {
       "name": "@koi/middleware-turn-prelude",
       "version": "0.0.0",
@@ -502,6 +548,13 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/nexus-client": {
+      "name": "@koi/nexus-client",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/outcome-evaluator": {
       "name": "@koi/outcome-evaluator",
       "version": "0.0.0",
@@ -519,6 +572,18 @@
         "@koi/errors": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
+      },
+    },
+    "packages/lib/proactive": {
+      "name": "@koi/proactive",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/tools-core": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/scheduler": "workspace:*",
       },
     },
     "packages/lib/query-engine": {
@@ -757,6 +822,7 @@
         "@koi/agent-summary": "workspace:*",
         "@koi/artifacts": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
+        "@koi/audit-sink-nexus": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/bash-ast": "workspace:*",
         "@koi/channel-cli": "workspace:*",
@@ -770,6 +836,7 @@
         "@koi/engine": "workspace:*",
         "@koi/event-trace": "workspace:*",
         "@koi/file-type": "workspace:*",
+        "@koi/forge-tools": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
         "@koi/governance-approval-tiers": "workspace:*",
@@ -802,7 +869,9 @@
         "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
         "@koi/permissions": "workspace:*",
+        "@koi/permissions-nexus": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/rules-loader": "workspace:*",
@@ -867,6 +936,7 @@
         "@koi/artifacts": "workspace:*",
         "@koi/artifacts-s3": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
+        "@koi/audit-sink-nexus": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/bash-ast": "workspace:*",
         "@koi/bash-security": "workspace:*",
@@ -884,8 +954,10 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-compose": "workspace:*",
         "@koi/event-trace": "workspace:*",
+        "@koi/execution-context": "workspace:*",
         "@koi/file-type": "workspace:*",
         "@koi/forge-demand": "workspace:*",
+        "@koi/forge-tools": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
@@ -900,6 +972,7 @@
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
         "@koi/ipc-local": "workspace:*",
+        "@koi/long-running": "workspace:*",
         "@koi/loop": "workspace:*",
         "@koi/lsp": "workspace:*",
         "@koi/mcp": "workspace:*",
@@ -926,8 +999,10 @@
         "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
         "@koi/outcome-evaluator": "workspace:*",
         "@koi/permissions": "workspace:*",
+        "@koi/permissions-nexus": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/replay": "workspace:*",
@@ -1154,6 +1229,14 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/security/audit-sink-nexus": {
+      "name": "@koi/audit-sink-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+    },
     "packages/security/audit-sink-sqlite": {
       "name": "@koi/audit-sink-sqlite",
       "version": "0.0.0",
@@ -1243,6 +1326,14 @@
         "@koi/settings": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
+      },
+    },
+    "packages/security/permissions-nexus": {
+      "name": "@koi/permissions-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
       },
     },
     "packages/security/redaction": {
@@ -1665,6 +1756,8 @@
 
     "@koi/audit-sink-ndjson": ["@koi/audit-sink-ndjson@workspace:packages/security/audit-sink-ndjson"],
 
+    "@koi/audit-sink-nexus": ["@koi/audit-sink-nexus@workspace:packages/security/audit-sink-nexus"],
+
     "@koi/audit-sink-sqlite": ["@koi/audit-sink-sqlite@workspace:packages/security/audit-sink-sqlite"],
 
     "@koi/bash-ast": ["@koi/bash-ast@workspace:packages/lib/bash-ast"],
@@ -1725,6 +1818,8 @@
 
     "@koi/forge-demand": ["@koi/forge-demand@workspace:packages/lib/forge-demand"],
 
+    "@koi/forge-tools": ["@koi/forge-tools@workspace:packages/lib/forge-tools"],
+
     "@koi/forge-types": ["@koi/forge-types@workspace:packages/lib/forge-types"],
 
     "@koi/fs-local": ["@koi/fs-local@workspace:packages/lib/fs-local"],
@@ -1760,6 +1855,8 @@
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 
     "@koi/ipc-local": ["@koi/ipc-local@workspace:packages/lib/ipc-local"],
+
+    "@koi/long-running": ["@koi/long-running@workspace:packages/lib/long-running"],
 
     "@koi/loop": ["@koi/loop@workspace:packages/lib/loop"],
 
@@ -1807,6 +1904,12 @@
 
     "@koi/middleware-task-anchor": ["@koi/middleware-task-anchor@workspace:packages/lib/middleware-task-anchor"],
 
+    "@koi/middleware-tool-audit": ["@koi/middleware-tool-audit@workspace:packages/lib/middleware-tool-audit"],
+
+    "@koi/middleware-tool-recovery": ["@koi/middleware-tool-recovery@workspace:packages/lib/middleware-tool-recovery"],
+
+    "@koi/middleware-tool-selector": ["@koi/middleware-tool-selector@workspace:packages/lib/middleware-tool-selector"],
+
     "@koi/middleware-turn-prelude": ["@koi/middleware-turn-prelude@workspace:packages/lib/middleware-turn-prelude"],
 
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
@@ -1815,11 +1918,17 @@
 
     "@koi/model-router": ["@koi/model-router@workspace:packages/lib/model-router"],
 
+    "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/lib/nexus-client"],
+
     "@koi/outcome-evaluator": ["@koi/outcome-evaluator@workspace:packages/lib/outcome-evaluator"],
 
     "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
 
+    "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/security/permissions-nexus"],
+
     "@koi/plugins": ["@koi/plugins@workspace:packages/lib/plugins"],
+
+    "@koi/proactive": ["@koi/proactive@workspace:packages/lib/proactive"],
 
     "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 

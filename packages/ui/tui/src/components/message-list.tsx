@@ -33,7 +33,7 @@ import {
   shouldFollow,
 } from "../auto-scroll/auto-scroll-state.js";
 import { useTuiStore } from "../store-context.js";
-import { copyToClipboard } from "../utils/clipboard.js";
+import { isBelowOsc52Limit } from "../utils/clipboard.js";
 import { MessageRow } from "./message-row.js";
 import { DEFAULT_SPINNER } from "./spinners.js";
 
@@ -142,7 +142,7 @@ export function MessageList(props: MessageListProps): JSX.Element {
       setScrollState((s) => onSelectionStart(s));
       const text = selection.getSelectedText();
       if (text.length > 0) {
-        const copied = copyToClipboard(text);
+        const copied = process.stdout.isTTY && isBelowOsc52Limit(text) && renderer.copyToClipboardOSC52(text);
         if (copied) {
           renderer.clearSelection();
         }

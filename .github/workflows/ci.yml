@@ -712,6 +712,9 @@ jobs:
       - name: Check complexity
         run: bun run check:complexity
 
+      - name: Check TUI single-writer output policy
+        run: bun run check:tui-single-writer
+
       - name: Check test integrity
         if: github.event_name == 'pull_request'
         run: bun run check:test-integrity

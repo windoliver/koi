@@ -19,6 +19,7 @@ const bash = createBashTool({
     allowlist: ["git ", "ls", "cat ", "echo ", "bun "],
     maxOutputBytes: 512_000,
     defaultTimeoutMs: 30_000,
+    maxTimeoutMs: 300_000,
   },
 });
 
@@ -39,9 +40,14 @@ Input:
 {
   "command": "git status",
   "cwd": "./packages/my-pkg",     // optional, validated against workspaceRoot
-  "timeoutMs": 10000              // optional, overrides BashPolicy.defaultTimeoutMs
+  "timeoutMs": 10000              // optional, clamped to BashPolicy.maxTimeoutMs
 }
 ```
+
+`timeoutMs` must be a positive finite integer. Invalid values are rejected
+before classification or subprocess launch. Values above `BashPolicy.maxTimeoutMs`
+are clamped; the default maximum is 300,000 ms (5 minutes), and the tool schema
+advertises both the minimum and configured maximum.
 
 Output (success):
 ```json
@@ -88,7 +94,8 @@ Output (truncated):
 8. **PATH extensions** (#1841): `pathExtensions` on `BashToolConfig` / `BashBackgroundToolConfig` prepends caller-supplied directories to `SAFE_ENV.PATH`. Each entry is validated: must be non-empty, absolute, and cannot contain `:` (prevents POSIX cwd injection via empty PATH segments). The execution preset stack auto-detects common tool paths (`~/.bun/bin`, `/opt/homebrew/bin`, `~/.cargo/bin`, etc.) with per-directory uid ownership checks. HOME-dependent shim paths (nvm, volta, pyenv) are only included in unsandboxed mode.
 8. **AbortSignal wiring**: SIGTERM + SIGKILL escalation after grace period
 9. **Output budget**: configurable `maxOutputBytes` (default 1 MB) prevents OOM
-10. **Destructive-pattern defense-in-depth** (#1721): the classifier includes a `destructive` category covering catastrophic shell ops — `rm -rf` on system paths (`/`, `/etc`, `/usr`, `/bin`, etc.), `mkfs*`, `dd of=/dev/*`, fork bomb, `chmod -R 777 /`, `shutdown`/`reboot`/`halt`/`poweroff`, `init 0/6`. These fire inside `bash-tool.ts`'s execution path **after** the permission modal, so a session-wide `[a] Always allow Bash` grant does not authorize catastrophic commands. Workspace-scoped ops (`rm -rf /tmp/x`, `rm -rf node_modules`) are intentionally not caught.
+10. **Timeout cap**: foreground `Bash` validates per-call `timeoutMs` before any subprocess is launched and clamps it to `BashPolicy.maxTimeoutMs` (default 5 minutes). Invalid numeric edge cases (`NaN`, `Infinity`, fractional, zero, negative) return a validation error instead of reaching `spawnBash()` / `execSandboxed()`.
+11. **Destructive-pattern defense-in-depth** (#1721): the classifier includes a `destructive` category covering catastrophic shell ops — `rm -rf` on system paths (`/`, `/etc`, `/usr`, `/bin`, etc.), `mkfs*`, `dd of=/dev/*`, fork bomb, `chmod -R 777 /`, `shutdown`/`reboot`/`halt`/`poweroff`, `init 0/6`. These fire inside `bash-tool.ts`'s execution path **after** the permission modal, so a session-wide `[a] Always allow Bash` grant does not authorize catastrophic commands. Workspace-scoped ops (`rm -rf /tmp/x`, `rm -rf node_modules`) are intentionally not caught.
 
 ## OS-Level Sandboxing
 

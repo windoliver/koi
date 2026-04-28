@@ -39,6 +39,7 @@ import { checkpointStack } from "./preset-stacks/checkpoint.js";
 import { codeExecStack } from "./preset-stacks/code-exec.js";
 import { dreamStack } from "./preset-stacks/dream.js";
 import { executionStack } from "./preset-stacks/execution.js";
+import { forgeStack } from "./preset-stacks/forge.js";
 import { mcpStack } from "./preset-stacks/mcp.js";
 import { memoryStack } from "./preset-stacks/memory.js";
 import { notebookStack } from "./preset-stacks/notebook.js";
@@ -272,6 +273,7 @@ export const DEFAULT_STACKS: readonly PresetStack[] = [
   mcpStack,
   notebookStack,
   codeExecStack,
+  forgeStack,
   rulesStack,
   schedulerStack,
   skillsStack,

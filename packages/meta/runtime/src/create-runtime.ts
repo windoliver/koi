@@ -1040,23 +1040,12 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
   if (isAuditSink(sinkInput)) {
     sink = sinkInput;
   } else if (sinkInput.kind === "ndjson") {
-    // F126: validate the config and fail fast on unknown keys so a
-    // caller passing rotation/retention/agentId fields (which the
-    // sink package no longer supports) gets a hard error instead of
-    // silently dropped options.
-    const allowedNdjsonKeys: ReadonlySet<string> = new Set(["kind", "filePath", "flushIntervalMs"]);
-    for (const key of Object.keys(sinkInput)) {
-      if (!allowedNdjsonKeys.has(key)) {
-        throw new Error(
-          `Unsupported NDJSON audit sink option: "${key}" — recognized keys are kind, filePath, flushIntervalMs`,
-        );
-      }
-    }
     const ndjsonConfig = {
       filePath: sinkInput.filePath,
       ...(sinkInput.flushIntervalMs !== undefined
         ? { flushIntervalMs: sinkInput.flushIntervalMs }
         : {}),
+      ...(sinkInput.rotation !== undefined ? { rotation: sinkInput.rotation } : {}),
     };
     const ndjsonValidation = validateNdjsonAuditSinkConfig(ndjsonConfig);
     if (!ndjsonValidation.ok) {
@@ -1068,26 +1057,25 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       await built.close();
     };
   } else if (sinkInput.kind === "sqlite") {
-    const allowedSqliteKeys: ReadonlySet<string> = new Set([
-      "kind",
-      "dbPath",
-      "flushIntervalMs",
-      "maxBufferSize",
-    ]);
-    for (const key of Object.keys(sinkInput)) {
-      if (!allowedSqliteKeys.has(key)) {
-        throw new Error(
-          `Unsupported SQLite audit sink option: "${key}" — recognized keys are kind, dbPath, flushIntervalMs, maxBufferSize`,
-        );
-      }
-    }
     const sqliteConfig = {
       dbPath: sinkInput.dbPath,
+      ...(sinkInput.agentId !== undefined ? { agentId: sinkInput.agentId } : {}),
       ...(sinkInput.flushIntervalMs !== undefined
         ? { flushIntervalMs: sinkInput.flushIntervalMs }
         : {}),
       ...(sinkInput.maxBufferSize !== undefined ? { maxBufferSize: sinkInput.maxBufferSize } : {}),
+      ...(sinkInput.retention !== undefined ? { retention: sinkInput.retention } : {}),
     };
+    // Retention + signing are incompatible: session-granular pruning cannot preserve
+    // hash-chain validity, so enabling both would make retention a silent no-op that
+    // lets the DB grow unboundedly while the operator believes it is being pruned.
+    if (sqliteConfig.retention !== undefined && audit.signing === true) {
+      throw new Error(
+        "audit sink: SQLite retention and signing cannot be enabled simultaneously. " +
+          "Session-granular pruning would break the signed hash chain. " +
+          "Disable signing or remove the retention configuration.",
+      );
+    }
     const sqliteValidation = validateSqliteAuditSinkConfig(sqliteConfig);
     if (!sqliteValidation.ok) {
       throw new Error(`Invalid SQLite audit sink config: ${sqliteValidation.error.message}`);
@@ -1232,6 +1220,9 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       if (poisonError !== undefined) {
         throw new Error("audit sink poisoned — refusing model call", { cause: poisonError });
       }
+      // Capture result/error so flush always runs — mirrors wrapToolCall pattern.
+      // Audit records a model_call entry even on failure, so it must be flushed
+      // before surfacing the model error.
       let modelError: unknown;
       let modelThrew = false;
       let modelResult: Awaited<ReturnType<typeof next>> | undefined;
@@ -1260,6 +1251,8 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       if (poisonError !== undefined) {
         throw new Error("audit sink poisoned — refusing tool call", { cause: poisonError });
       }
+      // Capture tool result/error so we can force-flush regardless of outcome before
+      // re-throwing. A throw from finally would mask the original tool error in Biome.
       let toolError: unknown;
       let toolThrew = false;
       let toolResult: Awaited<ReturnType<typeof next>> | undefined;
@@ -1269,11 +1262,16 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
         toolError = e;
         toolThrew = true;
       }
+      // Force-flush: drain the tool_call audit entry so the poison check below is not racy.
       await mw.flush().catch((flushErr: unknown) => {
+        // Propagate flush failures into the same poison channel as log failures so
+        // the check below surfaces any durability problem, not just log-path errors.
         if (poisonError === undefined) {
           poisonError = flushErr;
         }
       });
+      // Surface audit failure before returning; the tool has already executed.
+      // Callers MUST NOT retry this tool call on seeing this error.
       if (poisonError !== undefined) {
         throw new Error(
           "audit sink write failed — tool side effects are complete but audit record is missing; do not retry this tool call",
@@ -1292,6 +1290,8 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
         throw new Error("audit sink poisoned — refusing model stream", { cause: poisonError });
       }
       const inner = mw.wrapModelStream ? mw.wrapModelStream(ctx, request, next) : next(request);
+      // Capture stream error so flush always runs on both success and failure paths,
+      // including early-cancel (generator .return()) from the consumer breaking out.
       let streamError: unknown;
       let streamThrew = false;
       try {
@@ -1314,6 +1314,7 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
           }
         });
       }
+      // Reached only on normal completion (not early-cancel).
       if (poisonError !== undefined) {
         throw new Error("audit sink write failed after stream — turn aborted", {
           cause: poisonError,
@@ -1347,6 +1348,8 @@ function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): Built
       }
       if (flushErr !== undefined) throw flushErr;
       if (closeErr !== undefined) throw closeErr;
+      // Surface any stored poison state after releasing all resources.
+      // A successful close after a known write failure is not trustworthy.
       if (poisonError !== undefined) {
         throw new Error(
           "Audit sink closed but audit trail is incomplete: a prior write or flush failure was recorded",

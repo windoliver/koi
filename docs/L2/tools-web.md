@@ -354,7 +354,7 @@ createWebExecutor(config)
 ├── config.fetchFn           → globalThis.fetch (default)
 ├── config.searchFn          → undefined (required for web_search)
 ├── config.maxBodyChars      → 50,000 (default)
-├── config.defaultTimeoutMs  → 15,000 (default)
+├── config.defaultTimeoutMs  → 15,000 (default, capped at 60,000 for fetch/search)
 ├── config.cacheTtlMs        → 0 — disabled (default)
 ├── config.maxCacheEntries   → 100 (default)
 │
@@ -371,9 +371,13 @@ createWebExecutor(config)
     └── search(query, options)
         ├── Validates searchFn configured
         ├── Cache lookup
-        ├── Delegates to searchFn
+        ├── Delegates to searchFn with AbortController timeout
         └── Cache store on success
 ```
+
+Both `fetch()` and `search()` clamp executor timeouts to `MAX_TIMEOUT_MS`
+(60,000 ms). A bad `defaultTimeoutMs` config therefore cannot leave a search
+provider call running longer than the package-level maximum.
 
 ---
 

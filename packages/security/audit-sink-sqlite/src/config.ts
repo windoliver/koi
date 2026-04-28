@@ -5,6 +5,13 @@
 import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 
+export interface SqliteRetentionConfig {
+  /** Delete entries older than this many days. */
+  readonly maxAgeDays: number;
+  /** How often to run the pruning pass in ms. Default: 3600000 (1 hour). */
+  readonly pruneIntervalMs?: number;
+}
+
 export interface SqliteAuditSinkConfig {
   /** Path to the SQLite database file. Use ":memory:" for in-memory (tests). */
   readonly dbPath: string;
@@ -12,6 +19,14 @@ export interface SqliteAuditSinkConfig {
   readonly flushIntervalMs?: number;
   /** Maximum buffer size before an automatic flush. Default: 100. */
   readonly maxBufferSize?: number;
+  /** Retention / pruning policy. Omit to retain all entries indefinitely. */
+  readonly retention?: SqliteRetentionConfig;
+  /**
+   * When provided, scope all reads (query, getEntries) to this agent ID.
+   * Recommended when the DB is owned by a single agent — prevents a reused
+   * session ID from returning another agent's audit rows in a shared database.
+   */
+  readonly agentId?: string;
 }
 
 function fail(message: string): Result<never, KoiError> {
@@ -43,6 +58,21 @@ export function validateSqliteAuditSinkConfig(
   if (c.maxBufferSize !== undefined) {
     if (typeof c.maxBufferSize !== "number" || c.maxBufferSize <= 0) {
       return fail("config.maxBufferSize must be a positive number");
+    }
+  }
+
+  if (c.retention !== undefined) {
+    if (typeof c.retention !== "object" || c.retention === null) {
+      return fail("config.retention must be an object");
+    }
+    const r = c.retention as Record<string, unknown>;
+    if (typeof r.maxAgeDays !== "number" || r.maxAgeDays <= 0) {
+      return fail("config.retention.maxAgeDays must be a positive number");
+    }
+    if (r.pruneIntervalMs !== undefined) {
+      if (typeof r.pruneIntervalMs !== "number" || r.pruneIntervalMs <= 0) {
+        return fail("config.retention.pruneIntervalMs must be a positive number");
+      }
     }
   }
 
