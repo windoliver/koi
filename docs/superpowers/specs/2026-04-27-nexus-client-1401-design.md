@@ -685,6 +685,20 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // where undefined means EITHER no transport was supplied OR the operator
   // explicitly opted out of both Nexus consumers. Either way, no Nexus
   // startup work runs below.
+  //
+  // CONFIG-VALIDATION-ONLY peek at the raw kind: the boot-mode preflight
+  // for local-bridge + assert-* must fire even on the explicit-opt-out
+  // path. Without this, an operator who passes a real local-bridge
+  // transport with both consumers disabled AND nexusBootMode=assert-*
+  // would silently boot — the assert-* mode is unsupported on local-bridge
+  // regardless of consumer wiring, so silently accepting it is a false
+  // fail-fast signal. We read the raw kind here without going through
+  // assertProductionTransport (no throw on missing kind — that case is
+  // already covered by the consumer-wired branch above; the bypass we're
+  // closing requires a real local-bridge factory output, which by
+  // definition has kind set).
+  const rawKindForBootValidation: NexusTransportKind | undefined =
+    config.nexusTransport?.kind;
   if (txKind === "local-bridge") {
     const missing: string[] = [];
     if (config.nexusPermissionsEnabled === undefined) missing.push("nexusPermissionsEnabled");
@@ -747,9 +761,15 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // with no probe — exactly the misconfiguration this gate exists to catch.
   const declaredBootMode: NexusBootMode =
     config.nexusBootMode ?? "telemetry";
-  if (txKind === "local-bridge" && declaredBootMode !== "telemetry") {
+  // Use the RAW transport kind (not the consumer-resolved txKind) so this
+  // preflight fires even when the operator opted out of both consumers.
+  // Otherwise local-bridge + nexusPermissionsEnabled=false +
+  // nexusAuditEnabled=false + nexusBootMode=assert-* would silently boot.
+  if (rawKindForBootValidation === "local-bridge" && declaredBootMode !== "telemetry") {
     throw new Error(
-      `nexusBootMode=${declaredBootMode} is not supported for local-bridge transports. ` +
+      `nexusBootMode=${declaredBootMode} is not supported for local-bridge transports ` +
+      `(applies regardless of consumer-wiring opt-out — assert-* is unsupported on ` +
+      `local-bridge in any configuration). ` +
       `Use HTTP transport or nexusBootMode="telemetry". ` +
       `(Local-bridge cannot be probed without risking session wedge on auth challenges; ` +
       `probing a disposable subprocess would not validate the live session, so the ` +
@@ -880,15 +900,33 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
         throw new Error(msg);  // both assert-* modes
       }
     } else if (health !== undefined && health.value.status === "ok") {
+      // Distinguish "version + policy reads succeeded" from "version only,
+      // because permissions are disabled and we have no audit-write probe".
+      // The audit-only telemetry path skips policy-path reads, so a green
+      // probe message here would be a false-positive observability signal:
+      // operators would see "nexus probe ok" even though the audit
+      // namespace, ACLs, and write path were never tested. Surface the
+      // limitation in the log line so dashboards and humans cannot mistake
+      // this for validated audit health.
+      const auditOnlyVersionOnly = !effectivePermsWired;
       const probeScope = txKind === "local-bridge"
         ? "spawn-config-validated (disposable probe; live session NOT validated)"
-        : "session-validated";
-      logger.info({
+        : auditOnlyVersionOnly
+          ? "version-only (audit write path NOT validated — no audit-readiness probe exists)"
+          : "session-validated";
+      const msg = auditOnlyVersionOnly
+        ? "nexus probe partial: version reachable, audit-write readiness UNVALIDATED"
+        : `nexus probe ok: ${probeScope}`;
+      // Use logger.warn for the audit-only partial path so it surfaces in
+      // default log levels and can't be filtered out as routine info.
+      const logFn = auditOnlyVersionOnly ? logger.warn.bind(logger) : logger.info.bind(logger);
+      logFn({
         latencyMs: health.value.latencyMs,
         version: health.value.version,
         probed: health.value.probed,
         probeScope,
-      }, `nexus probe ok: ${probeScope}`);
+        partial: auditOnlyVersionOnly,
+      }, msg);
     }
     // health === undefined → probe skipped (already logged above)
   }
@@ -1131,6 +1169,9 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7h. `local-bridge + assert-remote-policy-loaded-at-boot mode: throws config validation error (unsupported) — same unconditional path as 7g`
 7h_unc1. `local-bridge + nexusAuditMode="local-only" + assert-transport-reachable-at-boot: STILL throws (anyEffectiveConsumer=false would otherwise skip the block — regression guard against the Round 5 silent-skip bug)`
 7h_unc2. `local-bridge + nexusAuditEnabled=false + nexusPermissionsEnabled=false + assert-remote-policy-loaded-at-boot: STILL throws (no-consumer path must not silently accept assert-* on local-bridge)`
+7h_unc3. `local-bridge + EXPLICIT nexusPermissionsEnabled=false + EXPLICIT nexusAuditEnabled=false + assert-transport-reachable-at-boot: STILL throws (regression guard for the Loop-4-R2 bypass — opt-out must not skip the assert-* preflight when the raw transport kind is local-bridge)`
+7h_unc4. `local-bridge + same opt-out + assert-remote-policy-loaded-at-boot: STILL throws (same root cause as 7h_unc3)`
+7h_unc5. `local-bridge + same opt-out + nexusBootMode="telemetry" (or unset): BOOTS without Nexus block (opt-out path is honored only when the boot mode is compatible with local-bridge)`
 7g2. (REMOVED Loop 3 — nexusProbeFactory removed from runtime config; no runtime test applies)
 7g2b. (REMOVED — same)
 7g3. (REMOVED — runtime no longer consumes nexusProbeFactory)
@@ -1179,6 +1220,9 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j11. `local-bridge + auditEnabled=true + nexusAuditMode="disabled": probe + boot-mode preflight SKIPPED` (effective-consumer gating — disabled-by-mode does not trigger Nexus startup work)
 7g16j12. `local-bridge + auditEnabled=true + nexusAuditMode="local-only": same as above (no Nexus consumer effectively wired on local-bridge)`
 7g16j13. `HTTP + auditEnabled=true + nexusAuditMode="disabled": probe SKIPPED AND audit sink NOT wired (Round 10 — wiring honors disabled on HTTP, not just probe)`
+7g16j13b. `HTTP audit-only telemetry probe success (permissions=false): logs WARNING with msg "nexus probe partial: version reachable, audit-write readiness UNVALIDATED" (NOT "nexus probe ok") and partial:true field — closes the false-positive observability signal flagged in Loop 4 R2`
+7g16j13c. `HTTP audit-only probe payload includes probeScope="version-only (audit write path NOT validated — no audit-readiness probe exists)" so log aggregators / dashboards can filter on the limitation`
+7g16j13d. `HTTP perms+audit telemetry probe success: logs INFO with msg "nexus probe ok: session-validated" and partial:false (regression guard — full-validation path keeps the green log)`
 7g16j14. `local-bridge with nexusProbeFactory: probe is NOT executed by createKoiRuntime` (regression guard — local-bridge probe is caller-site responsibility, runtime block is HTTP-only)
 7g16j15. `assert-transport-reachable-at-boot + 404 on version.json or policy.json: throws with 'namespace absent' message` (Round 9 plumbing now reaches throw)
 7g16j16. `assert-remote-policy-loaded-at-boot + 404 on either default probe path: throws (same handling as assert-transport-reachable-at-boot)`
