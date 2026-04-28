@@ -516,6 +516,17 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
     ?? (txKind === "http" ? true : txKind === "local-bridge" ? false : undefined);
   const auditEnabled = config.nexusAuditEnabled
     ?? (txKind === "http" ? true : txKind === "local-bridge" ? false : undefined);
+  // EFFECTIVE consumer wiring: applies nexusAuditMode after the boolean.
+  // local-bridge audit always skips the Nexus sink regardless of auditEnabled,
+  // and nexusAuditMode="disabled" on any transport explicitly opts out.
+  // Probe gating + boot-mode validation use these EFFECTIVE values so a
+  // disabled-by-mode consumer doesn't trigger probe work.
+  const effectiveAuditWired =
+    auditEnabled === true
+    && txKind === "http"
+    && config.nexusAuditMode !== "disabled";
+  const effectivePermsWired = permsEnabled === true && txKind === "http";
+  const anyEffectiveConsumer = effectivePermsWired || effectiveAuditWired;
   if (config.nexusTransport !== undefined) {
     const inferredPerms = config.nexusPermissionsEnabled === undefined;
     const inferredAudit = config.nexusAuditEnabled === undefined;
@@ -555,7 +566,7 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // and is none of this block's concern. Without this gate, `fail-closed-*`
   // could block boot for an opted-out configuration on an unrelated
   // permissions/audit readiness probe.
-  if (config.nexusTransport !== undefined && (permsEnabled === true || auditEnabled === true)) {
+  if (config.nexusTransport !== undefined && anyEffectiveConsumer) {
     const mode: NexusBootMode = config.nexusBootMode ?? "telemetry";
     const policyBase = config.nexusPolicyPath ?? "koi/permissions";
 
@@ -612,13 +623,18 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       }
       probeTransport = config.nexusTransport as HealthCapableNexusTransport;
     } else {
-      // local-bridge: probe-factory is OPTIONAL. After Round 4, local-bridge
-      // never wires a Nexus consumer (permissions are categorically rejected;
-      // audit always skips the Nexus sink per nexusAuditMode). The probe is
-      // therefore observability-only on local-bridge — useful when supplied,
-      // not required when omitted. If supplied, we still run it for telemetry.
+      // local-bridge: probe-factory is OPTIONAL and ADVISORY. Wrap construction
+      // in try/catch so a synchronous spawn error (missing binary, permission
+      // denied, bad env) becomes a logged warning rather than a startup
+      // outage — matches the documented advisory contract.
       if (config.nexusProbeFactory !== undefined) {
-        probeTransport = config.nexusProbeFactory();
+        try {
+          probeTransport = config.nexusProbeFactory();
+        } catch (err: unknown) {
+          logger.warn({ err, kind: "local-bridge" },
+            "nexus probe-factory threw during construction; probe SKIPPED " +
+            "(telemetry mode is advisory — boot continues)");
+        }
       } else {
         logger.debug({ kind: "local-bridge" },
           "nexus probe skipped: no factory provided (no Nexus consumer wired on local-bridge)");
@@ -906,6 +922,10 @@ Runtime config validation MAY warn (not throw) if `assert-remote-policy-loaded-a
 7g16j7. `Both consumers explicitly false (any transport): startup probe is SKIPPED entirely; runtime does not call probeTransport.health()` (fs-only Nexus session — probe is none of this block's concern)
 7g16j8. `Both consumers inferred false on local-bridge no-flags: probe SKIPPED` (consistent with explicit-false path)
 7g16j9. `One consumer enabled: probe runs as before` (regression guard against over-eager skip)
+7g16j10. `nexusProbeFactory throws synchronously: caught + logged in telemetry mode; boot CONTINUES; probe SKIPPED` (advisory contract preserved against spawn errors)
+7g16j11. `local-bridge + auditEnabled=true + nexusAuditMode="disabled": probe + boot-mode preflight SKIPPED` (effective-consumer gating — disabled-by-mode does not trigger Nexus startup work)
+7g16j12. `local-bridge + auditEnabled=true + nexusAuditMode="local-only": same as above (no Nexus consumer effectively wired on local-bridge)`
+7g16j13. `HTTP + auditEnabled=true + nexusAuditMode="disabled": probe SKIPPED (effective-audit-wired is false even on HTTP when mode=disabled)`
 7g16k. (REMOVED — local-bridge + permissions categorically rejected)
 7g16l. (REMOVED — same)
 7g16m. (REMOVED — same)
