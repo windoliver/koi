@@ -155,7 +155,7 @@ Sequence:
 
    Runtime behavior on probe failure:
    - `telemetry` mode: log warning; **continue boot using the live session transport for nexus consumers** (auth state may be re-established later via the session's normal `submitAuthCode` path; we do NOT downgrade the whole session for a probe blip)
-   - `fail-closed-transport` / `fail-closed-policy`: throw at startup before any consumer wiring
+   - `fail-closed-transport` / `fail-closed-policy-at-boot`: throw at startup before any consumer wiring
 
    This eliminates the "transient startup auth challenge silently kills nexus for the whole session" risk that the previous spec introduced. Cost: one extra short-lived subprocess at boot for local-bridge transports — acceptable.
 7. Per-call `deadlineMs: HEALTH_DEADLINE_MS = 5_000` overrides each transport's default.
@@ -196,13 +196,13 @@ The fs-nexus `local-bridge` transport is a spawned Python subprocess speaking JS
 
 If the Nexus server adds a dedicated `health` or `ready` RPC that aggregates all subsystem checks (incl. audit/fs storage), `health()` switches to that single call. Until then, the documented control-plane-only contract is the honest one.
 
-## Startup integration (telemetry by default, opt-in fail-closed-transport / fail-closed-policy)
+## Startup integration (telemetry by default, opt-in fail-closed-transport / fail-closed-policy-at-boot)
 
 The real production boundary is `packages/meta/cli/src/runtime-factory.ts:832` (`KoiRuntimeFactoryConfig.nexusTransport`). The runtime factory wires Nexus into `createNexusPermissionBackend` and `createNexusAuditSink`.
 
 **Critical existing contract: local-first permissions.** `createNexusPermissionBackend` is documented as "local-first: TUI rules apply when Nexus has no policy or is unreachable." A golden test in `meta/runtime/src/__tests__/golden-replay.test.ts` proves this fallback. **A fail-closed startup gate would break this contract** and convert recoverable Nexus outages into total runtime unavailability. That is a regression.
 
-**Decision: telemetry-by-default for everything; fail-closed-transport and fail-closed-policy are explicit opt-ins.**
+**Decision: telemetry-by-default for everything; fail-closed-transport and fail-closed-policy-at-boot are explicit opt-ins.**
 
 Earlier drafts proposed making audit-wired runtimes default to `fail-closed-transport`. That was wrong: `health()` does NOT probe the audit write path (no non-side-effecting audit RPC exists today), so defaulting to fail-closed for audit gives a **false safety signal**. Better to be honest: telemetry default for everything, document the audit-write gap, and let operators opt in.
 
@@ -210,60 +210,80 @@ Earlier drafts proposed making audit-wired runtimes default to `fail-closed-tran
 |---|---|
 | `telemetry` (default) | log on transport failure; log activation status; continue boot |
 | `fail-closed-transport` | throw on transport failure for any of the 3 probes (version + version.json read + policy.json read); does NOT validate that policy files exist or that backend successfully activates remote policy |
-| `fail-closed-policy` | throw on transport failure; throw on policy-activation failure (awaits `backend.ready`); centralized policy is required to serve traffic |
+| `fail-closed-policy-at-boot` | throw on transport failure; throw on first-sync policy-activation failure (awaits `backend.ready`). **STARTUP GATE ONLY** — does NOT enforce ongoing policy freshness. After successful boot, last-known-good remote policy continues to be served per existing semantics even if subsequent syncs fail or produce incompatible policy. Operators needing ongoing freshness enforcement need a separate mechanism (out of scope this PR). |
 
-**⚠️ Security caveat for `fail-closed-transport`:** this gate only proves the transport can carry the read calls. Even with a 404 on `version.json`/`policy.json` the probe succeeds (file-not-found is a transport-success signal). And even when the files exist, parsing or backend `rebuildBackend` shape mismatch can still cause silent local-fallback. Operators who require centralized-policy *enforcement* must use `fail-closed-policy`, not `fail-closed-transport`. The two-name split is deliberate so this caveat cannot be papered over by mode-name optimism.
+**⚠️ Security caveat for `fail-closed-transport`:** this gate only proves the transport can carry the read calls. Even with a 404 on `version.json`/`policy.json` the probe succeeds (file-not-found is a transport-success signal). And even when the files exist, parsing or backend `rebuildBackend` shape mismatch can still cause silent local-fallback. Operators who require centralized-policy *enforcement* must use `fail-closed-policy-at-boot`, not `fail-closed-transport`. The two-name split is deliberate so this caveat cannot be papered over by mode-name optimism.
 
-**Policy-activation check** (only in `fail-closed-policy`):
+**Policy-activation check** (only in `fail-closed-policy-at-boot`):
 
 After the permission backend is created, the runtime `await`s `nexusPermBackend.ready` and inspects whether centralized policy actually activated (vs. fell back to local). The backend exposes activation status via its existing `ready` promise resolution and a documented status field. If activation failed (file 404, parse error, `rebuildBackend` shape mismatch, `supportsDefaultDenyMarker` mismatch), the runtime throws before exposing the runtime to requests. This closes the race the earlier draft had: requests cannot be served against the local fallback when policy-required mode is set.
 
-**Audit-write runtime error surfacing (in scope this PR):**
+**Audit-write runtime error surfacing (opt-in, in scope this PR):**
 
-`@koi/middleware-audit` already exposes an `onError` hook, and `runtime-factory.ts` already wires NDJSON and SQLite sinks through a full poison-on-error guard pattern (`runtime-factory.ts:2526–2602`). The Nexus audit sink is currently wired without this pattern, which makes Nexus audit silently drop records on flush failure.
+`@koi/middleware-audit` already exposes an `onError` hook, and `runtime-factory.ts` already wires NDJSON and SQLite sinks through a poison-on-error guard pattern (`runtime-factory.ts:2526–2602`). The Nexus audit sink is currently wired without that pattern, so Nexus audit silently drops records on flush failure.
 
-This PR ports the **full** guard model to Nexus audit. Just adding an `onError` callback is not enough — the existing NDJSON/SQLite pattern has four parts, all of which apply:
-
-1. **Poison accumulator** — first failure latches the error.
-2. **Wrapped sink that rejects subsequent writes** — once poisoned, the wrapper synchronously fails every subsequent `append()` instead of accepting writes that would be silently dropped. This stops further audit emission from the middleware until the operator notices.
-3. **Per-hook flush + rethrow at every durability-critical boundary** — not just at shutdown. The audit middleware exposes `flush()` hooks at session-end, tool-result boundaries, and other durability points; each one must call `await sink.flush()` and then rethrow the poisoned error if set. Limiting this to shutdown leaves a gap where the session continues for minutes after a write failure.
-4. **No swallowing in the underlying sink** — `createNexusAuditSink` itself must propagate flush errors to the wrapper rather than catching them silently. Currently `nexus-sink.ts` calls `startFlush().catch(() => {})`; this PR removes those bare `.catch(() => {})` calls and replaces them with `.catch(err => onError(err))`.
-
-Concretely, this PR introduces `createPoisonGuardedNexusAuditSink({ transport, onError })` in `runtime-factory.ts` (or a small helper module) that composes:
+**Critical: the poison-guard pattern is fail-stop on first failure.** Wiring it unconditionally would turn the default `telemetry` boot mode into fail-stop on the first Nexus audit hiccup — a behavior regression. Therefore the guard is **opt-in via a separate config flag**, orthogonal to `nexusBootMode`:
 
 ```ts
-let poisonErr: unknown;
-const inner = createNexusAuditSink({
-  transport,
-  onError: (err) => {
-    if (poisonErr === undefined) poisonErr = err;
-    onError(err);
-  },
-});
-return {
-  append: (entry) => {
-    if (poisonErr !== undefined) throw new Error("nexus audit sink poisoned", { cause: poisonErr });
-    return inner.append(entry);
-  },
-  flush: async () => {
-    await inner.flush();
-    if (poisonErr !== undefined) throw new Error("nexus audit flush failed", { cause: poisonErr });
-  },
-  close: inner.close,
-};
+interface KoiRuntimeFactoryConfig {
+  // …
+  /**
+   * When true, wire the Nexus audit sink through the same poison-on-error
+   * guard used by NDJSON/SQLite sinks: first failure latches; subsequent
+   * `log()` calls throw; every middleware flush boundary rethrows.
+   *
+   * Default: false (best-effort, matches current Nexus audit behavior).
+   * Operators who require audit durability opt in explicitly.
+   *
+   * Independent of nexusBootMode — boot-mode controls the startup probe;
+   * this controls runtime audit error semantics.
+   */
+  readonly nexusAuditPoisonOnError?: boolean | undefined;
+}
 ```
 
-The audit middleware's existing per-hook flush boundaries pick up the rethrown error and surface it to the engine immediately — same path NDJSON/SQLite poison errors take today.
+When `nexusAuditPoisonOnError === true`, the runtime composes `createNexusAuditSink` with a thin wrapper that conforms to the existing `AuditSink` interface (`log()` required, `flush?` optional, `query?` optional — NOT `append`/`close`):
 
-**Sink-side change:** `packages/security/audit-sink-nexus/src/nexus-sink.ts` removes silent `.catch(() => {})` on `startFlush()`; instead routes errors through the existing `onError` config field (which the wrapper hooks).
+```ts
+function createPoisonGuardedNexusAuditSink(opts: {
+  transport: HealthCapableNexusTransport;
+  onError: (err: unknown) => void;
+}): AuditSink {
+  let poisonErr: unknown;
+  const inner = createNexusAuditSink({
+    transport: opts.transport,
+    onError: (err) => {
+      if (poisonErr === undefined) poisonErr = err;
+      opts.onError(err);
+    },
+  });
+  return {
+    log: (entry) => {
+      if (poisonErr !== undefined) throw new Error("nexus audit sink poisoned", { cause: poisonErr });
+      return inner.log(entry);
+    },
+    flush: inner.flush === undefined ? undefined : async () => {
+      await inner.flush?.();
+      if (poisonErr !== undefined) throw new Error("nexus audit flush failed", { cause: poisonErr });
+    },
+    query: inner.query,  // pass through unchanged — preserves ledger/query surface
+  };
+}
+```
 
-**Remaining gap (server-side, out of scope):** `health()` still does not probe audit *write* readiness — no non-side-effecting audit RPC exists on the Nexus server. The poison-guard wiring closes the runtime observability gap (operators see failures via logs immediately, subsequent appends fail loudly, every durability boundary surfaces the failure), but does not move detection to startup. A server-side `audit.ping` RPC would close that remaining gap; tracked as a separate Nexus server issue.
+**Default (telemetry mode, `nexusAuditPoisonOnError` unset):** Nexus audit remains best-effort. Failures are logged via `onError` but do not abort writes or rethrow at flush. Same observable behavior as today.
+
+**Opt-in (`nexusAuditPoisonOnError: true`):** Full guard model — first failure latches, subsequent `log()` calls throw, every middleware flush boundary rethrows. Matches NDJSON/SQLite semantics. Compatible with any `nexusBootMode`.
+
+**Sink-side change (always applies):** `packages/security/audit-sink-nexus/src/nexus-sink.ts` removes silent `.catch(() => {})` on `startFlush()`; instead routes errors through the existing `onError` config field. This is correct regardless of poison-guard opt-in — `onError` was always the documented contract; swallowing is the bug.
+
+**Remaining gap (server-side, out of scope):** `health()` still does not probe audit *write* readiness — no non-side-effecting audit RPC exists on the Nexus server. The opt-in poison-guard plus sink-side fix close the runtime observability and propagation gaps; they do not move detection to startup. A server-side `audit.ping` RPC would close that remaining gap; tracked as a separate Nexus server issue.
 
 ```ts
 // packages/meta/cli/src/runtime-factory.ts
 import type { HealthCapableNexusTransport } from "@koi/nexus-client";
 
-type NexusBootMode = "telemetry" | "fail-closed-transport" | "fail-closed-policy";
+type NexusBootMode = "telemetry" | "fail-closed-transport" | "fail-closed-policy-at-boot";
 
 interface KoiRuntimeFactoryConfig {
   // …
@@ -277,6 +297,12 @@ interface KoiRuntimeFactoryConfig {
    */
   readonly nexusPolicyBasePath?: string | undefined;
   /**
+   * When true, wire Nexus audit sink through poison-on-error guard.
+   * Default false (best-effort, matches current behavior).
+   * Independent of nexusBootMode — orthogonal concern.
+   */
+  readonly nexusAuditPoisonOnError?: boolean | undefined;
+  /**
    * Behavior when startup health probe fails or policy fails to activate.
    * Default: "telemetry" (always — does NOT vary by configured consumers;
    * audit-write readiness is not probed and an audit-driven default would
@@ -287,9 +313,11 @@ interface KoiRuntimeFactoryConfig {
    * - "fail-closed-transport": throw on transport failure. Does NOT validate
    *   that centralized policy activated — local-fallback may still apply.
    *   See security caveat in design doc.
-   * - "fail-closed-policy": throw on transport failure OR policy-activation
-   *   failure (awaits backend.ready and inspects isCentralizedPolicyActive()).
-   *   Required for deployments that need centralized policy enforced at boot.
+   * - "fail-closed-policy-at-boot": throw on transport failure OR first-sync
+   *   policy-activation failure (awaits backend.ready and inspects
+   *   isCentralizedPolicyActive()). STARTUP GATE ONLY — does not enforce
+   *   ongoing policy freshness; last-known-good remote policy continues to
+   *   be served after sync failures.
    */
   readonly nexusBootMode?: NexusBootMode | undefined;
 }
@@ -347,28 +375,36 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       // … existing config …
     });
 
-    // Step 4: policy-activation check — ONLY in fail-closed-policy mode.
+    // Step 4: policy-activation check — ONLY in fail-closed-policy-at-boot mode.
     // Note: this is the ONE place probe outcome AND wiring outcome must agree —
     // we get here because the probe succeeded (otherwise step 2 threw), then
     // we additionally require the first sync to actually activate remote policy.
-    if ((config.nexusBootMode ?? "telemetry") === "fail-closed-policy") {
+    if ((config.nexusBootMode ?? "telemetry") === "fail-closed-policy-at-boot") {
       await nexusPermBackend.ready;
       if (!nexusPermBackend.isCentralizedPolicyActive()) {
         throw new Error(
           "Nexus centralized policy not active after first sync (file missing, parse error, or backend rebuild failed); " +
-          "fail-closed-policy mode requires active centralized policy at boot",
+          "fail-closed-policy-at-boot mode requires active centralized policy at boot",
         );
       }
     }
     // telemetry / fail-closed-transport: do NOT await ready (preserves existing async semantics)
   }
 
-  // Step 5: wire Nexus audit sink with FULL poison-guard wrapper (see audit section)
+  // Step 5: wire Nexus audit sink. Poison-guard is OPT-IN via nexusAuditPoisonOnError.
+  // Default (best-effort) preserves existing telemetry-mode behavior — failures
+  // are logged but do not abort writes.
   if (config.nexusTransport !== undefined) {
-    auditSinks.push(createPoisonGuardedNexusAuditSink({
-      transport: config.nexusTransport,
-      onError: (err) => { logger.error({ err }, "nexus audit write failed"); },
-    }));
+    const sink = config.nexusAuditPoisonOnError === true
+      ? createPoisonGuardedNexusAuditSink({
+          transport: config.nexusTransport,
+          onError: (err) => logger.error({ err }, "nexus audit write failed"),
+        })
+      : createNexusAuditSink({
+          transport: config.nexusTransport,
+          onError: (err) => logger.warn({ err }, "nexus audit write failed (best-effort)"),
+        });
+    auditSinks.push(sink);
   }
   // … continue with non-nexus runtime construction …
 }
@@ -387,7 +423,7 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
 
 The function reports what the backend is *actually serving right now*, not the success of the latest sync attempt. This preserves the existing availability contract: a bad rollout that the backend rejects does not demote a node to local rules.
 
-`fail-closed-policy` checks this **once at startup** after `await backend.ready` completes — i.e., it asserts that the first sync produced a remote backend. Post-boot transient failures do not re-trigger the gate. The new mode adds a startup guarantee without changing steady-state behavior.
+`fail-closed-policy-at-boot` checks this **once at startup** after `await backend.ready` completes — i.e., it asserts that the first sync produced a remote backend. Post-boot transient failures do not re-trigger the gate. The new mode adds a startup guarantee without changing steady-state behavior.
 
 **Type-system enforcement:** field typed as `HealthCapableNexusTransport`. Production transports (`createHttpTransport`, fs-nexus `local-bridge`) must return this. TypeScript rejects a base `NexusTransport`. The `as unknown as NexusTransport` cast in `tui-command.ts:1704` becomes `assertHealthCapable(transport)`.
 
@@ -395,7 +431,7 @@ The function reports what the backend is *actually serving right now*, not the s
 
 - Default mode preserves the existing local-first contract — no regression
 - Operators get visibility into Nexus health via logs at every startup
-- Compliance/security deployments opt in to `fail-closed-transport` or `fail-closed-policy` explicitly
+- Compliance/security deployments opt in to `fail-closed-transport` or `fail-closed-policy-at-boot` explicitly
 - The golden test for local-first fallback continues to pass unchanged
 
 `assertHealthCapable<T extends NexusTransport>(t: T): asserts t is T & HealthCapableNexusTransport` is the assertion helper.
@@ -416,12 +452,12 @@ The function reports what the backend is *actually serving right now*, not the s
 | `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; long-lived session transport does NOT receive nonInteractive flag from runtime probe path; existing call/subscribe behavior unchanged | +80 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.ts` | Add `isCentralizedPolicyActive(): boolean` — read-only query of currently-serving backend (true iff serving remote, regardless of latest sync outcome); preserves existing skip-bad-update behavior | +25 |
 | `packages/security/permissions-nexus/src/nexus-permission-backend.test.ts` | New tests: false before any sync; false when first sync fails (404/parse/rebuild mismatch — no last-known-good); true after first successful sync; **stays true when subsequent sync fails** (last-known-good preserved); **stays true when subsequent sync produces incompatible policy** (skipped, last-known-good preserved) | +100 |
-| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as `HealthCapableNexusTransport`; add `nexusBootMode` and `nexusPolicyBasePath` config fields; **probe via `createLocalBridgeProbeTransport` for local-bridge** (HTTP probes itself); thread `nexusPolicyBasePath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; **telemetry mode: log probe failure but always wire consumers** (preserves existing local-first/polling recovery); fail-closed-* throws; in `fail-closed-policy`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; wire Nexus audit via `createPoisonGuardedNexusAuditSink` | +110 |
-| `packages/meta/cli/src/poison-guarded-nexus-audit.ts` | New small helper: `createPoisonGuardedNexusAuditSink({ transport, onError })` — composes `createNexusAuditSink` with the full poison-guard pattern (latch first error, reject subsequent appends, rethrow at flush) matching NDJSON/SQLite sinks | +50 |
-| `packages/meta/cli/src/poison-guarded-nexus-audit.test.ts` | New tests: first error latches; subsequent appends throw with cause chain; flush rethrows; success path passes through; multiple errors keep first | +90 |
+| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as `HealthCapableNexusTransport`; add `nexusBootMode`, `nexusPolicyBasePath`, **`nexusAuditPoisonOnError`** config fields; probe via `createLocalBridgeProbeTransport` for local-bridge (HTTP probes itself); thread `nexusPolicyBasePath` into BOTH `health()` readPaths AND `createNexusPermissionBackend`; telemetry mode: log probe failure but always wire consumers; fail-closed-* throws; in `fail-closed-policy-at-boot`, await `nexusPermBackend.ready` and check `isCentralizedPolicyActive()`; **wire Nexus audit via `createPoisonGuardedNexusAuditSink` ONLY when `nexusAuditPoisonOnError === true`; default best-effort** | +110 |
+| `packages/meta/cli/src/poison-guarded-nexus-audit.ts` | New small helper: `createPoisonGuardedNexusAuditSink({ transport, onError }): AuditSink` — composes `createNexusAuditSink` with the poison-guard pattern, returns the standard `AuditSink` shape (`log`, optional `flush`, optional `query`); preserves `query` passthrough | +55 |
+| `packages/meta/cli/src/poison-guarded-nexus-audit.test.ts` | New tests: first error latches; subsequent log() throws with cause chain; flush rethrows; success path passes through; query passes through unchanged; multiple errors keep first | +100 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.ts` | Remove silent `.catch(() => {})` on `startFlush()`; route flush errors through existing `onError` config so wrapper sees them | +5 |
 | `packages/security/audit-sink-nexus/src/nexus-sink.test.ts` | New: flush failure invokes `onError` (regression guard against silent swallowing) | +30 |
-| `packages/meta/cli/src/__tests__/runtime-factory-nexus-audit-poison.test.ts` | New tests: integration — runtime wires Nexus sink via `createPoisonGuardedNexusAuditSink`; first write failure poisons sink; subsequent appends throw; per-hook flush rethrows (not just shutdown); matches NDJSON pattern at every audit-middleware durability boundary | +120 |
+| `packages/meta/cli/src/__tests__/runtime-factory-nexus-audit-poison.test.ts` | New tests: default (`nexusAuditPoisonOnError` unset) wires plain `createNexusAuditSink` — first failure logs warning, subsequent log() succeeds (best-effort preserved); opt-in (`nexusAuditPoisonOnError: true`) wires guarded sink — first failure poisons; subsequent log() throws; per-hook flush rethrows; integration with audit middleware boundaries | +140 |
 | `packages/meta/cli/src/__tests__/runtime-factory-health.test.ts` | New tests covering all three modes + activation race coverage (see Tests section) | +200 |
 | `packages/meta/cli/src/tui-command.ts` | Replace `as unknown as NexusTransport` cast (line 1704) with `assertHealthCapable(transport)` narrowing | +5 |
 | `docs/L2/nexus-client.md` | Document readiness probe semantics; `HealthCapableNexusTransport` contract; WS/gRPC/pool out-of-scope rationale | +60 |
@@ -465,17 +501,17 @@ The function reports what the backend is *actually serving right now*, not the s
 10. `telemetry: does NOT await backend.ready` — preserves existing async semantics
 11. `fail-closed-transport: throws on transport error`
 12. `fail-closed-transport: does NOT await backend.ready` — only transport gate, no policy gate
-13. `fail-closed-policy: awaits backend.ready before exposing runtime`
-14. `fail-closed-policy: throws when first sync fails (no last-known-good) — file 404, no remote backend ever activated`
-15. `fail-closed-policy: throws when first sync fails — parse error`
-16. `fail-closed-policy: throws when first sync fails — rebuild shape mismatch`
-17. `fail-closed-policy: succeeds when first sync succeeds (isCentralizedPolicyActive === true)`
-17b. `fail-closed-policy: post-boot transient failure does NOT re-trigger gate — last-known-good remote policy preserved` (regression guard for availability)
-18. `fail-closed-policy: NO permission check executes against local backend before policy ready` — race coverage
+13. `fail-closed-policy-at-boot: awaits backend.ready before exposing runtime`
+14. `fail-closed-policy-at-boot: throws when first sync fails (no last-known-good) — file 404, no remote backend ever activated`
+15. `fail-closed-policy-at-boot: throws when first sync fails — parse error`
+16. `fail-closed-policy-at-boot: throws when first sync fails — rebuild shape mismatch`
+17. `fail-closed-policy-at-boot: succeeds when first sync succeeds (isCentralizedPolicyActive === true)`
+17b. `fail-closed-policy-at-boot: post-boot transient failure does NOT re-trigger gate — last-known-good remote policy preserved` (regression guard for availability)
+18. `fail-closed-policy-at-boot: NO permission check executes against local backend before policy ready` — race coverage
 19. `default mode is "telemetry" regardless of audit wiring` (honest contract)
 20. `explicit nexusBootMode override always wins`
 21. `skips preflight when nexusTransport is undefined`
-22. `fail-closed-transport / fail-closed-policy error messages include nexus error code`
+22. `fail-closed-transport / fail-closed-policy-at-boot error messages include nexus error code`
 23. `existing local-first golden test still passes (telemetry default)` — regression guard
 
 `packages/lib/fs-nexus/src/local-transport.test.ts` (additions):
