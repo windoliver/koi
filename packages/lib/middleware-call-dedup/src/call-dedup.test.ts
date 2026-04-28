@@ -476,6 +476,66 @@ describe("createCallDedupMiddleware", () => {
     expect(hits[0]?.cached).toBe(true);
   });
 
+  // Regression (#1419 round 21): sessionGen FIFO eviction must skip
+  // sessions with in-flight calls. Otherwise a long-running call from
+  // session A whose generation was bumped by onSessionEnd can have its
+  // tombstone evicted by churn from `> maxEntries * 4` other sessions,
+  // and the late writeback then reads `0` (default), matches the
+  // captured pre-end `0`, and writes back into the cache for a dead
+  // session id — exactly the cross-session contamination the
+  // generation counter exists to prevent.
+  test("sessionGen tombstone survives churn while in-flight calls remain", async () => {
+    const maxEntries = 2;
+    const mw = createCallDedupMiddleware({ maxEntries, include: ["lookup"] });
+    const ctxA = turnCtx("session-A");
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let aCalls = 0;
+    const slowA: ToolHandler = async () => {
+      aCalls++;
+      await gate;
+      return { output: "from-A" };
+    };
+    // 1. Submit a long-running call for session A. Captures gen=0.
+    const pA = mw.wrapToolCall?.(ctxA, { toolId: "lookup", input: { q: "a" } }, slowA);
+    await Promise.resolve();
+    await Promise.resolve();
+    // 2. End session A — bumps gen to 1. A is still in-flight, so the
+    //    tombstone must persist.
+    await mw.onSessionEnd?.(ctxA.session);
+    // 3. Drive churn from `>= maxEntries * 4 + 1` other sessions; each
+    //    onSessionEnd bumps a fresh tombstone and would normally FIFO-
+    //    evict the oldest entry (which is A's).
+    const churnCount = maxEntries * 4 + 2;
+    for (let i = 0; i < churnCount; i++) {
+      const ctxI = turnCtx(`session-${String(i)}`);
+      const fast: ToolHandler = async () => ({ output: "x" });
+      await mw.wrapToolCall?.(ctxI, { toolId: "lookup", input: { q: i } }, fast);
+      await mw.onSessionEnd?.(ctxI.session);
+    }
+    // 4. Release session A's late call. The writeback MUST detect the
+    //    gen mismatch and drop the result instead of writing back.
+    release?.();
+    const rA = await pA;
+    expect(rA?.output).toBe("from-A");
+    expect(aCalls).toBe(1);
+    // 5. Re-submit the same key under a fresh session A and assert the
+    //    handler runs again — proves no stale write-back populated the
+    //    cache during the late completion.
+    let aReuseCalls = 0;
+    const fresh: ToolHandler = async () => {
+      aReuseCalls++;
+      return { output: "fresh-A" };
+    };
+    const ctxA2 = turnCtx("session-A");
+    const r2 = await mw.wrapToolCall?.(ctxA2, { toolId: "lookup", input: { q: "a" } }, fresh);
+    expect(r2?.output).toBe("fresh-A");
+    expect(aReuseCalls).toBe(1);
+    expect(r2?.metadata?.cached).toBeUndefined();
+  });
+
   test("describeCapabilities describes the cache", () => {
     const mw = createCallDedupMiddleware();
     expect(mw.describeCapabilities(turnCtx())?.label).toBe("call-dedup");

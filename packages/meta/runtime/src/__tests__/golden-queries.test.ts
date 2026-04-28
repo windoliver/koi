@@ -1710,6 +1710,26 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     expect(names).toContain("audit");
   });
 
+  // Regression (#1419 round 21): the audit gate must inspect the
+  // effective middleware chain, not just `config.audit`. A caller can
+  // install audit through `config.middleware`, and dedup would still
+  // create the same blind spot.
+  test("createRuntime refuses callDedup when caller-supplied audit middleware is present", () => {
+    const fakeAudit = {
+      name: "audit",
+      phase: "observe" as const,
+      priority: 999,
+      describeCapabilities: () => ({ label: "audit", description: "audit" }),
+    } as unknown as import("@koi/core").KoiMiddleware;
+    expect(() =>
+      createRuntime({
+        adapter: createTerminalAdapter(),
+        middleware: [fakeAudit],
+        callDedup: { include: ["lookup"] },
+      }),
+    ).toThrow(/onCacheHit/);
+  });
+
   test("createRuntime accepts callDedup without audit even when onCacheHit is omitted", () => {
     const handle = createRuntime({
       adapter: createTerminalAdapter(),

@@ -71,6 +71,15 @@ interface DedupState {
    * the cache for that (now dead) session id.
    */
   readonly sessionGen: Map<string, number>;
+  /**
+   * Refcount of in-flight `executeAndStore` invocations per session.
+   * Used to gate `sessionGen` FIFO eviction: a generation tombstone
+   * cannot be dropped while any captured generation is still racing
+   * a writeback, otherwise the late writeback would read `0` (default)
+   * and match the captured pre-end value, repopulating the cache for
+   * a dead session id.
+   */
+  readonly inFlightBySession: Map<string, number>;
 }
 
 function isCacheable(s: DedupState, toolId: string): boolean {
@@ -117,19 +126,29 @@ async function executeAndStore(
   request: ToolRequest,
   next: ToolHandler,
 ): Promise<ToolResponse> {
-  const response = await next(request);
-  const meta = response.metadata;
-  if (meta?.blocked === true || meta?.error === true) return response;
-  // If the session ended (or was reused under a new generation) while the
-  // tool call was in flight, drop the result instead of repopulating the
-  // cache for a now-dead session id. Otherwise a later run reusing that
-  // sessionId could receive stale output from the prior run.
-  if ((s.sessionGen.get(sessionId) ?? 0) !== generation) return response;
-  // Snapshot the response into the cache so later mutation by the caller
-  // does not corrupt cached state.
-  await s.store.set(cacheKey, { response: cloneResponse(response), expiresAt: s.now() + s.ttlMs });
-  await trackKey(s, sessionId, cacheKey);
-  return response;
+  s.inFlightBySession.set(sessionId, (s.inFlightBySession.get(sessionId) ?? 0) + 1);
+  try {
+    const response = await next(request);
+    const meta = response.metadata;
+    if (meta?.blocked === true || meta?.error === true) return response;
+    // If the session ended (or was reused under a new generation) while the
+    // tool call was in flight, drop the result instead of repopulating the
+    // cache for a now-dead session id. Otherwise a later run reusing that
+    // sessionId could receive stale output from the prior run.
+    if ((s.sessionGen.get(sessionId) ?? 0) !== generation) return response;
+    // Snapshot the response into the cache so later mutation by the caller
+    // does not corrupt cached state.
+    await s.store.set(cacheKey, {
+      response: cloneResponse(response),
+      expiresAt: s.now() + s.ttlMs,
+    });
+    await trackKey(s, sessionId, cacheKey);
+    return response;
+  } finally {
+    const remaining = (s.inFlightBySession.get(sessionId) ?? 1) - 1;
+    if (remaining <= 0) s.inFlightBySession.delete(sessionId);
+    else s.inFlightBySession.set(sessionId, remaining);
+  }
 }
 
 async function trackKey(s: DedupState, sessionId: string, cacheKey: string): Promise<void> {
@@ -180,13 +199,26 @@ async function trackKey(s: DedupState, sessionId: string, cacheKey: string): Pro
 function bumpGeneration(s: DedupState, sessionId: string): number {
   const next = (s.sessionGen.get(sessionId) ?? 0) + 1;
   // FIFO cap on `sessionGen`: per-session generation tracking is bounded
-  // by `4 * maxEntries`. Eviction is safe — a stale read returns 0 which
-  // matches the inflight-call's captured generation only for sessions
-  // that never bumped, so the only failure mode is occasional
-  // false-positive cache misses, never bad cache hits.
+  // by `4 * maxEntries`. Eviction MUST skip any session that still has
+  // in-flight calls — otherwise a late writeback for that session would
+  // read the missing entry as `0`, match the captured pre-end generation
+  // (also `0` for sessions that never bumped before submit), and write
+  // a stale response back into the cache for a dead/reused session id.
+  // This is the cross-session contamination the generation counter
+  // exists to prevent.
   if (!s.sessionGen.has(sessionId) && s.sessionGen.size >= s.maxEntries * 4) {
-    const oldest = s.sessionGen.keys().next().value;
-    if (oldest !== undefined) s.sessionGen.delete(oldest);
+    let victim: string | undefined;
+    for (const k of s.sessionGen.keys()) {
+      if ((s.inFlightBySession.get(k) ?? 0) === 0) {
+        victim = k;
+        break;
+      }
+    }
+    if (victim !== undefined) s.sessionGen.delete(victim);
+    // If every tracked session still has in-flight work (rare under
+    // pathological load), accept temporary overshoot rather than risk
+    // a cross-session writeback. The map is still bounded by the
+    // number of concurrently-pending sessions, never unbounded.
   }
   s.sessionGen.set(sessionId, next);
   return next;
@@ -323,6 +355,7 @@ export function createCallDedupMiddleware(config?: CallDedupConfig): KoiMiddlewa
     inFlight: new Map(),
     keysBySession: new Map(),
     sessionGen: new Map(),
+    inFlightBySession: new Map(),
   };
   return {
     name: "koi:call-dedup",

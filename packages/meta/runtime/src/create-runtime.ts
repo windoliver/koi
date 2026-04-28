@@ -321,12 +321,15 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     ) {
       // Dedup short-circuits cached AND coalesced tool calls in the
       // intercept phase, so they bypass downstream observe-phase
-      // middleware (audit, transcript, metrics). When `audit` is wired
-      // and the caller does not supply an `onCacheHit` observer, the
-      // resulting audit blind spot is a real compliance gap rather than
-      // a documentation issue. Strongly gate that combination at
-      // construction time so the misconfiguration cannot ship silently.
-      if (config.audit !== undefined && config.callDedup.onCacheHit === undefined) {
+      // middleware (audit, transcript, metrics). The compliance gap
+      // exists whenever ANY audit-named middleware is in the effective
+      // chain — `config.audit` (auto-installed sink) OR an audit
+      // middleware supplied by the caller through `config.middleware`.
+      // Inspect the fully assembled `afterModelRouter` chain, not just
+      // the runtime-level config flag, so a caller-provided audit
+      // middleware also triggers the gate.
+      const auditNamed = afterModelRouter.some((mw) => mw.name === "audit");
+      if ((config.audit !== undefined || auditNamed) && config.callDedup.onCacheHit === undefined) {
         throw new Error(
           "[runtime] callDedup is enabled alongside audit but no onCacheHit observer is configured. " +
             "Cached/coalesced tool calls short-circuit the observe-phase chain and would otherwise " +
