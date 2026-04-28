@@ -687,7 +687,7 @@ interface KoiRuntimeFactoryConfig {
    *   - false → SKIP; local sinks unaffected.
    * **Phase 1 (this PR):** unset → on HTTP, INFER `true` + deprecation warning;
    *   on local-bridge, THROWS at boot (no inference; fs-only sessions must use
-   *   the tui-command.ts decoupling and not pass `nexusTransport`).
+   *   setting both consumer flags explicitly to `false`).
    * **Phase 2 (next release):** unset throws on all transports.
    */
   readonly nexusAuditEnabled?: boolean | undefined;
@@ -736,10 +736,11 @@ interface KoiRuntimeFactoryConfig {
    *   existing local-first contract for permissions.
    * - "assert-transport-reachable-at-boot": **DIAGNOSTIC ONLY — not a security
    *   control.** Throws on transport failure (unreachable / 5xx / auth /
-   *   malformed payload). Does NOT throw on 404 — namespace-absent is a
-   *   documented bootstrap state in the existing permissions backend
-   *   (Loop 5 R6); use assert-remote-policy-loaded-at-boot if you need
-   *   policy presence enforced. **Requires
+   *   malformed payload) AND on 404 to probe paths by default (Loop 5 R9 —
+   *   404 also results from typoed nexusPolicyPath / wrong tenant / missing
+   *   namespace, so silent local-rule fallback would defeat the gate).
+   *   Greenfield bootstrap deployments opt in via
+   *   `nexusAllowEmptyPolicyStore: true` to permit boot on 404. **Requires
    *   `nexusPermissionsEnabled=true`**: today's probe is a `version` call plus
    *   a permission-namespace read; with permissions disabled the gate
    *   collapses to `version` only and would silently pass even when audit
@@ -925,8 +926,8 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
         "wire an unsupported path (true). Set explicitly: Nexus permissions " +
         "on local-bridge is unsupported (use HTTP); Nexus audit on local-bridge " +
         "requires nexusAuditMode and skips the Nexus sink. " +
-        "If this is a fs-only session, do NOT pass nexusTransport into " +
-        "createKoiRuntime (see tui-command.ts decoupling).",
+        "If this is a fs-only local-bridge session, set BOTH " +
+        "nexusPermissionsEnabled=false AND nexusAuditEnabled=false explicitly.",
       );
     }
   }
@@ -1058,8 +1059,8 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
       `Resolve by either: ` +
       `(a) clearing the boot mode to "telemetry" (KOI_NEXUS_BOOT_MODE=telemetry) ` +
       `if rollback to fs-only is intentional, OR ` +
-      `(b) omitting nexusTransport entirely from createKoiRuntime (use the ` +
-      `tui-command.ts decoupling pattern for fs-only sessions), OR ` +
+      `(b) omitting nexusTransport entirely from createKoiRuntime ` +
+      `(programmatic fs-only callers that don't need any Nexus transport), OR ` +
       `(c) re-enabling at least one Nexus consumer if the assert-* gate is ` +
       `still required. Refusing to silently drop the security control.`,
     );
@@ -1856,9 +1857,7 @@ KOI_NEXUS_PERMISSIONS=true KOI_NEXUS_AUDIT=false koi up
 
 **Silent-bypass guard (Loop 5 R7, refined R10):** the parser THROWS a config error when control-plane flags (`nexusBootMode != "telemetry"`, `nexusAuditPoisonOnError === true`, `nexusProbeDeadlineMs`, `nexusBootSyncDeadlineMs`, non-default `nexusPolicyPath`) are set with EXPLICIT consumer-disabled flags (`nexusPermissionsEnabled === false` AND `nexusAuditEnabled === false`). When BOTH consumer flags are unset (the legacy HTTP path), the parser passes the flags through unchanged — the runtime's Step -1 guard then carves out HTTP-transport-supplied as implicit consumer intent so legacy HTTP deployments adding `KOI_NEXUS_BOOT_MODE` don't hard-fail before the Phase 1 inference path runs. The runtime's Step -1 guard catches the rest: no transport (programmatic non-CLI caller) + control-plane flags + no consumer = throw. This split keeps Phase 1 legacy compatibility intact AND closes the silent-no-op hole for both CLI and programmatic boundaries. The guard runs in BOTH tui-command.ts and commands/start.ts (shared parser), preserving symmetry.
 
-**Why not auto-wire Nexus consumers when manifest.filesystem.backend === "nexus" (Loop 5 R5 finding considered + rejected):** Codex argued that headless Nexus mounts should automatically participate in the new permission/audit model so behavior matches TUI on the same manifest. This conflates two separate concerns: (a) the fs-nexus filesystem path (already wired identically on both hosts via the Nexus-backed manifest), and (b) the new Nexus permissions/audit consumers (this PR's additions). Auto-wiring (b) on filesystem-backend detection would silently turn every legacy HTTP Nexus filesystem deployment into a centralized-permissions + Nexus-audit deployment on upgrade — a Phase 1 rollout that breaks pre-PR behavior, exactly the regression the explicit opt-in pattern is designed to prevent. Operators who want the new behavior set the consumer flags (which works identically on both hosts); operators who want pre-PR behavior do nothing. The symmetric opt-in is the trust-boundary contract; host-driven defaults would create the divergence Codex was worried about.
-
-Existing flags/env keys are unchanged. `tui-command.ts` is also responsible for the fs-only decoupling: it does NOT pass `nexusTransport` into `createKoiRuntime` when no Nexus consumer is wanted, so local-bridge sessions used purely for fs reads bypass the runtime's Nexus block entirely. `commands/start.ts` follows the same rule: when both consumer flags are explicitly false AND the manifest filesystem backend is not Nexus-backed, no `nexusTransport` is constructed.
+Existing flags/env keys are unchanged. The TUI/headless entrypoints pass `nexusTransport` whenever they construct one for the fs-nexus path (legacy behavior preserved — see "Default-preserving rule" above). For LOCAL-BRIDGE transports, operators who want a fs-only session must EXPLICITLY set both consumer flags to `false` so the runtime's Step 0 throw is satisfied (no inference path on local-bridge — silent disable would be an auth/audit downgrade). HTTP transports follow Phase 1 inference: unset consumer flags → runtime infers TRUE + warns; explicit `false/false` opts out of consumer wiring.
 
 ## Migration (existing v2 deployments) — two-phase rollout
 
