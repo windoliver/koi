@@ -202,10 +202,11 @@ describe("revoke()", () => {
         };
       }),
     });
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
     const backend = createNexusDelegationBackend({ api, agentId: PARENT_ID });
     await backend.grant(SCOPE, CHILD_ID);
-    // First revoke fails -> enqueued
-    await backend.revoke(GRANT_ID);
+    // First revoke fails -> enqueued AND throws so dispose-path callers can observe
+    await expect(backend.revoke(GRANT_ID)).rejects.toThrow(/queued for retry/);
     expect(calls).toBe(1);
 
     // Grant a second child so we can trigger another revoke + drain
@@ -217,7 +218,8 @@ describe("revoke()", () => {
     await backend.grant(SCOPE, agentId("child-2"));
 
     // Second revoke also fails but also triggers drain of pending queue
-    await backend.revoke(api2Grant);
+    await expect(backend.revoke(api2Grant)).rejects.toThrow(/queued for retry/);
+    errorSpy.mockRestore();
     // give background drain a moment
     await new Promise((r) => setTimeout(r, 20));
     // drain attempted the first grant again (calls: 1 original + 1 drain attempt + 1 new revoke = 3)
@@ -240,7 +242,7 @@ describe("revoke()", () => {
 
     // Grant first child and fail to revoke (fills queue)
     await backend.grant(SCOPE, CHILD_ID);
-    await backend.revoke(GRANT_ID);
+    await expect(backend.revoke(GRANT_ID)).rejects.toThrow(/queued for retry/);
 
     // Grant second child and fail to revoke (queue full → drops oldest)
     const id2 = delegationId("del-2");
@@ -249,7 +251,7 @@ describe("revoke()", () => {
       value: makeGrantResponse({ delegation_id: id2, api_key: "key2" }),
     });
     await backend.grant(SCOPE, agentId("child-2"));
-    await backend.revoke(id2);
+    await expect(backend.revoke(id2)).rejects.toThrow(/queued for retry/);
 
     // console.error should have been called with "dropping oldest" message
     expect(errorSpy.mock.calls.length).toBeGreaterThan(0);
@@ -276,9 +278,11 @@ describe("revoke()", () => {
       verifyCacheTtlMs: 60_000,
     });
 
-    // Step 1: grant and fail revoke → entry gets enqueued
+    // Step 1: grant and fail revoke → entry gets enqueued (and rejects)
+    const drainErrorSpy = spyOn(console, "error").mockImplementation(() => {});
     await backend.grant(SCOPE, CHILD_ID);
-    await backend.revoke(GRANT_ID);
+    await expect(backend.revoke(GRANT_ID)).rejects.toThrow(/queued for retry/);
+    drainErrorSpy.mockRestore();
 
     // Step 2: restore mock to succeed
     revokeShouldSucceed = true;
@@ -314,8 +318,8 @@ describe("revoke()", () => {
       maxRevocationRetries: 2,
     });
     await backend.grant(SCOPE, CHILD_ID);
-    // Initial revoke queues GRANT_ID into the retry queue
-    await backend.revoke(GRANT_ID);
+    // Initial revoke queues GRANT_ID into the retry queue (and rejects)
+    await expect(backend.revoke(GRANT_ID)).rejects.toThrow();
 
     // Exhaust retries: subsequent revokes drain GRANT_ID + re-fail until max retries
     for (let i = 0; i < 4; i++) {
@@ -325,7 +329,7 @@ describe("revoke()", () => {
         value: makeGrantResponse({ delegation_id: newId, api_key: `key-${i}` }),
       });
       await backend.grant(SCOPE, agentId(`c-${i}`));
-      await backend.revoke(newId);
+      await backend.revoke(newId).catch(() => {});
       // let background drain settle
       await new Promise((r) => setTimeout(r, 5));
     }

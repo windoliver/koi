@@ -44,7 +44,7 @@ import {
 import type { IterationLimits } from "@koi/engine-compose";
 import { createStructuredOutputGuard } from "@koi/engine-compose";
 import { KoiRuntimeError } from "@koi/errors";
-import { createAgentEnvProvider } from "./agent-env-provider.js";
+import { createAgentEnvProvider, mergeEnv } from "./agent-env-provider.js";
 import { createChildHandle } from "./child-handle.js";
 import { computeChildDelegationScope } from "./compute-delegation-scope.js";
 import { createInheritedChannel } from "./inherited-channel.js";
@@ -265,13 +265,18 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // further modify the result. Keys in spawn.env.exclude that don't exist in the parent env
   // are silently ignored (they're already absent — no violation to report).
   const parentHasEnv = options.parentAgent.has(ENV);
+  // Hoisted so the delegation-grant-env provider (below) can layer NEXUS_API_KEY
+  // on top of the same merge stack — runtime overrides + manifest exclusions —
+  // instead of hand-rolling its own ENV and silently shadowing manifest ceilings.
+  const envExcludeKeys: ReadonlySet<string> = new Set(manifestSpawn?.env?.exclude ?? []);
+  let baseEnvOverrides: Readonly<Record<string, string | undefined>> = {};
   if (parentHasEnv) {
     const parentEnvValues = options.parentAgent.component<AgentEnv>(ENV)?.values ?? {};
     const parentEnvKeys = new Set(Object.keys(parentEnvValues));
 
     // Translate manifest env exclusions to undefined overrides (only for keys that exist)
     const manifestExcludeOverrides: Record<string, undefined> = {};
-    for (const key of manifestSpawn?.env?.exclude ?? []) {
+    for (const key of envExcludeKeys) {
       if (parentEnvKeys.has(key)) {
         manifestExcludeOverrides[key] = undefined;
       }
@@ -280,16 +285,16 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     // Merge: runtime overrides applied first, then manifest exclusions (manifest always wins).
     // This ensures a manifest ceiling cannot be circumvented by a per-spawn override that
     // re-adds an excluded credential — the final removal always takes effect.
-    const mergedOverrides: Readonly<Record<string, string | undefined>> = {
+    baseEnvOverrides = {
       ...(inheritance.env?.overrides ?? {}),
       ...manifestExcludeOverrides,
     };
-    const hasOverrides = Object.keys(mergedOverrides).length > 0;
+    const hasOverrides = Object.keys(baseEnvOverrides).length > 0;
 
     inheritanceProviders.push(
       createAgentEnvProvider({
         parent: options.parentAgent,
-        ...(hasOverrides ? { overrides: mergedOverrides } : {}),
+        ...(hasOverrides ? { overrides: baseEnvOverrides } : {}),
       }),
     );
   }
@@ -430,17 +435,24 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
           if (grant.proof.kind !== "nexus") return new Map();
           childNexusApiKey = grant.proof.token;
 
-          // Override NEXUS_API_KEY in the child's env so any agent-env-aware
-          // component on the child observes the attenuated key, not the parent's.
+          // Inject NEXUS_API_KEY into the child's env so any agent-env-aware
+          // component observes the attenuated key, not the parent's. We layer
+          // the token on top of the SAME override stack the regular
+          // agent-env-provider uses (manifest exclusions + runtime overrides),
+          // so a manifest spawn.env.exclude entry for NEXUS_API_KEY (or any
+          // other key) wins — delegation cannot bypass manifest env ceilings.
           const parentEnv = options.parentAgent.component<AgentEnv>(ENV);
-          const parentValues = parentEnv?.values ?? {};
+          if (parentEnv === undefined) return new Map();
+          const parentValues = parentEnv.values;
           if (!("NEXUS_API_KEY" in parentValues)) return new Map();
-          const merged: Record<string, string> = {
-            ...parentValues,
+          if (envExcludeKeys.has("NEXUS_API_KEY")) return new Map();
+
+          const finalOverrides: Readonly<Record<string, string | undefined>> = {
+            ...baseEnvOverrides,
             NEXUS_API_KEY: grant.proof.token,
           };
-          const childEnv: AgentEnv =
-            parentEnv !== undefined ? { values: merged, parentEnv } : { values: merged };
+          const merged = mergeEnv(parentValues, finalOverrides);
+          const childEnv: AgentEnv = { values: merged, parentEnv };
           return new Map([[ENV as string, childEnv]]);
         },
       };
@@ -472,6 +484,31 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     // Release ledger slot on assembly failure — no leak
     const release = options.spawnLedger.release();
     await release;
+    // If the delegation provider already issued a grant before assembly threw
+    // (e.g. a later provider failed after the auto-delegation provider succeeded),
+    // attempt to revoke before re-throwing — otherwise the issued Nexus key would
+    // be leaked with no runtime handle to clean it up.
+    if (childGrantId !== undefined && parentHasDelegation) {
+      const parentDel = options.parentAgent.component<DelegationComponent>(DELEGATION);
+      if (parentDel !== undefined) {
+        try {
+          await Promise.race([
+            Promise.resolve(parentDel.revoke(childGrantId, false)),
+            new Promise<void>((_resolve, reject) => {
+              setTimeout(
+                () => reject(new Error("revoke timed out after 5000ms")),
+                REVOKE_DISPOSE_TIMEOUT_MS,
+              ).unref?.();
+            }),
+          ]);
+        } catch (revokeErr: unknown) {
+          console.warn(
+            `[spawn-child] post-assembly-failure revoke failed — key may remain active. ` +
+              `delegationId="${childGrantId}", error: ${revokeErr instanceof Error ? revokeErr.message : String(revokeErr)}`,
+          );
+        }
+      }
+    }
     throw e;
   }
 

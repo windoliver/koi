@@ -66,6 +66,10 @@ const DEFAULT_MAX_PENDING = 100;
 const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_LIST_PAGE_SIZE = 50;
 const UNKNOWN_AGENT_ID: AgentId = agentId("unknown");
+/** Total grant attempts (initial + retries) for transient/retryable errors. */
+const GRANT_MAX_ATTEMPTS = 3;
+/** Base delay between grant retries (linear backoff: 100ms, 200ms, 300ms…). */
+const GRANT_RETRY_DELAY_MS = 100;
 
 // ---------------------------------------------------------------------------
 // Reason mapping (private helpers)
@@ -189,27 +193,39 @@ export function createNexusDelegationBackend(
 
     const adjustments = mapScopeToNexus(scope);
 
-    const result = await api.createDelegation(
-      {
-        worker_id: delegateeId,
-        worker_name: delegateeId,
-        namespace_mode: mapNamespaceMode(namespaceMode),
-        ttl_seconds: ttlSeconds,
-        intent: "",
-        can_sub_delegate: canSubDelegate && maxChainDepth > 0,
-        ...(adjustments.add_grants.length > 0 ? { add_grants: adjustments.add_grants } : {}),
-        ...(adjustments.remove_grants.length > 0
-          ? { remove_grants: adjustments.remove_grants }
-          : {}),
-        ...(adjustments.readonly_paths.length > 0
-          ? { readonly_paths: adjustments.readonly_paths }
-          : {}),
-        ...(scope.resources !== undefined && scope.resources.length > 0
-          ? { scope: { resource_patterns: scope.resources, max_depth: maxChainDepth } }
-          : {}),
-      },
-      { idempotencyKey },
-    );
+    const requestBody = {
+      worker_id: delegateeId,
+      worker_name: delegateeId,
+      namespace_mode: mapNamespaceMode(namespaceMode),
+      ttl_seconds: ttlSeconds,
+      intent: "",
+      can_sub_delegate: canSubDelegate && maxChainDepth > 0,
+      ...(adjustments.add_grants.length > 0 ? { add_grants: adjustments.add_grants } : {}),
+      ...(adjustments.remove_grants.length > 0 ? { remove_grants: adjustments.remove_grants } : {}),
+      ...(adjustments.readonly_paths.length > 0
+        ? { readonly_paths: adjustments.readonly_paths }
+        : {}),
+      ...(scope.resources !== undefined && scope.resources.length > 0
+        ? { scope: { resource_patterns: scope.resources, max_depth: maxChainDepth } }
+        : {}),
+    };
+
+    // Internal retry on transient/retryable failures. The same idempotency key
+    // is reused for every attempt so Nexus deduplicates a partial-success
+    // (delegation created server-side, response lost in transit) onto a single
+    // delegation rather than creating duplicate active grants.
+    // NOTE: this only collapses retries WITHIN one grant() call. If the host
+    // retries the entire spawn, a fresh child AgentId produces a new idempotency
+    // key — caller-supplied stable spawn ids are tracked as a follow-up.
+    let result = await api.createDelegation(requestBody, { idempotencyKey });
+    let attempts = 1;
+    while (!result.ok && result.error.retryable === true && attempts < GRANT_MAX_ATTEMPTS) {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, GRANT_RETRY_DELAY_MS * attempts).unref?.(),
+      );
+      result = await api.createDelegation(requestBody, { idempotencyKey });
+      attempts++;
+    }
 
     if (!result.ok) {
       throw new Error(`Nexus delegation grant failed: ${result.error.message}`);
@@ -248,9 +264,21 @@ export function createNexusDelegationBackend(
     const result = await api.revokeDelegation(id);
 
     if (!result.ok) {
+      // Enqueue for retry on subsequent revokes, but surface the immediate
+      // failure to the awaiting caller. The spawn-child dispose path bounds
+      // its wait on revoke() — if we silently resolved on failure, the
+      // dispose path could declare cleanup complete while the delegated key
+      // remains active. Logging the first enqueue gives operators a hook to
+      // act on the leak even if the retry queue never drains.
       const childId = storedGrant?.delegateeId ?? UNKNOWN_AGENT_ID;
       enqueueRevocation(id, childId);
-      return;
+      console.error(
+        `[nexus-delegation] revoke failed and queued for retry: ` +
+          `delegationId="${id}", childId="${childId}", error: ${result.error.message}`,
+      );
+      throw new Error(
+        `Nexus delegation revoke failed (queued for retry): id=${id}, error: ${result.error.message}`,
+      );
     }
 
     grantStore.delete(id);
@@ -286,11 +314,17 @@ export function createNexusDelegationBackend(
       return r;
     }
 
-    const denyReason = chainStatusToDenyReason(leaf.status);
-    if (denyReason !== undefined) {
-      const r: DelegationVerifyResult = { ok: false, reason: denyReason };
-      verifyCache?.set(id, toolId, r);
-      return r;
+    // Validate every chain entry, not just the leaf. Nexus does not always
+    // synchronously cascade ancestor revocations to the leaf status, so a leaf
+    // marked "active" can still belong to a chain whose parent was already
+    // revoked or expired. Deny on any non-active ancestor.
+    for (const entry of chain.chain) {
+      const denyReason = chainStatusToDenyReason(entry.status);
+      if (denyReason !== undefined) {
+        const r: DelegationVerifyResult = { ok: false, reason: denyReason };
+        verifyCache?.set(id, toolId, r);
+        return r;
+      }
     }
 
     if (chain.total_depth > maxChainDepth) {
