@@ -286,21 +286,24 @@ function getOrCreateBreaker(s: CbState, key: string): CircuitBreaker | undefined
     //   1. Ownerless CLOSED with zero accumulated failures (truly idle).
     //   2. Owned CLOSED with zero accumulated failures (no recent
     //      failure history to lose, even if a session still references it).
-    //   3. Owned CLOSED with accumulated failures (last resort —
-    //      losing the partial ring buffer would let the next failure
-    //      escape fail-fast accounting).
-    // We deliberately never evict an OPEN/HALF_OPEN entry under
-    // capacity pressure (handled by the surrounding refusal path).
+    // We deliberately NEVER evict:
+    //   - OPEN/HALF_OPEN entries (resetting them resumes upstream traffic
+    //     to a still-unhealthy provider, defeating fail-fast).
+    //   - CLOSED entries with non-zero failureCount (their partial ring
+    //     buffer is one or two failures away from tripping; recreating
+    //     the breaker fresh lets the next failure escape and silently
+    //     loses fail-fast accounting under high-cardinality storms).
+    // If only rank-3 (owned+failures) candidates remain, refuse insertion.
     let evicted = false;
     let bestVictim: string | undefined;
-    let bestRank = 4;
+    let bestRank = 3;
     for (const [k, b] of s.breakers) {
       const snap = b.getSnapshot();
       if (snap.state !== "CLOSED") continue;
+      if (snap.failureCount > 0) continue;
       const owners = s.keyOwners.get(k);
       const owned = owners !== undefined && owners.size > 0;
-      const hasFailures = snap.failureCount > 0;
-      const rank = owned ? (hasFailures ? 3 : 2) : 1;
+      const rank = owned ? 2 : 1;
       if (rank < bestRank) {
         bestRank = rank;
         bestVictim = k;

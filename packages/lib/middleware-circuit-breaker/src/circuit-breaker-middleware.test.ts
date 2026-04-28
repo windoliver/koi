@@ -740,4 +740,57 @@ describe("createCircuitBreakerMiddleware", () => {
     ).rejects.toMatchObject({ code: "RATE_LIMIT" });
     expect(runCount).toBe(0);
   });
+
+  // Regression (#1419 round 19): when capacity is full and every CLOSED
+  // entry has accumulated failure history, eviction MUST refuse to drop
+  // any of them. Returning a fresh breaker for the new key would erase
+  // a still-tripping ring buffer; instead we fail-fast on the new key
+  // and leave the live breakers intact.
+  test("maxKeys eviction refuses to drop CLOSED breakers with accumulated failures", async () => {
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 5 },
+      maxKeys: 2,
+      extractKey: (m) => (m ?? "x").split("/")[0] ?? "x",
+    });
+    const ctx = turnCtx();
+    // Both keys accumulate partial failure history (1/5 each).
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "a/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "b/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    // Third key arrives. Capacity is full and no rank-1/rank-2 victim
+    // exists, so insertion must be refused with a fail-fast error.
+    let runCount = 0;
+    const trace = async (): Promise<never> => {
+      runCount++;
+      throw new Error("should-not-run");
+    };
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "c/m" }, trace),
+    ).rejects.toMatchObject({ code: "RATE_LIMIT" });
+    expect(runCount).toBe(0);
+    // Both partial rings survived: another failure on `a/m` should
+    // accumulate to 2/5 (not reset to 1/5), proving no eviction occurred.
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "a/m" }, makeHandler("fail-500")),
+    ).rejects.toThrow();
+    // Three more failures trip OPEN. If the breaker had been evicted/reset,
+    // we would need 5 fresh failures here.
+    for (let i = 0; i < 3; i++) {
+      await expect(
+        mw.wrapModelCall?.(ctx, { messages: [], model: "a/m" }, makeHandler("fail-500")),
+      ).rejects.toThrow();
+    }
+    let aRun = 0;
+    const traceA = async (): Promise<never> => {
+      aRun++;
+      throw new Error("should-not-run");
+    };
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "a/m" }, traceA),
+    ).rejects.toMatchObject({ code: "RATE_LIMIT" });
+    expect(aRun).toBe(0);
+  });
 });

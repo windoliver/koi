@@ -281,7 +281,19 @@ async function ddWrapToolCall(
   const existing = s.inFlight.get(cacheKey);
   if (existing !== undefined) {
     await trackKey(s, sessionId, cacheKey);
-    return existing;
+    // Coalesced waiter: dedup ran in intercept phase and short-circuited
+    // the downstream observe-phase chain, so audit/transcript/metrics
+    // hooks never see this logical call. Stamp `metadata.cached = true`
+    // and fire `onCacheHit` so the audit-wiring seam observes coalesced
+    // waiters the same way it observes TTL cache hits.
+    const upstream = await existing;
+    const cloned = cloneResponse(upstream);
+    const stamped: ToolResponse = {
+      ...cloned,
+      metadata: { ...cloned.metadata, cached: true },
+    };
+    notifyHit(s, sessionId, toolId, cacheKey, request, stamped);
+    return stamped;
   }
 
   const generation = s.sessionGen.get(sessionId) ?? 0;

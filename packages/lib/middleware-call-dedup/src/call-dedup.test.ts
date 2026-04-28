@@ -437,6 +437,45 @@ describe("createCallDedupMiddleware", () => {
     expect(calls).toBe(3);
   });
 
+  // Regression (#1419 round 19): coalesced waiters joining an in-flight
+  // promise also short-circuit the observe-phase chain, so audit hooks
+  // never see them. They must fire onCacheHit and stamp metadata.cached
+  // the same way TTL cache hits do.
+  test("coalesced waiters fire onCacheHit and receive cached:true response", async () => {
+    const hits: Array<{ readonly cached: boolean; readonly key: string }> = [];
+    const mw = createCallDedupMiddleware({
+      include: ["lookup"],
+      onCacheHit: (info) => {
+        hits.push({ cached: info.response.metadata?.cached === true, key: info.cacheKey });
+      },
+    });
+    const ctx = turnCtx("s-coalesce-obs");
+    let calls = 0;
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const slow: ToolHandler = async () => {
+      calls++;
+      await gate;
+      return { output: "v" };
+    };
+    const p1 = mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 1 } }, slow);
+    await Promise.resolve();
+    await Promise.resolve();
+    const p2 = mw.wrapToolCall?.(ctx, { toolId: "lookup", input: { q: 1 } }, slow);
+    release?.();
+    const [r1, r2] = await Promise.all([p1, p2]);
+    // Originator did not get a cached stamp (it actually executed).
+    expect(r1?.metadata?.cached).toBeUndefined();
+    // Coalesced waiter is stamped as a hit.
+    expect(r2?.metadata?.cached).toBe(true);
+    expect(calls).toBe(1);
+    // onCacheHit fired exactly once for the coalesced waiter.
+    expect(hits.length).toBe(1);
+    expect(hits[0]?.cached).toBe(true);
+  });
+
   test("describeCapabilities describes the cache", () => {
     const mw = createCallDedupMiddleware();
     expect(mw.describeCapabilities(turnCtx())?.label).toBe("call-dedup");
