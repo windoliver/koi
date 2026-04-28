@@ -43,11 +43,24 @@ Existing v2 `@koi/nexus-client` already provides:
 
 ```ts
 // src/types.ts
+
+/** Optional per-call options. Currently only `deadlineMs` for health probes. */
+export interface NexusCallOptions {
+  /** Override transport's default deadline for this single call. */
+  readonly deadlineMs?: number;
+}
+
+/** Tri-state health result: transport reachability AND policy-store bootstrap. */
 export interface NexusHealth {
-  readonly ok: boolean;
-  readonly version: string;
-  readonly latencyMs: number;
-  /** Methods exercised by the readiness probe (for diagnostics / debugging). */
+  /** Transport reachable + auth + JSON-RPC handler responding. */
+  readonly transport: { readonly ok: true; readonly version: string; readonly latencyMs: number };
+  /**
+   * Permission policy store status:
+   * - "synced": version.json exists and is readable (centralized policy active)
+   * - "empty": Nexus reachable but version.json is 404 (local-only fallback,
+   *   may indicate mis-mounted store, wrong tenant, or first-boot)
+   */
+  readonly policyStore: "synced" | "empty";
   readonly probed: readonly string[];
 }
 
@@ -56,6 +69,7 @@ export interface NexusTransport {
   readonly call: <T>(
     method: string,
     params: Record<string, unknown>,
+    opts?: NexusCallOptions,  // NEW: per-call deadline override
   ) => Promise<Result<T, KoiError>>;
   /** OPTIONAL on the base type so test fixtures don't need stubs. */
   readonly health?: () => Promise<Result<NexusHealth, KoiError>>;
@@ -71,6 +85,8 @@ export interface HealthCapableNexusTransport extends NexusTransport {
   readonly health: () => Promise<Result<NexusHealth, KoiError>>;
 }
 ```
+
+**Per-call deadline contract:** when `opts.deadlineMs` is set, the transport MUST honor that deadline regardless of its configured default. HTTP transport already wraps each call in `AbortSignal.any([abortController.signal, timeoutSignal])` — only needs to use the override when present. Local-bridge transport currently has a fixed `callTimeoutMs` (30s default); the implementation PR will add per-call deadline plumbing to its pending-request map (each request tracks its own deadline; reaper rejects on expiry).
 
 ### Why optional on the type, but required at the production boundary
 
@@ -105,12 +121,15 @@ The probe targets the **exact methods consumers actually call**. Audit of v2 cal
 Sequence:
 
 1. Record `start = performance.now()`
-2. `transport.call("version", {})` — liveness: TCP+TLS+JSON-RPC reachable; capture version string
-3. `transport.call("read", { path: "koi/permissions/version.json" })` — readiness: exercises the **exact** code path `createNexusPermissionBackend` uses on every policy sync. Idempotent. A 404 on the path is acceptable (means no policy synced yet, not a transport failure) — only network/auth/5xx failures fail the probe.
-4. All calls go through `transport.call(...)` — including from local-bridge (so subprocess IPC, line parsing, stdio channel exercised end-to-end).
-5. All use `HEALTH_DEADLINE_MS = 5_000` overriding the default 45s.
-6. On success: `{ ok: true, value: { ok: true, version, latencyMs, probed: ["version", "read:koi/permissions/version.json"] } }`.
-7. On failure: propagate `KoiError` via `mapNexusError`. A 404 from `read` is mapped to ok (path-not-found is not a transport failure).
+2. `transport.call("version", {}, { deadlineMs: HEALTH_DEADLINE_MS })` — liveness: TCP+TLS+JSON-RPC reachable; capture version string. Failure → return `{ ok: false, error }`.
+3. `transport.call("read", { path: "koi/permissions/version.json" }, { deadlineMs: HEALTH_DEADLINE_MS })` — exercises the exact code path `createNexusPermissionBackend` uses.
+   - **200 OK** → `policyStore: "synced"` (centralized policy active)
+   - **404** → `policyStore: "empty"` (transport ok but no policy synced — caller decides if this is acceptable)
+   - **5xx / auth / network failure** → return `{ ok: false, error }` (real failure)
+4. All calls go through `transport.call(...)` — local-bridge included.
+5. Per-call `deadlineMs: HEALTH_DEADLINE_MS = 5_000` overrides each transport's default. Achievable on local-bridge once per-call deadline support is implemented (see Public API).
+6. On success: `{ ok: true, value: { transport: { ok: true, version, latencyMs }, policyStore: "synced" | "empty", probed: ["version", "read:koi/permissions/version.json"] } }`.
+7. On failure: propagate `KoiError` via `mapNexusError`.
 
 ### What `health()` deliberately does NOT check
 
@@ -144,23 +163,40 @@ The real production boundary is `packages/meta/cli/src/runtime-factory.ts:832` (
 
 **Critical existing contract: local-first permissions.** `createNexusPermissionBackend` is documented as "local-first: TUI rules apply when Nexus has no policy or is unreachable." A golden test in `meta/runtime/src/__tests__/golden-replay.test.ts` proves this fallback. **A fail-closed startup gate would break this contract** and convert recoverable Nexus outages into total runtime unavailability. That is a regression.
 
-**Decision: telemetry-by-default, fail-closed opt-in.**
+**Decision: default depends on configured consumers; fail-closed when audit sink is wired.**
+
+Reasoning:
+
+- Permissions backend tolerates Nexus unreachability via local-first fallback (existing contract). For permissions-only setups, telemetry-mode preserves availability.
+- Audit sink (`createNexusAuditSink`) writes compliance records. Sink-write failures are **swallowed** by the audit queue unless an `onError` hook is set — so a broken Nexus audit path silently drops compliance data. For audit setups, telemetry mode is unsafe; fail-closed is the only correct default.
+- `policyStore: "empty"` (404) is treated as a warning, not a hard failure, because it can be valid first-boot state. Operators who require centralized policy at boot use `nexusBootMode: "fail-closed-policy-required"` (rare; opt-in).
+
+| Configured consumers | Default `nexusBootMode` |
+|---|---|
+| nexus permissions only | `telemetry` (preserves local-first) |
+| nexus audit sink wired | `fail-closed` (compliance) |
+| both | `fail-closed` (compliance wins) |
+| operator override | always wins |
+
+The runtime factory inspects whether `createNexusAuditSink` is being wired and selects the default accordingly.
 
 ```ts
 // packages/meta/cli/src/runtime-factory.ts
 import type { HealthCapableNexusTransport } from "@koi/nexus-client";
 
-type NexusBootMode = "telemetry" | "fail-closed";
+type NexusBootMode = "telemetry" | "fail-closed" | "fail-closed-policy-required";
 
 interface KoiRuntimeFactoryConfig {
   // …
   readonly nexusTransport?: HealthCapableNexusTransport | undefined;
   /**
-   * Behavior when startup health probe fails.
-   * - "telemetry" (default): log warning, continue boot; permissions backend
-   *   uses local-first fallback per existing contract.
-   * - "fail-closed": throw at startup. For deployments where Nexus is
-   *   compliance-mandatory and local fallback is unacceptable.
+   * Behavior when startup health probe fails or policy store is empty.
+   * Default: derived from configured consumers (see decision table).
+   * - "telemetry": log warning, continue boot; preserves local-first.
+   * - "fail-closed": throw on transport failure; warn on `policyStore: "empty"`.
+   *   Default when nexus audit sink is wired (compliance).
+   * - "fail-closed-policy-required": throw on transport failure OR empty policy.
+   *   For multi-node deployments that require centralized policy at boot.
    */
   readonly nexusBootMode?: NexusBootMode | undefined;
 }
@@ -168,18 +204,28 @@ interface KoiRuntimeFactoryConfig {
 export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
   // … existing setup …
   if (config.nexusTransport !== undefined) {
+    const auditWired = isNexusAuditConfigured(config);
+    const mode: NexusBootMode = config.nexusBootMode ?? (auditWired ? "fail-closed" : "telemetry");
+
     const result = await config.nexusTransport.health();
-    const mode = config.nexusBootMode ?? "telemetry";
     if (!result.ok) {
       const msg = `Nexus unhealthy at startup: ${result.error.message} (code=${result.error.code})`;
-      if (mode === "fail-closed") {
+      if (mode === "telemetry") {
+        logger.warn({ err: result.error }, msg);
+      } else {
         throw new Error(msg, { cause: result.error });
       }
-      // telemetry mode: log warning, preserve local-first behavior
-      logger.warn({ err: result.error, probed: result.error.context }, msg);
     } else {
-      logger.info({ latencyMs: result.value.latencyMs, probed: result.value.probed },
+      const { transport, policyStore, probed } = result.value;
+      logger.info({ latencyMs: transport.latencyMs, version: transport.version, policyStore, probed },
         "nexus health ok");
+      if (policyStore === "empty") {
+        const policyMsg = "Nexus policy store empty (koi/permissions/version.json missing); local-first rules in effect";
+        if (mode === "fail-closed-policy-required") {
+          throw new Error(policyMsg);
+        }
+        logger.warn({ probed }, policyMsg);
+      }
     }
   }
   // … then build permission backend + audit sink as before …
@@ -201,20 +247,20 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
 
 | File | Change | Est LOC |
 |---|---|---|
-| `packages/lib/nexus-client/src/types.ts` | Add `NexusHealth`, optional `health` on `NexusTransport`, required `health` on new `HealthCapableNexusTransport` | +18 |
-| `packages/lib/nexus-client/src/transport.ts` | Implement `health()` (version + read("koi/permissions/version.json")); per-call deadline override; return type narrowed to `HealthCapableNexusTransport` | +45 |
-| `packages/lib/nexus-client/src/health.test.ts` | New: both probes ok; version 5xx; read("koi/permissions/version.json") 5xx; auth failure (401); timeout; network error; malformed response | +130 |
+| `packages/lib/nexus-client/src/types.ts` | Add `NexusCallOptions`, tri-state `NexusHealth`, optional `health` on `NexusTransport`, required `health` on `HealthCapableNexusTransport`; extend `call` signature with optional `opts` | +25 |
+| `packages/lib/nexus-client/src/transport.ts` | HTTP impl: thread `opts.deadlineMs` into existing `AbortSignal.timeout`; implement `health()` with both probes; return `HealthCapableNexusTransport` | +50 |
+| `packages/lib/nexus-client/src/health.test.ts` | New: both probes ok → policyStore=synced; read 404 → policyStore=empty (still ok); version 5xx → fail; read 5xx → fail; read 401 → fail; timeout (per-call deadline honored); network error; malformed response | +160 |
 | `packages/lib/nexus-client/src/assert-health-capable.ts` | New: `assertHealthCapable` assertion function | +15 |
 | `packages/lib/nexus-client/src/assert-health-capable.test.ts` | New: present narrows; missing throws | +25 |
 | `packages/lib/nexus-client/src/index.ts` | Re-export `NexusHealth`, `HealthCapableNexusTransport`, `assertHealthCapable` | +3 |
-| `packages/lib/fs-nexus/src/local-transport.ts` | Implement `health()` on local-bridge — calls `transport.call("version", {})` + `transport.call("read", { path: "koi/permissions/version.json" })` through the real subprocess stdio channel (NOT direct handler calls); return type → `HealthCapableNexusTransport` | +35 |
-| `packages/lib/fs-nexus/src/local-transport.test.ts` | New tests: health success through subprocess; failure when subprocess dead; failure when stdio handshake broken | +60 |
-| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as `HealthCapableNexusTransport`; add `nexusBootMode` config field; wire preflight that logs (telemetry default) or throws (fail-closed opt-in); runs before `createNexusPermissionBackend`/`createNexusAuditSink` | +30 |
-| `packages/meta/cli/src/__tests__/runtime-factory-health.test.ts` | New tests covering telemetry + fail-closed modes (see Tests section) | +110 |
+| `packages/lib/fs-nexus/src/local-transport.ts` | (1) Add per-call `opts.deadlineMs` support: each entry in pending-request map tracks its own deadline; reaper rejects on expiry. (2) Implement `health()` calling both probes through the real subprocess stdio channel with `deadlineMs: 5000` opts; return `HealthCapableNexusTransport` | +60 |
+| `packages/lib/fs-nexus/src/local-transport.test.ts` | New: per-call deadline rejects before transport default; health success through subprocess; health failure when subprocess dead; health failure when stdio handshake broken; tri-state result wiring | +90 |
+| `packages/meta/cli/src/runtime-factory.ts` | Type `nexusTransport` as `HealthCapableNexusTransport`; add `nexusBootMode` config field with derived default (audit-wired → fail-closed); add `isNexusAuditConfigured` helper; wire preflight before `createNexusPermissionBackend`/`createNexusAuditSink`; handle tri-state policyStore result | +50 |
+| `packages/meta/cli/src/__tests__/runtime-factory-health.test.ts` | New tests covering all three modes + audit-aware default + policyStore=empty handling (see Tests section) | +160 |
 | `packages/meta/cli/src/tui-command.ts` | Replace `as unknown as NexusTransport` cast (line 1704) with `assertHealthCapable(transport)` narrowing | +5 |
 | `docs/L2/nexus-client.md` | Document readiness probe semantics; `HealthCapableNexusTransport` contract; WS/gRPC/pool out-of-scope rationale | +60 |
 
-**Total: ~436 LOC (131 src + 245 test + 60 doc).**
+**Total: ~580 LOC (175 src + 345 test + 60 doc).**
 
 (Larger than the original ~170 estimate because reviews correctly demanded real integration, type-system enforcement, and a readiness probe — not just a dead liveness API.)
 
@@ -222,11 +268,11 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
 
 `packages/lib/nexus-client/src/health.test.ts`:
 
-1. `health() returns ok with version, latency, probed=["version","read:koi/permissions/version.json"] when both probes succeed`
-2. `health() returns ok when read returns 404 (path-not-found mapped to ok)` — proves missing-policy is not a transport failure
+1. `health() returns ok with policyStore="synced" when both probes succeed (read returns 200)`
+2. `health() returns ok with policyStore="empty" when version ok and read returns 404` — tri-state distinguishes bootstrap state from failure
 3. `health() returns error when version probe returns 503` — fail at liveness step
-4. `health() returns error when read probe returns 503` — fail at readiness step (proves we don't stop at version)
-5. `health() returns error when read probe returns 401 (auth failure)` — proves auth path is exercised
+4. `health() returns error when read probe returns 503` — fail at readiness step
+5. `health() returns error when read probe returns 401 (auth failure)`
 5. `health() returns error on timeout shorter than default deadline`
 6. `health() returns error on network failure`
 7. `health() returns error on malformed response`
@@ -239,15 +285,20 @@ export async function createKoiRuntime(config: KoiRuntimeFactoryConfig) {
 
 `packages/meta/cli/src/__tests__/runtime-factory-health.test.ts`:
 
-11. `telemetry mode: createKoiRuntime succeeds and logs warning when health() returns error` — local-first preserved
-12. `telemetry mode: createKoiRuntime succeeds and logs info when health() returns ok`
-13. `fail-closed mode: createKoiRuntime throws when health() returns error`
-14. `fail-closed mode: createKoiRuntime succeeds when health() returns ok`
-15. `default mode is telemetry when nexusBootMode unspecified`
-16. `createKoiRuntime skips preflight when nexusTransport is undefined`
-17. `fail-closed startup error includes nexus error code in message`
-18. `preflight runs before createNexusPermissionBackend wiring` (order matters)
-19. `existing local-first golden test still passes` — regression guard for default mode
+11. `telemetry mode: succeeds and logs warning on health() error` — local-first preserved
+12. `telemetry mode: succeeds and logs info on health() ok with policyStore=synced`
+13. `telemetry mode: succeeds and logs warning on policyStore=empty`
+14. `fail-closed mode: throws on health() error`
+15. `fail-closed mode: succeeds + warns on policyStore=empty (does NOT throw — empty is valid first-boot)`
+16. `fail-closed-policy-required mode: throws on policyStore=empty`
+17. `fail-closed-policy-required mode: succeeds on policyStore=synced`
+18. `default mode is "telemetry" when only permissions wired (no audit sink)`
+19. `default mode is "fail-closed" when audit sink wired` — derived from configured consumers
+20. `explicit nexusBootMode override always wins`
+21. `skips preflight when nexusTransport is undefined`
+22. `fail-closed error message includes nexus error code`
+23. `preflight runs before createNexusPermissionBackend wiring` (order matters)
+24. `existing local-first golden test still passes` (telemetry-only setup) — regression guard
 
 `packages/lib/fs-nexus/src/local-transport.test.ts` (additions):
 
