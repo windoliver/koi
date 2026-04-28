@@ -44,6 +44,12 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/middleware-goal",
   // Report middleware — requires objective + sink config (no-op without objective)
   "@koi/middleware-report",
+  // Reflex middleware — opt-in (koi.optional: true), requires user-defined rules array
+  "@koi/middleware-reflex",
+  // Turn-ack middleware — opt-in (koi.optional: true), TUI has its own status indicator
+  "@koi/middleware-turn-ack",
+  // Prompt-cache middleware — opt-in (koi.optional: true), no adapter consumes CACHE_HINTS_KEY yet
+  "@koi/middleware-prompt-cache",
 ]);
 
 /**
