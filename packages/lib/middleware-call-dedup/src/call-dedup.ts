@@ -54,6 +54,14 @@ interface DedupState {
    * simultaneous misses both invoke `next` and store overlapping results.
    */
   readonly inFlight: Map<string, Promise<ToolResponse>>;
+  /**
+   * Index of cache keys produced for each session. Used by `onSessionEnd`
+   * to evict that session's entries and in-flight promises so a later run
+   * reusing the same `sessionId` cannot receive cached results from — or
+   * coalesce onto a still-running call belonging to — the terminated
+   * session.
+   */
+  readonly keysBySession: Map<string, Set<string>>;
 }
 
 function isCacheable(s: DedupState, toolId: string): boolean {
@@ -78,6 +86,7 @@ function notifyHit(s: DedupState, sessionId: string, toolId: string, cacheKey: s
 async function executeAndStore(
   s: DedupState,
   cacheKey: string,
+  sessionId: string,
   request: ToolRequest,
   next: ToolHandler,
 ): Promise<ToolResponse> {
@@ -85,7 +94,27 @@ async function executeAndStore(
   const meta = response.metadata;
   if (meta?.blocked === true || meta?.error === true) return response;
   await s.store.set(cacheKey, { response, expiresAt: s.now() + s.ttlMs });
+  trackKey(s, sessionId, cacheKey);
   return response;
+}
+
+function trackKey(s: DedupState, sessionId: string, cacheKey: string): void {
+  const existing = s.keysBySession.get(sessionId);
+  if (existing !== undefined) {
+    existing.add(cacheKey);
+    return;
+  }
+  s.keysBySession.set(sessionId, new Set([cacheKey]));
+}
+
+async function evictSession(s: DedupState, sessionId: string): Promise<void> {
+  const keys = s.keysBySession.get(sessionId);
+  if (keys === undefined) return;
+  s.keysBySession.delete(sessionId);
+  for (const key of keys) {
+    s.inFlight.delete(key);
+    await s.store.delete(key);
+  }
 }
 
 /**
@@ -144,12 +173,16 @@ async function ddWrapToolCall(
   // cancellation signal — coalesced callers all share metadata-free,
   // signal-free identity, so one caller cannot abort the others.
   const existing = s.inFlight.get(cacheKey);
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) {
+    trackKey(s, sessionId, cacheKey);
+    return existing;
+  }
 
-  const promise = executeAndStore(s, cacheKey, request, next).finally(() => {
+  const promise = executeAndStore(s, cacheKey, sessionId, request, next).finally(() => {
     s.inFlight.delete(cacheKey);
   });
   s.inFlight.set(cacheKey, promise);
+  trackKey(s, sessionId, cacheKey);
   return promise;
 }
 
@@ -168,6 +201,7 @@ export function createCallDedupMiddleware(config?: CallDedupConfig): KoiMiddlewa
       description: "Caches identical deterministic tool call results within TTL",
     },
     inFlight: new Map(),
+    keysBySession: new Map(),
   };
   return {
     name: "koi:call-dedup",
@@ -178,6 +212,7 @@ export function createCallDedupMiddleware(config?: CallDedupConfig): KoiMiddlewa
     priority: 150,
     phase: "intercept",
     wrapToolCall: (ctx, request, next) => ddWrapToolCall(state, ctx, request, next),
+    onSessionEnd: (ctx) => evictSession(state, ctx.sessionId),
     describeCapabilities: () => state.capability,
   } satisfies KoiMiddleware;
 }

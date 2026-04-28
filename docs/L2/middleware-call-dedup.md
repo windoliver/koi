@@ -17,6 +17,10 @@ The cache key (`{sessionId, toolId, input}`) cannot detect ambient state changes
 
 `DEFAULT_EXCLUDE` (mutating shell/file/agent tools) is a hard floor: even tools mistakenly added to `include` are still bypassed if they appear in the exclude list.
 
+### Session lifecycle
+
+The middleware exposes `onSessionEnd` to evict the cache and in-flight coalescing entries for a terminated session. Reused session ids are an expected lifecycle pattern: without this, a fresh run reusing the same `sessionId` could receive cached responses from — or coalesce onto a still-running tool call belonging to — the prior session.
+
 ### Per-request bypass conditions
 
 Even for allowlisted tools, dedup also bypasses when the `ToolRequest` carries:
@@ -146,6 +150,8 @@ These tools are excluded from caching by default because they are side-effecting
 | `file_create` | Creates files |
 | `agent_send` | Sends messages to other agents |
 | `agent_spawn` | Spawns new agent processes |
+| `file_read`, `fs_read` | Ambient-state filesystem reads (file may be mutated externally between calls) |
+| `task_list`, `notebook_read` | Stateful reads that observe other tools' writes |
 
 User-supplied `exclude` entries are merged with these defaults.
 

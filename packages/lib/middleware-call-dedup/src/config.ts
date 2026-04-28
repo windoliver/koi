@@ -52,6 +52,10 @@ export const DEFAULT_EXCLUDE: readonly string[] = [
   "fs_update",
   "fs_patch",
   "fs_edit",
+  // ambient-state filesystem reads (file mutated externally between calls
+  // would otherwise serve stale bytes within TTL)
+  "file_read",
+  "fs_read",
   // agent / messaging control plane
   "agent_send",
   "agent_spawn",

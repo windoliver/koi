@@ -192,6 +192,68 @@ describe("createCallDedupMiddleware", () => {
     expect(r?.metadata?.cached).toBe(true);
   });
 
+  // Regression: ambient-state filesystem reads must be in DEFAULT_EXCLUDE.
+  // If another tool mutates the file between two cached reads, the second
+  // read returns up-to-TTL-old bytes — exactly the stale-read failure mode
+  // the package promises to prevent.
+  test("DEFAULT_EXCLUDE covers fs_read / file_read", async () => {
+    const mw = createCallDedupMiddleware({ include: ["fs_read", "file_read"] });
+    const ctx = turnCtx();
+    const h = makeHandler("v");
+    for (const toolId of ["fs_read", "file_read"]) {
+      await mw.wrapToolCall?.(ctx, { toolId, input: { path: "/x" } }, h.handler);
+      await mw.wrapToolCall?.(ctx, { toolId, input: { path: "/x" } }, h.handler);
+    }
+    expect(h.calls).toBe(4);
+  });
+
+  // Regression: a session that ends and is later replayed with the same
+  // sessionId must NOT receive cached entries from the prior run. Reused
+  // session ids are an expected lifecycle pattern in this codebase.
+  test("onSessionEnd evicts cached entries for that session", async () => {
+    const mw = createCallDedupMiddleware({ include: ["lookup"] });
+    const ctx = turnCtx("s-shared");
+    const h = makeHandler("v");
+    await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: {} }, h.handler);
+    await mw.wrapToolCall?.(ctx, { toolId: "lookup", input: {} }, h.handler);
+    expect(h.calls).toBe(1);
+
+    await mw.onSessionEnd?.(ctx.session);
+
+    // New "session" reusing the same id must not see the prior cache.
+    await mw.wrapToolCall?.(turnCtx("s-shared"), { toolId: "lookup", input: {} }, h.handler);
+    expect(h.calls).toBe(2);
+  });
+
+  // Regression: in-flight promises must not survive session end. Otherwise
+  // a still-running call from a terminated session could fan out into a
+  // fresh session that reuses the same sessionId.
+  test("onSessionEnd clears in-flight coalescing for that session", async () => {
+    const mw = createCallDedupMiddleware({ include: ["lookup"] });
+    const ctx = turnCtx("s-x");
+    let executions = 0;
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const handler: ToolHandler = async () => {
+      executions++;
+      await gate;
+      return { output: "v" };
+    };
+    const p1 = mw.wrapToolCall?.(ctx, { toolId: "lookup", input: {} }, handler);
+    // Yield so p1 finishes its sync prefix and registers in inFlight + the
+    // session index. Without this, evictSession races and can run before
+    // p1 has tracked itself, making the test trivial.
+    await Promise.resolve();
+    await Promise.resolve();
+    await mw.onSessionEnd?.(ctx.session);
+    const p2 = mw.wrapToolCall?.(turnCtx("s-x"), { toolId: "lookup", input: {} }, handler);
+    release?.();
+    await Promise.all([p1, p2]);
+    expect(executions).toBe(2);
+  });
+
   test("describeCapabilities describes the cache", () => {
     const mw = createCallDedupMiddleware();
     expect(mw.describeCapabilities(turnCtx())?.label).toBe("call-dedup");
