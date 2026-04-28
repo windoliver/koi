@@ -87,6 +87,11 @@ const TOOL_MAP: Readonly<Record<string, ToolDisplayEntry>> = {
   Bash: { title: "Shell", subtitleKey: "command" },
   ToolSearch: { title: "Tool Search", subtitleKey: "query" },
   Spawn: { title: "Spawn", subtitleKey: "name" },
+  web_search: { title: "Web Search", subtitleKey: "query" },
+  memory_store: { title: "Memory Store", subtitleKey: "name" },
+  memory_recall: { title: "Memory Recall", subtitleKey: "query" },
+  memory_search: { title: "Memory Search", subtitleKey: "keyword" },
+  memory_delete: { title: "Memory Delete", subtitleKey: "id" },
 };
 
 /** Suffix-based entries for prefixed tools (`fs_read`, `web_fetch`, etc.). */
@@ -110,7 +115,6 @@ const SUFFIX_MAP: readonly (readonly [string, ToolDisplayEntry])[] = [
     },
   ],
   ["_fetch", { title: "Fetch", subtitleKey: "url" }],
-  ["_search", { title: "Web Search", subtitleKey: "query" }],
 ];
 
 // ---------------------------------------------------------------------------
