@@ -2,6 +2,7 @@ import type { JsonObject, Tool } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 
 import { toJSONSchema, z } from "zod";
+import { spawnCacheKey } from "../spawn-result-cache.js";
 import type { SpawnToolsConfig } from "../types.js";
 
 const schema = z.object({
@@ -65,6 +66,17 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
         context as JsonObject | undefined,
       );
 
+      const cacheKey =
+        config.resultCache !== undefined
+          ? spawnCacheKey(config.agentId, agent_name, context)
+          : undefined;
+      if (cacheKey !== undefined && config.resultCache !== undefined) {
+        const cached = config.resultCache.get(cacheKey);
+        if (cached !== undefined) {
+          return { ok: true, output: cached, deduplicated: true };
+        }
+      }
+
       const result = await config.spawnFn({
         agentName: agent_name,
         description: childDescription,
@@ -75,6 +87,10 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
 
       if (!result.ok) {
         return { ok: false, error: result.error.message };
+      }
+
+      if (cacheKey !== undefined && config.resultCache !== undefined) {
+        config.resultCache.set(cacheKey, result.output);
       }
 
       return { ok: true, output: result.output };

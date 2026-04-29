@@ -27,6 +27,7 @@ interface SpawnToolsConfig {
   readonly board: ManagedTaskBoard;
   readonly agentId: AgentId;
   readonly signal: AbortSignal;
+  readonly resultCache?: SpawnResultCache;  // optional — see "Idempotent delivery"
 }
 ```
 
@@ -102,6 +103,36 @@ free of L1 engine dependencies.
 as task IDs, file scopes, or constraints. The tool forwards that object as
 `SpawnRequest.context` and mirrors it into the child description for spawn
 implementations that have not yet adopted the structured field.
+
+### Idempotent delivery (#1709)
+
+`agent_spawn` accepts an optional `resultCache: SpawnResultCache`. When
+provided, the tool deduplicates retried calls so a duplicate spawn does not
+re-invoke `spawnFn` or inject duplicate output back into the parent session.
+
+- **Cache key**: `${parentAgentId}::${agent_name}::${context.task_id}`
+- **Activation**: only when `context.task_id` is a non-empty string. Without
+  a `task_id` we cannot identify the same logical spawn across retries, so
+  dedup is skipped silently and the spawn proceeds.
+- **Scope**: caches successful outputs only — failed spawns stay retryable.
+- **Eviction**: bounded LRU (default cap 256, see `DEFAULT_SPAWN_CACHE_CAP`).
+  Map insertion-order, sync `get`/`set` — no async overhead on the hot path.
+- **Result shape on hit**: `{ ok: true, output, deduplicated: true }` so
+  callers (and tests) can distinguish cached from fresh.
+- **Concurrency**: dedup catches sequential retries, not concurrent races —
+  two simultaneous in-flight calls both invoke `spawnFn` because the cache
+  is populated only on settle. The third (sequential) retry is deduped.
+
+The runtime (or autonomous spawn bridge from #1553) creates the cache once
+and reuses it across `createSpawnTools` invocations within a session so
+retries after re-entry hit the same store.
+
+```typescript
+import { createSpawnResultCache, createSpawnTools } from "@koi/spawn-tools";
+
+const resultCache = createSpawnResultCache();   // session-scoped
+const tools = createSpawnTools({ ...config, resultCache });
+```
 
 ### TaskCascade reuses @koi/task-board dag utilities
 
