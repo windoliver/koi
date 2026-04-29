@@ -2,7 +2,9 @@
 
 exports[`@koi/fs-nexus API surface . has stable type surface 1`] = `
 "import { OAuthChannel, ChannelAdapter, FileSystemBackend, Result, KoiError } from '@koi/core';
-import { B as BridgeNotification, N as NexusTransport, a as NexusFileSystemConfig } from './types-BN28JvQl.js';
+import { B as BridgeNotification, N as NexusTransport, a as NexusFileSystemConfig } from './types-Dw0nbZcy.js';
+import { HealthCapableNexusTransport } from '@koi/nexus-client';
+export { NexusCallOptions, NexusHealth, NexusHealthOptions, NexusTransportKind } from '@koi/nexus-client';
 
 /**
  * Channel wiring for bridge auth notifications.
@@ -132,6 +134,31 @@ interface NexusFileSystemFullConfig extends NexusFileSystemConfig {
 declare function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSystemBackend;
 
 /**
+ * Disposable local-bridge probe transport.
+ *
+ * Spawns a fresh short-lived bridge subprocess, exercises \`version\` + the
+ * configured policy \`read\` paths through \`transport.call(...)\` (so spawn,
+ * IPC handshake, line parsing, and notification routing are all validated),
+ * then closes itself.
+ *
+ * Sealed-capability pattern: spawn config is captured in the closure and
+ * never exposed on the returned transport object — eliminates credential
+ * leak risk via inspection of the long-lived runtime transport.
+ */
+
+/**
+ * Factory for a disposable probe transport. Caller passes \`spawnConfig\`
+ * once; the returned function constructs a fresh probe each invocation.
+ *
+ * @example
+ *   const probeFactory = createNexusProbeFactory({ mountUri, pythonPath, env });
+ *   const probe = await probeFactory();
+ *   const result = await probe.health();
+ *   probe.close();
+ */
+declare function createNexusProbeFactory(spawnConfig: LocalTransportConfig): () => Promise<HealthCapableNexusTransport>;
+
+/**
  * HTTP JSON-RPC transport for @koi/fs-nexus.
  * Delegates core HTTP logic to @koi/nexus-client and adds
  * the bridge-notification interface (no-ops for HTTP transport).
@@ -147,13 +174,14 @@ declare function createHttpTransport(config: NexusFileSystemConfig): NexusTransp
 /** Validate NexusFileSystemConfig at the system boundary. */
 declare function validateNexusFileSystemConfig(config: unknown): Result<NexusFileSystemConfig, KoiError>;
 
-export { BridgeNotification, type LocalTransportConfig, NexusFileSystemConfig, type NexusFileSystemFullConfig, NexusTransport, createAuthNotificationHandler, createHttpTransport, createLocalTransport, createNexusFileSystem, validateNexusFileSystemConfig };
+export { BridgeNotification, type LocalTransportConfig, NexusFileSystemConfig, type NexusFileSystemFullConfig, NexusTransport, createAuthNotificationHandler, createHttpTransport, createLocalTransport, createNexusFileSystem, createNexusProbeFactory, validateNexusFileSystemConfig };
 "
 `;
 
 exports[`@koi/fs-nexus API surface ./testing has stable type surface 1`] = `
 "import { FileSystemBackend } from '@koi/core';
-import { N as NexusTransport } from './types-BN28JvQl.js';
+import { N as NexusTransport } from './types-Dw0nbZcy.js';
+import '@koi/nexus-client';
 
 /**
  * Reusable FileSystemBackend contract test suite.
