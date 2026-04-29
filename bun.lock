@@ -1262,6 +1262,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
       },
     },
     "packages/net/gateway-webhook": {

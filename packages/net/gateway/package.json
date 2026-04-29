@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*"
+    "@koi/errors": "workspace:*",
+    "@koi/gateway-types": "workspace:*"
   }
 }
