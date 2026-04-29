@@ -215,6 +215,19 @@ export function reassembleResponses(
   const richContent = buildMergedRichContent(parts, separator);
   const stopReason = pickStopReason(parts);
   const provenance = buildProvenance(parts);
+  // Detect mixed-provider results. When per-segment routing or fallback
+  // sends segments to different models / responseIds, copying first-only
+  // identity into the top-level fields would silently misattribute
+  // aggregated usage to a single backend. Cost dashboards, traces, and
+  // incident debugging all key off `model` / `responseId` and would
+  // believe the lie. Surface the mix as a synthetic `koi:rlm-mixed`
+  // marker so observability sees the truth; per-segment provenance
+  // remains in `metadata.rlmSegments` for callers that care.
+  const allSameModel = parts.every((p) => p.model === first.model);
+  const mergedModel = allSameModel ? first.model : "koi:rlm-mixed";
+  const allSameResponseId = parts.every((p) => p.responseId === first.responseId);
+  const mergedResponseId =
+    first.responseId !== undefined && allSameResponseId ? first.responseId : undefined;
   // Merge metadata across every segment with last-write-wins per key.
   // Later-segment signals like `terminatedBy`, `blockedByHook`, recovery
   // metadata, and routing decisions must survive the merge so downstream
@@ -230,11 +243,11 @@ export function reassembleResponses(
 
   const out: ModelResponse = {
     content,
-    model: first.model,
+    model: mergedModel,
     ...(usage !== undefined ? { usage } : {}),
     metadata,
     ...(stopReason !== undefined ? { stopReason } : {}),
-    ...(first.responseId !== undefined ? { responseId: first.responseId } : {}),
+    ...(mergedResponseId !== undefined ? { responseId: mergedResponseId } : {}),
     ...(richContent !== undefined ? { richContent } : {}),
   };
   return out;

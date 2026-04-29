@@ -60,6 +60,21 @@ export interface RlmConfig {
    * for a task that may need genuine aggregation.
    */
   readonly acknowledgeSegmentLocalContract?: boolean;
+  /**
+   * Trust the `metadata.role` field on inbound messages when classifying
+   * role for chunking eligibility. **Defaults to `false`** because
+   * `InboundMessage.metadata` is otherwise caller-controlled in this
+   * codebase: an external caller could mark an oversized user turn as
+   * `assistant` or `tool` to bypass RLM's size guard, so RLM must not
+   * honor the field by default.
+   *
+   * Internal trusted callers (e.g. L1 session-repair replaying resumed
+   * assistant content) may opt in by setting this flag — but only when
+   * the entire upstream path is known to be trusted. Mirrors the explicit
+   * trust gate that `model-openai-compat`'s request mapper uses for the
+   * same field.
+   */
+  readonly trustMetadataRole?: boolean;
 }
 
 /** Default token threshold (~32K tokens of text under heuristic estimation). */
@@ -76,7 +91,16 @@ export const DEFAULT_SEGMENT_SEPARATOR = "";
 export const DEFAULT_MAX_CHUNK_CHARS = 8_000;
 
 /**
- * Default middleware priority. Sits before model-router/retry so the
- * downstream chain handles per-segment fallback and rate limits.
+ * Default middleware priority within the `intercept` phase tier.
+ *
+ * Set HIGHER than tool-mutating intercept middleware (e.g. tool-selector
+ * at 200) so RLM runs deeper in the onion — after upstream middleware
+ * has materialized any synthetic `tools`. The fail-closed `request.tools`
+ * guard in `rlm.ts` then sees the tool list and aborts BEFORE
+ * segmentation, instead of fanning a single user turn into N
+ * tool-capable model calls. Operators composing RLM with custom
+ * tool-mutating middleware MUST keep this invariant: RLM's priority
+ * must be greater than every tool-injecting intercept middleware in
+ * the chain.
  */
-export const DEFAULT_PRIORITY = 200;
+export const DEFAULT_PRIORITY = 800;

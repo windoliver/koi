@@ -26,13 +26,26 @@ describe("reassembleResponses", () => {
     expect(out.content).toBe("first\n\nsecond\n\nthird");
   });
 
-  test("retains the first response's model and responseId", () => {
+  test("retains first-segment model and responseId when every segment agrees", () => {
+    const out = reassembleResponses([
+      part("a", { model: "same-model", responseId: "id-a" }),
+      part("b", { model: "same-model", responseId: "id-a" }),
+    ]);
+    expect(out.model).toBe("same-model");
+    expect(out.responseId).toBe("id-a");
+  });
+
+  test("surfaces mixed-provider runs via 'koi:rlm-mixed' instead of misattributing to first segment", () => {
+    // Per-segment routing/fallback can send chunks to different providers.
+    // Copying first-only identity into top-level `model` / `responseId`
+    // would silently misattribute aggregated usage to a single backend.
+    // Surface the mix; per-segment identity stays in metadata.rlmSegments.
     const out = reassembleResponses([
       part("a", { model: "first-model", responseId: "id-a" }),
       part("b", { model: "second-model", responseId: "id-b" }),
     ]);
-    expect(out.model).toBe("first-model");
-    expect(out.responseId).toBe("id-a");
+    expect(out.model).toBe("koi:rlm-mixed");
+    expect(out.responseId).toBeUndefined();
   });
 
   test("surfaces the strongest non-success stopReason rather than the last", () => {

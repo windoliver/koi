@@ -30,13 +30,16 @@ interface TargetLocation {
  * MUST NOT chunk assistant/tool/system content even when senderId looks
  * neutral.
  *
- * Resolution order mirrors `resolveRole` in `model-openai-compat`:
+ * Resolution order:
  *   1. system:* senderIds → system (never user-role)
- *   2. metadata.role override (trusted) for assistant/tool/user
+ *   2. `metadata.role` override — only honored when the caller has
+ *      explicitly opted in via `trustMetadataRole`. Otherwise the field
+ *      is treated as untrusted (a malicious caller could stamp it on an
+ *      oversized user turn to bypass chunking).
  *   3. senderId === "assistant" or "tool" heuristic
  *   4. default user
  */
-function isUserRoleMessage(msg: InboundMessage): boolean {
+function isUserRoleMessage(msg: InboundMessage, trustMetadataRole: boolean): boolean {
   // The two canonical resolvers in this repo disagree on bare
   // `senderId === "system"`: openai-compat treats it as user; the
   // shared model-router normalizer treats it as system. Take the
@@ -46,7 +49,7 @@ function isUserRoleMessage(msg: InboundMessage): boolean {
   // path that treats bare "system" as system content. Oversized bare-
   // system content is a compaction concern, not RLM's.
   if (msg.senderId === "system" || msg.senderId.startsWith("system:")) return false;
-  if (msg.metadata !== undefined) {
+  if (trustMetadataRole && msg.metadata !== undefined) {
     const role = msg.metadata.role;
     if (role === "assistant" || role === "tool") return false;
     if (role === "user") return true;
@@ -64,12 +67,13 @@ function isUserRoleMessage(msg: InboundMessage): boolean {
 function findOversizedTextBlocks(
   messages: readonly InboundMessage[],
   minChars: number,
+  trustMetadataRole: boolean,
 ): readonly TargetLocation[] {
   const out: TargetLocation[] = [];
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg === undefined) continue;
-    if (!isUserRoleMessage(msg)) continue;
+    if (!isUserRoleMessage(msg, trustMetadataRole)) continue;
     for (let j = 0; j < msg.content.length; j++) {
       const block = msg.content[j];
       if (block === undefined || block.kind !== "text") continue;
@@ -97,6 +101,28 @@ export class MultipleOversizedBlocksError extends Error {
     );
     this.name = "MultipleOversizedBlocksError";
     this.blockCount = blockCount;
+  }
+}
+
+/**
+ * Error thrown by `segmentRequest` when the message containing the
+ * oversized text block carries additional text blocks. Replacing only the
+ * oversized block per segment would leave the sibling text intact in
+ * every downstream call, duplicating it across N chunks and corrupting
+ * the reassembled output for exact-copy and structured-transformation
+ * tasks. Combine the message's text blocks upstream so the chunkable
+ * payload is a single block.
+ */
+export class SiblingTextBlocksError extends Error {
+  readonly siblingCount: number;
+  constructor(siblingCount: number) {
+    super(
+      `RLM cannot segment a request whose oversized user message contains ${String(
+        siblingCount,
+      )} additional text block(s). Replacing only the oversized block per segment would duplicate the sibling text across every chunk and corrupt the reassembled output. Combine the text blocks upstream into a single block before invoking RLM.`,
+    );
+    this.name = "SiblingTextBlocksError";
+    this.siblingCount = siblingCount;
   }
 }
 
@@ -159,7 +185,13 @@ function safeHardCut(text: string, maxChars: number): readonly string[] {
       // step back one code unit so the pair stays in the next chunk.
       if (code >= 0xd800 && code <= 0xdbff) end -= 1;
     }
-    if (end <= k) end = k + maxChars; // pathological maxChars=1 + surrogate
+    // Surrogate pairs are atomic: when the budget is too small to fit one
+    // (e.g. maxChars=1 against astral text) we MUST advance through the
+    // full pair rather than emit a dangling high surrogate. The chunk
+    // exceeds maxChars in this case, but byte-faithful UTF-16 wins —
+    // splitting between surrogates corrupts the prompt, oversize-by-one
+    // does not.
+    if (end <= k) end = Math.min(k + 2, text.length);
     out.push(text.slice(k, end));
     k = end;
   }
@@ -238,13 +270,33 @@ function replaceTextBlock(
 export function segmentRequest(
   request: ModelRequest,
   maxChunkChars: number,
+  options: { readonly trustMetadataRole?: boolean } = {},
 ): readonly ModelRequest[] {
-  const oversized = findOversizedTextBlocks(request.messages, maxChunkChars);
+  const trustMetadataRole = options.trustMetadataRole ?? false;
+  const oversized = findOversizedTextBlocks(request.messages, maxChunkChars, trustMetadataRole);
   if (oversized.length === 0) return [request];
   if (oversized.length > 1) throw new MultipleOversizedBlocksError(oversized.length);
 
   const target = oversized[0];
   if (target === undefined) return [request];
+
+  // Guard against duplicating sibling text on every chunk. Replacing the
+  // oversized block alone would leave any other text blocks in the same
+  // message untouched, so each downstream call would see the sibling
+  // text repeated alongside its chunk — turning byte-faithful tasks into
+  // N-fold corruption. Image / non-text blocks are fine; only sibling
+  // text drives this guard.
+  const targetMsg = request.messages[target.messageIndex];
+  if (targetMsg !== undefined) {
+    let siblingTextCount = 0; // let: counter while scanning siblings
+    for (let j = 0; j < targetMsg.content.length; j++) {
+      if (j === target.blockIndex) continue;
+      const block = targetMsg.content[j];
+      if (block !== undefined && block.kind === "text") siblingTextCount += 1;
+    }
+    if (siblingTextCount > 0) throw new SiblingTextBlocksError(siblingTextCount);
+  }
+
   const chunks = splitText(target.text, maxChunkChars);
   if (chunks.length <= 1) return [request];
 

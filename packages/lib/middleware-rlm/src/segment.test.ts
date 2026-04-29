@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { InboundMessage, ModelRequest } from "@koi/core";
-import { segmentRequest, splitText } from "./segment.js";
+import { SiblingTextBlocksError, segmentRequest, splitText } from "./segment.js";
 
 function userMessage(text: string): InboundMessage {
   return {
@@ -45,6 +45,44 @@ describe("splitText", () => {
   test("rejects non-positive maxChars", () => {
     expect(() => splitText("hi", 0)).toThrow();
     expect(() => splitText("hi", -1)).toThrow();
+  });
+
+  test("segmentRequest preserves surrogate pairs end-to-end at maxChunkChars=1", () => {
+    // Boundary path: validateRlmConfig allows maxChunkChars=1, so the
+    // hard-cut surrogate guard must hold across the full segmentRequest
+    // pipeline (not just splitText). Each chunk's last UTF-16 unit must
+    // never be a dangling high surrogate, even though some chunks will
+    // exceed maxChunkChars by one code unit (the alternative is invalid
+    // UTF-16, which corrupts byte-faithful transforms in providers).
+    const emoji = "🙂🙂🙂".repeat(10); // pure astral-plane text
+    const out = segmentRequest(makeRequest([userMessage(emoji)]), 1);
+    expect(out.length).toBeGreaterThan(1);
+    let recovered = ""; // let: rejoin chunks to verify byte-faithful output
+    for (const seg of out) {
+      const block = seg.messages[0]?.content[0];
+      if (block === undefined || block.kind !== "text") {
+        throw new Error("expected text block");
+      }
+      const last = block.text.charCodeAt(block.text.length - 1);
+      const isHighSurrogate = last >= 0xd800 && last <= 0xdbff;
+      expect(isHighSurrogate).toBe(false);
+      recovered += block.text;
+    }
+    expect(recovered).toBe(emoji);
+  });
+
+  test("preserves surrogate pairs even when maxChars is 1 (advances through full pair)", () => {
+    // Pathological budget: maxChars=1 cannot fit a 2-code-unit emoji, but
+    // splitting between surrogates corrupts the prompt. Forward progress
+    // must consume the full pair instead of emitting a dangling high
+    // surrogate.
+    const chunks = splitText("🙂🙂", 1);
+    expect(chunks.join("")).toBe("🙂🙂");
+    for (const c of chunks) {
+      const last = c.charCodeAt(c.length - 1);
+      const isHighSurrogate = last >= 0xd800 && last <= 0xdbff;
+      expect(isHighSurrogate).toBe(false);
+    }
   });
 
   test("does not split UTF-16 surrogate pairs at hard-cut boundaries", () => {
@@ -113,6 +151,25 @@ describe("segmentRequest", () => {
     expect(recovered).toBe(big);
   });
 
+  test("throws SiblingTextBlocksError when the oversized message has additional text blocks", () => {
+    // Replacing only the oversized block per segment leaves sibling text
+    // blocks intact in every downstream call, duplicating that text
+    // across N chunks. For exact-copy / extraction tasks that is silent
+    // data corruption — fail closed and ask the caller to combine the
+    // text blocks upstream.
+    const big = "x".repeat(300);
+    const msg: InboundMessage = {
+      senderId: "user",
+      timestamp: 0,
+      content: [
+        { kind: "text", text: "prefix" },
+        { kind: "text", text: big },
+        { kind: "text", text: "suffix" },
+      ],
+    };
+    expect(() => segmentRequest(makeRequest([msg]), 100)).toThrow(SiblingTextBlocksError);
+  });
+
   test("throws MultipleOversizedBlocksError when more than one user-role block exceeds maxChunkChars", () => {
     // A true multi-block partition would require an explicit reducer
     // stage. Cross-product fan-out would duplicate work and corrupt
@@ -164,27 +221,48 @@ describe("segmentRequest", () => {
     expect(segmentRequest(makeRequest([toolMsg]), 100)).toEqual([makeRequest([toolMsg])]);
   });
 
-  test("respects trusted metadata.role override (assistant)", () => {
-    // L1 / session-repair set metadata.role for non-escalating roles.
-    // RLM must honor that override so resumed assistant content is not
-    // reclassified as chunkable user input.
+  test("ignores untrusted metadata.role by default (security: caller-controlled field)", () => {
+    // metadata is caller-controlled in this codebase; honoring metadata.role
+    // by default would let an external caller stamp `role: "assistant"` on
+    // an oversized user turn to bypass RLM's size guard. Default behavior
+    // is to ignore the field — the message still classifies as user-role
+    // by senderId heuristic and gets chunked.
+    const oversized: InboundMessage = {
+      senderId: "user:1",
+      timestamp: 0,
+      content: [{ kind: "text", text: "z".repeat(500) }],
+      metadata: { role: "assistant" },
+    };
+    const out = segmentRequest(makeRequest([oversized]), 100);
+    expect(out.length).toBeGreaterThan(1);
+  });
+
+  test("honors trusted metadata.role override only with opt-in (assistant)", () => {
+    // L1 / session-repair sets metadata.role for resumed non-user content.
+    // When the caller has confirmed the upstream path is trusted via
+    // `trustMetadataRole: true`, RLM honors the override and does not
+    // chunk resumed assistant content.
     const assistantMsg: InboundMessage = {
       senderId: "user:1",
       timestamp: 0,
       content: [{ kind: "text", text: "z".repeat(500) }],
       metadata: { role: "assistant" },
     };
-    expect(segmentRequest(makeRequest([assistantMsg]), 100)).toEqual([makeRequest([assistantMsg])]);
+    expect(segmentRequest(makeRequest([assistantMsg]), 100, { trustMetadataRole: true })).toEqual([
+      makeRequest([assistantMsg]),
+    ]);
   });
 
-  test("respects trusted metadata.role override (tool)", () => {
+  test("honors trusted metadata.role override only with opt-in (tool)", () => {
     const toolMsg: InboundMessage = {
       senderId: "user:tooluser",
       timestamp: 0,
       content: [{ kind: "text", text: "z".repeat(500) }],
       metadata: { role: "tool" },
     };
-    expect(segmentRequest(makeRequest([toolMsg]), 100)).toEqual([makeRequest([toolMsg])]);
+    expect(segmentRequest(makeRequest([toolMsg]), 100, { trustMetadataRole: true })).toEqual([
+      makeRequest([toolMsg]),
+    ]);
   });
 
   test("never chunks bare senderId === 'system' (trust boundary, even though openai-compat treats it as user)", () => {

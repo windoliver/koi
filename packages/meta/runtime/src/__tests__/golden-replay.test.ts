@@ -2041,16 +2041,16 @@ describe("Golden: @koi/middleware-rlm", () => {
     );
     expect(segments.length).toBe(3);
     const merged = reassembleResponses(
-      segments.map((_, i) => ({
+      segments.map(() => ({
         content: "x".repeat(100),
         model: "test-model",
-        stopReason: "stop",
-        responseId: `r-${i}`,
+        stopReason: "stop" as const,
+        responseId: "r-shared",
       })),
     );
     expect(merged.content).toBe(big);
     expect(merged.model).toBe("test-model");
-    expect(merged.responseId).toBe("r-0");
+    expect(merged.responseId).toBe("r-shared");
   });
 });
 

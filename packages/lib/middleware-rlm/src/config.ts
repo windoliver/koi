@@ -70,6 +70,9 @@ export function validateRlmConfig(config: unknown): Result<RlmConfig, KoiError> 
   if (c.segmentSeparator !== undefined && typeof c.segmentSeparator !== "string") {
     return validationError("'segmentSeparator' must be a string");
   }
+  if (c.trustMetadataRole !== undefined && typeof c.trustMetadataRole !== "boolean") {
+    return validationError("'trustMetadataRole' must be a boolean");
+  }
 
   return { ok: true, value: c as RlmConfig };
 }

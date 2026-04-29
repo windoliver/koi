@@ -4,6 +4,15 @@ Segments oversized model requests into model-sized chunks, dispatches each
 chunk through the downstream chain, and reassembles the responses in
 order. Sits in the middleware chain via `wrapModelCall` and is engine-agnostic.
 
+> **Status: library-only, opt-in.** This package ships the
+> `createRlmMiddleware` factory plus pure `segmentRequest` /
+> `reassembleResponses` primitives. The runtime does **not** wire RLM
+> into any default middleware stack. Operators must opt in by
+> instantiating the middleware and adding it to their composition (see
+> *Usage* below). The `@koi/runtime` dependency entry exists only so the
+> package participates in `check:orphans` / golden-query coverage —
+> shipping this package does not change runtime behavior on its own.
+
 ---
 
 ## Why It Exists
@@ -46,13 +55,21 @@ Agent
 L2 feature package — runtime deps on `@koi/core` (L0) and
 `@koi/token-estimator` (L0u). No external dependencies.
 
-`wrapModelStream` is implemented as a fail-closed gate, not a segmenter.
-Stream reassembly across multiple downstream streams is out of scope, but
-silently letting oversized streamed requests bypass RLM would be a
-contract break (engines with native `modelStream` skip call-only
-middleware on the streaming path). Small streamed requests forward
-unchanged; oversized ones throw — route them through the non-streaming
-path or compose with a compaction middleware.
+`wrapModelStream` runs the same segment/dispatch path as `wrapModelCall`
+on the streaming side. Each segment is dispatched through the downstream
+stream handler; the segment's terminal `done` chunk supplies its
+`ModelResponse`, which is folded into reassembly. The merged response is
+re-emitted as a single synthesized stream (one `text_delta` of the merged
+content, an aggregate `usage` chunk, then `done`). Per-chunk text deltas
+from intermediate segments are NOT proxied to the consumer — that would
+let tool-call or thinking content from one segment leak before
+reassembly's safety guards (non-success stopReason, tool_call blocks)
+have a chance to abort the run.
+
+Small streamed requests forward unchanged. The streaming path enforces
+the same fail-closed gates as `wrapModelCall` (acknowledgement opt-in,
+no tools, segments must fit) so streaming RLM can never silently produce
+the corruption modes the call path rejects.
 
 ### Token accounting
 
@@ -76,6 +93,11 @@ in three situations where its segmentation strategy cannot uphold its contract:
   model would emit independent tool calls per segment, and reassembly would
   concatenate them — turning one user turn into N side-effecting tool batches.
   Disable RLM for tool-enabled turns or compose with a tool-aware middleware.
+  This guard depends on **ordering**: RLM's `intercept`-tier priority MUST
+  be greater than every tool-injecting intercept middleware in the chain so
+  the tool list is materialized BEFORE RLM evaluates the request. The
+  default priority (800) sits above `@koi/middleware-tool-selector` (200);
+  custom tool-mutating middleware must respect the same invariant.
 - **Single-block chunking cannot reduce the request.** If every user text
   block already fits within `maxChunkChars` but the total token estimate
   still exceeds `maxInputTokens` (overflow lives in surrounding history /
@@ -125,8 +147,9 @@ middleware:
 | `maxInputTokens` | 32 000 | Threshold (in estimated tokens). Requests at or below pass through unchanged. |
 | `maxChunkChars` | 8 000 | Maximum characters per segment of the split text block. |
 | `estimator` | `HEURISTIC_ESTIMATOR` | Token estimator used for the threshold check. |
-| `priority` | 200 | Middleware priority. Sits before model-router/retry so per-segment fallback works. |
+| `priority` | 800 | Priority within the `intercept` phase tier. **Must be greater than every tool-mutating intercept middleware** (e.g. `@koi/middleware-tool-selector` at 200) so RLM runs deeper in the onion and its `request.tools` guard sees the materialized tool list before segmentation. |
 | `onEvent` | — | Optional callback receiving `RlmEvent` (`passthrough`, `segmented`, `segment-completed`). Errors thrown by the callback are swallowed. |
+| `trustMetadataRole` | `false` | When `true`, RLM honors `metadata.role` on inbound messages as a trusted role override (mirrors `model-openai-compat`'s explicit trust gate). Default is `false` because `InboundMessage.metadata` is otherwise caller-controlled — an external caller could stamp `role: "assistant"` on an oversized user turn to bypass RLM's size guard. Only opt in when the upstream path is fully trusted (e.g. L1 session-repair replaying resumed assistant content). |
 | `acknowledgeSegmentLocalContract` | `false` | **Required opt-in.** Setting this to `true` acknowledges that the caller's task is the in-order union of segment-local answers (extraction, transformation, summarization-per-chunk). When `false`, oversized requests fail closed rather than silently returning a synthesized concatenation that may corrupt global-aggregation tasks. |
 | `segmentSeparator` | `""` | String inserted between per-segment outputs during reassembly. Empty by default for byte-faithful concatenation (exact-copy and JSON/CSV/code transforms stay intact). Set to `"\n\n"` (or other) for summarization-style outputs. |
 

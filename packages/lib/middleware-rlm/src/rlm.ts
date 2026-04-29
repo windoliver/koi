@@ -42,6 +42,7 @@ interface ResolvedConfig {
   readonly onEvent: ((event: RlmEvent) => void) | undefined;
   readonly acknowledgeSegmentLocalContract: boolean;
   readonly segmentSeparator: string;
+  readonly trustMetadataRole: boolean;
 }
 
 function resolveConfig(config: RlmConfig): ResolvedConfig {
@@ -53,15 +54,25 @@ function resolveConfig(config: RlmConfig): ResolvedConfig {
     onEvent: config.onEvent,
     acknowledgeSegmentLocalContract: config.acknowledgeSegmentLocalContract ?? false,
     segmentSeparator: config.segmentSeparator ?? DEFAULT_SEGMENT_SEPARATOR,
+    trustMetadataRole: config.trustMetadataRole ?? false,
   };
 }
 
 function emit(cfg: ResolvedConfig, event: RlmEvent): void {
   if (cfg.onEvent === undefined) return;
+  // Wrap both sync throws and rejected promises so an async observer
+  // implementation cannot surface an unhandled rejection at the runtime
+  // level. The contract is fail-open observability — telemetry must
+  // never affect middleware behavior, sync or async.
   try {
-    cfg.onEvent(event);
+    const result = cfg.onEvent(event) as unknown;
+    if (result instanceof Promise) {
+      result.catch(() => {
+        // observer must not affect middleware behavior (async path)
+      });
+    }
   } catch {
-    // observer must not affect middleware behavior
+    // observer must not affect middleware behavior (sync path)
   }
 }
 
@@ -169,7 +180,9 @@ async function rlmWrapModelCall(
       )} tool(s) present): segmentation would replay each tool call per chunk. Disable RLM for tool-enabled turns or compose with a tool-aware middleware.`,
     );
   }
-  const segments = segmentRequest(request, cfg.maxChunkChars);
+  const segments = segmentRequest(request, cfg.maxChunkChars, {
+    trustMetadataRole: cfg.trustMetadataRole,
+  });
   // Cannot reduce the request below the threshold via single-block chunking
   // (all user text blocks already fit; overflow lives in surrounding messages).
   // Fail closed rather than forwarding the known-oversize request — silent
@@ -228,12 +241,64 @@ export function createRlmMiddleware(config?: RlmConfig): KoiMiddleware {
 }
 
 /**
- * Streaming gate: reassembling chunked text deltas across multiple
- * downstream streams is out of scope, so we run the same threshold check
- * as the non-streaming path and fail closed when it trips. Small requests
- * forward unchanged. Failing closed (rather than silent passthrough) is
- * critical: engines with native `modelStream` skip call-only middleware
- * on the streaming path, so a missing hook would create a covert bypass.
+ * Drive the downstream stream to completion and recover the final
+ * `ModelResponse`. Adapters always emit a `done` chunk at the end of a
+ * stream; we trust it as the authoritative response.
+ *
+ * Some upstream stream implementations report token usage via incremental
+ * `usage` chunks rather than (or in addition to) `done.response.usage`.
+ * Accumulate those chunks and merge into the returned response so
+ * downstream cost / budget enforcement does not undercount oversized
+ * streamed turns. When `done.response.usage` is already set, prefer it as
+ * authoritative; otherwise fall back to the streamed totals.
+ */
+async function consumeStream(
+  request: ModelRequest,
+  next: ModelStreamHandler,
+): Promise<ModelResponse> {
+  let streamedInput = 0; // let: per-segment usage accumulator
+  let streamedOutput = 0; // let: per-segment usage accumulator
+  let sawUsage = false; // let: did the stream emit any `usage` chunks
+  for await (const chunk of next(request)) {
+    if (chunk.kind === "usage") {
+      streamedInput += chunk.inputTokens;
+      streamedOutput += chunk.outputTokens;
+      sawUsage = true;
+      continue;
+    }
+    if (chunk.kind === "done") {
+      const response = chunk.response;
+      if (response.usage !== undefined || !sawUsage) return response;
+      return {
+        ...response,
+        usage: { inputTokens: streamedInput, outputTokens: streamedOutput },
+      };
+    }
+    if (chunk.kind === "error") {
+      throw new Error(`RLM segment stream emitted error: ${chunk.message}`);
+    }
+  }
+  throw new Error("RLM segment stream ended without a 'done' chunk");
+}
+
+/**
+ * Streaming path: query-engine prefers `modelStream` whenever an adapter
+ * exposes it, so failing closed here would turn every oversized turn —
+ * the exact traffic RLM is meant to handle — into a user-visible error.
+ *
+ * Strategy: small requests stream through unchanged. Oversized requests
+ * run the same segment/dispatch path as `wrapModelCall`, but each
+ * segment's downstream call is the underlying *stream* handler whose
+ * terminal `done` chunk carries the segment's `ModelResponse`. The
+ * reassembled response is then re-emitted as a synthetic stream — a
+ * single `text_delta` of the merged content, an aggregate `usage` chunk,
+ * and `done` carrying the full reassembled response — so consumers
+ * downstream of the engine see one coherent answer instead of N
+ * interleaved partial streams.
+ *
+ * We do NOT proxy per-chunk text deltas through to the consumer because
+ * that would replay tool-call/thinking blocks from intermediate segments
+ * before reassembly's safety guards have a chance to abort.
  */
 async function* rlmWrapModelStream(
   cfg: ResolvedConfig,
@@ -247,9 +312,73 @@ async function* rlmWrapModelStream(
     yield* next(request);
     return;
   }
-  throw new Error(
-    `RLM cannot segment streaming requests (${String(tokens)} tokens > ${String(
-      cfg.maxInputTokens,
-    )}-token threshold). Stream reassembly across downstream streams is out of scope; route oversized turns through the non-streaming path or compose with a compaction middleware.`,
-  );
+  if (!cfg.acknowledgeSegmentLocalContract) {
+    throw new Error(
+      `RLM saw an oversized streaming request (${String(tokens)} tokens > ${String(
+        cfg.maxInputTokens,
+      )}) but the caller has not opted in via 'acknowledgeSegmentLocalContract: true'. Concatenated per-chunk answers are only valid for segment-local tasks.`,
+    );
+  }
+  if (request.tools !== undefined && request.tools.length > 0) {
+    throw new Error(
+      `RLM cannot segment streaming requests that carry tool descriptors (${String(
+        request.tools.length,
+      )} tool(s) present): segmentation would replay each tool call per chunk.`,
+    );
+  }
+  const segments = segmentRequest(request, cfg.maxChunkChars, {
+    trustMetadataRole: cfg.trustMetadataRole,
+  });
+  if (segments.length <= 1) {
+    throw new Error(
+      `RLM cannot reduce a streaming request of ${String(tokens)} tokens below the ${String(
+        cfg.maxInputTokens,
+      )}-token threshold by chunking a single text block.`,
+    );
+  }
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (seg === undefined) continue;
+    const segTokens = await estimateRequestTokens(cfg, seg);
+    if (segTokens > cfg.maxInputTokens) {
+      throw new Error(
+        `RLM streaming segment ${String(i + 1)}/${String(segments.length)} still exceeds the ${String(
+          cfg.maxInputTokens,
+        )}-token threshold (${String(segTokens)} tokens) after chunking.`,
+      );
+    }
+  }
+  emit(cfg, { kind: "segmented", tokens, segmentCount: segments.length });
+
+  const responses: ModelResponse[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (seg === undefined) continue;
+    const response = await consumeStream(seg, next);
+    const stopAborts =
+      response.stopReason !== undefined && ABORTING_STOP_REASONS.has(response.stopReason);
+    const toolCallAborts = hasToolCallBlock(response);
+    if (stopAborts || toolCallAborts) {
+      const reason = toolCallAborts
+        ? `tool_call richContent (stopReason=${String(response.stopReason)})`
+        : `stopReason=${String(response.stopReason)}`;
+      throw new Error(
+        `RLM streaming segment ${String(i + 1)}/${String(segments.length)} returned ${reason} (model=${response.model}). Concatenating an incomplete or tool-use segment would mask the failure; aborting.`,
+      );
+    }
+    responses.push(response);
+    emit(cfg, { kind: "segment-completed", index: i, count: segments.length });
+  }
+  const merged = reassembleResponses(responses, cfg.segmentSeparator);
+  if (merged.content.length > 0) {
+    yield { kind: "text_delta", delta: merged.content };
+  }
+  if (merged.usage !== undefined) {
+    yield {
+      kind: "usage",
+      inputTokens: merged.usage.inputTokens,
+      outputTokens: merged.usage.outputTokens,
+    };
+  }
+  yield { kind: "done", response: merged };
 }

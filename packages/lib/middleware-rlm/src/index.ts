@@ -9,7 +9,12 @@
 export { validateRlmConfig } from "./config.js";
 export { reassembleResponses, SEGMENT_SEPARATOR } from "./reassemble.js";
 export { createRlmMiddleware } from "./rlm.js";
-export { MultipleOversizedBlocksError, segmentRequest, splitText } from "./segment.js";
+export {
+  MultipleOversizedBlocksError,
+  SiblingTextBlocksError,
+  segmentRequest,
+  splitText,
+} from "./segment.js";
 export type { RlmConfig, RlmEvent } from "./types.js";
 export {
   DEFAULT_MAX_CHUNK_CHARS,

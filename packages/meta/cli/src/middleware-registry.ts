@@ -20,6 +20,7 @@ import { basename, dirname, isAbsolute, relative, resolve as resolvePath } from 
 import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
 import type { KoiMiddleware, MiddlewarePhase } from "@koi/core";
 import { createAuditMiddleware } from "@koi/middleware-audit";
+import { createRlmMiddleware } from "@koi/middleware-rlm";
 
 /**
  * Closable audit sink as returned by `createNdjsonAuditSink`.
@@ -524,6 +525,16 @@ export function createBuiltinManifestRegistry(
       trusted: true,
     });
   }
+  // RLM is registered as `trusted` so it keeps its native `intercept` phase
+  // and `wrapModelStream` hook (zone-B forcing would push it to observe-only
+  // and break the segmentation contract). The manifest factory exposes only
+  // the safe declarative knobs (numeric thresholds, separator string, opt-in
+  // booleans) — the runtime estimator and onEvent observer cannot be set
+  // from manifest content because those are functions and not expressible
+  // in YAML. Hosts that need a custom estimator wire RLM programmatically.
+  registry.register("@koi/middleware-rlm", createRlmManifestEntry, {
+    trusted: true,
+  });
   return registry;
 }
 
@@ -788,6 +799,105 @@ function parseAuditOptions(
     filePath,
     ...(typeof flushIntervalMs === "number" ? { flushIntervalMs } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// @koi/middleware-rlm manifest factory
+// ---------------------------------------------------------------------------
+
+/**
+ * Manifest-resolvable subset of `RlmConfig`. The runtime fields that take
+ * functions (`onEvent`, `estimator`) cannot appear in YAML — hosts that
+ * need a custom estimator or telemetry observer wire RLM programmatically
+ * via a custom `MiddlewareRegistry`.
+ */
+interface RlmManifestOptions {
+  readonly maxInputTokens?: number;
+  readonly maxChunkChars?: number;
+  readonly priority?: number;
+  readonly segmentSeparator?: string;
+  readonly acknowledgeSegmentLocalContract?: boolean;
+  readonly trustMetadataRole?: boolean;
+}
+
+function parseRlmOptions(raw: Readonly<Record<string, unknown>> | undefined): RlmManifestOptions {
+  if (raw === undefined) return {};
+  const out: {
+    maxInputTokens?: number;
+    maxChunkChars?: number;
+    priority?: number;
+    segmentSeparator?: string;
+    acknowledgeSegmentLocalContract?: boolean;
+    trustMetadataRole?: boolean;
+  } = {};
+  if (raw.maxInputTokens !== undefined) {
+    if (
+      typeof raw.maxInputTokens !== "number" ||
+      !Number.isInteger(raw.maxInputTokens) ||
+      raw.maxInputTokens <= 0
+    ) {
+      throw new Error("@koi/middleware-rlm: options.maxInputTokens must be a positive integer");
+    }
+    out.maxInputTokens = raw.maxInputTokens;
+  }
+  if (raw.maxChunkChars !== undefined) {
+    if (
+      typeof raw.maxChunkChars !== "number" ||
+      !Number.isInteger(raw.maxChunkChars) ||
+      raw.maxChunkChars <= 0
+    ) {
+      throw new Error("@koi/middleware-rlm: options.maxChunkChars must be a positive integer");
+    }
+    out.maxChunkChars = raw.maxChunkChars;
+  }
+  if (raw.priority !== undefined) {
+    if (typeof raw.priority !== "number" || !Number.isInteger(raw.priority)) {
+      throw new Error("@koi/middleware-rlm: options.priority must be an integer");
+    }
+    out.priority = raw.priority;
+  }
+  if (raw.segmentSeparator !== undefined) {
+    if (typeof raw.segmentSeparator !== "string") {
+      throw new Error("@koi/middleware-rlm: options.segmentSeparator must be a string");
+    }
+    out.segmentSeparator = raw.segmentSeparator;
+  }
+  if (raw.acknowledgeSegmentLocalContract !== undefined) {
+    if (typeof raw.acknowledgeSegmentLocalContract !== "boolean") {
+      throw new Error(
+        "@koi/middleware-rlm: options.acknowledgeSegmentLocalContract must be a boolean",
+      );
+    }
+    out.acknowledgeSegmentLocalContract = raw.acknowledgeSegmentLocalContract;
+  }
+  if (raw.trustMetadataRole !== undefined) {
+    if (typeof raw.trustMetadataRole !== "boolean") {
+      throw new Error("@koi/middleware-rlm: options.trustMetadataRole must be a boolean");
+    }
+    // Manifest content is repo-authored config and CANNOT trust
+    // metadata.role. Honoring `trustMetadataRole: true` from manifest
+    // would let a committed `koi.yaml` flip RLM's size guard off for any
+    // caller-controlled `metadata.role` payload — defeating the security
+    // gate that segment.ts enforces. Hosts that need the trusted-mode
+    // override must register RLM programmatically via a custom
+    // MiddlewareRegistry where they own the trust-boundary decision.
+    if (raw.trustMetadataRole === true) {
+      throw new Error(
+        "@koi/middleware-rlm: options.trustMetadataRole is not supported from manifest. " +
+          "InboundMessage.metadata is caller-controlled, so honoring metadata.role from manifest " +
+          'config would let an external caller stamp `role: "assistant"` on an oversized user ' +
+          "turn to bypass RLM's size guard. Hosts that genuinely need trusted-mode role overrides " +
+          "(e.g. L1 session-repair) must register RLM programmatically via a custom MiddlewareRegistry.",
+      );
+    }
+    out.trustMetadataRole = raw.trustMetadataRole;
+  }
+  return out;
+}
+
+function createRlmManifestEntry(entry: ManifestMiddlewareEntry): KoiMiddleware {
+  const options = parseRlmOptions(entry.options);
+  return createRlmMiddleware(options);
 }
 
 function createAuditManifestEntry(
