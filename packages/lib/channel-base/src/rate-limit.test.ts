@@ -784,6 +784,30 @@ describe("createRateLimiter", () => {
       });
     });
 
+    it("strict-mode upgraded success does NOT fire onLateSuccess (caller never saw a synthetic TIMEOUT)", async () => {
+      // Regression: loop-5 round 7 finding 3. Late hooks must only fire
+      // when the caller actually received the synthetic deadline error.
+      // In strict mode, the loop UPGRADES the caller's outcome to the
+      // real result; firing onLateSuccess there is misleading telemetry.
+      const onLateSuccess = mock(() => {});
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+        sendTimeoutMs: 20,
+        // advanceOnTimeout NOT set → strict mode
+        onLateSuccess,
+      });
+      // Resolves at +30ms — past sendTimeoutMs (20ms) but within the
+      // bounded final-attempt grace window (another 20ms = 40ms total).
+      const slowSuccess: SendFn = () =>
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, 30);
+        });
+      await limiter.enqueue(slowSuccess);
+      await new Promise((res) => setTimeout(res, 50));
+      // Caller saw the upgraded real success — no late hook should fire.
+      expect(onLateSuccess).toHaveBeenCalledTimes(0);
+    });
+
     it("retries serialize on prior settle even in liveness mode (no overlapping invocations of the same fn)", async () => {
       // Force retry classification by making each attempt late-fail with a
       // RATE_LIMIT (default-retryable). Without per-attempt serialization,

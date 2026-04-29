@@ -86,15 +86,23 @@ describe("classifyErrorForChannel discriminated output", () => {
       );
     });
 
-    it("redacts schemeless bare domains that chat clients auto-link", () => {
-      // Slack/Discord/Teams/Gmail auto-link these even without a scheme.
+    it("redacts schemeless bare domains that include a URL marker (path/port/query/fragment)", () => {
+      // Loop-5 round 7: the bare-domain pattern must require a trailing
+      // URL marker to avoid eating dotted identifiers in validation
+      // messages (`user.profile.email`, `payload.items[0].sku`). With
+      // a marker it still catches autolink-grade strings.
       expect(safeText("visit evil.example/pay now")).toBe("Invalid input: visit link removed now");
-      expect(safeText("login at login.company.com to fix")).toBe(
-        "Invalid input: login at link removed to fix",
-      );
       expect(safeText("see attacker.co.uk/path")).toBe("Invalid input: see link removed");
-      // No clickable hostname should survive.
-      expect(safeText("go to phish.example")).not.toMatch(/phish/);
+    });
+
+    it("preserves dotted identifiers commonly used in validation messages", () => {
+      // Regression: loop-5 round 7 finding 2. Recovery info must survive.
+      expect(safeText("field 'user.profile.email' is required")).toBe(
+        "Invalid input: field 'user.profile.email' is required",
+      );
+      expect(safeText("invalid value at config.http.timeout")).toBe(
+        "Invalid input: invalid value at config.http.timeout",
+      );
     });
 
     it("replaces ASCII control characters with spaces", () => {

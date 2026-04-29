@@ -314,6 +314,15 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
      * instead of the synthetic deadline TIMEOUT.
      */
     readonly lateOutcome: () => LateOutcome;
+    /**
+     * Drain-loop confirmation: the caller was actually rejected with
+     * the synthetic deadline error (TIMEOUT or delivery-unknown). Only
+     * after this is set will `onLateSuccess`/`onLateFailure` fire.
+     * Calling this is safe whether the underlying send has settled
+     * already (the hook fires immediately) or is still pending (the
+     * hook fires when it settles).
+     */
+    readonly markCallerSawSynthetic: () => void;
   }
   // Wraps fn(signal) so a synchronous throw becomes a rejected promise
   // and a non-Promise return becomes a resolved one — otherwise the
@@ -346,6 +355,9 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         result: fnPromise,
         settled: fnPromise.catch(() => {}),
         lateOutcome: () => outcome,
+        // Watchdog disabled — caller cannot see a synthetic timeout
+        // here, so late hooks are inapplicable. No-op.
+        markCallerSawSynthetic: () => {},
       };
     }
     const controller = new AbortController();
@@ -399,28 +411,42 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         },
       );
     });
-    // Capture the real terminal outcome and emit telemetry whenever the
-    // underlying send eventually settles. Hook errors are swallowed.
+    // Capture the real terminal outcome. Late telemetry hooks fire only
+    // when both (a) the watchdog fired AND (b) the drain loop confirms
+    // the caller actually saw a synthetic deadline error (TIMEOUT or
+    // delivery-unknown). In strict mode, the loop frequently UPGRADES
+    // the caller's error to the real outcome and never marks — late
+    // hooks would be misleading there. Hook errors are swallowed.
+    // let justified: track marked + fired flags
+    let callerSawSynthetic = false;
+    let lateHooksFired = false;
+    const fireLateHooks = (): void => {
+      if (lateHooksFired) return;
+      if (!timedOut || !callerSawSynthetic) return;
+      if (outcome.kind === "abort-ignored") return;
+      lateHooksFired = true;
+      try {
+        if (outcome.kind === "success") config?.onLateSuccess?.();
+        else config?.onLateFailure?.(outcome.error);
+      } catch {
+        // telemetry hook misbehaved — non-fatal
+      }
+    };
     fnPromise.then(
       () => {
         outcome = { kind: "success" };
-        if (!timedOut) return;
-        try {
-          config?.onLateSuccess?.();
-        } catch {
-          // telemetry hook misbehaved — non-fatal
-        }
+        fireLateHooks();
       },
       (lateErr) => {
         outcome = { kind: "failure", error: lateErr };
-        if (!timedOut) return;
-        try {
-          config?.onLateFailure?.(lateErr);
-        } catch {
-          // telemetry hook misbehaved — non-fatal
-        }
+        fireLateHooks();
       },
     );
+    const markCallerSawSynthetic = (): void => {
+      callerSawSynthetic = true;
+      // Fire immediately if the real outcome is already known.
+      fireLateHooks();
+    };
     // Drain-facing: settles ONLY when the underlying send actually
     // resolves or rejects. No grace surrogate — the drain loop in
     // strict-FIFO mode (advanceOnTimeout: false) needs this to truly
@@ -431,7 +457,7 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
       () => {},
       () => {},
     );
-    return { result, settled, lateOutcome: () => outcome };
+    return { result, settled, lateOutcome: () => outcome, markCallerSawSynthetic };
   };
 
   const drain = async (): Promise<void> => {
@@ -447,11 +473,11 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         let lastError: unknown;
         // let justified: feeds decorrelated jitter so the window widens
         let prevDelayMs: number | undefined;
-        // let justified: collects per-attempt settle promises for FIFO
-        let lastSettled: Promise<void> | undefined;
+        // let justified: collects per-attempt run handle for FIFO + late hooks
+        let lastRun: DeadlineRun | undefined;
         for (let attempt = 0; attempt <= retryConfig.maxRetries; attempt++) {
           const run = runWithDeadline(entry.fn);
-          lastSettled = run.settled;
+          lastRun = run;
           try {
             await run.result;
             lastError = undefined;
@@ -665,6 +691,20 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         } else {
           entry.resolve();
         }
+        // Late telemetry hooks fire only when the caller actually saw
+        // the synthetic deadline error (TIMEOUT/deadline-exceeded or
+        // delivery-unknown). In strict mode the loop frequently upgrades
+        // the caller's outcome to the real result and never marks here,
+        // which prevents misleading "late success/failure" signals on
+        // normal slow-path traffic.
+        const callerSawSyntheticDeadline =
+          isKoiError(lastError) &&
+          lastError.code === "TIMEOUT" &&
+          ((lastError.context as { phase?: string } | undefined)?.phase === "deadline-exceeded" ||
+            (lastError.context as { phase?: string } | undefined)?.phase === "delivery-unknown");
+        if (callerSawSyntheticDeadline && lastRun !== undefined) {
+          lastRun.markCallerSawSynthetic();
+        }
         // Queue advance gate. Strict mode (default) waits for the real
         // underlying send to settle before pulling the next entry —
         // single-flight is preserved even when a transport ignores
@@ -683,14 +723,14 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         const isDeliveryUnknown =
           isKoiError(lastError) &&
           (lastError.context as { phase?: string } | undefined)?.phase === "delivery-unknown";
-        if (lastSettled !== undefined) {
+        if (lastRun !== undefined) {
           if (advanceOnTimeout || isDeliveryUnknown) {
             await Promise.race([
-              lastSettled,
+              lastRun.settled,
               new Promise<void>((res) => setTimeout(res, sendTimeoutMs)),
             ]);
           } else {
-            await lastSettled;
+            await lastRun.settled;
           }
         }
       }

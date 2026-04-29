@@ -53,13 +53,16 @@ const FORMATTING_CHARS = /[@`*_~#|!&\\[\]()<>{}]/g;
 const URL_LIKE = /\b[a-z][a-z0-9+.-]*:[^\s]+/gi;
 const WWW_LIKE = /\bwww\.\S+/gi;
 // Bare-domain autolink trap: Slack/Discord/Teams/Gmail auto-link strings
-// like `evil.example/path` or `login.company.com` even without a scheme.
-// Match `<label>(.<label>)+` ending in a TLD-shaped suffix (2–24 letters)
-// optionally followed by `/path`, `?query`, `:port`, etc. We accept some
-// false positives (e.g. file names containing a 2-letter "TLD") because
-// the contract is plain-text safety, not preserving sentence flow.
-const BARE_DOMAIN_LIKE =
-  /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?:[/:?#][^\s]*)?/gi;
+// like `evil.example/path` even without a scheme. Match `<label>(.<label>)+`
+// ending in a TLD-shaped suffix followed by a URL marker (`/`, `:`, `?`, `#`).
+// REQUIRING the trailing marker prevents collateral damage to common dotted
+// identifiers in validation messages (`user.profile.email`,
+// `config.http.timeout`, `payload.items[0].sku`) — those are valuable
+// recovery info for the user and must not be redacted as phishing.
+// Pure schemeless hostnames without a path (e.g. bare `evil.example`) are
+// no longer redacted by this pattern; if your transport autolinks bare
+// hostnames you must handle that at the adapter layer.
+const BARE_DOMAIN_LIKE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}[/:?#][^\s]*/gi;
 
 /**
  * Reduces a validator-controlled string to inert plain text:

@@ -1,6 +1,23 @@
-import { type KoiError, RETRYABLE_DEFAULTS } from "@koi/core";
+import type { KoiError } from "@koi/core";
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
 import { isKoiError, isRetryable, KoiRuntimeError, toKoiError } from "@koi/errors";
+
+/**
+ * Transport-safe codes whose default classification we inherit when a
+ * partial Error.cause omits `retryable`. Deliberately narrower than
+ * core RETRYABLE_DEFAULTS — codes like AUTH_REQUIRED and
+ * RESOURCE_EXHAUSTED are technically "retryable" only after external
+ * intervention (user authorizes, capacity frees), and auto-replaying
+ * them at the middleware layer hides the recovery path and burns
+ * non-idempotent upstream calls. Default to non-retryable for those.
+ */
+const TRANSPORT_RETRYABLE_DEFAULTS: ReadonlySet<KoiError["code"]> = new Set([
+  "RATE_LIMIT",
+  "TIMEOUT",
+  "EXTERNAL",
+  "CONFLICT",
+]);
+
 import { runGates } from "./gate.js";
 import type { Gate, RepairStrategy, ValidationError, Validator } from "./types.js";
 import { runValidators } from "./validators.js";
@@ -37,7 +54,9 @@ export function resolveRetryable(err: unknown): boolean {
         const synthesized: KoiError = {
           code,
           message: err.message,
-          retryable: hasRetryable ? (c.retryable as boolean) : RETRYABLE_DEFAULTS[code],
+          retryable: hasRetryable
+            ? (c.retryable as boolean)
+            : TRANSPORT_RETRYABLE_DEFAULTS.has(code),
         };
         return isRetryable(synthesized);
       }
