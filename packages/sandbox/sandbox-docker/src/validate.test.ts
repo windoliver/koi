@@ -2,11 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { validateDockerConfig } from "./validate.js";
 
 describe("validateDockerConfig", () => {
-  test("returns error when no client provided", () => {
+  // Fix 5: missing client no longer returns UNAVAILABLE — falls back to default client
+  test("returns ok: true when no client provided (falls back to default client)", () => {
     const result = validateDockerConfig({});
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("UNAVAILABLE");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.image).toBe("ubuntu:22.04");
+      // client should be a non-null object (the default client)
+      expect(typeof result.value.client).toBe("object");
     }
   });
 

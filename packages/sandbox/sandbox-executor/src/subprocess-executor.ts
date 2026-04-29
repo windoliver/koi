@@ -5,9 +5,18 @@
  * subprocess-runner.js (after build) to execute arbitrary code in isolation.
  *
  * Protocol:
- *   argv[2] = absolute path to a temp .ts file containing the code
+ *   argv[2] = absolute path to code file (temp or entry from context)
  *   argv[3] = JSON-encoded input
  *   stderr  = __KOI_RESULT__\n<json>\n  (framed protocol output)
+ *
+ * Network isolation note:
+ *   This executor CANNOT enforce network isolation by itself — it only sets the
+ *   KOI_NETWORK_ALLOWED=0 env var as a signal. Real enforcement (namespaces,
+ *   firewall rules, seccomp) requires composition with @koi/sandbox-os.
+ *
+ * Resource limits note:
+ *   KOI_MAX_MEMORY_MB and KOI_MAX_PIDS are informational env vars. Real OS-level
+ *   enforcement requires composition with @koi/sandbox-os.
  */
 
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -92,6 +101,27 @@ function classifyKilledCode(timerFired: boolean, exitCode: number): SandboxError
   return "CRASH";
 }
 
+/** Build env vars to propagate from ExecutionContext to the child process. */
+function buildContextEnv(context?: ExecutionContext): Readonly<Record<string, string>> {
+  if (context === undefined) return {};
+  // `let` justified: env is built incrementally from context fields
+  const env: Record<string, string> = {};
+  if (context.networkAllowed === false) {
+    // Signal: caller requested no network. Real enforcement needs @koi/sandbox-os.
+    env.KOI_NETWORK_ALLOWED = "0";
+  }
+  if (context.resourceLimits !== undefined) {
+    // Informational: real enforcement is OS-level (requires @koi/sandbox-os).
+    if (context.resourceLimits.maxMemoryMb !== undefined) {
+      env.KOI_MAX_MEMORY_MB = String(context.resourceLimits.maxMemoryMb);
+    }
+    if (context.resourceLimits.maxPids !== undefined) {
+      env.KOI_MAX_PIDS = String(context.resourceLimits.maxPids);
+    }
+  }
+  return env;
+}
+
 type ExecuteResult =
   | { readonly ok: true; readonly value: SandboxResult }
   | { readonly ok: false; readonly error: SandboxError };
@@ -108,29 +138,32 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
       code: string,
       input: unknown,
       timeoutMs: number,
-      _context?: ExecutionContext,
+      context?: ExecutionContext,
     ): Promise<ExecuteResult> => {
-      const { codePath, tempDir } = writeCodeToTemp(code);
+      // If context.entryPath is set, use it directly without writing a temp file.
+      // A temp dir is still created for cleanup symmetry but left empty.
+      const hasTempCode = context?.entryPath === undefined;
+      const { codePath, tempDir } = hasTempCode
+        ? writeCodeToTemp(code)
+        : { codePath: context.entryPath, tempDir: mkdtempSync(join(tmpdir(), "koi-sandbox-")) };
+
       const start = Date.now();
 
-      // Fix 1: wrap everything after writeCodeToTemp in try/finally so the
-      // temp dir is removed on every code path (including spawn rejection).
       try {
-        const spawnOpts =
-          cwdOverride !== undefined
-            ? {
-                stdout: "pipe" as const,
-                stderr: "pipe" as const,
-                // Fix 5: ignore stdin so the sandboxed child cannot read from parent's stdin
-                stdin: "ignore" as const,
-                cwd: cwdOverride,
-              }
-            : {
-                stdout: "pipe" as const,
-                stderr: "pipe" as const,
-                // Fix 5: ignore stdin so the sandboxed child cannot read from parent's stdin
-                stdin: "ignore" as const,
-              };
+        // Determine working directory: per-invocation context wins over config-level cwd.
+        const cwd = context?.workspacePath ?? cwdOverride;
+
+        const contextEnv = buildContextEnv(context);
+        const hasEnv = Object.keys(contextEnv).length > 0;
+
+        const spawnOpts = {
+          stdout: "pipe" as const,
+          stderr: "pipe" as const,
+          // Ignore stdin so the sandboxed child cannot read from parent's stdin.
+          stdin: "ignore" as const,
+          ...(cwd !== undefined ? { cwd } : {}),
+          ...(hasEnv ? { env: { ...process.env, ...contextEnv } } : {}),
+        };
 
         const proc = Bun.spawn(
           [bunPath, "run", runnerPath, codePath, JSON.stringify(input ?? null)],
@@ -145,25 +178,28 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
           proc.kill(9);
         }, timeoutMs);
 
-        // Fix 6: use structural check to call unref() without NodeJS.Timeout cast.
         // Bun's Timer type does not expose `unref` in its declared types but the
         // underlying object supports it at runtime — check defensively.
         if ("unref" in timer && typeof timer.unref === "function") timer.unref();
 
-        await proc.exited;
+        // Fix 2: Drain stdout AND stderr concurrently before awaiting proc.exited.
+        // A chatty child that fills the stdout pipe buffer will deadlock if we only
+        // await proc.exited while leaving stdout unread. Start both drains first.
+        const [rawStdout, rawStderr, exitCode] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
         clearTimeout(timer);
+
+        // Suppress unused stdout (we only drain to prevent deadlock).
+        void rawStdout.slice(0, maxOutputBytes);
 
         const durationMs = Date.now() - start;
 
-        // Fix 4: read FULL stderr before slicing. The result marker must be
-        // searched in the complete text — truncating before the search would
-        // miss markers that land past the cap and misclassify results as CRASH.
-        const rawStderr = await new Response(proc.stderr).text();
-        const exitCode = proc.exitCode ?? -1;
-
         // Killed or OOM
         if (killed || exitCode === 137 || exitCode === -9) {
-          const errorCode: SandboxErrorCode = classifyKilledCode(killed, exitCode);
+          const errorCode: SandboxErrorCode = classifyKilledCode(killed, exitCode ?? -1);
           const error: SandboxError = {
             code: errorCode,
             message:
@@ -175,12 +211,12 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
           return { ok: false, error };
         }
 
-        // Fix 4 (continued): search marker in full text; only apply maxOutputBytes
-        // to the stack snippet used in CRASH error messages.
+        // Search marker in full text; only apply maxOutputBytes to the snippet
+        // used in CRASH error messages (truncating before the search would miss
+        // markers that land past the cap and misclassify results as CRASH).
         const framed = parseFramedResult(rawStderr);
 
         if (framed === undefined) {
-          // Only cap the snippet, not the search input.
           const snippet = rawStderr.slice(-2000).slice(0, maxOutputBytes);
           const error: SandboxError = {
             code: "CRASH",
@@ -191,7 +227,6 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
           return { ok: false, error };
         }
 
-        // Fix 3: use isFramedObject type-predicate instead of `as Record<string, unknown>`
         if (!isFramedObject(framed)) {
           const error: SandboxError = {
             code: "CRASH",
@@ -217,7 +252,7 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
         };
         return { ok: true, value };
       } finally {
-        // Fix 1: always remove temp dir, even if spawn or stderr read throws.
+        // Always remove temp dir, even if spawn or stderr read throws.
         cleanupTemp(tempDir);
       }
     },

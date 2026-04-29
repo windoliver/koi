@@ -11,18 +11,51 @@ function quoteShellArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
-async function runDocker(args: readonly string[], stdin?: string): Promise<DockerExecResult> {
+/**
+ * Run a docker command with optional stdin and timeout.
+ * Drains stdout and stderr concurrently via Promise.all to prevent pipe-buffer deadlock.
+ * When timeoutMs is set, kills the process after the deadline and returns exitCode 124
+ * (the same sentinel that classify.ts maps to TIMEOUT).
+ */
+async function runDockerWithTimeout(
+  args: readonly string[],
+  stdin?: string,
+  timeoutMs?: number,
+): Promise<DockerExecResult> {
   const proc = Bun.spawn(["docker", ...args], {
     stdin: stdin !== undefined ? new TextEncoder().encode(stdin) : "ignore",
     stdout: "pipe",
     stderr: "pipe",
   });
+
+  // `let` justified: timedOut and timer are mutated inside the callback.
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (timeoutMs !== undefined && timeoutMs > 0) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill(9);
+    }, timeoutMs);
+    // Prevent the timer from keeping the event loop alive unnecessarily.
+    if ("unref" in timer && typeof timer.unref === "function") timer.unref();
+  }
+
+  // Drain stdout and stderr concurrently to prevent pipe-buffer deadlock.
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
-  return { exitCode, stdout, stderr };
+
+  if (timer !== undefined) clearTimeout(timer);
+
+  // exitCode 124 is the sentinel for TIMEOUT (matches classify.ts mapping).
+  return { exitCode: timedOut ? 124 : (exitCode ?? -1), stdout, stderr };
+}
+
+/** Convenience wrapper for calls that do not need a timeout. */
+async function runDocker(args: readonly string[], stdin?: string): Promise<DockerExecResult> {
+  return runDockerWithTimeout(args, stdin, undefined);
 }
 
 function buildCreateArgs(opts: DockerCreateOpts): readonly string[] {
@@ -44,7 +77,7 @@ function makeContainer(id: string): DockerContainer {
       const args: string[] = ["exec"];
       for (const [k, v] of Object.entries(execOpts.env ?? {})) args.push("--env", `${k}=${v}`);
       args.push(id, "sh", "-c", cmd);
-      return runDocker(args, execOpts.stdin);
+      return runDockerWithTimeout(args, execOpts.stdin, execOpts.timeoutMs);
     },
     readFile: async (path: string): Promise<Uint8Array> => {
       const r = await runDocker(["exec", id, "base64", path]);

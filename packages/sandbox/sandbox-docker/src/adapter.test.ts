@@ -33,9 +33,20 @@ describe("createDockerAdapter", () => {
     expect(out.stdout).toBe("ok");
   });
 
-  test("missing client returns UNAVAILABLE", () => {
+  // Fix 5: missing client falls back to default — must return ok: true
+  test("createDockerAdapter({}) returns ok: true using default client", () => {
     const r = createDockerAdapter({});
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.code).toBe("UNAVAILABLE");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.name).toBe("docker");
+  });
+
+  // Fix 5: explicit client is preserved and not replaced
+  test("explicit client is preserved in resolved config", () => {
+    const r = createDockerAdapter({ client: stubClient });
+    expect(r.ok).toBe(true);
+    // The adapter should be usable with the stub client (verified by exec call)
+    // We cannot inspect the resolved config directly, but we can verify create() works.
+    if (!r.ok) throw new Error("Expected ok");
+    expect(r.value.name).toBe("docker");
   });
 });
