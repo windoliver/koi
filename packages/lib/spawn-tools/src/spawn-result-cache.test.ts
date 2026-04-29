@@ -184,6 +184,41 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     expect(calls).toBe(0);
   });
 
+  test("caller abort during in-flight factory still records a successful background admission", async () => {
+    // Race: parent times out just after spawnFn was invoked. The spawn may
+    // still complete in the background; if it does and the result is
+    // cacheable, a retry must find the cached entry instead of launching a
+    // duplicate child.
+    const cache = createSpawnResultCache(8);
+    let release: () => void = () => {};
+    let calls = 0;
+    const factory = (): Promise<{ ok: true; output: string }> => {
+      calls += 1;
+      return new Promise((resolve) => {
+        release = () => resolve({ ok: true, output: "background-completed" });
+      });
+    };
+
+    const ctrl = new AbortController();
+    const aPromise = cache.runDeduped("k", ctrl.signal, factory);
+    await Promise.resolve();
+    ctrl.abort(new Error("parent timeout"));
+    const a = await aPromise;
+    expect(a.ok).toBe(false);
+
+    // Engine eventually completes the spawn even after the caller aborted.
+    release();
+    // Let the background .then handler run.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(cache.get("k")).toBe("background-completed");
+
+    // A retry now hits the cache, no second spawn.
+    const b = await cache.runDeduped("k", noAbort(), factory);
+    expect(b).toEqual({ ok: true, output: "background-completed", deduplicated: true });
+    expect(calls).toBe(1);
+  });
+
   test("aborting one of two concurrent callers cancels only that caller; the other proceeds", async () => {
     const cache = createSpawnResultCache(8);
     let releaseFirst: () => void = () => {};

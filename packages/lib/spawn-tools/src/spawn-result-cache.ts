@@ -140,11 +140,27 @@ export function createSpawnResultCache(
       return { ok: true, output: settled, deduplicated: true };
     }
 
+    const factoryPromise = factory();
     let result: SpawnFactoryResult;
     try {
-      result = await awaitWithAbort(factory(), signal);
+      result = await awaitWithAbort(factoryPromise, signal);
     } catch (err) {
-      if (signal.aborted) return abortedResult(signal);
+      if (signal.aborted) {
+        // Caller is gone, but the spawn may still complete in the background
+        // (e.g. the engine doesn't abort instantly, or returns the admission
+        // before observing the signal). If it does and the result is
+        // cacheable, record it — a retry that arrives later should attach
+        // to the cached output instead of launching a duplicate child.
+        void factoryPromise.then(
+          (settled) => {
+            if (settled.ok && settled.cacheable !== false) set(key, settled.output);
+          },
+          () => {
+            /* ignored — caller already received abortedResult */
+          },
+        );
+        return abortedResult(signal);
+      }
       throw err;
     }
 
