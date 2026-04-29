@@ -187,6 +187,80 @@ describe("createRateLimiter", () => {
     });
   });
 
+  describe("state-gated codes are not auto-retried", () => {
+    it("does not auto-retry AUTH_REQUIRED even though it is retryable post-OAuth", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
+      });
+      let attempts = 0;
+      await expect(
+        limiter.enqueue(async () => {
+          attempts++;
+          throw koiError({ code: "AUTH_REQUIRED", retryable: true });
+        }),
+      ).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+      expect(attempts).toBe(1);
+      expect(sleepSpy).not.toHaveBeenCalled();
+    });
+
+    it("does not auto-retry RESOURCE_EXHAUSTED — tight retry would just thrash", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
+      });
+      let attempts = 0;
+      await expect(
+        limiter.enqueue(async () => {
+          attempts++;
+          throw koiError({ code: "RESOURCE_EXHAUSTED", retryable: true });
+        }),
+      ).rejects.toMatchObject({ code: "RESOURCE_EXHAUSTED" });
+      expect(attempts).toBe(1);
+    });
+  });
+
+  describe("malformed retry hints are sanitized", () => {
+    const cases: ReadonlyArray<readonly [string, number]> = [
+      ["NaN", Number.NaN],
+      ["negative", -250],
+      ["-Infinity", Number.NEGATIVE_INFINITY],
+    ];
+
+    for (const [name, value] of cases) {
+      it(`treats ${name} retryAfterMs as absent (no immediate hot-loop)`, async () => {
+        const limiter = createRateLimiter({
+          retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
+        });
+        let attempts = 0;
+        await expect(
+          limiter.enqueue(async () => {
+            attempts++;
+            throw koiError({ code: "PERMISSION", retryAfterMs: value });
+          }),
+        ).rejects.toMatchObject({ code: "PERMISSION" });
+        // PERMISSION is not transport-retryable, hint was bogus → reject after 1 attempt
+        expect(attempts).toBe(1);
+      });
+    }
+
+    it("clamps absurdly large retryAfterMs to maxBackoffMs", async () => {
+      const limiter = createRateLimiter({
+        retry: {
+          ...errors.DEFAULT_RETRY_CONFIG,
+          maxRetries: 1,
+          maxBackoffMs: 5_000,
+          jitter: false,
+        },
+      });
+      let attempts = 0;
+      await limiter.enqueue(async () => {
+        attempts++;
+        if (attempts < 2) throw koiError({ code: "RATE_LIMIT", retryAfterMs: 9_999_999_999 });
+      });
+      expect(attempts).toBe(2);
+      expect(sleepSpy).toHaveBeenCalledWith(5_000);
+    });
+  });
+
   describe("classifier safety: queue keeps draining when hooks throw", () => {
     it("treats a throwing extractRetryAfterMs as non-retryable and continues the queue", async () => {
       const limiter = createRateLimiter({

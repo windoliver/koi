@@ -10,11 +10,11 @@
  * non-idempotent sends are never re-issued.
  */
 
+import type { KoiErrorCode } from "@koi/core";
 import {
   computeBackoff,
   DEFAULT_RETRY_CONFIG,
   isKoiError,
-  isRetryable as isKoiRetryable,
   type RetryConfig,
   sleep,
 } from "@koi/errors";
@@ -52,10 +52,36 @@ interface QueueEntry {
   readonly reject: (error: unknown) => void;
 }
 
-const defaultExtractRetryAfterMs = (error: unknown): number | undefined =>
-  isKoiError(error) ? error.retryAfterMs : undefined;
+/**
+ * Codes that are safe to auto-retry inline within a single send queue.
+ * These are transport-level transient conditions where the next attempt
+ * stands a real chance of succeeding without external intervention.
+ *
+ * Deliberately excluded:
+ *   - AUTH_REQUIRED      → recoverable only after the user completes OAuth.
+ *   - RESOURCE_EXHAUSTED → recoverable only after capacity is freed; tight retry would just thrash.
+ *   - PERMISSION / VALIDATION / NOT_FOUND / STALE_REF / INTERNAL / UNAVAILABLE / HEARTBEAT_TIMEOUT
+ *                        → either permanent or require operator action.
+ *   - EXTERNAL           → defaults to retryable=false in RETRYABLE_DEFAULTS; opt-in via callback.
+ */
+const TRANSPORT_RETRY_CODES: ReadonlySet<KoiErrorCode> = new Set<KoiErrorCode>([
+  "RATE_LIMIT",
+  "TIMEOUT",
+  "CONFLICT",
+]);
 
-const defaultIsRetryable = (error: unknown): boolean => isKoiError(error) && isKoiRetryable(error);
+/** Returns the retry-after hint only when it is a finite, non-negative number. */
+const sanitizeRetryAfterMs = (raw: unknown): number | undefined => {
+  if (typeof raw !== "number") return undefined;
+  if (!Number.isFinite(raw) || raw < 0) return undefined;
+  return raw;
+};
+
+const defaultExtractRetryAfterMs = (error: unknown): number | undefined =>
+  isKoiError(error) ? sanitizeRetryAfterMs(error.retryAfterMs) : undefined;
+
+const defaultIsRetryable = (error: unknown): boolean =>
+  isKoiError(error) && TRANSPORT_RETRY_CODES.has(error.code);
 
 export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
   const retryConfig = config?.retry ?? DEFAULT_RETRY_CONFIG;
@@ -103,7 +129,10 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
           } catch (error: unknown) {
             lastError = error;
 
-            const retryAfterMs = safeExtract(error);
+            // Hint sanitation lives in the safe wrapper, but a custom extractor
+            // can still return a hostile value — re-validate before trust.
+            const rawHint = safeExtract(error);
+            const retryAfterMs = sanitizeRetryAfterMs(rawHint);
             const retryable = retryAfterMs !== undefined || safeIsRetryable(error);
 
             // Stop on permanent failures or when the budget is spent — the queue
@@ -111,13 +140,15 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
             // send for an error not classified as retryable.
             if (!retryable || attempt >= retryConfig.maxRetries) break;
 
-            // computeBackoff is pure but takes an injectable RNG; if a caller
-            // passes a config that throws, treat as terminal failure rather than
-            // wedging the queue.
+            // Route through computeBackoff so the provider hint is clamped to
+            // maxBackoffMs and falls back to backoff when the hint is absent.
+            // computeBackoff is pure but its config can technically throw if a
+            // caller plugs in a malformed RNG — treat that as terminal failure
+            // rather than wedging the queue.
             // let justified: mutable to preserve final delay across try/catch
             let delay: number;
             try {
-              delay = retryAfterMs ?? computeBackoff(attempt, retryConfig);
+              delay = computeBackoff(attempt, retryConfig, retryAfterMs);
             } catch {
               break;
             }
