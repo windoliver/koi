@@ -51,6 +51,24 @@ function emit(cfg: ResolvedConfig, event: RlmEvent): void {
   }
 }
 
+/**
+ * Estimate the full footprint a provider sees for `request` — messages plus
+ * the system prompt and tool descriptors injected by L1. Token estimators
+ * only know about messages, so we add `estimateText` for the system prompt
+ * and a JSON serialization of the tools list.
+ */
+async function estimateRequestTokens(cfg: ResolvedConfig, request: ModelRequest): Promise<number> {
+  const messageTokens = await cfg.estimator.estimateMessages(request.messages, request.model);
+  let extra = 0; // let: accumulate sidecar token contributions
+  if (request.systemPrompt !== undefined && request.systemPrompt.length > 0) {
+    extra += await cfg.estimator.estimateText(request.systemPrompt, request.model);
+  }
+  if (request.tools !== undefined && request.tools.length > 0) {
+    extra += await cfg.estimator.estimateText(JSON.stringify(request.tools), request.model);
+  }
+  return messageTokens + extra;
+}
+
 async function dispatchSegmented(
   cfg: ResolvedConfig,
   segments: readonly ModelRequest[],
@@ -73,7 +91,7 @@ async function rlmWrapModelCall(
   request: ModelRequest,
   next: ModelHandler,
 ): Promise<ModelResponse> {
-  const tokens = await cfg.estimator.estimateMessages(request.messages, request.model);
+  const tokens = await estimateRequestTokens(cfg, request);
   if (tokens <= cfg.maxInputTokens) {
     emit(cfg, { kind: "passthrough", tokens });
     return next(request);
@@ -102,6 +120,23 @@ async function rlmWrapModelCall(
         cfg.maxInputTokens,
       )}-token threshold by chunking a single text block. Increase maxInputTokens, lower the input size, or compose with a compaction middleware.`,
     );
+  }
+  // Re-validate every produced segment: surrounding context (history,
+  // system prompt) is preserved verbatim, so it is possible for individual
+  // segments to remain over budget even when the target text block was
+  // reduced. Fail closed before paying for any downstream calls instead of
+  // letting the provider reject N requests in series.
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (seg === undefined) continue;
+    const segTokens = await estimateRequestTokens(cfg, seg);
+    if (segTokens > cfg.maxInputTokens) {
+      throw new Error(
+        `RLM segment ${String(i + 1)}/${String(segments.length)} still exceeds the ${String(
+          cfg.maxInputTokens,
+        )}-token threshold (${String(segTokens)} tokens) after chunking. Surrounding context dominates the budget; pair RLM with a compaction middleware.`,
+      );
+    }
   }
   emit(cfg, { kind: "segmented", tokens, segmentCount: segments.length });
   return dispatchSegmented(cfg, segments, next);

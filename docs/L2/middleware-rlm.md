@@ -51,10 +51,23 @@ forwarded unchanged because reassembling chunked deltas across multiple
 downstream streams is materially more complex than the current scope.
 Callers that need RLM behavior should use the non-streaming path.
 
+### Token accounting
+
+The threshold check considers the **full** request footprint, not just
+`messages`:
+
+- `messages` → `estimator.estimateMessages(...)`
+- `systemPrompt` → `estimator.estimateText(...)` when present
+- `tools` → `estimator.estimateText(JSON.stringify(tools))` when present
+
+L1 injects the system prompt and tool descriptors before the middleware
+chain runs, so omitting them would let small-message requests with large
+capability banners or tool schemas slip past the gate.
+
 ### Fail-closed cases
 
 The middleware throws (rather than silently forwarding the oversize request)
-in two situations where its segmentation strategy cannot uphold its contract:
+in three situations where its segmentation strategy cannot uphold its contract:
 
 - **Tools are present.** Each segment would receive the same tool list, the
   model would emit independent tool calls per segment, and reassembly would
@@ -67,6 +80,11 @@ in two situations where its segmentation strategy cannot uphold its contract:
   otherwise pass through. RLM throws so the caller sees the budget breach
   immediately instead of failing later inside the provider. Pair with a
   compaction middleware or raise `maxInputTokens` if this fires often.
+- **A produced segment still exceeds the budget.** After splitting the
+  largest text block, every segment is re-estimated (`messages` +
+  `systemPrompt` + `tools`). When surrounding history dominates the
+  request, individual segments can still exceed `maxInputTokens`. RLM
+  rejects before paying for any downstream calls.
 
 ---
 
