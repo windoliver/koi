@@ -5,6 +5,7 @@
 
 export type {
   IntegrityContentMismatch,
+  IntegrityMalformed,
   IntegrityOk,
   IntegrityProducerMismatch,
   IntegrityProducerUnknown,

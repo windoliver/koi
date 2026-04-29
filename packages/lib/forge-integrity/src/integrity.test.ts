@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { BrickArtifact, BrickId } from "@koi/core";
 import { brickId } from "@koi/core";
 import { makeTool, reBrandId, recomputeFixtureId, tamper } from "./__tests__/fixtures.js";
-import type { ProducerRegistry } from "./integrity.js";
+import type { ProducerRegistry, RecomputeBrickId } from "./integrity.js";
 import { verifyBrickIntegrity } from "./integrity.js";
 
 const TRUSTED_BUILDER = "koi/forge";
@@ -27,14 +27,18 @@ describe("verifyBrickIntegrity", () => {
     if (result.kind === "ok") expect(result.builderId).toBe(TRUSTED_BUILDER);
   });
 
-  test("content_mismatch when implementation has been tampered", () => {
+  test("content_mismatch when implementation has been tampered (expectedId = canonical, actualId = stored)", () => {
     const original = makeTool();
-    const result = verify(tamper(original), trustedRegistry);
+    const tampered = tamper(original);
+    const result = verify(tampered, trustedRegistry);
     expect(result.kind).toBe("content_mismatch");
     expect(result.ok).toBe(false);
     if (result.kind === "content_mismatch") {
-      expect(result.expectedId).toBe(original.id);
-      expect(result.actualId).not.toBe(original.id);
+      // expectedId is what the trusted recompute produced — the canonical value.
+      // actualId is the id stored on the artifact — the observed (suspect) value.
+      expect(result.expectedId).toBe(recomputeFixtureId(tampered));
+      expect(result.actualId).toBe(tampered.id);
+      expect(result.expectedId).not.toBe(result.actualId);
     }
   });
 
@@ -42,6 +46,10 @@ describe("verifyBrickIntegrity", () => {
     const brick = reBrandId(makeTool(), "0".repeat(64));
     const result = verify(brick, trustedRegistry);
     expect(result.kind).toBe("content_mismatch");
+    if (result.kind === "content_mismatch") {
+      expect(result.actualId).toBe(brick.id);
+      expect(result.expectedId).toBe(recomputeFixtureId(brick));
+    }
   });
 
   test("producer_unknown when builder.id is not registered (rejects untrusted callers)", () => {
@@ -99,5 +107,52 @@ describe("verifyBrickIntegrity", () => {
       expect(result.expectedBuilderId).toBe("koi/forge/other");
       expect(result.claimedBuilderId).toBe(TRUSTED_BUILDER);
     }
+  });
+
+  test("rejects prototype-inherited registry entries (own-property check)", () => {
+    // Polluting Object.prototype with a builder id that happens to match the
+    // expected one must NOT be treated as a registered producer.
+    const polluted = "polluted/builder";
+    const proto = Object.prototype as unknown as Record<string, RecomputeBrickId>;
+    proto[polluted] = (b: BrickArtifact): BrickId => b.id; // hostile recompute
+    try {
+      const registry: ProducerRegistry = Object.create(null);
+      const brick = makeTool();
+      // The brick's claimed builder must equal the expected to reach the
+      // own-property check; reBrand the test by using a builder-id matching
+      // both expected and the polluted prototype key.
+      const claimed = polluted;
+      const fakeProvenanceBrick: BrickArtifact = {
+        ...brick,
+        provenance: { ...brick.provenance, builder: { id: claimed } },
+      };
+      const result = verifyBrickIntegrity(fakeProvenanceBrick, registry, claimed);
+      expect(result.kind).toBe("producer_unknown");
+    } finally {
+      delete proto[polluted];
+    }
+  });
+
+  test("malformed when brick.provenance.builder is missing", () => {
+    const brick = makeTool();
+    const broken = { ...brick, provenance: { ...brick.provenance, builder: undefined } };
+    // Cast to BrickArtifact for the test boundary: we are deliberately
+    // passing a malformed artifact to assert defensive shape validation.
+    const result = verifyBrickIntegrity(
+      broken as unknown as BrickArtifact,
+      trustedRegistry,
+      TRUSTED_BUILDER,
+    );
+    expect(result.kind).toBe("malformed");
+    if (result.kind === "malformed") expect(result.reason).toContain("builder");
+  });
+
+  test("malformed when brick is null/undefined-shaped", () => {
+    const result = verifyBrickIntegrity(
+      null as unknown as BrickArtifact,
+      trustedRegistry,
+      TRUSTED_BUILDER,
+    );
+    expect(result.kind).toBe("malformed");
   });
 });
