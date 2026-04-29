@@ -502,6 +502,77 @@ describe("createRlmMiddleware", () => {
     expect(usageChunk.outputTokens).toBeGreaterThan(0);
   });
 
+  test("wrapModelStream folds upstream 'error' chunks into stopReason='error' (not bare throw)", async () => {
+    // ModelChunk.error is a first-class stream outcome carrying message
+    // + optional usage. The query-engine stream consumer folds it into
+    // a terminal response with stopReason="error". RLM must mirror that
+    // contract so dispatchSegmented's stopReason guard aborts cleanly,
+    // preserving partial output + usage instead of throwing a bare
+    // exception that loses the state.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    const upstream: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "partial-" };
+      yield { kind: "usage", inputTokens: 4, outputTokens: 1 };
+      yield { kind: "error", message: "rate limit exceeded" };
+    };
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    let threw = false;
+    try {
+      for await (const _c of iter) {
+        // segment-level stopReason guard should abort with a clear error
+      }
+    } catch (err: unknown) {
+      threw = true;
+      // The outer error must reference the segment failure, but the
+      // inner failure is now surfaced as a stopReason rather than
+      // swallowed in an unstructured exception.
+      expect(String(err)).toMatch(/RLM streaming segment/i);
+    }
+    expect(threw).toBe(true);
+  });
+
+  test("wrapModelStream honors AbortSignal during oversized segmented streaming", async () => {
+    // Without abort-aware iteration, a stalled provider can hang an
+    // oversized streamed turn past the runtime's timeout/cancel signal.
+    // Each iterator.next() must race against request.signal so the
+    // middleware terminates cleanly on abort with a stopReason='error'
+    // synthesized terminal response.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    const upstream: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "starting" };
+      // Stall forever — only abort can break this.
+      await new Promise(() => undefined);
+    };
+    const ac = new AbortController();
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(
+      turnCtx(),
+      { messages: [userMessage(big)], signal: ac.signal },
+      upstream,
+    );
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    setTimeout(() => ac.abort(), 25);
+    let threw = false;
+    try {
+      for await (const _c of iter) {
+        // expected: segment guard aborts on stopReason='error'
+      }
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+  });
+
   test("wrapModelStream still fails closed when segmentation cannot reduce the request", async () => {
     // History-dominated requests where chunking the largest text block
     // doesn't drop below the threshold must surface the budget breach

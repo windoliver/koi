@@ -252,6 +252,29 @@ export function createRlmMiddleware(config?: RlmConfig): KoiMiddleware {
  * streamed turns. When `done.response.usage` is already set, prefer it as
  * authoritative; otherwise fall back to the streamed totals.
  */
+/**
+ * Drive the downstream stream and fold it into a single `ModelResponse`.
+ *
+ * Three correctness properties:
+ *
+ *   1. **Abort-aware.** Each `iterator.next()` races against
+ *      `request.signal` so a stalled provider cannot hang an oversized
+ *      streamed turn past the runtime's timeout / cancel signal. On
+ *      abort we synthesize a terminal response from what we accumulated.
+ *
+ *   2. **Error chunks are first-class.** `ModelChunk.error` is a
+ *      structured stream outcome — provider failures, rate limits, or
+ *      hook-blocks — that the normal query-engine consumer folds into a
+ *      terminal response with `stopReason: "error"`. RLM mirrors that
+ *      contract so segment reassembly's stopReason guard decides whether
+ *      to abort, instead of swallowing partial text + usage in an
+ *      exception.
+ *
+ *   3. **Empty terminal content backfilled.** Some providers stream the
+ *      real text in `text_delta` chunks and emit `done.response.content:
+ *      ""`. Without backfill, oversized streamed turns reassemble to
+ *      empty answers.
+ */
 async function consumeStream(
   request: ModelRequest,
   next: ModelStreamHandler,
@@ -260,7 +283,63 @@ async function consumeStream(
   let streamedOutput = 0; // let: per-segment usage accumulator
   let sawUsage = false; // let: did the stream emit any `usage` chunks
   let streamedText = ""; // let: accumulate text_delta in case done.response.content is empty
-  for await (const chunk of next(request)) {
+  let model = ""; // let: best-effort model id from done or fallback
+  let responseId: string | undefined;
+  const iterator = next(request)[Symbol.asyncIterator]();
+  const signal = request.signal;
+  const abortPromise: Promise<{ readonly aborted: true }> | undefined =
+    signal === undefined
+      ? undefined
+      : new Promise((resolve) => {
+          if (signal.aborted) {
+            resolve({ aborted: true });
+            return;
+          }
+          signal.addEventListener("abort", () => resolve({ aborted: true }), { once: true });
+        });
+
+  function buildTerminalResponse(
+    overrides: { readonly stopReason?: ModelStopReason; readonly errorMessage?: string } = {},
+  ): ModelResponse {
+    const usage = sawUsage
+      ? { inputTokens: streamedInput, outputTokens: streamedOutput }
+      : undefined;
+    const baseStopReason: ModelStopReason | undefined =
+      overrides.stopReason ?? (overrides.errorMessage !== undefined ? "error" : undefined);
+    return {
+      content: streamedText,
+      model,
+      ...(usage !== undefined ? { usage } : {}),
+      ...(baseStopReason !== undefined ? { stopReason: baseStopReason } : {}),
+      ...(responseId !== undefined ? { responseId } : {}),
+      ...(overrides.errorMessage !== undefined
+        ? { metadata: { rlmStreamError: overrides.errorMessage } }
+        : {}),
+    };
+  }
+
+  while (true) {
+    const nextPromise = iterator.next();
+    const settled =
+      abortPromise === undefined
+        ? await nextPromise
+        : await Promise.race([nextPromise, abortPromise]);
+    if ("aborted" in settled && settled.aborted === true) {
+      // Abort wins. Best-effort close of the upstream iterator without
+      // awaiting — a generator stuck in `await new Promise(() =>
+      // undefined)` will never honor `.return()` until control returns
+      // to it, so awaiting that here would just re-create the hang we
+      // are escaping. Fire-and-forget release; ignore any rejection.
+      iterator.return?.().catch(() => {
+        // closing a hung iterator is best-effort
+      });
+      return buildTerminalResponse({ stopReason: "error", errorMessage: "aborted" });
+    }
+    const result = settled as IteratorResult<ModelChunk>;
+    if (result.done === true) {
+      return buildTerminalResponse({ errorMessage: "stream ended without 'done' chunk" });
+    }
+    const chunk = result.value;
     if (chunk.kind === "text_delta") {
       streamedText += chunk.delta;
       continue;
@@ -273,10 +352,8 @@ async function consumeStream(
     }
     if (chunk.kind === "done") {
       const response = chunk.response;
-      // Some providers stream the real text in `text_delta` chunks and
-      // emit `done.response.content: ""`. Backfill from accumulated
-      // deltas so reassembly does not corrupt oversized streamed turns
-      // into empty answers.
+      model = response.model;
+      if (response.responseId !== undefined) responseId = response.responseId;
       const content = response.content.length > 0 ? response.content : streamedText;
       const usage =
         response.usage ??
@@ -288,10 +365,27 @@ async function consumeStream(
       };
     }
     if (chunk.kind === "error") {
-      throw new Error(`RLM segment stream emitted error: ${chunk.message}`);
+      // Structured stream failure: fold what we have (partial text +
+      // streamed usage) into a synthetic terminal response with
+      // `stopReason: "error"`. The segment-level stopReason guard in
+      // dispatchSegmented / wrapModelStream then aborts reassembly,
+      // surfacing the failure to the caller with the accumulated state
+      // intact instead of throwing a bare exception that loses it.
+      if (chunk.usage !== undefined) {
+        streamedInput += chunk.usage.inputTokens;
+        streamedOutput += chunk.usage.outputTokens;
+        sawUsage = true;
+      }
+      return buildTerminalResponse({
+        stopReason: "error",
+        errorMessage: chunk.message,
+      });
     }
+    // Unknown / non-text chunk kinds (tool_call_*, thinking_delta, etc.)
+    // are not informative for the segmented call/reassemble path — RLM
+    // already aborts on tool_call blocks via `hasToolCallBlock` once
+    // done arrives. Skip them here without losing forward progress.
   }
-  throw new Error("RLM segment stream ended without a 'done' chunk");
 }
 
 /**
