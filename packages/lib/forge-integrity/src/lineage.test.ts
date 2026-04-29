@@ -136,6 +136,34 @@ describe("lineage", () => {
     expect(findDuplicateById([poisoned, real], real.id, "koi/forge", verify)?.id).toBe(real.id);
   });
 
+  test("isDerivedFrom integrity-verifies each loaded ancestor when verify option is supplied", async () => {
+    const root = makeTool({ implementation: "v1" });
+    const mid = makeTool({ implementation: "v2", parentBrickId: root.id });
+    const child = makeTool({ implementation: "v3", parentBrickId: mid.id });
+    // Stash a tampered version of mid under mid.id so the load returns
+    // matching id but the content fails recompute.
+    const tamperedMid = { ...mid, implementation: "// tampered" } as BrickArtifact;
+    const tamperedStore: ForgeStore = {
+      save: () => Promise.resolve({ ok: true, value: undefined }),
+      load: (id: BrickId) =>
+        Promise.resolve(
+          id === root.id
+            ? ({ ok: true, value: root } as Result<BrickArtifact, KoiError>)
+            : ({ ok: true, value: tamperedMid } as Result<BrickArtifact, KoiError>),
+        ),
+      search: () => notImplemented(),
+      remove: () => notImplemented(),
+      update: () => notImplemented(),
+      exists: () => Promise.resolve({ ok: true, value: false }),
+    };
+    const result = await isDerivedFrom(child, root.id, tamperedStore, {
+      verify,
+      producerBuilderId: "koi/forge",
+    });
+    expect(result.kind).toBe("integrity_failed");
+    if (result.kind === "integrity_failed") expect(result.at).toBe(mid.id);
+  });
+
   test("isDerivedFrom returns malformed when store returns a brick with a different id", async () => {
     const root = makeTool({ implementation: "v1" });
     const mid = makeTool({ implementation: "v2", parentBrickId: root.id });

@@ -24,6 +24,7 @@
  */
 
 import type { BrickArtifact, BrickId } from "@koi/core";
+import { isBrickId } from "@koi/hash";
 
 export interface IntegrityOk {
   readonly kind: "ok";
@@ -202,16 +203,25 @@ export function verifyBrickIntegrity(
       reason: "recompute returned a Promise; only sync recomputers are supported",
     };
   }
-  if (typeof recomputedRaw !== "string" || recomputedRaw.length === 0) {
+  if (typeof recomputedRaw !== "string" || !isBrickId(recomputedRaw)) {
     return {
       kind: "recompute_failed",
       ok: false,
       brickId: shape.id,
       builderId: expectedBuilderId,
-      reason: "recompute did not return a non-empty BrickId string",
+      reason: "recompute did not return a canonical BrickId (sha256:<64-hex>)",
     };
   }
-  const recomputedId = recomputedRaw as BrickId;
+  const recomputedId = recomputedRaw;
+  // The stored id must also be canonical; otherwise treat as malformed
+  // rather than ever returning `ok` for a non-canonical identifier.
+  if (!isBrickId(shape.id)) {
+    return {
+      kind: "malformed",
+      ok: false,
+      reason: `brick.id "${shape.id}" is not a canonical BrickId`,
+    };
+  }
 
   if (recomputedId === shape.id) {
     return { kind: "ok", ok: true, brickId: shape.id, builderId: expectedBuilderId };

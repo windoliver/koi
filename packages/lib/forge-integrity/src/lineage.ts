@@ -24,7 +24,25 @@ export type LineageOutcome =
   | { readonly kind: "depth_exceeded"; readonly depth: number }
   | { readonly kind: "cycle_detected"; readonly at: BrickId }
   | { readonly kind: "store_error"; readonly at: BrickId; readonly error: KoiError }
-  | { readonly kind: "malformed"; readonly at?: BrickId; readonly reason: string };
+  | { readonly kind: "malformed"; readonly at?: BrickId; readonly reason: string }
+  | {
+      readonly kind: "integrity_failed";
+      readonly at: BrickId;
+      readonly producerBuilderId: string;
+      readonly reason: string;
+    };
+
+export interface IsDerivedFromOptions {
+  /**
+   * Required when the caller intends to trust the result for policy or
+   * dedup. Each loaded ancestor is verified under the named producer's
+   * scheme before its `parentBrickId` is followed; an ancestor that fails
+   * integrity short-circuits with `integrity_failed` instead of letting a
+   * corrupt/adversarial record dictate the lineage walk.
+   */
+  readonly verify: BrickVerifier;
+  readonly producerBuilderId: string;
+}
 
 /**
  * Read `provenance.parentBrickId` defensively. Returns `undefined` when the
@@ -63,12 +81,19 @@ function inspectLineageShape(brick: BrickArtifact): LineageShape {
  * Walks the `parentBrickId` chain upwards from `child` to determine whether
  * `ancestor` is in its lineage. Surfaces the reason for a non-positive
  * answer so callers can distinguish a true non-lineage relationship from a
- * store outage, a depth overrun, a malformed record, or a cycle.
+ * store outage, a depth overrun, a malformed record, a cycle, or a failed
+ * integrity check on a loaded ancestor.
+ *
+ * Pass `options.verify` + `options.producerBuilderId` to integrity-verify
+ * each loaded ancestor before its `parentBrickId` is trusted. Without
+ * verification, a stale/corrupt/adversarial record stored under a real
+ * brick id could rewrite its parent pointer and silently mislead the walk.
  */
 export async function isDerivedFrom(
   child: BrickArtifact,
   ancestor: BrickId,
   store: ForgeStore,
+  options?: IsDerivedFromOptions,
 ): Promise<LineageOutcome> {
   const childShape = inspectLineageShape(child);
   if (childShape.kind === "malformed") {
@@ -114,6 +139,17 @@ export async function isDerivedFrom(
         at: parentId,
         reason: `store returned brick with id ${loadedShape.id}, expected ${parentId}`,
       };
+    }
+    if (options !== undefined) {
+      const verdict = options.verify(result.value, options.producerBuilderId);
+      if (verdict.kind !== "ok") {
+        return {
+          kind: "integrity_failed",
+          at: parentId,
+          producerBuilderId: options.producerBuilderId,
+          reason: verdict.kind,
+        };
+      }
     }
     parentId = loadedShape.parentBrickId;
     steps += 1;

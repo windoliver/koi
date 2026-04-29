@@ -22,7 +22,7 @@ export type {
 // passed into the verifier on each call.
 export { createBrickVerifier } from "./integrity.js";
 
-export type { LineageOutcome } from "./lineage.js";
+export type { IsDerivedFromOptions, LineageOutcome } from "./lineage.js";
 export {
   findDuplicateById,
   getParentBrickId,
