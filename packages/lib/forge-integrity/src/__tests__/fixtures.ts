@@ -1,6 +1,19 @@
-import type { BrickArtifact, BrickId, ForgeProvenance, ToolArtifact } from "@koi/core";
+import type {
+  BrickArtifact,
+  BrickId,
+  ForgeProvenance,
+  ForgeVerificationSummary,
+  ToolArtifact,
+} from "@koi/core";
 import { brickId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { computeBrickId } from "@koi/hash";
+
+const passingVerification: ForgeVerificationSummary = {
+  passed: true,
+  sandbox: true,
+  totalDurationMs: 1,
+  stageResults: [],
+};
 
 const baseProvenance: ForgeProvenance = {
   source: { origin: "forged", forgedBy: "agent-1", sessionId: "sess-1" },
@@ -14,7 +27,7 @@ const baseProvenance: ForgeProvenance = {
     agentId: "agent-1",
     depth: 0,
   },
-  verification: { passed: true, sandbox: true, totalDurationMs: 1, stageResults: [] },
+  verification: passingVerification,
   classification: "public",
   contentMarkers: [],
   contentHash: "sha256:placeholder",
@@ -25,6 +38,17 @@ interface MakeToolOptions {
   readonly name?: string;
   readonly parentBrickId?: BrickId | undefined;
   readonly id?: BrickId | undefined;
+}
+
+/**
+ * Test fixture using a simplified identity scheme — kind+implementation —
+ * for unit-test isolation. Production bricks use the canonical scheme in
+ * `@koi/forge-tools`. The recompute function passed to `verifyBrickIntegrity`
+ * must match whatever the producer used; here that's `recomputeFixtureId`.
+ */
+export function recomputeFixtureId(brick: BrickArtifact): BrickId {
+  if (brick.kind !== "tool") throw new Error("fixture: tool only");
+  return computeBrickId("tool", brick.implementation);
 }
 
 export function makeTool(options: MakeToolOptions = {}): ToolArtifact {

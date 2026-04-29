@@ -1,6 +1,21 @@
 import { describe, expect, test } from "bun:test";
+import type { ForgeVerificationSummary } from "@koi/core";
 import { brickId } from "@koi/core";
 import { createForgeProvenance } from "./provenance.js";
+
+const passingVerification: ForgeVerificationSummary = {
+  passed: true,
+  sandbox: true,
+  totalDurationMs: 1500,
+  stageResults: [{ stage: "static", passed: true, durationMs: 12 }],
+};
+
+const draftVerification: ForgeVerificationSummary = {
+  passed: false,
+  sandbox: false,
+  totalDurationMs: 0,
+  stageResults: [],
+};
 
 const baseOptions = {
   forgedBy: "agent-7",
@@ -13,6 +28,7 @@ const baseOptions = {
   buildType: "koi.forge.tool/v1",
   externalParameters: { name: "csv-parse" },
   builderId: "koi/forge/pipeline/v1",
+  verification: passingVerification,
 };
 
 describe("createForgeProvenance", () => {
@@ -33,12 +49,21 @@ describe("createForgeProvenance", () => {
     expect(prov.contentHash).toBe("sha256:cafebabe");
   });
 
-  test("derives totalDurationMs from start/finish and defaults classification", () => {
+  test("uses caller-supplied verification verbatim — no defaults invented", () => {
     const prov = createForgeProvenance(baseOptions);
-    expect(prov.verification.totalDurationMs).toBe(1500);
+    expect(prov.verification).toBe(passingVerification);
+    expect(prov.verification.passed).toBe(true);
+    expect(prov.verification.sandbox).toBe(true);
     expect(prov.classification).toBe("public");
     expect(prov.contentMarkers).toEqual([]);
     expect(prov.parentBrickId).toBeUndefined();
+  });
+
+  test("preserves draft verification (passed=false, sandbox=false) faithfully", () => {
+    const prov = createForgeProvenance({ ...baseOptions, verification: draftVerification });
+    expect(prov.verification.passed).toBe(false);
+    expect(prov.verification.sandbox).toBe(false);
+    expect(prov.verification).toBe(draftVerification);
   });
 
   test("includes parentBrickId + evolutionKind when supplied", () => {

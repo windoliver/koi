@@ -1,9 +1,11 @@
 /**
  * Build a `ForgeProvenance` record from minimal pipeline inputs.
  *
- * Records who created the brick, when, and from what demand. Out of scope
- * for this package: SLSA serialization, attestation signing, build-graph
- * resolution — those live in dedicated packages or downstream issues.
+ * Records who created the brick, when, and from what demand. Verification
+ * state (`passed`, `sandbox`, stage results) is REQUIRED from the caller —
+ * this helper never manufactures optimistic verification metadata. A draft
+ * or unsandboxed artifact must be reflected truthfully in its provenance so
+ * downstream policy/trust code is not misled.
  */
 
 import type {
@@ -12,6 +14,7 @@ import type {
   DataClassification,
   EvolutionKind,
   ForgeProvenance,
+  ForgeVerificationSummary,
 } from "@koi/core";
 
 export interface CreateProvenanceOptions {
@@ -25,6 +28,7 @@ export interface CreateProvenanceOptions {
   readonly buildType: string;
   readonly externalParameters: Readonly<Record<string, unknown>>;
   readonly builderId: string;
+  readonly verification: ForgeVerificationSummary;
   readonly depth?: number | undefined;
   readonly classification?: DataClassification | undefined;
   readonly contentMarkers?: readonly ContentMarker[] | undefined;
@@ -62,12 +66,7 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
       agentId: options.agentId,
       depth: options.depth ?? 0,
     },
-    verification: {
-      passed: true,
-      sandbox: true,
-      totalDurationMs: options.finishedAt - options.startedAt,
-      stageResults: [],
-    },
+    verification: options.verification,
     classification: options.classification ?? "public",
     contentMarkers: options.contentMarkers ?? [],
     contentHash: options.contentHash,
