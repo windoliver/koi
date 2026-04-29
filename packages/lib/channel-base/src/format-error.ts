@@ -93,14 +93,14 @@ function sanitizeValidationMessage(raw: string): string {
  * other context fields (user IDs, internal tokens, etc.) into adapter UX.
  */
 function extractAuthHandoff(error: KoiError): {
-  readonly authorizationUrl?: string;
+  readonly unverifiedAuthorizationUrl?: string;
   readonly scope?: string;
 } {
   const ctx = error.context;
   if (ctx === undefined || ctx === null || typeof ctx !== "object") return {};
-  const out: { authorizationUrl?: string; scope?: string } = {};
+  const out: { unverifiedAuthorizationUrl?: string; scope?: string } = {};
   const url = (ctx as Record<string, unknown>).authorizationUrl;
-  if (typeof url === "string") out.authorizationUrl = url;
+  if (typeof url === "string") out.unverifiedAuthorizationUrl = url;
   const scope = (ctx as Record<string, unknown>).scope;
   if (typeof scope === "string") out.scope = scope;
   return out;
@@ -158,13 +158,17 @@ export type ChannelErrorOutput =
        * Narrowed handoff payload. Only fields the channel-base layer
        * deems candidate-safe are exposed; the original `error.message`,
        * `error.cause`, and `error.context` (other than the documented
-       * fields below) are deliberately withheld so adapters cannot
-       * accidentally render unsafe text. Adapters MUST still validate
-       * `authorizationUrl` against their own tenant trust configuration
-       * before rendering it as a clickable link.
+       * fields below) are deliberately withheld.
+       *
+       * The `unverified*` prefix on the URL is not cosmetic: the
+       * channel-base layer cannot validate the URL against the adapter's
+       * tenant/issuer trust policy. Treat it as attacker-controlled
+       * input until the adapter runs it through an allowlist or other
+       * trust check. Rendering it as a clickable link without that
+       * check is a phishing footgun.
        */
       readonly auth: {
-        readonly authorizationUrl?: string;
+        readonly unverifiedAuthorizationUrl?: string;
         readonly scope?: string;
       };
     };

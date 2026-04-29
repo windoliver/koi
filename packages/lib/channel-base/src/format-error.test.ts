@@ -28,7 +28,7 @@ describe("classifyErrorForChannel discriminated output", () => {
     expect(out.kind).toBe("auth-required");
     if (out.kind === "auth-required") {
       expect(out.safeText).toBe("Authorization is required to continue.");
-      expect(out.auth.authorizationUrl).toBe("https://issuer.example/oauth");
+      expect(out.auth.unverifiedAuthorizationUrl).toBe("https://issuer.example/oauth");
     }
   });
 
@@ -145,7 +145,7 @@ describe("classifyErrorForChannel discriminated output", () => {
       const out = classifyErrorForChannel(err);
       if (out.kind !== "auth-required") throw new Error("expected auth-required");
       expect(out.auth).toEqual({
-        authorizationUrl: "https://issuer.example",
+        unverifiedAuthorizationUrl: "https://issuer.example",
         scope: "read",
       });
     });

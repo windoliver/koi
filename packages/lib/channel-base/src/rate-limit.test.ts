@@ -628,8 +628,10 @@ describe("createRateLimiter", () => {
       const b = limiter.enqueue(async () => {
         events.push("B-sent");
       });
-      await expect(a).rejects.toMatchObject({ code: "TIMEOUT" });
+      // Late success after deadline: real outcome wins → caller resolves.
+      await expect(a).resolves.toBeUndefined();
       await b;
+      // FIFO preserved: A's send finished before B was delivered.
       expect(events).toEqual(["A-finished", "B-sent"]);
     });
 
@@ -727,60 +729,77 @@ describe("createRateLimiter", () => {
       });
     });
 
-    it("retry waits for prior settle even in liveness mode (no overlapping invocations of the same fn)", async () => {
+    it("retries serialize on prior settle even in liveness mode (no overlapping invocations of the same fn)", async () => {
+      // Force retry classification by making each attempt late-fail with a
+      // RATE_LIMIT (default-retryable). Without per-attempt serialization,
+      // the second attempt could start while attempt 1's transport is still
+      // running — duplicate-send hazard.
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 1, initialDelayMs: 0 },
         sendTimeoutMs: 30,
         advanceOnTimeout: true,
-        isRetryable: (e: unknown): boolean =>
-          typeof e === "object" && e !== null && (e as { code?: string }).code === "TIMEOUT",
       });
       let inFlight = 0;
       let maxConcurrent = 0;
+      const rateLimitErr: KoiError = {
+        code: "RATE_LIMIT",
+        message: "throttled",
+        retryable: true,
+      };
       const fn: SendFn = () =>
-        new Promise<void>((resolve) => {
+        new Promise<void>((_resolve, reject) => {
           inFlight++;
           maxConcurrent = Math.max(maxConcurrent, inFlight);
-          // Settles 50ms after start; deadline at 30ms, grace ends 60ms after.
+          // Settles 50ms after start with a retryable error; deadline at 30ms.
           setTimeout(() => {
             inFlight--;
-            resolve();
+            reject(rateLimitErr);
           }, 50);
         });
-      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "TIMEOUT" });
-      // Even with advanceOnTimeout=true, retries of the same fn must not
-      // overlap — the second attempt must wait for the first to settle.
+      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "RATE_LIMIT" });
+      // Two attempts ran but never overlapped.
       expect(maxConcurrent).toBe(1);
     });
 
-    it("retry waits for prior attempt to settle before re-issuing the send (no overlap)", async () => {
-      // Custom isRetryable opts TIMEOUT into retry. Without the per-attempt
-      // settle gate, a TIMEOUT on attempt 1 would re-invoke the same fn while
-      // attempt 1's transport is still running — duplicate send hazard.
+    it("late-success after deadline TIMEOUT resolves the caller (real outcome wins)", async () => {
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 1, initialDelayMs: 0 },
         sendTimeoutMs: 30,
         isRetryable: (e: unknown): boolean =>
           typeof e === "object" && e !== null && (e as { code?: string }).code === "TIMEOUT",
       });
-      // let justified: tracks concurrent in-flight invocations
-      let inFlight = 0;
-      let maxConcurrent = 0;
+      // Settles successfully 50ms after start (after deadline, before grace expires).
+      const fn: SendFn = () => new Promise<void>((resolve) => setTimeout(resolve, 50));
+      // The synthetic TIMEOUT would have triggered a retry under the
+      // custom isRetryable, but the late success is observed first and
+      // wins — no retry, caller resolves.
+      await expect(limiter.enqueue(fn)).resolves.toBeUndefined();
+    });
+
+    it("late terminal failure replaces the synthetic TIMEOUT for retry classification", async () => {
+      // Custom isRetryable opts TIMEOUT into retry. But if the underlying
+      // send late-fails with a terminal PERMISSION (not retryable), we
+      // must NOT retry — the real outcome overrides the synthetic timeout.
+      let attempts = 0;
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 3, initialDelayMs: 0 },
+        sendTimeoutMs: 30,
+        isRetryable: (e: unknown): boolean =>
+          typeof e === "object" && e !== null && (e as { code?: string }).code === "TIMEOUT",
+      });
+      const permErr: KoiError = {
+        code: "PERMISSION",
+        message: "denied",
+        retryable: false,
+      };
       const fn: SendFn = () =>
-        new Promise<void>((resolve) => {
-          inFlight++;
-          maxConcurrent = Math.max(maxConcurrent, inFlight);
-          // Slow but settles within grace (30ms grace, settles at 50ms after start).
-          setTimeout(() => {
-            inFlight--;
-            resolve();
-          }, 50);
+        new Promise<void>((_resolve, reject) => {
+          attempts++;
+          setTimeout(() => reject(permErr), 50);
         });
-      // Final attempt will succeed (timeout fires first time, but before retry
-      // we await settled; second attempt starts AFTER first promise resolved).
-      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "TIMEOUT" });
-      // Strict mode forbids overlapping invocations of the same send.
-      expect(maxConcurrent).toBe(1);
+      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "PERMISSION" });
+      // Real terminal error wins over synthetic TIMEOUT — no retries.
+      expect(attempts).toBe(1);
     });
 
     it("synchronous throws in the send callback reject the caller and unblock the queue", async () => {

@@ -264,9 +264,21 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
   // faster than the grace and preserve strict FIFO.
   //
   // Disabled deadline (0 / Infinity): transparent passthrough.
+  type LateOutcome =
+    | { readonly kind: "success" }
+    | { readonly kind: "failure"; readonly error: unknown }
+    | { readonly kind: "abort-ignored" };
   interface DeadlineRun {
     readonly result: Promise<void>;
     readonly settled: Promise<void>;
+    /**
+     * Returns the underlying send's actual outcome after `settled`
+     * resolves. `abort-ignored` means the grace backstop fired before
+     * the transport settled — delivery status is permanently unknown.
+     * Used by the retry loop to classify on the real terminal outcome
+     * instead of the synthetic deadline TIMEOUT.
+     */
+    readonly lateOutcome: () => LateOutcome;
   }
   // Wraps fn(signal) so a synchronous throw becomes a rejected promise —
   // otherwise the throw escapes runWithDeadline before any catch path is
@@ -282,12 +294,29 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
     if (!sendTimeoutEnabled) {
       const passthrough = new AbortController();
       const fnPromise = invoke(fn, passthrough.signal);
-      return { result: fnPromise, settled: fnPromise.catch(() => {}) };
+      // let justified: captured by lateOutcome accessor
+      let outcome: LateOutcome = { kind: "abort-ignored" };
+      fnPromise.then(
+        () => {
+          outcome = { kind: "success" };
+        },
+        (err) => {
+          outcome = { kind: "failure", error: err };
+        },
+      );
+      return {
+        result: fnPromise,
+        settled: fnPromise.catch(() => {}),
+        lateOutcome: () => outcome,
+      };
     }
     const controller = new AbortController();
     const fnPromise = invoke(fn, controller.signal);
     // let justified: tracks whether the watchdog fired
     let timedOut = false;
+    // let justified: captured by lateOutcome accessor; defaults to
+    // abort-ignored if grace expires before fnPromise settles
+    let outcome: LateOutcome = { kind: "abort-ignored" };
     // Caller-facing: bounded by sendTimeoutMs.
     const result = new Promise<void>((resolve, reject) => {
       // let justified: race winner
@@ -332,10 +361,11 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         },
       );
     });
-    // Telemetry: fires whenever the underlying send eventually settles
-    // (independent of the grace backstop). Hook errors are swallowed.
+    // Capture the real terminal outcome and emit telemetry whenever the
+    // underlying send eventually settles. Hook errors are swallowed.
     fnPromise.then(
       () => {
+        outcome = { kind: "success" };
         if (!timedOut) return;
         try {
           config?.onLateSuccess?.();
@@ -344,6 +374,7 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         }
       },
       (lateErr) => {
+        outcome = { kind: "failure", error: lateErr };
         if (!timedOut) return;
         try {
           config?.onLateFailure?.(lateErr);
@@ -376,7 +407,7 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         graceTimer = setTimeout(finish, sendTimeoutMs);
       });
     });
-    return { result, settled };
+    return { result, settled, lateOutcome: () => outcome };
   };
 
   const drain = async (): Promise<void> => {
@@ -404,14 +435,55 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
           } catch (error: unknown) {
             lastError = error;
 
+            // For deadline-exceeded TIMEOUTs (synthetic watchdog rejection,
+            // not a transport-reported TIMEOUT), the caller-facing error
+            // and the retry decision must reflect the underlying send's
+            // REAL outcome, not the synthetic timeout. Otherwise an
+            // idempotent-retry config could re-issue a send that actually
+            // succeeded late, or replay after a definitive terminal error
+            // like PERMISSION; or the caller could see TIMEOUT for a send
+            // that the transport reported a structured error for.
+            // let justified: mutable so we can re-classify on late outcome
+            let classifyError: unknown = error;
+            if (
+              isKoiError(error) &&
+              error.code === "TIMEOUT" &&
+              (error.context as { phase?: string } | undefined)?.phase === "deadline-exceeded"
+            ) {
+              await run.settled;
+              const late = run.lateOutcome();
+              if (late.kind === "success") {
+                // Underlying send succeeded after the deadline. Treat the
+                // entry as resolved and skip the retry path entirely.
+                lastError = undefined;
+                break;
+              }
+              if (late.kind === "failure" && isKoiError(late.error)) {
+                // Real structured terminal error arrived after the
+                // deadline. Use it for retry classification and the
+                // caller-facing rejection. We require KoiError because
+                // an abort-honoring transport typically rejects with a
+                // generic abort error that is indistinguishable from a
+                // transport hiccup; only structured KoiError responses
+                // represent a real terminal classification.
+                classifyError = late.error;
+                lastError = late.error;
+              }
+              // late.kind === "abort-ignored": grace expired without a
+              // real outcome. Keep the synthetic TIMEOUT.
+            }
+
+            // Skip retry analysis when no retries remain.
+            if (attempt >= retryConfig.maxRetries) break;
+
             // A defined retry-after hint OR a positive isRetryable verdict
             // opts the error into a retry. The default extractor already
             // refuses to emit a hint for state-gated codes, so this OR is
             // safe; callers who provide a custom extractor are trusted to
             // know what their hint means.
-            const retryAfterMs = sanitizeRetryAfterMs(safeExtract(error));
-            const retryable = retryAfterMs !== undefined || safeIsRetryable(error);
-            if (!retryable || attempt >= retryConfig.maxRetries) break;
+            const retryAfterMs = sanitizeRetryAfterMs(safeExtract(classifyError));
+            const retryable = retryAfterMs !== undefined || safeIsRetryable(classifyError);
+            if (!retryable) break;
 
             // Route through computeBackoff so the provider hint is clamped to
             // maxBackoffMs and falls back to backoff when the hint is absent.
