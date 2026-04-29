@@ -1080,6 +1080,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestAudit: import("./manifest.js").ManifestAuditConfig | undefined;
   let manifestDelegation: import("./manifest.js").ManifestDelegationConfig | undefined;
   let manifestNetwork: import("./manifest.js").ManifestNetworkConfig | undefined;
+  let manifestCredentials: import("./manifest.js").ManifestCredentialsConfig | undefined;
   let manifestLoadPath: string | undefined; // tracks which path was loaded, for TOCTOU revalidation
   // Mirror start.ts: when resuming without an explicit --manifest, bypass
   // auto-discovery so the cwd manifest cannot silently override the model,
@@ -1137,6 +1138,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestAudit = manifestResult.value.audit;
     manifestDelegation = manifestResult.value.delegation;
     manifestNetwork = manifestResult.value.network;
+    manifestCredentials = manifestResult.value.credentials;
     manifestLoadPath = resolvedManifestPath;
 
     // Fail-closed audit intent enforcement — applies regardless of KOI_ALLOW_MANIFEST_FILE_SINKS.
@@ -2095,6 +2097,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
     // gov-15: outbound-network scope from manifest.network → web-tools fetch wrap.
     ...(manifestNetwork !== undefined ? { networkScope: { allow: manifestNetwork.allow } } : {}),
+    // gov-15: credentials scope from manifest.credentials → CREDENTIALS subsystem.
+    ...(manifestCredentials !== undefined
+      ? { credentialsScope: { allow: manifestCredentials.allow } }
+      : {}),
     // Nexus backend (when resolved above) is passed through so the checkpoint
     // stack stamps the correct backend name and the restore protocol dispatches
     // compensating ops through the right backend. Omitted when undefined —

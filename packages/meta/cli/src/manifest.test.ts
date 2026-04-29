@@ -650,7 +650,7 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     // to detect a real ".." path segment. Only `../<rest>` is a traversal.
     const dotDotDir = join(dir, "..logs");
     mkdirSync(dotDotDir);
-    const p = writeManifest(
+    const _p = writeManifest(
       [
         "model:",
         "  name: google/gemini-2.0-flash-001",
@@ -1029,5 +1029,114 @@ describe("loadManifestConfig: network block (gov-15)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("manifest.network");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// credentials block (gov-15) — credential key glob scope
+// ---------------------------------------------------------------------------
+
+describe("loadManifestConfig: credentials block (gov-15)", () => {
+  let dir: string;
+  const writeManifest = (yaml: string): string => {
+    const p = join(dir, "koi.manifest.yaml");
+    writeFileSync(p, yaml);
+    return p;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-manifest-gov15-creds-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("omits credentials when block absent", async () => {
+    const p = writeManifest(["model:", "  name: google/gemini-2.0-flash-001"].join("\n"));
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.credentials).toBeUndefined();
+  });
+
+  test("parses credentials.allow with one entry", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "credentials:",
+        "  allow:",
+        '    - "openai_*"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.credentials).toEqual({ allow: ["openai_*"] });
+  });
+
+  test("parses credentials.allow with multiple entries", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "credentials:",
+        "  allow:",
+        '    - "openai_*"',
+        '    - "anthropic_*"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.credentials?.allow.length).toBe(2);
+  });
+
+  test("treats empty allow array as undefined (no scope)", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "credentials:", "  allow: []"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.credentials).toBeUndefined();
+  });
+
+  test("rejects non-string allow entries", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "credentials:",
+        "  allow:",
+        "    - 42",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("non-empty strings");
+  });
+
+  test("rejects credentials as a non-object", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "credentials: yes"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.credentials");
+  });
+
+  test("rejects allow as non-array", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "credentials:", '  allow: "openai_*"'].join(
+        "\n",
+      ),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("must be an array");
   });
 });

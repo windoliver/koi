@@ -220,6 +220,58 @@ describe("buildCoreProviders: filesystem operation gating", () => {
 });
 
 // ---------------------------------------------------------------------------
+// buildCoreProviders: credentials scope (gov-15)
+// ---------------------------------------------------------------------------
+
+describe("buildCoreProviders: credentials scope (gov-15)", () => {
+  test("omits the credentials provider when no scope is supplied", () => {
+    const providers = buildCoreProviders({ cwd: mkTempCwd(), includeWebFetch: false });
+    expect(providers.map((p) => p.name)).not.toContain("credentials");
+  });
+
+  test("omits the credentials provider when allow array is empty", () => {
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      includeWebFetch: false,
+      credentialsScope: { allow: [] },
+    });
+    expect(providers.map((p) => p.name)).not.toContain("credentials");
+  });
+
+  test("registers a scoped credentials provider when allow is non-empty", async () => {
+    const previous = { ...process.env };
+    process.env.KOI_CRED_OPENAI_API_KEY = "sk-openai";
+    process.env.KOI_CRED_BLOCKED_KEY = "secret";
+    try {
+      const providers = buildCoreProviders({
+        cwd: mkTempCwd(),
+        includeWebFetch: false,
+        credentialsScope: { allow: ["openai_*"] },
+      });
+      const credsProvider = providers.find((p) => p.name === "credentials");
+      if (credsProvider === undefined) throw new Error("credentials provider missing");
+      // Assert scope semantics by attaching the provider and reading the
+      // CREDENTIALS component out of the resulting components map. Allowed
+      // keys resolve to the env value; out-of-scope keys return undefined
+      // (least-information principle — the agent path can't enumerate other
+      // env vars even when the bare env producer would surface them).
+      const { CREDENTIALS, isAttachResult } = await import("@koi/core");
+      const stubAgent = {} as Parameters<typeof credsProvider.attach>[0];
+      const result = await credsProvider.attach(stubAgent);
+      if (!isAttachResult(result)) throw new Error("expected AttachResult");
+      const component = result.components.get(CREDENTIALS as unknown as string) as {
+        get: (key: string) => Promise<string | undefined>;
+      };
+      expect(component).toBeDefined();
+      expect(await component.get("openai_api_key")).toBe("sk-openai");
+      expect(await component.get("blocked_key")).toBeUndefined();
+    } finally {
+      process.env = previous;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // resolveWebCacheTtlMs — web_fetch response cache wiring (issue #1903)
 // ---------------------------------------------------------------------------
 

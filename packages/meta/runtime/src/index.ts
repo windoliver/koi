@@ -76,6 +76,9 @@ export {
 export type { InteractionProviderConfig } from "./create-interaction-provider.js";
 export { createInteractionProvider } from "./create-interaction-provider.js";
 export { createRuntime } from "./create-runtime.js";
+// Credentials producer (env-var-backed CredentialComponent)
+export type { EnvCredentialsOptions } from "./credentials.js";
+export { createCredentialsProvider, createEnvCredentials } from "./credentials.js";
 // Debug
 export { collectDebugInfo, formatDebugInfo } from "./debug/collect-debug-info.js";
 export type { HookObserverConfig } from "./middleware/hook-dispatch.js";

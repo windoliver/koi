@@ -328,10 +328,32 @@ export interface ManifestConfig {
    * fails the manifest load with an actionable error.
    */
   readonly network: ManifestNetworkConfig | undefined;
+  /**
+   * Optional credentials scope (gov-15). When set, the CLI registers an
+   * env-var-backed `CredentialComponent` wrapped with
+   * `@koi/governance-scope`'s `createScopedCredentials` so brick activation
+   * can only resolve keys matching one of the supplied glob patterns. Keys
+   * outside the allowlist resolve to `undefined` (least-information
+   * principle — bricks cannot enumerate other secrets).
+   *
+   *   credentials:
+   *     allow:
+   *       - "openai_*"
+   *       - "anthropic.*"
+   *
+   * Each entry is a glob pattern (`*` within a segment, `**` across
+   * segments) compiled by the same engine used for filesystem scope.
+   */
+  readonly credentials: ManifestCredentialsConfig | undefined;
 }
 
 /** Manifest-declared outbound-network scope (gov-15). */
 export interface ManifestNetworkConfig {
+  readonly allow: readonly string[];
+}
+
+/** Manifest-declared credentials scope (gov-15). */
+export interface ManifestCredentialsConfig {
   readonly allow: readonly string[];
 }
 
@@ -647,6 +669,11 @@ export async function loadManifestConfig(
     return { ok: false, error: networkResult.error };
   }
 
+  const credentialsResult = parseManifestCredentials(raw.credentials);
+  if (!credentialsResult.ok) {
+    return { ok: false, error: credentialsResult.error };
+  }
+
   return {
     ok: true,
     value: {
@@ -662,6 +689,7 @@ export async function loadManifestConfig(
       audit: auditResult.value,
       delegation: delegationResult.value,
       network: networkResult.value,
+      credentials: credentialsResult.value,
     },
   };
 }
@@ -718,6 +746,43 @@ function parseManifestNetwork(
         error: `manifest.network.allow entry ${JSON.stringify(pattern)} is not a valid URLPattern: ${msg}`,
       };
     }
+  }
+  if (allow.length === 0) {
+    return { ok: true, value: undefined };
+  }
+  return { ok: true, value: { allow } };
+}
+
+function parseManifestCredentials(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: ManifestCredentialsConfig | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error: 'manifest.credentials must be an object, e.g. credentials: { allow: ["openai_*"] }',
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+  const allow = obj.allow;
+  if (allow === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (!Array.isArray(allow)) {
+    return {
+      ok: false,
+      error: "manifest.credentials.allow must be an array of glob strings",
+    };
+  }
+  if (!allow.every((p): p is string => typeof p === "string" && p.length > 0)) {
+    return {
+      ok: false,
+      error: "manifest.credentials.allow entries must be non-empty strings",
+    };
   }
   if (allow.length === 0) {
     return { ok: true, value: undefined };

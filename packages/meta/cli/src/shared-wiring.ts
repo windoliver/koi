@@ -42,7 +42,7 @@ import {
 } from "@koi/core";
 import { createSystemPromptMiddleware } from "@koi/engine";
 import { createLocalFileSystem } from "@koi/fs-local";
-import { createScopedFetcher } from "@koi/governance-scope";
+import { createScopedCredentials, createScopedFetcher } from "@koi/governance-scope";
 import type { CreateHookMiddlewareOptions, RegisteredHook } from "@koi/hooks";
 import {
   createHookMiddleware,
@@ -52,7 +52,11 @@ import {
 import type { McpResolver, McpServerConfig, OAuthAuthProvider } from "@koi/mcp";
 import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
 import type { SkillsMcpBridge } from "@koi/runtime";
-import { createSkillsMcpBridge } from "@koi/runtime";
+import {
+  createCredentialsProvider,
+  createEnvCredentials,
+  createSkillsMcpBridge,
+} from "@koi/runtime";
 import { createSessionTranscriptMiddleware, resumeForSession } from "@koi/session";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import {
@@ -1017,6 +1021,21 @@ export interface CoreProvidersConfig {
    */
   readonly networkScope?: { readonly allow: readonly string[] } | undefined;
   /**
+   * Credentials scope (gov-15). When provided, the CLI registers an
+   * env-var-backed `CredentialComponent` (resolving keys from
+   * `process.env.KOI_CRED_<UPPER>`) wrapped with
+   * `@koi/governance-scope`'s `createScopedCredentials` so brick
+   * activation can only resolve keys matching one of the supplied glob
+   * patterns. Keys outside the allowlist resolve to `undefined`
+   * (least-information principle — bricks cannot enumerate other
+   * secrets).
+   *
+   * When omitted, no `CREDENTIALS` provider is wired and brick activation
+   * trivially passes credential checks (backwards compatible — see
+   * `validateCredentialRequires`).
+   */
+  readonly credentialsScope?: { readonly allow: readonly string[] } | undefined;
+  /**
    * Host-specific extra providers appended after the core set (e.g. TUI's
    * bash_background, task tools, memory, notebook, spawn). Added here
    * rather than by the caller splicing arrays so the assembly order is
@@ -1166,6 +1185,17 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
 
   if (bashTool !== undefined) {
     providers.push(wrapToolAsProvider(bashTool));
+  }
+
+  // gov-15: when manifest declares `credentials.allow`, register an env-var
+  // CredentialComponent wrapped with the scope allowlist. Brick activation
+  // (validateBrickCredentials in @koi/validation) is the legitimate consumer
+  // — agent-facing tools intentionally do NOT receive raw credentials.
+  const credentialsAllow = config.credentialsScope?.allow;
+  if (credentialsAllow !== undefined && credentialsAllow.length > 0) {
+    const baseCreds = createEnvCredentials();
+    const scopedCreds = createScopedCredentials(baseCreds, { allow: credentialsAllow });
+    providers.push(createCredentialsProvider(scopedCreds));
   }
 
   if (config.additional !== undefined) {

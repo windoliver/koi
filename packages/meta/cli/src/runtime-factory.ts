@@ -870,6 +870,14 @@ export interface KoiRuntimeConfig {
    */
   readonly networkScope?: { readonly allow: readonly string[] } | undefined;
   /**
+   * Credentials scope (gov-15). Forwarded into `buildCoreProviders` so
+   * an env-var-backed `CredentialComponent` wrapped with
+   * `createScopedCredentials` is registered under the `CREDENTIALS`
+   * subsystem token. `undefined` registers no provider — brick activation
+   * trivially passes credential checks.
+   */
+  readonly credentialsScope?: { readonly allow: readonly string[] } | undefined;
+  /**
    * Active filesystem backend to use for `fs_read`, `fs_write`, and
    * `fs_edit` tools, AND for the checkpoint preset stack's backend
    * discriminator (capture + rewind dispatch).
@@ -1899,6 +1907,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       ? { filesystemOperations: config.filesystemOperations }
       : {}),
     ...(config.networkScope !== undefined ? { networkScope: config.networkScope } : {}),
+    ...(config.credentialsScope !== undefined ? { credentialsScope: config.credentialsScope } : {}),
   });
 
   // --- @koi/skills-runtime + @koi/skill-tool: on-demand skill discovery and loading ---
