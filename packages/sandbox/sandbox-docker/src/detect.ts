@@ -7,16 +7,16 @@ export interface DetectOptions {
   readonly probe?: () => Promise<number>;
 }
 
+async function defaultProbe(): Promise<number> {
+  const proc = Bun.spawn(["docker", "version", "--format", "{{.Server.Version}}"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  return await proc.exited;
+}
+
 export async function detectDocker(options: DetectOptions = {}): Promise<DockerAvailability> {
-  const probe =
-    options.probe ??
-    (async (): Promise<number> => {
-      const proc = Bun.spawn(["docker", "version", "--format", "{{.Server.Version}}"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      return await proc.exited;
-    });
+  const probe = options.probe ?? defaultProbe;
 
   try {
     const code = await probe();

@@ -12,4 +12,14 @@ describe("detectDocker", () => {
     const result = await detectDocker({ probe: async () => 0 });
     expect(result.available).toBe(true);
   });
+
+  test("returns available=false when probe throws", async () => {
+    const result = await detectDocker({
+      probe: async () => {
+        throw new Error("spawn failed");
+      },
+    });
+    expect(result.available).toBe(false);
+    expect(result.reason).toContain("docker probe failed");
+  });
 });
