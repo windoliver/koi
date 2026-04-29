@@ -118,3 +118,7 @@ hasn't been validated with Bun's pipe handling (spec §6.6).
    the Example Domain page.
 8. Detach or end the session cleanly, then confirm the extension returns to its
    idle state.
+
+## Notes
+
+- `src/ws-shim.d.ts` import order is enforced by Biome (alphabetical). No runtime impact; cosmetic only.

@@ -298,7 +298,11 @@ Creates the middleware and returns a `VerifierHandle`.
 interface VerifierHandle {
   readonly middleware: KoiMiddleware;
   readonly getStats: () => VerifierStats;
-  readonly setRubric: (rubric: string) => void;  // hot-swap rubric without restart
+  // Session-scoped rubric override. Default rubric (captured at construction)
+  // is immutable; setRubric writes a per-session override that does NOT bleed
+  // into other concurrent sessions sharing the same middleware instance.
+  readonly setRubric: (sessionId: string, rubric: string) => void;
+  readonly clearRubric: (sessionId: string) => void;
   readonly reset: () => void;                    // zero all stats counters
 }
 ```
@@ -444,9 +448,10 @@ const { middleware, setRubric } = createOutputVerifierMiddleware({
   },
 });
 
-// Later — when user updates their quality preferences:
-setRubric("Formal tone required. No bullet points. Cite sources.");
-// Takes effect on next wrapModelCall/wrapModelStream invocation.
+// Later — when a specific session updates its quality preferences:
+setRubric(sessionId, "Formal tone required. No bullet points. Cite sources.");
+// Takes effect on next wrapModelCall/wrapModelStream invocation in THAT
+// session only. Other concurrent sessions continue to use the default rubric.
 ```
 
 ### Per-Session Stats Reset

@@ -496,6 +496,127 @@ describe("Golden: @koi/middleware-audit", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/middleware-output-verifier (2 queries)
+// ---------------------------------------------------------------------------
+
+import {
+  BUILTIN_CHECKS,
+  createOutputVerifierMiddleware,
+  parseJudgeResponse,
+} from "@koi/middleware-output-verifier";
+
+describe("Golden: @koi/middleware-output-verifier", () => {
+  test("middleware name is 'output-verifier' with priority 385", async () => {
+    const { middleware } = createOutputVerifierMiddleware({
+      deterministic: [BUILTIN_CHECKS.nonEmpty("warn")],
+    });
+    expect(middleware.name).toBe("output-verifier");
+    expect(middleware.priority).toBe(385);
+  });
+
+  test("parseJudgeResponse fails closed on unparseable input", async () => {
+    const result = parseJudgeResponse("garbage not-json output");
+    // Fail-closed: parse error → score 0 → veto fires.
+    expect(result.score).toBe(0);
+    expect(result.parseError).toBeDefined();
+
+    const ok = parseJudgeResponse('{"score": 0.85, "reasoning": "good"}');
+    expect(ok.score).toBe(0.85);
+    expect(ok.reasoning).toBe("good");
+    expect(ok.parseError).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-degenerate (2 queries)
+// ---------------------------------------------------------------------------
+
+import { createDegenerateMiddleware, validateDegenerateConfig } from "@koi/middleware-degenerate";
+
+function makeDegenerateForgeStore(): never {
+  const okEmpty = { ok: true as const, value: [] };
+  const notFound = {
+    ok: false as const,
+    error: { code: "NOT_FOUND" as const, message: "n/a", retryable: false },
+  };
+  return {
+    search: async (): Promise<typeof okEmpty> => okEmpty,
+    save: async (): Promise<{ ok: true; value: undefined }> => ({ ok: true, value: undefined }),
+    load: async (): Promise<typeof notFound> => notFound,
+    remove: async (): Promise<{ ok: true; value: undefined }> => ({ ok: true, value: undefined }),
+    update: async (): Promise<{ ok: true; value: undefined }> => ({ ok: true, value: undefined }),
+    exists: async (): Promise<boolean> => false,
+    promote: async (): Promise<{ ok: true; value: undefined }> => ({ ok: true, value: undefined }),
+  } as never;
+}
+
+describe("Golden: @koi/middleware-degenerate", () => {
+  test("middleware name is 'degenerate' with priority 1000 (innermost tool MW)", async () => {
+    const handle = createDegenerateMiddleware({
+      forgeStore: makeDegenerateForgeStore(),
+      createToolExecutor: () => {
+        throw new Error("not used in this query");
+      },
+      capabilityConfigs: new Map([
+        [
+          "search",
+          {
+            selectionStrategy: "fitness",
+            minVariants: 1,
+            maxVariants: 3,
+            failoverEnabled: true,
+          },
+        ],
+      ]),
+    });
+    expect(handle.middleware.name).toBe("degenerate");
+    expect(handle.middleware.priority).toBe(1_000);
+    // No session started yet — attempt log is empty.
+    expect(handle.getAttemptLog("search")).toEqual([]);
+  });
+
+  test("validateDegenerateConfig rejects minVariants > maxVariants", async () => {
+    const bad = validateDegenerateConfig({
+      forgeStore: makeDegenerateForgeStore(),
+      createToolExecutor: () => {
+        throw new Error("unused");
+      },
+      capabilityConfigs: new Map([
+        [
+          "search",
+          {
+            selectionStrategy: "fitness",
+            minVariants: 5,
+            maxVariants: 2,
+            failoverEnabled: true,
+          },
+        ],
+      ]),
+    });
+    expect(bad.ok).toBe(false);
+
+    const good = validateDegenerateConfig({
+      forgeStore: makeDegenerateForgeStore(),
+      createToolExecutor: () => {
+        throw new Error("unused");
+      },
+      capabilityConfigs: new Map([
+        [
+          "search",
+          {
+            selectionStrategy: "round-robin",
+            minVariants: 1,
+            maxVariants: 3,
+            failoverEnabled: false,
+          },
+        ],
+      ]),
+    });
+    expect(good.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/audit-sink-sqlite (2 queries)
 // ---------------------------------------------------------------------------
 

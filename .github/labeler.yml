@@ -57,6 +57,7 @@
       - "packages/**/tools-core/**"
       - "packages/**/url-safety/**"
       - "packages/**/validation/**"
+      - "packages/**/variant-selection/**"
       - "packages/**/watch-patterns/**"
 
 "layer:L3":
@@ -116,4 +117,5 @@
       - "!packages/**/tools-core/**"
       - "!packages/**/url-safety/**"
       - "!packages/**/validation/**"
+      - "!packages/**/variant-selection/**"
       - "!packages/**/watch-patterns/**"

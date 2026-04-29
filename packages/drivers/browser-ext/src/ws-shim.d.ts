@@ -1,6 +1,6 @@
 declare module "ws" {
   import type { EventEmitter } from "node:events";
-  import type { IncomingMessage, Server as HttpServer } from "node:http";
+  import type { Server as HttpServer, IncomingMessage } from "node:http";
   import type { Duplex } from "node:stream";
 
   namespace WebSocket {
