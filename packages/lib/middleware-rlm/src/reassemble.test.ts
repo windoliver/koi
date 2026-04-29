@@ -30,12 +30,46 @@ describe("reassembleResponses", () => {
     expect(out.responseId).toBe("id-a");
   });
 
-  test("uses the last response's stopReason", () => {
+  test("surfaces the strongest non-success stopReason rather than the last", () => {
+    // Concatenation would mask truncation if reassembly only honored the
+    // last segment's reason. The synthetic stopReason must reflect any
+    // segment that did NOT complete normally.
     const out = reassembleResponses([
       part("a", { stopReason: "tool_use" }),
       part("b", { stopReason: "stop" }),
     ]);
+    expect(out.stopReason).toBe("tool_use");
+  });
+
+  test("falls back to the last stopReason when every segment finished normally", () => {
+    const out = reassembleResponses([
+      part("a", { stopReason: "stop" }),
+      part("b", { stopReason: "stop" }),
+    ]);
     expect(out.stopReason).toBe("stop");
+  });
+
+  test("preserves per-segment provenance under metadata.rlmSegments", () => {
+    const out = reassembleResponses([
+      part("a", { model: "m1", responseId: "r-a", stopReason: "stop" }),
+      part("b", { model: "m2", responseId: "r-b" }),
+    ]);
+    const segments = out.metadata?.rlmSegments;
+    expect(Array.isArray(segments)).toBe(true);
+    if (!Array.isArray(segments)) throw new Error("expected array");
+    expect(segments).toEqual([
+      { index: 0, model: "m1", stopReason: "stop", responseId: "r-a" },
+      { index: 1, model: "m2", responseId: "r-b" },
+    ]);
+  });
+
+  test("preserves caller metadata alongside rlmSegments", () => {
+    const out = reassembleResponses([
+      part("a", { metadata: { callerKey: "v1" } }),
+      part("b", { metadata: { callerKey: "v2" } }),
+    ]);
+    expect(out.metadata?.callerKey).toBe("v1");
+    expect(out.metadata?.rlmSegments).toBeDefined();
   });
 
   test("sums usage across parts and aggregates cache fields when present", () => {

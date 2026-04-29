@@ -146,13 +146,31 @@ returns a `Result<RlmConfig, KoiError>`.
 
 ## Reassembly
 
-`reassembleResponses(parts)`:
+`reassembleResponses(parts)` builds a synthetic `ModelResponse` from
+per-segment outputs. **It concatenates — it does not synthesize.** RLM is
+therefore only sound for tasks whose answer is the in-order union of
+segment-local answers (extraction, transformation, summarization-per-chunk).
+Tasks that need global aggregation, dedup, ranking, or cross-segment
+reasoning must run an explicit reducer downstream by feeding the
+reassembled output back into another model call.
+
+The synthetic response:
 
 - `content` → `parts.map(p => p.content).join("\n\n")`
-- `model`, `responseId`, `metadata` from the first part
-- `stopReason` from the last part
+- `model`, `responseId` taken from the first part for backward compatibility
+- `stopReason` → the strongest non-success reason across parts (`length`,
+  `tool_use`, `error`, `hook_blocked`); falls back to the last part's reason
+  when every segment finished with `stop`
 - `usage` summed across parts (cache fields aggregated when present)
 - `richContent` concatenated when any part carries it
+- `metadata.rlmSegments` → `[{ index, model, stopReason, responseId }, …]`
+  for every segment, so callers can audit per-segment routing or safety
+  metadata that the merged top-level fields would otherwise hide
+
+In addition, the middleware aborts mid-dispatch (rather than pushing an
+incomplete answer back to the caller) when any segment returns a
+non-success `stopReason` — concatenating a truncated or tool-use segment
+into a "complete" result would mask the failure.
 
 Throws if `parts` is empty.
 

@@ -269,6 +269,41 @@ describe("createRlmMiddleware", () => {
     expect(rec.calls.length).toBe(0);
   });
 
+  test("aborts when a segment returns a non-success stopReason", async () => {
+    // Concatenating an incomplete or tool-use segment into the merged
+    // response would mask the failure. The middleware must surface it.
+    const mw = createRlmMiddleware({ maxInputTokens: 50, maxChunkChars: 100 });
+    let call = 0; // let: simulate one segment hitting a length cap
+    const handler: ModelHandler = async () => {
+      call += 1;
+      const stopReason = call === 2 ? "length" : "stop";
+      return { content: `c${call}`, model: "test", stopReason } satisfies ModelResponse;
+    };
+    const big = "x".repeat(300);
+    const req: ModelRequest = { messages: [userMessage(big)] };
+    expect(mw.wrapModelCall?.(turnCtx(), req, handler)).rejects.toThrow(/stopReason=length/);
+  });
+
+  test("attaches per-segment provenance to the reassembled response", async () => {
+    const mw = createRlmMiddleware({ maxInputTokens: 50, maxChunkChars: 100 });
+    let call = 0; // let: per-call counter for the stub model handler
+    const handler: ModelHandler = async () => {
+      call += 1;
+      return {
+        content: `c${call}`,
+        model: `model-${call}`,
+        responseId: `resp-${call}`,
+        stopReason: "stop",
+      } satisfies ModelResponse;
+    };
+    const big = "x".repeat(300);
+    const out = await mw.wrapModelCall?.(turnCtx(), { messages: [userMessage(big)] }, handler);
+    const segs = out?.metadata?.rlmSegments;
+    expect(Array.isArray(segs)).toBe(true);
+    if (!Array.isArray(segs)) throw new Error("expected array");
+    expect(segs.length).toBe(3);
+  });
+
   test("describeCapabilities returns a label", () => {
     const mw = createRlmMiddleware();
     const cap = mw.describeCapabilities?.(turnCtx());

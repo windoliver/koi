@@ -14,6 +14,7 @@ import type {
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStopReason,
   TokenEstimator,
   TurnContext,
 } from "@koi/core";
@@ -69,6 +70,18 @@ async function estimateRequestTokens(cfg: ResolvedConfig, request: ModelRequest)
   return messageTokens + extra;
 }
 
+/**
+ * Stop reasons that signal an incomplete or non-text response. Concatenating
+ * those into a synthetic "complete" answer would mask truncation, tool-use
+ * intent, errors, or hook blocks.
+ */
+const ABORTING_STOP_REASONS: ReadonlySet<ModelStopReason> = new Set<ModelStopReason>([
+  "length",
+  "tool_use",
+  "error",
+  "hook_blocked",
+]);
+
 async function dispatchSegmented(
   cfg: ResolvedConfig,
   segments: readonly ModelRequest[],
@@ -79,6 +92,11 @@ async function dispatchSegmented(
     const seg = segments[i];
     if (seg === undefined) continue;
     const response = await next(seg);
+    if (response.stopReason !== undefined && ABORTING_STOP_REASONS.has(response.stopReason)) {
+      throw new Error(
+        `RLM segment ${String(i + 1)}/${String(segments.length)} returned stopReason=${response.stopReason} (model=${response.model}). Concatenating an incomplete or tool-use segment would mask the failure; aborting.`,
+      );
+    }
     responses.push(response);
     emit(cfg, { kind: "segment-completed", index: i, count: segments.length });
   }
