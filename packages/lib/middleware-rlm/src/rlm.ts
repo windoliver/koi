@@ -120,6 +120,30 @@ function hasToolCallBlock(response: ModelResponse): boolean {
   return false;
 }
 
+/**
+ * Synthesize a terminal abort response for a cancelled segmented run
+ * without invoking the downstream handler. Mirrors the metadata shape
+ * `consumeStream` builds for streamed aborts so observability /
+ * delivery paths see a single contract.
+ */
+function buildAbortResponse(seg: ModelRequest): ModelResponse {
+  const signal = seg.signal;
+  const isTimeout =
+    signal !== undefined &&
+    signal.reason instanceof DOMException &&
+    signal.reason.name === "TimeoutError";
+  return {
+    content: "",
+    model: seg.model ?? "",
+    stopReason: "error",
+    metadata: {
+      rlmStreamError: isTimeout ? "Stream timed out" : "Stream cancelled",
+      interrupted: true,
+      terminatedBy: isTimeout ? "activity-timeout" : "abort",
+    },
+  };
+}
+
 async function dispatchSegmented(
   cfg: ResolvedConfig,
   segments: readonly ModelRequest[],
@@ -129,6 +153,20 @@ async function dispatchSegmented(
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     if (seg === undefined) continue;
+    // Pre-dispatch abort guard. Without this, a cancellation that
+    // arrives after segment k completes still pays for segments
+    // k+1..N because not every downstream handler short-circuits
+    // synchronously on an already-aborted signal. RLM owns the
+    // segmentation loop, so RLM owns the abort-between-chunks check.
+    if (seg.signal?.aborted === true) {
+      throw createSegmentAbortError({
+        index: i,
+        total: segments.length,
+        response: buildAbortResponse(seg),
+        toolCallAborts: false,
+        kind: "call",
+      });
+    }
     const response = await next(seg);
     const stopAborts =
       response.stopReason !== undefined && ABORTING_STOP_REASONS.has(response.stopReason);
@@ -367,6 +405,25 @@ async function consumeStream(
   let streamedText = ""; // let: accumulate text_delta in case done.response.content is empty
   let model = ""; // let: best-effort model id from done or fallback
   let responseId: string | undefined;
+  // Pre-dispatch abort guard. Opening a downstream stream with an
+  // already-aborted signal would still send the request to the provider
+  // (or downstream handlers that check abort lazily) and incur paid
+  // traffic. Short-circuit before invoking `next`.
+  if (request.signal?.aborted === true) {
+    const isTimeout =
+      request.signal.reason instanceof DOMException &&
+      request.signal.reason.name === "TimeoutError";
+    return {
+      content: "",
+      model: request.model ?? "",
+      stopReason: "error",
+      metadata: {
+        rlmStreamError: isTimeout ? "Stream timed out" : "Stream cancelled",
+        interrupted: true,
+        terminatedBy: isTimeout ? "activity-timeout" : "abort",
+      },
+    };
+  }
   const iterator = next(request)[Symbol.asyncIterator]();
   const signal = request.signal;
   const abortPromise: Promise<{ readonly aborted: true }> | undefined =
@@ -637,6 +694,19 @@ async function* rlmWrapModelStream(
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     if (seg === undefined) continue;
+    // Pre-dispatch abort guard for the streaming path — see the
+    // matching guard in dispatchSegmented. Opening a fresh downstream
+    // stream after a late abort would leak an extra paid provider
+    // request on every cancelled oversized turn.
+    if (seg.signal?.aborted === true) {
+      throw createSegmentAbortError({
+        index: i,
+        total: segments.length,
+        response: buildAbortResponse(seg),
+        toolCallAborts: false,
+        kind: "stream",
+      });
+    }
     const response = await consumeStream(seg, next);
     const stopAborts =
       response.stopReason !== undefined && ABORTING_STOP_REASONS.has(response.stopReason);

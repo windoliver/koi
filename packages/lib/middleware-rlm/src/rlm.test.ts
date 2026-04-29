@@ -645,6 +645,90 @@ describe("createRlmMiddleware", () => {
     expect(threw).toBe(true);
   });
 
+  test("wrapModelCall does not dispatch later segments after abort fires between chunks", async () => {
+    // Without a pre-dispatch abort guard, a cancellation that lands
+    // after segment k completes still pays for segments k+1..N because
+    // not every downstream handler short-circuits on an
+    // already-aborted signal. RLM owns the segmentation loop, so RLM
+    // owns the abort-between-chunks check.
+    const ac = new AbortController();
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let calls = 0; // let: count downstream invocations
+    const handler: ModelHandler = async () => {
+      calls += 1;
+      if (calls === 1) ac.abort();
+      return {
+        content: `seg${calls}`,
+        model: "abort-test",
+        stopReason: "stop" as const,
+      };
+    };
+    const big = "x".repeat(400);
+    let threw = false;
+    try {
+      await mw.wrapModelCall?.(
+        turnCtx(),
+        { messages: [userMessage(big)], signal: ac.signal },
+        handler,
+      );
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(calls).toBe(1); // only the first segment ran; abort guard stopped the rest
+  });
+
+  test("wrapModelStream does not open downstream stream after abort fires between segments", async () => {
+    const ac = new AbortController();
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let streamsOpened = 0; // let: count consumeStream invocations
+    const upstream: ModelStreamHandler = async function* () {
+      streamsOpened += 1;
+      const seg = streamsOpened;
+      // Abort BEFORE done so the segment's consumeStream still returns
+      // a clean response (not an aborted one). The abort then fires
+      // for the *next* segment's pre-dispatch guard.
+      if (seg === 1) {
+        // schedule abort to fire after this stream's done is consumed
+        queueMicrotask(() => ac.abort());
+      }
+      yield { kind: "text_delta", delta: `seg${seg}` };
+      yield {
+        kind: "done",
+        response: {
+          content: `seg${seg}`,
+          model: "abort-stream",
+          stopReason: "stop" as const,
+        },
+      };
+    };
+    const big = "y".repeat(400);
+    const iter = mw.wrapModelStream?.(
+      turnCtx(),
+      { messages: [userMessage(big)], signal: ac.signal },
+      upstream,
+    );
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    let threw = false;
+    try {
+      for await (const _c of iter) {
+        // expected: abort guard prevents segment 2's stream from opening
+      }
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(streamsOpened).toBe(1);
+  });
+
   test("wrapModelCall fails closed when request.maxTokens is set (per-segment dispatch would amplify the cap)", async () => {
     const mw = createRlmMiddleware({
       maxInputTokens: 30,
