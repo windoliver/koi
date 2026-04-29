@@ -1054,6 +1054,167 @@ describe("createRlmMiddleware", () => {
     }
   });
 
+  test("wrapModelStream does not leak thinking_delta from a segment that ends in tool_use", async () => {
+    // Failed/blocked segments must not surface their reasoning to the
+    // consumer before the abort guard fires. If a segment streams
+    // thinking and then ends with stopReason=tool_use, those reasoning
+    // tokens must be dropped, not replayed downstream alongside the
+    // SegmentAbortError.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let segmentCount = 0; // let: per-segment counter
+    const upstream: ModelStreamHandler = async function* () {
+      segmentCount += 1;
+      const n = segmentCount;
+      yield { kind: "thinking_delta", delta: `secret-reasoning-${n}` };
+      // First segment terminates in tool_use — it must be rejected
+      // BEFORE its thinking is sent to the consumer.
+      if (n === 1) {
+        yield {
+          kind: "done",
+          response: {
+            content: "",
+            model: "stream-model",
+            stopReason: "tool_use" as const,
+            richContent: [{ kind: "tool_call", id: toolCallId("c1"), name: "x", arguments: {} }],
+          },
+        };
+        return;
+      }
+      yield { kind: "text_delta", delta: `seg${n}` };
+      yield {
+        kind: "done",
+        response: { content: `seg${n}`, model: "stream-model", stopReason: "stop" as const },
+      };
+    };
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    const emitted: ModelChunk[] = [];
+    let threw = false;
+    try {
+      for await (const c of iter) emitted.push(c);
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    const thinking = emitted.filter((c) => c.kind === "thinking_delta");
+    // No thinking should be emitted: the only segment that produced
+    // thinking ended in tool_use and was rejected before replay.
+    expect(thinking.length).toBe(0);
+  });
+
+  test("wrapModelStream wraps a thrown downstream stream into SegmentAbortError with completedSegments", async () => {
+    // A network/provider failure that surfaces as a thrown promise
+    // (rather than a structured `error` chunk) must still preserve
+    // completed-segment context so callers can resume from segment k
+    // instead of paying to re-dispatch the whole oversized turn.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let call = 0; // let: per-test counter
+    const upstream: ModelStreamHandler = async function* () {
+      call += 1;
+      const n = call;
+      if (n === 1) {
+        yield { kind: "text_delta", delta: "seg1" };
+        yield {
+          kind: "done",
+          response: {
+            content: "seg1",
+            model: "stream-model",
+            stopReason: "stop" as const,
+            usage: { inputTokens: 9, outputTokens: 2 },
+          },
+        };
+        return;
+      }
+      // Second segment: throw before yielding any chunk.
+      throw new Error("upstream EPIPE");
+    };
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    let caught: unknown;
+    try {
+      for await (const _ of iter) {
+        // exhaust until segment loop wraps the thrown error
+      }
+    } catch (err: unknown) {
+      caught = err;
+    }
+    if (
+      !(caught instanceof Error) ||
+      !("segmentResponse" in caught) ||
+      !("completedSegments" in caught)
+    ) {
+      throw new Error("expected SegmentAbortError");
+    }
+    const aborted = caught as unknown as Error & {
+      readonly segmentIndex: number;
+      readonly completedSegments: readonly ModelResponse[];
+      readonly completedUsage:
+        | { readonly inputTokens: number; readonly outputTokens: number }
+        | undefined;
+    };
+    expect(aborted.segmentIndex).toBe(1);
+    expect(aborted.completedSegments.length).toBe(1);
+    expect(aborted.completedUsage?.inputTokens).toBe(9);
+  });
+
+  test("wrapModelCall wraps a thrown downstream call into SegmentAbortError with completedSegments", async () => {
+    // Same partial-progress contract as the streaming path: a thrown
+    // exception from the call handler on segment k must preserve the
+    // earlier segments' responses + aggregated usage.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let call = 0; // let: per-test counter
+    const handler: ModelHandler = async (_req) => {
+      call += 1;
+      const n = call;
+      if (n === 1) {
+        return {
+          content: "seg1",
+          model: "test",
+          usage: { inputTokens: 5, outputTokens: 1 },
+        } satisfies ModelResponse;
+      }
+      throw new Error("provider 503");
+    };
+    const big = "x".repeat(400);
+    let caught: unknown;
+    try {
+      await mw.wrapModelCall?.(turnCtx(), { messages: [userMessage(big)] }, handler);
+    } catch (err: unknown) {
+      caught = err;
+    }
+    if (
+      !(caught instanceof Error) ||
+      !("segmentResponse" in caught) ||
+      !("completedSegments" in caught)
+    ) {
+      throw new Error("expected SegmentAbortError");
+    }
+    const aborted = caught as unknown as Error & {
+      readonly segmentIndex: number;
+      readonly completedSegments: readonly ModelResponse[];
+      readonly completedUsage:
+        | { readonly inputTokens: number; readonly outputTokens: number }
+        | undefined;
+    };
+    expect(aborted.segmentIndex).toBe(1);
+    expect(aborted.completedSegments.length).toBe(1);
+    expect(aborted.completedUsage?.inputTokens).toBe(5);
+  });
+
   test("describeCapabilities returns a label", () => {
     const mw = createRlmMiddleware();
     const cap = mw.describeCapabilities?.(turnCtx());

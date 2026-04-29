@@ -168,7 +168,29 @@ async function dispatchSegmented(
         completedSegments: [...responses],
       });
     }
-    const response = await next(seg);
+    let response: ModelResponse;
+    try {
+      response = await next(seg);
+    } catch (err: unknown) {
+      // Wrap a thrown downstream failure (network blip, provider 5xx,
+      // hook throw) so callers receive `completedSegments` /
+      // `completedUsage` and can resume from this segment instead of
+      // paying to re-dispatch the chunks already completed.
+      const message = err instanceof Error ? err.message : String(err);
+      throw createSegmentAbortError({
+        index: i,
+        total: segments.length,
+        response: {
+          content: "",
+          model: seg.model ?? "",
+          stopReason: "error",
+          metadata: { rlmStreamError: message },
+        },
+        toolCallAborts: false,
+        kind: "call",
+        completedSegments: [...responses],
+      });
+    }
     const stopAborts =
       response.stopReason !== undefined && ABORTING_STOP_REASONS.has(response.stopReason);
     const toolCallAborts = hasToolCallBlock(response);
@@ -502,7 +524,27 @@ async function consumeStream(
       thinkingText: "",
     };
   }
-  const iterator = next(request)[Symbol.asyncIterator]();
+  // Stream creation can itself throw (provider rejected the request,
+  // hook fault, network error before any chunk lands). Normalize that
+  // into a structured terminal response so the segment loop can wrap it
+  // in SegmentAbortError with `completedSegments`/`completedUsage`
+  // instead of letting the bare exception escape and discard the
+  // partial-progress state that callers depend on for resume.
+  let iterator: AsyncIterator<ModelChunk>;
+  try {
+    iterator = next(request)[Symbol.asyncIterator]();
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      response: {
+        content: "",
+        model: request.model ?? "",
+        stopReason: "error",
+        metadata: { rlmStreamError: message },
+      },
+      thinkingText: "",
+    };
+  }
   const signal = request.signal;
   const abortPromise: Promise<{ readonly aborted: true }> | undefined =
     signal === undefined
@@ -567,11 +609,21 @@ async function consumeStream(
   let exitedOnDone = false; // let: gates iterator cleanup in finally
   try {
     while (true) {
-      const nextPromise = iterator.next();
-      const settled =
-        abortPromise === undefined
-          ? await nextPromise
-          : await Promise.race([nextPromise, abortPromise]);
+      let settled: IteratorResult<ModelChunk> | { readonly aborted: true };
+      try {
+        const nextPromise = iterator.next();
+        settled =
+          abortPromise === undefined
+            ? await nextPromise
+            : await Promise.race([nextPromise, abortPromise]);
+      } catch (err: unknown) {
+        // Iterator rejected mid-stream (network failure, provider error
+        // surfaced as a thrown promise, etc.). Synthesize a terminal
+        // error response so the outer segment loop can wrap it with
+        // SegmentAbortError.completedSegments and let callers resume.
+        const message = err instanceof Error ? err.message : String(err);
+        return buildTerminalResponse({ errorMessage: message });
+      }
       if ("aborted" in settled && settled.aborted === true) {
         // Distinguish caller cancel from activity-timeout via the
         // signal's reason (matches the query-engine consumer's
@@ -815,19 +867,39 @@ async function* rlmWrapModelStream(
         completedSegments: [...responses],
       });
     }
-    const consumed = await consumeStream(seg, next);
-    const { response, thinkingText } = consumed;
-    // Re-emit per-segment thinking before the next segment opens so the
-    // engine, TUI, and event-trace see thinking_delta in segment order
-    // alongside the eventual aggregate text. Holding it until after
-    // reassembly would invert the visible chronology.
-    if (thinkingText.length > 0) {
-      yield { kind: "thinking_delta", delta: thinkingText };
+    let consumed: ConsumedSegment;
+    try {
+      consumed = await consumeStream(seg, next);
+    } catch (err: unknown) {
+      // A thrown downstream failure (provider blew up before yielding,
+      // iterator rejected, etc.) must still surface completedSegments /
+      // completedUsage so callers can resume from `i` instead of paying
+      // to re-dispatch every chunk. Wrap the bare exception in a
+      // SegmentAbortError carrying a synthetic terminal response.
+      const message = err instanceof Error ? err.message : String(err);
+      throw createSegmentAbortError({
+        index: i,
+        total: segments.length,
+        response: {
+          content: "",
+          model: seg.model ?? "",
+          stopReason: "error",
+          metadata: { rlmStreamError: message },
+        },
+        toolCallAborts: false,
+        kind: "stream",
+        completedSegments: [...responses],
+      });
     }
+    const { response, thinkingText } = consumed;
     const stopAborts =
       response.stopReason !== undefined && ABORTING_STOP_REASONS.has(response.stopReason);
     const toolCallAborts = hasToolCallBlock(response);
     if (stopAborts || toolCallAborts) {
+      // Do NOT emit buffered thinking_delta from a rejected segment:
+      // failed/blocked segments must not leak reasoning to the consumer
+      // before the safety guard fires. Buffered thinking is dropped
+      // alongside the rejected segment.
       throw createSegmentAbortError({
         index: i,
         total: segments.length,
@@ -836,6 +908,11 @@ async function* rlmWrapModelStream(
         kind: "stream",
         completedSegments: [...responses],
       });
+    }
+    // Segment passed safety checks — replay its thinking_delta now,
+    // preserving per-segment chronology for the engine/TUI/event-trace.
+    if (thinkingText.length > 0) {
+      yield { kind: "thinking_delta", delta: thinkingText };
     }
     responses.push(response);
     emit(cfg, { kind: "segment-completed", index: i, count: segments.length });
