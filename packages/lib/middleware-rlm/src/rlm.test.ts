@@ -1408,6 +1408,61 @@ describe("createRlmMiddleware", () => {
     expect(meta?.retryAfterMs).toBe(1234);
   });
 
+  test("wrapModelStream surfaces completed-segment text BEFORE a later segment aborts (no data loss)", async () => {
+    // The query-engine stream consumer converts a thrown
+    // SegmentAbortError into a terminal error using only previously-
+    // yielded text_delta fragments. If RLM deferred all text emission
+    // until full reassembly, the answers from segments that already
+    // ran (and were billed) would be silently lost on a later segment
+    // failure. Per-segment text must be yielded the moment the
+    // segment passes its safety guards.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let call = 0; // let: per-test counter
+    const upstream: ModelStreamHandler = async function* () {
+      call += 1;
+      const n = call;
+      if (n === 1) {
+        yield { kind: "text_delta", delta: "completed-text" };
+        yield {
+          kind: "done",
+          response: {
+            content: "completed-text",
+            model: "stream-model",
+            stopReason: "stop" as const,
+          },
+        };
+        return;
+      }
+      // Second segment: throws to simulate rate limit.
+      throw new Error("provider 503");
+    };
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    const seen: ModelChunk[] = [];
+    let threw = false;
+    try {
+      for await (const c of iter) seen.push(c);
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    // Successful segment 1's text MUST have been yielded BEFORE the
+    // segment 2 throw — otherwise downstream consumers that fold a
+    // thrown stream into a terminal error using yielded fragments
+    // would lose the text from billed segments.
+    const textChunks = seen.filter((c) => c.kind === "text_delta");
+    let combined = "";
+    for (const t of textChunks) {
+      if (t.kind === "text_delta") combined += t.delta;
+    }
+    expect(combined).toContain("completed-text");
+  });
+
   test("describeCapabilities returns a label", () => {
     const mw = createRlmMiddleware();
     const cap = mw.describeCapabilities?.(turnCtx());

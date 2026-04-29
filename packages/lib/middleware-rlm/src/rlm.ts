@@ -1007,18 +1007,30 @@ async function* rlmWrapModelStream(
         completedSegments: [...responses],
       });
     }
-    // Segment passed safety checks — replay its thinking_delta now,
-    // preserving per-segment chronology for the engine/TUI/event-trace.
+    // Segment passed safety checks — replay its thinking_delta and
+    // text_delta now. Surfacing text incrementally is required for
+    // partial-failure durability: under the query-engine stream
+    // consumer, a thrown SegmentAbortError on segment N>1 is converted
+    // to a terminal error using only previously-yielded text fragments,
+    // so deferring all text until full reassembly would silently lose
+    // the answers from completed segments that already ran and were
+    // billed. Per-segment chronology also matches what the engine/TUI/
+    // event-trace expect on a non-segmented turn.
     if (thinkingText.length > 0) {
       yield { kind: "thinking_delta", delta: thinkingText };
+    }
+    if (response.content.length > 0) {
+      yield { kind: "text_delta", delta: response.content };
+    }
+    // Insert separator between segments so the streamed text matches
+    // the reassembled `done.response.content`. Non-empty separator only.
+    if (i + 1 < segments.length && cfg.segmentSeparator.length > 0) {
+      yield { kind: "text_delta", delta: cfg.segmentSeparator };
     }
     responses.push(response);
     emit(cfg, { kind: "segment-completed", index: i, count: segments.length });
   }
   const merged = reassembleResponses(responses, cfg.segmentSeparator);
-  if (merged.content.length > 0) {
-    yield { kind: "text_delta", delta: merged.content };
-  }
   // Do NOT emit a post-reassembly aggregate `usage` chunk: per-segment
   // upstream usage is already forwarded as a heartbeat the moment it
   // arrives, and the canonical aggregate is carried by

@@ -194,14 +194,40 @@ describe("segmentRequest", () => {
     expect(() => segmentRequest(makeRequest([msg]), 100)).toThrow(SiblingNonTextBlocksError);
   });
 
-  test("throws MultipleOversizedBlocksError when more than one user-role block exceeds maxChunkChars", () => {
+  test("throws MultipleOversizedBlocksError when the active user turn has multiple oversized text blocks", () => {
     // A true multi-block partition would require an explicit reducer
     // stage. Cross-product fan-out would duplicate work and corrupt
     // reassembly. Fail closed and ask the caller to combine upstream.
     const a = "a".repeat(300);
     const b = "b".repeat(200);
-    const req = makeRequest([userMessage(a), userMessage(b)]);
-    expect(() => segmentRequest(req, 100)).toThrow(/multiple oversized/i);
+    const activeTurn: InboundMessage = {
+      senderId: "user",
+      timestamp: 0,
+      content: [
+        { kind: "text", text: a },
+        { kind: "text", text: b },
+      ],
+    };
+    expect(() => segmentRequest(makeRequest([activeTurn]), 100)).toThrow(/multiple oversized/i);
+  });
+
+  test("does not chunk a historical user message even if it is the longest text in the request", () => {
+    // The active turn is the LAST user-role message. An earlier user
+    // message that happens to be longer (e.g. an uploaded document)
+    // must not be rewritten — later assistant/tool messages were
+    // produced from the FULL historical text, so chunking it would
+    // make the transcript internally inconsistent and silently corrupt
+    // the model's answer. Pass through unchanged.
+    const oldDoc = "d".repeat(500);
+    const assistantReply: InboundMessage = {
+      senderId: "assistant",
+      timestamp: 1,
+      content: [{ kind: "text", text: "ok" }],
+    };
+    const activeTurn = userMessage("short follow-up");
+    const req = makeRequest([userMessage(oldDoc), assistantReply, activeTurn]);
+    const out = segmentRequest(req, 100);
+    expect(out).toEqual([req]);
   });
 
   test("treats non-literal user senders (e.g. 'user:1', 'watch-patterns') as user-role for chunk eligibility", () => {

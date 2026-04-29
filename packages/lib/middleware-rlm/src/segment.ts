@@ -63,27 +63,45 @@ function isUserRoleMessage(msg: InboundMessage, trustMetadataRole: boolean): boo
 }
 
 /**
- * Collect every user-role text block strictly larger than `minChars`,
- * sorted longest-first. The caller decides whether to chunk the largest,
- * fail closed because more than one oversized block exists, or pass the
- * request through.
+ * Collect oversized user-role text blocks from the **active turn only**
+ * — i.e. the LAST user-role message in the request. Earlier user-role
+ * messages are conversation history; chunking them would rewrite a
+ * historical message while leaving later assistant/tool/user state
+ * intact, so the model would see an internally inconsistent transcript
+ * (later turns were produced from the FULL historical text, but
+ * segmentation would only show a fragment). RLM is therefore restricted
+ * to the latest user turn.
+ *
+ * Returns a list (rather than a single block) so the caller can fail
+ * closed when more than one oversized block exists in the active turn —
+ * a true multi-block partition would need a reducer stage that is out
+ * of scope.
  */
 function findOversizedTextBlocks(
   messages: readonly InboundMessage[],
   minChars: number,
   trustMetadataRole: boolean,
 ): readonly TargetLocation[] {
-  const out: TargetLocation[] = [];
-  for (let i = 0; i < messages.length; i++) {
+  // Find the index of the last user-role message — anything before it
+  // is history and must not be rewritten.
+  let lastUserIdx = -1; // let: scan from end for last user-role message
+  for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg === undefined) continue;
-    if (!isUserRoleMessage(msg, trustMetadataRole)) continue;
-    for (let j = 0; j < msg.content.length; j++) {
-      const block = msg.content[j];
-      if (block === undefined || block.kind !== "text") continue;
-      if (block.text.length <= minChars) continue;
-      out.push({ messageIndex: i, blockIndex: j, text: block.text });
+    if (isUserRoleMessage(msg, trustMetadataRole)) {
+      lastUserIdx = i;
+      break;
     }
+  }
+  if (lastUserIdx < 0) return [];
+  const targetMsg = messages[lastUserIdx];
+  if (targetMsg === undefined) return [];
+  const out: TargetLocation[] = [];
+  for (let j = 0; j < targetMsg.content.length; j++) {
+    const block = targetMsg.content[j];
+    if (block === undefined || block.kind !== "text") continue;
+    if (block.text.length <= minChars) continue;
+    out.push({ messageIndex: lastUserIdx, blockIndex: j, text: block.text });
   }
   return out.toSorted((a, b) => b.text.length - a.text.length);
 }
