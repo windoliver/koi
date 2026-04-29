@@ -170,6 +170,39 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(out).not.toHaveProperty("error");
     });
 
+    it("sanitizes and length-caps the auth scope (untrusted upstream input)", () => {
+      const err = baseError("AUTH_REQUIRED", "x", {
+        context: {
+          authorizationUrl: "https://issuer.example",
+          scope: "read @everyone https://attacker.example/pay `inject`",
+        },
+      });
+      const out = classifyErrorForChannel(err);
+      if (out.kind !== "auth-required") throw new Error("expected auth-required");
+      // Mentions, URLs, and formatting sigils are stripped from scope so a
+      // hostile producer cannot smuggle them through the auth handoff.
+      expect(out.auth.scope).toBeDefined();
+      expect(out.auth.scope).not.toContain("@");
+      expect(out.auth.scope).not.toContain("https://");
+      expect(out.auth.scope).not.toContain("attacker.example");
+      expect(out.auth.scope).not.toContain("`");
+    });
+
+    it("caps oversized auth scope with an ellipsis", () => {
+      const err = baseError("AUTH_REQUIRED", "x", {
+        context: {
+          authorizationUrl: "https://issuer.example",
+          scope: "x".repeat(500),
+        },
+      });
+      const out = classifyErrorForChannel(err);
+      if (out.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(out.auth.scope).toBeDefined();
+      // Capped at 200 + ellipsis.
+      expect(out.auth.scope?.length).toBeLessThanOrEqual(201);
+      expect(out.auth.scope?.endsWith("…")).toBe(true);
+    });
+
     it("returns an empty auth object when context has no candidate-safe fields", () => {
       const err = baseError("AUTH_REQUIRED", "x", {
         context: { unrelated: "value" },

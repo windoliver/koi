@@ -92,6 +92,11 @@ function sanitizeValidationMessage(raw: string): string {
  * the discriminated `auth-required` payload can never accidentally leak
  * other context fields (user IDs, internal tokens, etc.) into adapter UX.
  */
+// Cap on auth scope length: long enough for realistic OAuth scope strings
+// (space-separated lists of resource identifiers), short enough that a
+// hostile producer cannot dump arbitrary attacker text into adapter UX.
+const SCOPE_MAX_LEN = 200;
+
 function extractAuthHandoff(error: KoiError): {
   readonly unverifiedAuthorizationUrl?: string;
   readonly scope?: string;
@@ -102,7 +107,25 @@ function extractAuthHandoff(error: KoiError): {
   const url = (ctx as Record<string, unknown>).authorizationUrl;
   if (typeof url === "string") out.unverifiedAuthorizationUrl = url;
   const scope = (ctx as Record<string, unknown>).scope;
-  if (typeof scope === "string") out.scope = scope;
+  if (typeof scope === "string") {
+    // Sanitize: strip ASCII/Unicode control chars and chat-formatting
+    // sigils so a hostile upstream cannot smuggle mentions, links, or
+    // bidi tricks through the auth handoff. Length-capped to bound
+    // attacker payload size.
+    const sanitized = scope
+      .normalize("NFC")
+      .replace(CONTROL_CHARS, " ")
+      .replace(UNICODE_CONTROL_CHARS, "")
+      .replace(URL_LIKE, "")
+      .replace(WWW_LIKE, "")
+      .replace(BARE_DOMAIN_LIKE, "")
+      .replace(FORMATTING_CHARS, "")
+      .trim();
+    if (sanitized.length > 0) {
+      out.scope =
+        sanitized.length > SCOPE_MAX_LEN ? `${sanitized.slice(0, SCOPE_MAX_LEN)}…` : sanitized;
+    }
+  }
   return out;
 }
 
