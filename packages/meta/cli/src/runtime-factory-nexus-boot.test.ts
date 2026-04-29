@@ -183,6 +183,34 @@ describe("Step 0: assertProductionTransport + HARD REJECTS", () => {
     ).rejects.toThrow(/incompatible with/);
   });
 
+  test("assert-transport-reachable with nexusPermissionsEnabled=false throws", async () => {
+    await expect(
+      createKoiRuntime({
+        ...baseConfig(),
+        nexusTransport: fakeTransport({
+          kind: "http",
+          health: async () => ({ ok: true, value: okHealth }),
+        }) as HealthCapableNexusTransport,
+        nexusBootMode: "assert-transport-reachable-at-boot",
+        nexusPermissionsEnabled: false,
+      }),
+    ).rejects.toThrow(/requires nexusPermissionsEnabled=true/);
+  });
+
+  test("assert-remote-policy-loaded with nexusPermissionsEnabled=false throws", async () => {
+    await expect(
+      createKoiRuntime({
+        ...baseConfig(),
+        nexusTransport: fakeTransport({
+          kind: "http",
+          health: async () => ({ ok: true, value: okHealth }),
+        }) as HealthCapableNexusTransport,
+        nexusBootMode: "assert-remote-policy-loaded-at-boot",
+        nexusPermissionsEnabled: false,
+      }),
+    ).rejects.toThrow(/requires nexusPermissionsEnabled=true/);
+  });
+
   test("local-bridge + nexusAuditPoisonOnError throws", async () => {
     // Note: poison guard check fires inside the audit block, AFTER the probe
     // block already handled local-bridge in telemetry mode. Use telemetry to

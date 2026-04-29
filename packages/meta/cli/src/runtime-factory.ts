@@ -1853,6 +1853,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           "this mode's contract requires remote policy to be loaded at boot.",
       );
     }
+    // Both assert-* boot modes require permissions to be enabled — the probe
+    // targets the policy namespace (version.json + policy.json), not audit
+    // paths, and the activation gate runs inside the permissions wiring
+    // block. Audit-only deployments would get false readiness from a
+    // permissions-only probe, so reject the combination explicitly.
+    if (nexusBootMode !== "telemetry" && !nexusPermsWanted) {
+      throw new Error(
+        `nexusBootMode="${nexusBootMode}" requires nexusPermissionsEnabled=true. ` +
+          "The probe targets the permissions namespace; audit-only deployments " +
+          "cannot earn a fail-closed signal from this mode.",
+      );
+    }
 
     // Probe block: HTTP probes in place; local-bridge uses the disposable
     // probe factory (sealed-capability, never reuses long-lived credentials).
@@ -1936,7 +1948,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     nexusPermBackend = createNexusPermissionBackend({
       transport,
       localBackend: tuiPermBackend,
-      ...(config.nexusBootSyncDeadlineMs !== undefined
+      // Only honor bootSyncDeadlineMs under assert-remote-policy-loaded — in
+      // other modes the deadline would silently downgrade slow-but-healthy
+      // Nexus to local fallback (centralized policy never activates, but
+      // boot succeeds — exactly the silent authorization downgrade the
+      // assert modes exist to prevent).
+      ...(config.nexusBootSyncDeadlineMs !== undefined &&
+      nexusBootMode === "assert-remote-policy-loaded-at-boot"
         ? { bootSyncDeadlineMs: config.nexusBootSyncDeadlineMs }
         : {}),
       ...(config.nexusPolicyPath !== undefined ? { policyPath: config.nexusPolicyPath } : {}),
@@ -1989,28 +2007,46 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     permBackend = nexusPermBackend;
 
     // assert-remote-policy-loaded-at-boot: await ready + verify activation,
-    // bounded by nexusBootSyncDeadlineMs.
+    // bounded by nexusBootSyncDeadlineMs. Dispose the backend before throwing
+    // so a rejected boot does not leak a live polling timer + open transport.
     if (nexusBootMode === "assert-remote-policy-loaded-at-boot") {
       const deadline = config.nexusBootSyncDeadlineMs ?? 30_000;
-      const timeoutP = new Promise<"timeout">((resolve) =>
-        setTimeout(() => resolve("timeout"), deadline),
-      );
-      const raceResult = await Promise.race([
-        nexusPermBackend.ready.then(() => "ready" as const),
-        timeoutP,
-      ]);
-      if (raceResult === "timeout") {
-        nexusPermBackend.abortInFlightSync();
-        throw new Error(
-          `nexus initial policy sync exceeded nexusBootSyncDeadlineMs=${String(deadline)}ms ` +
-            `under ${nexusBootMode}.`,
-        );
-      }
-      if (!nexusPermBackend.isCentralizedPolicyActive()) {
-        throw new Error(
-          `nexus initial policy sync resolved without activating remote policy under ${nexusBootMode}. ` +
-            "Likely cause: malformed policy.json, marker mismatch, or transport error during sync.",
-        );
+      let timerHandle: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const timeoutP = new Promise<"timeout">((resolve) => {
+          timerHandle = setTimeout(() => resolve("timeout"), deadline);
+          // unref so a successful boot does not keep the event loop alive
+          // until the deadline elapses on short-lived/headless runs.
+          if (
+            typeof timerHandle === "object" &&
+            timerHandle !== null &&
+            "unref" in timerHandle &&
+            typeof (timerHandle as { unref?: () => void }).unref === "function"
+          ) {
+            (timerHandle as { unref: () => void }).unref();
+          }
+        });
+        const raceResult = await Promise.race([
+          nexusPermBackend.ready.then(() => "ready" as const),
+          timeoutP,
+        ]);
+        if (raceResult === "timeout") {
+          nexusPermBackend.abortInFlightSync();
+          nexusPermBackend.dispose();
+          throw new Error(
+            `nexus initial policy sync exceeded nexusBootSyncDeadlineMs=${String(deadline)}ms ` +
+              `under ${nexusBootMode}.`,
+          );
+        }
+        if (!nexusPermBackend.isCentralizedPolicyActive()) {
+          nexusPermBackend.dispose();
+          throw new Error(
+            `nexus initial policy sync resolved without activating remote policy under ${nexusBootMode}. ` +
+              "Likely cause: malformed policy.json, marker mismatch, or transport error during sync.",
+          );
+        }
+      } finally {
+        if (timerHandle !== undefined) clearTimeout(timerHandle);
       }
     }
   }
@@ -3305,14 +3341,29 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           ...(config.nexusAuditPoisonOnError === true
             ? {
                 onError: (err: unknown): void => {
-                  console.error("[koi/cli] nexus compliance write failed — terminating:", err);
-                  process.exit(1);
+                  // Latch the per-sink poison so the next admission boundary
+                  // refuses new work. Do NOT process.exit() here — Nexus
+                  // writes are async, and a hard-exit from a fire-and-forget
+                  // callback would strand mid-session work, bypass cleanup,
+                  // and skip the surrounding poison-latch flow. Synchronous
+                  // fail-stop on every operation requires a local required
+                  // sink (NDJSON/SQLite); honest scoping per spec.
+                  if (nexusPoisonError.err === undefined) {
+                    nexusPoisonError.err = err;
+                    console.error(
+                      "[koi/cli] nexus compliance write failed — sink poisoned, refusing further work at next boundary:",
+                      err,
+                    );
+                    process.exitCode = 1;
+                  }
                 },
               }
             : {}),
         }),
       );
       // Wrap the audit middleware to fail admission boundaries when poisoned.
+      // Mirrors the NDJSON/SQLite required-sink guard surface so post-poison
+      // model/tool calls cannot run inside an already-open turn.
       const guardedNexusAuditMw: KoiMiddleware =
         config.nexusAuditPoisonOnError === true
           ? {
@@ -3333,6 +3384,61 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
                   );
                 }
                 return nexusAuditMw.onBeforeTurn?.(ctx);
+              },
+              wrapModelCall: async (ctx, request, next) => {
+                if (nexusPoisonError.err !== undefined) {
+                  throw new Error("nexus audit sink poisoned — refusing model call mid-turn", {
+                    cause: nexusPoisonError.err,
+                  });
+                }
+                if (nexusAuditMw.wrapModelCall !== undefined) {
+                  return nexusAuditMw.wrapModelCall(ctx, request, next);
+                }
+                return next(request);
+              },
+              wrapModelStream: (ctx, request, next) => {
+                if (nexusPoisonError.err !== undefined) {
+                  throw new Error("nexus audit sink poisoned — refusing model stream mid-turn", {
+                    cause: nexusPoisonError.err,
+                  });
+                }
+                const inner = nexusAuditMw.wrapModelStream
+                  ? nexusAuditMw.wrapModelStream(ctx, request, next)
+                  : next(request);
+                // Stop yielding chunks if the sink poisons during the stream
+                return (async function* (): AsyncIterable<
+                  Awaited<ReturnType<typeof next>> extends AsyncIterable<infer U> ? U : never
+                > {
+                  for await (const chunk of inner) {
+                    if (nexusPoisonError.err !== undefined) {
+                      throw new Error(
+                        "nexus audit sink poisoned mid-stream — aborting model stream",
+                        { cause: nexusPoisonError.err },
+                      );
+                    }
+                    yield chunk;
+                  }
+                })();
+              },
+              wrapToolCall: async (ctx, request, next) => {
+                if (nexusPoisonError.err !== undefined) {
+                  throw new Error("nexus audit sink poisoned — refusing tool call mid-turn", {
+                    cause: nexusPoisonError.err,
+                  });
+                }
+                if (nexusAuditMw.wrapToolCall !== undefined) {
+                  return nexusAuditMw.wrapToolCall(ctx, request, next);
+                }
+                return next(request);
+              },
+              onPermissionDecision: async (ctx, query, decision) => {
+                if (nexusPoisonError.err !== undefined) {
+                  throw new Error(
+                    "nexus audit sink poisoned — refusing permission decision mid-turn",
+                    { cause: nexusPoisonError.err },
+                  );
+                }
+                return nexusAuditMw.onPermissionDecision?.(ctx, query, decision);
               },
               onSessionEnd: async (ctx) => {
                 if (nexusPoisonError.err !== undefined) {

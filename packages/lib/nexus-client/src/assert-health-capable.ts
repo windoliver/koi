@@ -1,4 +1,4 @@
-import type { HealthCapableNexusTransport, NexusTransport, NexusTransportKind } from "./types.js";
+import type { HealthCapableNexusTransport, NexusTransport } from "./types.js";
 
 /**
  * Type guard / runtime assertion: throws if `t` is not HealthCapable.
@@ -24,7 +24,7 @@ export function assertHealthCapable(t: NexusTransport): asserts t is HealthCapab
  */
 export function assertProductionTransport(
   t: NexusTransport,
-): asserts t is NexusTransport & { readonly kind: NexusTransportKind } {
+): asserts t is NexusTransport & { readonly kind: "http" | "local-bridge" } {
   if (t.kind === undefined) {
     throw new Error(
       "nexus transport is missing required `kind` discriminator — " +
@@ -33,6 +33,13 @@ export function assertProductionTransport(
         "nexusPermissionsEnabled=false AND nexusAuditEnabled=false to " +
         "explicitly opt out of Nexus consumer wiring (transport will still " +
         "be used by other subsystems).",
+    );
+  }
+  if (t.kind === "probe") {
+    throw new Error(
+      'nexus transport kind="probe" is a disposable health probe and cannot ' +
+        "be used as the long-lived runtime transport. Construct a session " +
+        "transport via createHttpTransport / createLocalBridgeTransport.",
     );
   }
 }

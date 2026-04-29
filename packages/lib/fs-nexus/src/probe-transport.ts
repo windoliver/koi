@@ -46,7 +46,7 @@ export function createNexusProbeFactory(
       const versionResult = await inner.call<unknown>(
         "version",
         {},
-        { deadlineMs: probeDeadlineMs },
+        { deadlineMs: probeDeadlineMs, nonInteractive: true },
       );
       if (!versionResult.ok) return { ok: false, error: versionResult.error };
       const version =
@@ -69,7 +69,11 @@ export function createNexusProbeFactory(
       const probed: string[] = ["version"];
       const notFound: string[] = [];
       for (const path of readPaths) {
-        const r = await inner.call<unknown>("read", { path }, { deadlineMs: probeDeadlineMs });
+        const r = await inner.call<unknown>(
+          "read",
+          { path },
+          { deadlineMs: probeDeadlineMs, nonInteractive: true },
+        );
         if (!r.ok) {
           if (r.error.code === "NOT_FOUND") {
             notFound.push(path);

@@ -559,7 +559,9 @@ describe("boot helpers (#1401)", () => {
     });
     await backend.ready;
     expect(observed.length).toBeGreaterThan(0);
-    expect(observed[0]?.opts).toEqual({ deadlineMs: 1234 });
+    const firstOpts = observed[0]?.opts as { deadlineMs?: number; signal?: AbortSignal };
+    expect(firstOpts.deadlineMs).toBe(1234);
+    expect(firstOpts.signal).toBeInstanceOf(AbortSignal);
     backend.dispose();
   });
 

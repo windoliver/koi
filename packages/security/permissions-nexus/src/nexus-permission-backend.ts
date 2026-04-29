@@ -72,8 +72,16 @@ export function createNexusPermissionBackend(
   let syncAborted = false;
   // let justified: tracks whether initial sync activated a centralized policy
   let centralizedPolicyActive = false;
-  const bootCallOpts =
-    config.bootSyncDeadlineMs !== undefined ? { deadlineMs: config.bootSyncDeadlineMs } : undefined;
+  // AbortController for the initial sync — abortInFlightSync()/dispose()
+  // signals the transport so HTTP can cancel mid-flight (TCP read drops)
+  // and local-bridge resets the subprocess. Without this, the underlying
+  // transport.call would continue running long after the boot-time
+  // deadline expired, even though the JS side has already given up.
+  const bootSyncAbort = new AbortController();
+  const bootCallOpts: { readonly deadlineMs?: number; readonly signal: AbortSignal } = {
+    ...(config.bootSyncDeadlineMs !== undefined ? { deadlineMs: config.bootSyncDeadlineMs } : {}),
+    signal: bootSyncAbort.signal,
+  };
 
   function extractString(value: unknown): string {
     const r = extractReadContent(value);
@@ -221,6 +229,7 @@ export function createNexusPermissionBackend(
   function dispose(): void {
     disposed = true;
     syncAborted = true;
+    bootSyncAbort.abort();
     if (timer !== undefined) {
       clearInterval(timer);
       timer = undefined;
@@ -230,6 +239,7 @@ export function createNexusPermissionBackend(
 
   function abortInFlightSync(): void {
     syncAborted = true;
+    bootSyncAbort.abort();
   }
 
   function isCentralizedPolicyActive(): boolean {

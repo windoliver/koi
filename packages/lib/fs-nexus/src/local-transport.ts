@@ -126,6 +126,10 @@ interface PendingRequest {
   readonly reject: (e: Error) => void;
   // Timer handle so we can clear it when auth_required extends the deadline
   timer: ReturnType<typeof setTimeout>;
+  // When true, the reader loop MUST NOT clear the timer on auth_required —
+  // probe transports use this to keep the caller's deadline authoritative
+  // and fail fast instead of waiting for human interaction.
+  readonly nonInteractive: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +283,7 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
               (parsed as Record<string, unknown>).method === "auth_required"
             ) {
               for (const [, pending] of pendingRequests) {
+                if (pending.nonInteractive) continue; // probe keeps its own deadline
                 clearTimeout(pending.timer);
                 // Timer is intentionally not replaced — bridge owns the deadline.
                 // If the bridge process dies, the reader loop catch path rejects all pending.
@@ -319,7 +324,11 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
   function call<T>(
     method: string,
     params: Record<string, unknown>,
-    opts?: { readonly deadlineMs?: number | undefined; readonly signal?: AbortSignal | undefined },
+    opts?: {
+      readonly deadlineMs?: number | undefined;
+      readonly signal?: AbortSignal | undefined;
+      readonly nonInteractive?: boolean | undefined;
+    },
   ): Promise<Result<T, KoiError>> {
     if (closed) {
       return Promise.resolve({
@@ -368,7 +377,12 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
 
         // Caller-provided signal: TRANSPORT RESET semantics. Kill the bridge
         // and reject all pending; the next call will spawn a fresh subprocess.
+        // Detach the listener on every settle path so a later signal abort
+        // cannot fire onAbort() against an already-completed request.
+        // let: holds the detach closure so settle paths can call it
+        let detachAbort: (() => void) | undefined;
         const onAbort = (): void => {
+          detachAbort?.();
           pendingRequests.delete(requestId);
           clearTimeout(timer);
           close();
@@ -386,11 +400,14 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
             onAbort();
             return;
           }
-          opts.signal.addEventListener("abort", onAbort, { once: true });
+          const sig = opts.signal;
+          sig.addEventListener("abort", onAbort, { once: true });
+          detachAbort = (): void => sig.removeEventListener("abort", onAbort);
         }
 
         pendingRequests.set(requestId, {
           resolve: (line: string) => {
+            detachAbort?.();
             try {
               const response = JSON.parse(line) as JsonRpcResponse<T>;
               if (response.error !== undefined) {
@@ -403,6 +420,7 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
             }
           },
           reject: (e: Error) => {
+            detachAbort?.();
             // Always surface the actual error — the reader loop captures the
             // real cause (protocol error, malformed JSON, EOF) before calling
             // close(), so we must not replace it with the generic "Transport
@@ -413,6 +431,7 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
             });
           },
           timer,
+          nonInteractive: opts?.nonInteractive === true,
         });
 
         // Write to stdin. Synchronous write errors (bridge exited, pipe closed)
@@ -425,6 +444,7 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
           proc.stdin.write(`${request}\n`);
           proc.stdin.flush();
         } catch (writeErr: unknown) {
+          detachAbort?.();
           pendingRequests.delete(requestId);
           clearTimeout(timer);
           close();
