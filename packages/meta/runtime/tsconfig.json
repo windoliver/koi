@@ -75,6 +75,8 @@
     { "path": "../../lib/middleware-turn-ack" },
     { "path": "../../security/middleware-exfiltration-guard" },
     { "path": "../../lib/middleware-otel" },
+    { "path": "../../lib/middleware-output-verifier" },
+    { "path": "../../lib/middleware-degenerate" },
     { "path": "../../lib/debug" },
     { "path": "../../lib/middleware-semantic-retry" },
     { "path": "../../lib/middleware-strict-agentic" },

@@ -132,8 +132,20 @@ export function createSessionTranscriptMiddleware(
             // Skip senderId === "tool": wrapToolCall already wrote a tool_result entry
             // immediately after execution. Re-writing it here would produce duplicates
             // that break one-to-one tool_call/result reconstruction on replay.
+            //
+            // Skip senderIds starting with "system:internal:": those are
+            // middleware-injected scratch messages (e.g. output-verifier
+            // revise feedback) that drive in-flight model behavior but
+            // must not corrupt the durable inbound transcript. Without
+            // this skip, a successful revise pass would commit the
+            // verifier feedback as the persisted turn input and leak
+            // judge/check signal into resume context.
             const lastMsg = request.messages.at(-1);
-            if (lastMsg !== undefined && lastMsg.senderId !== "tool") {
+            if (
+              lastMsg !== undefined &&
+              lastMsg.senderId !== "tool" &&
+              !lastMsg.senderId.startsWith("system:internal:")
+            ) {
               const content = lastMsg.content
                 .map((c) => (c.kind === "text" ? c.text : JSON.stringify(c)))
                 .join("\n");

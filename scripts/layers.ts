@@ -55,6 +55,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/tools-core",
   "@koi/url-safety",
   "@koi/validation",
+  "@koi/variant-selection",
   "@koi/watch-patterns",
 ]);
 
@@ -82,8 +83,10 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/loop",
   "@koi/mcp",
   "@koi/middleware-audit",
+  "@koi/middleware-degenerate",
   "@koi/middleware-feedback-loop",
   "@koi/middleware-memory-recall",
+  "@koi/middleware-output-verifier",
   "@koi/middleware-strict-agentic",
   "@koi/middleware-turn-prelude",
   "@koi/nexus-delegation",

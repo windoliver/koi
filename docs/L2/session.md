@@ -96,6 +96,17 @@ privileged sender — not downgraded to `"user"` like plain `"system"` entries.
 This ensures engine-injected guardrails (doom loop, capability injection)
 survive session persistence and remain in system prompt context after restart.
 
+### `system:internal:*` sender skip (transcript pollution guard)
+Inbound messages whose `senderId` starts with `system:internal:` are NOT
+persisted to the transcript on commit. These are middleware-injected scratch
+messages — for example, `system:internal:verifier` (output-verifier revise
+feedback) and `system:internal:verifier-replay` (the prior assistant turn
+replayed for context). They drive in-flight model behavior but must not
+corrupt the durable transcript: if persisted, a successful revise pass would
+commit the verifier feedback as the turn's input and leak judge/check signal
+into resume context. The skip is at commit time only — the message still
+reaches the model adapter on the live call.
+
 ### `resumeFromTranscript()` — positional tool pairing
 `tool_call` entries in the transcript carry an array of `{id, toolName, args}` calls. The corresponding `tool_result` entries are positional (nth result matches nth call). `resumeFromTranscript()` matches them by queuing callIds and consuming positionally. Dangling calls (crash before tool completed) get synthetic error tool_results (`metadata.isError=true`). The final pass calls `repairSession()` to clean up any remaining orphans.
 

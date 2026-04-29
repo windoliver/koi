@@ -225,6 +225,12 @@ Validated at manifest parse time via Zod schema. `minVariants` must be `<= maxVa
 | 4 | Alternative execution | Injected `createToolExecutor` factory | Avoids L2-to-L2 imports |
 | 5 | Hot path cost | Compute fitness every call | Trivial cost (~microseconds), always fresh |
 | 6 | Circuit breaker memory | In-memory, disposed on session end | No persistence needed for per-session state |
+| 7 | Middleware priority | `1000` (innermost tool MW) | Outer auth/audit MW see one identity per pool — the public alias addressed by the caller — instead of every variant individually |
+| 8 | Policy envelope check | Identical `brick.policy` across pool | Failover preserves the alias as `request.toolId`; divergent sandbox/network/permission envelopes would silently widen the alias's effective trust scope. Build-time JSON fingerprint rejects mismatches at session start |
+| 9 | Pool backfill | Walk full ranked list until `maxVariants` USABLE entries | A stale top-ranked brick that fails to hydrate must not strand healthy lower-ranked variants below the cutoff |
+| 10 | Alias collisions | Reject duplicates within and across capabilities | Last-wins routing would silently execute a different variant than the one addressed |
+| 11 | Variant identity surface | Public alias stays as `request.toolId`; variant id flows via `metadata.selectedVariantId` | Outer middleware sees a stable alias; observability sinks can still attribute the actual executing brick |
+| 12 | Attempt log cap | 256 entries, O(1) amortized append | Prevents unbounded growth on long sessions |
 
 ---
 
