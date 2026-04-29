@@ -11,6 +11,14 @@ const koiError = (overrides: Partial<KoiError> & Pick<KoiError, "code">): KoiErr
   ...(overrides.context === undefined ? {} : { context: overrides.context }),
 });
 
+const captureRejection = async <T>(p: Promise<T>): Promise<unknown> =>
+  p.then(
+    () => {
+      throw new Error("expected promise to reject");
+    },
+    (e: unknown) => e,
+  );
+
 describe("createRateLimiter", () => {
   let sleepSpy: ReturnType<typeof spyOn<typeof errors, "sleep">>;
 
@@ -120,7 +128,7 @@ describe("createRateLimiter", () => {
       retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
     });
     const err = new Error("boom");
-    await expect(limiter.enqueue(() => Promise.reject(err))).rejects.toBe(err);
+    expect(await captureRejection(limiter.enqueue(() => Promise.reject(err)))).toBe(err);
   });
 
   it("retries on rate-limit and uses extracted retry-after delay", async () => {
@@ -169,7 +177,9 @@ describe("createRateLimiter", () => {
       attempts++;
       throw new Error("permission denied");
     };
-    await expect(limiter.enqueue(fn)).rejects.toThrow("permission denied");
+    const __rejErr1 = await captureRejection(limiter.enqueue(fn));
+    expect(__rejErr1).toBeInstanceOf(Error);
+    expect((__rejErr1 as Error).message).toContain("permission denied");
     expect(attempts).toBe(1);
     expect(sleepSpy).not.toHaveBeenCalled();
   });
@@ -183,7 +193,7 @@ describe("createRateLimiter", () => {
       attempts++;
       throw koiError({ code: "RATE_LIMIT", retryAfterMs: 250 });
     };
-    await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "RATE_LIMIT" });
+    expect(await captureRejection(limiter.enqueue(fn))).toMatchObject({ code: "RATE_LIMIT" });
     expect(attempts).toBe(2);
     // One sleep between attempts 0 and 1; no sleep after the terminal attempt
     expect(sleepSpy).toHaveBeenCalledTimes(1);
@@ -197,7 +207,9 @@ describe("createRateLimiter", () => {
     const succeeding = limiter.enqueue(async () => {
       completed.push("ok");
     });
-    await expect(failing).rejects.toThrow("x");
+    const __rejErr2 = await captureRejection(failing);
+    expect(__rejErr2).toBeInstanceOf(Error);
+    expect((__rejErr2 as Error).message).toContain("x");
     await succeeding;
     expect(completed).toEqual(["ok"]);
   });
@@ -274,12 +286,14 @@ describe("createRateLimiter", () => {
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
       });
       let attempts = 0;
-      await expect(
-        limiter.enqueue(async () => {
-          attempts++;
-          throw koiError({ code: "TIMEOUT", retryAfterMs: 60_000, retryable: true });
-        }),
-      ).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(
+        await captureRejection(
+          limiter.enqueue(async () => {
+            attempts++;
+            throw koiError({ code: "TIMEOUT", retryAfterMs: 60_000, retryable: true });
+          }),
+        ),
+      ).toMatchObject({ code: "TIMEOUT" });
       expect(attempts).toBe(1);
     });
 
@@ -288,12 +302,14 @@ describe("createRateLimiter", () => {
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
       });
       let attempts = 0;
-      await expect(
-        limiter.enqueue(async () => {
-          attempts++;
-          throw koiError({ code: "TIMEOUT", retryable: true });
-        }),
-      ).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(
+        await captureRejection(
+          limiter.enqueue(async () => {
+            attempts++;
+            throw koiError({ code: "TIMEOUT", retryable: true });
+          }),
+        ),
+      ).toMatchObject({ code: "TIMEOUT" });
       expect(attempts).toBe(1);
       expect(sleepSpy).not.toHaveBeenCalled();
     });
@@ -303,12 +319,14 @@ describe("createRateLimiter", () => {
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
       });
       let attempts = 0;
-      await expect(
-        limiter.enqueue(async () => {
-          attempts++;
-          throw koiError({ code: "PERMISSION" });
-        }),
-      ).rejects.toMatchObject({ code: "PERMISSION" });
+      expect(
+        await captureRejection(
+          limiter.enqueue(async () => {
+            attempts++;
+            throw koiError({ code: "PERMISSION" });
+          }),
+        ),
+      ).toMatchObject({ code: "PERMISSION" });
       expect(attempts).toBe(1);
       expect(sleepSpy).not.toHaveBeenCalled();
     });
@@ -318,12 +336,14 @@ describe("createRateLimiter", () => {
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 3 },
       });
       let attempts = 0;
-      await expect(
+      const __rejErr3 = await captureRejection(
         limiter.enqueue(async () => {
           attempts++;
           throw new Error("plain transport blip");
         }),
-      ).rejects.toThrow("plain transport blip");
+      );
+      expect(__rejErr3).toBeInstanceOf(Error);
+      expect((__rejErr3 as Error).message).toContain("plain transport blip");
       expect(attempts).toBe(1);
     });
   });
@@ -370,12 +390,14 @@ describe("createRateLimiter", () => {
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
       });
       let attempts = 0;
-      await expect(
-        limiter.enqueue(async () => {
-          attempts++;
-          throw koiError({ code: "AUTH_REQUIRED", retryable: true, retryAfterMs: 100 });
-        }),
-      ).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+      expect(
+        await captureRejection(
+          limiter.enqueue(async () => {
+            attempts++;
+            throw koiError({ code: "AUTH_REQUIRED", retryable: true, retryAfterMs: 100 });
+          }),
+        ),
+      ).toMatchObject({ code: "AUTH_REQUIRED" });
       expect(attempts).toBe(1);
       expect(sleepSpy).not.toHaveBeenCalled();
     });
@@ -385,12 +407,14 @@ describe("createRateLimiter", () => {
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
       });
       let attempts = 0;
-      await expect(
-        limiter.enqueue(async () => {
-          attempts++;
-          throw koiError({ code: "PERMISSION", retryAfterMs: 100 });
-        }),
-      ).rejects.toMatchObject({ code: "PERMISSION" });
+      expect(
+        await captureRejection(
+          limiter.enqueue(async () => {
+            attempts++;
+            throw koiError({ code: "PERMISSION", retryAfterMs: 100 });
+          }),
+        ),
+      ).toMatchObject({ code: "PERMISSION" });
       expect(attempts).toBe(1);
     });
   });
@@ -410,12 +434,14 @@ describe("createRateLimiter", () => {
           },
         });
         let attempts = 0;
-        await expect(
-          limiter.enqueue(async () => {
-            attempts++;
-            throw koiError({ code: "RATE_LIMIT" });
-          }),
-        ).rejects.toMatchObject({ code: "RATE_LIMIT" });
+        expect(
+          await captureRejection(
+            limiter.enqueue(async () => {
+              attempts++;
+              throw koiError({ code: "RATE_LIMIT" });
+            }),
+          ),
+        ).toMatchObject({ code: "RATE_LIMIT" });
 
         expect(attempts).toBe(4);
         // First retry: prevDelayMs is undefined; subsequent retries pass the prior delay.
@@ -436,12 +462,14 @@ describe("createRateLimiter", () => {
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
       });
       let attempts = 0;
-      await expect(
-        limiter.enqueue(async () => {
-          attempts++;
-          throw koiError({ code: "AUTH_REQUIRED", retryable: true });
-        }),
-      ).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+      expect(
+        await captureRejection(
+          limiter.enqueue(async () => {
+            attempts++;
+            throw koiError({ code: "AUTH_REQUIRED", retryable: true });
+          }),
+        ),
+      ).toMatchObject({ code: "AUTH_REQUIRED" });
       expect(attempts).toBe(1);
       expect(sleepSpy).not.toHaveBeenCalled();
     });
@@ -451,12 +479,14 @@ describe("createRateLimiter", () => {
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
       });
       let attempts = 0;
-      await expect(
-        limiter.enqueue(async () => {
-          attempts++;
-          throw koiError({ code: "CONFLICT", retryable: true });
-        }),
-      ).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(
+        await captureRejection(
+          limiter.enqueue(async () => {
+            attempts++;
+            throw koiError({ code: "CONFLICT", retryable: true });
+          }),
+        ),
+      ).toMatchObject({ code: "CONFLICT" });
       expect(attempts).toBe(1);
     });
 
@@ -465,12 +495,14 @@ describe("createRateLimiter", () => {
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
       });
       let attempts = 0;
-      await expect(
-        limiter.enqueue(async () => {
-          attempts++;
-          throw koiError({ code: "RESOURCE_EXHAUSTED", retryable: true });
-        }),
-      ).rejects.toMatchObject({ code: "RESOURCE_EXHAUSTED" });
+      expect(
+        await captureRejection(
+          limiter.enqueue(async () => {
+            attempts++;
+            throw koiError({ code: "RESOURCE_EXHAUSTED", retryable: true });
+          }),
+        ),
+      ).toMatchObject({ code: "RESOURCE_EXHAUSTED" });
       expect(attempts).toBe(1);
     });
   });
@@ -488,12 +520,14 @@ describe("createRateLimiter", () => {
           retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
         });
         let attempts = 0;
-        await expect(
-          limiter.enqueue(async () => {
-            attempts++;
-            throw koiError({ code: "PERMISSION", retryAfterMs: value });
-          }),
-        ).rejects.toMatchObject({ code: "PERMISSION" });
+        expect(
+          await captureRejection(
+            limiter.enqueue(async () => {
+              attempts++;
+              throw koiError({ code: "PERMISSION", retryAfterMs: value });
+            }),
+          ),
+        ).toMatchObject({ code: "PERMISSION" });
         // PERMISSION is not transport-retryable, hint was bogus → reject after 1 attempt
         expect(attempts).toBe(1);
       });
@@ -530,9 +564,11 @@ describe("createRateLimiter", () => {
           reports.push([stage, err]);
         },
       });
-      await expect(limiter.enqueue(() => Promise.reject(new Error("send-fail")))).rejects.toThrow(
-        "send-fail",
+      const __rejErr4 = await captureRejection(
+        limiter.enqueue(() => Promise.reject(new Error("send-fail"))),
       );
+      expect(__rejErr4).toBeInstanceOf(Error);
+      expect((__rejErr4 as Error).message).toContain("send-fail");
       expect(
         reports.some(
           ([s, e]) => s === "extract" && e instanceof Error && e.message === "ext-broken",
@@ -551,9 +587,11 @@ describe("createRateLimiter", () => {
           reports.push([stage, err]);
         },
       });
-      await expect(limiter.enqueue(() => Promise.reject(new Error("send-fail")))).rejects.toThrow(
-        "send-fail",
+      const __rejErr5 = await captureRejection(
+        limiter.enqueue(() => Promise.reject(new Error("send-fail"))),
       );
+      expect(__rejErr5).toBeInstanceOf(Error);
+      expect((__rejErr5 as Error).message).toContain("send-fail");
       expect(reports.some(([s]) => s === "classify")).toBe(true);
     });
 
@@ -566,9 +604,11 @@ describe("createRateLimiter", () => {
           reports.push([stage, err]);
         },
       });
-      await expect(
-        limiter.enqueue(() => Promise.reject(koiError({ code: "RATE_LIMIT" }))),
-      ).rejects.toMatchObject({ code: "RATE_LIMIT" });
+      expect(
+        await captureRejection(
+          limiter.enqueue(() => Promise.reject(koiError({ code: "RATE_LIMIT" }))),
+        ),
+      ).toMatchObject({ code: "RATE_LIMIT" });
       expect(
         reports.some(
           ([s, e]) => s === "sleep" && e instanceof Error && e.message === "clock-broken",
@@ -586,9 +626,11 @@ describe("createRateLimiter", () => {
           throw new Error("hook-broken");
         },
       });
-      await expect(limiter.enqueue(() => Promise.reject(new Error("send-fail")))).rejects.toThrow(
-        "send-fail",
+      const __rejErr6 = await captureRejection(
+        limiter.enqueue(() => Promise.reject(new Error("send-fail"))),
       );
+      expect(__rejErr6).toBeInstanceOf(Error);
+      expect((__rejErr6 as Error).message).toContain("send-fail");
     });
   });
 
@@ -606,7 +648,7 @@ describe("createRateLimiter", () => {
     const after = limiter.enqueue(async () => {
       completed.push("ok");
     });
-    await expect(failing).rejects.toMatchObject({ code: "RATE_LIMIT" });
+    expect(await captureRejection(failing)).toMatchObject({ code: "RATE_LIMIT" });
     await after;
     expect(completed).toEqual(["ok"]);
     expect(attempts).toBe(1);
@@ -625,7 +667,9 @@ describe("createRateLimiter", () => {
       const after = limiter.enqueue(async () => {
         completed.push("ok");
       });
-      await expect(failing).rejects.toThrow("send-fail");
+      const __rejErr7 = await captureRejection(failing);
+      expect(__rejErr7).toBeInstanceOf(Error);
+      expect((__rejErr7 as Error).message).toContain("send-fail");
       await after;
       expect(completed).toEqual(["ok"]);
     });
@@ -642,7 +686,9 @@ describe("createRateLimiter", () => {
       const after = limiter.enqueue(async () => {
         completed.push("ok");
       });
-      await expect(failing).rejects.toThrow("send-fail");
+      const __rejErr8 = await captureRejection(failing);
+      expect(__rejErr8).toBeInstanceOf(Error);
+      expect((__rejErr8 as Error).message).toContain("send-fail");
       await after;
       expect(completed).toEqual(["ok"]);
     });
@@ -687,7 +733,9 @@ describe("createRateLimiter", () => {
         sendTimeoutMs: 25,
       });
       const start = Date.now();
-      await expect(limiter.enqueue(cancelOnAbort)).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(await captureRejection(limiter.enqueue(cancelOnAbort))).toMatchObject({
+        code: "TIMEOUT",
+      });
       expect(Date.now() - start).toBeLessThan(2_000);
     });
 
@@ -698,7 +746,9 @@ describe("createRateLimiter", () => {
         sendTimeoutMs: 15,
         onSendTimeout,
       });
-      await expect(limiter.enqueue(cancelOnAbort)).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(await captureRejection(limiter.enqueue(cancelOnAbort))).toMatchObject({
+        code: "TIMEOUT",
+      });
       expect(onSendTimeout).toHaveBeenCalledTimes(1);
     });
 
@@ -712,7 +762,7 @@ describe("createRateLimiter", () => {
       const after = limiter.enqueue(async () => {
         completed.push("ok");
       });
-      await expect(hung).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(await captureRejection(hung)).toMatchObject({ code: "TIMEOUT" });
       await after;
       expect(completed).toEqual(["ok"]);
     });
@@ -738,7 +788,7 @@ describe("createRateLimiter", () => {
       // Strict mode awaits real settle on the final attempt (the queue
       // is already going to wait for advance, so this adds no latency).
       // Late success → caller resolves with no duplicate-send hazard.
-      await expect(a).resolves.toBeUndefined();
+      expect(await a).toBeUndefined();
       await b;
       expect(events).toEqual(["A-finished", "B-sent"]);
     });
@@ -757,7 +807,7 @@ describe("createRateLimiter", () => {
       const b = limiter.enqueue(async () => {
         bDelivered.push("ok");
       });
-      await expect(a).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(await captureRejection(a)).toMatchObject({ code: "TIMEOUT" });
       await b;
       expect(bDelivered).toEqual(["ok"]);
       // Total stall is bounded at ~2× sendTimeoutMs (deadline + grace).
@@ -773,7 +823,7 @@ describe("createRateLimiter", () => {
       // Transport that takes 200ms, far longer than sendTimeoutMs.
       const slow: SendFn = () => new Promise<void>((resolve) => setTimeout(resolve, 200));
       const start = Date.now();
-      await expect(limiter.enqueue(slow)).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(await captureRejection(limiter.enqueue(slow))).toMatchObject({ code: "TIMEOUT" });
       const elapsed = Date.now() - start;
       // Liveness mode: caller-facing rejection fires at the deadline,
       // NOT at fnPromise settlement. Allow some scheduler slack.
@@ -795,7 +845,7 @@ describe("createRateLimiter", () => {
         const b = limiter.enqueue(async () => {
           bDelivered.push("ok");
         });
-        await expect(a).rejects.toMatchObject({ code: "TIMEOUT" });
+        expect(await captureRejection(a)).toMatchObject({ code: "TIMEOUT" });
         await b;
         expect(bDelivered).toEqual(["ok"]);
       });
@@ -812,7 +862,9 @@ describe("createRateLimiter", () => {
           new Promise<void>((resolve) => {
             setTimeout(() => resolve(), 60);
           });
-        await expect(limiter.enqueue(slowAfterAbort)).rejects.toMatchObject({ code: "TIMEOUT" });
+        expect(await captureRejection(limiter.enqueue(slowAfterAbort))).toMatchObject({
+          code: "TIMEOUT",
+        });
         await new Promise((res) => setTimeout(res, 80));
         expect(onLateSuccess).toHaveBeenCalledTimes(1);
       });
@@ -829,7 +881,9 @@ describe("createRateLimiter", () => {
           new Promise<void>((_resolve, reject) => {
             setTimeout(() => reject(new Error("late-boom")), 60);
           });
-        await expect(limiter.enqueue(slowReject)).rejects.toMatchObject({ code: "TIMEOUT" });
+        expect(await captureRejection(limiter.enqueue(slowReject))).toMatchObject({
+          code: "TIMEOUT",
+        });
         await new Promise((res) => setTimeout(res, 80));
         expect(onLateFailure).toHaveBeenCalledTimes(1);
         expect(onLateFailure).toHaveBeenCalledWith(
@@ -892,7 +946,7 @@ describe("createRateLimiter", () => {
       // Final attempt's caller-facing error is the synthetic TIMEOUT
       // (prompt rejection on no-more-retries) — late RATE_LIMIT only
       // affects internal retry classification on non-final attempts.
-      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(await captureRejection(limiter.enqueue(fn))).toMatchObject({ code: "TIMEOUT" });
       // Two attempts ran but never overlapped.
       expect(maxConcurrent).toBe(1);
     });
@@ -909,7 +963,7 @@ describe("createRateLimiter", () => {
       // The synthetic TIMEOUT would have triggered a retry under the
       // custom isRetryable, but the late success is observed first and
       // wins — no retry, caller resolves.
-      await expect(limiter.enqueue(fn)).resolves.toBeUndefined();
+      expect(await limiter.enqueue(fn)).toBeUndefined();
     });
 
     it("late terminal failure replaces the synthetic TIMEOUT for retry classification", async () => {
@@ -933,7 +987,7 @@ describe("createRateLimiter", () => {
           attempts++;
           setTimeout(() => reject(permErr), 50);
         });
-      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "PERMISSION" });
+      expect(await captureRejection(limiter.enqueue(fn))).toMatchObject({ code: "PERMISSION" });
       // Real terminal error wins over synthetic TIMEOUT — no retries.
       expect(attempts).toBe(1);
     });
@@ -974,7 +1028,7 @@ describe("createRateLimiter", () => {
         // Fail loudly if A is still in-flight when B starts.
         expect(inFlight).toBe(0);
       });
-      await expect(a).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(await captureRejection(a)).toMatchObject({ code: "TIMEOUT" });
       await b;
       expect(maxConcurrent).toBe(1);
     });
@@ -1014,7 +1068,7 @@ describe("createRateLimiter", () => {
       // here lands at +50ms (after the 20ms grace), so the caller sees
       // the synthetic TIMEOUT and the late RATE_LIMIT flows to the late
       // outcome callbacks (asserted in other tests).
-      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(await captureRejection(limiter.enqueue(fn))).toMatchObject({ code: "TIMEOUT" });
       // Three attempts (initial + 2 retries), never overlapping.
       expect(attempts).toBe(3);
       expect(maxConcurrent).toBe(1);
@@ -1033,7 +1087,7 @@ describe("createRateLimiter", () => {
       });
       const neverSettles: SendFn = () => new Promise<void>(() => {});
       const start = Date.now();
-      await expect(limiter.enqueue(neverSettles)).rejects.toMatchObject({
+      expect(await captureRejection(limiter.enqueue(neverSettles))).toMatchObject({
         code: "TIMEOUT",
         retryable: false,
         context: { phase: "delivery-unknown" },
@@ -1058,7 +1112,7 @@ describe("createRateLimiter", () => {
       const b = limiter.enqueue(async () => {
         completed.push("ok");
       });
-      await expect(a).rejects.toMatchObject({
+      expect(await captureRejection(a)).toMatchObject({
         context: { phase: "delivery-unknown" },
       });
       // b must complete despite a's transport never settling.
@@ -1083,7 +1137,7 @@ describe("createRateLimiter", () => {
       });
       // Resolves at +60ms — well past the bounded final-attempt grace.
       const slowSuccess: SendFn = () => new Promise<void>((resolve) => setTimeout(resolve, 60));
-      await expect(limiter.enqueue(slowSuccess)).rejects.toMatchObject({
+      expect(await captureRejection(limiter.enqueue(slowSuccess))).toMatchObject({
         code: "TIMEOUT",
         retryable: false,
         context: { phase: "delivery-unknown" },
@@ -1175,7 +1229,9 @@ describe("createRateLimiter", () => {
         throw new Error("sync-boom");
       };
       // Caller must reject promptly, not hang forever.
-      await expect(limiter.enqueue(syncBoom)).rejects.toThrow("sync-boom");
+      const __rejErr9 = await captureRejection(limiter.enqueue(syncBoom));
+      expect(__rejErr9).toBeInstanceOf(Error);
+      expect((__rejErr9 as Error).message).toContain("sync-boom");
       // Queue must keep draining: a subsequent normal send completes.
       const completed: string[] = [];
       await limiter.enqueue(async () => {
@@ -1210,7 +1266,7 @@ describe("createRateLimiter", () => {
       });
       const hung = limiter.enqueue(cancelOnAbort);
       const after = limiter.enqueue(() => Promise.resolve());
-      await expect(hung).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(await captureRejection(hung)).toMatchObject({ code: "TIMEOUT" });
       await after;
     });
   });
