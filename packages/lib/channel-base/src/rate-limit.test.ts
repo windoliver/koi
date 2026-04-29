@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import type { KoiError } from "@koi/core";
 import * as errors from "@koi/errors";
-import { createRateLimiter } from "./rate-limit.js";
+import { createRateLimiter, type SendFn } from "./rate-limit.js";
 
 const koiError = (overrides: Partial<KoiError> & Pick<KoiError, "code">): KoiError => ({
   code: overrides.code,
@@ -538,16 +538,21 @@ describe("createRateLimiter", () => {
   });
 
   describe("sendTimeoutMs prevents a hung send from wedging the queue", () => {
+    // Helper: a send callback that resolves immediately when its abort
+    // signal fires. Models a well-behaved transport that honors cancellation.
+    const cancelOnAbort: SendFn = (signal) =>
+      new Promise<void>((resolve, reject) => {
+        if (signal.aborted) return reject(new Error("aborted"));
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+
     it("rejects the in-flight entry with TIMEOUT KoiError after the deadline", async () => {
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
         sendTimeoutMs: 25,
       });
       const start = Date.now();
-      await expect(limiter.enqueue(() => new Promise<void>(() => {}))).rejects.toMatchObject({
-        code: "TIMEOUT",
-      });
-      // Should reject at roughly sendTimeoutMs, not hang on the never-settling promise.
+      await expect(limiter.enqueue(cancelOnAbort)).rejects.toMatchObject({ code: "TIMEOUT" });
       expect(Date.now() - start).toBeLessThan(2_000);
     });
 
@@ -558,9 +563,7 @@ describe("createRateLimiter", () => {
         sendTimeoutMs: 15,
         onSendTimeout,
       });
-      await expect(limiter.enqueue(() => new Promise<void>(() => {}))).rejects.toMatchObject({
-        code: "TIMEOUT",
-      });
+      await expect(limiter.enqueue(cancelOnAbort)).rejects.toMatchObject({ code: "TIMEOUT" });
       expect(onSendTimeout).toHaveBeenCalledTimes(1);
     });
 
@@ -569,7 +572,7 @@ describe("createRateLimiter", () => {
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
         sendTimeoutMs: 15,
       });
-      const hung = limiter.enqueue(() => new Promise<void>(() => {}));
+      const hung = limiter.enqueue(cancelOnAbort);
       const completed: string[] = [];
       const after = limiter.enqueue(async () => {
         completed.push("ok");
@@ -579,6 +582,31 @@ describe("createRateLimiter", () => {
       expect(completed).toEqual(["ok"]);
     });
 
+    it("waits for in-flight send to actually settle before advancing the queue (FIFO preserved)", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+        sendTimeoutMs: 15,
+      });
+      const events: string[] = [];
+      // Slow-to-cancel send: ignores the abort and finishes 80ms later.
+      const slowAfterAbort: SendFn = () =>
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            events.push("A-finished");
+            resolve();
+          }, 80);
+        });
+      const a = limiter.enqueue(slowAfterAbort);
+      const b = limiter.enqueue(async () => {
+        events.push("B-sent");
+      });
+      await expect(a).rejects.toMatchObject({ code: "TIMEOUT" });
+      await b;
+      // FIFO: A's underlying send must finish before B is delivered, even
+      // though A was rejected to the caller at the deadline.
+      expect(events).toEqual(["A-finished", "B-sent"]);
+    });
+
     it("opting out with sendTimeoutMs:0 leaves a hung send pending (no auto-reject)", async () => {
       const limiter = createRateLimiter({ sendTimeoutMs: 0 });
       let release: (() => void) | undefined;
@@ -586,7 +614,6 @@ describe("createRateLimiter", () => {
         release = res;
       });
       const p = limiter.enqueue(() => blocker);
-      // Race the send against a short sleeper; the limiter must NOT have rejected p.
       const winner = await Promise.race([
         p.then(() => "settled" as const),
         new Promise<"timer">((res) => setTimeout(() => res("timer"), 60)),
@@ -604,7 +631,7 @@ describe("createRateLimiter", () => {
           throw new Error("hook-broken");
         },
       });
-      const hung = limiter.enqueue(() => new Promise<void>(() => {}));
+      const hung = limiter.enqueue(cancelOnAbort);
       const after = limiter.enqueue(() => Promise.resolve());
       await expect(hung).rejects.toMatchObject({ code: "TIMEOUT" });
       await after;

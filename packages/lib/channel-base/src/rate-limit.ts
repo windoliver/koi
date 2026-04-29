@@ -78,15 +78,25 @@ export interface RateLimiterConfig {
 
 const DEFAULT_SEND_TIMEOUT_MS = 30_000;
 
+/**
+ * Send callback. Receives an `AbortSignal` that is fired when the queue's
+ * watchdog deadline (`sendTimeoutMs`) elapses; honoring it lets the queue
+ * advance to the next entry safely. Callbacks that ignore the signal still
+ * receive a `TIMEOUT` rejection, but the queue will wait for the underlying
+ * promise to settle before advancing — preserving strict FIFO at the cost
+ * of potentially holding the wedged worker open.
+ */
+export type SendFn = (signal: AbortSignal) => Promise<void>;
+
 export interface RateLimiter {
   /** Enqueues a send. Resolves when the send completes (after any retries). */
-  readonly enqueue: (fn: () => Promise<void>) => Promise<void>;
+  readonly enqueue: (fn: SendFn) => Promise<void>;
   /** Number of items waiting in the queue (excludes the in-flight item). */
   readonly size: () => number;
 }
 
 interface QueueEntry {
-  readonly fn: () => Promise<void>;
+  readonly fn: SendFn;
   readonly resolve: () => void;
   readonly reject: (error: unknown) => void;
 }
@@ -173,16 +183,29 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
     }
   };
 
-  // Races `fn()` against the configured send deadline. If the timer
-  // fires first we abandon the in-flight send (its real promise still
-  // resolves/rejects later — we just stop waiting on it) and reject this
-  // attempt with a TIMEOUT KoiError so retry classification and the
-  // operator hook see a structured failure instead of a hang. With a
-  // disabled deadline (0 / Infinity) this is a transparent passthrough.
-  const runWithDeadline = (fn: () => Promise<void>): Promise<void> => {
-    if (!sendTimeoutEnabled) return fn();
-    return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
+  // Runs `fn(signal)` against the configured deadline. If the timer
+  // fires first we abort the signal and wait for the underlying promise
+  // to actually settle before letting the queue advance — that preserves
+  // strict FIFO even when a callback is slow to honor cancellation. The
+  // entry is rejected with a TIMEOUT KoiError immediately on timeout, so
+  // callers see a structured failure; the in-flight send is allowed to
+  // unwind quietly behind it. With a disabled deadline (0 / Infinity)
+  // this is a transparent passthrough.
+  const runWithDeadline = async (fn: SendFn): Promise<void> => {
+    if (!sendTimeoutEnabled) {
+      const passthrough = new AbortController();
+      return fn(passthrough.signal);
+    }
+    const controller = new AbortController();
+    // let justified: timer handle managed by the deadline race
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // let justified: tracks which arm of the race fired
+    let timedOut = false;
+    const fnPromise = fn(controller.signal);
+    const deadlinePromise = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
         try {
           config?.onSendTimeout?.();
         } catch {
@@ -195,17 +218,28 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         };
         reject(timeoutError);
       }, sendTimeoutMs);
-      fn().then(
-        () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        (err: unknown) => {
-          clearTimeout(timer);
-          reject(err);
-        },
-      );
     });
+    try {
+      await Promise.race([fnPromise, deadlinePromise]);
+    } catch (err) {
+      if (timedOut) {
+        // Wait for the underlying send to actually settle before letting
+        // the queue advance — without this, a slow-to-cancel transport
+        // could complete after the next message has already been sent,
+        // breaking FIFO. Errors here are intentional (the abort signal)
+        // so they get swallowed.
+        await fnPromise.catch(() => {});
+        const timeoutError: KoiError = {
+          code: "TIMEOUT",
+          message: `channel send did not settle within ${sendTimeoutMs}ms`,
+          retryable: false,
+        };
+        throw timeoutError;
+      }
+      throw err;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   };
 
   const drain = async (): Promise<void> => {
@@ -279,7 +313,7 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
   };
 
   return {
-    enqueue: (fn: () => Promise<void>): Promise<void> =>
+    enqueue: (fn: SendFn): Promise<void> =>
       new Promise<void>((resolve, reject) => {
         queue = [...queue, { fn, resolve, reject }];
         void drain();

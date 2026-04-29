@@ -356,7 +356,7 @@ There is intentionally no verbose / developer mode; CLI tooling that needs raw d
 
 | Function | Returns | Purpose |
 |----------|---------|---------|
-| `createRateLimiter(config?)` | `RateLimiter` | FIFO send queue with retry-after honoring, exponential backoff, and a per-send watchdog (`sendTimeoutMs` defaults to 30s; rejects with `code: "TIMEOUT"` when a send hangs and fires `onSendTimeout` so operators can detect a wedged channel) |
+| `createRateLimiter(config?)` | `RateLimiter` | FIFO send queue with retry-after honoring, exponential backoff, and a per-send watchdog. Send callbacks receive an `AbortSignal` (`SendFn = (signal) => Promise<void>`); when `sendTimeoutMs` (default 30s) elapses the signal aborts, the caller sees a `TIMEOUT` rejection, and the queue waits for the underlying promise to settle before advancing — preserving FIFO. Pass `sendTimeoutMs: 0` to opt out for transports that already enforce their own timeout. |
 | `createChannelRegistry(entries)` | `ChannelRegistry` | Snapshot-based name → factory map for adapter discovery |
 
 ### Types
@@ -368,6 +368,7 @@ There is intentionally no verbose / developer mode; CLI tooling that needs raw d
 | `ContentBlock` | Re-exported union from `@koi/core` |
 | `ChannelErrorOutput` | Discriminated union returned by `formatErrorForChannel` |
 | `RateLimiter` | `{ enqueue, size }` — sequential queued sends with retry |
+| `SendFn` | `(signal: AbortSignal) => Promise<void>` — send-callback signature for `enqueue` |
 | `RateLimiterConfig` | `{ retry?, extractRetryAfterMs? }` |
 | `ChannelFactory` | `(config: unknown) => ChannelAdapter` |
 | `ChannelRegistry` | `{ get, names }` — snapshot of registered factories |
