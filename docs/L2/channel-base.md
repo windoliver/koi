@@ -305,7 +305,12 @@ UNAVAILABLE         "The service is currently unavailable."
 HEARTBEAT_TIMEOUT   "The worker stopped responding."
 ```
 
-Strictly user-safe by construction: never reads `error.cause`, `error.context`, stack traces, or — outside of `VALIDATION` — `error.message`. There is intentionally no verbose / developer mode; CLI tooling that needs raw diagnostics formats `error.code` / `error.message` through its own sanitizer.
+Strictly user-safe by construction. Never reads `error.cause`, stack traces, or — outside of two enumerated exceptions — `error.message` / `error.context`:
+
+- **VALIDATION**: the message itself is user-relevant input feedback.
+- **AUTH_REQUIRED**: an `error.context.authorizationUrl` is appended only when it parses as an `http(s)` URL — `javascript:`, `data:`, malformed strings, and non-string values are dropped silently.
+
+There is intentionally no verbose / developer mode; CLI tooling that needs raw diagnostics formats `error.code` / `error.message` through its own sanitizer.
 
 ---
 

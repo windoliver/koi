@@ -57,10 +57,58 @@ describe("formatErrorForChannel", () => {
     );
   });
 
-  it("returns canned message for AUTH_REQUIRED", () => {
+  it("returns canned message for AUTH_REQUIRED without context", () => {
     expect(formatErrorForChannel(baseError("AUTH_REQUIRED", "oauth needed"))).toBe(
       "Authorization is required to continue.",
     );
+  });
+
+  describe("AUTH_REQUIRED authorization URL", () => {
+    it("appends https authorizationUrl from context", () => {
+      const err = baseError("AUTH_REQUIRED", "oauth needed", {
+        context: { authorizationUrl: "https://auth.example.com/oauth?state=abc" },
+      });
+      expect(formatErrorForChannel(err)).toBe(
+        "Authorization is required to continue. https://auth.example.com/oauth?state=abc",
+      );
+    });
+
+    it("appends http authorizationUrl from context", () => {
+      const err = baseError("AUTH_REQUIRED", "oauth needed", {
+        context: { authorizationUrl: "http://auth.local/oauth" },
+      });
+      expect(formatErrorForChannel(err)).toBe(
+        "Authorization is required to continue. http://auth.local/oauth",
+      );
+    });
+
+    it("rejects non-http schemes (javascript:)", () => {
+      const err = baseError("AUTH_REQUIRED", "x", {
+        context: { authorizationUrl: "javascript:alert(1)" },
+      });
+      expect(formatErrorForChannel(err)).toBe("Authorization is required to continue.");
+    });
+
+    it("rejects non-http schemes (data:)", () => {
+      const err = baseError("AUTH_REQUIRED", "x", {
+        context: { authorizationUrl: "data:text/html,<script>" },
+      });
+      expect(formatErrorForChannel(err)).toBe("Authorization is required to continue.");
+    });
+
+    it("rejects malformed URLs", () => {
+      const err = baseError("AUTH_REQUIRED", "x", {
+        context: { authorizationUrl: "not a url" },
+      });
+      expect(formatErrorForChannel(err)).toBe("Authorization is required to continue.");
+    });
+
+    it("ignores non-string authorizationUrl", () => {
+      const err = baseError("AUTH_REQUIRED", "x", {
+        context: { authorizationUrl: 42 },
+      });
+      expect(formatErrorForChannel(err)).toBe("Authorization is required to continue.");
+    });
   });
 
   it("returns canned message for RESOURCE_EXHAUSTED", () => {

@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
+import type { KoiError } from "@koi/core";
 import * as errors from "@koi/errors";
 import { createRateLimiter } from "./rate-limit.js";
+
+const koiError = (overrides: Partial<KoiError> & Pick<KoiError, "code">): KoiError => ({
+  code: overrides.code,
+  message: overrides.message ?? "test",
+  retryable: overrides.retryable ?? false,
+  ...(overrides.retryAfterMs === undefined ? {} : { retryAfterMs: overrides.retryAfterMs }),
+  ...(overrides.context === undefined ? {} : { context: overrides.context }),
+});
 
 describe("createRateLimiter", () => {
   let sleepSpy: ReturnType<typeof spyOn<typeof errors, "sleep">>;
@@ -119,6 +128,99 @@ describe("createRateLimiter", () => {
     await expect(failing).rejects.toThrow("x");
     await succeeding;
     expect(completed).toEqual(["ok"]);
+  });
+
+  describe("default policy honors KoiError metadata", () => {
+    it("retries a KoiError with retryAfterMs", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 2, initialDelayMs: 10, jitter: false },
+      });
+      let attempts = 0;
+      await limiter.enqueue(async () => {
+        attempts++;
+        if (attempts < 2) throw koiError({ code: "RATE_LIMIT", retryAfterMs: 750 });
+      });
+      expect(attempts).toBe(2);
+      expect(sleepSpy).toHaveBeenCalledWith(750);
+    });
+
+    it("retries a KoiError whose code is in the retryable set", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 1, initialDelayMs: 25, jitter: false },
+      });
+      let attempts = 0;
+      await limiter.enqueue(async () => {
+        attempts++;
+        if (attempts < 2) throw koiError({ code: "TIMEOUT" });
+      });
+      expect(attempts).toBe(2);
+      expect(sleepSpy).toHaveBeenCalledWith(25);
+    });
+
+    it("rejects a KoiError whose code is not retryable without re-issuing", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
+      });
+      let attempts = 0;
+      await expect(
+        limiter.enqueue(async () => {
+          attempts++;
+          throw koiError({ code: "PERMISSION" });
+        }),
+      ).rejects.toMatchObject({ code: "PERMISSION" });
+      expect(attempts).toBe(1);
+      expect(sleepSpy).not.toHaveBeenCalled();
+    });
+
+    it("rejects a non-KoiError thrown without re-issuing", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 3 },
+      });
+      let attempts = 0;
+      await expect(
+        limiter.enqueue(async () => {
+          attempts++;
+          throw new Error("plain transport blip");
+        }),
+      ).rejects.toThrow("plain transport blip");
+      expect(attempts).toBe(1);
+    });
+  });
+
+  describe("classifier safety: queue keeps draining when hooks throw", () => {
+    it("treats a throwing extractRetryAfterMs as non-retryable and continues the queue", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 3 },
+        extractRetryAfterMs: () => {
+          throw new Error("classifier blew up");
+        },
+      });
+      const failing = limiter.enqueue(() => Promise.reject(new Error("send-fail")));
+      const completed: string[] = [];
+      const after = limiter.enqueue(async () => {
+        completed.push("ok");
+      });
+      await expect(failing).rejects.toThrow("send-fail");
+      await after;
+      expect(completed).toEqual(["ok"]);
+    });
+
+    it("treats a throwing isRetryable as non-retryable and continues the queue", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 3 },
+        isRetryable: () => {
+          throw new Error("classifier blew up");
+        },
+      });
+      const failing = limiter.enqueue(() => Promise.reject(new Error("send-fail")));
+      const completed: string[] = [];
+      const after = limiter.enqueue(async () => {
+        completed.push("ok");
+      });
+      await expect(failing).rejects.toThrow("send-fail");
+      await after;
+      expect(completed).toEqual(["ok"]);
+    });
   });
 
   it("size() reflects pending items", async () => {
