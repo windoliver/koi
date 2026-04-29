@@ -814,7 +814,6 @@ function parseAuditOptions(
 interface RlmManifestOptions {
   readonly maxInputTokens?: number;
   readonly maxChunkChars?: number;
-  readonly priority?: number;
   readonly segmentSeparator?: string;
   readonly acknowledgeSegmentLocalContract?: boolean;
   readonly trustMetadataRole?: boolean;
@@ -825,7 +824,6 @@ function parseRlmOptions(raw: Readonly<Record<string, unknown>> | undefined): Rl
   const out: {
     maxInputTokens?: number;
     maxChunkChars?: number;
-    priority?: number;
     segmentSeparator?: string;
     acknowledgeSegmentLocalContract?: boolean;
     trustMetadataRole?: boolean;
@@ -851,10 +849,23 @@ function parseRlmOptions(raw: Readonly<Record<string, unknown>> | undefined): Rl
     out.maxChunkChars = raw.maxChunkChars;
   }
   if (raw.priority !== undefined) {
-    if (typeof raw.priority !== "number" || !Number.isInteger(raw.priority)) {
-      throw new Error("@koi/middleware-rlm: options.priority must be an integer");
-    }
-    out.priority = raw.priority;
+    // Reject manifest-configured priority. RLM's safety contract requires
+    // it to run deeper (higher priority) than every tool-mutating
+    // intercept middleware (e.g. tool-selector at 200) so the
+    // request.tools guard sees the materialized tool list before
+    // segmentation. A repo-authored `priority: 50` would brick every
+    // oversized turn by tripping the tools-present guard before
+    // upstream filtering had a chance to strip or narrow tools. Hosts
+    // that need a custom intercept-tier priority must register RLM
+    // programmatically via a custom MiddlewareRegistry where they own
+    // the ordering invariant.
+    throw new Error(
+      "@koi/middleware-rlm: options.priority is not configurable from manifest. " +
+        "RLM's tool-fan-out guard depends on running deeper than tool-mutating intercept " +
+        "middleware (tool-selector at 200, etc.); repo-authored priority overrides could " +
+        "violate that invariant and break oversized turns. Hosts that need a custom priority " +
+        "must register the middleware programmatically via a custom MiddlewareRegistry.",
+    );
   }
   if (raw.segmentSeparator !== undefined) {
     if (typeof raw.segmentSeparator !== "string") {

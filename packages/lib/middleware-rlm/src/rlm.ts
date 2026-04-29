@@ -259,7 +259,12 @@ async function consumeStream(
   let streamedInput = 0; // let: per-segment usage accumulator
   let streamedOutput = 0; // let: per-segment usage accumulator
   let sawUsage = false; // let: did the stream emit any `usage` chunks
+  let streamedText = ""; // let: accumulate text_delta in case done.response.content is empty
   for await (const chunk of next(request)) {
+    if (chunk.kind === "text_delta") {
+      streamedText += chunk.delta;
+      continue;
+    }
     if (chunk.kind === "usage") {
       streamedInput += chunk.inputTokens;
       streamedOutput += chunk.outputTokens;
@@ -268,10 +273,18 @@ async function consumeStream(
     }
     if (chunk.kind === "done") {
       const response = chunk.response;
-      if (response.usage !== undefined || !sawUsage) return response;
+      // Some providers stream the real text in `text_delta` chunks and
+      // emit `done.response.content: ""`. Backfill from accumulated
+      // deltas so reassembly does not corrupt oversized streamed turns
+      // into empty answers.
+      const content = response.content.length > 0 ? response.content : streamedText;
+      const usage =
+        response.usage ??
+        (sawUsage ? { inputTokens: streamedInput, outputTokens: streamedOutput } : undefined);
       return {
         ...response,
-        usage: { inputTokens: streamedInput, outputTokens: streamedOutput },
+        content,
+        ...(usage !== undefined ? { usage } : {}),
       };
     }
     if (chunk.kind === "error") {

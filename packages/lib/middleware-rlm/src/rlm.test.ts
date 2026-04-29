@@ -427,6 +427,44 @@ describe("createRlmMiddleware", () => {
     expect(usage.inputTokens).toBeGreaterThan(0);
   });
 
+  test("wrapModelStream preserves segment text when upstream emits text_delta and done.response.content is empty", async () => {
+    // Some providers stream the real text in `text_delta` chunks and
+    // emit `done.response.content: ""`. RLM must accumulate those
+    // deltas and backfill content; otherwise reassembly produces an
+    // empty answer for oversized streamed turns even though the model
+    // produced text.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let segmentCount = 0; // let: per-segment counter
+    const upstream: ModelStreamHandler = async function* () {
+      segmentCount += 1;
+      const seg = segmentCount;
+      yield { kind: "text_delta", delta: `seg${seg}-part-a ` };
+      yield { kind: "text_delta", delta: `seg${seg}-part-b` };
+      yield {
+        kind: "done",
+        response: {
+          content: "", // empty terminal content; real text is in deltas
+          model: "delta-model",
+          stopReason: "stop" as const,
+        },
+      };
+    };
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    const chunks: ModelChunk[] = [];
+    for await (const c of iter) chunks.push(c);
+    const done = chunks.find((c) => c.kind === "done");
+    if (done === undefined || done.kind !== "done") throw new Error("expected done chunk");
+    expect(done.response.content).toContain("seg1-part-a");
+    expect(done.response.content).toContain("seg1-part-b");
+    expect(segmentCount).toBeGreaterThan(1);
+  });
+
   test("wrapModelStream preserves usage when upstream reports it via 'usage' chunks (not done.response.usage)", async () => {
     // Some upstream stream implementations emit per-token usage chunks
     // and leave done.response.usage unset. RLM must accumulate those so
