@@ -279,11 +279,11 @@ describe("MiddlewareRegistry", () => {
     // host explicitly opts in. Hosts that want audit pass
     // `{ allowFileBackedSinks: true }`.
     //
-    // Non-file-backed middleware (e.g. `@koi/middleware-rlm`) is
-    // registered unconditionally because it has no filesystem trust
-    // boundary; its safety contract is enforced by per-flag rejection
-    // inside the factory (acknowledgeSegmentLocalContract /
-    // trustMetadataRole / priority cannot be set from manifest).
+    // `@koi/middleware-rlm` registers a factory that always throws an
+    // explicit error: per-request safety flags cannot be set from
+    // manifest, so a manifest-instantiated middleware would always be
+    // a fail-closed trap on the first oversized turn. The factory
+    // surfaces the constraint at resolution time instead.
     const registry = createBuiltinManifestRegistry();
     expect(registry.has("@koi/middleware-audit")).toBe(false);
     expect(registry.has("@koi/middleware-rlm")).toBe(true);

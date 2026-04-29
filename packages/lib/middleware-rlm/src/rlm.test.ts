@@ -645,6 +645,53 @@ describe("createRlmMiddleware", () => {
     expect(threw).toBe(true);
   });
 
+  test("SegmentAbortError carries completed segments + aggregated usage so callers can resume", async () => {
+    // Without completedSegments on the failure path, a partial-failure
+    // case (e.g. timeout/rate-limit on chunk k of N) discards the
+    // already-paid output of chunks 0..k-1. Retry logic can only
+    // re-dispatch the whole oversized turn and observability cannot
+    // attribute the cost. Carrying prior responses + aggregated usage
+    // on the error lets callers resume from segmentIndex.
+    const { SegmentAbortError } = await import("./rlm.js");
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let calls = 0;
+    const handler: ModelHandler = async () => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          content: "first",
+          model: "ok-model",
+          stopReason: "stop" as const,
+          usage: { inputTokens: 11, outputTokens: 3 },
+        };
+      }
+      return {
+        content: "second-failed",
+        model: "rate-limited-model",
+        stopReason: "error" as const,
+        usage: { inputTokens: 7, outputTokens: 1 },
+      };
+    };
+    const big = "x".repeat(400);
+    let caught: unknown;
+    try {
+      await mw.wrapModelCall?.(turnCtx(), { messages: [userMessage(big)] }, handler);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(SegmentAbortError);
+    if (!(caught instanceof SegmentAbortError)) throw new Error("expected SegmentAbortError");
+    expect(caught.segmentIndex).toBe(1);
+    expect(caught.completedSegments.length).toBe(1);
+    expect(caught.completedSegments[0]?.content).toBe("first");
+    expect(caught.completedUsage?.inputTokens).toBe(11);
+    expect(caught.completedUsage?.outputTokens).toBe(3);
+  });
+
   test("wrapModelCall does not dispatch later segments after abort fires between chunks", async () => {
     // Without a pre-dispatch abort guard, a cancellation that lands
     // after segment k completes still pays for segments k+1..N because

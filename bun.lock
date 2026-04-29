@@ -951,7 +951,6 @@
         "@koi/middleware-plan-persist": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
         "@koi/middleware-report": "workspace:*",
-        "@koi/middleware-rlm": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
         "@koi/middleware-turn-prelude": "workspace:*",

@@ -20,7 +20,6 @@ import { basename, dirname, isAbsolute, relative, resolve as resolvePath } from 
 import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
 import type { KoiMiddleware, MiddlewarePhase } from "@koi/core";
 import { createAuditMiddleware } from "@koi/middleware-audit";
-import { createRlmMiddleware } from "@koi/middleware-rlm";
 
 /**
  * Closable audit sink as returned by `createNdjsonAuditSink`.
@@ -525,13 +524,16 @@ export function createBuiltinManifestRegistry(
       trusted: true,
     });
   }
-  // RLM is registered as `trusted` so it keeps its native `intercept` phase
-  // and `wrapModelStream` hook (zone-B forcing would push it to observe-only
-  // and break the segmentation contract). The manifest factory exposes only
-  // the safe declarative knobs (numeric thresholds, separator string, opt-in
-  // booleans) — the runtime estimator and onEvent observer cannot be set
-  // from manifest content because those are functions and not expressible
-  // in YAML. Hosts that need a custom estimator wire RLM programmatically.
+  // RLM is registered with an explicit-rejection factory rather than a
+  // working one. The manifest factory rejects every safety-relevant flag
+  // (`acknowledgeSegmentLocalContract`, `trustMetadataRole`, `priority`)
+  // because a static manifest cannot make per-request decisions about
+  // those contracts. With those flags rejected, a manifest-instantiated
+  // RLM would default to fail-closed on every oversized request — a
+  // load-bearing trap for repo authors who think `rlm: { ... }` in YAML
+  // gives them oversized handling. Surfacing a clear error at registry
+  // resolution instead of at the first oversized turn makes the
+  // programmatic-only activation requirement obvious.
   registry.register("@koi/middleware-rlm", createRlmManifestEntry, {
     trusted: true,
   });
@@ -927,8 +929,25 @@ function parseRlmOptions(raw: Readonly<Record<string, unknown>> | undefined): Rl
 }
 
 function createRlmManifestEntry(entry: ManifestMiddlewareEntry): KoiMiddleware {
-  const options = parseRlmOptions(entry.options);
-  return createRlmMiddleware(options);
+  // Validate the option shape first so misuse surfaces a precise error
+  // (unknown booleans, wrong types, etc.) rather than the generic
+  // programmatic-only message below.
+  parseRlmOptions(entry.options);
+  // Manifest activation is a trap: every safety-relevant RLM flag is
+  // rejected from manifest content (see parseRlmOptions), so a
+  // manifest-instantiated middleware can only ever fail closed on the
+  // first oversized turn. Hosts who put `@koi/middleware-rlm` in
+  // `koi.yaml` would see it load successfully and then take a hard
+  // runtime error on real traffic. Surface the constraint at
+  // resolution time so the misconfiguration is obvious.
+  throw new Error(
+    "@koi/middleware-rlm cannot be activated from manifest content. " +
+      "RLM's segmentation behavior requires `acknowledgeSegmentLocalContract: true`, " +
+      "which a static manifest is not allowed to set (see option-validation rejection above) " +
+      "because per-request safety must come from programmatic composition. " +
+      "Hosts that need oversized-request virtualization must register RLM via a custom " +
+      "MiddlewareRegistry where they can opt into the segment-local contract per known-safe turn.",
+  );
 }
 
 function createAuditManifestEntry(

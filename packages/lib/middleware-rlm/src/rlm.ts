@@ -165,6 +165,7 @@ async function dispatchSegmented(
         response: buildAbortResponse(seg),
         toolCallAborts: false,
         kind: "call",
+        completedSegments: [...responses],
       });
     }
     const response = await next(seg);
@@ -178,6 +179,7 @@ async function dispatchSegmented(
         response,
         toolCallAborts,
         kind: "call",
+        completedSegments: [...responses],
       });
     }
     responses.push(response);
@@ -204,19 +206,81 @@ export class SegmentAbortError extends Error {
   readonly segmentCount: number;
   readonly segmentResponse: ModelResponse;
   readonly toolCallAborts: boolean;
+  /**
+   * Per-segment responses for chunks 0..segmentIndex-1 that completed
+   * successfully before the failing chunk. Callers can use these to
+   * resume from `segmentIndex` instead of re-dispatching the whole
+   * oversized turn, and observability can attribute already-paid usage
+   * even when the run aborts mid-flight.
+   */
+  readonly completedSegments: readonly ModelResponse[];
+  /**
+   * Aggregated usage across `completedSegments`. Surfaces token cost
+   * already paid for the partial run; absent when no completed segment
+   * carried usage.
+   */
+  readonly completedUsage:
+    | {
+        readonly inputTokens: number;
+        readonly outputTokens: number;
+        readonly cacheReadTokens?: number;
+        readonly cacheWriteTokens?: number;
+      }
+    | undefined;
   constructor(args: {
     readonly message: string;
     readonly index: number;
     readonly total: number;
     readonly response: ModelResponse;
     readonly toolCallAborts: boolean;
+    readonly completedSegments: readonly ModelResponse[];
   }) {
     super(args.message, { cause: args.response });
     this.segmentIndex = args.index;
     this.segmentCount = args.total;
     this.segmentResponse = args.response;
     this.toolCallAborts = args.toolCallAborts;
+    this.completedSegments = args.completedSegments;
+    this.completedUsage = aggregateCompletedUsage(args.completedSegments);
   }
+}
+
+function aggregateCompletedUsage(completed: readonly ModelResponse[]):
+  | {
+      readonly inputTokens: number;
+      readonly outputTokens: number;
+      readonly cacheReadTokens?: number;
+      readonly cacheWriteTokens?: number;
+    }
+  | undefined {
+  let any = false;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
+  let hasCacheRead = false;
+  let hasCacheWrite = false;
+  for (const r of completed) {
+    if (r.usage === undefined) continue;
+    any = true;
+    inputTokens += r.usage.inputTokens;
+    outputTokens += r.usage.outputTokens;
+    if (r.usage.cacheReadTokens !== undefined) {
+      cacheReadTokens += r.usage.cacheReadTokens;
+      hasCacheRead = true;
+    }
+    if (r.usage.cacheWriteTokens !== undefined) {
+      cacheWriteTokens += r.usage.cacheWriteTokens;
+      hasCacheWrite = true;
+    }
+  }
+  if (!any) return undefined;
+  return {
+    inputTokens,
+    outputTokens,
+    ...(hasCacheRead ? { cacheReadTokens } : {}),
+    ...(hasCacheWrite ? { cacheWriteTokens } : {}),
+  };
 }
 
 function createSegmentAbortError(args: {
@@ -225,6 +289,7 @@ function createSegmentAbortError(args: {
   readonly response: ModelResponse;
   readonly toolCallAborts: boolean;
   readonly kind: "call" | "stream";
+  readonly completedSegments: readonly ModelResponse[];
 }): SegmentAbortError {
   const reason = args.toolCallAborts
     ? `tool_call richContent (stopReason=${String(args.response.stopReason)})`
@@ -245,6 +310,7 @@ function createSegmentAbortError(args: {
     index: args.index,
     total: args.total,
     response: args.response,
+    completedSegments: args.completedSegments,
     toolCallAborts: args.toolCallAborts,
   });
 }
@@ -711,6 +777,7 @@ async function* rlmWrapModelStream(
         response: buildAbortResponse(seg),
         toolCallAborts: false,
         kind: "stream",
+        completedSegments: [...responses],
       });
     }
     const response = await consumeStream(seg, next);
@@ -724,6 +791,7 @@ async function* rlmWrapModelStream(
         response,
         toolCallAborts,
         kind: "stream",
+        completedSegments: [...responses],
       });
     }
     responses.push(response);

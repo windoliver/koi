@@ -34,7 +34,6 @@
     { "path": "../../security/governance-security" },
     { "path": "../../security/audit-sink-nexus" },
     { "path": "../../security/middleware-audit" },
-    { "path": "../../lib/middleware-rlm" },
     { "path": "../../security/audit-sink-ndjson" },
     { "path": "../../security/audit-sink-sqlite" },
     { "path": "../../security/permissions-nexus" },

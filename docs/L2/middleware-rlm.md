@@ -4,14 +4,18 @@ Segments oversized model requests into model-sized chunks, dispatches each
 chunk through the downstream chain, and reassembles the responses in
 order. Sits in the middleware chain via `wrapModelCall` and is engine-agnostic.
 
-> **Status: library-only, opt-in.** This package ships the
-> `createRlmMiddleware` factory plus pure `segmentRequest` /
+> **Status: library-only, programmatic activation only.** This package
+> ships the `createRlmMiddleware` factory plus pure `segmentRequest` /
 > `reassembleResponses` primitives. The runtime does **not** wire RLM
-> into any default middleware stack. Operators must opt in by
-> instantiating the middleware and adding it to their composition (see
-> *Usage* below). The `@koi/runtime` dependency entry exists only so the
-> package participates in `check:orphans` / golden-query coverage —
-> shipping this package does not change runtime behavior on its own.
+> into any default middleware stack, and the built-in manifest registry
+> rejects manifest-driven activation with an explicit error. Operators
+> must opt in by instantiating the middleware programmatically and
+> adding it to their composition (see *Usage* below). Manifest content
+> cannot set the safety-relevant flags
+> (`acknowledgeSegmentLocalContract`, `trustMetadataRole`, `priority`),
+> so a `koi.yaml` reference would only ever produce a fail-closed
+> instance — the registry surfaces this at resolution time rather than
+> letting it become a hard runtime error on the first oversized turn.
 
 ---
 
