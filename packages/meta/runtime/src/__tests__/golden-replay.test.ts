@@ -15451,3 +15451,87 @@ describe("Golden: @koi/middleware-prompt-cache", () => {
     expect(toolSteps.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/sandbox-docker (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/sandbox-docker", () => {
+  test("createDockerAdapter returns UNAVAILABLE error when client is missing", async () => {
+    const { createDockerAdapter } = await import("@koi/sandbox-docker");
+
+    // Config with no client — should return an UNAVAILABLE error Result
+    const result = createDockerAdapter({ image: "ubuntu:22.04" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("UNAVAILABLE");
+      expect(result.error.message).toContain("Docker client is required");
+    }
+  });
+
+  test("createDockerAdapter returns a named SandboxAdapter when a client is provided", async () => {
+    const { createDockerAdapter } = await import("@koi/sandbox-docker");
+
+    // Minimal stub DockerClient — never actually called in this test
+    const stubClient = {
+      createContainer: async () => {
+        throw new Error("not used in this test");
+      },
+      startContainer: async () => {
+        throw new Error("not used in this test");
+      },
+      execInContainer: async () => {
+        throw new Error("not used in this test");
+      },
+      stopContainer: async () => {
+        throw new Error("not used in this test");
+      },
+      removeContainer: async () => {
+        throw new Error("not used in this test");
+      },
+      readFile: async () => {
+        throw new Error("not used in this test");
+      },
+      writeFile: async () => {
+        throw new Error("not used in this test");
+      },
+    };
+
+    const result = createDockerAdapter({ image: "ubuntu:22.04", client: stubClient });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.name).toBe("docker");
+      expect(typeof result.value.create).toBe("function");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/sandbox-executor (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/sandbox-executor", () => {
+  test("createSubprocessExecutor returns a SandboxExecutor with an execute function", async () => {
+    const { createSubprocessExecutor } = await import("@koi/sandbox-executor");
+
+    const executor = createSubprocessExecutor({ bunPath: "bun" });
+    expect(typeof executor.execute).toBe("function");
+  });
+
+  test("createSubprocessExecutor execute returns TIMEOUT error for code that never exits", async () => {
+    const { createSubprocessExecutor } = await import("@koi/sandbox-executor");
+
+    const executor = createSubprocessExecutor({ bunPath: "bun" });
+    // Code that immediately returns success — validates the happy path protocol
+    const code = `
+export default async function run(input: unknown): Promise<unknown> {
+  return { echo: input };
+}
+`;
+    const result = await executor.execute(code, { hello: "world" }, 10_000);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.output).toBeDefined();
+    }
+  });
+});

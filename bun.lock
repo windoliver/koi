@@ -1117,6 +1117,8 @@
         "@koi/query-engine": "workspace:*",
         "@koi/replay": "workspace:*",
         "@koi/rules-loader": "workspace:*",
+        "@koi/sandbox-docker": "workspace:*",
+        "@koi/sandbox-executor": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
         "@koi/scheduler": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",
