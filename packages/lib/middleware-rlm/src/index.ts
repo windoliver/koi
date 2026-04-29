@@ -8,7 +8,7 @@
 
 export { validateRlmConfig } from "./config.js";
 export { reassembleResponses, SEGMENT_SEPARATOR } from "./reassemble.js";
-export { createRlmMiddleware } from "./rlm.js";
+export { createRlmMiddleware, SegmentAbortError } from "./rlm.js";
 export {
   MultipleOversizedBlocksError,
   SiblingTextBlocksError,

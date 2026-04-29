@@ -645,6 +645,78 @@ describe("createRlmMiddleware", () => {
     expect(threw).toBe(true);
   });
 
+  test("wrapModelStream surfaces SegmentAbortError carrying interrupted+terminatedBy on caller abort", async () => {
+    const { SegmentAbortError } = await import("./rlm.js");
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    const upstream: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "starting" };
+      await new Promise(() => undefined); // forever
+    };
+    const ac = new AbortController();
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(
+      turnCtx(),
+      { messages: [userMessage(big)], signal: ac.signal },
+      upstream,
+    );
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    setTimeout(() => ac.abort(), 25);
+    let caught: unknown;
+    try {
+      for await (const _c of iter) {
+        // expected: SegmentAbortError on stopReason='error' with interrupted metadata
+      }
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(SegmentAbortError);
+    if (!(caught instanceof SegmentAbortError)) throw new Error("expected SegmentAbortError");
+    expect(caught.segmentResponse.metadata?.interrupted).toBe(true);
+    expect(caught.segmentResponse.metadata?.terminatedBy).toBe("abort");
+    expect(caught.segmentResponse.content).toContain("starting");
+  });
+
+  test("wrapModelStream propagates retryable + retryAfterMs from upstream error chunks", async () => {
+    const { SegmentAbortError } = await import("./rlm.js");
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    const upstream: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "before-rate-limit-" };
+      yield {
+        kind: "error",
+        message: "rate limit exceeded",
+        code: "RATE_LIMIT" as const,
+        retryable: true,
+        retryAfterMs: 1500,
+      };
+    };
+    const big = "y".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    let caught: unknown;
+    try {
+      for await (const _c of iter) {
+        // expected: structured error preserved on the segment response
+      }
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(SegmentAbortError);
+    if (!(caught instanceof SegmentAbortError)) throw new Error("expected SegmentAbortError");
+    const meta = caught.segmentResponse.metadata as Record<string, unknown>;
+    expect(meta.errorCode).toBe("RATE_LIMIT");
+    expect(meta.retryable).toBe(true);
+    expect(meta.retryAfterMs).toBe(1500);
+    expect(caught.segmentResponse.content).toContain("before-rate-limit-");
+  });
+
   test("wrapModelStream still fails closed when segmentation cannot reduce the request", async () => {
     // History-dominated requests where chunking the largest text block
     // doesn't drop below the threshold must surface the budget breach

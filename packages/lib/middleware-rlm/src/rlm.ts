@@ -134,17 +134,81 @@ async function dispatchSegmented(
       response.stopReason !== undefined && ABORTING_STOP_REASONS.has(response.stopReason);
     const toolCallAborts = hasToolCallBlock(response);
     if (stopAborts || toolCallAborts) {
-      const reason = toolCallAborts
-        ? `tool_call richContent (stopReason=${String(response.stopReason)})`
-        : `stopReason=${String(response.stopReason)}`;
-      throw new Error(
-        `RLM segment ${String(i + 1)}/${String(segments.length)} returned ${reason} (model=${response.model}). Concatenating an incomplete or tool-use segment would mask the failure; aborting.`,
-      );
+      throw createSegmentAbortError({
+        index: i,
+        total: segments.length,
+        response,
+        toolCallAborts,
+        kind: "call",
+      });
     }
     responses.push(response);
     emit(cfg, { kind: "segment-completed", index: i, count: segments.length });
   }
   return reassembleResponses(responses, cfg.segmentSeparator);
+}
+
+/**
+ * Error thrown by RLM when a segmented call/stream cannot be safely
+ * reassembled because a segment returned a non-success terminal state.
+ *
+ * The original segment response is attached as `cause` plus exposed on
+ * a typed `segmentResponse` field so observability / retry / delivery
+ * paths can recover the structured failure metadata (interrupted /
+ * terminatedBy / errorCode / retryable / retryAfterMs) the
+ * synthesized terminal response carries. A bare `throw new Error(...)`
+ * with only a string would discard those signals on exactly the
+ * oversized path RLM is meant to virtualize.
+ */
+export class SegmentAbortError extends Error {
+  override readonly name = "SegmentAbortError";
+  readonly segmentIndex: number;
+  readonly segmentCount: number;
+  readonly segmentResponse: ModelResponse;
+  readonly toolCallAborts: boolean;
+  constructor(args: {
+    readonly message: string;
+    readonly index: number;
+    readonly total: number;
+    readonly response: ModelResponse;
+    readonly toolCallAborts: boolean;
+  }) {
+    super(args.message, { cause: args.response });
+    this.segmentIndex = args.index;
+    this.segmentCount = args.total;
+    this.segmentResponse = args.response;
+    this.toolCallAborts = args.toolCallAborts;
+  }
+}
+
+function createSegmentAbortError(args: {
+  readonly index: number;
+  readonly total: number;
+  readonly response: ModelResponse;
+  readonly toolCallAborts: boolean;
+  readonly kind: "call" | "stream";
+}): SegmentAbortError {
+  const reason = args.toolCallAborts
+    ? `tool_call richContent (stopReason=${String(args.response.stopReason)})`
+    : `stopReason=${String(args.response.stopReason)}`;
+  const meta = (args.response.metadata ?? {}) as Record<string, unknown>;
+  const detail: string[] = [];
+  if (meta.interrupted === true) {
+    detail.push(`interrupted=true terminatedBy=${String(meta.terminatedBy ?? "unknown")}`);
+  }
+  if (meta.errorCode !== undefined) detail.push(`code=${String(meta.errorCode)}`);
+  if (meta.retryable !== undefined) detail.push(`retryable=${String(meta.retryable)}`);
+  if (meta.retryAfterMs !== undefined) detail.push(`retryAfterMs=${String(meta.retryAfterMs)}`);
+  if (typeof meta.rlmStreamError === "string") detail.push(`message=${meta.rlmStreamError}`);
+  const detailStr = detail.length > 0 ? ` [${detail.join(" ")}]` : "";
+  const phase = args.kind === "stream" ? "streaming segment" : "segment";
+  return new SegmentAbortError({
+    message: `RLM ${phase} ${String(args.index + 1)}/${String(args.total)} returned ${reason} (model=${args.response.model})${detailStr}. Concatenating an incomplete or tool-use segment would mask the failure; aborting.`,
+    index: args.index,
+    total: args.total,
+    response: args.response,
+    toolCallAborts: args.toolCallAborts,
+  });
 }
 
 async function rlmWrapModelCall(
@@ -300,22 +364,41 @@ async function consumeStream(
         });
 
   function buildTerminalResponse(
-    overrides: { readonly stopReason?: ModelStopReason; readonly errorMessage?: string } = {},
+    overrides: {
+      readonly stopReason?: ModelStopReason;
+      readonly errorMessage?: string;
+      readonly interrupted?: boolean;
+      readonly terminatedBy?: "abort" | "timeout";
+      readonly errorCode?: string;
+      readonly retryable?: boolean;
+      readonly retryAfterMs?: number;
+    } = {},
   ): ModelResponse {
     const usage = sawUsage
       ? { inputTokens: streamedInput, outputTokens: streamedOutput }
       : undefined;
     const baseStopReason: ModelStopReason | undefined =
       overrides.stopReason ?? (overrides.errorMessage !== undefined ? "error" : undefined);
+    // Preserve structured failure metadata so the outer dispatch guard
+    // (and any caller observing the synthetic terminal response) can
+    // distinguish caller aborts from real provider failures, and so
+    // retryable/backoff signals from upstream `error` chunks are not
+    // lost on the oversized streaming path.
+    const meta: Record<string, unknown> = {};
+    if (overrides.errorMessage !== undefined) meta.rlmStreamError = overrides.errorMessage;
+    if (overrides.interrupted === true) meta.interrupted = true;
+    if (overrides.terminatedBy !== undefined) meta.terminatedBy = overrides.terminatedBy;
+    if (overrides.errorCode !== undefined) meta.errorCode = overrides.errorCode;
+    if (overrides.retryable !== undefined) meta.retryable = overrides.retryable;
+    if (overrides.retryAfterMs !== undefined) meta.retryAfterMs = overrides.retryAfterMs;
+    const hasMeta = Object.keys(meta).length > 0;
     return {
       content: streamedText,
       model,
       ...(usage !== undefined ? { usage } : {}),
       ...(baseStopReason !== undefined ? { stopReason: baseStopReason } : {}),
       ...(responseId !== undefined ? { responseId } : {}),
-      ...(overrides.errorMessage !== undefined
-        ? { metadata: { rlmStreamError: overrides.errorMessage } }
-        : {}),
+      ...(hasMeta ? { metadata: meta } : {}),
     };
   }
 
@@ -334,7 +417,20 @@ async function consumeStream(
       iterator.return?.().catch(() => {
         // closing a hung iterator is best-effort
       });
-      return buildTerminalResponse({ stopReason: "error", errorMessage: "aborted" });
+      // Distinguish caller cancel from activity-timeout via the
+      // signal's reason (matches the query-engine consumer's mapping).
+      // Both terminate the segmented run, but the metadata flag lets
+      // delivery / observability paths key off the right semantic.
+      const isTimeout =
+        signal !== undefined &&
+        signal.reason instanceof DOMException &&
+        signal.reason.name === "TimeoutError";
+      return buildTerminalResponse({
+        stopReason: "error",
+        errorMessage: isTimeout ? "Stream timed out" : "Stream cancelled",
+        interrupted: true,
+        terminatedBy: isTimeout ? "timeout" : "abort",
+      });
     }
     const result = settled as IteratorResult<ModelChunk>;
     if (result.done === true) {
@@ -416,6 +512,8 @@ async function consumeStream(
       // dispatchSegmented / wrapModelStream then aborts reassembly,
       // surfacing the failure to the caller with the accumulated state
       // intact instead of throwing a bare exception that loses it.
+      // Preserve provider/hook metadata (code, retryable, retryAfterMs)
+      // so retry / backoff signals are not stripped on the RLM path.
       if (chunk.usage !== undefined) {
         streamedInput += chunk.usage.inputTokens;
         streamedOutput += chunk.usage.outputTokens;
@@ -424,6 +522,9 @@ async function consumeStream(
       return buildTerminalResponse({
         stopReason: "error",
         errorMessage: chunk.message,
+        ...(chunk.code !== undefined ? { errorCode: chunk.code } : {}),
+        ...(chunk.retryable !== undefined ? { retryable: chunk.retryable } : {}),
+        ...(chunk.retryAfterMs !== undefined ? { retryAfterMs: chunk.retryAfterMs } : {}),
       });
     }
     // Unknown / non-text chunk kinds (tool_call_*, thinking_delta, etc.)
@@ -511,12 +612,13 @@ async function* rlmWrapModelStream(
       response.stopReason !== undefined && ABORTING_STOP_REASONS.has(response.stopReason);
     const toolCallAborts = hasToolCallBlock(response);
     if (stopAborts || toolCallAborts) {
-      const reason = toolCallAborts
-        ? `tool_call richContent (stopReason=${String(response.stopReason)})`
-        : `stopReason=${String(response.stopReason)}`;
-      throw new Error(
-        `RLM streaming segment ${String(i + 1)}/${String(segments.length)} returned ${reason} (model=${response.model}). Concatenating an incomplete or tool-use segment would mask the failure; aborting.`,
-      );
+      throw createSegmentAbortError({
+        index: i,
+        total: segments.length,
+        response,
+        toolCallAborts,
+        kind: "stream",
+      });
     }
     responses.push(response);
     emit(cfg, { kind: "segment-completed", index: i, count: segments.length });
