@@ -1,5 +1,5 @@
 /**
- * createTaskTools — factory that returns all 6 task management tools.
+ * createTaskTools — factory that returns all 7 task management tools.
  *
  * Includes a verification nudge: after 3+ task completions without a
  * verification task, task_update responses include a reminder to verify.
