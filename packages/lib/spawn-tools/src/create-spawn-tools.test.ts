@@ -3,7 +3,10 @@ import type { AgentId, ManagedTaskBoard, SpawnFn, SpawnRequest } from "@koi/core
 import { createSpawnTools } from "./create-spawn-tools.js";
 
 describe("createSpawnTools", () => {
-  test("provisions a default SpawnResultCache when none is supplied", async () => {
+  test("does NOT provision a default cache — dedup is opt-in via resultCache", async () => {
+    // Default-on caching would be misleading: a per-factory cache disappears
+    // whenever tools are re-created across turn boundaries. Session-scoped
+    // ownership is the runtime's job (#1553).
     const calls: SpawnRequest[] = [];
     const fn: SpawnFn = async (request) => {
       calls.push(request);
@@ -15,19 +18,14 @@ describe("createSpawnTools", () => {
       agentId: "parent" as AgentId,
       signal: AbortSignal.timeout(5_000),
     });
-    expect(agentSpawn).toBeDefined();
-
     const args = {
       agent_name: "researcher",
       description: "X",
       context: { task_id: "T-1" },
     };
-    const first = await agentSpawn?.execute(args);
-    const second = await agentSpawn?.execute(args);
-
-    expect(first).toEqual({ ok: true, output: "n=1" });
-    expect(second).toEqual({ ok: true, output: "n=1", deduplicated: true });
-    expect(calls).toHaveLength(1);
+    await agentSpawn?.execute(args);
+    await agentSpawn?.execute(args);
+    expect(calls).toHaveLength(2);
   });
 
   test("respects an explicit resultCache from the caller (sharing across factories)", async () => {

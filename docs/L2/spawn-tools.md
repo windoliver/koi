@@ -125,10 +125,25 @@ re-invoke `spawnFn` or inject duplicate output back into the parent session.
   admission isn't replayed for retries — `agent_spawn` propagates that
   flag to the cache layer. Default streaming spawns (the common case)
   leave `cacheable` undefined and are cached normally.
-- **Default cache**: `createSpawnTools` provisions a `SpawnResultCache` when
-  the caller does not supply one, so the feature is on by default. Pass an
-  explicit `resultCache` to share across multiple factory calls in the same
-  session.
+- **Cache ownership**: dedup is opt-in. Pass a session-scoped
+  `SpawnResultCache` via `config.resultCache`. The runtime / autonomous
+  bridge (#1553) owns the cache so it survives across turn boundaries and
+  tool re-instantiation; provisioning a default in `createSpawnTools` is
+  intentionally not done because a per-factory default would dedup only
+  against the current tool instance and silently disappear on re-entry.
+
+### Known limitation: in-progress deferred-delivery retries
+
+When an engine adapter uses non-streaming delivery (`deferred` /
+`on_demand`) and signals `cacheable: false`, retries that arrive while the
+background child is still executing will start a second child. The cache
+cannot coalesce those retries because there is no completion signal to
+tell us when "background still running" transitions to "done"; the
+factory Promise resolves on the placeholder admission. Full in-progress
+dedup needs an engine-level completion handle on `SpawnResult` (a future
+core contract change). Until that lands, callers that mix `agent_spawn`
+with deferred delivery should serialize retries at a higher layer (e.g.
+the autonomous bridge's task-state machine).
 - **Eviction**: bounded LRU (default cap 256, see `DEFAULT_SPAWN_CACHE_CAP`).
   Map insertion-order, sync `get`/`set` — no async overhead on the hot path.
 - **Result shape on hit**: `{ ok: true, output, deduplicated: true }` so

@@ -1,5 +1,4 @@
 import type { Tool } from "@koi/core";
-import { createSpawnResultCache } from "./spawn-result-cache.js";
 import { createAgentSpawnTool } from "./tools/agent-spawn.js";
 import type { SpawnToolsConfig } from "./types.js";
 
@@ -8,14 +7,13 @@ import type { SpawnToolsConfig } from "./types.js";
  *
  * Returns [agent_spawn].
  *
- * Provisions a default `SpawnResultCache` if the caller did not supply one,
- * so idempotent retry dedup is on by default. The cache only activates when
- * a spawn carries `context.task_id`, so spawns without a task identity are
- * unaffected. Pass an explicit `resultCache` to share a single cache across
- * multiple `createSpawnTools` calls in the same session, or pass `null` (via
- * a wrapper) if a future caller needs to opt out.
+ * Idempotent retry dedup is opt-in: pass a session-scoped
+ * `SpawnResultCache` via `config.resultCache`. The cache must be owned by
+ * the runtime / autonomous bridge (#1553) so it survives tool re-creation
+ * across turn boundaries — provisioning a default cache here would only
+ * dedup against the current factory instance, giving misleading
+ * "default-on" idempotency that disappears whenever tools are rebuilt.
  */
 export function createSpawnTools(config: SpawnToolsConfig): readonly Tool[] {
-  const resultCache = config.resultCache ?? createSpawnResultCache();
-  return [createAgentSpawnTool({ ...config, resultCache })];
+  return [createAgentSpawnTool(config)];
 }
