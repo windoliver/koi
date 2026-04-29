@@ -6,8 +6,19 @@
  *   - resources: maxPids → --pids-limit, maxMemoryMb → --memory
  *   - env:       forwarded directly
  *   - filesystem.allowRead  → bind mount :ro
- *   - filesystem.allowWrite → bind mount :rw
+ *   - filesystem.allowWrite → bind mount :rw + readOnlyRoot + tmpfsMounts
  *   - nexusMounts → bind mount source:mountPath (rw)
+ *
+ * Read-only rootfs:
+ *   When filesystem.allowWrite is present (allow-list semantics), the container
+ *   rootfs is made read-only via `--read-only` so only the explicit bind mounts
+ *   are writable. `/tmp` is mounted as tmpfs to provide scratch space. This
+ *   hardens the contract: without `--read-only`, allowWrite binds are present but
+ *   the rest of the rootfs remains writable, weakening the isolation guarantee.
+ *
+ *   When neither allowWrite nor allowRead is present, readOnlyRoot is NOT set —
+ *   the rootfs remains writable as before (caller did not opt into allow-list
+ *   semantics).
  *
  * NOT translated (requires OS-level or Nexus FUSE implementation):
  *   - filesystem.denyRead / denyWrite — Docker has no fine-grained path-deny;
@@ -98,6 +109,15 @@ export function mapProfileToDockerOpts(
   const { networkMode } = resolveDockerNetwork(profile.network);
   const binds = buildBinds(profile);
 
+  // Enable read-only rootfs when allow-list filesystem semantics are in use:
+  // if allowWrite is set, the caller has opted into explicit-allow semantics and
+  // expects only the listed paths to be writable. Making rootfs read-only enforces
+  // this contract. /tmp is mounted as tmpfs for scratch space (Docker convention).
+  // We also enable it when only allowRead is set — allow-list implies intent.
+  const hasAllowList =
+    (profile.filesystem.allowWrite !== undefined && profile.filesystem.allowWrite.length > 0) ||
+    (profile.filesystem.allowRead !== undefined && profile.filesystem.allowRead.length > 0);
+
   const opts: DockerCreateOpts = {
     image,
     networkMode,
@@ -107,6 +127,7 @@ export function mapProfileToDockerOpts(
       : {}),
     ...(profile.env !== undefined ? { env: profile.env } : {}),
     ...(binds.length > 0 ? { binds } : {}),
+    ...(hasAllowList ? { readOnlyRoot: true, tmpfsMounts: ["/tmp"] } : {}),
   };
   return { ok: true, value: { opts, networkMode } };
 }

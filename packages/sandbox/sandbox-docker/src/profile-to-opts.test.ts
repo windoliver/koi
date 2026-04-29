@@ -133,4 +133,58 @@ describe("mapProfileToDockerOpts", () => {
     if (r.ok) throw new Error("Expected ok: false");
     expect(r.error.code).toBe("VALIDATION");
   });
+
+  // Fix 2 (read-only rootfs): profile with allowWrite → opts has readOnlyRoot + tmpfsMounts
+  test("profile with allowWrite sets readOnlyRoot:true and tmpfsMounts:[/tmp] on opts", () => {
+    const r = mapProfileToDockerOpts(
+      {
+        filesystem: {
+          defaultReadAccess: "open",
+          allowWrite: ["/work"],
+        },
+        network: { allow: false },
+        resources: {},
+      },
+      "ubuntu:22.04",
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("Expected ok");
+    expect(r.value.opts.readOnlyRoot).toBe(true);
+    expect(r.value.opts.tmpfsMounts).toEqual(["/tmp"]);
+  });
+
+  // Fix 2 (read-only rootfs): profile with allowRead only → opts has readOnlyRoot + tmpfsMounts
+  test("profile with allowRead only sets readOnlyRoot:true and tmpfsMounts:[/tmp] on opts", () => {
+    const r = mapProfileToDockerOpts(
+      {
+        filesystem: {
+          defaultReadAccess: "open",
+          allowRead: ["/usr/local/share"],
+        },
+        network: { allow: false },
+        resources: {},
+      },
+      "ubuntu:22.04",
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("Expected ok");
+    expect(r.value.opts.readOnlyRoot).toBe(true);
+    expect(r.value.opts.tmpfsMounts).toEqual(["/tmp"]);
+  });
+
+  // Fix 2 (read-only rootfs): profile with no allow lists → readOnlyRoot is undefined
+  test("profile with no allow lists leaves readOnlyRoot undefined (caller did not opt in)", () => {
+    const r = mapProfileToDockerOpts(
+      {
+        filesystem: { defaultReadAccess: "open" },
+        network: { allow: false },
+        resources: {},
+      },
+      "ubuntu:22.04",
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("Expected ok");
+    expect(r.value.opts.readOnlyRoot).toBeUndefined();
+    expect(r.value.opts.tmpfsMounts).toBeUndefined();
+  });
 });

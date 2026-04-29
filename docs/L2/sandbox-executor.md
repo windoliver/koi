@@ -43,21 +43,24 @@ export function createSubprocessExecutor(
 ): SandboxExecutor;
 ```
 
-## Isolation / fail-closed default
+## Isolation / explicit-deny guard
 
 `subprocess-executor` can only *signal* isolation constraints (via env vars such as
 `KOI_NETWORK_ALLOWED=0`, `KOI_MAX_MEMORY_MB`, `KOI_MAX_PIDS`) — it cannot *enforce*
-them without OS-level support. To prevent silent trust-boundary leaks, the executor
-**fails closed** by default:
+them without OS-level support. The guard fires only on **explicit** isolation requests:
 
 - Passing `context: { networkAllowed: false }` without `externalIsolation: true`
-  returns `{ ok: false, error: { code: "PERMISSION" } }` immediately.
-- Same for any `context.resourceLimits` value.
-- Context fields that do not require enforcement (e.g., `workspacePath`, `entryPath`)
-  are always honoured and never trigger the guard.
+  returns `{ ok: false, error: { code: "PERMISSION" } }` immediately — explicit
+  network-deny cannot be enforced in plain subprocess mode.
+- Same for any `context.resourceLimits` value — OS-level enforcement required.
+- **Omitting** `networkAllowed` (undefined) means "caller has no isolation opinion" —
+  the executor passes through. `ExecutionContext` is also used for non-isolation
+  metadata (`workspacePath`, `entryPath`, `env`) and those fields never trigger the guard.
+- Passing `context: {}` or `context: { workspacePath: "/tmp/x", entryPath: "..." }` is
+  always allowed — no isolation opinion, no guard.
 
-To opt out of the guard — for example when composing with `@koi/sandbox-os` which
-wraps the process with real OS isolation — set `externalIsolation: true` in the
+To opt in to OS-enforced isolation — for example when composing with `@koi/sandbox-os`
+which wraps the process with real OS isolation — set `externalIsolation: true` in the
 config. The env-var signals are then forwarded to the child process as before.
 
 `executor.execute(code, input, timeoutMs, context?)`:
@@ -68,12 +71,18 @@ config. The env-var signals are then forwarded to the child process as before.
 4. SIGKILLs on timeout; classifies non-zero exits as `CRASH`/`OOM`/`PERMISSION`.
 5. Returns `Result<SandboxResult, SandboxError>`.
 
-## Output capping
+## Output capping (drain-not-kill)
 
 Both stdout and stderr are read with a streaming byte-cap (`readBoundedText`) that
-stops consuming and cancels the reader once `maxOutputBytes` is reached. When the cap
-is hit, the child is killed via `killChild` so it doesn't keep producing output.
-This prevents an adversarial child from OOMing the host.
+stops accumulating bytes once `maxOutputBytes` is reached. When the cap is hit, the
+reader **continues draining** the underlying pipe silently (discarding excess bytes)
+so the child is not blocked on a full pipe buffer — which would otherwise cause a
+false TIMEOUT. The child is NOT killed on cap; only the timeout timer kills the child.
+
+This means a noisy-but-correct child that logs more than `maxOutputBytes` to stdout
+is not killed; it runs to completion. If the stderr framing marker was past the cap,
+the run is classified as CRASH after natural exit. This is intentional — reserving
+marker space is more complex and reserved for a future improvement.
 
 ## Process-group kill
 

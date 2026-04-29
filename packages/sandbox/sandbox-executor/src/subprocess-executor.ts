@@ -9,27 +9,39 @@
  *   argv[3] = JSON-encoded input
  *   stderr  = __KOI_RESULT__\n<json>\n  (framed protocol output)
  *
- * Isolation note (fail-closed, default-deny):
- *   This executor uses DEFAULT-DENY semantics for network and resource isolation.
+ * Isolation note (fail-closed, explicit-deny):
+ *   This executor uses EXPLICIT-DENY semantics for network and resource isolation.
  *   When the caller supplies an ExecutionContext and externalIsolation is NOT true,
- *   the executor refuses to proceed unless the caller explicitly opts in to
- *   unconfined execution by setting context.networkAllowed = true.
+ *   the executor refuses to proceed only when the caller EXPLICITLY requests
+ *   isolation that this package cannot enforce on its own.
  *
  *   The guard fires whenever:
- *     - context.networkAllowed !== true (omitted OR false) — both mean "caller
- *       wants confined execution" which this package cannot enforce on its own
+ *     - context.networkAllowed === false — explicit network-deny requested; this
+ *       package cannot enforce it without OS-level support (@koi/sandbox-os)
  *     - context.resourceLimits !== undefined — resource limits require OS-level
  *       enforcement (cgroups, rlimits) unavailable in plain subprocess mode
  *
- *   This prevents silent trust-boundary leaks: callers who omit networkAllowed
- *   get a hard refusal, not silently unconfined execution.
+ *   Omitting networkAllowed (undefined) means "caller has no isolation opinion" —
+ *   the executor passes through without complaint. ExecutionContext is also used
+ *   by callers for non-isolation purposes (workspacePath, entryPath, env) and
+ *   those fields are always honoured and never trigger the guard.
  *
  *   To opt out of the guard, callers have two choices:
  *   A) Set externalIsolation: true in the config — asserts that real isolation
  *      is provided externally (e.g., composing with @koi/sandbox-os, running
  *      inside a Docker container). Env-var signals are then passed through.
- *   B) Set context.networkAllowed = true explicitly — acknowledges that this
- *      call runs unconfined; the executor proceeds without OS enforcement.
+ *   B) Omit networkAllowed and resourceLimits — passes through with no enforcement
+ *      (caller takes responsibility for running unconfined).
+ *
+ * Output cap note (drain-not-kill):
+ *   When either stream hits the output cap, the reader stops accumulating bytes
+ *   but continues draining the underlying pipe silently. This prevents the child
+ *   from blocking on a full pipe buffer (which would cause a false TIMEOUT) while
+ *   also preventing host OOM. The child is NOT killed on cap; only on timeout.
+ *
+ *   Caveat: if stdout or stderr is truncated AND the stderr framing marker was past
+ *   the cap, the run is classified as CRASH (marker missing) after the child exits
+ *   naturally. This is intentional — reserving marker space is more complex.
  *
  * Process-group kill note:
  *   When `setsid` is available (Linux/macOS), the child is spawned as a new
@@ -182,19 +194,19 @@ function buildChildEnv(context?: ExecutionContext): Readonly<Record<string, stri
 }
 
 /**
- * Read from a ReadableStream<Uint8Array> up to maxBytes, then cancel the rest.
+ * Read from a ReadableStream<Uint8Array> up to maxBytes, then drain silently.
  * Returns the decoded text and a truncated flag.
  *
- * This prevents an adversarial child from OOMing the host by producing unbounded
- * output — we stop consuming (and cancel the stream) once the cap is hit.
- * When `onTruncate` is provided, it is called once the moment truncation occurs —
- * callers use it to kill the child process immediately so proc.exited resolves
- * and the Promise.all completes without waiting for the full timeout.
+ * When the cap is hit we STOP accumulating bytes but KEEP draining the pipe.
+ * Draining prevents the child from blocking on a full pipe buffer (which would
+ * turn into a false TIMEOUT). The child is NOT killed here — only the timeout
+ * timer kills the child. This means a noisy-but-correct child that logs more
+ * than maxOutputBytes is not killed; it runs to completion, and if the stderr
+ * framing marker was past the cap it will be classified as CRASH after exit.
  */
 async function readBoundedText(
   stream: ReadableStream<Uint8Array>,
   maxBytes: number,
-  onTruncate?: () => void,
 ): Promise<{ readonly text: string; readonly truncated: boolean }> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -206,25 +218,19 @@ async function readBoundedText(
     const { value, done } = await reader.read();
     if (done) break;
     if (value === undefined) continue;
+    if (truncated) continue; // already over cap — drain silently to keep pipe drained
     const remaining = maxBytes - total;
     if (remaining <= 0) {
       truncated = true;
-      onTruncate?.();
-      reader.cancel().catch((_: unknown) => {
-        // cancel errors are safe to ignore — we've already stopped reading
-      });
-      break;
+      continue;
     }
-    const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value;
-    buf += decoder.decode(chunk, { stream: true });
-    total += chunk.byteLength;
-    if (chunk.byteLength < value.byteLength) {
+    if (value.byteLength > remaining) {
+      buf += decoder.decode(value.subarray(0, remaining), { stream: true });
+      total += remaining;
       truncated = true;
-      onTruncate?.();
-      reader.cancel().catch((_: unknown) => {
-        // cancel errors are safe to ignore — we've already stopped reading
-      });
-      break;
+    } else {
+      buf += decoder.decode(value, { stream: true });
+      total += value.byteLength;
     }
   }
   buf += decoder.decode();
@@ -299,25 +305,29 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
       timeoutMs: number,
       context?: ExecutionContext,
     ): Promise<ExecuteResult> => {
-      // Fail-closed guard (default-deny): refuse execution when context is present
-      // and externalIsolation is not asserted.
+      // Explicit-deny guard: refuse execution when the caller explicitly requests
+      // isolation that this package cannot enforce on its own, AND externalIsolation
+      // is not asserted by the config.
       //
-      // Default-deny semantics:
-      //   - context.networkAllowed !== true means "caller wants confined execution"
-      //     (both undefined/omitted and false trigger this — omission is denial)
-      //   - context.resourceLimits !== undefined means OS-level enforcement required
+      // Semantics:
+      //   - context.networkAllowed === false — explicit network-deny; enforce requires
+      //     OS-level support (@koi/sandbox-os). Omitting networkAllowed (undefined)
+      //     means "caller has no isolation opinion" — pass through.
+      //   - context.resourceLimits !== undefined — resource limits require OS-level
+      //     enforcement (cgroups, rlimits) unavailable in plain subprocess mode.
       //
-      // Bypass: set externalIsolation: true (real isolation provided externally)
-      //     OR: set context.networkAllowed: true (explicit acknowledgement of
-      //         unconfined execution, no resource limits)
+      // ExecutionContext is also used for non-isolation metadata (workspacePath,
+      // entryPath, env). Those fields never trigger the guard.
+      //
+      // Bypass: set externalIsolation: true (real isolation provided externally).
       if (externalIsolation !== true && context !== undefined) {
         const wantsRestricted =
-          context.networkAllowed !== true || context.resourceLimits !== undefined;
+          context.networkAllowed === false || context.resourceLimits !== undefined;
         if (wantsRestricted) {
           const error: SandboxError = {
             code: "PERMISSION",
             message:
-              "subprocess-executor cannot enforce network/resource isolation; pass externalIsolation:true (after composing @koi/sandbox-os) or set context.networkAllowed:true to acknowledge unconfined execution",
+              "subprocess-executor cannot enforce network/resource isolation; pass externalIsolation:true (after composing @koi/sandbox-os) to enable OS-level enforcement",
             durationMs: 0,
           };
           return { ok: false, error };
@@ -371,25 +381,15 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
         // underlying object supports it at runtime — check defensively.
         if ("unref" in timer && typeof timer.unref === "function") timer.unref();
 
-        // Kill immediately when output cap is hit — prevents child blocking on full
-        // pipes and turning into a false TIMEOUT (Fix 3).
-        // `let` justified: killTriggered is a shared one-shot guard across both readers.
-        let killTriggered = false;
-        const triggerKill = (): void => {
-          if (killTriggered) return;
-          killTriggered = true;
-          killChild(proc, usedSetsid);
-        };
-
-        // Drain stdout AND stderr concurrently using bounded readers (Fix 1).
+        // Drain stdout AND stderr concurrently using bounded readers.
         // A chatty child that fills the stdout pipe buffer will deadlock if we only
         // await proc.exited while leaving stdout unread. Start both drains first.
-        // Both streams are capped at maxOutputBytes to prevent host OOM.
-        // triggerKill fires the moment either reader hits the cap, so proc.exited
-        // resolves promptly and the Promise.all completes without waiting for timeout.
+        // Both streams are capped at maxOutputBytes: once the cap is hit, excess
+        // bytes are discarded silently (pipe stays drained) so the child is not
+        // blocked. The child is only killed by the timeout timer above.
         const [, stderrResult, exitCode] = await Promise.all([
-          readBoundedText(proc.stdout, maxOutputBytes, triggerKill),
-          readBoundedText(proc.stderr, maxOutputBytes, triggerKill),
+          readBoundedText(proc.stdout, maxOutputBytes),
+          readBoundedText(proc.stderr, maxOutputBytes),
           proc.exited,
         ]);
         clearTimeout(timer);

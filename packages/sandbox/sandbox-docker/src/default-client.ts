@@ -227,6 +227,8 @@ function buildCreateArgs(opts: DockerCreateOpts): readonly string[] {
   for (const [k, v] of Object.entries(opts.env ?? {})) args.push("--env", `${k}=${v}`);
   for (const bind of opts.binds ?? []) args.push("--volume", bind);
   for (const cap of opts.capAdd ?? []) args.push("--cap-add", cap);
+  if (opts.readOnlyRoot === true) args.push("--read-only");
+  for (const path of opts.tmpfsMounts ?? []) args.push("--tmpfs", path);
   args.push(opts.image, "sleep", "infinity");
   return args;
 }

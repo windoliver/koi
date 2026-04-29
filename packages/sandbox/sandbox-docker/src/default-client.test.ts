@@ -458,4 +458,57 @@ describe("createDefaultDockerClient", () => {
     const env = buildDockerEnv("/run/docker.sock");
     expect(env.DOCKER_HOST).toBe("unix:///run/docker.sock");
   });
+
+  // Fix 2 (read-only rootfs): readOnlyRoot=true → --read-only in docker create args
+  test("buildCreateArgs: passes --read-only when readOnlyRoot is true", async () => {
+    const createArgs: string[][] = [];
+    let callCount = 0;
+    // @ts-expect-error — test stub: returning a partial SubProcess for coverage
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
+      callCount += 1;
+      createArgs.push(args);
+      if (callCount === 1) return fakeProc({ stdout: "rrid\n", stderr: "", exitCode: 0 });
+      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      await client.createContainer({
+        image: "ubuntu:22.04",
+        networkMode: "none",
+        readOnlyRoot: true,
+        tmpfsMounts: ["/tmp"],
+      });
+      const first = createArgs[0] ?? [];
+      expect(first).toContain("--read-only");
+      expect(first).toContain("--tmpfs");
+      expect(first).toContain("/tmp");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Fix 2 (read-only rootfs): readOnlyRoot not set → no --read-only in docker create args
+  test("buildCreateArgs: omits --read-only when readOnlyRoot is not set", async () => {
+    const createArgs: string[][] = [];
+    let callCount = 0;
+    // @ts-expect-error — test stub: returning a partial SubProcess for coverage
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
+      callCount += 1;
+      createArgs.push(args);
+      if (callCount === 1) return fakeProc({ stdout: "norrid\n", stderr: "", exitCode: 0 });
+      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      await client.createContainer({
+        image: "ubuntu:22.04",
+        networkMode: "none",
+      });
+      const first = createArgs[0] ?? [];
+      expect(first).not.toContain("--read-only");
+      expect(first).not.toContain("--tmpfs");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
 });

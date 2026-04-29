@@ -39,6 +39,17 @@ export interface DockerCreateOpts {
   readonly pidsLimit?: number;
   readonly binds?: readonly string[];
   readonly capAdd?: readonly string[];
+  /**
+   * When true, passes `--read-only` to docker create so the container rootfs
+   * is read-only. Only the explicit bind mounts are writable. Use in combination
+   * with tmpfsMounts to provide scratch space (e.g., /tmp).
+   */
+  readonly readOnlyRoot?: boolean;
+  /**
+   * Paths inside the container to mount as tmpfs (e.g., ["/tmp"]).
+   * Each entry is passed as `--tmpfs <path>`. Ignored when readOnlyRoot is false.
+   */
+  readonly tmpfsMounts?: readonly string[];
 }
 
 export interface DockerClient {

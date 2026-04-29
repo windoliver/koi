@@ -130,15 +130,40 @@ describe("createSubprocessExecutor", () => {
     expect(result.error.code).toBe("PERMISSION");
   });
 
-  // Default-deny: context={} with networkAllowed omitted → PERMISSION (omission = denial)
-  test("returns PERMISSION when context is empty object with no externalIsolation (default-deny on omission)", async () => {
+  // Fix 1 (guard narrowed): context={} with networkAllowed omitted → succeeds
+  // Omitting networkAllowed means "caller has no isolation opinion" — not explicit denial.
+  // ExecutionContext is also used for non-isolation metadata (workspacePath, entryPath).
+  test("context with no isolation fields passes through without PERMISSION (explicit-deny only)", async () => {
     const executor = createSubprocessExecutor();
-    const code = "export default async () => ({});";
-    // Empty context: networkAllowed is omitted (undefined) — treated as denial by default-deny
+    const code = "export default async () => ({ ok: true });";
+    // Empty context: networkAllowed is undefined (omitted) — no isolation opinion
     const result = await executor.execute(code, null, 5000, {});
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("Expected error");
-    expect(result.error.code).toBe("PERMISSION");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`Expected ok, got: ${result.error.message}`);
+    expect(result.value.output).toEqual({ ok: true });
+  });
+
+  // Fix 1 (guard narrowed): context with only workspacePath/entryPath (no isolation fields) → succeeds
+  test("context with only workspacePath and entryPath (no isolation fields) passes through", async () => {
+    const executor = createSubprocessExecutor();
+    // Create a real entry file in a temp workspace
+    const ws = mkdtempSync(join(tmpdir(), "koi-test-ws2-"));
+    const entryPath = join(ws, "entry2.ts");
+    writeFileSync(
+      entryPath,
+      "export default async (_input: unknown) => ({ source: 'metadata-only' });",
+      "utf8",
+    );
+    // No networkAllowed, no resourceLimits — metadata-only context should not trigger guard
+    const result = await executor.execute(
+      "export default async () => ({ source: 'code' });",
+      null,
+      5000,
+      { workspacePath: ws, entryPath },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`Expected ok, got: ${result.error.message}`);
+    expect(result.value.output).toEqual({ source: "metadata-only" });
   });
 
   // Default-deny bypass: context.networkAllowed=true acknowledges unconfined execution
@@ -221,26 +246,47 @@ describe("createSubprocessExecutor", () => {
     expect(result.value.output).toEqual({ ok: true });
   });
 
-  // Fix 1 (streaming byte cap): executor with a tiny maxOutputBytes cap handles
-  // a child that writes more than the cap without host OOM.
-  test("stdout exceeding maxOutputBytes is handled gracefully without OOM (Fix 1 streaming cap)", async () => {
-    // Use 1 KB cap to keep the test fast — far below any default OS pipe buffer
-    const executor = createSubprocessExecutor({ maxOutputBytes: 1024 });
-    // Child writes 4 KB to stdout (4× the cap), then returns a valid result.
-    // With bounded reading the executor stops reading stdout early and kills the child.
-    // The result must still come through stderr framing → success, OR be classified
-    // as CRASH (if stderr was also truncated). What must NOT happen: host OOM or hang.
+  // Fix 3 (drain-not-kill): a moderately noisy stdout (50 KB) with a large cap (1 MB)
+  // must succeed — the child is not killed on output cap, so it completes naturally.
+  test("moderately noisy stdout (50 KB) with 1 MB cap succeeds (drain-not-kill, Fix 3)", async () => {
+    const executor = createSubprocessExecutor({ maxOutputBytes: 1024 * 1024 });
+    // Child writes ~50 KB to stdout, then returns a valid result.
+    // Under drain-not-kill semantics the stdout is accumulated (within cap) and
+    // the child completes naturally → success.
     const code = `
       export default async (_input: unknown) => {
-        const chunk = "x".repeat(128);
-        for (let i = 0; i < 32; i++) process.stdout.write(chunk);
+        const chunk = "x".repeat(1024);
+        for (let i = 0; i < 50; i++) process.stdout.write(chunk);
         return { bounded: true };
       };
     `;
     const result = await executor.execute(code, null, 10000);
-    // The execution must complete within timeout — no deadlock, no OOM.
-    // The result may be ok (if stderr framing wasn't truncated) or CRASH (if it was).
-    // Both outcomes are acceptable — the key invariant is that it finishes.
-    expect(result.ok === true || result.ok === false).toBe(true);
+    expect(result.ok).toBe(true);
+    if (!result.ok)
+      throw new Error(`Expected ok, got: ${result.error.code} - ${result.error.message}`);
+    expect(result.value.output).toEqual({ bounded: true });
+  });
+
+  // Fix 3 (drain-not-kill): stdout exceeds the cap — child is not killed, it completes
+  // normally. The call must finish without hanging (no blocked pipe) and without OOM.
+  test("stdout exceeding cap does not kill child or hang — completes within timeout (Fix 3)", async () => {
+    // Use a small cap (1 KB) so the child exceeds it quickly.
+    const executor = createSubprocessExecutor({ maxOutputBytes: 1024 });
+    // Child writes 50 KB stdout (50× cap), then returns a valid result via stderr framing.
+    // drain-not-kill: pipe is kept drained, child exits naturally, framing is found → ok.
+    const code = `
+      export default async (_input: unknown) => {
+        const chunk = "x".repeat(1024);
+        for (let i = 0; i < 50; i++) process.stdout.write(chunk);
+        return { drained: true };
+      };
+    `;
+    const result = await executor.execute(code, null, 10000);
+    // The child completes naturally; stderr framing is intact → ok.
+    // (stdout is truncated, but stderr framing is unaffected since it's a separate stream)
+    expect(result.ok).toBe(true);
+    if (!result.ok)
+      throw new Error(`Expected ok, got: ${result.error.code} - ${result.error.message}`);
+    expect(result.value.output).toEqual({ drained: true });
   });
 });
