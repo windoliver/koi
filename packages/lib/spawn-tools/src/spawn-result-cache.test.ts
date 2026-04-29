@@ -219,6 +219,40 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     expect(calls).toBe(1);
   });
 
+  test("aborted attempt's late background settle does NOT overwrite a fresher retry's cached result", async () => {
+    // Race: A starts, A aborts; meanwhile B retries with the same key and
+    // completes first ("B-output"). When A's orphaned factoryPromise finally
+    // settles ("A-output"), it must NOT overwrite B's entry — that would
+    // regress the cache to the older attempt's output.
+    const cache = createSpawnResultCache(8);
+    let releaseA: () => void = () => {};
+    const factoryA = (): Promise<{ ok: true; output: string }> =>
+      new Promise((resolve) => {
+        releaseA = () => resolve({ ok: true, output: "A-output" });
+      });
+    const factoryB = async (): Promise<{ ok: true; output: string }> => ({
+      ok: true,
+      output: "B-output",
+    });
+
+    const ctrl = new AbortController();
+    const aPromise = cache.runDeduped("k", ctrl.signal, factoryA);
+    await Promise.resolve();
+    ctrl.abort(new Error("A timed out"));
+    await aPromise;
+
+    // B retries the same key and wins.
+    const b = await cache.runDeduped("k", noAbort(), factoryB);
+    expect(b).toMatchObject({ ok: true, output: "B-output" });
+    expect(cache.get("k")).toBe("B-output");
+
+    // A's orphaned factory finally settles. Backfill must be a no-op.
+    releaseA();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(cache.get("k")).toBe("B-output");
+  });
+
   test("aborting one of two concurrent callers cancels only that caller; the other proceeds", async () => {
     const cache = createSpawnResultCache(8);
     let releaseFirst: () => void = () => {};

@@ -151,9 +151,15 @@ export function createSpawnResultCache(
         // before observing the signal). If it does and the result is
         // cacheable, record it — a retry that arrives later should attach
         // to the cached output instead of launching a duplicate child.
+        //
+        // Race guard: a parallel retry may have already populated the cache
+        // for this key with a fresher result. Only backfill if the slot is
+        // still empty so we never regress to an older attempt's output.
         void factoryPromise.then(
           (settled) => {
-            if (settled.ok && settled.cacheable !== false) set(key, settled.output);
+            if (settled.ok && settled.cacheable !== false && !cache.has(key)) {
+              set(key, settled.output);
+            }
           },
           () => {
             /* ignored — caller already received abortedResult */
