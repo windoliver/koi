@@ -142,9 +142,9 @@ export function verifyBrickIntegrity(
     return { kind: "producer_unknown", ok: false, brickId: shape.id, expectedBuilderId };
   }
 
-  let recomputedId: BrickId;
+  let recomputedRaw: unknown;
   try {
-    recomputedId = recompute(brick);
+    recomputedRaw = recompute(brick);
   } catch (err: unknown) {
     return {
       kind: "recompute_failed",
@@ -154,6 +154,28 @@ export function verifyBrickIntegrity(
       reason: err instanceof Error ? err.message : String(err),
     };
   }
+  // Reject promises and non-string returns: this verifier's contract is
+  // synchronous, and a Promise/object recompute would otherwise silently
+  // fail the `===` check and surface as a misleading content_mismatch.
+  if (recomputedRaw !== null && typeof recomputedRaw === "object" && "then" in recomputedRaw) {
+    return {
+      kind: "recompute_failed",
+      ok: false,
+      brickId: shape.id,
+      builderId: expectedBuilderId,
+      reason: "recompute returned a Promise; only sync recomputers are supported",
+    };
+  }
+  if (typeof recomputedRaw !== "string" || recomputedRaw.length === 0) {
+    return {
+      kind: "recompute_failed",
+      ok: false,
+      brickId: shape.id,
+      builderId: expectedBuilderId,
+      reason: "recompute did not return a non-empty BrickId string",
+    };
+  }
+  const recomputedId = recomputedRaw as BrickId;
 
   if (recomputedId === shape.id) {
     return { kind: "ok", ok: true, brickId: shape.id, builderId: expectedBuilderId };

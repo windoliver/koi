@@ -166,6 +166,24 @@ describe("verifyBrickIntegrity", () => {
     expect(result.kind).toBe("malformed");
   });
 
+  test("recompute_failed when registered recompute is async (returns Promise)", () => {
+    const asyncRegistry: ProducerRegistry = {
+      [TRUSTED_BUILDER]: (async (b: BrickArtifact) => b.id) as unknown as RecomputeBrickId,
+    };
+    const result = verifyBrickIntegrity(makeTool(), asyncRegistry, TRUSTED_BUILDER);
+    expect(result.kind).toBe("recompute_failed");
+    if (result.kind === "recompute_failed") expect(result.reason).toContain("Promise");
+  });
+
+  test("recompute_failed when recompute returns non-string", () => {
+    const garbage: ProducerRegistry = {
+      [TRUSTED_BUILDER]: (() => 42) as unknown as RecomputeBrickId,
+    };
+    const result = verifyBrickIntegrity(makeTool(), garbage, TRUSTED_BUILDER);
+    expect(result.kind).toBe("recompute_failed");
+    if (result.kind === "recompute_failed") expect(result.reason).toContain("BrickId");
+  });
+
   test("malformed when registry is undefined or non-object", () => {
     const brick = makeTool();
     const r1 = verifyBrickIntegrity(

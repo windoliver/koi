@@ -44,14 +44,16 @@ export interface CreateProvenanceOptions {
 
 const ALLOWED_CLASSIFICATIONS = new Set<DataClassification>(["public", "internal", "secret"]);
 const ALLOWED_MARKERS = new Set<ContentMarker>(["credentials", "pii", "phi", "payment"]);
+const ALLOWED_EVOLUTION_KINDS = new Set<EvolutionKind>(["fix", "derived", "captured"]);
+
+/** Bound on object/array nesting we will traverse — defends against stack-blowing inputs. */
+export const MAX_PROVENANCE_DEPTH = 32;
 
 export function createForgeProvenance(options: CreateProvenanceOptions): ForgeProvenance {
+  validateScalars(options);
   if (options.finishedAt < options.startedAt) {
     throw new Error("createForgeProvenance: finishedAt < startedAt");
   }
-  // Runtime validation of trust-bearing fields. TypeScript guards the typed
-  // call sites; the runtime checks defend the JS / version-skew boundary so
-  // policy/audit consumers can rely on shape invariants.
   if (!ALLOWED_CLASSIFICATIONS.has(options.classification)) {
     throw new Error(
       `createForgeProvenance: classification must be one of ${[...ALLOWED_CLASSIFICATIONS].join(", ")}`,
@@ -70,7 +72,9 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
   // inputs to JSON-plain values so we can guarantee a deep freeze. Map/Set/
   // Date instances survive `Object.freeze` with mutable APIs intact, so we
   // reject them at the boundary rather than silently letting callers mutate
-  // trust-bearing metadata after construction.
+  // trust-bearing metadata after construction. The walker is iterative and
+  // depth-bounded so deeply-nested untyped inputs fail with a typed error
+  // rather than blowing the stack.
   const externalsViolation = findNonPlainValue(options.externalParameters);
   if (externalsViolation !== undefined) {
     throw new Error(
@@ -84,13 +88,16 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
     );
   }
   // Lineage invariant: parentBrickId and evolutionKind must be both-or-neither.
-  // A `fix`/`derived`/`captured` evolution makes no sense without a parent;
-  // a parent without an evolution kind has no auditable derivation reason.
   const hasParent = options.parentBrickId !== undefined;
   const hasEvolutionKind = options.evolutionKind !== undefined;
   if (hasParent !== hasEvolutionKind) {
     throw new Error(
       "createForgeProvenance: parentBrickId and evolutionKind must be both set or both omitted",
+    );
+  }
+  if (hasEvolutionKind && !ALLOWED_EVOLUTION_KINDS.has(options.evolutionKind as EvolutionKind)) {
+    throw new Error(
+      `createForgeProvenance: invalid evolutionKind "${String(options.evolutionKind)}"`,
     );
   }
 
@@ -132,6 +139,39 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
   return Object.freeze(provenance);
 }
 
+function requireNonEmptyString(name: string, value: unknown): void {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`createForgeProvenance: ${name} must be a non-empty string`);
+  }
+}
+
+function requireFiniteNumber(name: string, value: unknown): void {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`createForgeProvenance: ${name} must be a finite number`);
+  }
+}
+
+function validateScalars(o: CreateProvenanceOptions): void {
+  requireNonEmptyString("forgedBy", o.forgedBy);
+  requireNonEmptyString("sessionId", o.sessionId);
+  requireNonEmptyString("agentId", o.agentId);
+  requireNonEmptyString("invocationId", o.invocationId);
+  requireNonEmptyString("contentHash", o.contentHash);
+  requireNonEmptyString("buildType", o.buildType);
+  requireNonEmptyString("builderId", o.builderId);
+  requireFiniteNumber("startedAt", o.startedAt);
+  requireFiniteNumber("finishedAt", o.finishedAt);
+  if (o.depth !== undefined) {
+    if (typeof o.depth !== "number" || !Number.isFinite(o.depth) || o.depth < 0) {
+      throw new Error("createForgeProvenance: depth must be a non-negative finite number");
+    }
+  }
+  if (o.parentBrickId !== undefined) {
+    requireNonEmptyString("parentBrickId", o.parentBrickId);
+  }
+  if (o.demandId !== undefined) requireNonEmptyString("demandId", o.demandId);
+}
+
 function validateVerification(v: ForgeVerificationSummary): void {
   if (v === null || typeof v !== "object") {
     throw new Error("createForgeProvenance: verification must be an object");
@@ -164,50 +204,73 @@ function validateVerification(v: ForgeVerificationSummary): void {
   }
 }
 
+interface FreezeFrame {
+  readonly node: unknown;
+  readonly depth: number;
+}
+
 function deepFreeze<T>(value: T): T {
   const seen = new WeakSet<object>();
-  const walk = (node: unknown): void => {
-    if (node === null || typeof node !== "object") return;
-    if (seen.has(node)) return;
+  const stack: FreezeFrame[] = [{ node: value, depth: 0 }];
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (frame === undefined) break;
+    const node = frame.node;
+    if (node === null || typeof node !== "object") continue;
+    if (seen.has(node)) continue;
+    if (frame.depth > MAX_PROVENANCE_DEPTH) {
+      throw new Error(`createForgeProvenance: nested object depth exceeds ${MAX_PROVENANCE_DEPTH}`);
+    }
     seen.add(node);
     if (!Object.isFrozen(node)) Object.freeze(node);
-    for (const v of Object.values(node as Record<string, unknown>)) walk(v);
-  };
-  walk(value);
+    for (const v of Object.values(node as Record<string, unknown>)) {
+      stack.push({ node: v, depth: frame.depth + 1 });
+    }
+  }
   return value;
+}
+
+interface PlainFrame {
+  readonly node: unknown;
+  readonly path: string;
+  readonly depth: number;
 }
 
 /**
  * Return a path to the first non-plain (Map/Set/Date/Function/etc.) value
- * found in `value`, or undefined if every nested value is JSON-plain
- * (string/number/boolean/null/array/plain-object). Used to reject inputs
- * that would survive Object.freeze with mutable APIs.
+ * found in `value`, or undefined if every nested value is JSON-plain.
+ * Iterative + depth-bounded so deeply-nested input fails with a typed error
+ * rather than `RangeError`.
  */
 function findNonPlainValue(value: unknown): string | undefined {
   const seen = new WeakSet<object>();
-  const walk = (node: unknown, path: string): string | undefined => {
-    if (node === null) return undefined;
+  const stack: PlainFrame[] = [{ node: value, path: "$", depth: 0 }];
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (frame === undefined) break;
+    const { node, path, depth } = frame;
+    if (node === null) continue;
     const t = typeof node;
-    if (t === "string" || t === "number" || t === "boolean") return undefined;
+    if (t === "string" || t === "number" || t === "boolean") continue;
     if (t !== "object") return `${path} is ${t}`;
-    if (seen.has(node as object)) return undefined;
+    if (seen.has(node as object)) continue;
     seen.add(node as object);
+    if (depth > MAX_PROVENANCE_DEPTH) {
+      return `${path} exceeds max nesting depth ${MAX_PROVENANCE_DEPTH}`;
+    }
     if (Array.isArray(node)) {
       for (let i = 0; i < node.length; i++) {
-        const sub = walk(node[i], `${path}[${i}]`);
-        if (sub !== undefined) return sub;
+        stack.push({ node: node[i], path: `${path}[${i}]`, depth: depth + 1 });
       }
-      return undefined;
+      continue;
     }
     const proto = Object.getPrototypeOf(node);
     if (proto !== null && proto !== Object.prototype) {
       return `${path} is a non-plain object (${proto.constructor?.name ?? "unknown"})`;
     }
     for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
-      const sub = walk(v, `${path}.${k}`);
-      if (sub !== undefined) return sub;
+      stack.push({ node: v, path: `${path}.${k}`, depth: depth + 1 });
     }
-    return undefined;
-  };
-  return walk(value, "$");
+  }
+  return undefined;
 }

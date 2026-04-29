@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ForgeVerificationSummary } from "@koi/core";
+import type { BrickId, ForgeVerificationSummary } from "@koi/core";
 import { brickId } from "@koi/core";
 import { createForgeProvenance } from "./provenance.js";
 
@@ -198,6 +198,56 @@ describe("createForgeProvenance", () => {
         },
       }),
     ).toThrow(/totalDurationMs/);
+  });
+
+  test("rejects empty/missing scalar fields (builderId, contentHash, sessionId, etc.)", () => {
+    expect(() => createForgeProvenance({ ...baseOptions, builderId: "" })).toThrow(/builderId/);
+    expect(() => createForgeProvenance({ ...baseOptions, contentHash: "" })).toThrow(/contentHash/);
+    expect(() => createForgeProvenance({ ...baseOptions, sessionId: "" })).toThrow(/sessionId/);
+    expect(() => createForgeProvenance({ ...baseOptions, agentId: "" })).toThrow(/agentId/);
+    expect(() => createForgeProvenance({ ...baseOptions, invocationId: "" })).toThrow(
+      /invocationId/,
+    );
+    expect(() => createForgeProvenance({ ...baseOptions, forgedBy: "" })).toThrow(/forgedBy/);
+    expect(() => createForgeProvenance({ ...baseOptions, buildType: "" })).toThrow(/buildType/);
+  });
+
+  test("rejects negative or non-finite depth", () => {
+    expect(() => createForgeProvenance({ ...baseOptions, depth: -1 })).toThrow(/depth/);
+    expect(() => createForgeProvenance({ ...baseOptions, depth: Number.NaN })).toThrow(/depth/);
+  });
+
+  test("rejects empty parentBrickId or invalid evolutionKind", () => {
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        parentBrickId: "" as unknown as BrickId,
+        evolutionKind: "fix",
+      }),
+    ).toThrow(/parentBrickId/);
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        parentBrickId: brickId(`sha256:${"a".repeat(64)}`),
+        evolutionKind: "bogus" as unknown as "fix",
+      }),
+    ).toThrow(/evolutionKind/);
+  });
+
+  test("rejects deeply-nested externalParameters with a typed error (no stack overflow)", () => {
+    const deep: Record<string, unknown> = {};
+    let cursor = deep;
+    for (let i = 0; i < 100; i++) {
+      const next: Record<string, unknown> = {};
+      cursor.next = next;
+      cursor = next;
+    }
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        externalParameters: deep as Readonly<Record<string, unknown>>,
+      }),
+    ).toThrow(/depth/);
   });
 
   test("rejects malformed stage digests", () => {
