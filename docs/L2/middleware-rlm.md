@@ -51,6 +51,23 @@ forwarded unchanged because reassembling chunked deltas across multiple
 downstream streams is materially more complex than the current scope.
 Callers that need RLM behavior should use the non-streaming path.
 
+### Fail-closed cases
+
+The middleware throws (rather than silently forwarding the oversize request)
+in two situations where its segmentation strategy cannot uphold its contract:
+
+- **Tools are present.** Each segment would receive the same tool list, the
+  model would emit independent tool calls per segment, and reassembly would
+  concatenate them — turning one user turn into N side-effecting tool batches.
+  Disable RLM for tool-enabled turns or compose with a tool-aware middleware.
+- **Single-block chunking cannot reduce the request.** If every user text
+  block already fits within `maxChunkChars` but the total token estimate
+  still exceeds `maxInputTokens` (overflow lives in surrounding history /
+  system prompt), segmentation produces one chunk and the request would
+  otherwise pass through. RLM throws so the caller sees the budget breach
+  immediately instead of failing later inside the provider. Pair with a
+  compaction middleware or raise `maxInputTokens` if this fires often.
+
 ---
 
 ## Usage

@@ -78,10 +78,30 @@ async function rlmWrapModelCall(
     emit(cfg, { kind: "passthrough", tokens });
     return next(request);
   }
+  // Fail closed when tools are present: each segment would receive the same
+  // tool list, the model would emit tool calls per segment, and reassembly
+  // would concatenate them — producing N independent tool-use batches for a
+  // single user turn. RLM's segment/reassemble strategy has no way to dedupe
+  // or coordinate side-effecting tool calls.
+  if (request.tools !== undefined && request.tools.length > 0) {
+    throw new Error(
+      `RLM cannot segment requests that carry tool descriptors (${String(
+        request.tools.length,
+      )} tool(s) present): segmentation would replay each tool call per chunk. Disable RLM for tool-enabled turns or compose with a tool-aware middleware.`,
+    );
+  }
   const segments = segmentRequest(request, cfg.maxChunkChars);
+  // Cannot reduce the request below the threshold via single-block chunking
+  // (all user text blocks already fit; overflow lives in surrounding messages).
+  // Fail closed rather than forwarding the known-oversize request — silent
+  // passthrough breaks the middleware's core guarantee and surfaces later as
+  // a provider context-limit error far from the offending caller.
   if (segments.length <= 1) {
-    emit(cfg, { kind: "passthrough", tokens });
-    return next(request);
+    throw new Error(
+      `RLM cannot reduce a request of ${String(tokens)} tokens below the ${String(
+        cfg.maxInputTokens,
+      )}-token threshold by chunking a single text block. Increase maxInputTokens, lower the input size, or compose with a compaction middleware.`,
+    );
   }
   emit(cfg, { kind: "segmented", tokens, segmentCount: segments.length });
   return dispatchSegmented(cfg, segments, next);

@@ -145,6 +145,59 @@ describe("createRlmMiddleware", () => {
     expect(out?.content).toBe("ok\n\nok\n\nok");
   });
 
+  test("fails closed when oversized but no single user text block exceeds maxChunkChars", async () => {
+    // Total messages exceed the 5-token budget, but each user text block is
+    // smaller than maxChunkChars (1000), so segmentation cannot reduce the
+    // request. Middleware must fail closed rather than forwarding the
+    // oversize request unchanged.
+    const mw = createRlmMiddleware({ maxInputTokens: 5, maxChunkChars: 1000 });
+    const rec = recordingHandler(() => "should-not-be-called");
+    const req: ModelRequest = {
+      messages: [
+        userMessage("a".repeat(50)),
+        userMessage("b".repeat(50)),
+        userMessage("c".repeat(50)),
+      ],
+    };
+    expect(mw.wrapModelCall?.(turnCtx(), req, rec.handler)).rejects.toThrow(
+      /cannot reduce a request/i,
+    );
+    expect(rec.calls.length).toBe(0);
+  });
+
+  test("fails closed when oversized request carries tools", async () => {
+    // Segmenting tool-enabled requests would fan out tool calls across
+    // segments. Middleware must refuse rather than silently multiply
+    // side-effecting tool executions.
+    const mw = createRlmMiddleware({ maxInputTokens: 5, maxChunkChars: 100 });
+    const rec = recordingHandler(() => "irrelevant");
+    const big = "x".repeat(300);
+    const req: ModelRequest = {
+      messages: [userMessage(big)],
+      tools: [
+        {
+          name: "delete_file",
+          description: "delete a file",
+          inputSchema: { type: "object" },
+        },
+      ],
+    };
+    expect(mw.wrapModelCall?.(turnCtx(), req, rec.handler)).rejects.toThrow(/tool descriptors/i);
+    expect(rec.calls.length).toBe(0);
+  });
+
+  test("oversized requests with an empty tools array still segment", async () => {
+    // tools: [] should be treated as "no tools" — the fan-out concern only
+    // applies when tool descriptors are actually present.
+    const mw = createRlmMiddleware({ maxInputTokens: 5, maxChunkChars: 100 });
+    const rec = recordingHandler(() => "ok");
+    const big = "y".repeat(300);
+    const req: ModelRequest = { messages: [userMessage(big)], tools: [] };
+    const out = await mw.wrapModelCall?.(turnCtx(), req, rec.handler);
+    expect(rec.calls.length).toBeGreaterThan(1);
+    expect(out?.content).toContain("ok");
+  });
+
   test("describeCapabilities returns a label", () => {
     const mw = createRlmMiddleware();
     const cap = mw.describeCapabilities?.(turnCtx());
