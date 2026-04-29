@@ -100,17 +100,19 @@ Agent sends a rich message with mixed content:
 │  @koi/channel-base  (L0u)                           │
 │                                                     │
 │  channel-adapter-factory.ts ← createChannelAdapter  │
-│  content-block-builders.ts  ← text, image, file...  │
-│  render-blocks.ts           ← capability downgrade   │
-│  format-error.ts            ← user-facing errors     │
-│  index.ts                   ← public API surface     │
+│  channel-registry.ts        ← createChannelRegistry │
+│  render-blocks.ts           ← capability downgrade  │
+│  format-error.ts            ← user-facing errors    │
+│  rate-limit.ts              ← createRateLimiter     │
+│  index.ts                   ← public API surface    │
 │                                                     │
 ├─────────────────────────────────────────────────────┤
 │  Dependencies                                       │
 │                                                     │
 │  @koi/core    (L0)   ChannelAdapter, ContentBlock,  │
 │                       InboundMessage, OutboundMessage│
-│  @koi/errors  (L0u)  swallowError()                │
+│  @koi/errors  (L0u)  computeBackoff, sleep,         │
+│                       DEFAULT_RETRY_CONFIG          │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -328,6 +330,13 @@ Never leaks `error.cause`, `error.context`, or stack traces. Verbose mode is for
 | `renderBlocks(blocks, capabilities)` | `readonly ContentBlock[]` | Downgrade unsupported blocks to text |
 | `formatErrorForChannel(error, options?)` | `string` | Safe user-facing error message |
 
+### Resilience & Discovery
+
+| Function | Returns | Purpose |
+|----------|---------|---------|
+| `createRateLimiter(config?)` | `RateLimiter` | FIFO send queue with retry-after honoring + exponential backoff |
+| `createChannelRegistry(entries)` | `ChannelRegistry` | Snapshot-based name → factory map for adapter discovery |
+
 ### Types
 
 | Type | Description |
@@ -336,6 +345,10 @@ Never leaks `error.cause`, `error.context`, or stack traces. Verbose mode is for
 | `MessageNormalizer<E>` | `(event: E) => InboundMessage \| null \| Promise<InboundMessage \| null>` |
 | `ContentBlock` | Re-exported union from `@koi/core` |
 | `FormatErrorOptions` | `{ verbose?: boolean }` |
+| `RateLimiter` | `{ enqueue, size }` — sequential queued sends with retry |
+| `RateLimiterConfig` | `{ retry?, extractRetryAfterMs? }` |
+| `ChannelFactory` | `(config: unknown) => ChannelAdapter` |
+| `ChannelRegistry` | `{ get, names }` — snapshot of registered factories |
 
 ---
 
