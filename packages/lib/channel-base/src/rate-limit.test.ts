@@ -305,6 +305,20 @@ describe("createRateLimiter", () => {
       expect(sleepSpy).not.toHaveBeenCalled();
     });
 
+    it("does not auto-retry CONFLICT — replaying could duplicate side effects", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
+      });
+      let attempts = 0;
+      await expect(
+        limiter.enqueue(async () => {
+          attempts++;
+          throw koiError({ code: "CONFLICT", retryable: true });
+        }),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(attempts).toBe(1);
+    });
+
     it("does not auto-retry RESOURCE_EXHAUSTED — tight retry would just thrash", async () => {
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },

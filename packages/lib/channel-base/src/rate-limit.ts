@@ -65,9 +65,15 @@ interface QueueEntry {
 /**
  * Codes that are safe to auto-retry inline within a single send queue.
  * These are transport-level transient conditions where the next attempt
- * stands a real chance of succeeding without external intervention.
+ * stands a real chance of succeeding without external intervention AND
+ * where re-issuing the operation cannot produce a duplicate user-visible
+ * side effect.
  *
  * Deliberately excluded:
+ *   - CONFLICT           → typically a CAS / already-exists mismatch; replaying
+ *                          a partially-successful send could duplicate output.
+ *                          Adapters with replay-safe conflict semantics opt in
+ *                          via a custom `isRetryable`.
  *   - AUTH_REQUIRED      → recoverable only after the user completes OAuth.
  *   - RESOURCE_EXHAUSTED → recoverable only after capacity is freed; tight retry would just thrash.
  *   - PERMISSION / VALIDATION / NOT_FOUND / STALE_REF / INTERNAL / UNAVAILABLE / HEARTBEAT_TIMEOUT
@@ -77,7 +83,6 @@ interface QueueEntry {
 const TRANSPORT_RETRY_CODES: ReadonlySet<KoiErrorCode> = new Set<KoiErrorCode>([
   "RATE_LIMIT",
   "TIMEOUT",
-  "CONFLICT",
 ]);
 
 /** Returns the retry-after hint only when it is a finite, non-negative number. */
