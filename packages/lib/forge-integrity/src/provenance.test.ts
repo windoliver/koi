@@ -135,6 +135,42 @@ describe("createForgeProvenance", () => {
     expect(Object.isFrozen(prov.buildDefinition.externalParameters)).toBe(true);
   });
 
+  test("rejects Map/Set/Date in externalParameters (would survive Object.freeze)", () => {
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        externalParameters: { schedule: new Date(0) } as unknown as Readonly<
+          Record<string, unknown>
+        >,
+      }),
+    ).toThrow(/JSON-plain/);
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        externalParameters: { tags: new Set(["a"]) } as unknown as Readonly<
+          Record<string, unknown>
+        >,
+      }),
+    ).toThrow(/JSON-plain/);
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        externalParameters: { lookup: new Map([["k", "v"]]) } as unknown as Readonly<
+          Record<string, unknown>
+        >,
+      }),
+    ).toThrow(/JSON-plain/);
+  });
+
+  test("rejects function values inside externalParameters", () => {
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        externalParameters: { hook: () => 1 } as unknown as Readonly<Record<string, unknown>>,
+      }),
+    ).toThrow(/JSON-plain/);
+  });
+
   test("freezes externalParameters and contentMarkers against post-construction mutation", () => {
     const externals = { name: "csv-parse", schemaVer: 1 };
     const markers = ["pii"] as const;

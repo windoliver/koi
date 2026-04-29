@@ -46,6 +46,23 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
   if (options.finishedAt < options.startedAt) {
     throw new Error("createForgeProvenance: finishedAt < startedAt");
   }
+  // Provenance is immutable, audit-visible metadata; restrict structured
+  // inputs to JSON-plain values so we can guarantee a deep freeze. Map/Set/
+  // Date instances survive `Object.freeze` with mutable APIs intact, so we
+  // reject them at the boundary rather than silently letting callers mutate
+  // trust-bearing metadata after construction.
+  const externalsViolation = findNonPlainValue(options.externalParameters);
+  if (externalsViolation !== undefined) {
+    throw new Error(
+      `createForgeProvenance: externalParameters must be JSON-plain — ${externalsViolation}`,
+    );
+  }
+  const verificationViolation = findNonPlainValue(options.verification);
+  if (verificationViolation !== undefined) {
+    throw new Error(
+      `createForgeProvenance: verification must be JSON-plain — ${verificationViolation}`,
+    );
+  }
   // Lineage invariant: parentBrickId and evolutionKind must be both-or-neither.
   // A `fix`/`derived`/`captured` evolution makes no sense without a parent;
   // a parent without an evolution kind has no auditable derivation reason.
@@ -106,4 +123,39 @@ function deepFreeze<T>(value: T): T {
   };
   walk(value);
   return value;
+}
+
+/**
+ * Return a path to the first non-plain (Map/Set/Date/Function/etc.) value
+ * found in `value`, or undefined if every nested value is JSON-plain
+ * (string/number/boolean/null/array/plain-object). Used to reject inputs
+ * that would survive Object.freeze with mutable APIs.
+ */
+function findNonPlainValue(value: unknown): string | undefined {
+  const seen = new WeakSet<object>();
+  const walk = (node: unknown, path: string): string | undefined => {
+    if (node === null) return undefined;
+    const t = typeof node;
+    if (t === "string" || t === "number" || t === "boolean") return undefined;
+    if (t !== "object") return `${path} is ${t}`;
+    if (seen.has(node as object)) return undefined;
+    seen.add(node as object);
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) {
+        const sub = walk(node[i], `${path}[${i}]`);
+        if (sub !== undefined) return sub;
+      }
+      return undefined;
+    }
+    const proto = Object.getPrototypeOf(node);
+    if (proto !== null && proto !== Object.prototype) {
+      return `${path} is a non-plain object (${proto.constructor?.name ?? "unknown"})`;
+    }
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+      const sub = walk(v, `${path}.${k}`);
+      if (sub !== undefined) return sub;
+    }
+    return undefined;
+  };
+  return walk(value, "$");
 }

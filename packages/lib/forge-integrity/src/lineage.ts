@@ -6,6 +6,10 @@
  * `provenance.parentBrickId` pointing at its ancestor. `isDerivedFrom`
  * returns a typed result so callers can distinguish "definitely not derived"
  * from a transient store outage and decide whether to retry or fail closed.
+ *
+ * Both helpers shape-check artifacts before dereferencing nested fields —
+ * a corrupt or partially migrated record returned by the store surfaces as
+ * a `malformed` outcome rather than throwing into the caller's promise.
  */
 
 import type { BrickArtifact, BrickId, ForgeStore, KoiError } from "@koi/core";
@@ -18,25 +22,60 @@ export type LineageOutcome =
   | { readonly kind: "not_derived" }
   | { readonly kind: "depth_exceeded"; readonly depth: number }
   | { readonly kind: "cycle_detected"; readonly at: BrickId }
-  | { readonly kind: "store_error"; readonly at: BrickId; readonly error: KoiError };
+  | { readonly kind: "store_error"; readonly at: BrickId; readonly error: KoiError }
+  | { readonly kind: "malformed"; readonly at?: BrickId; readonly reason: string };
 
+/**
+ * Read `provenance.parentBrickId` defensively. Returns `undefined` when the
+ * brick is well-formed but has no parent, OR when the artifact's shape is
+ * corrupt — callers that need to distinguish those cases should use
+ * `inspectLineageShape`.
+ */
 export function getParentBrickId(brick: BrickArtifact): BrickId | undefined {
-  return brick.provenance.parentBrickId;
+  const shape = inspectLineageShape(brick);
+  return shape.kind === "ok" ? shape.parentBrickId : undefined;
+}
+
+type LineageShape =
+  | { readonly kind: "ok"; readonly id: BrickId; readonly parentBrickId: BrickId | undefined }
+  | { readonly kind: "malformed"; readonly reason: string };
+
+function inspectLineageShape(brick: BrickArtifact): LineageShape {
+  if (brick === null || typeof brick !== "object") {
+    return { kind: "malformed", reason: "brick is not an object" };
+  }
+  if (typeof brick.id !== "string" || brick.id.length === 0) {
+    return { kind: "malformed", reason: "brick.id missing or empty" };
+  }
+  const provenance = brick.provenance;
+  if (provenance === null || typeof provenance !== "object") {
+    return { kind: "malformed", reason: "brick.provenance missing or not an object" };
+  }
+  const parent = provenance.parentBrickId;
+  if (parent !== undefined && (typeof parent !== "string" || parent.length === 0)) {
+    return { kind: "malformed", reason: "brick.provenance.parentBrickId malformed" };
+  }
+  return { kind: "ok", id: brick.id, parentBrickId: parent };
 }
 
 /**
  * Walks the `parentBrickId` chain upwards from `child` to determine whether
  * `ancestor` is in its lineage. Surfaces the reason for a non-positive
  * answer so callers can distinguish a true non-lineage relationship from a
- * store outage, a depth overrun, or a malformed cycle.
+ * store outage, a depth overrun, a malformed record, or a cycle.
  */
 export async function isDerivedFrom(
   child: BrickArtifact,
   ancestor: BrickId,
   store: ForgeStore,
 ): Promise<LineageOutcome> {
-  const seen = new Set<BrickId>([child.id]);
-  let parentId = getParentBrickId(child);
+  const childShape = inspectLineageShape(child);
+  if (childShape.kind === "malformed") {
+    return { kind: "malformed", reason: childShape.reason };
+  }
+
+  const seen = new Set<BrickId>([childShape.id]);
+  let parentId = childShape.parentBrickId;
   let steps = 0;
 
   while (parentId !== undefined) {
@@ -48,7 +87,11 @@ export async function isDerivedFrom(
     const result = await store.load(parentId);
     if (!result.ok) return { kind: "store_error", at: parentId, error: result.error };
 
-    parentId = getParentBrickId(result.value);
+    const loadedShape = inspectLineageShape(result.value);
+    if (loadedShape.kind === "malformed") {
+      return { kind: "malformed", at: parentId, reason: loadedShape.reason };
+    }
+    parentId = loadedShape.parentBrickId;
     steps += 1;
   }
   return { kind: "not_derived" };

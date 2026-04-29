@@ -102,4 +102,28 @@ describe("lineage", () => {
     const novel = computeBrickId("tool", "different");
     expect(findDuplicateById([a], novel)).toBeUndefined();
   });
+
+  test("isDerivedFrom returns malformed when child has no provenance", async () => {
+    const broken = { id: "sha256:zzz" } as unknown as BrickArtifact;
+    const root = makeTool();
+    const result = await isDerivedFrom(broken, root.id, fixtureStore([root]));
+    expect(result.kind).toBe("malformed");
+  });
+
+  test("isDerivedFrom returns malformed when a loaded ancestor is corrupt", async () => {
+    const root = makeTool();
+    const mid = makeTool({ implementation: "v2", parentBrickId: root.id });
+    const child = makeTool({ implementation: "v3", parentBrickId: mid.id });
+    // Replace `mid` in the store with a corrupt record (missing provenance).
+    const corruptMid = { ...mid, provenance: undefined } as unknown as BrickArtifact;
+    const store = fixtureStore([root, corruptMid, child]);
+    const result = await isDerivedFrom(child, root.id, store);
+    expect(result.kind).toBe("malformed");
+    if (result.kind === "malformed") expect(result.at).toBe(mid.id);
+  });
+
+  test("getParentBrickId returns undefined for a malformed brick", () => {
+    const broken = { id: "sha256:x" } as unknown as BrickArtifact;
+    expect(getParentBrickId(broken)).toBeUndefined();
+  });
 });
