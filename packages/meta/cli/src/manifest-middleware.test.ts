@@ -279,14 +279,14 @@ describe("MiddlewareRegistry", () => {
     // host explicitly opts in. Hosts that want audit pass
     // `{ allowFileBackedSinks: true }`.
     //
-    // `@koi/middleware-rlm` registers a factory that always throws an
-    // explicit error: per-request safety flags cannot be set from
-    // manifest, so a manifest-instantiated middleware would always be
-    // a fail-closed trap on the first oversized turn. The factory
-    // surfaces the constraint at resolution time instead.
+    // `@koi/middleware-rlm` is intentionally NOT registered: every
+    // safety-relevant RLM flag must be set per-request by programmatic
+    // composition. Registering an entry that always throws on
+    // resolution would advertise a built-in that does not work; hiding
+    // RLM from manifest discovery is the correct UX.
     const registry = createBuiltinManifestRegistry();
     expect(registry.has("@koi/middleware-audit")).toBe(false);
-    expect(registry.has("@koi/middleware-rlm")).toBe(true);
+    expect(registry.has("@koi/middleware-rlm")).toBe(false);
   });
 
   test("createBuiltinManifestRegistry with allowFileBackedSinks registers @koi/middleware-audit", () => {

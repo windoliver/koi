@@ -524,19 +524,16 @@ export function createBuiltinManifestRegistry(
       trusted: true,
     });
   }
-  // RLM is registered with an explicit-rejection factory rather than a
-  // working one. The manifest factory rejects every safety-relevant flag
-  // (`acknowledgeSegmentLocalContract`, `trustMetadataRole`, `priority`)
-  // because a static manifest cannot make per-request decisions about
-  // those contracts. With those flags rejected, a manifest-instantiated
-  // RLM would default to fail-closed on every oversized request — a
-  // load-bearing trap for repo authors who think `rlm: { ... }` in YAML
-  // gives them oversized handling. Surfacing a clear error at registry
-  // resolution instead of at the first oversized turn makes the
-  // programmatic-only activation requirement obvious.
-  registry.register("@koi/middleware-rlm", createRlmManifestEntry, {
-    trusted: true,
-  });
+  // @koi/middleware-rlm is intentionally NOT registered here. Every
+  // safety-relevant RLM flag (`acknowledgeSegmentLocalContract`,
+  // `trustMetadataRole`, `priority`) must be set per-request by
+  // programmatic composition — a static manifest cannot make those
+  // per-request decisions. Registering an entry that always throws on
+  // resolution would advertise a built-in that does not work; hiding
+  // RLM from manifest discovery is the correct UX. Hosts who genuinely
+  // need oversized-request virtualization must register RLM via a
+  // custom MiddlewareRegistry where they can opt into the
+  // segment-local contract per known-safe turn.
   return registry;
 }
 
@@ -805,6 +802,14 @@ function parseAuditOptions(
 
 // ---------------------------------------------------------------------------
 // @koi/middleware-rlm manifest factory
+//
+// `parseRlmOptions` defines the rejection contract for any future manifest
+// activation path: every safety-relevant flag (`acknowledgeSegmentLocalContract`,
+// `trustMetadataRole`, `priority`) must come from programmatic composition,
+// not from a static manifest. We retain the parser even though no factory
+// currently calls it so the rejection contract has a single home and is
+// reachable via re-exports for testing without requiring the entry to be
+// registered as a built-in.
 // ---------------------------------------------------------------------------
 
 /**
@@ -813,7 +818,7 @@ function parseAuditOptions(
  * need a custom estimator or telemetry observer wire RLM programmatically
  * via a custom `MiddlewareRegistry`.
  */
-interface RlmManifestOptions {
+export interface RlmManifestOptions {
   readonly maxInputTokens?: number;
   readonly maxChunkChars?: number;
   readonly segmentSeparator?: string;
@@ -821,7 +826,9 @@ interface RlmManifestOptions {
   readonly trustMetadataRole?: boolean;
 }
 
-function parseRlmOptions(raw: Readonly<Record<string, unknown>> | undefined): RlmManifestOptions {
+export function parseRlmOptions(
+  raw: Readonly<Record<string, unknown>> | undefined,
+): RlmManifestOptions {
   if (raw === undefined) return {};
   const out: {
     maxInputTokens?: number;
@@ -926,28 +933,6 @@ function parseRlmOptions(raw: Readonly<Record<string, unknown>> | undefined): Rl
     out.trustMetadataRole = raw.trustMetadataRole;
   }
   return out;
-}
-
-function createRlmManifestEntry(entry: ManifestMiddlewareEntry): KoiMiddleware {
-  // Validate the option shape first so misuse surfaces a precise error
-  // (unknown booleans, wrong types, etc.) rather than the generic
-  // programmatic-only message below.
-  parseRlmOptions(entry.options);
-  // Manifest activation is a trap: every safety-relevant RLM flag is
-  // rejected from manifest content (see parseRlmOptions), so a
-  // manifest-instantiated middleware can only ever fail closed on the
-  // first oversized turn. Hosts who put `@koi/middleware-rlm` in
-  // `koi.yaml` would see it load successfully and then take a hard
-  // runtime error on real traffic. Surface the constraint at
-  // resolution time so the misconfiguration is obvious.
-  throw new Error(
-    "@koi/middleware-rlm cannot be activated from manifest content. " +
-      "RLM's segmentation behavior requires `acknowledgeSegmentLocalContract: true`, " +
-      "which a static manifest is not allowed to set (see option-validation rejection above) " +
-      "because per-request safety must come from programmatic composition. " +
-      "Hosts that need oversized-request virtualization must register RLM via a custom " +
-      "MiddlewareRegistry where they can opt into the segment-local contract per known-safe turn.",
-  );
 }
 
 function createAuditManifestEntry(
