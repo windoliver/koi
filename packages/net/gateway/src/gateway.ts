@@ -69,9 +69,9 @@ export interface Gateway {
 }
 
 // Compile-time check: the local `Gateway` interface satisfies the L0u contract.
-// Zero runtime cost; if a future change breaks structural compatibility this errors.
-type _Assert<T extends GatewayContract> = T;
-type _GatewayCompat = _Assert<Gateway>;
+// Zero runtime cost; exported under a private name so it's not flagged as unused.
+// If a future change breaks structural compatibility this errors at typecheck.
+export type _GatewayContractCompat = Gateway extends GatewayContract ? true : never;
 
 // ---------------------------------------------------------------------------
 // Deps
