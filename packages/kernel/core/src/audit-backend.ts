@@ -22,7 +22,9 @@ export interface AuditEntry {
     | "secret_access"
     | "permission_decision"
     | "compliance_event"
-    | "config_change";
+    | "config_change"
+    | "gateway.request"
+    | "gateway.ws_upgrade";
   /** Populated for tool_call entries — the tool's identifier. */
   readonly toolName?: string;
   readonly request?: unknown;
