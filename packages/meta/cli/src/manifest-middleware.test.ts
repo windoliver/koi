@@ -273,15 +273,20 @@ describe("MiddlewareRegistry", () => {
     expect(registry.names()).toEqual([]);
   });
 
-  test("createBuiltinManifestRegistry is empty by default (no file-backed sinks)", () => {
+  test("createBuiltinManifestRegistry has no file-backed sinks by default", () => {
     // Codex round-8 finding #2: file-backed manifest middleware
     // must not be available to repo-authored content unless the
-    // host explicitly opts in. The default built-in registry is
-    // therefore empty; hosts that want audit pass
+    // host explicitly opts in. Hosts that want audit pass
     // `{ allowFileBackedSinks: true }`.
+    //
+    // Non-file-backed middleware (e.g. `@koi/middleware-rlm`) is
+    // registered unconditionally because it has no filesystem trust
+    // boundary; its safety contract is enforced by per-flag rejection
+    // inside the factory (acknowledgeSegmentLocalContract /
+    // trustMetadataRole / priority cannot be set from manifest).
     const registry = createBuiltinManifestRegistry();
     expect(registry.has("@koi/middleware-audit")).toBe(false);
-    expect(registry.names()).toEqual([]);
+    expect(registry.has("@koi/middleware-rlm")).toBe(true);
   });
 
   test("createBuiltinManifestRegistry with allowFileBackedSinks registers @koi/middleware-audit", () => {

@@ -879,6 +879,26 @@ function parseRlmOptions(raw: Readonly<Record<string, unknown>> | undefined): Rl
         "@koi/middleware-rlm: options.acknowledgeSegmentLocalContract must be a boolean",
       );
     }
+    // A committed manifest cannot know whether each runtime request is
+    // actually segment-local. Honoring this flag globally would force
+    // concatenation semantics on every oversized turn, including tasks
+    // that need cross-segment reasoning, dedup, ranking, or counting —
+    // those would ship wrong answers as apparent successes with no
+    // failure signal. Per-request safety must come from programmatic
+    // composition where the host knows the task shape, not from
+    // repo-authored YAML. Without manifest opt-in, RLM's default
+    // fail-closed behavior surfaces oversized turns as explicit errors
+    // until a host wires up the contract per turn.
+    if (raw.acknowledgeSegmentLocalContract === true) {
+      throw new Error(
+        "@koi/middleware-rlm: options.acknowledgeSegmentLocalContract is not supported from manifest. " +
+          "A static manifest cannot know whether each runtime request is segment-local; honoring this " +
+          "flag globally would silently concatenate per-chunk answers for tasks that require " +
+          "cross-segment reasoning (dedup, ranking, counting, global aggregation), shipping wrong " +
+          "answers as apparent successes. Hosts must register RLM programmatically via a custom " +
+          "MiddlewareRegistry and gate the contract per known-safe turn.",
+      );
+    }
     out.acknowledgeSegmentLocalContract = raw.acknowledgeSegmentLocalContract;
   }
   if (raw.trustMetadataRole !== undefined) {
