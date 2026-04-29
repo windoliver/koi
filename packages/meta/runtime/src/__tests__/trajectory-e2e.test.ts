@@ -25,6 +25,12 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { createRuntime } from "../create-runtime.js";
+import type { AtifDocument, AtifStep } from "../trajectory/atif-types.js";
+import {
+  docIdToMetadataFilename,
+  metadataFilenameToDocId,
+  stepChunkFilenameToInfo,
+} from "../trajectory/path-encoding.js";
 
 const TRAJ_DIR = `/tmp/koi-traj-e2e-${Date.now()}`;
 
@@ -35,6 +41,39 @@ afterEach(() => {
     // ignore
   }
 });
+
+async function listTrajectoryDocIds(): Promise<readonly string[]> {
+  const files = await readdir(TRAJ_DIR);
+  return files
+    .map((file) => metadataFilenameToDocId(file))
+    .filter((docId): docId is string => docId !== undefined)
+    .sort();
+}
+
+async function readRawAtifDocument(docId: string): Promise<AtifDocument> {
+  const files = await readdir(TRAJ_DIR);
+  const metadata = (await Bun.file(`${TRAJ_DIR}/${docIdToMetadataFilename(docId)}`).json()) as {
+    readonly document: Omit<AtifDocument, "steps">;
+  };
+  const chunkFiles = files
+    .map((file) => ({ file, info: stepChunkFilenameToInfo(file) }))
+    .filter(
+      (
+        entry,
+      ): entry is {
+        readonly file: string;
+        readonly info: { docId: string; startIndex: number };
+      } => entry.info !== undefined && entry.info.docId === docId,
+    )
+    .sort((a, b) => a.info.startIndex - b.info.startIndex);
+
+  const steps: AtifStep[] = [];
+  for (const chunk of chunkFiles) {
+    const chunkSteps = (await Bun.file(`${TRAJ_DIR}/${chunk.file}`).json()) as readonly AtifStep[];
+    steps.push(...chunkSteps);
+  }
+  return { ...metadata.document, steps };
+}
 
 // ---------------------------------------------------------------------------
 // Test middleware: logs every model/tool call it sees
@@ -207,11 +246,10 @@ describe("trajectory E2E: multi-middleware flow → ATIF on local FS", () => {
     expect(store).toBeDefined();
     if (store === undefined) throw new Error("store should exist");
 
-    // Each stream() call gets a unique docId — find it from the ATIF files on disk
-    const files = await readdir(TRAJ_DIR);
-    const atifFiles = files.filter((f) => f.endsWith(".atif.json"));
-    expect(atifFiles).toHaveLength(1);
-    const docId = atifFiles[0]?.replace(".atif.json", "") ?? "";
+    // Each stream() call gets a unique docId — find it from the chunk metadata.
+    const docIds = await listTrajectoryDocIds();
+    expect(docIds).toHaveLength(1);
+    const docId = docIds[0] ?? "";
 
     const steps = await store.getDocument(docId);
     // 3 call steps + middleware spans for each (debug: true enables instrumentation)
@@ -304,10 +342,9 @@ describe("trajectory E2E: multi-middleware flow → ATIF on local FS", () => {
 
     const store = runtime.trajectoryStore;
     if (store === undefined) throw new Error("store should exist");
-    const files = await readdir(TRAJ_DIR);
-    const atifFiles = files.filter((f) => f.endsWith(".atif.json"));
-    expect(atifFiles).toHaveLength(1);
-    const docId = atifFiles[0]?.replace(".atif.json", "") ?? "";
+    const docIds = await listTrajectoryDocIds();
+    expect(docIds).toHaveLength(1);
+    const docId = docIds[0] ?? "";
     const steps = await store.getDocument(docId);
 
     // No middleware spans when debug is off
@@ -336,10 +373,9 @@ describe("trajectory E2E: multi-middleware flow → ATIF on local FS", () => {
 
     const store = runtime.trajectoryStore;
     if (store === undefined) throw new Error("store should exist");
-    const files = await readdir(TRAJ_DIR);
-    const atifFiles = files.filter((f) => f.endsWith(".atif.json"));
-    expect(atifFiles).toHaveLength(1);
-    const docId = atifFiles[0]?.replace(".atif.json", "") ?? "";
+    const docIds = await listTrajectoryDocIds();
+    expect(docIds).toHaveLength(1);
+    const docId = docIds[0] ?? "";
     const steps = await store.getDocument(docId);
 
     const spanSteps = steps.filter((s) => s.identifier.startsWith("middleware:"));
@@ -384,9 +420,8 @@ describe("trajectory E2E: multi-middleware flow → ATIF on local FS", () => {
     expect(steps[0]?.identifier).toBe("fake-model");
     expect(steps[0]?.metadata?.traceCallId).toBe("test-correlation-id");
 
-    // Verify ATIF file exists on disk
-    const files = await readdir(TRAJ_DIR);
-    expect(files.some((f) => f.endsWith(".atif.json"))).toBe(true);
+    // Verify chunked ATIF metadata exists on disk
+    expect(await listTrajectoryDocIds()).toContain("e2e-session");
   });
 
   test("ATIF file on disk has valid schema_version and agent metadata", async () => {
@@ -414,9 +449,8 @@ describe("trajectory E2E: multi-middleware flow → ATIF on local FS", () => {
       },
     ]);
 
-    // Read raw ATIF JSON from disk
-    const rawJson = await Bun.file(`${TRAJ_DIR}/schema-test.atif.json`).json();
-    const doc = rawJson as Record<string, unknown>;
+    // Read raw chunked ATIF JSON from disk
+    const doc = (await readRawAtifDocument("schema-test")) as unknown as Record<string, unknown>;
 
     expect(doc.schema_version).toBe("ATIF-v1.6");
     expect(doc.session_id).toBe("schema-test");
@@ -469,9 +503,7 @@ describe("trajectory E2E: multi-middleware flow → ATIF on local FS", () => {
       },
     ]);
 
-    const files = await readdir(TRAJ_DIR);
-    const atifFiles = files.filter((f) => f.endsWith(".atif.json")).sort();
-    expect(atifFiles).toEqual(["session-a.atif.json", "session-b.atif.json"]);
+    expect(await listTrajectoryDocIds()).toEqual(["session-a", "session-b"]);
 
     // Each session has its own data
     const stepsA = await store.getDocument("session-a");
@@ -540,10 +572,9 @@ describe("trajectory E2E: multi-middleware flow → ATIF on local FS", () => {
     const store = runtime.trajectoryStore;
     if (store === undefined) throw new Error("store should exist");
 
-    const files = await readdir(TRAJ_DIR);
-    const atifFiles = files.filter((f) => f.endsWith(".atif.json"));
-    expect(atifFiles).toHaveLength(1);
-    const docId = decodeURIComponent(atifFiles[0]?.replace(".atif.json", "") ?? "");
+    const docIds = await listTrajectoryDocIds();
+    expect(docIds).toHaveLength(1);
+    const docId = docIds[0] ?? "";
     const steps = await store.getDocument(docId);
 
     expect(steps.length).toBeGreaterThanOrEqual(1);
@@ -621,10 +652,9 @@ describe("trajectory E2E: multi-middleware flow → ATIF on local FS", () => {
     const store = runtime.trajectoryStore;
     if (store === undefined) throw new Error("store should exist");
 
-    const files = await readdir(TRAJ_DIR);
-    const atifFiles = files.filter((f) => f.endsWith(".atif.json"));
-    expect(atifFiles).toHaveLength(1);
-    const docId = decodeURIComponent(atifFiles[0]?.replace(".atif.json", "") ?? "");
+    const docIds = await listTrajectoryDocIds();
+    expect(docIds).toHaveLength(1);
+    const docId = docIds[0] ?? "";
     const steps = await store.getDocument(docId);
 
     expect(steps.length).toBeGreaterThanOrEqual(1);

@@ -1,7 +1,7 @@
 import { createAgentResolver } from "@koi/agent-runtime";
 import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit-sink-ndjson";
 import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
-import { type Checkpoint, createCheckpoint } from "@koi/checkpoint";
+import { type Checkpoint, type CheckpointPayload, createCheckpoint } from "@koi/checkpoint";
 import type {
   ApprovalHandler,
   AuditEntry,
@@ -91,7 +91,7 @@ import { createFsAtifDelegate } from "./trajectory/fs-delegate.js";
 import { createNexusAtifDelegate } from "./trajectory/nexus-delegate.js";
 import { createNexusOutcomeDelegate } from "./trajectory/outcome-nexus-delegate.js";
 import type { RuntimeConfig, RuntimeHandle } from "./types.js";
-import { DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";
+import { DEFAULT_ACTIVITY_MAX_DURATION_MS, DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";
 
 const DEFAULT_AGENT_NAME = "koi-runtime";
 
@@ -163,12 +163,16 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // the file-state restore. Threads the filesystem backend's `resolvePath`
   // so pre/post-image hashes are computed against the same on-disk paths
   // the backend writes to.
-  const checkpointHandle: Checkpoint | undefined =
+  const checkpointStore =
     config.checkpoint !== undefined
+      ? createSnapshotStoreSqlite<CheckpointPayload>({
+          path: config.checkpoint.snapshotPath ?? ":memory:",
+        })
+      : undefined;
+  const checkpointHandle: Checkpoint | undefined =
+    config.checkpoint !== undefined && checkpointStore !== undefined
       ? createCheckpoint({
-          store: createSnapshotStoreSqlite({
-            path: config.checkpoint.snapshotPath ?? ":memory:",
-          }),
+          store: checkpointStore,
           config: {
             blobDir: config.checkpoint.blobDir,
             // Drift detection runs git status on every turn. Disable for now —
@@ -228,6 +232,8 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   let auditCleanedUp = false;
   let browserCleanedUp = false;
   let lspCleanedUp = false;
+  let checkpointCleanedUp = false;
+  let filesystemCleanedUp = false;
 
   try {
     const baseMiddleware: readonly KoiMiddleware[] = [
@@ -478,9 +484,23 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         ? { pathGuard: createCredentialPathGuard() }
         : undefined;
 
-    const filesystemProvider =
+    const rawFilesystemProvider =
       filesystemBackend !== undefined
         ? createFileSystemProvider(filesystemBackend, "fs", filesystemOperations, fsToolOptions)
+        : undefined;
+    const filesystemProvider: ComponentProvider | undefined =
+      rawFilesystemProvider !== undefined
+        ? {
+            ...rawFilesystemProvider,
+            attach: async (agent) => rawFilesystemProvider.attach(agent),
+            detach: async (agent) => {
+              if (filesystemCleanedUp) return;
+              if (rawFilesystemProvider.detach !== undefined) {
+                await rawFilesystemProvider.detach(agent);
+                filesystemCleanedUp = true;
+              }
+            },
+          }
         : undefined;
 
     // Fail closed: if a real (non-stub) "permissions" middleware is installed
@@ -803,6 +823,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       config.requestApproval,
       config.userId,
       config.channelId,
+      config.sessionId,
       allToolDescriptors,
       config.retrySignalReader,
       config.agentName ?? DEFAULT_AGENT_NAME,
@@ -1072,7 +1093,12 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         const results = await Promise.allSettled([
           channel.disconnect(),
           rawAdapter.dispose?.() ?? Promise.resolve(),
-          filesystemBackend?.dispose?.() ?? Promise.resolve(),
+          filesystemBackend !== undefined && !filesystemCleanedUp
+            ? (async () => {
+                await filesystemBackend.dispose?.();
+                filesystemCleanedUp = true;
+              })()
+            : Promise.resolve(),
         ]);
         // Step 2: Drain stream finalizations (flush + afterFlush) with a bounded
         // timeout. Adapters without dispose() or that don't cancel streams would
@@ -1221,6 +1247,12 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 auditCleanedUp = true;
               })()
             : Promise.resolve(),
+          checkpointStore !== undefined && !checkpointCleanedUp
+            ? (async () => {
+                checkpointStore.close();
+                checkpointCleanedUp = true;
+              })()
+            : Promise.resolve(),
           // Browser backend: fall back to backend.dispose() when the
           // inner provider has not fully detached. The unshared-per-
           // runtime contract makes this safe — no other consumer can be
@@ -1257,6 +1289,14 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       auditHandle.close().catch(() => {
         // best-effort cleanup during createRuntime error path
       });
+    }
+    if (checkpointStore !== undefined && !checkpointCleanedUp) {
+      try {
+        checkpointStore.close();
+        checkpointCleanedUp = true;
+      } catch {
+        // best-effort cleanup during createRuntime error path
+      }
     }
     // Browser backend: unshared-per-runtime contract means nothing else
     // holds the driver, so disposing here cannot interfere with peers.
@@ -2051,6 +2091,7 @@ function composeMiddlewareIntoAdapter(
   requestApproval?: ApprovalHandler,
   userId?: string,
   channelId?: string,
+  fixedSessionId?: string,
   toolDescriptors?: readonly ToolDescriptor[],
   retrySignalReader?: RetrySignalReader,
   agentName?: string,
@@ -2125,6 +2166,8 @@ function composeMiddlewareIntoAdapter(
         (ctxOpts as Record<string, unknown>).requestApproval = requestApproval;
       if (userId !== undefined) (ctxOpts as Record<string, unknown>).userId = userId;
       if (channelId !== undefined) (ctxOpts as Record<string, unknown>).channelId = channelId;
+      if (fixedSessionId !== undefined)
+        (ctxOpts as Record<string, unknown>).sessionId = fixedSessionId;
       const ctx = createMinimalTurnContext(ctxOpts);
       const docId = `stream-${streamId}`;
 
@@ -2808,15 +2851,10 @@ function resolveFilesystemInput(
  * Back-compat bridge for #1638: when the caller only supplies the legacy
  * `streamTimeoutMs`, map it onto `activityTimeout.maxDurationMs` so existing
  * behaviour (hard wall-clock kill) is preserved. When `activityTimeout` is
- * provided, the deprecated field is ignored — but if the caller omitted
- * `maxDurationMs` we still fill in the legacy `DEFAULT_STREAM_TIMEOUT_MS`
- * (120s) rather than the larger recommended 4h bound. This keeps the
- * migration path rollback-safe: a caller that adopts `activityTimeout`
- * without picking an explicit wall-clock cap keeps the same hard-stop budget
- * as before. Callers who want the recommended longer cap opt in explicitly:
- *   maxDurationMs: DEFAULT_ACTIVITY_MAX_DURATION_MS (4h)
- * or pick their own value. `maxDurationMs: Number.POSITIVE_INFINITY` disables
- * the wall-clock bound entirely.
+ * provided, the deprecated field is ignored; if the caller omits
+ * `maxDurationMs`, install the recommended 4h safety backstop while idle
+ * timers do the normal interruption work. `maxDurationMs:
+ * Number.POSITIVE_INFINITY` disables the wall-clock bound entirely.
  */
 function resolveActivityTimeoutConfig(
   activityTimeout: ActivityTimeoutConfig | undefined,
@@ -2827,7 +2865,7 @@ function resolveActivityTimeoutConfig(
     return { maxDurationMs: legacyWallClockMs };
   }
   if (activityTimeout.maxDurationMs === undefined) {
-    return { ...activityTimeout, maxDurationMs: legacyWallClockMs };
+    return { ...activityTimeout, maxDurationMs: DEFAULT_ACTIVITY_MAX_DURATION_MS };
   }
   return activityTimeout;
 }
