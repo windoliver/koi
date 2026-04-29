@@ -112,6 +112,13 @@
         "@koi/event-delivery": "workspace:*",
       },
     },
+    "packages/lib/agent-procfs": {
+      "name": "@koi/agent-procfs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/agent-runtime": {
       "name": "@koi/agent-runtime",
       "version": "0.0.0",
@@ -1894,6 +1901,8 @@
     "@jsonjoy.com/util": ["@jsonjoy.com/util@1.9.0", "", { "dependencies": { "@jsonjoy.com/buffers": "^1.0.0", "@jsonjoy.com/codegen": "^1.0.0" }, "peerDependencies": { "tslib": "2" } }, "sha512-pLuQo+VPRnN8hfPqUTLTHk126wuYdXVxE6aDmjSeV4NCAgyxWbiOIeNJVtID3h1Vzpoi9m4jXezf73I6LgabgQ=="],
 
     "@koi-agent/cli": ["@koi-agent/cli@workspace:packages/meta/cli"],
+
+    "@koi/agent-procfs": ["@koi/agent-procfs@workspace:packages/lib/agent-procfs"],
 
     "@koi/agent-runtime": ["@koi/agent-runtime@workspace:packages/lib/agent-runtime"],
 
