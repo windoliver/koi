@@ -4,18 +4,21 @@ import { isKoiError, isRetryable, KoiRuntimeError, toKoiError } from "@koi/error
 
 /**
  * Transport-safe codes whose default classification we inherit when a
- * partial Error.cause omits `retryable`. Deliberately narrower than
- * core RETRYABLE_DEFAULTS — codes like AUTH_REQUIRED and
- * RESOURCE_EXHAUSTED are technically "retryable" only after external
- * intervention (user authorizes, capacity frees), and auto-replaying
- * them at the middleware layer hides the recovery path and burns
- * non-idempotent upstream calls. Default to non-retryable for those.
+ * partial Error.cause omits `retryable`. Deliberately narrower than core
+ * RETRYABLE_DEFAULTS:
+ *   - AUTH_REQUIRED / RESOURCE_EXHAUSTED — "retryable" only after external
+ *     intervention; auto-replaying hides the recovery path.
+ *   - EXTERNAL — depends on the specific remote failure; core defaults
+ *     it to non-retryable for that reason. A producer that knows the
+ *     failure is transient must say so explicitly.
+ *   - CONFLICT — non-idempotent in many domains; require explicit opt-in.
+ *
+ * That leaves only RATE_LIMIT and TIMEOUT (server-acknowledged throttling
+ * and watchdog deadlines) — the safe-to-replay-by-default transport set.
  */
 const TRANSPORT_RETRYABLE_DEFAULTS: ReadonlySet<KoiError["code"]> = new Set([
   "RATE_LIMIT",
   "TIMEOUT",
-  "EXTERNAL",
-  "CONFLICT",
 ]);
 
 import { runGates } from "./gate.js";

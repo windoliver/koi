@@ -53,16 +53,91 @@ const FORMATTING_CHARS = /[@`*_~#|!&\\[\]()<>{}]/g;
 const URL_LIKE = /\b[a-z][a-z0-9+.-]*:[^\s]+/gi;
 const WWW_LIKE = /\bwww\.\S+/gi;
 // Bare-domain autolink trap: Slack/Discord/Teams/Gmail auto-link strings
-// like `evil.example/path` even without a scheme. Match `<label>(.<label>)+`
-// ending in a TLD-shaped suffix followed by a URL marker (`/`, `:`, `?`, `#`).
-// REQUIRING the trailing marker prevents collateral damage to common dotted
-// identifiers in validation messages (`user.profile.email`,
-// `config.http.timeout`, `payload.items[0].sku`) — those are valuable
-// recovery info for the user and must not be redacted as phishing.
-// Pure schemeless hostnames without a path (e.g. bare `evil.example`) are
-// no longer redacted by this pattern; if your transport autolinks bare
-// hostnames you must handle that at the adapter layer.
-const BARE_DOMAIN_LIKE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}[/:?#][^\s]*/gi;
+// like `evil.com` or `attacker.io/path` even without a scheme. Match
+// `<label>(.<label>)+` whose last label is a curated real TLD. The
+// allowlist deliberately excludes common identifier-shaped trailing
+// segments (`email`, `profile`, `items`, `timeout`, `password`,
+// `address`, etc.) so dotted validation field paths
+// (`user.profile.email`, `config.http.timeout`, `payload.items[0].sku`)
+// survive sanitization — that is the user's primary recovery info.
+const TLD_ALLOWLIST = [
+  // gTLDs commonly seen in phishing
+  "com",
+  "net",
+  "org",
+  "info",
+  "biz",
+  "app",
+  "dev",
+  "ai",
+  "io",
+  "co",
+  "me",
+  "tv",
+  "top",
+  "xyz",
+  "online",
+  "site",
+  "store",
+  "shop",
+  "click",
+  "link",
+  "live",
+  "cloud",
+  "edu",
+  "gov",
+  "mil",
+  "int",
+  // major ccTLDs
+  "uk",
+  "us",
+  "ca",
+  "au",
+  "de",
+  "fr",
+  "jp",
+  "cn",
+  "in",
+  "br",
+  "ru",
+  "kr",
+  "mx",
+  "it",
+  "es",
+  "nl",
+  "pl",
+  "se",
+  "no",
+  "fi",
+  "dk",
+  "ch",
+  "at",
+  "be",
+  "pt",
+  "gr",
+  "tr",
+  "cz",
+  "hu",
+  "ie",
+  "il",
+  "za",
+  "ng",
+  "ae",
+  "sg",
+  "my",
+  "th",
+  "id",
+  "ph",
+  "vn",
+  "tw",
+  "hk",
+  "nz",
+] as const;
+const TLD_PATTERN = TLD_ALLOWLIST.join("|");
+const BARE_DOMAIN_LIKE = new RegExp(
+  String.raw`\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:${TLD_PATTERN})(?:[/:?#][^\s]*)?\b`,
+  "gi",
+);
 
 /**
  * Reduces a validator-controlled string to inert plain text:

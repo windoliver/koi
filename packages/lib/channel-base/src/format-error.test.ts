@@ -86,22 +86,28 @@ describe("classifyErrorForChannel discriminated output", () => {
       );
     });
 
-    it("redacts schemeless bare domains that include a URL marker (path/port/query/fragment)", () => {
-      // Loop-5 round 7: the bare-domain pattern must require a trailing
-      // URL marker to avoid eating dotted identifiers in validation
-      // messages (`user.profile.email`, `payload.items[0].sku`). With
-      // a marker it still catches autolink-grade strings.
-      expect(safeText("visit evil.example/pay now")).toBe("Invalid input: visit link removed now");
-      expect(safeText("see attacker.co.uk/path")).toBe("Invalid input: see link removed");
+    it("redacts schemeless bare domains that match the curated TLD allowlist", () => {
+      // Loop-5 round 7+8: redact only domains whose last label is a real
+      // TLD on the curated list (com, net, org, io, co, …, ccTLDs). Both
+      // bare hostnames and hostnames with paths fire.
+      expect(safeText("visit evil.com now")).toBe("Invalid input: visit link removed now");
+      expect(safeText("visit attacker.io/pay now")).toBe("Invalid input: visit link removed now");
+      expect(safeText("see phish.co.uk/path")).toBe("Invalid input: see link removed");
+      expect(safeText("login at login.company.com")).toBe("Invalid input: login at link removed");
     });
 
     it("preserves dotted identifiers commonly used in validation messages", () => {
-      // Regression: loop-5 round 7 finding 2. Recovery info must survive.
+      // Regression: loop-5 round 7 finding 2. Recovery info must survive
+      // because identifier-shaped trailing segments are NOT in the TLD
+      // allowlist (email, profile, items, sku, timeout, password, etc.).
       expect(safeText("field 'user.profile.email' is required")).toBe(
         "Invalid input: field 'user.profile.email' is required",
       );
       expect(safeText("invalid value at config.http.timeout")).toBe(
         "Invalid input: invalid value at config.http.timeout",
+      );
+      expect(safeText("missing payload.items[0].sku")).toBe(
+        "Invalid input: missing payload.items0.sku",
       );
     });
 
