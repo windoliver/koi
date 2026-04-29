@@ -137,26 +137,31 @@ export function createSpawnResultCache(
   }
 
   async function awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-    if (!signal.aborted) {
-      return await new Promise<T>((resolve, reject) => {
-        const onAbort = (): void => {
+    if (signal.aborted) throw signal.reason ?? new Error("aborted");
+    return await new Promise<T>((resolve, reject) => {
+      const onAbort = (): void => {
+        signal.removeEventListener("abort", onAbort);
+        reject(signal.reason ?? new Error("aborted"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      // Re-check after registering the listener: if abort fired in the
+      // window between the initial check and addEventListener, fire the
+      // handler manually so the await still rejects promptly.
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      promise.then(
+        (value) => {
           signal.removeEventListener("abort", onAbort);
-          reject(signal.reason ?? new Error("aborted"));
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-        promise.then(
-          (value) => {
-            signal.removeEventListener("abort", onAbort);
-            resolve(value);
-          },
-          (err) => {
-            signal.removeEventListener("abort", onAbort);
-            reject(err);
-          },
-        );
-      });
-    }
-    throw signal.reason ?? new Error("aborted");
+          resolve(value);
+        },
+        (err) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(err);
+        },
+      );
+    });
   }
 
   async function runDeduped(
@@ -188,9 +193,15 @@ export function createSpawnResultCache(
         throw err;
       } finally {
         pending.subscribers -= 1;
-        // Don't evict the slot here — the .then handler is the
-        // authoritative cleanup path and will remove the entry when the
-        // factory promise settles.
+        // If we are the last subscriber to abandon the call (driver and
+        // every other waiter already aborted), evict the slot so a
+        // subsequent retry doesn't attach to a Promise nobody is
+        // observing. The .then handler is still the cache-write path on
+        // settle, but liveness here matters more than backfilling work
+        // every observer abandoned.
+        if (pending.subscribers <= 0 && inflight.get(key) === pending) {
+          inflight.delete(key);
+        }
       }
     }
 

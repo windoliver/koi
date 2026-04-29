@@ -302,6 +302,63 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     expect(cResult).toMatchObject({ ok: true, output: "shared", deduplicated: true });
   });
 
+  test("driver and all waiters abort before settle — retry drives a fresh spawn", async () => {
+    // Liveness: if every subscriber abandons the call before the factory
+    // settles, the inflight slot must be evicted so a retry doesn't
+    // attach to a Promise nobody is observing.
+    const cache = createSpawnResultCache(8);
+    let calls = 0;
+    let releaseStuck: () => void = () => {};
+    const stuckFactory = (): Promise<{ ok: true; output: string }> => {
+      calls += 1;
+      return new Promise((resolve) => {
+        releaseStuck = () => resolve({ ok: true, output: "stuck" });
+      });
+    };
+
+    const ctrlA = new AbortController();
+    const ctrlB = new AbortController();
+    const aPromise = cache.runDeduped("k", ctrlA.signal, stuckFactory);
+    const bPromise = cache.runDeduped("k", ctrlB.signal, stuckFactory);
+    await Promise.resolve();
+    ctrlA.abort(new Error("A timed out"));
+    ctrlB.abort(new Error("B timed out"));
+    await Promise.all([aPromise, bPromise]);
+
+    // Slot should be evicted now. A retry must drive a fresh factory.
+    const freshFactory = async (): Promise<{ ok: true; output: string }> => {
+      calls += 1;
+      return { ok: true, output: "fresh" };
+    };
+    const cResult = await cache.runDeduped("k", noAbort(), freshFactory);
+    expect(cResult).toMatchObject({ ok: true, output: "fresh" });
+    expect(calls).toBe(2); // one stuck + one fresh
+
+    // Cleanup: drain the orphan to avoid unhandled-rejection noise.
+    releaseStuck();
+  });
+
+  test("abort that fires between signal-aborted check and listener registration still rejects promptly", async () => {
+    // Construct an AbortSignal that fires during the synchronous
+    // callback of awaitWithAbort: aborting via a microtask after entering
+    // the runDeduped function but before the listener attaches to the
+    // signal. Race-free design must still reject the await.
+    const cache = createSpawnResultCache(8);
+    const ctrl = new AbortController();
+    const factory = (): Promise<{ ok: true; output: string }> =>
+      // Never settles in the test window.
+      new Promise(() => {});
+
+    // Schedule abort on the next microtask tick. runDeduped's first
+    // signal.aborted check runs synchronously before the abort fires;
+    // the listener is registered in the same microtask but a poorly-
+    // designed implementation could miss the abort that lands between.
+    const promise = cache.runDeduped("k", ctrl.signal, factory);
+    queueMicrotask(() => ctrl.abort(new Error("microtask abort")));
+    const result = await promise;
+    expect(result.ok).toBe(false);
+  });
+
   test("driver abort with NO waiters evicts the slot, letting the next retry drive a fresh spawn", async () => {
     // A drives alone, A aborts. No surviving waiters, so the slot is
     // evicted. A retry meant to replace A drives its own factory.
