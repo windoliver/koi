@@ -685,7 +685,11 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         const childId = spawnResult.childPid.id;
         const output =
           policy.kind === "on_demand" ? JSON.stringify({ delivery: "on_demand", childId }) : "";
-        return { ok: true, output };
+        // Non-streaming delivery returns success before the child finishes.
+        // Mark as non-cacheable so retry-dedup layers (e.g. @koi/spawn-tools
+        // SpawnResultCache) don't replay the placeholder admission and mask
+        // a later background failure. See L0 SpawnResult for the contract.
+        return { ok: true, output, cacheable: false };
       });
     }
 

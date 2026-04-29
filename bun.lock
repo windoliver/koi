@@ -748,6 +748,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
         "@koi/task-board": "workspace:*",
         "zod": "4.3.6",
       },
