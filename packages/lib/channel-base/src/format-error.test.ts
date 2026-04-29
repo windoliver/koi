@@ -258,22 +258,35 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(out.auth.unverifiedAuthorizationUrl).toBeUndefined();
     });
 
-    it("sanitizes and length-caps the auth scope (untrusted upstream input)", () => {
+    it("preserves URI-shaped OAuth scopes (informed consent)", () => {
+      // Real OAuth scopes are often URI-shaped — Google, Microsoft, AWS
+      // STS, etc. The sanitizer must NOT strip them.
       const err = baseError("AUTH_REQUIRED", "x", {
         context: {
           authorizationUrl: "https://issuer.example",
-          scope: "read @everyone https://attacker.example/pay `inject`",
+          scope: "https://www.googleapis.com/auth/drive.readonly api://resource/.default",
         },
       });
       const out = classifyErrorForChannel(err);
       if (out.kind !== "auth-required") throw new Error("expected auth-required");
-      // Mentions, URLs, and formatting sigils are stripped from scope so a
-      // hostile producer cannot smuggle them through the auth handoff.
+      expect(out.auth.scope).toBe(
+        "https://www.googleapis.com/auth/drive.readonly api://resource/.default",
+      );
+    });
+
+    it("strips control/bidi chars from auth scope (still rejects hostile invisible input)", () => {
+      const err = baseError("AUTH_REQUIRED", "x", {
+        context: {
+          authorizationUrl: "https://issuer.example",
+          scope: "drive\nread\x00‮hidden",
+        },
+      });
+      const out = classifyErrorForChannel(err);
+      if (out.kind !== "auth-required") throw new Error("expected auth-required");
       expect(out.auth.scope).toBeDefined();
-      expect(out.auth.scope).not.toContain("@");
-      expect(out.auth.scope).not.toContain("https://");
-      expect(out.auth.scope).not.toContain("attacker.example");
-      expect(out.auth.scope).not.toContain("`");
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: testing strip behavior
+      expect(out.auth.scope).not.toMatch(/[\x00-\x1f]/);
+      expect(out.auth.scope).not.toMatch(/‮/);
     });
 
     it("caps oversized auth scope with an ellipsis", () => {

@@ -150,18 +150,19 @@ function extractAuthHandoff(error: KoiError): {
   }
   const scope = (ctx as Record<string, unknown>).scope;
   if (typeof scope === "string") {
-    // Sanitize: strip ASCII/Unicode control chars and chat-formatting
-    // sigils so a hostile upstream cannot smuggle mentions, links, or
-    // bidi tricks through the auth handoff. Length-capped to bound
-    // attacker payload size.
+    // OAuth scopes are commonly URI-shaped identifiers (e.g.
+    // `https://www.googleapis.com/auth/drive`, `api://resource/.default`,
+    // provider-specific namespaces) — so we DO NOT run them through the
+    // chat-text URL/domain/formatting redactor used for VALIDATION
+    // safeText. That would erase legitimate scopes and break informed-
+    // consent UX. We only strip control / bidi chars (never legitimate
+    // in scope identifiers) and length-cap. Adapters that render scope
+    // MUST apply transport-specific escaping appropriate to the
+    // destination (HTML escape, Markdown escape, etc.).
     const sanitized = scope
       .normalize("NFC")
       .replace(CONTROL_CHARS, " ")
       .replace(UNICODE_CONTROL_CHARS, "")
-      .replace(URL_LIKE, "")
-      .replace(WWW_LIKE, "")
-      .replace(BARE_DOMAIN_LIKE, "")
-      .replace(FORMATTING_CHARS, "")
       .trim();
     if (sanitized.length > 0) {
       out.scope =
