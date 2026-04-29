@@ -4,7 +4,9 @@
  * Maps KoiErrorCode to fixed, user-friendly messages. Strictly user-safe by
  * construction: never reads `error.cause`, `error.context`, stack traces, or
  * — outside of `VALIDATION` — `error.message`. VALIDATION is the one
- * exception because its message is itself the user-relevant input feedback.
+ * exception because its message is itself the user-relevant input feedback;
+ * the message is sanitized through `sanitizeValidationMessage` before being
+ * concatenated into channel output.
  *
  * Notably this helper does NOT surface authorization URLs for
  * `AUTH_REQUIRED`. The channel-base layer cannot validate that a URL in
@@ -21,6 +23,32 @@
  */
 
 import type { KoiError, KoiErrorCode } from "@koi/core";
+
+const VALIDATION_MAX_LEN = 200;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: regex precisely targets ASCII control characters to strip them
+const CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
+const MARKDOWN_LINK_DELIMS = /[[\]()<>]/g;
+
+/**
+ * Sanitizes the VALIDATION message before it is concatenated into channel
+ * output. The message originates from validators whose text we don't fully
+ * control, so we:
+ *   - replace ASCII control characters with spaces — many channel transports
+ *     treat them as protocol delimiters or formatting escapes;
+ *   - strip the markdown autolink/inline-link delimiters `[`, `]`, `(`,
+ *     `)`, `<`, `>` so a hostile validator string cannot construct a
+ *     clickable link in markdown-rendering channels;
+ *   - cap the length so a pathological message cannot pin a channel.
+ *
+ * Per-channel adapters do their own format-specific escaping on top of this
+ * coarse channel-base safety net.
+ */
+function sanitizeValidationMessage(raw: string): string {
+  const stripped = raw.replace(CONTROL_CHARS, " ").replace(MARKDOWN_LINK_DELIMS, "");
+  return stripped.length > VALIDATION_MAX_LEN
+    ? `${stripped.slice(0, VALIDATION_MAX_LEN)}…`
+    : stripped;
+}
 
 const USER_MESSAGES: Readonly<Record<KoiErrorCode, string>> = {
   VALIDATION: "", // VALIDATION uses error.message directly (user-relevant input feedback)
@@ -43,7 +71,7 @@ const USER_MESSAGES: Readonly<Record<KoiErrorCode, string>> = {
  */
 export function formatErrorForChannel(error: KoiError): string {
   if (error.code === "VALIDATION") {
-    return `Invalid input: ${error.message}`;
+    return `Invalid input: ${sanitizeValidationMessage(error.message)}`;
   }
   return USER_MESSAGES[error.code];
 }

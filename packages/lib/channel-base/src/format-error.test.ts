@@ -16,6 +16,41 @@ describe("formatErrorForChannel", () => {
     expect(formatErrorForChannel(err)).toBe("Invalid input: field 'x' is required");
   });
 
+  describe("VALIDATION message sanitization", () => {
+    it("strips markdown link delimiters so hostile messages cannot inject clickable links", () => {
+      const err = baseError("VALIDATION", "click [here](https://evil.com) to fix");
+      const out = formatErrorForChannel(err);
+      expect(out).toBe("Invalid input: click herehttps://evil.com to fix");
+      expect(out).not.toContain("[");
+      expect(out).not.toContain("(");
+    });
+
+    it("strips angle-bracket autolink delimiters", () => {
+      const err = baseError("VALIDATION", "see <https://attacker.test> please");
+      const out = formatErrorForChannel(err);
+      expect(out).not.toContain("<");
+      expect(out).not.toContain(">");
+    });
+
+    it("replaces ASCII control characters with spaces", () => {
+      const err = baseError("VALIDATION", "bad\nfield\rname\x00here\x07!");
+      const out = formatErrorForChannel(err);
+      expect(out).toBe("Invalid input: bad field name here !");
+      expect(out).not.toContain("\n");
+      expect(out).not.toContain("\r");
+      expect(out).not.toContain("\x00");
+    });
+
+    it("caps long messages with an ellipsis", () => {
+      const long = "x".repeat(500);
+      const err = baseError("VALIDATION", long);
+      const out = formatErrorForChannel(err);
+      // "Invalid input: " (15 chars) + 200 sliced chars + "…"
+      expect(out.length).toBe(15 + 200 + 1);
+      expect(out.endsWith("…")).toBe(true);
+    });
+  });
+
   it("returns canned message for NOT_FOUND", () => {
     const err = baseError("NOT_FOUND", "user 123 missing");
     expect(formatErrorForChannel(err)).toBe("The requested resource was not found.");
