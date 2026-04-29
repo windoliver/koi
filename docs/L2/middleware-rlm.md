@@ -137,16 +137,20 @@ returns a `Result<RlmConfig, KoiError>`.
 
 `segmentRequest(request, maxChunkChars)`:
 
-1. Locate the largest user text block whose length exceeds `maxChunkChars`.
-2. If every user text block already fits, return `[request]` unchanged.
-3. Otherwise call `splitText(text, maxChunkChars)` which prefers paragraph
-   boundaries (`\n\n`), then line boundaries, and finally hard-cuts.
-4. Re-emit one `ModelRequest` per chunk with the **raw chunk text** replacing
+1. Find every user-role text block whose length exceeds `maxChunkChars`.
+   "User-role" matches the model adapter's `mapSenderIdToRole`: any
+   `senderId` that is not `assistant` or does not start with `system`.
+2. If none, return `[request]` unchanged.
+3. If exactly one, call `splitText(text, maxChunkChars)` (prefers
+   paragraph boundaries, then line boundaries, finally hard-cuts) and
+   emit one `ModelRequest` per chunk with the **raw chunk text** replacing
    the original block — no synthetic `Segment k/N:` prefix, so exact-copy
    and structured-transformation prompts remain byte-safe.
-5. **Recurse** on each produced segment so a request with multiple
-   oversized user text blocks fans out across the cross product of their
-   chunks instead of failing closed at re-validation.
+4. If more than one, throw `MultipleOversizedBlocksError`. A true
+   multi-block partition would require a reducer stage that is out of
+   scope here, and a cross-product fan-out would duplicate work and
+   corrupt reassembly. Combine the blocks upstream, raise `maxChunkChars`,
+   or compose with a compaction middleware.
 
 All other messages, the system prompt, and the tools list are carried
 verbatim. `splitText(text, maxChars)` is exported for unit testing and reuse.

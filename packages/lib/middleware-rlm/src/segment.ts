@@ -17,29 +17,61 @@ interface TargetLocation {
 }
 
 /**
- * Locate the longest user text block strictly larger than `minChars`.
- * Returns `undefined` when every user text block is already within bounds —
- * the caller signals "nothing left to chunk".
+ * True for any message that the model adapter treats as user-role content.
+ * Mirrors `mapSenderIdToRole`: everything except `assistant` and
+ * `system*` is user content, so middleware-authored senders such as
+ * `watch-patterns` and `user:1` are eligible for chunking just like
+ * literal `"user"` messages.
  */
-function findLargestOversizedTextBlock(
+function isUserRoleSender(senderId: string): boolean {
+  if (senderId === "assistant") return false;
+  if (senderId.startsWith("system")) return false;
+  return true;
+}
+
+/**
+ * Collect every user-role text block strictly larger than `minChars`,
+ * sorted longest-first. The caller decides whether to chunk the largest,
+ * fail closed because more than one oversized block exists, or pass the
+ * request through.
+ */
+function findOversizedTextBlocks(
   messages: readonly InboundMessage[],
   minChars: number,
-): TargetLocation | undefined {
-  let best: TargetLocation | undefined;
+): readonly TargetLocation[] {
+  const out: TargetLocation[] = [];
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg === undefined) continue;
-    if (msg.senderId !== "user") continue;
+    if (!isUserRoleSender(msg.senderId)) continue;
     for (let j = 0; j < msg.content.length; j++) {
       const block = msg.content[j];
       if (block === undefined || block.kind !== "text") continue;
       if (block.text.length <= minChars) continue;
-      if (best === undefined || block.text.length > best.text.length) {
-        best = { messageIndex: i, blockIndex: j, text: block.text };
-      }
+      out.push({ messageIndex: i, blockIndex: j, text: block.text });
     }
   }
-  return best;
+  return out.toSorted((a, b) => b.text.length - a.text.length);
+}
+
+/**
+ * Error thrown by `segmentRequest` when more than one user-role text block
+ * is over `maxChunkChars`. RLM's segmentation strategy can only partition
+ * one block at a time — fanning out across the cross product would
+ * duplicate content and answers, and a true multi-block partition would
+ * require an explicit reducer stage that is out of scope for this package.
+ */
+export class MultipleOversizedBlocksError extends Error {
+  readonly blockCount: number;
+  constructor(blockCount: number) {
+    super(
+      `RLM cannot segment requests with multiple oversized user text blocks (${String(
+        blockCount,
+      )} blocks > maxChunkChars). Fanning out across the cross product would duplicate work and corrupt reassembly. Combine the blocks upstream, raise maxChunkChars, or use a compaction middleware.`,
+    );
+    this.name = "MultipleOversizedBlocksError";
+    this.blockCount = blockCount;
+  }
 }
 
 /**
@@ -136,16 +168,16 @@ function replaceTextBlock(
 }
 
 /**
- * Segment a request into N requests by iteratively splitting every user text
- * block that exceeds `maxChunkChars`. The user payload is rewritten verbatim
- * with the chunk text only — no synthetic ordinal labels — so exact-copy and
- * structured-transformation prompts remain byte-safe.
+ * Segment a request into N requests by splitting the single user-role text
+ * block that exceeds `maxChunkChars`. The user payload is rewritten
+ * verbatim with the chunk text only — no synthetic ordinal labels — so
+ * exact-copy and structured-transformation prompts remain byte-safe.
  *
- * Recursion: after splitting the largest oversized block, every produced
- * segment is fed back through `segmentRequest`, so a request with multiple
- * oversized text blocks fans out into the cross product of their chunks
- * rather than rejecting valid multi-block input. Returns `[request]`
- * unchanged when every user text block already fits within `maxChunkChars`.
+ * Returns `[request]` unchanged when no user-role text block exceeds the
+ * chunk size. Throws {@link MultipleOversizedBlocksError} when more than
+ * one user-role text block does: a true partition across multiple blocks
+ * would require a reducer stage that is out of scope for this package,
+ * and a cross-product fan-out would duplicate content and answers.
  *
  * Per-segment ordinal information is intentionally not threaded into the
  * `ModelRequest` — the caller (RLM middleware) sees the flat list and
@@ -156,19 +188,17 @@ export function segmentRequest(
   request: ModelRequest,
   maxChunkChars: number,
 ): readonly ModelRequest[] {
-  const target = findLargestOversizedTextBlock(request.messages, maxChunkChars);
+  const oversized = findOversizedTextBlocks(request.messages, maxChunkChars);
+  if (oversized.length === 0) return [request];
+  if (oversized.length > 1) throw new MultipleOversizedBlocksError(oversized.length);
+
+  const target = oversized[0];
   if (target === undefined) return [request];
   const chunks = splitText(target.text, maxChunkChars);
   if (chunks.length <= 1) return [request];
 
-  const out: ModelRequest[] = [];
-  for (const chunk of chunks) {
+  return chunks.map((chunk) => {
     const messages = replaceTextBlock(request.messages, target, chunk);
-    const reduced: ModelRequest = { ...request, messages };
-    // The chunked block may not have been the only oversized one; recurse
-    // on this reduced request so multi-block oversized inputs fan out
-    // across every offending block instead of failing closed downstream.
-    for (const sub of segmentRequest(reduced, maxChunkChars)) out.push(sub);
-  }
-  return out;
+    return { ...request, messages };
+  });
 }

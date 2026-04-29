@@ -95,24 +95,39 @@ describe("segmentRequest", () => {
     expect(recovered).toBe(big);
   });
 
-  test("recursively segments multiple oversized user text blocks in one request", () => {
-    // Two large user blocks must both be split. Without recursion the
-    // unchunked block would push every produced segment back over the
-    // budget at re-validation time and cause an avoidable hard failure.
+  test("throws MultipleOversizedBlocksError when more than one user-role block exceeds maxChunkChars", () => {
+    // A true multi-block partition would require an explicit reducer
+    // stage. Cross-product fan-out would duplicate work and corrupt
+    // reassembly. Fail closed and ask the caller to combine upstream.
     const a = "a".repeat(300);
     const b = "b".repeat(200);
     const req = makeRequest([userMessage(a), userMessage(b)]);
+    expect(() => segmentRequest(req, 100)).toThrow(/multiple oversized/i);
+  });
+
+  test("treats non-literal user senders (e.g. 'user:1', 'watch-patterns') as user-role for chunk eligibility", () => {
+    // The model adapter normalizes anything except 'assistant' / 'system*'
+    // to user role. RLM must follow the same rule so middleware-authored
+    // turns and multi-user senders are not silently exempt from chunking.
+    const big = "p".repeat(300);
+    const customSender: InboundMessage = {
+      senderId: "watch-patterns",
+      timestamp: 0,
+      content: [{ kind: "text", text: big }],
+    };
+    const req = makeRequest([customSender]);
     const out = segmentRequest(req, 100);
-    // 3 chunks of A × 2 chunks of B = 6 segments
-    expect(out.length).toBe(6);
-    for (const seg of out) {
-      const aBlock = seg.messages[0]?.content[0];
-      const bBlock = seg.messages[1]?.content[0];
-      if (aBlock === undefined || aBlock.kind !== "text") throw new Error("expected text A");
-      if (bBlock === undefined || bBlock.kind !== "text") throw new Error("expected text B");
-      expect(aBlock.text.length).toBeLessThanOrEqual(100);
-      expect(bBlock.text.length).toBeLessThanOrEqual(100);
-    }
+    expect(out.length).toBeGreaterThan(1);
+  });
+
+  test("ignores oversized text blocks under system:* senders (handled by compaction, not RLM)", () => {
+    const sysMsg: InboundMessage = {
+      senderId: "system:root",
+      timestamp: 0,
+      content: [{ kind: "text", text: "z".repeat(500) }],
+    };
+    const req = makeRequest([sysMsg]);
+    expect(segmentRequest(req, 100)).toEqual([req]);
   });
 
   test("preserves system prompt, tools, and prior messages", () => {
