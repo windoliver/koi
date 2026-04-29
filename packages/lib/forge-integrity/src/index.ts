@@ -27,6 +27,7 @@ export {
   findDuplicateById,
   getParentBrickId,
   isDerivedFrom,
+  isDerivedFromUnchecked,
   MAX_LINEAGE_DEPTH,
 } from "./lineage.js";
 

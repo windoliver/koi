@@ -6,6 +6,7 @@ import {
   findDuplicateById,
   getParentBrickId,
   isDerivedFrom,
+  isDerivedFromUnchecked,
   MAX_LINEAGE_DEPTH,
 } from "./lineage.js";
 
@@ -58,9 +59,9 @@ describe("lineage", () => {
     const leaf = makeTool({ implementation: "v3", parentBrickId: mid.id });
     const store = fixtureStore([root, mid, leaf]);
 
-    expect((await isDerivedFrom(leaf, root.id, store)).kind).toBe("derived");
-    expect((await isDerivedFrom(leaf, mid.id, store)).kind).toBe("derived");
-    expect((await isDerivedFrom(mid, root.id, store)).kind).toBe("derived");
+    expect((await isDerivedFromUnchecked(leaf, root.id, store)).kind).toBe("derived");
+    expect((await isDerivedFromUnchecked(leaf, mid.id, store)).kind).toBe("derived");
+    expect((await isDerivedFromUnchecked(mid, root.id, store)).kind).toBe("derived");
   });
 
   test("isDerivedFrom returns not_derived for unrelated ancestor", async () => {
@@ -68,7 +69,7 @@ describe("lineage", () => {
     const other = makeTool({ implementation: "unrelated" });
     const child = makeTool({ implementation: "v2", parentBrickId: root.id });
     const store = fixtureStore([root, other, child]);
-    const result = await isDerivedFrom(child, other.id, store);
+    const result = await isDerivedFromUnchecked(child, other.id, store);
     expect(result.kind).toBe("not_derived");
   });
 
@@ -84,7 +85,7 @@ describe("lineage", () => {
       update: () => notImplemented(),
       exists: () => Promise.resolve({ ok: true, value: false }),
     };
-    const result = await isDerivedFrom(child, root.id, throwingStore);
+    const result = await isDerivedFromUnchecked(child, root.id, throwingStore);
     expect(result.kind).toBe("store_error");
     if (result.kind === "store_error") {
       expect(result.error.message).toContain("backend disposed");
@@ -101,7 +102,7 @@ describe("lineage", () => {
     const child = makeTool({ implementation: "v3", parentBrickId: mid.id });
     const transient: KoiError = { code: "INTERNAL", message: "store outage", retryable: true };
     const store = fixtureStore([], { loadError: transient });
-    const result = await isDerivedFrom(child, root.id, store);
+    const result = await isDerivedFromUnchecked(child, root.id, store);
     expect(result.kind).toBe("store_error");
     if (result.kind === "store_error") {
       expect(result.error).toBe(transient);
@@ -118,7 +119,7 @@ describe("lineage", () => {
     // rather than a generic store_error so callers can distinguish a
     // partial-store condition from a transport failure.
     const store = fixtureStore([root, child]);
-    const result = await isDerivedFrom(child, root.id, store);
+    const result = await isDerivedFromUnchecked(child, root.id, store);
     expect(result.kind).toBe("missing_link");
     if (result.kind === "missing_link") {
       expect(result.at).toBe(mid.id);
@@ -151,6 +152,29 @@ describe("lineage", () => {
 
   test("isDerivedFrom is bounded by MAX_LINEAGE_DEPTH", () => {
     expect(MAX_LINEAGE_DEPTH).toBeGreaterThan(0);
+  });
+
+  test("isDerivedFrom returns malformed for null/missing/wrong-shape options instead of throwing", async () => {
+    const root = makeTool();
+    const child = makeTool({ implementation: "v2", parentBrickId: root.id });
+    const store = fixtureStore([root]);
+    // null options
+    const r1 = await isDerivedFrom(child, root.id, store, null as unknown as never);
+    expect(r1.kind).toBe("malformed");
+    // empty object — both fields missing
+    const r2 = await isDerivedFrom(child, root.id, store, {} as unknown as never);
+    expect(r2.kind).toBe("malformed");
+    if (r2.kind === "malformed") expect(r2.reason).toContain("verify");
+    // missing producerBuilderId
+    const r3 = await isDerivedFrom(child, root.id, store, { verify } as unknown as never);
+    expect(r3.kind).toBe("malformed");
+    if (r3.kind === "malformed") expect(r3.reason).toContain("producerBuilderId");
+    // empty producerBuilderId
+    const r4 = await isDerivedFrom(child, root.id, store, {
+      verify,
+      producerBuilderId: "",
+    });
+    expect(r4.kind).toBe("malformed");
   });
 
   test("findDuplicateById detects verified content-equivalent brick within one producer", () => {
@@ -231,7 +255,7 @@ describe("lineage", () => {
   test("isDerivedFrom rejects non-canonical ancestor argument as malformed", async () => {
     const root = makeTool();
     const child = makeTool({ implementation: "v2", parentBrickId: root.id });
-    const result = await isDerivedFrom(
+    const result = await isDerivedFromUnchecked(
       child,
       "not-a-brick-id" as unknown as BrickId,
       fixtureStore([root]),
@@ -282,7 +306,7 @@ describe("lineage", () => {
       update: () => notImplemented(),
       exists: () => Promise.resolve({ ok: true, value: false }),
     };
-    const result = await isDerivedFrom(child, root.id, cacheConfusedStore);
+    const result = await isDerivedFromUnchecked(child, root.id, cacheConfusedStore);
     expect(result.kind).toBe("malformed");
     if (result.kind === "malformed") {
       expect(result.at).toBe(mid.id);
@@ -293,7 +317,7 @@ describe("lineage", () => {
   test("isDerivedFrom returns malformed when child has no provenance", async () => {
     const broken = { id: "sha256:zzz" } as unknown as BrickArtifact;
     const root = makeTool();
-    const result = await isDerivedFrom(broken, root.id, fixtureStore([root]));
+    const result = await isDerivedFromUnchecked(broken, root.id, fixtureStore([root]));
     expect(result.kind).toBe("malformed");
   });
 
@@ -304,7 +328,7 @@ describe("lineage", () => {
     // Replace `mid` in the store with a corrupt record (missing provenance).
     const corruptMid = { ...mid, provenance: undefined } as unknown as BrickArtifact;
     const store = fixtureStore([root, corruptMid, child]);
-    const result = await isDerivedFrom(child, root.id, store);
+    const result = await isDerivedFromUnchecked(child, root.id, store);
     expect(result.kind).toBe("malformed");
     if (result.kind === "malformed") expect(result.at).toBe(mid.id);
   });

@@ -86,21 +86,63 @@ function inspectLineageShape(brick: BrickArtifact): LineageShape {
 
 /**
  * Walks the `parentBrickId` chain upwards from `child` to determine whether
- * `ancestor` is in its lineage. Surfaces the reason for a non-positive
- * answer so callers can distinguish a true non-lineage relationship from a
- * store outage, a depth overrun, a malformed record, a cycle, or a failed
- * integrity check on a loaded ancestor.
+ * `ancestor` is in its lineage, integrity-verifying every brick along the
+ * way. Surfaces the reason for a non-positive answer so callers can
+ * distinguish a true non-lineage relationship from a store outage, a depth
+ * overrun, a malformed record, a cycle, or a failed integrity check.
  *
- * Pass `options.verify` + `options.producerBuilderId` to integrity-verify
- * each loaded ancestor before its `parentBrickId` is trusted. Without
- * verification, a stale/corrupt/adversarial record stored under a real
- * brick id could rewrite its parent pointer and silently mislead the walk.
+ * `options.verify` + `options.producerBuilderId` are REQUIRED. The child is
+ * verified under `producerBuilderId`; each loaded ancestor is verified
+ * under its own claimed builder.id. Use `isDerivedFromUnchecked` only if
+ * you have an explicit, audited reason to skip integrity verification — a
+ * stale/corrupt/adversarial record stored under a real brick id can
+ * rewrite its parent pointer and silently mislead an unverified walk.
  */
 export async function isDerivedFrom(
   child: BrickArtifact,
   ancestor: BrickId,
   store: ForgeStore,
-  options?: IsDerivedFromOptions,
+  options: IsDerivedFromOptions,
+): Promise<LineageOutcome> {
+  const optionsCheck = validateOptions(options);
+  if (optionsCheck !== undefined) return optionsCheck;
+  return walk(child, ancestor, store, options);
+}
+
+/**
+ * Unverified lineage walk — the legacy 3-arg form. Caller MUST treat the
+ * result as untrusted. Intended only for narrow contexts (debug tools,
+ * UI hints, pre-verification triage) where the caller does not gate
+ * policy/dedup decisions on the outcome. Production trust paths must use
+ * `isDerivedFrom`.
+ */
+export async function isDerivedFromUnchecked(
+  child: BrickArtifact,
+  ancestor: BrickId,
+  store: ForgeStore,
+): Promise<LineageOutcome> {
+  return walk(child, ancestor, store, undefined);
+}
+
+function validateOptions(options: unknown): LineageOutcome | undefined {
+  if (options === null || typeof options !== "object") {
+    return { kind: "malformed", reason: "options is not an object" };
+  }
+  const o = options as Partial<IsDerivedFromOptions>;
+  if (typeof o.verify !== "function") {
+    return { kind: "malformed", reason: "options.verify is not a function" };
+  }
+  if (typeof o.producerBuilderId !== "string" || o.producerBuilderId.length === 0) {
+    return { kind: "malformed", reason: "options.producerBuilderId must be a non-empty string" };
+  }
+  return undefined;
+}
+
+async function walk(
+  child: BrickArtifact,
+  ancestor: BrickId,
+  store: ForgeStore,
+  options: IsDerivedFromOptions | undefined,
 ): Promise<LineageOutcome> {
   if (typeof ancestor !== "string" || !isBrickId(ancestor)) {
     return { kind: "malformed", reason: "ancestor is not a canonical BrickId" };
