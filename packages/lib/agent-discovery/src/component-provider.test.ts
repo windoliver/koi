@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Agent, AgentManifest, ExternalAgentDescriptor, SubsystemToken } from "@koi/core";
-import { EXTERNAL_AGENTS, agentId, isAttachResult, toolToken } from "@koi/core";
+import { agentId, EXTERNAL_AGENTS, isAttachResult, toolToken } from "@koi/core";
 import { createDiscoveryProvider } from "./component-provider.js";
 import type { SystemCalls } from "./types.js";
 

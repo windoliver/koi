@@ -15551,3 +15551,78 @@ describe("Golden: @koi/agent-procfs", () => {
     expect(names).toContain("metrics");
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/agent-discovery (2 queries)
+//
+// Standalone — no cassette replay. Validates createDiscoveryProvider attaches
+// the discover_agents tool + EXTERNAL_AGENTS singleton, and dedup priority
+// (MCP > filesystem > PATH) per docs/L2/agent-discovery.md.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/agent-discovery", () => {
+  test("provider attaches discover_agents tool + EXTERNAL_AGENTS", async () => {
+    const { createDiscoveryProvider } = await import("@koi/agent-discovery");
+    const { EXTERNAL_AGENTS, isAttachResult, toolToken, agentId } = await import("@koi/core");
+
+    const fakeAgent = {
+      pid: { id: agentId("golden-disc"), name: "golden", type: "worker", depth: 0 },
+      manifest: { name: "golden", description: "test" },
+      state: "running",
+      component: () => undefined,
+      has: () => false,
+      hasAll: () => false,
+      query: () => new Map(),
+      components: () => new Map(),
+    };
+
+    const provider = createDiscoveryProvider({
+      systemCalls: {
+        which: async (b: string) => (b === "claude" ? "/bin/claude" : null),
+        readDir: async () => [],
+        readFile: async () => "",
+        spawn: async () => ({ stdout: "", exitCode: 0 }),
+      },
+    });
+    const result = await provider.attach(fakeAgent as never);
+    const map = isAttachResult(result) ? result.components : result;
+    expect(map.has(toolToken("discover_agents"))).toBe(true);
+    expect(map.has(EXTERNAL_AGENTS)).toBe(true);
+  });
+
+  test("dedup-by-name: MCP source wins over PATH", async () => {
+    const { createDiscovery, createPathSource, createMcpSource } = await import(
+      "@koi/agent-discovery"
+    );
+
+    const path = createPathSource({
+      knownAgents: [
+        {
+          name: "shared",
+          binaries: ["shared"],
+          capabilities: [],
+          transport: "cli",
+        },
+      ],
+      systemCalls: {
+        which: async (b: string) => (b === "shared" ? "/bin/shared" : null),
+        readDir: async () => [],
+        readFile: async () => "",
+        spawn: async () => ({ stdout: "", exitCode: 0 }),
+      },
+    });
+    const mcp = createMcpSource([
+      {
+        name: "shared",
+        listTools: async () => ({
+          ok: true as const,
+          value: [{ name: "code_assist" }],
+        }),
+      },
+    ]);
+    const discovery = createDiscovery([path, mcp], 1000);
+    const agents = await discovery.discover();
+    const shared = agents.find((a) => a.name === "shared");
+    expect(shared?.source).toBe("mcp");
+  });
+});
