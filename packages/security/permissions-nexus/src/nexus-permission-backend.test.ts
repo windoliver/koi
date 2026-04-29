@@ -477,3 +477,155 @@ describe("createNexusPermissionBackend", () => {
     backend.dispose();
   });
 });
+
+describe("boot helpers (#1401)", () => {
+  test("isCentralizedPolicyActive=false on transport error", async () => {
+    const backend = createNexusPermissionBackend({
+      transport: makeTransport(async () => timeoutResult()),
+      localBackend: makeLocalBackend(),
+      rebuildBackend: () => makeLocalBackend(),
+      syncIntervalMs: 0,
+    });
+    await backend.ready;
+    expect(backend.isCentralizedPolicyActive()).toBe(false);
+    backend.dispose();
+  });
+
+  test("isCentralizedPolicyActive=false when version.json missing", async () => {
+    const backend = createNexusPermissionBackend({
+      transport: makeTransport(async () => notFoundResult()),
+      localBackend: makeLocalBackend(),
+      rebuildBackend: () => makeLocalBackend(),
+      syncIntervalMs: 0,
+    });
+    await backend.ready;
+    expect(backend.isCentralizedPolicyActive()).toBe(false);
+    backend.dispose();
+  });
+
+  test("isCentralizedPolicyActive=true on successful policy load", async () => {
+    const backend = createNexusPermissionBackend({
+      transport: makeTransport(async (_method, params) => {
+        const path = params.path as string;
+        if (path.endsWith("version.json")) return okResult(VERSION_JSON);
+        if (path.endsWith("policy.json")) return okResult(POLICY_JSON);
+        return notFoundResult();
+      }),
+      localBackend: makeLocalBackend(),
+      rebuildBackend: () => makeLocalBackend(),
+      syncIntervalMs: 0,
+    });
+    await backend.ready;
+    expect(backend.isCentralizedPolicyActive()).toBe(true);
+    backend.dispose();
+  });
+
+  test("isCentralizedPolicyActive=false on supportsDefaultDenyMarker mismatch", async () => {
+    const localBackend: PermissionBackend = {
+      check: () => ALLOW,
+      supportsDefaultDenyMarker: true,
+    };
+    const backend = createNexusPermissionBackend({
+      transport: makeTransport(async (_method, params) => {
+        const path = params.path as string;
+        if (path.endsWith("version.json")) return okResult(VERSION_JSON);
+        if (path.endsWith("policy.json")) return okResult(POLICY_JSON);
+        return notFoundResult();
+      }),
+      localBackend,
+      // rebuilt backend has supportsDefaultDenyMarker=undefined → mismatch
+      rebuildBackend: () => ({ check: () => ALLOW }),
+      syncIntervalMs: 0,
+    });
+    await backend.ready;
+    expect(backend.isCentralizedPolicyActive()).toBe(false);
+    backend.dispose();
+  });
+
+  test("bootSyncDeadlineMs is threaded to transport.call as opts.deadlineMs", async () => {
+    const observed: Array<{ readonly path: string; readonly opts: unknown }> = [];
+    const backend = createNexusPermissionBackend({
+      transport: {
+        call: (async (_method: string, params: CallArgs, opts?: unknown) => {
+          observed.push({ path: params.path as string, opts: opts ?? null });
+          return notFoundResult();
+        }) as NexusTransport["call"],
+        close: () => {},
+      },
+      localBackend: makeLocalBackend(),
+      rebuildBackend: () => makeLocalBackend(),
+      syncIntervalMs: 0,
+      bootSyncDeadlineMs: 1234,
+    });
+    await backend.ready;
+    expect(observed.length).toBeGreaterThan(0);
+    expect(observed[0]?.opts).toEqual({ deadlineMs: 1234 });
+    backend.dispose();
+  });
+
+  test("abortInFlightSync prevents late initializePolicy from activating", async () => {
+    let releaseVersion: ((v: Result<string, KoiError>) => void) | undefined;
+    const versionPromise = new Promise<Result<string, KoiError>>((resolve) => {
+      releaseVersion = resolve;
+    });
+    const backend = createNexusPermissionBackend({
+      transport: {
+        call: (async (_method: string, params: CallArgs) => {
+          if ((params.path as string).endsWith("version.json")) return versionPromise;
+          return okResult(POLICY_JSON);
+        }) as NexusTransport["call"],
+        close: () => {},
+      },
+      localBackend: makeLocalBackend(),
+      rebuildBackend: () => makeLocalBackend(),
+      syncIntervalMs: 0,
+    });
+    // Abort BEFORE the version read resolves
+    backend.abortInFlightSync();
+    // Now release the late reply
+    releaseVersion!(okResult(VERSION_JSON));
+    await backend.ready;
+    expect(backend.isCentralizedPolicyActive()).toBe(false);
+    backend.dispose();
+  });
+
+  test("dispose also sets the abort guard", async () => {
+    let releaseVersion: ((v: Result<string, KoiError>) => void) | undefined;
+    const versionPromise = new Promise<Result<string, KoiError>>((resolve) => {
+      releaseVersion = resolve;
+    });
+    const backend = createNexusPermissionBackend({
+      transport: {
+        call: (async (_method: string, params: CallArgs) => {
+          if ((params.path as string).endsWith("version.json")) return versionPromise;
+          return okResult(POLICY_JSON);
+        }) as NexusTransport["call"],
+        close: () => {},
+      },
+      localBackend: makeLocalBackend(),
+      rebuildBackend: () => makeLocalBackend(),
+      syncIntervalMs: 0,
+    });
+    backend.dispose();
+    releaseVersion!(okResult(VERSION_JSON));
+    await backend.ready;
+    expect(backend.isCentralizedPolicyActive()).toBe(false);
+  });
+
+  test("malformed version payload leaves activation false but does not throw", async () => {
+    const backend = createNexusPermissionBackend({
+      transport: makeTransport(async (_method, params) => {
+        const path = params.path as string;
+        if (path.endsWith("version.json")) return okResult("not json{{");
+        if (path.endsWith("policy.json")) return okResult(POLICY_JSON);
+        return notFoundResult();
+      }),
+      localBackend: makeLocalBackend(),
+      rebuildBackend: () => makeLocalBackend(),
+      syncIntervalMs: 0,
+    });
+    await backend.ready;
+    expect(backend.isCentralizedPolicyActive()).toBe(false);
+    backend.dispose();
+  });
+});
