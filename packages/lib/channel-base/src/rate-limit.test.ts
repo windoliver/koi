@@ -229,6 +229,32 @@ describe("createRateLimiter", () => {
       expect(sleepSpy).toHaveBeenCalledWith(25);
     });
 
+    it("opt-in TIMEOUT retries honor server-provided retryAfterMs", async () => {
+      // Regression: loop-5 round 9 finding 3. When a caller opts TIMEOUT
+      // into retry (because they have provider-side idempotency), the
+      // built-in extractor must surface a `retryAfterMs` hint so the
+      // server-requested cooldown is honored instead of falling back
+      // to local backoff and hammering the provider.
+      const limiter = createRateLimiter({
+        retry: {
+          ...errors.DEFAULT_RETRY_CONFIG,
+          maxRetries: 1,
+          jitter: false,
+          maxBackoffMs: 120_000,
+        },
+        isRetryable: (e) =>
+          typeof e === "object" && e !== null && (e as { code?: string }).code === "TIMEOUT",
+      });
+      let attempts = 0;
+      await limiter.enqueue(async () => {
+        attempts++;
+        if (attempts < 2)
+          throw koiError({ code: "TIMEOUT", retryAfterMs: 60_000, retryable: true });
+      });
+      expect(attempts).toBe(2);
+      expect(sleepSpy).toHaveBeenCalledWith(60_000);
+    });
+
     it("does not auto-retry TIMEOUT — request status is unknown", async () => {
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },

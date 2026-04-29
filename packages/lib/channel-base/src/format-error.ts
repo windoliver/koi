@@ -88,7 +88,9 @@ const TLD_ALLOWLIST = [
   "gov",
   "mil",
   "int",
-  // major ccTLDs
+  // major ccTLDs (kept as a curated set rather than a full public-suffix
+  // dataset to avoid the dependency; covers the autolink-bait long tail
+  // commonly seen in phishing — bit.ly, discord.gg, foo.sh, bar.fm, etc.)
   "uk",
   "us",
   "ca",
@@ -126,12 +128,61 @@ const TLD_ALLOWLIST = [
   "sg",
   "my",
   "th",
-  "id",
   "ph",
   "vn",
   "tw",
   "hk",
   "nz",
+  // ccTLDs commonly used as link-shorteners or autolink-bait
+  "ly",
+  "gg",
+  "sh",
+  "fm",
+  "gl",
+  "ws",
+  "to",
+  "cc",
+  "ms",
+  "gd",
+  "tt",
+  "bz",
+  "ar",
+  "cl",
+  "pe",
+  "ec",
+  "pr",
+  "ve",
+  "uy",
+  "py",
+  "do",
+  "kw",
+  "sa",
+  "qa",
+  "ke",
+  "tz",
+  "eg",
+  "ma",
+  "is",
+  "ee",
+  "lv",
+  "lt",
+  "si",
+  "sk",
+  "hr",
+  "bg",
+  "ro",
+  "ua",
+  "by",
+  "kz",
+  "uz",
+  "ge",
+  "am",
+  "az",
+  "lk",
+  "bd",
+  "pk",
+  "np",
+  "mn",
 ] as const;
 const TLD_PATTERN = TLD_ALLOWLIST.join("|");
 const BARE_DOMAIN_LIKE = new RegExp(
@@ -246,12 +297,26 @@ function extractAuthHandoff(error: KoiError): {
     // displayed. Adapters that need full granular display must consume
     // the original error.context themselves under their trust policy.
     const allowedToken = /^[A-Za-z0-9:/.\-_+=?&#~]+$/;
+    // Schemes allowed on URI-shaped scope tokens. https and api:// cover
+    // the common OAuth scope forms (Google, Azure AD, Microsoft Graph,
+    // Salesforce, urn:ietf:params:oauth:...). Anything else is rejected:
+    // raw `http://...`, `javascript:`, `data:`, `file:`, custom app
+    // schemes — those autolink or trigger client actions on common chat
+    // surfaces and have no business in a consent-UX scope list.
+    const URI_TOKEN_ALLOWED_SCHEMES = new Set(["https", "api", "urn"]);
+    const isAllowedScopeToken = (t: string): boolean => {
+      if (!allowedToken.test(t)) return false;
+      const colonIdx = t.indexOf(":");
+      if (colonIdx === -1) return true;
+      const scheme = t.slice(0, colonIdx).toLowerCase();
+      return URI_TOKEN_ALLOWED_SCHEMES.has(scheme);
+    };
     const normalized = scope
       .normalize("NFC")
       .replace(CONTROL_CHARS, " ")
       .replace(UNICODE_CONTROL_CHARS, "");
     const tokens = normalized.split(/\s+/).filter((t) => t.length > 0);
-    const allValid = tokens.length > 0 && tokens.every((t) => allowedToken.test(t));
+    const allValid = tokens.length > 0 && tokens.every((t) => isAllowedScopeToken(t));
     if (allValid) {
       const joined = tokens.join(" ");
       // Reject (do not truncate) when the full scope cannot fit. A

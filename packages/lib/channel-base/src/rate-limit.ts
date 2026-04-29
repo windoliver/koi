@@ -168,6 +168,18 @@ interface QueueEntry {
  *   - EXTERNAL           → defaults to retryable=false in RETRYABLE_DEFAULTS; opt-in via callback.
  */
 const TRANSPORT_RETRY_CODES: ReadonlySet<KoiErrorCode> = new Set<KoiErrorCode>(["RATE_LIMIT"]);
+// Codes for which the default extractor honors a server-provided
+// `retryAfterMs` hint. Wider than TRANSPORT_RETRY_CODES so that callers
+// who opt TIMEOUT into retry (via a custom isRetryable predicate, when
+// they have provider-side idempotency) automatically get the
+// server-requested cooldown instead of falling back to local backoff.
+// Without this, a `{ code: "TIMEOUT", retryable: true, retryAfterMs: 60_000 }`
+// from a transport that explicitly said "wait 60s" would still replay
+// after only the computed backoff and hammer the struggling provider.
+const RETRY_AFTER_HINT_CODES: ReadonlySet<KoiErrorCode> = new Set<KoiErrorCode>([
+  "RATE_LIMIT",
+  "TIMEOUT",
+]);
 
 /** Returns the retry-after hint only when it is a finite, non-negative number. */
 const sanitizeRetryAfterMs = (raw: unknown): number | undefined => {
@@ -178,7 +190,7 @@ const sanitizeRetryAfterMs = (raw: unknown): number | undefined => {
 
 const defaultExtractRetryAfterMs = (error: unknown): number | undefined => {
   if (!isKoiError(error)) return undefined;
-  if (!TRANSPORT_RETRY_CODES.has(error.code)) return undefined;
+  if (!RETRY_AFTER_HINT_CODES.has(error.code)) return undefined;
   return sanitizeRetryAfterMs(error.retryAfterMs);
 };
 

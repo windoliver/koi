@@ -336,6 +336,31 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(out.auth.scope).toBeUndefined();
     });
 
+    it("rejects scope tokens whose scheme is not on the allowlist (https/api/urn)", () => {
+      // Regression: loop-5 round 9 finding 2. Bare `http://...`,
+      // `javascript:`, `data:`, custom app schemes can autolink or
+      // trigger client actions; they have no place in a consent-UX
+      // scope list. Reject the whole field if any token uses a
+      // non-allowlisted scheme.
+      const cases = [
+        "http://evil.example/x",
+        "javascript:alert(1)",
+        "data:text/html,<x>",
+        "vscode://settings",
+      ];
+      for (const bad of cases) {
+        const err = baseError("AUTH_REQUIRED", "x", {
+          context: {
+            authorizationUrl: "https://issuer.example",
+            scope: `read ${bad} email`,
+          },
+        });
+        const out = classifyErrorForChannel(err);
+        if (out.kind !== "auth-required") throw new Error("expected auth-required");
+        expect(out.auth.scope).toBeUndefined();
+      }
+    });
+
     it("omits scope when ANY token fails validation (no partial display)", () => {
       // Regression: loop-5 round 5. Mixed valid/invalid tokens must
       // never produce a misleading subset. Drop the whole field.
