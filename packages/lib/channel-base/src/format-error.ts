@@ -150,20 +150,23 @@ function extractAuthHandoff(error: KoiError): {
   }
   const scope = (ctx as Record<string, unknown>).scope;
   if (typeof scope === "string") {
-    // OAuth scopes are commonly URI-shaped identifiers (e.g.
-    // `https://www.googleapis.com/auth/drive`, `api://resource/.default`,
-    // provider-specific namespaces) — so we DO NOT run them through the
-    // chat-text URL/domain/formatting redactor used for VALIDATION
-    // safeText. That would erase legitimate scopes and break informed-
-    // consent UX. We only strip control / bidi chars (never legitimate
-    // in scope identifiers) and length-cap. Adapters that render scope
-    // MUST apply transport-specific escaping appropriate to the
-    // destination (HTML escape, Markdown escape, etc.).
-    const sanitized = scope
+    // OAuth scopes are space-separated tokens. Each token may be a
+    // simple word (`read`, `email`) or a URI-shaped identifier
+    // (`https://www.googleapis.com/auth/drive`, `api://resource/.default`).
+    // We tokenize and admit ONLY tokens whose chars are valid in real
+    // OAuth scopes: alphanumeric plus `: / . - _ + = ? & # ~`. This
+    // preserves legitimate URI scopes while rejecting tokens that carry
+    // chat-formatting payloads (`@everyone`, backticks, mentions,
+    // markdown sigils, etc.) — the trust-boundary protection adapters
+    // rely on when rendering this into an OAuth consent prompt.
+    const allowedToken = /^[A-Za-z0-9:/.\-_+=?&#~]+$/;
+    const tokens = scope
       .normalize("NFC")
       .replace(CONTROL_CHARS, " ")
       .replace(UNICODE_CONTROL_CHARS, "")
-      .trim();
+      .split(/\s+/)
+      .filter((t) => t.length > 0 && allowedToken.test(t));
+    const sanitized = tokens.join(" ");
     if (sanitized.length > 0) {
       out.scope =
         sanitized.length > SCOPE_MAX_LEN ? `${sanitized.slice(0, SCOPE_MAX_LEN)}…` : sanitized;
