@@ -302,10 +302,18 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         } catch {
           // observer hook misbehaved — keep the queue moving
         }
+        // `context.phase: "deadline-exceeded"` tells callers this is the
+        // local watchdog firing (delivery status unknown) rather than a
+        // transport-reported TIMEOUT response. The eventual real outcome
+        // — late success or late terminal error — surfaces through the
+        // `onLateSuccess` / `onLateFailure` telemetry hooks. Adapters
+        // that need the actual classification (e.g. converting a late
+        // PERMISSION into a non-retry) should subscribe to those.
         const timeoutError: KoiError = {
           code: "TIMEOUT",
           message: `channel send did not settle within ${sendTimeoutMs}ms`,
           retryable: false,
+          context: { phase: "deadline-exceeded" },
         };
         reject(timeoutError);
       }, sendTimeoutMs);

@@ -20,7 +20,7 @@ describe("classifyErrorForChannel discriminated output", () => {
     });
   });
 
-  it("returns kind:'auth-required' with the original error for AUTH_REQUIRED", () => {
+  it("returns kind:'auth-required' with narrowed auth handoff for AUTH_REQUIRED", () => {
     const err = baseError("AUTH_REQUIRED", "oauth needed", {
       context: { authorizationUrl: "https://issuer.example/oauth" },
     });
@@ -28,7 +28,7 @@ describe("classifyErrorForChannel discriminated output", () => {
     expect(out.kind).toBe("auth-required");
     if (out.kind === "auth-required") {
       expect(out.safeText).toBe("Authorization is required to continue.");
-      expect(out.error).toBe(err);
+      expect(out.auth.authorizationUrl).toBe("https://issuer.example/oauth");
     }
   });
 
@@ -138,16 +138,45 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(out.safeText).not.toContain("attacker.example");
     });
 
-    it("delivers the original error so the adapter can read context", () => {
+    it("delivers a narrowed auth handoff with only candidate-safe fields", () => {
       const err = baseError("AUTH_REQUIRED", "oauth needed", {
         context: { authorizationUrl: "https://issuer.example", scope: "read" },
       });
       const out = classifyErrorForChannel(err);
       if (out.kind !== "auth-required") throw new Error("expected auth-required");
-      expect(out.error.context).toEqual({
+      expect(out.auth).toEqual({
         authorizationUrl: "https://issuer.example",
         scope: "read",
       });
+    });
+
+    it("does not expose error.message, cause, or unrelated context fields", () => {
+      const err = baseError("AUTH_REQUIRED", "secret-internal-message", {
+        context: {
+          authorizationUrl: "https://issuer.example",
+          userId: "secret-user",
+          internalToken: "secret-token",
+        },
+        cause: new Error("secret stack trace"),
+      });
+      const out = classifyErrorForChannel(err);
+      if (out.kind !== "auth-required") throw new Error("expected auth-required");
+      const serialized = JSON.stringify(out);
+      expect(serialized).not.toContain("secret-internal-message");
+      expect(serialized).not.toContain("secret-user");
+      expect(serialized).not.toContain("secret-token");
+      expect(serialized).not.toContain("secret stack trace");
+      // No raw `error` field on the discriminant — only `auth` is exposed.
+      expect(out).not.toHaveProperty("error");
+    });
+
+    it("returns an empty auth object when context has no candidate-safe fields", () => {
+      const err = baseError("AUTH_REQUIRED", "x", {
+        context: { unrelated: "value" },
+      });
+      const out = classifyErrorForChannel(err);
+      if (out.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(out.auth).toEqual({});
     });
   });
 

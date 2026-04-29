@@ -87,6 +87,26 @@ function sanitizeValidationMessage(raw: string): string {
 }
 
 /**
+ * Extracts the candidate-safe auth handoff fields from a KoiError context.
+ * Returns only `authorizationUrl` and `scope` when present as strings, so
+ * the discriminated `auth-required` payload can never accidentally leak
+ * other context fields (user IDs, internal tokens, etc.) into adapter UX.
+ */
+function extractAuthHandoff(error: KoiError): {
+  readonly authorizationUrl?: string;
+  readonly scope?: string;
+} {
+  const ctx = error.context;
+  if (ctx === undefined || ctx === null || typeof ctx !== "object") return {};
+  const out: { authorizationUrl?: string; scope?: string } = {};
+  const url = (ctx as Record<string, unknown>).authorizationUrl;
+  if (typeof url === "string") out.authorizationUrl = url;
+  const scope = (ctx as Record<string, unknown>).scope;
+  if (typeof scope === "string") out.scope = scope;
+  return out;
+}
+
+/**
  * Fallback message for unknown error codes — version skew (newer producer,
  * deserialized remote error, forward-compat path) must never collapse to
  * undefined or empty user output.
@@ -134,8 +154,19 @@ export type ChannelErrorOutput =
       readonly kind: "auth-required";
       /** Canned fallback when the adapter has no auth UX path. */
       readonly safeText: string;
-      /** Original error for the adapter to inspect for auth metadata. */
-      readonly error: KoiError;
+      /**
+       * Narrowed handoff payload. Only fields the channel-base layer
+       * deems candidate-safe are exposed; the original `error.message`,
+       * `error.cause`, and `error.context` (other than the documented
+       * fields below) are deliberately withheld so adapters cannot
+       * accidentally render unsafe text. Adapters MUST still validate
+       * `authorizationUrl` against their own tenant trust configuration
+       * before rendering it as a clickable link.
+       */
+      readonly auth: {
+        readonly authorizationUrl?: string;
+        readonly scope?: string;
+      };
     };
 
 /**
@@ -158,7 +189,7 @@ export function classifyErrorForChannel(error: KoiError): ChannelErrorOutput {
     return {
       kind: "auth-required",
       safeText: USER_MESSAGES.AUTH_REQUIRED,
-      error,
+      auth: extractAuthHandoff(error),
     };
   }
   // Use Object.hasOwn to fall back safely on unrecognized codes (version
