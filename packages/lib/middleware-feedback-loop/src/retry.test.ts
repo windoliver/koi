@@ -132,11 +132,47 @@ describe("runWithRetry", () => {
     expect(calls).toBe(2);
   });
 
-  it("retries partial-cause TIMEOUT with no retryable field (inherits code default)", async () => {
+  it("does NOT retry partial-cause TIMEOUT without explicit retryable opt-in", async () => {
+    // Regression: loop-6 round 3 finding 2. TIMEOUT delivery state is
+    // unknown after a watchdog deadline — the first attempt may have
+    // landed server-side and only the response path failed. Inferring
+    // retryability from `code: "TIMEOUT"` alone could duplicate
+    // non-idempotent model requests, tool calls, or billable operations.
+    // Transport default-set is RATE_LIMIT only; TIMEOUT requires
+    // producer-supplied `retryable: true` (or a full KoiError with
+    // `phase` metadata proving idempotency).
+    let calls = 0;
+    const err = new Error("504", { cause: { code: "TIMEOUT" } });
+    const next = mock(async () => {
+      calls++;
+      if (calls === 1) throw err;
+      return goodResponse;
+    });
+    let thrown: unknown;
+    try {
+      await runWithRetry(baseRequest, next, {
+        validators: [],
+        gates: [],
+        repairStrategy: defaultRepairStrategy,
+        validationMaxAttempts: 3,
+        transportMaxAttempts: 2,
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBe(err);
+    expect(calls).toBe(1);
+  });
+
+  it("DOES retry partial-cause TIMEOUT when producer explicitly sets retryable: true", async () => {
+    // The opt-in path: when the producer can prove the request is
+    // idempotent (or has some other safety guarantee), they signal it
+    // by setting `retryable: true` on the partial cause. The transport
+    // then inherits that explicit decision instead of refusing.
     let calls = 0;
     const next = mock(async () => {
       calls++;
-      if (calls === 1) throw new Error("504", { cause: { code: "TIMEOUT" } });
+      if (calls === 1) throw new Error("504", { cause: { code: "TIMEOUT", retryable: true } });
       return goodResponse;
     });
     const result = await runWithRetry(baseRequest, next, {

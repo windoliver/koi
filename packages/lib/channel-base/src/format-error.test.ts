@@ -116,19 +116,42 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(safeText("visit static.cdn.evil.health")).toBe("Invalid input: visit link removed");
     });
 
-    it("preserves dotted identifiers commonly used in validation messages", () => {
-      // Regression: loop-5 round 7 finding 2. Recovery info must survive
-      // because identifier-shaped trailing segments are NOT in the TLD
-      // allowlist (email, profile, items, sku, timeout, password, etc.).
+    it("preserves identifier paths that carry an underscore marker", () => {
+      // Loop-6 round 3 tightening: only an underscore is a reliable,
+      // TLD- and DNS-immune marker. RFC 1035 forbids `_` in DNS hostname
+      // labels, so any dotted token with an underscore cannot be a real
+      // hostname. Digits and hyphens are NOT enough (`cdn1.example.com`,
+      // `my-store.com` are valid hostnames). Adapters that need
+      // full-fidelity dotted-field UX without underscores should consume
+      // `KoiError.context` directly.
+      expect(safeText("invalid users[0].email_address")).toBe(
+        "Invalid input: invalid users0.email_address",
+      );
+      expect(safeText("config_v2.http_timeout out of range")).toBe(
+        "Invalid input: config_v2.http_timeout out of range",
+      );
+      expect(safeText("missing payload.items[0].sku_id")).toBe(
+        "Invalid input: missing payload.items0.sku_id",
+      );
+    });
+
+    it("redacts pure-alpha or digit-only dotted tokens (indistinguishable from real domains)", () => {
+      // Loop-6 round 3 finding (high): `email`, `name`, `info`, `travel`,
+      // `careers`, etc. are all real ICANN gTLDs. A pure-alpha
+      // `login.attacker.email` is indistinguishable from
+      // `<sub>.<host>.<tld>`, so identifier-tail allowlists were leaky.
+      // Digits alone are also ambiguous (`cdn1.evil.com`,
+      // `host-2.svc.local`). Redact deny-by-default; require an
+      // underscore marker for preservation (above).
       expect(safeText("field 'user.profile.email' is required")).toBe(
-        "Invalid input: field 'user.profile.email' is required",
+        "Invalid input: field 'link removed' is required",
       );
+      expect(safeText("see login.attacker.email")).toBe("Invalid input: see link removed");
+      expect(safeText("visit cdn.bad.info")).toBe("Invalid input: visit link removed");
       expect(safeText("invalid value at config.http.timeout")).toBe(
-        "Invalid input: invalid value at config.http.timeout",
+        "Invalid input: invalid value at link removed",
       );
-      expect(safeText("missing payload.items[0].sku")).toBe(
-        "Invalid input: missing payload.items0.sku",
-      );
+      expect(safeText("call cdn1.example.com")).toBe("Invalid input: call link removed");
     });
 
     it("replaces ASCII control characters with spaces", () => {

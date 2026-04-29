@@ -4,22 +4,25 @@ import { isKoiError, isRetryable, KoiRuntimeError, toKoiError } from "@koi/error
 
 /**
  * Transport-safe codes whose default classification we inherit when a
- * partial Error.cause omits `retryable`. Deliberately narrower than core
+ * partial `Error.cause` omits `retryable`. Deliberately narrower than core
  * RETRYABLE_DEFAULTS:
  *   - AUTH_REQUIRED / RESOURCE_EXHAUSTED — "retryable" only after external
  *     intervention; auto-replaying hides the recovery path.
  *   - EXTERNAL — depends on the specific remote failure; core defaults
- *     it to non-retryable for that reason. A producer that knows the
- *     failure is transient must say so explicitly.
+ *     it to non-retryable for that reason. Producer must opt in.
  *   - CONFLICT — non-idempotent in many domains; require explicit opt-in.
+ *   - TIMEOUT — delivery state is unknown after a watchdog deadline. The
+ *     first attempt may have been accepted server-side and only the
+ *     response path failed; a blind replay can duplicate non-idempotent
+ *     model requests, tool calls, billable operations, or writes.
+ *     Producer MUST set `retryable: true` (or wrap in a full KoiError
+ *     with phase metadata proving idempotency) to opt in.
  *
- * That leaves only RATE_LIMIT and TIMEOUT (server-acknowledged throttling
- * and watchdog deadlines) — the safe-to-replay-by-default transport set.
+ * That leaves only RATE_LIMIT (server-acknowledged throttling — by
+ * definition the request was rejected before any side-effect) as the
+ * safe-to-replay-by-default transport class.
  */
-const TRANSPORT_RETRYABLE_DEFAULTS: ReadonlySet<KoiError["code"]> = new Set([
-  "RATE_LIMIT",
-  "TIMEOUT",
-]);
+const TRANSPORT_RETRYABLE_DEFAULTS: ReadonlySet<KoiError["code"]> = new Set(["RATE_LIMIT"]);
 
 import { runGates } from "./gate.js";
 import type { Gate, RepairStrategy, ValidationError, Validator } from "./types.js";

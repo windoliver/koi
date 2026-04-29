@@ -44,7 +44,15 @@ const UNICODE_CONTROL_CHARS = /[​-‏‪-‮⁦-⁩﻿]/g;
 // least one common chat transport (Slack/Discord/Markdown/HTML/Teams).
 // Stripping rather than escaping because we can't know the destination
 // transport at this layer; the sanitizer's contract is "plain text".
-const FORMATTING_CHARS = /[@`*_~#|!&\\[\]()<>{}]/g;
+//
+// `_` is split out — it's a Markdown emphasis sigil at word boundaries
+// (`_under_`) but a code identifier separator inside words
+// (`email_address`). The boundary-aware strip below handles both.
+const FORMATTING_CHARS = /[@`*~#|!&\\[\]()<>{}]/g;
+// Strip runs of `_` that are NOT bounded on both sides by alphanumerics —
+// that excludes `email_address`-style identifiers but catches Markdown
+// emphasis `_under_`, leading/trailing `__`, etc.
+const BOUNDARY_UNDERSCORES = /(?<![A-Za-z0-9])_+|_+(?![A-Za-z0-9])/g;
 // Match ANY scheme-form URI, not just http/ftp/ws. Many chat transports
 // (Slack, Discord, Teams, Gmail, VS Code) autolink or trigger client
 // actions on schemes like mailto:, file:, slack:, vscode:, sms:, tel:,
@@ -69,8 +77,12 @@ const WWW_LIKE = /\bwww\.\S+/gi;
 //     label is itself TLD-shape (2-letter ccTLD, or a small set of
 //     unmistakable gTLDs like `com`/`net`/`org`/`gov`) — those land in
 //     `<sub>.<host>.<tld>` autolink territory.
+// HOST_SHAPE includes `_` in label characters even though it's invalid
+// in a real DNS hostname — that way snake_case identifier paths
+// (`users0.email_address`) match as a single contiguous token, and the
+// presence of `_` later signals "this is an identifier, not a hostname".
 const HOST_SHAPE =
-  /\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?:[/:?#][^\s]*)?/gi;
+  /\b[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?)+(?:[/:?#][^\s]*)?/gi;
 const SAFE_TRAILING_FILE_EXT: ReadonlySet<string> = new Set([
   "ts",
   "tsx",
@@ -102,111 +114,6 @@ const SAFE_TRAILING_FILE_EXT: ReadonlySet<string> = new Set([
   "xml",
   "svg",
 ]);
-// Allowlist of identifier-tail words that commonly appear as the LAST
-// label of a dotted field path in validation messages. Keeping this
-// allowlist small (vs maintaining a full PSL/TLD dataset) is the
-// pragmatic tradeoff: any unlisted last-label word is treated as a
-// potential domain and redacted. Adapters that need full identifier
-// fidelity should consume `KoiError.context` directly.
-const SAFE_IDENTIFIER_TAILS: ReadonlySet<string> = new Set([
-  // common field/property names
-  "email",
-  "name",
-  "type",
-  "value",
-  "id",
-  "key",
-  "code",
-  "status",
-  "kind",
-  "label",
-  "title",
-  "text",
-  "body",
-  "message",
-  "data",
-  "info",
-  "details",
-  "address",
-  "phone",
-  "country",
-  "city",
-  "state",
-  "zip",
-  "postal",
-  "password",
-  "username",
-  "user",
-  "token",
-  "secret",
-  "hash",
-  "signature",
-  "size",
-  "count",
-  "index",
-  "length",
-  "limit",
-  "offset",
-  "page",
-  "total",
-  "timeout",
-  "delay",
-  "duration",
-  "interval",
-  "timestamp",
-  "date",
-  "time",
-  "config",
-  "settings",
-  "options",
-  "metadata",
-  "tags",
-  "attrs",
-  "props",
-  "url",
-  "uri",
-  "path",
-  "query",
-  "params",
-  "fields",
-  "items",
-  "results",
-  "entries",
-  "input",
-  "output",
-  "result",
-  "request",
-  "response",
-  "payload",
-  "headers",
-  "cookies",
-  "version",
-  "format",
-  "encoding",
-  "schema",
-  "model",
-  "ref",
-  "min",
-  "max",
-  "start",
-  "end",
-  "first",
-  "last",
-  "next",
-  "prev",
-  "active",
-  "enabled",
-  "visible",
-  "public",
-  "private",
-  "required",
-  "optional",
-  "valid",
-  "invalid",
-  "error",
-  "errors",
-  "warnings",
-]);
 const redactBareDomain = (match: string): string => {
   const pathIdx = match.search(/[/:?#]/);
   const host = pathIdx === -1 ? match : match.slice(0, pathIdx);
@@ -214,23 +121,31 @@ const redactBareDomain = (match: string): string => {
   if (hadPath) return "link removed";
   const labels = host.toLowerCase().split(".");
   const last = labels[labels.length - 1] ?? "";
+  // Identifier marker: underscore is the only TLD- and DNS-immune signal
+  // ("_" is forbidden in DNS hostname labels by RFC 1035, so any token
+  // with an underscore cannot be a real hostname). Digits and hyphens
+  // are NOT enough — `evil-1.com`, `cdn1.example.org`, `my-store.com`
+  // are all real domain shapes.
+  const hasUnderscoreMarker = labels.some((l) => l.includes("_"));
+  // 2-label hosts: preserve `package.json`-shape tokens via the file-
+  // extension safelist, OR identifier-marker tokens
+  // (`users0.email_address` after `[]` strip). Otherwise redact — the
+  // corpus of 2-label attacker registrations (`evil.com`, `evil.zip`,
+  // `evil.support`, …) is unbounded.
   if (labels.length === 2) {
-    // 2-label hosts: redact unless trailing label is a known code/data
-    // file extension (`package.json`, `tsconfig.json`).
-    return SAFE_TRAILING_FILE_EXT.has(last) ? match : "link removed";
+    if (SAFE_TRAILING_FILE_EXT.has(last)) return match;
+    return hasUnderscoreMarker ? match : "link removed";
   }
-  // 3+ labels: redact UNLESS the token clearly reads as an identifier
-  // path. A token qualifies as an identifier when it either contains a
-  // digit/underscore in any label (so `payload.items0.sku` survives), or
-  // its last label is in the small `SAFE_IDENTIFIER_TAILS` allowlist
-  // (`user.profile.email`, `config.http.timeout`). All other 3+ label
-  // host shapes — including phishing-bait like `login.company.careers`
-  // or `auth.example.travel` whose TLDs are genuine but uncurated — are
-  // redacted. The allowlist is a deliberate KISS tradeoff vs bundling a
-  // full public-suffix dataset.
-  const hasDigitOrUnderscore = labels.some((l) => /[0-9_]/.test(l));
-  const isIdentifierTail = SAFE_IDENTIFIER_TAILS.has(last);
-  return hasDigitOrUnderscore || isIdentifierTail ? match : "link removed";
+  // 3+ labels: redact UNLESS the token carries an underscore. Pure
+  // all-lowercase-alpha 3+ label tokens (`user.profile.email`,
+  // `login.attacker.email`, `auth.example.travel`) are indistinguishable
+  // from real `<sub>.<host>.<tld>` domain shapes — modern ICANN gTLDs
+  // include `email`, `name`, `info`, `zip`, `careers`, `travel`,
+  // `health`, `phone`, `city`, `page`, `date`, etc. Tokens with digits
+  // are also ambiguous (`cdn1.example.com`, `host-2.svc.local`).
+  // Adapters that need richer dotted-field-path UX should consume
+  // `KoiError.context` directly under their trust policy.
+  return hasUnderscoreMarker ? match : "link removed";
 };
 
 /**
@@ -250,10 +165,13 @@ const redactBareDomain = (match: string): string => {
 function sanitizeValidationMessage(raw: string): string {
   // NFC-normalize first so canonical-equivalent sequences (e.g. composed
   // vs decomposed accents) hit the strip passes consistently.
-  // Order: strip formatting/escape characters BEFORE running URL and host
-  // pattern matches, so dotted identifier paths broken up by brackets
-  // (`payload.items[0].sku` → `payload.items0.sku`) remain a single
-  // contiguous match for the dotted-identifier preservation rule.
+  // Order: strip non-underscore formatting/escape characters BEFORE
+  // running URL and host pattern matches, so dotted identifier paths
+  // broken up by brackets (`payload.items[0].sku` → `payload.items0.sku`)
+  // remain a single contiguous match. Underscores are kept through the
+  // host pass (the sanitizer uses them as the identifier marker) and
+  // stripped LAST, only when they're at word boundaries (Markdown
+  // emphasis `_under_`) — `email_address`-style identifiers survive.
   const stripped = raw
     .normalize("NFC")
     .replace(CONTROL_CHARS, " ")
@@ -261,7 +179,8 @@ function sanitizeValidationMessage(raw: string): string {
     .replace(FORMATTING_CHARS, "")
     .replace(URL_LIKE, "link removed")
     .replace(WWW_LIKE, "link removed")
-    .replace(HOST_SHAPE, redactBareDomain);
+    .replace(HOST_SHAPE, redactBareDomain)
+    .replace(BOUNDARY_UNDERSCORES, "");
   return stripped.length > VALIDATION_MAX_LEN
     ? `${stripped.slice(0, VALIDATION_MAX_LEN)}…`
     : stripped;
