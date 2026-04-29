@@ -29,6 +29,14 @@ function writeResult(data: RunnerResult): void {
   process.stderr.write(`${RESULT_MARKER}${JSON.stringify(data)}\n`);
 }
 
+/**
+ * Fix 3: type-predicate to check that an unknown import result has a `default`
+ * field. Avoids `as` casts when narrowing the dynamic import result.
+ */
+function hasDefault(m: unknown): m is { readonly default: unknown } {
+  return m !== null && typeof m === "object" && "default" in m;
+}
+
 async function main(): Promise<void> {
   const codePath = process.argv[2];
   const inputJson = process.argv[3];
@@ -54,30 +62,47 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  let mod: { readonly default?: unknown };
-  try {
-    mod = (await import(codePath)) as { readonly default?: unknown };
-  } catch (e: unknown) {
+  // Fix 3: type the import result as `unknown` and use the hasDefault predicate
+  // to narrow without casting.
+  const mod: unknown = await import(codePath).catch((e: unknown) => {
     const msg = e instanceof Error ? e.message : String(e);
     writeResult({ ok: false, error: `subprocess-runner: failed to import module: ${msg}` });
     process.exit(1);
+  });
+
+  if (!hasDefault(mod)) {
+    writeResult({
+      ok: false,
+      error: "subprocess-runner: module has no default export",
+    });
+    process.exit(1);
+    return;
   }
 
-  const fn = mod.default;
-  if (typeof fn !== "function") {
+  if (typeof mod.default !== "function") {
     writeResult({
       ok: false,
       error: "subprocess-runner: module default export must be a function",
     });
     process.exit(1);
+    return;
   }
 
   try {
-    const output: unknown = await (fn as (input: unknown) => Promise<unknown>)(input);
+    // `as` cast is unavoidable here: TypeScript cannot narrow `unknown` to a
+    // callable type through `typeof fn === "function"` alone. The guard above
+    // ensures this is safe at runtime.
+    const fn = mod.default as (input: unknown) => unknown | Promise<unknown>;
+    const output: unknown = await fn(input);
     writeResult({ ok: true, output });
+    // Fix 2: exit 0 after writing success result so any event-loop anchors in
+    // user code (setInterval, open handles, dangling promises) do not keep
+    // this process alive past the result — which would be misclassified as TIMEOUT.
+    process.exit(0);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     writeResult({ ok: false, error: msg });
+    process.exit(0);
   }
 }
 

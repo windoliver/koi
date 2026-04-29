@@ -73,6 +73,17 @@ function parseFramedResult(stderrText: string): unknown {
   }
 }
 
+/**
+ * Type-predicate: checks that v is a non-null object with an "ok" field,
+ * plus optional "output" and "error" fields — the framed result shape.
+ * Avoids `as` casts when narrowing the raw JSON parse result.
+ */
+function isFramedObject(
+  v: unknown,
+): v is { readonly ok: unknown; readonly output?: unknown; readonly error?: unknown } {
+  return v !== null && typeof v === "object" && "ok" in v;
+}
+
 /** Classify a killed process exit into a SandboxErrorCode. */
 function classifyKilledCode(timerFired: boolean, exitCode: number): SandboxErrorCode {
   if (timerFired) return "TIMEOUT";
@@ -102,94 +113,113 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
       const { codePath, tempDir } = writeCodeToTemp(code);
       const start = Date.now();
 
-      const spawnOpts =
-        cwdOverride !== undefined
-          ? { stdout: "pipe" as const, stderr: "pipe" as const, cwd: cwdOverride }
-          : { stdout: "pipe" as const, stderr: "pipe" as const };
+      // Fix 1: wrap everything after writeCodeToTemp in try/finally so the
+      // temp dir is removed on every code path (including spawn rejection).
+      try {
+        const spawnOpts =
+          cwdOverride !== undefined
+            ? {
+                stdout: "pipe" as const,
+                stderr: "pipe" as const,
+                // Fix 5: ignore stdin so the sandboxed child cannot read from parent's stdin
+                stdin: "ignore" as const,
+                cwd: cwdOverride,
+              }
+            : {
+                stdout: "pipe" as const,
+                stderr: "pipe" as const,
+                // Fix 5: ignore stdin so the sandboxed child cannot read from parent's stdin
+                stdin: "ignore" as const,
+              };
 
-      const proc = Bun.spawn(
-        [bunPath, "run", runnerPath, codePath, JSON.stringify(input ?? null)],
-        spawnOpts,
-      );
+        const proc = Bun.spawn(
+          [bunPath, "run", runnerPath, codePath, JSON.stringify(input ?? null)],
+          spawnOpts,
+        );
 
-      // Kill the process after timeout
-      // let justified: timer ref allows unref() to avoid keeping event loop alive
-      let killed = false;
-      const timer = setTimeout(() => {
-        killed = true;
-        proc.kill(9);
-      }, timeoutMs);
-      // unref() if available so the timer doesn't block process exit in tests
-      if (typeof (timer as NodeJS.Timeout).unref === "function") {
-        (timer as NodeJS.Timeout).unref();
-      }
+        // Kill the process after timeout.
+        // `let` justified: `killed` is a mutable flag set inside the timer callback.
+        let killed = false;
+        const timer = setTimeout(() => {
+          killed = true;
+          proc.kill(9);
+        }, timeoutMs);
 
-      await proc.exited;
-      clearTimeout(timer);
+        // Fix 6: use structural check to call unref() without NodeJS.Timeout cast.
+        // Bun's Timer type does not expose `unref` in its declared types but the
+        // underlying object supports it at runtime — check defensively.
+        if ("unref" in timer && typeof timer.unref === "function") timer.unref();
 
-      const durationMs = Date.now() - start;
-      const rawStderr = await new Response(proc.stderr).text();
-      const stderrText = rawStderr.slice(0, maxOutputBytes);
-      const exitCode = proc.exitCode ?? -1;
+        await proc.exited;
+        clearTimeout(timer);
 
-      cleanupTemp(tempDir);
+        const durationMs = Date.now() - start;
 
-      // Killed or OOM
-      if (killed || exitCode === 137 || exitCode === -9) {
-        const errorCode: SandboxErrorCode = classifyKilledCode(killed, exitCode);
-        const error: SandboxError = {
-          code: errorCode,
-          message:
-            errorCode === "TIMEOUT"
-              ? "Sandbox execution timed out"
-              : "Sandbox process killed (OOM or signal)",
+        // Fix 4: read FULL stderr before slicing. The result marker must be
+        // searched in the complete text — truncating before the search would
+        // miss markers that land past the cap and misclassify results as CRASH.
+        const rawStderr = await new Response(proc.stderr).text();
+        const exitCode = proc.exitCode ?? -1;
+
+        // Killed or OOM
+        if (killed || exitCode === 137 || exitCode === -9) {
+          const errorCode: SandboxErrorCode = classifyKilledCode(killed, exitCode);
+          const error: SandboxError = {
+            code: errorCode,
+            message:
+              errorCode === "TIMEOUT"
+                ? "Sandbox execution timed out"
+                : "Sandbox process killed (OOM or signal)",
+            durationMs,
+          };
+          return { ok: false, error };
+        }
+
+        // Fix 4 (continued): search marker in full text; only apply maxOutputBytes
+        // to the stack snippet used in CRASH error messages.
+        const framed = parseFramedResult(rawStderr);
+
+        if (framed === undefined) {
+          // Only cap the snippet, not the search input.
+          const snippet = rawStderr.slice(-2000).slice(0, maxOutputBytes);
+          const error: SandboxError = {
+            code: "CRASH",
+            message: "Sandbox exited without result marker",
+            durationMs,
+            stack: snippet,
+          };
+          return { ok: false, error };
+        }
+
+        // Fix 3: use isFramedObject type-predicate instead of `as Record<string, unknown>`
+        if (!isFramedObject(framed)) {
+          const error: SandboxError = {
+            code: "CRASH",
+            message: "Sandbox result marker contained invalid JSON",
+            durationMs,
+          };
+          return { ok: false, error };
+        }
+
+        if (framed.ok === false) {
+          const errMsg = typeof framed.error === "string" ? framed.error : "Unknown sandbox error";
+          const error: SandboxError = {
+            code: "CRASH",
+            message: errMsg,
+            durationMs,
+          };
+          return { ok: false, error };
+        }
+
+        const value: SandboxResult = {
+          output: framed.output,
           durationMs,
         };
-        return { ok: false, error };
+        return { ok: true, value };
+      } finally {
+        // Fix 1: always remove temp dir, even if spawn or stderr read throws.
+        cleanupTemp(tempDir);
       }
-
-      // Parse framed result from stderr
-      const framed = parseFramedResult(stderrText);
-
-      if (framed === undefined) {
-        const snippet = stderrText.slice(-2000);
-        const error: SandboxError = {
-          code: "CRASH",
-          message: "Sandbox exited without result marker",
-          durationMs,
-          stack: snippet,
-        };
-        return { ok: false, error };
-      }
-
-      // Validate framed shape
-      if (framed === null || typeof framed !== "object" || !("ok" in framed)) {
-        const error: SandboxError = {
-          code: "CRASH",
-          message: "Sandbox result marker contained invalid JSON",
-          durationMs,
-        };
-        return { ok: false, error };
-      }
-
-      const framedObj = framed as Record<string, unknown>;
-
-      if (framedObj.ok === false) {
-        const errMsg =
-          typeof framedObj.error === "string" ? framedObj.error : "Unknown sandbox error";
-        const error: SandboxError = {
-          code: "CRASH",
-          message: errMsg,
-          durationMs,
-        };
-        return { ok: false, error };
-      }
-
-      const value: SandboxResult = {
-        output: framedObj.output,
-        durationMs,
-      };
-      return { ok: true, value };
     },
   };
 }

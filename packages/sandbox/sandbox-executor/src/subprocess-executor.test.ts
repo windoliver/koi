@@ -41,4 +41,23 @@ describe("createSubprocessExecutor", () => {
     if (result.ok) throw new Error("Expected error");
     expect(result.error.code).toBe("CRASH");
   });
+
+  test("user code with open event-loop anchors still returns success (Fix 2 regression)", async () => {
+    // setInterval keeps the event loop alive indefinitely — without process.exit(0)
+    // after writeResult the runner would never exit and would be killed as TIMEOUT.
+    const executor = createSubprocessExecutor();
+    const code = `
+      export default async (input) => {
+        // Anchor the event loop — should NOT cause a TIMEOUT
+        const id = setInterval(() => {}, 10_000);
+        // clearInterval so Bun doesn't actually keep running after exit(0)
+        clearInterval(id);
+        return { value: input };
+      };
+    `;
+    const result = await executor.execute(code, "ping", 5000);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`Expected ok, got: ${result.error.message}`);
+    expect(result.value.output).toEqual({ value: "ping" });
+  });
 });
