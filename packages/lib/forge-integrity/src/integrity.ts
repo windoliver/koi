@@ -126,6 +126,12 @@ export function verifyBrickIntegrity(
       claimedBuilderId: shape.claimedBuilderId,
     };
   }
+  // Defend against a misconfigured/version-skewed registry argument: a null
+  // or non-object registry must fail closed rather than throwing inside
+  // Object.hasOwn and crashing the caller on the security boundary.
+  if (registry === null || typeof registry !== "object") {
+    return { kind: "malformed", ok: false, reason: "registry is not an object" };
+  }
   // Own-property lookup only — prototype-chain entries are rejected so a
   // polluted prototype cannot supply a trusted recompute by inheritance.
   if (!Object.hasOwn(registry, expectedBuilderId)) {

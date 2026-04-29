@@ -113,6 +113,28 @@ describe("createForgeProvenance", () => {
     expect(prov.verification.sandbox).toBe(false);
   });
 
+  test("rejects parentBrickId without evolutionKind (and vice versa)", () => {
+    const parent = brickId(`sha256:${"a".repeat(64)}`);
+    expect(() => createForgeProvenance({ ...baseOptions, parentBrickId: parent })).toThrow(
+      /both set or both omitted/,
+    );
+    expect(() => createForgeProvenance({ ...baseOptions, evolutionKind: "fix" })).toThrow(
+      /both set or both omitted/,
+    );
+  });
+
+  test("does not stack-overflow on cyclic externalParameters or verification", () => {
+    type Cyclic = { self?: Cyclic; name: string };
+    const cyclic: Cyclic = { name: "csv" };
+    cyclic.self = cyclic;
+    // structuredClone preserves cycles; deepFreeze must not recurse into them.
+    const prov = createForgeProvenance({
+      ...baseOptions,
+      externalParameters: cyclic as unknown as Readonly<Record<string, unknown>>,
+    });
+    expect(Object.isFrozen(prov.buildDefinition.externalParameters)).toBe(true);
+  });
+
   test("freezes externalParameters and contentMarkers against post-construction mutation", () => {
     const externals = { name: "csv-parse", schemaVer: 1 };
     const markers = ["pii"] as const;

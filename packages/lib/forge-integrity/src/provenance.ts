@@ -46,6 +46,16 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
   if (options.finishedAt < options.startedAt) {
     throw new Error("createForgeProvenance: finishedAt < startedAt");
   }
+  // Lineage invariant: parentBrickId and evolutionKind must be both-or-neither.
+  // A `fix`/`derived`/`captured` evolution makes no sense without a parent;
+  // a parent without an evolution kind has no auditable derivation reason.
+  const hasParent = options.parentBrickId !== undefined;
+  const hasEvolutionKind = options.evolutionKind !== undefined;
+  if (hasParent !== hasEvolutionKind) {
+    throw new Error(
+      "createForgeProvenance: parentBrickId and evolutionKind must be both set or both omitted",
+    );
+  }
 
   const externalParameters: Readonly<Record<string, unknown>> = deepFreeze(
     options.demandId !== undefined
@@ -86,9 +96,14 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
 }
 
 function deepFreeze<T>(value: T): T {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
-  for (const v of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(v);
-  }
-  return Object.freeze(value);
+  const seen = new WeakSet<object>();
+  const walk = (node: unknown): void => {
+    if (node === null || typeof node !== "object") return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    if (!Object.isFrozen(node)) Object.freeze(node);
+    for (const v of Object.values(node as Record<string, unknown>)) walk(v);
+  };
+  walk(value);
+  return value;
 }

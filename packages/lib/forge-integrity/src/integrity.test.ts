@@ -155,4 +155,26 @@ describe("verifyBrickIntegrity", () => {
     );
     expect(result.kind).toBe("malformed");
   });
+
+  test("malformed when registry is null (does not throw)", () => {
+    const brick = makeTool();
+    const result = verifyBrickIntegrity(
+      brick,
+      null as unknown as ProducerRegistry,
+      TRUSTED_BUILDER,
+    );
+    expect(result.kind).toBe("malformed");
+  });
+
+  test("malformed when registry is undefined or non-object", () => {
+    const brick = makeTool();
+    const r1 = verifyBrickIntegrity(
+      brick,
+      undefined as unknown as ProducerRegistry,
+      TRUSTED_BUILDER,
+    );
+    expect(r1.kind).toBe("malformed");
+    const r2 = verifyBrickIntegrity(brick, 42 as unknown as ProducerRegistry, TRUSTED_BUILDER);
+    expect(r2.kind).toBe("malformed");
+  });
 });
