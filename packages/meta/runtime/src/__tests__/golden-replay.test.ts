@@ -15643,7 +15643,7 @@ describe("Golden: @koi/agent-monitor", () => {
     expect(mw.name).toBe("agent-monitor");
     expect(mw.priority).toBe(AGENT_MONITOR_PRIORITY);
     expect(mw.priority).toBe(350);
-    expect(mw.describeCapabilities?.()).toBeUndefined();
+    expect(typeof mw.describeCapabilities).toBe("function");
   });
 
   test("tool_rate_exceeded fires after >maxToolCallsPerTurn calls", async () => {
