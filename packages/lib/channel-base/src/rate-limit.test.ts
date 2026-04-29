@@ -730,6 +730,23 @@ describe("createRateLimiter", () => {
       expect(maxConcurrent).toBe(1);
     });
 
+    it("synchronous throws in the send callback reject the caller and unblock the queue", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+      });
+      const syncBoom: SendFn = () => {
+        throw new Error("sync-boom");
+      };
+      // Caller must reject promptly, not hang forever.
+      await expect(limiter.enqueue(syncBoom)).rejects.toThrow("sync-boom");
+      // Queue must keep draining: a subsequent normal send completes.
+      const completed: string[] = [];
+      await limiter.enqueue(async () => {
+        completed.push("ok");
+      });
+      expect(completed).toEqual(["ok"]);
+    });
+
     it("opting out with sendTimeoutMs:0 leaves a hung send pending (no auto-reject)", async () => {
       const limiter = createRateLimiter({ sendTimeoutMs: 0 });
       let release: (() => void) | undefined;

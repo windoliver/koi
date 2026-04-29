@@ -245,14 +245,24 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
     readonly result: Promise<void>;
     readonly settled: Promise<void>;
   }
+  // Wraps fn(signal) so a synchronous throw becomes a rejected promise —
+  // otherwise the throw escapes runWithDeadline before any catch path is
+  // armed, orphaning the queue entry's caller forever.
+  const invoke = (fn: SendFn, signal: AbortSignal): Promise<void> => {
+    try {
+      return fn(signal);
+    } catch (syncErr) {
+      return Promise.reject(syncErr);
+    }
+  };
   const runWithDeadline = (fn: SendFn): DeadlineRun => {
     if (!sendTimeoutEnabled) {
       const passthrough = new AbortController();
-      const fnPromise = fn(passthrough.signal);
+      const fnPromise = invoke(fn, passthrough.signal);
       return { result: fnPromise, settled: fnPromise.catch(() => {}) };
     }
     const controller = new AbortController();
-    const fnPromise = fn(controller.signal);
+    const fnPromise = invoke(fn, controller.signal);
     // let justified: tracks whether the watchdog fired
     let timedOut = false;
     // Caller-facing: bounded by sendTimeoutMs.
