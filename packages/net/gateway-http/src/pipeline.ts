@@ -210,10 +210,10 @@ async function dispatchAndCache(
     if (deliveryId !== undefined) {
       deps.idempotency.clear(reg.id, outcome.tenantId, deliveryId);
     }
-    emit(deps, route, 500, "rejected:auth", sessionId);
-    // 5xx: do not throw out (would crash server). Return 500 with the cause
-    // chained on the Error we log via audit. Provider's normal retry policy
-    // will re-attempt; reservation has been cleared.
+    // Auth succeeded — failure is downstream. authResult stays "ok"; the
+    // status field (500) signals the dispatch failure to the audit log.
+    // Reservation cleared so provider retry can re-attempt.
+    emit(deps, route, 500, "ok", sessionId);
     void err;
     return new Response("internal error", { status: 500 });
   }
