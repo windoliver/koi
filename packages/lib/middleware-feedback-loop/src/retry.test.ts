@@ -109,6 +109,31 @@ describe("runWithRetry", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  it("does NOT retry partial-cause errors with hard non-retryable code mislabeled as retryable: true", async () => {
+    // Regression: loop-5 round 4 finding 1. Adapters often throw
+    //   throw new Error("denied", { cause: { code: "PERMISSION", retryable: true } })
+    // resolveRetryable() previously trusted the raw boolean from cause,
+    // bypassing the new isRetryable() floor. PERMISSION/VALIDATION/
+    // NOT_FOUND/INTERNAL must not be retried even when mis-labeled.
+    let calls = 0;
+    const next = mock(async () => {
+      calls++;
+      throw new Error("denied", {
+        cause: { code: "PERMISSION", retryable: true },
+      });
+    });
+    await expect(
+      runWithRetry(baseRequest, next, {
+        validators: [],
+        gates: [],
+        repairStrategy: defaultRepairStrategy,
+        validationMaxAttempts: 3,
+        transportMaxAttempts: 5,
+      }),
+    ).rejects.toThrow("denied");
+    expect(calls).toBe(1);
+  });
+
   it("fires onRetry on each retry attempt", async () => {
     const onRetry = mock(() => {});
     const next = mock(async () => badResponse);

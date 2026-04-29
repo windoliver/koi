@@ -1,3 +1,4 @@
+import type { KoiError } from "@koi/core";
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
 import { isKoiError, isRetryable, KoiRuntimeError, toKoiError } from "@koi/errors";
 import { runGates } from "./gate.js";
@@ -8,7 +9,10 @@ import { runValidators } from "./validators.js";
  * Extracts retryability from an error, handling three shapes:
  * 1. Full KoiError thrown directly → use isRetryable()
  * 2. Error with partial KoiError-shaped cause ({ code, retryable }) but missing message →
- *    adapters often throw Error('msg', { cause: { code, retryable } }) without a full KoiError
+ *    adapters often throw Error('msg', { cause: { code, retryable } }) without a full KoiError.
+ *    Normalize the partial cause through `isRetryable()` so the hard non-retryable code floor
+ *    (VALIDATION, NOT_FOUND, PERMISSION, INTERNAL) applies — a producer that mislabels
+ *    a permanent failure as `retryable: true` cannot escalate it into automatic replay.
  * 3. Anything else → toKoiError() fallback (returns retryable: false)
  */
 export function resolveRetryable(err: unknown): boolean {
@@ -16,15 +20,21 @@ export function resolveRetryable(err: unknown): boolean {
   if (err instanceof Error) {
     const cause = err.cause;
     if (isKoiError(cause)) return isRetryable(cause);
-    // Partial cause: has code + retryable but no message (not a full KoiError)
-    if (
-      cause !== null &&
-      cause !== undefined &&
-      typeof cause === "object" &&
-      "retryable" in cause &&
-      typeof (cause as { retryable: unknown }).retryable === "boolean"
-    ) {
-      return (cause as { retryable: boolean }).retryable;
+    // Partial cause: route through isRetryable so the hard non-retryable
+    // floor applies. Synthesize a minimal KoiError shape from whatever
+    // fields are present; missing fields fall back to safe defaults.
+    if (cause !== null && cause !== undefined && typeof cause === "object") {
+      const c = cause as { code?: unknown; retryable?: unknown };
+      const hasCode = typeof c.code === "string";
+      const hasRetryable = typeof c.retryable === "boolean";
+      if (hasCode || hasRetryable) {
+        const synthesized: KoiError = {
+          code: (hasCode ? (c.code as string) : "EXTERNAL") as KoiError["code"],
+          message: err.message,
+          retryable: hasRetryable ? (c.retryable as boolean) : false,
+        };
+        return isRetryable(synthesized);
+      }
     }
   }
   return isRetryable(toKoiError(err));
