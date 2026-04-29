@@ -349,8 +349,8 @@ There is intentionally no verbose / developer mode; CLI tooling that needs raw d
 | Function | Returns | Purpose |
 |----------|---------|---------|
 | `renderBlocks(blocks, capabilities)` | `readonly ContentBlock[]` | Downgrade unsupported blocks to text |
-| `formatErrorForChannel(error)` | `ChannelErrorOutput` | Discriminated union so adapters handle text / validation / auth-required explicitly |
-| `formatErrorTextForChannel(error)` | `string` | Convenience collapse to a single string for adapters with no auth/validation UX |
+| `classifyErrorForChannel(error)` | `ChannelErrorOutput` | Discriminated union so adapters handle text / validation / auth-required explicitly |
+| `formatErrorForChannel(error)` | `string` | Convenience collapse to a single string for adapters with no auth/validation UX |
 
 ### Resilience & Discovery
 
@@ -366,7 +366,7 @@ There is intentionally no verbose / developer mode; CLI tooling that needs raw d
 | `ChannelAdapterConfig<E>` | Configuration for `createChannelAdapter()` |
 | `MessageNormalizer<E>` | `(event: E) => InboundMessage \| null \| Promise<InboundMessage \| null>` |
 | `ContentBlock` | Re-exported union from `@koi/core` |
-| `ChannelErrorOutput` | Discriminated union returned by `formatErrorForChannel` |
+| `ChannelErrorOutput` | Discriminated union returned by `classifyErrorForChannel` |
 | `RateLimiter` | `{ enqueue, size }` — sequential queued sends with retry |
 | `SendFn` | `(signal: AbortSignal) => Promise<void>` — send-callback signature for `enqueue` |
 | `RateLimiterConfig` | `{ retry?, extractRetryAfterMs? }` |

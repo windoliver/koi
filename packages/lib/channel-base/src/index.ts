@@ -13,6 +13,6 @@ export type { ChannelFactory, ChannelRegistry } from "./channel-registry.js";
 export { createChannelRegistry } from "./channel-registry.js";
 export type { ChannelErrorOutput } from "./format-error.js";
 export { classifyErrorForChannel, formatErrorForChannel } from "./format-error.js";
-export type { RateLimiter, RateLimiterConfig } from "./rate-limit.js";
+export type { RateLimiter, RateLimiterConfig, SendFn } from "./rate-limit.js";
 export { createRateLimiter } from "./rate-limit.js";
 export { renderBlocks } from "./render-blocks.js";
