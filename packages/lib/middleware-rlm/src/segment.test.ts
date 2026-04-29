@@ -120,6 +120,20 @@ describe("segmentRequest", () => {
     expect(out.length).toBeGreaterThan(1);
   });
 
+  test("treats look-alike system senders ('systemic-user', 'system2') as user-role", () => {
+    // mapSenderIdToRole only matches literal 'system' and 'system:*'. RLM
+    // must not exempt look-alike senders or oversized payloads under those
+    // ids will bypass segmentation.
+    const big = "p".repeat(300);
+    const lookalike: InboundMessage = {
+      senderId: "systemic-user",
+      timestamp: 0,
+      content: [{ kind: "text", text: big }],
+    };
+    const out = segmentRequest(makeRequest([lookalike]), 100);
+    expect(out.length).toBeGreaterThan(1);
+  });
+
   test("ignores oversized text blocks under system:* senders (handled by compaction, not RLM)", () => {
     const sysMsg: InboundMessage = {
       senderId: "system:root",

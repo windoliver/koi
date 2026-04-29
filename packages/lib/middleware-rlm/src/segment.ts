@@ -25,7 +25,10 @@ interface TargetLocation {
  */
 function isUserRoleSender(senderId: string): boolean {
   if (senderId === "assistant") return false;
-  if (senderId.startsWith("system")) return false;
+  // Match mapSenderIdToRole exactly: only literal "system" or "system:*"
+  // are system-role. Look-alike senders such as "systemic-user" or
+  // "system2" are user content and must be eligible for chunking.
+  if (senderId === "system" || senderId.startsWith("system:")) return false;
   return true;
 }
 

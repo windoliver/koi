@@ -35,6 +35,7 @@ interface ResolvedConfig {
   readonly estimator: TokenEstimator;
   readonly priority: number;
   readonly onEvent: ((event: RlmEvent) => void) | undefined;
+  readonly acknowledgeSegmentLocalContract: boolean;
 }
 
 function resolveConfig(config: RlmConfig): ResolvedConfig {
@@ -44,6 +45,7 @@ function resolveConfig(config: RlmConfig): ResolvedConfig {
     estimator: config.estimator ?? HEURISTIC_ESTIMATOR,
     priority: config.priority ?? DEFAULT_PRIORITY,
     onEvent: config.onEvent,
+    acknowledgeSegmentLocalContract: config.acknowledgeSegmentLocalContract ?? false,
   };
 }
 
@@ -86,6 +88,19 @@ const ABORTING_STOP_REASONS: ReadonlySet<ModelStopReason> = new Set<ModelStopRea
   "hook_blocked",
 ]);
 
+/**
+ * Some adapters return tool calls in `richContent` without setting
+ * `stopReason`. Treat richContent tool-call blocks as authoritative so RLM
+ * never reassembles a response that would replay segment-local tool calls.
+ */
+function hasToolCallBlock(response: ModelResponse): boolean {
+  if (response.richContent === undefined) return false;
+  for (const block of response.richContent) {
+    if (block.kind === "tool_call") return true;
+  }
+  return false;
+}
+
 async function dispatchSegmented(
   cfg: ResolvedConfig,
   segments: readonly ModelRequest[],
@@ -96,9 +111,15 @@ async function dispatchSegmented(
     const seg = segments[i];
     if (seg === undefined) continue;
     const response = await next(seg);
-    if (response.stopReason !== undefined && ABORTING_STOP_REASONS.has(response.stopReason)) {
+    const stopAborts =
+      response.stopReason !== undefined && ABORTING_STOP_REASONS.has(response.stopReason);
+    const toolCallAborts = hasToolCallBlock(response);
+    if (stopAborts || toolCallAborts) {
+      const reason = toolCallAborts
+        ? `tool_call richContent (stopReason=${String(response.stopReason)})`
+        : `stopReason=${String(response.stopReason)}`;
       throw new Error(
-        `RLM segment ${String(i + 1)}/${String(segments.length)} returned stopReason=${response.stopReason} (model=${response.model}). Concatenating an incomplete or tool-use segment would mask the failure; aborting.`,
+        `RLM segment ${String(i + 1)}/${String(segments.length)} returned ${reason} (model=${response.model}). Concatenating an incomplete or tool-use segment would mask the failure; aborting.`,
       );
     }
     responses.push(response);
@@ -117,6 +138,17 @@ async function rlmWrapModelCall(
   if (tokens <= cfg.maxInputTokens) {
     emit(cfg, { kind: "passthrough", tokens });
     return next(request);
+  }
+  // Require explicit acknowledgment that the caller's task is segment-
+  // local. Concatenation is not a sound reducer for global aggregation,
+  // ranking, dedup, or counting tasks, so transparent segmentation could
+  // return semantically wrong output dressed up as a single response.
+  if (!cfg.acknowledgeSegmentLocalContract) {
+    throw new Error(
+      `RLM saw an oversized request (${String(tokens)} tokens > ${String(
+        cfg.maxInputTokens,
+      )}) but the caller has not opted in via 'acknowledgeSegmentLocalContract: true'. Concatenated per-chunk answers are only valid for segment-local tasks; if the task needs global aggregation, run a reducer downstream.`,
+    );
   }
   // Fail closed when tools are present: each segment would receive the same
   // tool list, the model would emit tool calls per segment, and reassembly

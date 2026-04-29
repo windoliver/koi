@@ -61,6 +61,12 @@ export function validateRlmConfig(config: unknown): Result<RlmConfig, KoiError> 
   if (c.onEvent !== undefined && typeof c.onEvent !== "function") {
     return validationError("'onEvent' must be a function");
   }
+  if (
+    c.acknowledgeSegmentLocalContract !== undefined &&
+    typeof c.acknowledgeSegmentLocalContract !== "boolean"
+  ) {
+    return validationError("'acknowledgeSegmentLocalContract' must be a boolean");
+  }
 
   return { ok: true, value: c as RlmConfig };
 }

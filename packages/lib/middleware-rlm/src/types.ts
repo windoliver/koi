@@ -38,6 +38,19 @@ export interface RlmConfig {
   readonly priority?: number;
   /** Telemetry callback. Errors thrown by the callback are swallowed. */
   readonly onEvent?: (event: RlmEvent) => void;
+  /**
+   * Required opt-in. RLM concatenates per-segment outputs; the result is
+   * only correct when the original task is the in-order union of
+   * segment-local answers (extraction, transformation, summarization-
+   * per-chunk). Tasks that need global ranking, dedup, counting, or
+   * cross-segment reasoning must run an explicit reducer downstream.
+   *
+   * Setting this flag to `true` acknowledges the contract. When the flag
+   * is absent or `false`, the middleware fails closed on every oversized
+   * request rather than silently returning a synthesized concatenation
+   * for a task that may need genuine aggregation.
+   */
+  readonly acknowledgeSegmentLocalContract?: boolean;
 }
 
 /** Default token threshold (~32K tokens of text under heuristic estimation). */

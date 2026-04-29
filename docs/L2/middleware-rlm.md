@@ -127,6 +127,7 @@ middleware:
 | `estimator` | `HEURISTIC_ESTIMATOR` | Token estimator used for the threshold check. |
 | `priority` | 200 | Middleware priority. Sits before model-router/retry so per-segment fallback works. |
 | `onEvent` | — | Optional callback receiving `RlmEvent` (`passthrough`, `segmented`, `segment-completed`). Errors thrown by the callback are swallowed. |
+| `acknowledgeSegmentLocalContract` | `false` | **Required opt-in.** Setting this to `true` acknowledges that the caller's task is the in-order union of segment-local answers (extraction, transformation, summarization-per-chunk). When `false`, oversized requests fail closed rather than silently returning a synthesized concatenation that may corrupt global-aggregation tasks. |
 
 Validate ahead of construction with `validateRlmConfig(config)` —
 returns a `Result<RlmConfig, KoiError>`.

@@ -8,7 +8,7 @@ import type {
   ModelStreamHandler,
   TurnContext,
 } from "@koi/core";
-import { runId, sessionId, turnId } from "@koi/core";
+import { runId, sessionId, toolCallId, turnId } from "@koi/core";
 import { createRlmMiddleware } from "./rlm.js";
 import type { RlmEvent } from "./types.js";
 
@@ -76,6 +76,7 @@ describe("createRlmMiddleware", () => {
     const mw = createRlmMiddleware({
       maxInputTokens: 50,
       maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
       onEvent: (e) => events.push(e),
     });
     const rec = recordingHandler((_req, i) => `R${i}`);
@@ -121,6 +122,7 @@ describe("createRlmMiddleware", () => {
     const mw = createRlmMiddleware({
       maxInputTokens: 100,
       maxChunkChars: 10,
+      acknowledgeSegmentLocalContract: true,
       estimator: {
         estimateText: () => 0,
         estimateMessages: () => {
@@ -138,7 +140,11 @@ describe("createRlmMiddleware", () => {
 
   test("composes with downstream middleware: next is invoked once per segment in order", async () => {
     const order: number[] = [];
-    const mw = createRlmMiddleware({ maxInputTokens: 50, maxChunkChars: 100 });
+    const mw = createRlmMiddleware({
+      maxInputTokens: 50,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
     const handler: ModelHandler = async (_req) => {
       order.push(order.length);
       return { content: `seg${order.length - 1}`, model: "m" };
@@ -153,6 +159,7 @@ describe("createRlmMiddleware", () => {
     const mw = createRlmMiddleware({
       maxInputTokens: 50,
       maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
       onEvent: () => {
         throw new Error("boom");
       },
@@ -168,7 +175,11 @@ describe("createRlmMiddleware", () => {
     // smaller than maxChunkChars (1000), so segmentation cannot reduce the
     // request. Middleware must fail closed rather than forwarding the
     // oversize request unchanged.
-    const mw = createRlmMiddleware({ maxInputTokens: 50, maxChunkChars: 1000 });
+    const mw = createRlmMiddleware({
+      maxInputTokens: 50,
+      maxChunkChars: 1000,
+      acknowledgeSegmentLocalContract: true,
+    });
     const rec = recordingHandler(() => "should-not-be-called");
     const req: ModelRequest = {
       messages: [
@@ -187,7 +198,11 @@ describe("createRlmMiddleware", () => {
     // Segmenting tool-enabled requests would fan out tool calls across
     // segments. Middleware must refuse rather than silently multiply
     // side-effecting tool executions.
-    const mw = createRlmMiddleware({ maxInputTokens: 50, maxChunkChars: 100 });
+    const mw = createRlmMiddleware({
+      maxInputTokens: 50,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
     const rec = recordingHandler(() => "irrelevant");
     const big = "x".repeat(300);
     const req: ModelRequest = {
@@ -207,7 +222,11 @@ describe("createRlmMiddleware", () => {
   test("oversized requests with an empty tools array still segment", async () => {
     // tools: [] should be treated as "no tools" — the fan-out concern only
     // applies when tool descriptors are actually present.
-    const mw = createRlmMiddleware({ maxInputTokens: 50, maxChunkChars: 100 });
+    const mw = createRlmMiddleware({
+      maxInputTokens: 50,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
     const rec = recordingHandler(() => "ok");
     const big = "y".repeat(300);
     const req: ModelRequest = { messages: [userMessage(big)], tools: [] };
@@ -220,7 +239,11 @@ describe("createRlmMiddleware", () => {
     // messages alone fit, but the systemPrompt pushes the request over budget.
     // The middleware must NOT silently forward — it should fail closed
     // because there is no user text block large enough to chunk.
-    const mw = createRlmMiddleware({ maxInputTokens: 50, maxChunkChars: 1000 });
+    const mw = createRlmMiddleware({
+      maxInputTokens: 50,
+      maxChunkChars: 1000,
+      acknowledgeSegmentLocalContract: true,
+    });
     const rec = recordingHandler(() => "should-not-be-called");
     const req: ModelRequest = {
       messages: [userMessage("short")],
@@ -234,7 +257,11 @@ describe("createRlmMiddleware", () => {
     // The tool descriptors alone push the request over budget. Because tools
     // are present, the middleware should throw with the tool-descriptors
     // error before attempting segmentation.
-    const mw = createRlmMiddleware({ maxInputTokens: 50, maxChunkChars: 1000 });
+    const mw = createRlmMiddleware({
+      maxInputTokens: 50,
+      maxChunkChars: 1000,
+      acknowledgeSegmentLocalContract: true,
+    });
     const rec = recordingHandler(() => "should-not-be-called");
     const req: ModelRequest = {
       messages: [userMessage("short")],
@@ -257,6 +284,7 @@ describe("createRlmMiddleware", () => {
     const mw = createRlmMiddleware({
       maxInputTokens: 100,
       maxChunkChars: 50,
+      acknowledgeSegmentLocalContract: true,
       // Estimator returns a constant well above the threshold for any
       // message set, simulating large surrounding history.
       estimator: {
@@ -274,7 +302,11 @@ describe("createRlmMiddleware", () => {
   test("aborts when a segment returns a non-success stopReason", async () => {
     // Concatenating an incomplete or tool-use segment into the merged
     // response would mask the failure. The middleware must surface it.
-    const mw = createRlmMiddleware({ maxInputTokens: 50, maxChunkChars: 100 });
+    const mw = createRlmMiddleware({
+      maxInputTokens: 50,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
     let call = 0; // let: simulate one segment hitting a length cap
     const handler: ModelHandler = async () => {
       call += 1;
@@ -287,7 +319,11 @@ describe("createRlmMiddleware", () => {
   });
 
   test("attaches per-segment provenance to the reassembled response", async () => {
-    const mw = createRlmMiddleware({ maxInputTokens: 50, maxChunkChars: 100 });
+    const mw = createRlmMiddleware({
+      maxInputTokens: 50,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
     let call = 0; // let: per-call counter for the stub model handler
     const handler: ModelHandler = async () => {
       call += 1;
@@ -327,7 +363,11 @@ describe("createRlmMiddleware", () => {
   });
 
   test("wrapModelStream fails closed for oversized requests", async () => {
-    const mw = createRlmMiddleware({ maxInputTokens: 5, maxChunkChars: 100 });
+    const mw = createRlmMiddleware({
+      maxInputTokens: 5,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
     const upstream: ModelStreamHandler = async function* () {
       yield { kind: "text_delta", delta: "should-not-arrive" };
     };
@@ -344,6 +384,52 @@ describe("createRlmMiddleware", () => {
       expect(String(err)).toMatch(/streaming requests/i);
     }
     expect(threw).toBe(true);
+  });
+
+  test("requires acknowledgeSegmentLocalContract to segment", async () => {
+    // Without the explicit opt-in, transparent segmentation could turn
+    // global-aggregation tasks into silently corrupted concatenations.
+    const mw = createRlmMiddleware({ maxInputTokens: 50, maxChunkChars: 100 });
+    const rec = recordingHandler(() => "should-not-be-called");
+    const big = "z".repeat(300);
+    expect(
+      mw.wrapModelCall?.(turnCtx(), { messages: [userMessage(big)] }, rec.handler),
+    ).rejects.toThrow(/acknowledgeSegmentLocalContract/);
+    expect(rec.calls.length).toBe(0);
+  });
+
+  test("aborts when a segment returns a tool_call richContent block even without stopReason", async () => {
+    // Some adapters omit stopReason but return tool calls in richContent.
+    // Treat those as authoritative — concatenating segment-local tool calls
+    // would replay side effects.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 50,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let call = 0; // let: simulate the second segment returning a tool call
+    const handler: ModelHandler = async () => {
+      call += 1;
+      if (call === 2) {
+        return {
+          content: "",
+          model: "test",
+          richContent: [
+            {
+              kind: "tool_call",
+              id: toolCallId("c1"),
+              name: "delete_file",
+              arguments: {},
+            },
+          ],
+        } satisfies ModelResponse;
+      }
+      return { content: `c${call}`, model: "test" } satisfies ModelResponse;
+    };
+    const big = "x".repeat(300);
+    expect(
+      mw.wrapModelCall?.(turnCtx(), { messages: [userMessage(big)] }, handler),
+    ).rejects.toThrow(/tool_call/);
   });
 
   test("describeCapabilities returns a label", () => {
