@@ -645,6 +645,54 @@ describe("createRlmMiddleware", () => {
     expect(threw).toBe(true);
   });
 
+  test("wrapModelCall fails closed when request.maxTokens is set (per-segment dispatch would amplify the cap)", async () => {
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    const rec = recordingHandler(() => "should-not-be-called");
+    const big = "x".repeat(400);
+    expect(
+      mw.wrapModelCall?.(turnCtx(), { messages: [userMessage(big)], maxTokens: 1000 }, rec.handler),
+    ).rejects.toThrow(/output cap/i);
+  });
+
+  test("wrapModelStream tags timeout aborts as terminatedBy='activity-timeout' (matches engine sentinel)", async () => {
+    const { SegmentAbortError } = await import("./rlm.js");
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    const upstream: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "starting" };
+      await new Promise(() => undefined);
+    };
+    const ac = new AbortController();
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(
+      turnCtx(),
+      { messages: [userMessage(big)], signal: ac.signal },
+      upstream,
+    );
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    setTimeout(() => {
+      ac.abort(new DOMException("Stream timed out", "TimeoutError"));
+    }, 25);
+    let caught: unknown;
+    try {
+      for await (const _c of iter) {
+        // expected: timeout-tagged abort
+      }
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(SegmentAbortError);
+    if (!(caught instanceof SegmentAbortError)) throw new Error("expected SegmentAbortError");
+    expect(caught.segmentResponse.metadata?.terminatedBy).toBe("activity-timeout");
+  });
+
   test("wrapModelStream surfaces SegmentAbortError carrying interrupted+terminatedBy on caller abort", async () => {
     const { SegmentAbortError } = await import("./rlm.js");
     const mw = createRlmMiddleware({

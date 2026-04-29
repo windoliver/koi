@@ -245,6 +245,23 @@ async function rlmWrapModelCall(
       )} tool(s) present): segmentation would replay each tool call per chunk. Disable RLM for tool-enabled turns or compose with a tool-aware middleware.`,
     );
   }
+  // Fail closed when the caller set `maxTokens`. Each downstream segment
+  // dispatch reuses the original request, so the cap fires per-segment
+  // — N segments could legitimately produce N×maxTokens of output,
+  // blowing iteration / cost budgets that bound the original turn.
+  // Apportioning a per-segment slice is unsafe without a task-specific
+  // policy (segments may answer with very different lengths). Reject
+  // the configuration up front so the caller sees the budget conflict
+  // immediately instead of paying for amplified spend.
+  if (request.maxTokens !== undefined) {
+    throw new Error(
+      `RLM cannot segment requests with an output cap (maxTokens=${String(
+        request.maxTokens,
+      )}). Each segment dispatch reuses the cap, so N segments could produce up to ~${String(
+        request.maxTokens,
+      )}×N output tokens, breaking the caller's budget. Drop maxTokens for oversized turns or apply it after RLM via a downstream middleware that can apportion fairly.`,
+    );
+  }
   const segments = segmentRequest(request, cfg.maxChunkChars, {
     trustMetadataRole: cfg.trustMetadataRole,
   });
@@ -368,7 +385,7 @@ async function consumeStream(
       readonly stopReason?: ModelStopReason;
       readonly errorMessage?: string;
       readonly interrupted?: boolean;
-      readonly terminatedBy?: "abort" | "timeout";
+      readonly terminatedBy?: "abort" | "activity-timeout";
       readonly errorCode?: string;
       readonly retryable?: boolean;
       readonly retryAfterMs?: number;
@@ -429,7 +446,11 @@ async function consumeStream(
         stopReason: "error",
         errorMessage: isTimeout ? "Stream timed out" : "Stream cancelled",
         interrupted: true,
-        terminatedBy: isTimeout ? "timeout" : "abort",
+        // Match the runtime's existing sentinel — `delivery-policy.ts`
+        // and `runtime-factory.ts` key timeout handling off the literal
+        // `"activity-timeout"`. Inventing a different value would skip
+        // those recovery branches on oversized streamed turns.
+        terminatedBy: isTimeout ? "activity-timeout" : "abort",
       });
     }
     const result = settled as IteratorResult<ModelChunk>;
@@ -577,6 +598,15 @@ async function* rlmWrapModelStream(
       `RLM cannot segment streaming requests that carry tool descriptors (${String(
         request.tools.length,
       )} tool(s) present): segmentation would replay each tool call per chunk.`,
+    );
+  }
+  // Same maxTokens budget guard as the non-streaming path. See
+  // wrapModelCall for the rationale.
+  if (request.maxTokens !== undefined) {
+    throw new Error(
+      `RLM cannot segment streaming requests with an output cap (maxTokens=${String(
+        request.maxTokens,
+      )}). Each segment dispatch reuses the cap, breaking the caller's budget by a factor of N. Drop maxTokens for oversized turns or apply it after RLM.`,
     );
   }
   const segments = segmentRequest(request, cfg.maxChunkChars, {
