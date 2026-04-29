@@ -139,7 +139,12 @@ describe("createSkillProvider", () => {
     expect(result.components.has(skillToken("blocked-skill"))).toBe(false);
     const skip = result.skipped.find((s) => s.name === "blocked-skill");
     expect(skip).toBeDefined();
-    expect(skip?.reason).toContain("credentials not in scope");
+    // gov-15: reason must be the CONSTANT denial string. The skipped
+    // reason is reachable by operators/telemetry, so it must not echo the
+    // skill's required credential ref name (which would let an attacker
+    // enumerate keys via skill discovery).
+    expect(skip?.reason).toBe("credentials not in scope");
+    expect(skip?.reason).not.toContain("stripe");
   });
 
   test("when no CredentialComponent is wired, skill credential requirements are not enforced (backwards-compat)", async () => {

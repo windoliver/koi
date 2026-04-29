@@ -1092,14 +1092,18 @@ describe("loadManifestConfig: credentials block (gov-15)", () => {
     expect(result.value.credentials?.allow.length).toBe(2);
   });
 
-  test("treats empty allow array as undefined (no scope)", async () => {
+  test("preserves empty allow array as deny-all (not undefined)", async () => {
     const p = writeManifest(
       ["model:", "  name: google/gemini-2.0-flash-001", "credentials:", "  allow: []"].join("\n"),
     );
     const result = await loadManifestConfig(p);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.credentials).toBeUndefined();
+    // gov-15: explicit `credentials: { allow: [] }` means deny all, not
+    // legacy "no scope". The downstream wiring must build a deny-all
+    // CredentialComponent so out-of-scope skills are gated and
+    // authed_fetch rejects every key.
+    expect(result.value.credentials).toEqual({ allow: [] });
   });
 
   test("rejects non-string allow entries", async () => {

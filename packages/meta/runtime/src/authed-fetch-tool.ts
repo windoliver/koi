@@ -110,20 +110,38 @@ export function createAuthedFetchTool(opts: AuthedFetchToolOptions): Tool {
       }
 
       const authHeader = scheme === "" ? credValue : `${scheme} ${credValue}`;
+      // Redact both the bare credential and the full Authorization header
+      // anywhere they appear in returned strings. An echo/debug endpoint
+      // (or a misconfigured upstream that surfaces request headers in error
+      // pages) would otherwise hand the credential straight back to the
+      // agent through `body` or `statusText`.
+      const redact = (s: string): string => {
+        if (s.length === 0) return s;
+        let out = s;
+        if (authHeader.length > 0) out = out.split(authHeader).join("[REDACTED]");
+        if (credValue.length > 0) out = out.split(credValue).join("[REDACTED]");
+        return out;
+      };
       const controller = new AbortController();
       const timeoutHandle = setTimeout(() => controller.abort(), timeout);
       try {
         const res = await fetchFn(url, {
           method: "GET",
           headers: { [headerName]: authHeader },
+          // Do NOT auto-follow redirects: URL scope is enforced on the
+          // initial URL only, so a redirect to an off-allowlist host would
+          // smuggle the credential past the gate. Surface 30x to the agent
+          // and let an explicit follow-up call re-pass URL scope.
+          redirect: "manual",
           signal: controller.signal,
         });
         const body = await res.text();
         const truncated = body.length > MAX_BODY_BYTES;
+        const safeBody = redact(truncated ? body.slice(0, MAX_BODY_BYTES) : body);
         return {
           status: res.status,
-          statusText: res.statusText,
-          body: truncated ? body.slice(0, MAX_BODY_BYTES) : body,
+          statusText: redact(res.statusText),
+          body: safeBody,
           truncated,
         };
       } catch (e: unknown) {
@@ -131,7 +149,7 @@ export function createAuthedFetchTool(opts: AuthedFetchToolOptions): Tool {
         // Surface URL-scope / DNS / network failures uniformly. Do NOT
         // include the credential value or the cred key in the error path —
         // the message is reflected back to the agent.
-        return { error: `fetch failed: ${message}`, code: "EXTERNAL" };
+        return { error: `fetch failed: ${redact(message)}`, code: "EXTERNAL" };
       } finally {
         clearTimeout(timeoutHandle);
       }

@@ -975,7 +975,12 @@ export function buildCoreMiddleware(config: CoreMiddlewareConfig): CoreMiddlewar
 export function buildScopedCredentials(
   scope: { readonly allow: readonly string[] } | undefined,
 ): CredentialComponent | undefined {
-  if (scope === undefined || scope.allow.length === 0) return undefined;
+  // Absent `credentials:` block → no scoping configured (legacy open mode).
+  // Explicit `credentials: { allow: [] }` → present-but-empty deny-all
+  // wrapper: createScopedCredentials with an empty allowlist returns
+  // `undefined` for every key, which is the correct fail-closed behavior
+  // for an explicit empty manifest declaration.
+  if (scope === undefined) return undefined;
   return createScopedCredentials(createEnvCredentials(), { allow: scope.allow });
 }
 
@@ -1241,7 +1246,11 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     providers.push(createCredentialsProvider(directComponent));
   } else {
     const credentialsAllow = config.credentialsScope?.allow;
-    if (credentialsAllow !== undefined && credentialsAllow.length > 0) {
+    // Treat an explicit empty allowlist as deny-all: createScopedCredentials
+    // with `allow: []` returns `undefined` for every key, so every brick or
+    // tool reaching for a credential is denied. Only an absent
+    // `credentialsScope` (undefined) means "no scoping configured".
+    if (credentialsAllow !== undefined) {
       const baseCreds = createEnvCredentials();
       const scopedCreds = createScopedCredentials(baseCreds, { allow: credentialsAllow });
       activeCredentials = scopedCreds;
@@ -1249,12 +1258,15 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     }
   }
 
-  // gov-15: when both a credentials component AND web is enabled, wire the
-  // `authed_fetch` tool — the canonical agent-facing consumer of CREDENTIALS.
-  // The same scope-wrapped fetch (when network.allow is set) gates URL access.
-  // Both gates are independent: a request must satisfy URL scope AND
-  // credential scope to succeed.
-  if (activeCredentials !== undefined) {
+  // gov-15: register `authed_fetch` ONLY when web access is enabled. The
+  // tool issues outbound HTTP with a credential attached, so it is a
+  // network capability — gating it solely on credentials would leave a
+  // network-capable exfil tool reachable when the host explicitly disabled
+  // web (`includeWebFetch: false`). The same scope-wrapped fetch
+  // (`fetchFn`) inherits the manifest's `network.allow` URLPattern
+  // allowlist; without that, `authed_fetch` falls through to the unscoped
+  // global fetch which is unsafe for credentialed requests.
+  if (activeCredentials !== undefined && includeWeb) {
     const authedFetchTool = createAuthedFetchTool({
       credentials: activeCredentials,
       ...(fetchFn !== undefined ? { fetchFn } : {}),

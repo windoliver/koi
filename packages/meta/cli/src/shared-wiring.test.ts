@@ -230,13 +230,27 @@ describe("buildCoreProviders: credentials scope (gov-15)", () => {
     expect(providers.map((p) => p.name)).not.toContain("credentials");
   });
 
-  test("omits the credentials provider when allow array is empty", () => {
+  test("registers a deny-all credentials provider when allow array is empty", async () => {
+    // gov-15: explicit `credentials: { allow: [] }` is a deny-everything
+    // declaration, not "no scope". The provider is registered so brick
+    // activation and skill gating both see a CredentialComponent that
+    // returns undefined for every key.
     const providers = buildCoreProviders({
       cwd: mkTempCwd(),
       includeWebFetch: false,
       credentialsScope: { allow: [] },
     });
-    expect(providers.map((p) => p.name)).not.toContain("credentials");
+    const credsProvider = providers.find((p) => p.name === "credentials");
+    if (credsProvider === undefined) throw new Error("credentials provider missing");
+    const { CREDENTIALS, isAttachResult } = await import("@koi/core");
+    const stubAgent = {} as Parameters<typeof credsProvider.attach>[0];
+    const result = await credsProvider.attach(stubAgent);
+    if (!isAttachResult(result)) throw new Error("expected AttachResult");
+    const component = result.components.get(CREDENTIALS as unknown as string) as {
+      get: (key: string) => Promise<string | undefined>;
+    };
+    expect(await component.get("anything")).toBeUndefined();
+    expect(await component.get("openai_api_key")).toBeUndefined();
   });
 
   test("registers a scoped credentials provider when allow is non-empty", async () => {
@@ -304,8 +318,22 @@ describe("buildScopedCredentials", () => {
     expect(buildScopedCredentials(undefined)).toBeUndefined();
   });
 
-  test("returns undefined for empty allow array", () => {
-    expect(buildScopedCredentials({ allow: [] })).toBeUndefined();
+  test("returns a deny-all component for empty allow array", async () => {
+    // gov-15: empty allow → present-but-empty wrapper that denies every
+    // key. Returning `undefined` here would silently revert to legacy
+    // open-mode behavior, which is the wrong default for an explicit
+    // empty manifest declaration.
+    const previous = { ...process.env };
+    process.env.KOI_CRED_OPENAI_API_KEY = "sk-openai";
+    try {
+      const component = buildScopedCredentials({ allow: [] });
+      expect(component).toBeDefined();
+      if (component === undefined) return;
+      expect(await component.get("openai_api_key")).toBeUndefined();
+      expect(await component.get("anything")).toBeUndefined();
+    } finally {
+      process.env = previous;
+    }
   });
 
   test("returns a scoped component that honors the allowlist", async () => {
@@ -328,7 +356,23 @@ describe("buildScopedCredentials", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildCoreProviders: authed_fetch tool", () => {
-  test("registers authed_fetch when credentials component is wired", () => {
+  test("registers authed_fetch when credentials are wired AND web is enabled", () => {
+    const component = {
+      get: async () => "stub-cred",
+    };
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      includeWebFetch: true,
+      credentials: component,
+    });
+    expect(providers.map((p) => p.name)).toContain("authed_fetch");
+  });
+
+  test("does NOT register authed_fetch when web is disabled (network gating)", () => {
+    // gov-15: authed_fetch is a network capability with credentials
+    // attached. Gating it solely on credentials would leave a
+    // credential-armed exfil tool reachable when the host explicitly
+    // disabled web. Requires `includeWebFetch: true` to register.
     const component = {
       get: async () => "stub-cred",
     };
@@ -337,11 +381,11 @@ describe("buildCoreProviders: authed_fetch tool", () => {
       includeWebFetch: false,
       credentials: component,
     });
-    expect(providers.map((p) => p.name)).toContain("authed_fetch");
+    expect(providers.map((p) => p.name)).not.toContain("authed_fetch");
   });
 
   test("does not register authed_fetch when no credentials are wired", () => {
-    const providers = buildCoreProviders({ cwd: mkTempCwd(), includeWebFetch: false });
+    const providers = buildCoreProviders({ cwd: mkTempCwd(), includeWebFetch: true });
     expect(providers.map((p) => p.name)).not.toContain("authed_fetch");
   });
 });

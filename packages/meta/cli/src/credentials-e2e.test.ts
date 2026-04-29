@@ -159,10 +159,24 @@ describe("gov-15 credentials scope: manifest → skill activation E2E", () => {
 
     const manifestResult = await loadManifestConfig(manifestPath, { skipAuditValidation: true });
     if (!manifestResult.ok) throw new Error(`manifest load failed: ${manifestResult.error}`);
-    // Parser treats empty allow as undefined (no scope) — see manifest.ts.
-    // Documenting the parser contract here so a future change to "empty =
-    // closed everything" stays an intentional decision rather than an
-    // accidental tightening.
-    expect(manifestResult.value.credentials).toBeUndefined();
+    // gov-15: explicit empty allow is preserved as a present-but-empty
+    // declaration so downstream wiring builds a deny-all
+    // CredentialComponent. Skills with `requires.credentials` are dropped
+    // to `skipped`; only skills with no credential block remain visible.
+    expect(manifestResult.value.credentials).toEqual({ allow: [] });
+
+    const credentials = buildScopedCredentials(manifestResult.value.credentials);
+    if (credentials === undefined) {
+      throw new Error("expected deny-all CredentialComponent for explicit empty allow");
+    }
+    const skillsRuntime = createSkillsRuntime({
+      bundledRoot: null,
+      userRoot: join(workspace, ".claude", "skills"),
+    });
+    const { provider } = createProgressiveSkillProvider(skillsRuntime, { credentials });
+    const result = await provider.attach(STUB_AGENT);
+    if (!isAttachResult(result)) throw new Error("expected AttachResult");
+    expect(result.components.has(skillToken("any-cred"))).toBe(false);
+    expect(result.skipped.find((s) => s.name === "any-cred")?.reason).toBeDefined();
   });
 });

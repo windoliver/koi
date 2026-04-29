@@ -784,9 +784,10 @@ function parseManifestCredentials(
       error: "manifest.credentials.allow entries must be non-empty strings",
     };
   }
-  if (allow.length === 0) {
-    return { ok: true, value: undefined };
-  }
+  // Explicit empty allowlist (`credentials: { allow: [] }`) means deny all
+  // — preserve it as a present-but-empty config so downstream wiring builds
+  // a deny-everything CredentialComponent. Only an absent `credentials:`
+  // block means "no scoping configured".
   return { ok: true, value: { allow } };
 }
 

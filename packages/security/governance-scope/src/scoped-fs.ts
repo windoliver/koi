@@ -17,7 +17,7 @@
  * Read-only mode rejects every mutating operation regardless of scope.
  */
 
-import { realpathSync } from "node:fs";
+import { realpathSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import type { FileSearchResult, FileSystemBackend, KoiError, Result } from "@koi/core";
 import { permission } from "@koi/core";
@@ -131,6 +131,66 @@ function writeGuard(operation: string, compiled: CompiledScopedFs): KoiError | u
   return undefined;
 }
 
+function applyPostWriteRevalidation<T>(
+  result: Result<T, KoiError>,
+  preWritePath: string,
+  compiled: CompiledScopedFs,
+): Result<T, KoiError> {
+  // Only revalidate on successful writes — a backend failure already
+  // means nothing was written.
+  if (!result.ok) return result;
+  const denial = revalidateAfterWrite(preWritePath, compiled);
+  if (denial !== undefined) {
+    return { ok: false, error: denial };
+  }
+  return result;
+}
+
+/**
+ * Defense-in-depth post-write revalidation. The pre-write `normalizePath`
+ * realpaths the deepest existing ancestor and re-attaches the missing
+ * tail — but in the window between that check and the backend's actual
+ * write, an attacker-controlled concurrent process can replace the
+ * not-yet-existing leaf with a symlink to an outside-scope target. The
+ * backend (which is intentionally pure I/O) would then follow the
+ * symlink and write outside the allowlist.
+ *
+ * After every successful write/edit, re-resolve the realpath of the
+ * target. If the new realpath no longer matches the allowlist, the leaf
+ * was raced — best-effort unlink the leaked file and turn the result
+ * into a PERMISSION error. The race window is bounded by this check;
+ * full atomicity requires backend support for O_NOFOLLOW.
+ */
+function revalidateAfterWrite(
+  preWritePath: string,
+  compiled: CompiledScopedFs,
+): KoiError | undefined {
+  const post = resolveReal(preWritePath);
+  if (post === undefined) {
+    // Best-effort cleanup: try to unlink whatever exists at preWritePath.
+    try {
+      unlinkSync(preWritePath);
+    } catch {
+      // Cleanup failures are not user-visible — the PERMISSION error below
+      // is what the agent sees; the operator can investigate via logs.
+    }
+    return permission(
+      `Access to '${preWritePath}' was blocked: post-write path resolution failed (fail-closed).`,
+    );
+  }
+  if (!matchAny(toPosix(post), compiled.allow)) {
+    try {
+      unlinkSync(preWritePath);
+    } catch {
+      // ignore — see above
+    }
+    return permission(
+      `Access to '${post}' was blocked: post-write target is outside the allowed scope (symlink race).`,
+    );
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Search filter
 // ---------------------------------------------------------------------------
@@ -195,7 +255,11 @@ export function createScopedFs(
           const normTo = normalizePath(to, compiled);
           if (!normTo.ok)
             return { ok: false, error: normTo.error } satisfies Result<never, KoiError>;
-          return ren(normFrom.value, normTo.value);
+          const target = normTo.value;
+          const result = ren(normFrom.value, target);
+          return result instanceof Promise
+            ? result.then((r) => applyPostWriteRevalidation(r, target, compiled))
+            : applyPostWriteRevalidation(result, target, compiled);
         },
       }
     : {};
@@ -231,7 +295,11 @@ export function createScopedFs(
       if (guard !== undefined) return { ok: false, error: guard } satisfies Result<never, KoiError>;
       const norm = normalizePath(filePath, compiled);
       if (!norm.ok) return { ok: false, error: norm.error } satisfies Result<never, KoiError>;
-      return backend.write(norm.value, content, options);
+      const target = norm.value;
+      const result = backend.write(target, content, options);
+      return result instanceof Promise
+        ? result.then((r) => applyPostWriteRevalidation(r, target, compiled))
+        : applyPostWriteRevalidation(result, target, compiled);
     },
 
     edit(filePath, edits, options) {
@@ -239,7 +307,11 @@ export function createScopedFs(
       if (guard !== undefined) return { ok: false, error: guard } satisfies Result<never, KoiError>;
       const norm = normalizePath(filePath, compiled);
       if (!norm.ok) return { ok: false, error: norm.error } satisfies Result<never, KoiError>;
-      return backend.edit(norm.value, edits, options);
+      const target = norm.value;
+      const result = backend.edit(target, edits, options);
+      return result instanceof Promise
+        ? result.then((r) => applyPostWriteRevalidation(r, target, compiled))
+        : applyPostWriteRevalidation(result, target, compiled);
     },
 
     list(dirPath, options) {

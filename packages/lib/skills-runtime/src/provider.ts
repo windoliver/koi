@@ -267,10 +267,13 @@ async function checkSkillCredentials(
   if (credentials === undefined) return { ok: true };
   const result = await validateCredentialRequires(skill.requires as BrickRequires, credentials);
   if (result.ok) return { ok: true };
-  return {
-    ok: false,
-    reason: `credentials not in scope: ${result.error.message}`,
-  };
+  // gov-15: surface a CONSTANT denial reason. validateCredentialRequires's
+  // error.message includes the required credential ref names; echoing
+  // them into AttachResult.skipped (which is reachable by operators and
+  // can leak into telemetry) would let an attacker enumerate which keys
+  // a skill needs. Keep the detailed validation output for redacted
+  // internal logs only — never on this path.
+  return { ok: false, reason: "credentials not in scope" };
 }
 
 /**
