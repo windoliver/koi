@@ -1,0 +1,62 @@
+import type { BrickArtifact, BrickId, ForgeProvenance, ToolArtifact } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
+import { computeBrickId } from "@koi/hash";
+
+const baseProvenance: ForgeProvenance = {
+  source: { origin: "forged", forgedBy: "agent-1", sessionId: "sess-1" },
+  buildDefinition: { buildType: "koi.forge.tool/v1", externalParameters: {} },
+  builder: { id: "koi/forge" },
+  metadata: {
+    invocationId: "inv-1",
+    startedAt: 1,
+    finishedAt: 2,
+    sessionId: "sess-1",
+    agentId: "agent-1",
+    depth: 0,
+  },
+  verification: { passed: true, sandbox: true, totalDurationMs: 1, stageResults: [] },
+  classification: "public",
+  contentMarkers: [],
+  contentHash: "sha256:placeholder",
+};
+
+interface MakeToolOptions {
+  readonly implementation?: string;
+  readonly name?: string;
+  readonly parentBrickId?: BrickId | undefined;
+  readonly id?: BrickId | undefined;
+}
+
+export function makeTool(options: MakeToolOptions = {}): ToolArtifact {
+  const implementation = options.implementation ?? "export default () => 1";
+  const id = options.id ?? computeBrickId("tool", implementation);
+  const provenance: ForgeProvenance =
+    options.parentBrickId !== undefined
+      ? { ...baseProvenance, parentBrickId: options.parentBrickId, evolutionKind: "fix" }
+      : baseProvenance;
+  return {
+    id,
+    kind: "tool",
+    name: options.name ?? "sample-tool",
+    description: "fixture",
+    scope: "agent",
+    origin: "forged",
+    policy: DEFAULT_SANDBOXED_POLICY,
+    lifecycle: "active",
+    provenance,
+    version: "1.0.0",
+    tags: [],
+    usageCount: 0,
+    implementation,
+    inputSchema: { type: "object" },
+  };
+}
+
+export function tamper(brick: BrickArtifact): BrickArtifact {
+  if (brick.kind !== "tool") throw new Error("tamper: tool only");
+  return { ...brick, implementation: `${brick.implementation}// tampered` };
+}
+
+export function reBrandId(brick: BrickArtifact, fakeHex: string): BrickArtifact {
+  return { ...brick, id: brickId(`sha256:${fakeHex}`) };
+}
