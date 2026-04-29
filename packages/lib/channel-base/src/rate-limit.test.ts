@@ -618,7 +618,7 @@ describe("createRateLimiter", () => {
       expect(completed).toEqual(["ok"]);
     });
 
-    it("default mode rejects the caller at the deadline AND preserves single-flight FIFO", async () => {
+    it("default mode upgrades final-attempt TIMEOUT to real outcome (no duplicate-send hazard)", async () => {
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
         sendTimeoutMs: 50,
@@ -636,10 +636,11 @@ describe("createRateLimiter", () => {
       const b = limiter.enqueue(async () => {
         events.push("B-sent");
       });
-      // Caller rejected at the deadline (synthetic TIMEOUT).
-      await expect(a).rejects.toMatchObject({ code: "TIMEOUT" });
+      // Strict mode awaits real settle on the final attempt (the queue
+      // is already going to wait for advance, so this adds no latency).
+      // Late success → caller resolves with no duplicate-send hazard.
+      await expect(a).resolves.toBeUndefined();
       await b;
-      // Strict FIFO: A's underlying send must finish before B is sent.
       expect(events).toEqual(["A-finished", "B-sent"]);
     });
 
@@ -664,18 +665,19 @@ describe("createRateLimiter", () => {
       expect(Date.now() - start).toBeLessThan(500);
     });
 
-    it("rejects the caller promptly at the deadline regardless of underlying send", async () => {
+    it("liveness mode rejects the caller promptly at the deadline (no late-outcome wait)", async () => {
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
         sendTimeoutMs: 20,
+        advanceOnTimeout: true,
       });
       // Transport that takes 200ms, far longer than sendTimeoutMs.
       const slow: SendFn = () => new Promise<void>((resolve) => setTimeout(resolve, 200));
       const start = Date.now();
       await expect(limiter.enqueue(slow)).rejects.toMatchObject({ code: "TIMEOUT" });
       const elapsed = Date.now() - start;
-      // Caller-facing rejection fires at sendTimeoutMs, NOT at fnPromise
-      // settlement. Allow some scheduler slack.
+      // Liveness mode: caller-facing rejection fires at the deadline,
+      // NOT at fnPromise settlement. Allow some scheduler slack.
       expect(elapsed).toBeLessThan(80);
     });
 
@@ -881,7 +883,9 @@ describe("createRateLimiter", () => {
           if (signal.aborted) onAbort();
           else signal.addEventListener("abort", onAbort, { once: true });
         });
-      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "TIMEOUT" });
+      // Final attempt's caller-facing error is upgraded to the real
+      // late RATE_LIMIT (strict mode awaits real settle on terminal).
+      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "RATE_LIMIT" });
       // Three attempts (initial + 2 retries), never overlapping.
       expect(attempts).toBe(3);
       expect(maxConcurrent).toBe(1);

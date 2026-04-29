@@ -428,12 +428,33 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
           } catch (error: unknown) {
             lastError = error;
 
-            // For deadline-exceeded TIMEOUTs (synthetic watchdog rejection,
-            // Skip retry analysis when no retries remain. This also
-            // ensures the caller is rejected promptly at the deadline on
-            // the final attempt — we do not delay caller-facing
-            // settlement to wait for late outcome on a terminal failure.
-            if (attempt >= retryConfig.maxRetries) break;
+            const isDeadlineTimeout =
+              isKoiError(error) &&
+              error.code === "TIMEOUT" &&
+              (error.context as { phase?: string } | undefined)?.phase === "deadline-exceeded";
+
+            // On the final attempt with no retries remaining: in strict
+            // mode the queue is already going to wait for the underlying
+            // send to settle (single-flight gate on advance), so we have
+            // a free opportunity to upgrade the caller's outcome from
+            // the synthetic TIMEOUT to the real terminal result. This
+            // avoids the duplicate-send hazard where upstream code
+            // retries a send that actually completed. In liveness mode
+            // we don't wait — caller sees prompt synthetic TIMEOUT; the
+            // real outcome surfaces via onLateSuccess/onLateFailure.
+            if (attempt >= retryConfig.maxRetries) {
+              if (isDeadlineTimeout && !advanceOnTimeout) {
+                await run.settled;
+                const late = run.lateOutcome();
+                if (late.kind === "success") {
+                  lastError = undefined;
+                } else if (late.kind === "failure") {
+                  lastError = late.error;
+                }
+                // late.kind === "abort-ignored": keep synthetic TIMEOUT.
+              }
+              break;
+            }
 
             // For deadline-exceeded TIMEOUTs (synthetic watchdog rejection,
             // not a transport-reported TIMEOUT), the retry decision must

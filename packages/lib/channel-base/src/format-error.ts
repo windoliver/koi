@@ -125,6 +125,12 @@ function normalizeAuthUrl(raw: string): string | undefined {
   // Only https — reject http (cleartext OAuth handoff is a credential
   // exposure risk), as well as ftp/javascript/data/file/etc.
   if (parsed.protocol !== "https:") return undefined;
+  // Reject URLs with embedded userinfo. `https://user:pass@host/...`
+  // can leak credentials when logged or rendered, and
+  // `https://trusted.example@attacker.test/...` is a classic phishing
+  // pattern where a naive host-prefix check matches the userinfo
+  // instead of the actual host.
+  if (parsed.username !== "" || parsed.password !== "") return undefined;
   // URL.toString() canonicalizes (lowercases host, normalizes percent-
   // encoding) — that's what we want adapters to see and validate.
   return parsed.toString();

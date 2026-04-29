@@ -205,6 +205,25 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(httpOut.auth.unverifiedAuthorizationUrl).toBeUndefined();
     });
 
+    it("rejects authorization URLs with embedded userinfo (credential leak / phishing)", () => {
+      // user:pass@host — credentials leak risk via logs/UX.
+      const withCreds = baseError("AUTH_REQUIRED", "x", {
+        context: { authorizationUrl: "https://user:pass@issuer.example/auth" },
+      });
+      const credsOut = classifyErrorForChannel(withCreds);
+      if (credsOut.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(credsOut.auth.unverifiedAuthorizationUrl).toBeUndefined();
+
+      // trusted.example@attacker.test — classic phishing: a naive
+      // host-prefix check matches the userinfo, not the real host.
+      const phish = baseError("AUTH_REQUIRED", "x", {
+        context: { authorizationUrl: "https://trusted.example@attacker.test/auth" },
+      });
+      const phishOut = classifyErrorForChannel(phish);
+      if (phishOut.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(phishOut.auth.unverifiedAuthorizationUrl).toBeUndefined();
+    });
+
     it("strips control/bidi chars from the authorization URL before parsing", () => {
       // Inject a bidi (RLO U+202E) and a null byte into the URL string.
       const hostile = `https://issuer.example/oauth‮ `;
