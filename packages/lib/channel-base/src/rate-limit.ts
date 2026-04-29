@@ -168,18 +168,6 @@ interface QueueEntry {
  *   - EXTERNAL           → defaults to retryable=false in RETRYABLE_DEFAULTS; opt-in via callback.
  */
 const TRANSPORT_RETRY_CODES: ReadonlySet<KoiErrorCode> = new Set<KoiErrorCode>(["RATE_LIMIT"]);
-// Codes for which the default extractor honors a server-provided
-// `retryAfterMs` hint. Wider than TRANSPORT_RETRY_CODES so that callers
-// who opt TIMEOUT into retry (via a custom isRetryable predicate, when
-// they have provider-side idempotency) automatically get the
-// server-requested cooldown instead of falling back to local backoff.
-// Without this, a `{ code: "TIMEOUT", retryable: true, retryAfterMs: 60_000 }`
-// from a transport that explicitly said "wait 60s" would still replay
-// after only the computed backoff and hammer the struggling provider.
-const RETRY_AFTER_HINT_CODES: ReadonlySet<KoiErrorCode> = new Set<KoiErrorCode>([
-  "RATE_LIMIT",
-  "TIMEOUT",
-]);
 
 /** Returns the retry-after hint only when it is a finite, non-negative number. */
 const sanitizeRetryAfterMs = (raw: unknown): number | undefined => {
@@ -188,9 +176,19 @@ const sanitizeRetryAfterMs = (raw: unknown): number | undefined => {
   return raw;
 };
 
+// The default extractor mirrors the default isRetryable set: only
+// RATE_LIMIT carries a retryAfterMs hint. Including TIMEOUT here would
+// cause the retry-decision logic
+// (`retryable = retryAfterMs !== undefined || isRetryable(...)`)
+// to auto-replay TIMEOUT sends whenever a transport included a hint —
+// reintroducing the duplicate-delivery hazard the channel-base contract
+// explicitly avoids. Callers who opt TIMEOUT into retry (because they
+// have provider-side idempotency) MUST also supply their own
+// `extractRetryAfterMs` if they want the server-requested cooldown
+// honored.
 const defaultExtractRetryAfterMs = (error: unknown): number | undefined => {
   if (!isKoiError(error)) return undefined;
-  if (!RETRY_AFTER_HINT_CODES.has(error.code)) return undefined;
+  if (!TRANSPORT_RETRY_CODES.has(error.code)) return undefined;
   return sanitizeRetryAfterMs(error.retryAfterMs);
 };
 

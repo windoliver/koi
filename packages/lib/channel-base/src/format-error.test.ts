@@ -336,6 +336,23 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(out.auth.scope).toBeUndefined();
     });
 
+    it("preserves common colon-delimited OAuth scope names (chat:write, read:user)", () => {
+      // Regression: loop-5 round 10 finding 2. Real OAuth providers use
+      // identifier:identifier scope names — Slack `chat:write`,
+      // `channels:history`; GitHub `read:user`, `write:repo_hook`.
+      // These must NOT be conflated with URI schemes; the all-or-nothing
+      // gate must let them through.
+      const err = baseError("AUTH_REQUIRED", "x", {
+        context: {
+          authorizationUrl: "https://issuer.example",
+          scope: "chat:write read:user channels:history write:repo_hook",
+        },
+      });
+      const out = classifyErrorForChannel(err);
+      if (out.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(out.auth.scope).toBe("chat:write read:user channels:history write:repo_hook");
+    });
+
     it("rejects scope tokens whose scheme is not on the allowlist (https/api/urn)", () => {
       // Regression: loop-5 round 9 finding 2. Bare `http://...`,
       // `javascript:`, `data:`, custom app schemes can autolink or

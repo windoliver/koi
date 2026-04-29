@@ -229,12 +229,13 @@ describe("createRateLimiter", () => {
       expect(sleepSpy).toHaveBeenCalledWith(25);
     });
 
-    it("opt-in TIMEOUT retries honor server-provided retryAfterMs", async () => {
-      // Regression: loop-5 round 9 finding 3. When a caller opts TIMEOUT
-      // into retry (because they have provider-side idempotency), the
-      // built-in extractor must surface a `retryAfterMs` hint so the
-      // server-requested cooldown is honored instead of falling back
-      // to local backoff and hammering the provider.
+    it("opt-in TIMEOUT retries with caller-provided extractor honor retryAfterMs", async () => {
+      // Loop-5 round 10: the default extractor deliberately does NOT
+      // surface TIMEOUT.retryAfterMs (gated to RATE_LIMIT only) — that
+      // would auto-replay TIMEOUT sends and reintroduce the
+      // duplicate-delivery hazard. Callers who opt TIMEOUT into retry
+      // (because they have provider-side idempotency) and want the
+      // server cooldown honored MUST supply their own extractRetryAfterMs.
       const limiter = createRateLimiter({
         retry: {
           ...errors.DEFAULT_RETRY_CONFIG,
@@ -244,6 +245,13 @@ describe("createRateLimiter", () => {
         },
         isRetryable: (e) =>
           typeof e === "object" && e !== null && (e as { code?: string }).code === "TIMEOUT",
+        extractRetryAfterMs: (e) => {
+          if (typeof e === "object" && e !== null) {
+            const r = (e as { retryAfterMs?: unknown }).retryAfterMs;
+            if (typeof r === "number") return r;
+          }
+          return undefined;
+        },
       });
       let attempts = 0;
       await limiter.enqueue(async () => {
@@ -253,6 +261,26 @@ describe("createRateLimiter", () => {
       });
       expect(attempts).toBe(2);
       expect(sleepSpy).toHaveBeenCalledWith(60_000);
+    });
+
+    it("default extractor does NOT auto-replay TIMEOUT even when retryAfterMs is set", async () => {
+      // Regression: loop-5 round 10 finding 1. A bare
+      // { code: "TIMEOUT", retryAfterMs: 60_000 } from a transport
+      // must NOT trigger automatic retry under default policy — request
+      // status is unknown and the send may have completed before the
+      // local watchdog fired. Explicit opt-in via custom isRetryable +
+      // extractRetryAfterMs is required.
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
+      });
+      let attempts = 0;
+      await expect(
+        limiter.enqueue(async () => {
+          attempts++;
+          throw koiError({ code: "TIMEOUT", retryAfterMs: 60_000, retryable: true });
+        }),
+      ).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(attempts).toBe(1);
     });
 
     it("does not auto-retry TIMEOUT — request status is unknown", async () => {

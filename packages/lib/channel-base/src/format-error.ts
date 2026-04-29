@@ -297,19 +297,47 @@ function extractAuthHandoff(error: KoiError): {
     // displayed. Adapters that need full granular display must consume
     // the original error.context themselves under their trust policy.
     const allowedToken = /^[A-Za-z0-9:/.\-_+=?&#~]+$/;
-    // Schemes allowed on URI-shaped scope tokens. https and api:// cover
-    // the common OAuth scope forms (Google, Azure AD, Microsoft Graph,
-    // Salesforce, urn:ietf:params:oauth:...). Anything else is rejected:
-    // raw `http://...`, `javascript:`, `data:`, `file:`, custom app
-    // schemes — those autolink or trigger client actions on common chat
-    // surfaces and have no business in a consent-UX scope list.
+    // Distinguish three cases for tokens that contain a colon:
+    //
+    //   1. URI shape (`scheme://host/...`): the scheme MUST be in the
+    //      URI allowlist. Covers https://googleapis.com/..., api://....
+    //   2. Single-colon URN-like (`urn:ietf:params:oauth:...`): allowed.
+    //   3. Single-colon scope name (`chat:write`, `read:user`): allowed,
+    //      but only when the scheme prefix is NOT a known dangerous URI
+    //      scheme that chat surfaces autolink (mailto, tel, sms, file,
+    //      ftp, javascript, data, vscode, slack, etc.). The character
+    //      allowlist already excludes most URI authority chars (`@`,
+    //      `(`, `<`, `,`), so the remaining risk is "looks like a
+    //      scope name but resolves to a clickable scheme."
     const URI_TOKEN_ALLOWED_SCHEMES = new Set(["https", "api", "urn"]);
+    const DANGEROUS_SCHEME_PREFIXES = new Set([
+      "http",
+      "ftp",
+      "ftps",
+      "mailto",
+      "javascript",
+      "vbscript",
+      "data",
+      "file",
+      "sms",
+      "tel",
+      "vscode",
+      "slack",
+      "app",
+      "intent",
+    ]);
     const isAllowedScopeToken = (t: string): boolean => {
       if (!allowedToken.test(t)) return false;
       const colonIdx = t.indexOf(":");
       if (colonIdx === -1) return true;
       const scheme = t.slice(0, colonIdx).toLowerCase();
-      return URI_TOKEN_ALLOWED_SCHEMES.has(scheme);
+      // URI shape requires scheme://...
+      if (t.startsWith(`${scheme}://`)) return URI_TOKEN_ALLOWED_SCHEMES.has(scheme);
+      // urn: form is allowed.
+      if (URI_TOKEN_ALLOWED_SCHEMES.has(scheme)) return true;
+      // Single-colon: reject known dangerous URI schemes; otherwise treat
+      // as a plain OAuth scope name (chat:write, read:user, channels:history).
+      return !DANGEROUS_SCHEME_PREFIXES.has(scheme);
     };
     const normalized = scope
       .normalize("NFC")
