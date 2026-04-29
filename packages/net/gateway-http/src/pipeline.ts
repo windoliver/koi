@@ -40,6 +40,20 @@ export interface PipelineDeps {
 
 type WebhookRoute = Extract<RouteMatch, { kind: "webhook" }>;
 
+type VerifiedAuth = {
+  readonly reg: ChannelRegistration;
+  readonly payload: unknown;
+  readonly outcome: AuthOutcome;
+};
+
+type AuthResult =
+  | { readonly ok: true; readonly value: VerifiedAuth }
+  | { readonly ok: false; readonly response: Response };
+
+type DispatchResult =
+  | { readonly ok: true; readonly frameId: string }
+  | { readonly ok: false; readonly response: Response };
+
 export async function runPipeline(req: Request, deps: PipelineDeps): Promise<Response> {
   const url = new URL(req.url);
   const route = matchRoute(req.method, url.pathname);
@@ -58,6 +72,9 @@ export async function runPipeline(req: Request, deps: PipelineDeps): Promise<Res
       headers: { "Retry-After": "1" },
     });
   }
+  // Single event-loop scope: read/increment/decrement is safe without atomics
+  // because there's no preemption between await points in the request scope.
+  // Do NOT share inFlight across worker threads or processes.
   deps.inFlight.count += 1;
   try {
     return await runWebhook(req, deps, route);
@@ -81,19 +98,10 @@ async function runWebhook(
 
   // Step 1 cont'd: channel lookup with synthetic decoy on miss for timing parity.
   const channel = deps.channels.get(route.channel);
-  const effectiveSecret = channel?.secret ?? DUMMY_SECRET;
 
-  // Step 4: front-door source-IP limiter (only when configured).
-  if (deps.config.sourceLimit !== "disabled-acknowledged") {
-    const r = deps.rateLimits.consumeSource(deps.sourceAddr, deps.config.sourceLimit);
-    if (!r.allowed) {
-      emit(deps, route, 429, "rejected:rate-limit-source");
-      return new Response("rate limited", {
-        status: 429,
-        headers: { "Retry-After": String(Math.max(1, Math.ceil(r.retryAfterMs / 1000))) },
-      });
-    }
-  }
+  // Step 4: front-door source-IP limiter.
+  const sourceLimitResp = checkSourceLimit(deps, route);
+  if (sourceLimitResp !== null) return sourceLimitResp;
 
   // Step 5: body read with size cap.
   const rawBody = await readBoundedBody(req, deps.config.maxBodyBytes);
@@ -102,48 +110,90 @@ async function runWebhook(
     return new Response("payload too large", { status: 413 });
   }
 
-  // Step 6: HMAC verify (always; even with decoy for timing parity).
+  // Steps 6-9: HMAC verify, replay window, parse, channel.authenticate.
+  const auth = await verifyAndAuth(req, route, rawBody, channel, deps);
+  if (!auth.ok) return auth.response;
+  const { reg, payload, outcome } = auth.value;
+
+  // Steps 10-11: per-tenant nonce + tenant rate limit.
+  const tenantResp = applyTenantGates(reg, outcome, req, deps, route);
+  if (tenantResp !== null) return tenantResp;
+
+  return await dispatchAndCache(req, deps, route, reg, outcome, payload);
+}
+
+function checkSourceLimit(deps: PipelineDeps, route: WebhookRoute): Response | null {
+  if (deps.config.sourceLimit === "disabled-acknowledged") return null;
+  const r = deps.rateLimits.consumeSource(deps.sourceAddr, deps.config.sourceLimit);
+  if (r.allowed) return null;
+  emit(deps, route, 429, "rejected:rate-limit-source");
+  return new Response("rate limited", {
+    status: 429,
+    headers: { "Retry-After": String(Math.max(1, Math.ceil(r.retryAfterMs / 1000))) },
+  });
+}
+
+async function verifyAndAuth(
+  req: Request,
+  route: WebhookRoute,
+  rawBody: string,
+  channel: ChannelRegistration | undefined,
+  deps: PipelineDeps,
+): Promise<AuthResult> {
   const ts = req.headers.get(HEADER_TS) ?? "";
   const sig = req.headers.get(HEADER_SIG) ?? "";
-  const sigOk = verifyHmac(effectiveSecret, ts, rawBody, sig);
-  if (!sigOk || channel === undefined) {
-    // Run a dummy compute on the unknown-channel path so timing stays close to
-    // the registered-channel HMAC failure path even when verifyHmac short-circuits.
-    if (channel === undefined) {
-      computeSignature(DUMMY_SECRET, ts, rawBody);
-    }
-    emit(deps, route, 401, "rejected:auth");
-    return new Response(UNAUTH_BODY, { status: 401 });
-  }
 
+  // Step 6: HMAC verify (always; even with decoy for timing parity).
+  const sigOk = verifyHmac(channel?.secret ?? DUMMY_SECRET, ts, rawBody, sig);
+  if (!sigOk || channel === undefined) {
+    // Dummy compute on unknown-channel path keeps timing close to the
+    // registered-channel HMAC failure path even when verifyHmac short-circuits.
+    if (channel === undefined) computeSignature(DUMMY_SECRET, ts, rawBody);
+    return rejectAuth(deps, route, "rejected:auth");
+  }
   const reg = channel;
 
   // Step 7: replay timestamp window only.
-  const tsNum = Number(ts);
   const nowSec = Math.floor(deps.clock() / 1000);
-  if (!isWithinReplayWindow(nowSec, tsNum, deps.config.replayWindowSeconds)) {
-    emit(deps, route, 401, "rejected:replay");
-    return new Response(UNAUTH_BODY, { status: 401 });
+  if (!isWithinReplayWindow(nowSec, Number(ts), deps.config.replayWindowSeconds)) {
+    return rejectAuth(deps, route, "rejected:replay");
   }
 
   // Step 8: parse body (pre-auth, gateway-canonical).
   const parsed = parseBody(rawBody, req.headers.get("Content-Type"), reg.parseBody);
   if (!parsed.ok) {
     emit(deps, route, 400, "rejected:invalid-body");
-    return new Response(JSON.stringify({ ok: false, code: "INVALID_BODY" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return {
+      ok: false,
+      response: new Response(JSON.stringify({ ok: false, code: "INVALID_BODY" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }),
+    };
   }
 
   // Step 9: authenticate (channel-specific; receives parsed payload).
   const authResult = await reg.authenticate(req, rawBody, parsed.value, reg.secret);
-  if (!authResult.ok) {
-    emit(deps, route, 401, "rejected:auth");
-    return new Response(UNAUTH_BODY, { status: 401 });
-  }
-  const outcome: AuthOutcome = authResult.value;
+  if (!authResult.ok) return rejectAuth(deps, route, "rejected:auth");
+  return { ok: true, value: { reg, payload: parsed.value, outcome: authResult.value } };
+}
 
+function rejectAuth(
+  deps: PipelineDeps,
+  route: WebhookRoute,
+  reason: AuthAuditResult,
+): { readonly ok: false; readonly response: Response } {
+  emit(deps, route, 401, reason);
+  return { ok: false, response: new Response(UNAUTH_BODY, { status: 401 }) };
+}
+
+function applyTenantGates(
+  reg: ChannelRegistration,
+  outcome: AuthOutcome,
+  req: Request,
+  deps: PipelineDeps,
+  route: WebhookRoute,
+): Response | null {
   // Step 10: per-tenant nonce check.
   if (reg.replayProtection === "nonce") {
     const nonce = req.headers.get(HEADER_NONCE) ?? "";
@@ -164,8 +214,7 @@ async function runWebhook(
       });
     }
   }
-
-  return await dispatchAndCache(req, deps, route, reg, outcome, parsed.value);
+  return null;
 }
 
 async function dispatchAndCache(
@@ -184,28 +233,76 @@ async function dispatchAndCache(
 
   // Step 13: idempotency reservation.
   const deliveryId = reg.extractDeliveryId(req, payload);
-  if (deliveryId !== undefined) {
-    const reservation = deps.idempotency.reserve(reg.id, outcome.tenantId, deliveryId);
-    if (reservation.kind === "in-flight") {
-      emit(deps, route, 409, "idempotent-in-flight");
-      return new Response(JSON.stringify({ ok: false, code: "DELIVERY_IN_FLIGHT" }), {
-        status: 409,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-    if (reservation.kind === "cached") {
-      emit(deps, route, reservation.response.status, "idempotent-replay", sessionId);
-      return new Response(reservation.response.body, {
-        status: reservation.response.status,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-  }
+  const reservationResp = reserveDelivery(deps, route, reg, outcome, deliveryId, sessionId);
+  if (reservationResp !== null) return reservationResp;
 
-  // Step 14: dispatch.
-  let frameId: string;
+  // Step 14: dispatch (with cleanup on throw).
+  const dispatchResult = await runDispatchWithCleanup(
+    reg,
+    outcome,
+    sessionId,
+    deliveryId,
+    payload,
+    deps,
+    route,
+  );
+  if (!dispatchResult.ok) return dispatchResult.response;
+
+  // Step 15: respond + cache (only on success).
+  const responseBody = JSON.stringify({ ok: true, frameId: dispatchResult.frameId });
+  if (deliveryId !== undefined) {
+    deps.idempotency.complete(reg.id, outcome.tenantId, deliveryId, {
+      status: 200,
+      body: responseBody,
+      frameId: dispatchResult.frameId,
+    });
+  }
+  emit(deps, route, 200, "ok", sessionId);
+  return new Response(responseBody, {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function reserveDelivery(
+  deps: PipelineDeps,
+  route: WebhookRoute,
+  reg: ChannelRegistration,
+  outcome: AuthOutcome,
+  deliveryId: string | undefined,
+  sessionId: string,
+): Response | null {
+  if (deliveryId === undefined) return null;
+  const reservation = deps.idempotency.reserve(reg.id, outcome.tenantId, deliveryId);
+  if (reservation.kind === "in-flight") {
+    emit(deps, route, 409, "idempotent-in-flight");
+    return new Response(JSON.stringify({ ok: false, code: "DELIVERY_IN_FLIGHT" }), {
+      status: 409,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  if (reservation.kind === "cached") {
+    emit(deps, route, reservation.response.status, "idempotent-replay", sessionId);
+    return new Response(reservation.response.body, {
+      status: reservation.response.status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  return null;
+}
+
+async function runDispatchWithCleanup(
+  reg: ChannelRegistration,
+  outcome: AuthOutcome,
+  sessionId: string,
+  deliveryId: string | undefined,
+  payload: unknown,
+  deps: PipelineDeps,
+  route: WebhookRoute,
+): Promise<DispatchResult> {
   try {
-    frameId = await deps.dispatch(sessionId, outcome.agentId, payload);
+    const frameId = await deps.dispatch(sessionId, outcome.agentId, payload);
+    return { ok: true, frameId };
   } catch (err: unknown) {
     if (deliveryId !== undefined) {
       deps.idempotency.clear(reg.id, outcome.tenantId, deliveryId);
@@ -215,23 +312,8 @@ async function dispatchAndCache(
     // Reservation cleared so provider retry can re-attempt.
     emit(deps, route, 500, "ok", sessionId);
     void err;
-    return new Response("internal error", { status: 500 });
+    return { ok: false, response: new Response("internal error", { status: 500 }) };
   }
-
-  // Step 15: respond + cache (only on success).
-  const responseBody = JSON.stringify({ ok: true, frameId });
-  if (deliveryId !== undefined) {
-    deps.idempotency.complete(reg.id, outcome.tenantId, deliveryId, {
-      status: 200,
-      body: responseBody,
-      frameId,
-    });
-  }
-  emit(deps, route, 200, "ok", sessionId);
-  return new Response(responseBody, {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 }
 
 function emit(
@@ -249,6 +331,8 @@ function emit(
     path,
     method: "POST",
     status,
+    // TODO: D3 (server.ts) will thread requestStartedAt into deps so we can
+    // compute real latency. For now this records 0 for all entries.
     latencyMs: 0,
     authResult,
     ...(sessionId === undefined ? {} : { sessionId }),
