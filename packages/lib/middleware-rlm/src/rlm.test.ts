@@ -970,6 +970,90 @@ describe("createRlmMiddleware", () => {
     ).rejects.toThrow(/tool_call/);
   });
 
+  test("wrapModelStream does not double-count tokens when error chunk repeats final usage totals", async () => {
+    // Providers can emit incremental usage deltas during the stream and
+    // then repeat the FINAL cumulative numbers on the terminating error
+    // chunk. The query-engine consumer treats error.usage as
+    // overwrite-only; RLM must mirror that contract or the failed
+    // segment's terminal response (and any cost dashboard reading it)
+    // overstates the tokens billed for that segment.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    const upstream: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "partial" };
+      yield { kind: "usage", inputTokens: 7, outputTokens: 3 };
+      // Provider repeats the final cumulative totals on the error chunk:
+      yield {
+        kind: "error",
+        message: "rate limit exceeded",
+        usage: { inputTokens: 10, outputTokens: 4 },
+      };
+    };
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    let caught: unknown;
+    try {
+      for await (const _ of iter) {
+        // exhaust until segment-level guard throws
+      }
+    } catch (err: unknown) {
+      caught = err;
+    }
+    if (!(caught instanceof Error) || !("segmentResponse" in caught)) {
+      throw new Error("expected SegmentAbortError");
+    }
+    const aborted = caught as Error & { readonly segmentResponse: ModelResponse };
+    // Overwrite (not 7+10=17 / 3+4=7): error.usage replaces accumulated totals.
+    expect(aborted.segmentResponse.usage?.inputTokens).toBe(10);
+    expect(aborted.segmentResponse.usage?.outputTokens).toBe(4);
+  });
+
+  test("wrapModelStream forwards thinking_delta from each segment instead of dropping it", async () => {
+    // thinking_delta is a first-class stream event consumed by the
+    // engine, the TUI, and event-trace middleware. Silently dropping it
+    // on oversized turns would diverge the RLM streaming contract from
+    // the normal one and lose reasoning chronology on the exact turns
+    // that are hardest to debug.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let segmentCount = 0; // let: per-segment counter
+    const upstream: ModelStreamHandler = async function* () {
+      segmentCount += 1;
+      const n = segmentCount;
+      yield { kind: "thinking_delta", delta: `think${n}` };
+      yield { kind: "text_delta", delta: `seg${n}` };
+      yield {
+        kind: "done",
+        response: {
+          content: `seg${n}`,
+          model: "stream-model",
+          stopReason: "stop" as const,
+        },
+      };
+    };
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    const chunks: ModelChunk[] = [];
+    for await (const c of iter) chunks.push(c);
+    const thinkingDeltas = chunks.filter((c) => c.kind === "thinking_delta");
+    expect(thinkingDeltas.length).toBe(segmentCount);
+    expect(segmentCount).toBeGreaterThan(1);
+    for (let i = 0; i < thinkingDeltas.length; i++) {
+      const t = thinkingDeltas[i];
+      if (t === undefined || t.kind !== "thinking_delta")
+        throw new Error("expected thinking_delta");
+      expect(t.delta).toBe(`think${i + 1}`);
+    }
+  });
+
   test("describeCapabilities returns a label", () => {
     const mw = createRlmMiddleware();
     const cap = mw.describeCapabilities?.(turnCtx());

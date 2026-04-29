@@ -461,14 +461,23 @@ export function createRlmMiddleware(config?: RlmConfig): KoiMiddleware {
  *      ""`. Without backfill, oversized streamed turns reassemble to
  *      empty answers.
  */
+interface ConsumedSegment {
+  readonly response: ModelResponse;
+  readonly thinkingText: string;
+}
+
 async function consumeStream(
   request: ModelRequest,
   next: ModelStreamHandler,
-): Promise<ModelResponse> {
+): Promise<ConsumedSegment> {
   let streamedInput = 0; // let: per-segment usage accumulator
   let streamedOutput = 0; // let: per-segment usage accumulator
   let sawUsage = false; // let: did the stream emit any `usage` chunks
   let streamedText = ""; // let: accumulate text_delta in case done.response.content is empty
+  let streamedThinking = ""; // let: accumulate thinking_delta so the segmented
+  // stream can re-emit it; oversized turns are exactly the cases where
+  // reasoning chronology is most needed, and silently dropping it
+  // would diverge the RLM streaming contract from the normal one.
   let model = ""; // let: best-effort model id from done or fallback
   let responseId: string | undefined;
   // Pre-dispatch abort guard. Opening a downstream stream with an
@@ -480,14 +489,17 @@ async function consumeStream(
       request.signal.reason instanceof DOMException &&
       request.signal.reason.name === "TimeoutError";
     return {
-      content: "",
-      model: request.model ?? "",
-      stopReason: "error",
-      metadata: {
-        rlmStreamError: isTimeout ? "Stream timed out" : "Stream cancelled",
-        interrupted: true,
-        terminatedBy: isTimeout ? "activity-timeout" : "abort",
+      response: {
+        content: "",
+        model: request.model ?? "",
+        stopReason: "error",
+        metadata: {
+          rlmStreamError: isTimeout ? "Stream timed out" : "Stream cancelled",
+          interrupted: true,
+          terminatedBy: isTimeout ? "activity-timeout" : "abort",
+        },
       },
+      thinkingText: "",
     };
   }
   const iterator = next(request)[Symbol.asyncIterator]();
@@ -513,7 +525,7 @@ async function consumeStream(
       readonly retryable?: boolean;
       readonly retryAfterMs?: number;
     } = {},
-  ): ModelResponse {
+  ): ConsumedSegment {
     const usage = sawUsage
       ? { inputTokens: streamedInput, outputTokens: streamedOutput }
       : undefined;
@@ -533,12 +545,15 @@ async function consumeStream(
     if (overrides.retryAfterMs !== undefined) meta.retryAfterMs = overrides.retryAfterMs;
     const hasMeta = Object.keys(meta).length > 0;
     return {
-      content: streamedText,
-      model,
-      ...(usage !== undefined ? { usage } : {}),
-      ...(baseStopReason !== undefined ? { stopReason: baseStopReason } : {}),
-      ...(responseId !== undefined ? { responseId } : {}),
-      ...(hasMeta ? { metadata: meta } : {}),
+      response: {
+        content: streamedText,
+        model,
+        ...(usage !== undefined ? { usage } : {}),
+        ...(baseStopReason !== undefined ? { stopReason: baseStopReason } : {}),
+        ...(responseId !== undefined ? { responseId } : {}),
+        ...(hasMeta ? { metadata: meta } : {}),
+      },
+      thinkingText: streamedThinking,
     };
   }
 
@@ -587,6 +602,14 @@ async function consumeStream(
         streamedText += chunk.delta;
         continue;
       }
+      if (chunk.kind === "thinking_delta") {
+        // Reasoning text must survive segmented streaming. The outer
+        // generator re-emits accumulated thinking per segment so the
+        // engine, TUI, and observability path see the same first-class
+        // thinking_delta events they would on a non-segmented turn.
+        streamedThinking += chunk.delta;
+        continue;
+      }
       if (chunk.kind === "usage") {
         streamedInput += chunk.inputTokens;
         streamedOutput += chunk.outputTokens;
@@ -617,9 +640,12 @@ async function consumeStream(
           (sawUsage ? { inputTokens: streamedInput, outputTokens: streamedOutput } : undefined);
         exitedOnDone = true; // generator already finished — no return() needed
         return {
-          ...response,
-          content,
-          ...(usage !== undefined ? { usage } : {}),
+          response: {
+            ...response,
+            content,
+            ...(usage !== undefined ? { usage } : {}),
+          },
+          thinkingText: streamedThinking,
         };
       }
       if (
@@ -643,21 +669,31 @@ async function consumeStream(
           ? { inputTokens: streamedInput, outputTokens: streamedOutput }
           : undefined;
         return {
-          content: streamedText,
-          model,
-          ...(usage !== undefined ? { usage } : {}),
-          stopReason: "tool_use",
-          ...(responseId !== undefined ? { responseId } : {}),
-          richContent: [toolCallBlock],
+          response: {
+            content: streamedText,
+            model,
+            ...(usage !== undefined ? { usage } : {}),
+            stopReason: "tool_use",
+            ...(responseId !== undefined ? { responseId } : {}),
+            richContent: [toolCallBlock],
+          },
+          thinkingText: streamedThinking,
         };
       }
       if (chunk.kind === "error") {
         // Structured stream failure: fold what we have into a
         // terminal response with `stopReason: "error"`, preserving
         // provider/hook metadata (code/retryable/retryAfterMs).
+        // Treat error.usage as authoritative terminal usage and
+        // *overwrite* the running totals (matches
+        // packages/lib/query-engine/src/consume-stream.ts). Providers
+        // can emit incremental `usage` deltas before the failure and
+        // then repeat the final cumulative numbers on the error
+        // chunk; adding both would double-count the tokens already
+        // billed for the segment.
         if (chunk.usage !== undefined) {
-          streamedInput += chunk.usage.inputTokens;
-          streamedOutput += chunk.usage.outputTokens;
+          streamedInput = chunk.usage.inputTokens;
+          streamedOutput = chunk.usage.outputTokens;
           sawUsage = true;
         }
         return buildTerminalResponse({
@@ -668,9 +704,8 @@ async function consumeStream(
           ...(chunk.retryAfterMs !== undefined ? { retryAfterMs: chunk.retryAfterMs } : {}),
         });
       }
-      // Unknown chunk kinds (thinking_delta, etc.) are not
-      // informative for the segmented call/reassemble path. Skip
-      // without losing forward progress.
+      // Unknown chunk kinds are not informative for reassembly.
+      // Skip without losing forward progress.
     }
   } finally {
     // Best-effort iterator release on every non-`done` exit. Fire-and-
@@ -780,7 +815,15 @@ async function* rlmWrapModelStream(
         completedSegments: [...responses],
       });
     }
-    const response = await consumeStream(seg, next);
+    const consumed = await consumeStream(seg, next);
+    const { response, thinkingText } = consumed;
+    // Re-emit per-segment thinking before the next segment opens so the
+    // engine, TUI, and event-trace see thinking_delta in segment order
+    // alongside the eventual aggregate text. Holding it until after
+    // reassembly would invert the visible chronology.
+    if (thinkingText.length > 0) {
+      yield { kind: "thinking_delta", delta: thinkingText };
+    }
     const stopAborts =
       response.stopReason !== undefined && ABORTING_STOP_REASONS.has(response.stopReason);
     const toolCallAborts = hasToolCallBlock(response);
