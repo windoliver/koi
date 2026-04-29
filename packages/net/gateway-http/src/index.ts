@@ -1,4 +1,5 @@
 export { DEFAULT_GATEWAY_HTTP_CONFIG } from "./defaults.js";
+export { createGatewayServer } from "./server.js";
 export type {
   AuditSink,
   AuthAuditResult,
