@@ -746,6 +746,15 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
       }
     } finally {
       processing = false;
+      // Lost-wakeup guard: between the last `while (queue.length > 0)`
+      // check and clearing `processing`, an enqueue() may have appended
+      // a new entry. That enqueue's own drain() call would have seen
+      // `processing === true` and early-returned. Without this recheck
+      // the entry sits forever until some later enqueue happens to
+      // restart the drain. Re-arm now that `processing` is false.
+      if (queue.length > 0) {
+        void drain();
+      }
     }
   };
 

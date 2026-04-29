@@ -104,6 +104,16 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(safeText("see attacker.mov for video")).toBe(
         "Invalid input: see link removed for video",
       );
+      // Round 2 finding (loop-6): 3+ label hosts on uncurated TLDs must
+      // also redact. `careers`, `travel`, `health`, `legal` are real
+      // ICANN gTLDs and were autolinking despite the deny-by-default rule.
+      expect(safeText("apply at login.company.careers")).toBe(
+        "Invalid input: apply at link removed",
+      );
+      expect(safeText("auth at auth.example.travel/path")).toBe(
+        "Invalid input: auth at link removed",
+      );
+      expect(safeText("visit static.cdn.evil.health")).toBe("Invalid input: visit link removed");
     });
 
     it("preserves dotted identifiers commonly used in validation messages", () => {

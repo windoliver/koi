@@ -102,46 +102,111 @@ const SAFE_TRAILING_FILE_EXT: ReadonlySet<string> = new Set([
   "xml",
   "svg",
 ]);
-// Last-label tails that unmistakably indicate a domain in 3+ label tokens.
-// Kept intentionally small — the goal is to catch obvious autolink shapes
-// like `login.company.com`, `static.cdn.example.org`, `phish.co.uk` while
-// leaving genuine identifier paths (`user.profile.email`) untouched.
-const KNOWN_TLD_TAILS: ReadonlySet<string> = new Set([
-  "com",
-  "net",
-  "org",
-  "edu",
-  "gov",
-  "mil",
-  "int",
+// Allowlist of identifier-tail words that commonly appear as the LAST
+// label of a dotted field path in validation messages. Keeping this
+// allowlist small (vs maintaining a full PSL/TLD dataset) is the
+// pragmatic tradeoff: any unlisted last-label word is treated as a
+// potential domain and redacted. Adapters that need full identifier
+// fidelity should consume `KoiError.context` directly.
+const SAFE_IDENTIFIER_TAILS: ReadonlySet<string> = new Set([
+  // common field/property names
+  "email",
+  "name",
+  "type",
+  "value",
+  "id",
+  "key",
+  "code",
+  "status",
+  "kind",
+  "label",
+  "title",
+  "text",
+  "body",
+  "message",
+  "data",
   "info",
-  "biz",
-  "app",
-  "dev",
-  "io",
-  "co",
-  "ai",
-  "me",
-  "tv",
-  "top",
-  "xyz",
-  "online",
-  "site",
-  "store",
-  "shop",
-  "click",
-  "link",
-  "live",
-  "cloud",
+  "details",
+  "address",
+  "phone",
+  "country",
+  "city",
+  "state",
   "zip",
-  "mov",
-  "support",
+  "postal",
+  "password",
+  "username",
+  "user",
+  "token",
+  "secret",
+  "hash",
+  "signature",
+  "size",
+  "count",
+  "index",
+  "length",
+  "limit",
+  "offset",
+  "page",
+  "total",
+  "timeout",
+  "delay",
+  "duration",
+  "interval",
+  "timestamp",
+  "date",
+  "time",
+  "config",
+  "settings",
+  "options",
+  "metadata",
+  "tags",
+  "attrs",
+  "props",
+  "url",
+  "uri",
+  "path",
+  "query",
+  "params",
+  "fields",
+  "items",
+  "results",
+  "entries",
+  "input",
+  "output",
+  "result",
+  "request",
+  "response",
+  "payload",
+  "headers",
+  "cookies",
+  "version",
+  "format",
+  "encoding",
+  "schema",
+  "model",
+  "ref",
+  "min",
+  "max",
+  "start",
+  "end",
+  "first",
+  "last",
+  "next",
+  "prev",
+  "active",
+  "enabled",
+  "visible",
+  "public",
+  "private",
+  "required",
+  "optional",
+  "valid",
+  "invalid",
+  "error",
+  "errors",
+  "warnings",
 ]);
-const looksLikeTldTail = (label: string): boolean => {
-  // Two-letter labels: treat as ccTLDs in the 3+ label case.
-  if (/^[a-z]{2}$/.test(label)) return true;
-  return KNOWN_TLD_TAILS.has(label);
-};
 const redactBareDomain = (match: string): string => {
   const pathIdx = match.search(/[/:?#]/);
   const host = pathIdx === -1 ? match : match.slice(0, pathIdx);
@@ -149,13 +214,23 @@ const redactBareDomain = (match: string): string => {
   if (hadPath) return "link removed";
   const labels = host.toLowerCase().split(".");
   const last = labels[labels.length - 1] ?? "";
-  if (labels.length >= 3) {
-    return looksLikeTldTail(last) ? "link removed" : match;
+  if (labels.length === 2) {
+    // 2-label hosts: redact unless trailing label is a known code/data
+    // file extension (`package.json`, `tsconfig.json`).
+    return SAFE_TRAILING_FILE_EXT.has(last) ? match : "link removed";
   }
-  // 2 labels (`a.b`): redact unless the trailing label is a code/data
-  // file extension — those routinely appear in validation messages
-  // (`package.json`, `tsconfig.json`).
-  return SAFE_TRAILING_FILE_EXT.has(last) ? match : "link removed";
+  // 3+ labels: redact UNLESS the token clearly reads as an identifier
+  // path. A token qualifies as an identifier when it either contains a
+  // digit/underscore in any label (so `payload.items0.sku` survives), or
+  // its last label is in the small `SAFE_IDENTIFIER_TAILS` allowlist
+  // (`user.profile.email`, `config.http.timeout`). All other 3+ label
+  // host shapes — including phishing-bait like `login.company.careers`
+  // or `auth.example.travel` whose TLDs are genuine but uncurated — are
+  // redacted. The allowlist is a deliberate KISS tradeoff vs bundling a
+  // full public-suffix dataset.
+  const hasDigitOrUnderscore = labels.some((l) => /[0-9_]/.test(l));
+  const isIdentifierTail = SAFE_IDENTIFIER_TAILS.has(last);
+  return hasDigitOrUnderscore || isIdentifierTail ? match : "link removed";
 };
 
 /**

@@ -1240,6 +1240,48 @@ describe("createRateLimiter", () => {
       expect(completed).toEqual(["ok"]);
     });
 
+    it("re-arms drain after late enqueue between final empty-check and clearing processing", async () => {
+      // Regression: loop-6 round 2 finding 1. Drain shutdown previously
+      // had a lost-wakeup race: between the final `while (queue.length > 0)`
+      // check and the `finally { processing = false }` clearing, an
+      // enqueue() could append a new entry whose own drain() call would
+      // see processing===true and early-return. Without the post-clear
+      // recheck the new entry would sit in the queue forever.
+      //
+      // Force the race deterministically: the first send's resolve is
+      // wrapped to enqueue a second send AFTER the await unblocks the
+      // drain loop, exercising the same scheduler ordering as a real
+      // race: micro-task chain (drain await result) → next-tick enqueue.
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+        sendTimeoutMs: 0,
+      });
+      const completed: string[] = [];
+      let secondPromise: Promise<void> | undefined;
+      // First enqueue: when its send resolves, the drain loop's
+      // `await run.result` returns. Schedule a NEW enqueue on the next
+      // micro-task — that lands during the narrow window between the
+      // final queue.length check and processing being cleared.
+      const firstPromise = limiter.enqueue(async () => {
+        completed.push("first");
+        // Tail-schedule the second enqueue for the moment after the
+        // drain loop sees queue.length === 0.
+        Promise.resolve().then(() => {
+          secondPromise = limiter.enqueue(async () => {
+            completed.push("second");
+          });
+        });
+      });
+      await firstPromise;
+      // Give the rescheduled enqueue + recheck a tick to fire.
+      await new Promise((res) => setTimeout(res, 5));
+      // Without the lost-wakeup guard, secondPromise either stays
+      // pending forever or completed never includes "second".
+      if (secondPromise === undefined) throw new Error("second was not scheduled");
+      await secondPromise;
+      expect(completed).toEqual(["first", "second"]);
+    });
+
     it("opting out with sendTimeoutMs:0 leaves a hung send pending (no auto-reject)", async () => {
       const limiter = createRateLimiter({ sendTimeoutMs: 0 });
       let release: (() => void) | undefined;
