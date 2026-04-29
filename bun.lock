@@ -1323,6 +1323,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/sandbox/sandbox-executor": {
+      "name": "@koi/sandbox-executor",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/sandbox/sandbox-os": {
       "name": "@koi/sandbox-os",
       "version": "0.1.0",
@@ -2105,6 +2112,8 @@
     "@koi/runtime": ["@koi/runtime@workspace:packages/meta/runtime"],
 
     "@koi/sandbox-docker": ["@koi/sandbox-docker@workspace:packages/sandbox/sandbox-docker"],
+
+    "@koi/sandbox-executor": ["@koi/sandbox-executor@workspace:packages/sandbox/sandbox-executor"],
 
     "@koi/sandbox-os": ["@koi/sandbox-os@workspace:packages/sandbox/sandbox-os"],
 
