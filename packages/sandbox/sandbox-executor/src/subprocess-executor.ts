@@ -166,10 +166,14 @@ function buildChildEnv(context?: ExecutionContext): Readonly<Record<string, stri
  *
  * This prevents an adversarial child from OOMing the host by producing unbounded
  * output — we stop consuming (and cancel the stream) once the cap is hit.
+ * When `onTruncate` is provided, it is called once the moment truncation occurs —
+ * callers use it to kill the child process immediately so proc.exited resolves
+ * and the Promise.all completes without waiting for the full timeout.
  */
 async function readBoundedText(
   stream: ReadableStream<Uint8Array>,
   maxBytes: number,
+  onTruncate?: () => void,
 ): Promise<{ readonly text: string; readonly truncated: boolean }> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -184,6 +188,7 @@ async function readBoundedText(
     const remaining = maxBytes - total;
     if (remaining <= 0) {
       truncated = true;
+      onTruncate?.();
       reader.cancel().catch((_: unknown) => {
         // cancel errors are safe to ignore — we've already stopped reading
       });
@@ -194,6 +199,7 @@ async function readBoundedText(
     total += chunk.byteLength;
     if (chunk.byteLength < value.byteLength) {
       truncated = true;
+      onTruncate?.();
       reader.cancel().catch((_: unknown) => {
         // cancel errors are safe to ignore — we've already stopped reading
       });
@@ -318,21 +324,28 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
         // underlying object supports it at runtime — check defensively.
         if ("unref" in timer && typeof timer.unref === "function") timer.unref();
 
+        // Kill immediately when output cap is hit — prevents child blocking on full
+        // pipes and turning into a false TIMEOUT (Fix 3).
+        // `let` justified: killTriggered is a shared one-shot guard across both readers.
+        let killTriggered = false;
+        const triggerKill = (): void => {
+          if (killTriggered) return;
+          killTriggered = true;
+          killChild(proc, usedSetsid);
+        };
+
         // Drain stdout AND stderr concurrently using bounded readers (Fix 1).
         // A chatty child that fills the stdout pipe buffer will deadlock if we only
         // await proc.exited while leaving stdout unread. Start both drains first.
         // Both streams are capped at maxOutputBytes to prevent host OOM.
-        const [stdoutResult, stderrResult, exitCode] = await Promise.all([
-          readBoundedText(proc.stdout, maxOutputBytes),
-          readBoundedText(proc.stderr, maxOutputBytes),
+        // triggerKill fires the moment either reader hits the cap, so proc.exited
+        // resolves promptly and the Promise.all completes without waiting for timeout.
+        const [, stderrResult, exitCode] = await Promise.all([
+          readBoundedText(proc.stdout, maxOutputBytes, triggerKill),
+          readBoundedText(proc.stderr, maxOutputBytes, triggerKill),
           proc.exited,
         ]);
         clearTimeout(timer);
-
-        // If stdout was truncated, kill the child so it stops producing output.
-        if (stdoutResult.truncated || stderrResult.truncated) {
-          killChild(proc, usedSetsid);
-        }
 
         const durationMs = Date.now() - start;
 

@@ -158,10 +158,20 @@ describe("createDockerInstance", () => {
 
     const container: DockerContainer = {
       id: "stub",
-      exec: async (): Promise<DockerExecResult> => {
-        // Simulate a slow exec — waits until resolved externally
-        await slowExecPromise;
-        return { exitCode: 0, stdout: "", stderr: "" };
+      exec: async (_cmd, opts): Promise<DockerExecResult> => {
+        // Simulate a real client: resolve with 130 when the signal aborts,
+        // otherwise wait for external resolve. Mirrors runDockerExecBounded.
+        const abortPromise = new Promise<DockerExecResult>((resolve) => {
+          opts?.signal?.addEventListener(
+            "abort",
+            () => resolve({ exitCode: 130, stdout: "", stderr: "" }),
+            { once: true },
+          );
+        });
+        return Promise.race([
+          slowExecPromise.then(() => ({ exitCode: 0, stdout: "", stderr: "" })),
+          abortPromise,
+        ]);
       },
       readFile: async (): Promise<Uint8Array> => new Uint8Array(),
       writeFile: async (): Promise<void> => {},

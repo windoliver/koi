@@ -20,11 +20,14 @@ function quoteShellArg(arg: string): string {
  *
  * Prevents an adversarial container from OOMing the host by producing
  * unbounded output — we stop consuming (and cancel the stream) once the cap
- * is hit.
+ * is hit. When `onTruncate` is provided, it is called once the moment
+ * truncation occurs — callers can use it to kill the child process immediately
+ * so it stops producing output and unblocks proc.exited.
  */
 async function readBoundedText(
   stream: ReadableStream<Uint8Array>,
   maxBytes: number,
+  onTruncate?: () => void,
 ): Promise<{ readonly text: string; readonly truncated: boolean }> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -39,6 +42,7 @@ async function readBoundedText(
     const remaining = maxBytes - total;
     if (remaining <= 0) {
       truncated = true;
+      onTruncate?.();
       reader.cancel().catch((_: unknown) => {
         // cancel errors are safe to ignore — we've already stopped reading
       });
@@ -49,6 +53,7 @@ async function readBoundedText(
     total += chunk.byteLength;
     if (chunk.byteLength < value.byteLength) {
       truncated = true;
+      onTruncate?.();
       reader.cancel().catch((_: unknown) => {
         // cancel errors are safe to ignore — we've already stopped reading
       });
@@ -105,8 +110,11 @@ async function runDockerWithTimeout(
 }
 
 /**
- * Run a docker exec command with bounded output capture and optional cwd/timeout.
+ * Run a docker exec command with bounded output capture and optional cwd/timeout/signal.
  * Applies readBoundedText to both stdout and stderr to prevent host OOM.
+ * When signal is pre-aborted, returns immediately without spawning.
+ * When signal fires mid-flight, kills the process and returns exitCode 130.
+ * When output cap is hit, kills the process immediately so it stops producing output.
  */
 async function runDockerExecBounded(
   args: readonly string[],
@@ -114,6 +122,12 @@ async function runDockerExecBounded(
 ): Promise<DockerExecResult> {
   const maxBytes = execOpts.maxOutputBytes ?? DEFAULT_EXEC_MAX_OUTPUT_BYTES;
   const timeoutMs = execOpts.timeoutMs;
+  const signal = execOpts.signal;
+
+  // Pre-aborted: don't even spawn.
+  if (signal?.aborted === true) {
+    return { exitCode: 130, stdout: "", stderr: "", truncated: false };
+  }
 
   const proc = Bun.spawn(["docker", ...args], {
     stdin:
@@ -122,8 +136,10 @@ async function runDockerExecBounded(
     stderr: "pipe",
   });
 
-  // `let` justified: timedOut and timer are mutated inside the callback.
+  // `let` justified: timedOut/aborted are mutated inside callbacks.
   let timedOut = false;
+  let aborted = false;
+
   let timer: ReturnType<typeof setTimeout> | undefined;
   if (timeoutMs !== undefined && timeoutMs > 0) {
     timer = setTimeout(() => {
@@ -133,16 +149,38 @@ async function runDockerExecBounded(
     if ("unref" in timer && typeof timer.unref === "function") timer.unref();
   }
 
+  const onAbort = (): void => {
+    aborted = true;
+    proc.kill(9);
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+
+  // Kill immediately when output cap is hit so proc.exited resolves promptly.
+  // `let` justified: killTriggered is a shared one-shot guard across both readers.
+  let killTriggered = false;
+  const triggerKill = (): void => {
+    if (killTriggered) return;
+    killTriggered = true;
+    proc.kill(9);
+  };
+
   // Drain both streams with byte-cap to prevent host OOM from adversarial containers.
   const [stdoutResult, stderrResult, exitCode] = await Promise.all([
-    readBoundedText(proc.stdout, maxBytes),
-    readBoundedText(proc.stderr, maxBytes),
+    readBoundedText(proc.stdout, maxBytes, triggerKill),
+    readBoundedText(proc.stderr, maxBytes, triggerKill),
     proc.exited,
   ]);
 
   if (timer !== undefined) clearTimeout(timer);
+  signal?.removeEventListener("abort", onAbort);
 
   const truncated = stdoutResult.truncated || stderrResult.truncated;
+
+  // Aborted (and timer didn't fire first) → return 130.
+  if (aborted && !timedOut) {
+    return { exitCode: 130, stdout: "", stderr: "", truncated: false };
+  }
+
   return {
     exitCode: timedOut ? 124 : (exitCode ?? -1),
     stdout: stdoutResult.text,
@@ -226,9 +264,19 @@ export function createDefaultDockerClient(): DockerClient {
         throw new Error("docker create failed", { cause: create });
       }
       const id = create.stdout.trim();
-      const start = await runDocker(["start", id]);
-      if (start.exitCode !== 0) {
-        throw new Error("docker start failed", { cause: start });
+      try {
+        const start = await runDocker(["start", id]);
+        if (start.exitCode !== 0) {
+          throw new Error(`docker start failed for ${id}`, { cause: start });
+        }
+      } catch (e: unknown) {
+        // Best-effort: remove the orphaned container. Don't mask the original error.
+        try {
+          await runDocker(["rm", "-f", id]);
+        } catch (_: unknown) {
+          // ignore: original error wins
+        }
+        throw e;
       }
       return makeContainer(id);
     },

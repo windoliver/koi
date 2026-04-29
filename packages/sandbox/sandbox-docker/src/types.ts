@@ -18,6 +18,8 @@ export interface DockerExecOpts {
   readonly cwd?: string;
   /** Maximum bytes to buffer for stdout + stderr combined. */
   readonly maxOutputBytes?: number;
+  /** Optional AbortSignal — when aborted, kills the docker exec subprocess. */
+  readonly signal?: AbortSignal;
 }
 
 export interface DockerContainer {
