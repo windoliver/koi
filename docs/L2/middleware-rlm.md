@@ -153,7 +153,10 @@ returns a `Result<RlmConfig, KoiError>`.
    paragraph boundaries, then line boundaries, finally hard-cuts) and
    emit one `ModelRequest` per chunk with the **raw chunk text** replacing
    the original block — no synthetic `Segment k/N:` prefix, so exact-copy
-   and structured-transformation prompts remain byte-safe.
+   and structured-transformation prompts remain byte-safe. Hard-cuts
+   respect UTF-16 surrogate pairs: the splitter steps back one code unit
+   when a cut would land between a high and low surrogate, so emoji and
+   astral-plane characters are never split into invalid UTF-16.
 4. If more than one, throw `MultipleOversizedBlocksError`. A true
    multi-block partition would require a reducer stage that is out of
    scope here, and a cross-product fan-out would duplicate work and
@@ -183,12 +186,17 @@ The synthetic response:
 - `usage` summed across parts (cache fields aggregated when present)
 - `richContent` rebuilt as the full ordered representation when any
   segment carries it: per-segment richContent blocks are interleaved
-  with `\n\n` text separators, and segments without richContent
-  contribute a synthesized text block from their `content`. This
-  guarantees the engine's synthesized `modelStream` path replays the
-  complete answer instead of dropping plain-content segments.
-  When no segment has richContent, the field is omitted entirely so
-  the stream path falls back to `content`.
+  with the `segmentSeparator` (when non-empty), and segments without
+  richContent contribute a synthesized text block from their `content`.
+  When a segment carries richContent that has **no text block** but its
+  `content` is non-empty (e.g. an adapter returned a thinking-only or
+  tool-call-only richContent alongside the actual text answer in
+  `content`), reassembly prepends a synthesized text block from
+  `content` so the engine's synthesized `modelStream` path — which
+  replays richContent verbatim and ignores `content` when richContent
+  is set — does not silently drop the segment's text. When no segment
+  has richContent, the field is omitted entirely so the stream path
+  falls back to `content`.
 - `metadata` is a **last-write-wins merge** across every segment's
   `metadata`, with `rlmSegments` appended for full provenance. This
   preserves later-segment signals like `terminatedBy`, `blockedByHook`,

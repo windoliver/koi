@@ -160,6 +160,24 @@ describe("reassembleResponses", () => {
     ]);
   });
 
+  test("synthesizes a text block when a segment has content + non-text richContent", () => {
+    // Adapter returns thinking blocks in richContent without duplicating
+    // text into a richContent text block. Without a synthesized text
+    // block, the stream path would replay only the thinking and lose
+    // the segment's actual text answer.
+    const out = reassembleResponses([
+      part("a", { richContent: [{ kind: "text", text: "rich-a" }] }),
+      part("plain-b-text", {
+        richContent: [{ kind: "thinking", text: "internal" }],
+      }),
+    ]);
+    expect(out.richContent).toEqual([
+      { kind: "text", text: "rich-a" },
+      { kind: "text", text: "plain-b-text" },
+      { kind: "thinking", text: "internal" },
+    ]);
+  });
+
   test("omits richContent when no part carries it (stream path falls back to content)", () => {
     const out = reassembleResponses([part("a"), part("b")]);
     expect(out.richContent).toBeUndefined();

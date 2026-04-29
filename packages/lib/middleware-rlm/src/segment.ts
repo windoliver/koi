@@ -140,6 +140,32 @@ export function splitText(text: string, maxChars: number): readonly string[] {
   return chunks;
 }
 
+/**
+ * Hard-cut a string at UTF-16 code-unit budget `maxChars` while respecting
+ * surrogate pairs. Astral-plane characters (emoji, many CJK extensions,
+ * math symbols) occupy two code units; slicing through that boundary
+ * produces invalid UTF-16 segments and silently corrupts byte-faithful
+ * transformations. We bail one code unit early whenever the cut would
+ * land between a high and low surrogate.
+ */
+function safeHardCut(text: string, maxChars: number): readonly string[] {
+  const out: string[] = [];
+  let k = 0; // let: walking offset through the string
+  while (k < text.length) {
+    let end = Math.min(k + maxChars, text.length);
+    if (end < text.length) {
+      const code = text.charCodeAt(end - 1);
+      // 0xD800..0xDBFF is a high surrogate; if the cut leaves it dangling,
+      // step back one code unit so the pair stays in the next chunk.
+      if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+    }
+    if (end <= k) end = k + maxChars; // pathological maxChars=1 + surrogate
+    out.push(text.slice(k, end));
+    k = end;
+  }
+  return out;
+}
+
 /** Split a paragraph on newline boundaries; hard-cut lines that themselves overflow. */
 function splitByLines(text: string, maxChars: number): readonly string[] {
   if (text.length <= maxChars) return [text];
@@ -159,8 +185,7 @@ function splitByLines(text: string, maxChars: number): readonly string[] {
       current = line;
       continue;
     }
-    for (let k = 0; k < line.length; k += maxChars) {
-      const piece = line.slice(k, k + maxChars);
+    for (const piece of safeHardCut(line, maxChars)) {
       if ((current + piece).length <= maxChars) {
         current += piece;
       } else {

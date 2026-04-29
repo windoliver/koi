@@ -99,6 +99,35 @@ function sumUsage(parts: readonly ModelResponse[]): UsageTotals | undefined {
  * Returns `undefined` when no segment carries `richContent` — the merged
  * response keeps `content` only and the stream path falls back to it.
  */
+/**
+ * Convert a single segment to its richContent representation, preserving
+ * the segment's text whenever it would otherwise be dropped by the stream
+ * path. The engine's synthesized `modelStream` replays `richContent`
+ * verbatim and ignores `content` when richContent is set, so a segment
+ * with non-empty `content` plus a non-text `richContent` (thinking-only,
+ * tool-call-only, etc.) would silently lose its text on the stream view.
+ *
+ * Rules:
+ *   - If richContent already carries a text block, trust the adapter and
+ *     return richContent verbatim.
+ *   - If richContent has no text block but `content` does, prepend a
+ *     synthesized text block so the merged stream view stays complete.
+ *   - If neither carries text, return what we have (possibly empty).
+ */
+function segmentBlocks(part: ModelResponse): readonly ModelContentBlock[] {
+  const rich = part.richContent;
+  if (rich !== undefined && rich.length > 0) {
+    const richHasText = rich.some((b) => b.kind === "text");
+    if (richHasText) return rich;
+    if (part.content.length > 0) {
+      return [{ kind: "text", text: part.content }, ...rich];
+    }
+    return rich;
+  }
+  if (part.content.length > 0) return [{ kind: "text", text: part.content }];
+  return [];
+}
+
 function buildMergedRichContent(
   parts: readonly ModelResponse[],
   separator: string,
@@ -119,11 +148,7 @@ function buildMergedRichContent(
     }
     const part = parts[i];
     if (part === undefined) continue;
-    if (part.richContent !== undefined && part.richContent.length > 0) {
-      for (const block of part.richContent) blocks.push(block);
-    } else if (part.content.length > 0) {
-      blocks.push({ kind: "text", text: part.content });
-    }
+    for (const block of segmentBlocks(part)) blocks.push(block);
   }
   return blocks;
 }

@@ -46,6 +46,24 @@ describe("splitText", () => {
     expect(() => splitText("hi", 0)).toThrow();
     expect(() => splitText("hi", -1)).toThrow();
   });
+
+  test("does not split UTF-16 surrogate pairs at hard-cut boundaries", () => {
+    // Astral-plane characters (e.g. emoji) occupy two UTF-16 code units.
+    // A naive slice on odd boundaries lands between the high and low
+    // surrogate, producing invalid UTF-16 that providers may corrupt.
+    // Each emoji "🙂" is 2 code units; build a long emoji-only string
+    // and force the hard-cut path with a small maxChars.
+    const emoji = "🙂".repeat(50); // 100 UTF-16 code units, no whitespace
+    const chunks = splitText(emoji, 7);
+    expect(chunks.join("")).toBe(emoji);
+    for (const c of chunks) {
+      // Every emoji occupies 2 code units; valid chunks must contain an
+      // even number of UTF-16 code units (no dangling surrogate).
+      const last = c.charCodeAt(c.length - 1);
+      const isHighSurrogate = last >= 0xd800 && last <= 0xdbff;
+      expect(isHighSurrogate).toBe(false);
+    }
+  });
 });
 
 describe("segmentRequest", () => {
