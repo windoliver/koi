@@ -1088,6 +1088,7 @@
         "@koi/middleware-prompt-cache": "workspace:*",
         "@koi/middleware-reflex": "workspace:*",
         "@koi/middleware-report": "workspace:*",
+        "@koi/middleware-rlm": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-strict-agentic": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
