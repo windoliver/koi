@@ -700,6 +700,36 @@ describe("createRateLimiter", () => {
       });
     });
 
+    it("retry waits for prior attempt to settle before re-issuing the send (no overlap)", async () => {
+      // Custom isRetryable opts TIMEOUT into retry. Without the per-attempt
+      // settle gate, a TIMEOUT on attempt 1 would re-invoke the same fn while
+      // attempt 1's transport is still running — duplicate send hazard.
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 1, initialDelayMs: 0 },
+        sendTimeoutMs: 30,
+        isRetryable: (e: unknown): boolean =>
+          typeof e === "object" && e !== null && (e as { code?: string }).code === "TIMEOUT",
+      });
+      // let justified: tracks concurrent in-flight invocations
+      let inFlight = 0;
+      let maxConcurrent = 0;
+      const fn: SendFn = () =>
+        new Promise<void>((resolve) => {
+          inFlight++;
+          maxConcurrent = Math.max(maxConcurrent, inFlight);
+          // Slow but settles within grace (30ms grace, settles at 50ms after start).
+          setTimeout(() => {
+            inFlight--;
+            resolve();
+          }, 50);
+        });
+      // Final attempt will succeed (timeout fires first time, but before retry
+      // we await settled; second attempt starts AFTER first promise resolved).
+      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "TIMEOUT" });
+      // Strict mode forbids overlapping invocations of the same send.
+      expect(maxConcurrent).toBe(1);
+    });
+
     it("opting out with sendTimeoutMs:0 leaves a hung send pending (no auto-reject)", async () => {
       const limiter = createRateLimiter({ sendTimeoutMs: 0 });
       let release: (() => void) | undefined;

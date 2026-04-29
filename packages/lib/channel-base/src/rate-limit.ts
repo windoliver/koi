@@ -388,6 +388,14 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
               break;
             }
             prevDelayMs = delay;
+            // Before reissuing the same send fn, wait for the previous
+            // attempt's underlying promise to settle (capped by the grace
+            // backstop). Without this gate, two concurrent invocations of
+            // the same non-idempotent send could race after a timeout
+            // when a custom isRetryable opts TIMEOUT back in.
+            if (!advanceOnTimeout) {
+              await run.settled;
+            }
             // Wrap sleep so a sleeper rejection (clock corruption, monkey-
             // patched timers, etc.) does not abandon the in-flight entry —
             // we treat it as terminal failure for this entry and resume

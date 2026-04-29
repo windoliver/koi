@@ -47,6 +47,14 @@ const UNICODE_CONTROL_CHARS = /[​-‏‪-‮⁦-⁩﻿]/g;
 const FORMATTING_CHARS = /[@`*_~#|!&\\[\]()<>{}]/g;
 const URL_LIKE = /\b(?:https?|ftps?|wss?):\/\/\S+/gi;
 const WWW_LIKE = /\bwww\.\S+/gi;
+// Bare-domain autolink trap: Slack/Discord/Teams/Gmail auto-link strings
+// like `evil.example/path` or `login.company.com` even without a scheme.
+// Match `<label>(.<label>)+` ending in a TLD-shaped suffix (2–24 letters)
+// optionally followed by `/path`, `?query`, `:port`, etc. We accept some
+// false positives (e.g. file names containing a 2-letter "TLD") because
+// the contract is plain-text safety, not preserving sentence flow.
+const BARE_DOMAIN_LIKE =
+  /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?:[/:?#][^\s]*)?/gi;
 
 /**
  * Reduces a validator-controlled string to inert plain text:
@@ -71,6 +79,7 @@ function sanitizeValidationMessage(raw: string): string {
     .replace(UNICODE_CONTROL_CHARS, "")
     .replace(URL_LIKE, "link removed")
     .replace(WWW_LIKE, "link removed")
+    .replace(BARE_DOMAIN_LIKE, "link removed")
     .replace(FORMATTING_CHARS, "");
   return stripped.length > VALIDATION_MAX_LEN
     ? `${stripped.slice(0, VALIDATION_MAX_LEN)}…`

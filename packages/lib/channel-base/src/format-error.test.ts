@@ -70,6 +70,17 @@ describe("formatErrorForChannel discriminated output", () => {
       );
     });
 
+    it("redacts schemeless bare domains that chat clients auto-link", () => {
+      // Slack/Discord/Teams/Gmail auto-link these even without a scheme.
+      expect(safeText("visit evil.example/pay now")).toBe("Invalid input: visit link removed now");
+      expect(safeText("login at login.company.com to fix")).toBe(
+        "Invalid input: login at link removed to fix",
+      );
+      expect(safeText("see attacker.co.uk/path")).toBe("Invalid input: see link removed");
+      // No clickable hostname should survive.
+      expect(safeText("go to phish.example")).not.toMatch(/phish/);
+    });
+
     it("replaces ASCII control characters with spaces", () => {
       const out = safeText("bad\nfield\rname\x00here\x07end");
       expect(out).toBe("Invalid input: bad field name here end");
