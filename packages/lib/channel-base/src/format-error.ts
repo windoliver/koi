@@ -53,25 +53,74 @@ const FORMATTING_CHARS = /[@`*_~#|!&\\[\]()<>{}]/g;
 const URL_LIKE = /\b[a-z][a-z0-9+.-]*:[^\s]+/gi;
 const WWW_LIKE = /\bwww\.\S+/gi;
 // Bare-domain autolink trap: Slack/Discord/Teams/Gmail auto-link strings
-// like `evil.com` or `attacker.io/path` even without a scheme. Match
-// `<label>(.<label>)+` whose last label is a curated real TLD. The
-// allowlist deliberately excludes common identifier-shaped trailing
-// segments (`email`, `profile`, `items`, `timeout`, `password`,
-// `address`, etc.) so dotted validation field paths
-// (`user.profile.email`, `config.http.timeout`, `payload.items[0].sku`)
-// survive sanitization — that is the user's primary recovery info.
-const TLD_ALLOWLIST = [
-  // gTLDs commonly seen in phishing
+// like `evil.com` or `attacker.io/path` even without a scheme. Policy is
+// deny-by-default for host-shape tokens (a curated TLD allowlist is
+// fundamentally incomplete — `.zip`, `.mov`, `.support`, and any new gTLD
+// would slip through). Instead match the full host-shape span and decide
+// in a callback:
+//
+//   - any host shape with a trailing path/query/fragment marker
+//     (`/`, `:`, `?`, `#`) → URL-like, redact;
+//   - 2 labels (`evil.com`, `evil.zip`, `attacker.support`) → redact,
+//     unless the trailing label is a known safe code/data file
+//     extension (so `package.json`, `tsconfig.json` survive);
+//   - 3+ labels → preserve as a dotted identifier path
+//     (`user.profile.email`, `config.http.timeout`), unless the last
+//     label is itself TLD-shape (2-letter ccTLD, or a small set of
+//     unmistakable gTLDs like `com`/`net`/`org`/`gov`) — those land in
+//     `<sub>.<host>.<tld>` autolink territory.
+const HOST_SHAPE =
+  /\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?:[/:?#][^\s]*)?/gi;
+const SAFE_TRAILING_FILE_EXT: ReadonlySet<string> = new Set([
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "json",
+  "yaml",
+  "yml",
+  "toml",
+  "md",
+  "mdx",
+  "txt",
+  "csv",
+  "html",
+  "htm",
+  "css",
+  "scss",
+  "less",
+  "sh",
+  "py",
+  "rb",
+  "go",
+  "rs",
+  "lock",
+  "log",
+  "env",
+  "xml",
+  "svg",
+]);
+// Last-label tails that unmistakably indicate a domain in 3+ label tokens.
+// Kept intentionally small — the goal is to catch obvious autolink shapes
+// like `login.company.com`, `static.cdn.example.org`, `phish.co.uk` while
+// leaving genuine identifier paths (`user.profile.email`) untouched.
+const KNOWN_TLD_TAILS: ReadonlySet<string> = new Set([
   "com",
   "net",
   "org",
+  "edu",
+  "gov",
+  "mil",
+  "int",
   "info",
   "biz",
   "app",
   "dev",
-  "ai",
   "io",
   "co",
+  "ai",
   "me",
   "tv",
   "top",
@@ -84,111 +133,30 @@ const TLD_ALLOWLIST = [
   "link",
   "live",
   "cloud",
-  "edu",
-  "gov",
-  "mil",
-  "int",
-  // major ccTLDs (kept as a curated set rather than a full public-suffix
-  // dataset to avoid the dependency; covers the autolink-bait long tail
-  // commonly seen in phishing — bit.ly, discord.gg, foo.sh, bar.fm, etc.)
-  "uk",
-  "us",
-  "ca",
-  "au",
-  "de",
-  "fr",
-  "jp",
-  "cn",
-  "in",
-  "br",
-  "ru",
-  "kr",
-  "mx",
-  "it",
-  "es",
-  "nl",
-  "pl",
-  "se",
-  "no",
-  "fi",
-  "dk",
-  "ch",
-  "at",
-  "be",
-  "pt",
-  "gr",
-  "tr",
-  "cz",
-  "hu",
-  "ie",
-  "il",
-  "za",
-  "ng",
-  "ae",
-  "sg",
-  "my",
-  "th",
-  "ph",
-  "vn",
-  "tw",
-  "hk",
-  "nz",
-  // ccTLDs commonly used as link-shorteners or autolink-bait
-  "ly",
-  "gg",
-  "sh",
-  "fm",
-  "gl",
-  "ws",
-  "to",
-  "cc",
-  "ms",
-  "gd",
-  "tt",
-  "bz",
-  "ar",
-  "cl",
-  "pe",
-  "ec",
-  "pr",
-  "ve",
-  "uy",
-  "py",
-  "do",
-  "kw",
-  "sa",
-  "qa",
-  "ke",
-  "tz",
-  "eg",
-  "ma",
-  "is",
-  "ee",
-  "lv",
-  "lt",
-  "si",
-  "sk",
-  "hr",
-  "bg",
-  "ro",
-  "ua",
-  "by",
-  "kz",
-  "uz",
-  "ge",
-  "am",
-  "az",
-  "lk",
-  "bd",
-  "pk",
-  "np",
-  "mn",
-] as const;
-const TLD_PATTERN = TLD_ALLOWLIST.join("|");
-const BARE_DOMAIN_LIKE = new RegExp(
-  String.raw`\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:${TLD_PATTERN})(?:[/:?#][^\s]*)?\b`,
-  "gi",
-);
+  "zip",
+  "mov",
+  "support",
+]);
+const looksLikeTldTail = (label: string): boolean => {
+  // Two-letter labels: treat as ccTLDs in the 3+ label case.
+  if (/^[a-z]{2}$/.test(label)) return true;
+  return KNOWN_TLD_TAILS.has(label);
+};
+const redactBareDomain = (match: string): string => {
+  const pathIdx = match.search(/[/:?#]/);
+  const host = pathIdx === -1 ? match : match.slice(0, pathIdx);
+  const hadPath = pathIdx !== -1;
+  if (hadPath) return "link removed";
+  const labels = host.toLowerCase().split(".");
+  const last = labels[labels.length - 1] ?? "";
+  if (labels.length >= 3) {
+    return looksLikeTldTail(last) ? "link removed" : match;
+  }
+  // 2 labels (`a.b`): redact unless the trailing label is a code/data
+  // file extension — those routinely appear in validation messages
+  // (`package.json`, `tsconfig.json`).
+  return SAFE_TRAILING_FILE_EXT.has(last) ? match : "link removed";
+};
 
 /**
  * Reduces a validator-controlled string to inert plain text:
@@ -207,14 +175,18 @@ const BARE_DOMAIN_LIKE = new RegExp(
 function sanitizeValidationMessage(raw: string): string {
   // NFC-normalize first so canonical-equivalent sequences (e.g. composed
   // vs decomposed accents) hit the strip passes consistently.
+  // Order: strip formatting/escape characters BEFORE running URL and host
+  // pattern matches, so dotted identifier paths broken up by brackets
+  // (`payload.items[0].sku` → `payload.items0.sku`) remain a single
+  // contiguous match for the dotted-identifier preservation rule.
   const stripped = raw
     .normalize("NFC")
     .replace(CONTROL_CHARS, " ")
     .replace(UNICODE_CONTROL_CHARS, "")
+    .replace(FORMATTING_CHARS, "")
     .replace(URL_LIKE, "link removed")
     .replace(WWW_LIKE, "link removed")
-    .replace(BARE_DOMAIN_LIKE, "link removed")
-    .replace(FORMATTING_CHARS, "");
+    .replace(HOST_SHAPE, redactBareDomain);
   return stripped.length > VALIDATION_MAX_LEN
     ? `${stripped.slice(0, VALIDATION_MAX_LEN)}…`
     : stripped;
@@ -297,20 +269,36 @@ function extractAuthHandoff(error: KoiError): {
     // displayed. Adapters that need full granular display must consume
     // the original error.context themselves under their trust policy.
     const allowedToken = /^[A-Za-z0-9:/.\-_+=?&#~]+$/;
-    // Distinguish three cases for tokens that contain a colon:
+    // Distinguish four cases for tokens:
     //
-    //   1. URI shape (`scheme://host/...`): the scheme MUST be in the
-    //      URI allowlist. Covers https://googleapis.com/..., api://....
-    //   2. Single-colon URN-like (`urn:ietf:params:oauth:...`): allowed.
-    //   3. Single-colon scope name (`chat:write`, `read:user`): allowed,
-    //      but only when the scheme prefix is NOT a known dangerous URI
-    //      scheme that chat surfaces autolink (mailto, tel, sms, file,
-    //      ftp, javascript, data, vscode, slack, etc.). The character
-    //      allowlist already excludes most URI authority chars (`@`,
-    //      `(`, `<`, `,`), so the remaining risk is "looks like a
-    //      scope name but resolves to a clickable scheme."
-    const URI_TOKEN_ALLOWED_SCHEMES = new Set(["https", "api", "urn"]);
-    const DANGEROUS_SCHEME_PREFIXES = new Set([
+    //   1. No colon (`read`, `email`): identifier — alphanumeric +
+    //      `_` `-` only. Rejects junk like `???` even though
+    //      `allowedToken` would accept it.
+    //   2. URI shape (`scheme://host/...`): scheme MUST be in
+    //      `URI_TOKEN_ALLOWED_SCHEMES` (https, api). Anything else
+    //      (`zoommtg://`, `slack://`, etc.) is rejected — chat surfaces
+    //      treat these as click-to-open-app handlers.
+    //   3. URN form (`urn:ietf:params:oauth:...`): allowed as a literal
+    //      `urn:...` opaque identifier.
+    //   4. Scope-name shape (`chat:write`, `read:user`,
+    //      `write:repo_hook`, `spotify:track:abc`): require strict
+    //      `identifier(:identifier)+` shape — alphanumeric + `_`,
+    //      first char alpha, NO URI-suffix characters (`/`, `?`,
+    //      `#`, `&`, `=`, `+`, `.`, `~`, `-`). Additionally reject any
+    //      prefix that names a known clickable URI scheme. This is
+    //      deny-by-default for unknown scheme-shaped tokens — better
+    //      to silently drop the whole `auth.scope` field than render
+    //      an attacker-controlled `zoommtg:join` as a clickable
+    //      handoff.
+    const URI_TOKEN_ALLOWED_SCHEMES: ReadonlySet<string> = new Set(["https", "api"]);
+    const PLAIN_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]*$/;
+    const SAFE_SCOPE_NAME = /^[A-Za-z][A-Za-z0-9_]*(?::[A-Za-z][A-Za-z0-9_]*)+$/;
+    // App- and OS-registered URI schemes that a chat surface can autolink
+    // into a click-to-launch handoff. Even when wrapped in an
+    // `identifier:identifier` shape (`zoommtg:join`, `spotify:track`),
+    // these names register OS-level handlers — keep them out of consent
+    // text rendered as scope.
+    const APP_SCHEME_PREFIXES: ReadonlySet<string> = new Set([
       "http",
       "ftp",
       "ftps",
@@ -325,19 +313,36 @@ function extractAuthHandoff(error: KoiError): {
       "slack",
       "app",
       "intent",
+      "chrome",
+      "zoommtg",
+      "zoomus",
+      "zoom",
+      "msteams",
+      "msoutlook",
+      "skype",
+      "spotify",
+      "tg",
+      "whatsapp",
+      "discord",
+      "steam",
+      "fb",
+      "instagram",
+      "weixin",
+      "weibo",
     ]);
     const isAllowedScopeToken = (t: string): boolean => {
       if (!allowedToken.test(t)) return false;
       const colonIdx = t.indexOf(":");
-      if (colonIdx === -1) return true;
+      if (colonIdx === -1) return PLAIN_IDENTIFIER.test(t);
       const scheme = t.slice(0, colonIdx).toLowerCase();
-      // URI shape requires scheme://...
+      // URI shape: scheme://host/...
       if (t.startsWith(`${scheme}://`)) return URI_TOKEN_ALLOWED_SCHEMES.has(scheme);
-      // urn: form is allowed.
-      if (URI_TOKEN_ALLOWED_SCHEMES.has(scheme)) return true;
-      // Single-colon: reject known dangerous URI schemes; otherwise treat
-      // as a plain OAuth scope name (chat:write, read:user, channels:history).
-      return !DANGEROUS_SCHEME_PREFIXES.has(scheme);
+      // urn:... opaque identifier form
+      if (scheme === "urn") return true;
+      // Otherwise must be a strict scope-name (no URI-suffix chars) AND
+      // its prefix must not name a known clickable URI scheme.
+      if (!SAFE_SCOPE_NAME.test(t)) return false;
+      return !APP_SCHEME_PREFIXES.has(scheme);
     };
     const normalized = scope
       .normalize("NFC")

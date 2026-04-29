@@ -86,14 +86,24 @@ describe("classifyErrorForChannel discriminated output", () => {
       );
     });
 
-    it("redacts schemeless bare domains that match the curated TLD allowlist", () => {
-      // Loop-5 round 7+8: redact only domains whose last label is a real
-      // TLD on the curated list (com, net, org, io, co, …, ccTLDs). Both
-      // bare hostnames and hostnames with paths fire.
+    it("redacts schemeless bare domains regardless of TLD novelty", () => {
+      // Deny-by-default for 2-label host shapes — a curated TLD allowlist
+      // is fundamentally incomplete (`.zip`, `.mov`, `.support` and any
+      // future gTLD slip through). Cover both legacy gTLDs and recent
+      // attacker-favored ones, plus 3-label hosts that end in unmistakable
+      // TLD tails.
       expect(safeText("visit evil.com now")).toBe("Invalid input: visit link removed now");
       expect(safeText("visit attacker.io/pay now")).toBe("Invalid input: visit link removed now");
       expect(safeText("see phish.co.uk/path")).toBe("Invalid input: see link removed");
       expect(safeText("login at login.company.com")).toBe("Invalid input: login at link removed");
+      // Round 1 finding (loop-6): novel/uncurated TLDs must redact too.
+      expect(safeText("download evil.zip now")).toBe("Invalid input: download link removed now");
+      expect(safeText("contact login.support please")).toBe(
+        "Invalid input: contact link removed please",
+      );
+      expect(safeText("see attacker.mov for video")).toBe(
+        "Invalid input: see link removed for video",
+      );
     });
 
     it("preserves dotted identifiers commonly used in validation messages", () => {
@@ -354,8 +364,10 @@ describe("classifyErrorForChannel discriminated output", () => {
     });
 
     it("rejects scope tokens whose scheme is not on the allowlist (https/api/urn)", () => {
-      // Regression: loop-5 round 9 finding 2. Bare `http://...`,
-      // `javascript:`, `data:`, custom app schemes can autolink or
+      // Regression: loop-5 round 9 finding 2 + loop-6 round 1 finding 2.
+      // Bare `http://...`, `javascript:`, `data:`, custom app schemes,
+      // and identifier-shaped tokens whose prefix names a registered
+      // app handler (zoommtg, spotify, msteams, ...) can autolink or
       // trigger client actions; they have no place in a consent-UX
       // scope list. Reject the whole field if any token uses a
       // non-allowlisted scheme.
@@ -364,6 +376,14 @@ describe("classifyErrorForChannel discriminated output", () => {
         "javascript:alert(1)",
         "data:text/html,<x>",
         "vscode://settings",
+        // App-scheme handoffs disguised as identifier:identifier scopes.
+        "zoommtg:join",
+        "spotify:track:abc",
+        "msteams:meeting",
+        "slack:open",
+        // URI-suffix characters disqualify even unknown prefixes.
+        "custom:scope?action=launch",
+        "weird:scope#frag",
       ];
       for (const bad of cases) {
         const err = baseError("AUTH_REQUIRED", "x", {
