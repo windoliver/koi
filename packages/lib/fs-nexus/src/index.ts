@@ -14,12 +14,22 @@ export { createLocalTransport } from "./local-transport.js";
 // Factory
 export type { NexusFileSystemFullConfig } from "./nexus-filesystem-backend.js";
 export { createNexusFileSystem } from "./nexus-filesystem-backend.js";
+// Disposable probe transport (sealed-capability factory) — health() probe path for local-bridge
+export { createNexusProbeFactory } from "./probe-transport.js";
 
 // Transport — TODO(#1469): extract to @koi/nexus-client when 3rd consumer exists
 export { createHttpTransport } from "./transport.js";
 
 // Config & types
-export type { BridgeNotification, NexusFileSystemConfig, NexusTransport } from "./types.js";
+export type {
+  BridgeNotification,
+  NexusCallOptions,
+  NexusFileSystemConfig,
+  NexusHealth,
+  NexusHealthOptions,
+  NexusTransport,
+  NexusTransportKind,
+} from "./types.js";
 
 // Validation
 export { validateNexusFileSystemConfig } from "./validate-config.js";

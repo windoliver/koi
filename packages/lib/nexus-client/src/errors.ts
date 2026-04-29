@@ -27,10 +27,15 @@ export function mapNexusError(error: unknown, operation: string): KoiError {
 
   if (isAbortError(error)) {
     const message = error instanceof Error ? error.message : String(error);
+    // Aborts are always intentional (someone called abort() on a controller
+    // or the deadline timer fired). NEVER retryable — retrying after a
+    // caller-driven cancellation would defeat the cancellation contract,
+    // and retrying after a deadline-timer abort would loop until the next
+    // attempt's deadline also fires.
     return {
       code: "TIMEOUT",
-      message: `Network error during ${operation}: ${message}`,
-      retryable: true,
+      message: `Aborted during ${operation}: ${message}`,
+      retryable: false,
       cause: error,
       context: ctx,
     };

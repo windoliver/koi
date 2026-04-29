@@ -108,6 +108,10 @@ import {
 import { createPlanPersistMiddleware } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
+import {
+  assertHealthCapable as nexusAssertHealthCapable,
+  assertProductionTransport as nexusAssertProductionTransport,
+} from "@koi/nexus-client";
 import type { CompiledRule, SourcedRule } from "@koi/permissions";
 import {
   compileGlob,
@@ -830,6 +834,54 @@ export interface KoiRuntimeConfig {
    * Omit when no nexus filesystem is configured.
    */
   readonly nexusTransport?: import("@koi/nexus-client").NexusTransport | undefined;
+  /**
+   * Explicit consumer flags. When BOTH are `false`, runtime skips all Nexus
+   * wiring — the fs-only escape hatch that bypasses `assertProductionTransport`.
+   * Default: enabled when nexusTransport is set (HTTP-implicit Phase 1 behavior).
+   */
+  readonly nexusPermissionsEnabled?: boolean | undefined;
+  readonly nexusAuditEnabled?: boolean | undefined;
+  /**
+   * Boot-time gating posture. `telemetry` (default) logs probe failures and
+   * continues. `assert-transport-reachable-at-boot` throws on unreachable
+   * transport / 5xx / auth failure / malformed payload (404 → fatal unless
+   * `nexusAllowEmptyPolicyStore`). `assert-remote-policy-loaded-at-boot`
+   * additionally awaits `backend.ready` and `isCentralizedPolicyActive()`.
+   * Local-bridge supports `telemetry` only (HARD REJECT on assert-* modes).
+   */
+  readonly nexusBootMode?:
+    | "telemetry"
+    | "assert-transport-reachable-at-boot"
+    | "assert-remote-policy-loaded-at-boot"
+    | undefined;
+  /** Probe deadline per call (default: HEALTH_DEADLINE_MS = 5_000). */
+  readonly nexusProbeDeadlineMs?: number | undefined;
+  /** Initial-sync deadline; threaded into `bootSyncDeadlineMs` on the backend. */
+  readonly nexusBootSyncDeadlineMs?: number | undefined;
+  /** Operator opt-in for `assert-transport-reachable-at-boot`: warn (don't fatal) on 404 reads. */
+  readonly nexusAllowEmptyPolicyStore?: boolean | undefined;
+  /**
+   * POST-FAILURE CONTAINMENT. When true, latches the per-sink poison on the
+   * first Nexus audit write failure; subsequent admission boundaries refuse new
+   * work. NOT a synchronous-flush guarantee (Nexus is remote/buffered). For
+   * synchronous fail-stop, use NDJSON/SQLite required sinks instead.
+   * Default: false (matches pre-PR best-effort behavior).
+   */
+  readonly nexusAuditPoisonOnError?: boolean | undefined;
+  /** Custom policy path (defaults to `koi/permissions`). */
+  readonly nexusPolicyPath?: string | undefined;
+  /** Custom poll interval (defaults to backend's 30s). 0 disables polling. */
+  readonly nexusSyncIntervalMs?: number | undefined;
+  /**
+   * Disposable probe factory for local-bridge transports. Constructed at the
+   * caller site (e.g., tui-command) via `createNexusProbeFactory(spawnConfig)`.
+   * Sealed-capability pattern: spawnConfig lives in the closure, never on the
+   * long-lived transport object. Required for any boot mode other than
+   * `telemetry` when transport.kind === "local-bridge".
+   */
+  readonly nexusProbeFactory?:
+    | (() => Promise<import("@koi/nexus-client").HealthCapableNexusTransport>)
+    | undefined;
   /**
    * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
    * session end. The TUI surfaces this via `KOI_REPORT_ENABLED=true`.
@@ -1770,14 +1822,145 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // --- Nexus permission backend (opt-in via config.nexusTransport) ---
   // Wraps the fully-assembled TUI permBackend so nexus policy rules
   // layer on top while TUI rules remain the local fallback.
+  //
+  // Step -1: silent-bypass guard. Both consumer flags `false` is the only
+  // path that skips `assertProductionTransport` (fs-only escape hatch).
+  // When at least one consumer is wanted, the transport MUST stamp `kind`.
+  const nexusPermsWanted = config.nexusPermissionsEnabled !== false; // HTTP-implicit Phase 1
+  const nexusAuditWanted = config.nexusAuditEnabled !== false;
+  const nexusBootMode = config.nexusBootMode ?? "telemetry";
   // let: nexusPermBackend held for disposal
   let nexusPermBackend: NexusPermissionBackend | undefined;
-  if (config.nexusTransport !== undefined) {
+  if (config.nexusTransport !== undefined && (nexusPermsWanted || nexusAuditWanted)) {
+    nexusAssertProductionTransport(config.nexusTransport);
+    const txKind = config.nexusTransport.kind;
+    // HARD REJECT: assert-* boot modes on local-bridge are unsupported.
+    if (txKind === "local-bridge" && nexusBootMode !== "telemetry") {
+      throw new Error(
+        `nexusBootMode="${nexusBootMode}" is not supported on local-bridge transport. ` +
+          'Use HTTP transport for fail-closed boot, or switch to nexusBootMode="telemetry".',
+      );
+    }
+    // assert-remote-policy-loaded-at-boot rejects nexusAllowEmptyPolicyStore
+    // (its contract demands remote policy presence; the opt-in contradicts that).
+    if (
+      nexusBootMode === "assert-remote-policy-loaded-at-boot" &&
+      config.nexusAllowEmptyPolicyStore === true
+    ) {
+      throw new Error(
+        "nexusAllowEmptyPolicyStore is incompatible with " +
+          'nexusBootMode="assert-remote-policy-loaded-at-boot" — ' +
+          "this mode's contract requires remote policy to be loaded at boot.",
+      );
+    }
+    // Both assert-* boot modes require permissions to be enabled — the probe
+    // targets the policy namespace (version.json + policy.json), not audit
+    // paths, and the activation gate runs inside the permissions wiring
+    // block. Audit-only deployments would get false readiness from a
+    // permissions-only probe, so reject the combination explicitly.
+    if (nexusBootMode !== "telemetry" && !nexusPermsWanted) {
+      throw new Error(
+        `nexusBootMode="${nexusBootMode}" requires nexusPermissionsEnabled=true. ` +
+          "The probe targets the permissions namespace; audit-only deployments " +
+          "cannot earn a fail-closed signal from this mode.",
+      );
+    }
+
+    // Probe block: HTTP probes in place; local-bridge uses the disposable
+    // probe factory (sealed-capability, never reuses long-lived credentials).
+    const probePaths = [
+      `${config.nexusPolicyPath ?? "koi/permissions"}/version.json`,
+      `${config.nexusPolicyPath ?? "koi/permissions"}/policy.json`,
+    ];
+    const probeOpts = {
+      readPaths: probePaths,
+      ...(config.nexusProbeDeadlineMs !== undefined
+        ? { probeDeadlineMs: config.nexusProbeDeadlineMs }
+        : {}),
+    };
+    let probeOutcome:
+      | { readonly kind: "ok" | "version-only" }
+      | { readonly kind: "missing-paths"; readonly notFound: readonly string[] }
+      | { readonly kind: "skipped" }
+      | undefined;
+    if (txKind === "http") {
+      nexusAssertHealthCapable(config.nexusTransport);
+      const r = await config.nexusTransport.health(probeOpts);
+      if (!r.ok) {
+        if (nexusBootMode === "telemetry") {
+          console.warn("[koi/cli] nexus health probe failed:", r.error.message);
+          probeOutcome = { kind: "skipped" };
+        } else {
+          throw new Error(`nexus health probe failed under ${nexusBootMode}: ${r.error.message}`, {
+            cause: r.error,
+          });
+        }
+      } else if (r.value.status === "missing-paths") {
+        if (
+          nexusBootMode === "assert-transport-reachable-at-boot" &&
+          config.nexusAllowEmptyPolicyStore !== true
+        ) {
+          throw new Error(
+            `nexus probe found missing paths under ${nexusBootMode}: ${r.value.notFound.join(", ")}. ` +
+              "Set nexusAllowEmptyPolicyStore=true for genuine bootstrap, or fix nexusPolicyPath for typo.",
+          );
+        }
+        if (nexusBootMode === "assert-remote-policy-loaded-at-boot") {
+          throw new Error(
+            `nexus probe found missing paths under ${nexusBootMode}: ${r.value.notFound.join(", ")}. ` +
+              "This mode requires remote policy to be loaded at boot.",
+          );
+        }
+        console.warn("[koi/cli] nexus probe missing paths:", r.value.notFound.join(", "));
+        probeOutcome = { kind: "missing-paths", notFound: r.value.notFound };
+      } else {
+        probeOutcome = { kind: r.value.status };
+      }
+    } else if (txKind === "local-bridge" && config.nexusProbeFactory !== undefined) {
+      // telemetry-only path: log probe result, do not gate boot
+      try {
+        const probe = await config.nexusProbeFactory();
+        const r = await probe.health(probeOpts);
+        probe.close();
+        if (!r.ok) {
+          console.warn("[koi/cli] nexus local-bridge probe failed:", r.error.message);
+        } else if (r.value.status !== "ok") {
+          console.warn("[koi/cli] nexus local-bridge probe:", r.value.status);
+        }
+        probeOutcome = { kind: "skipped" };
+      } catch (e: unknown) {
+        console.warn(
+          "[koi/cli] nexus local-bridge probe construction failed:",
+          e instanceof Error ? e.message : String(e),
+        );
+        probeOutcome = { kind: "skipped" };
+      }
+    } else {
+      // local-bridge with no probe factory (Phase 1 legacy): skip silently
+      probeOutcome = { kind: "skipped" };
+    }
+    void probeOutcome; // observable in logs above; runtime decision already gated
+  }
+
+  if (config.nexusTransport !== undefined && nexusPermsWanted) {
     const transport = config.nexusTransport;
     const tuiPermBackend = permBackend; // captured before wrapping
     nexusPermBackend = createNexusPermissionBackend({
       transport,
       localBackend: tuiPermBackend,
+      // Only honor bootSyncDeadlineMs under assert-remote-policy-loaded — in
+      // other modes the deadline would silently downgrade slow-but-healthy
+      // Nexus to local fallback (centralized policy never activates, but
+      // boot succeeds — exactly the silent authorization downgrade the
+      // assert modes exist to prevent).
+      ...(config.nexusBootSyncDeadlineMs !== undefined &&
+      nexusBootMode === "assert-remote-policy-loaded-at-boot"
+        ? { bootSyncDeadlineMs: config.nexusBootSyncDeadlineMs }
+        : {}),
+      ...(config.nexusPolicyPath !== undefined ? { policyPath: config.nexusPolicyPath } : {}),
+      ...(config.nexusSyncIntervalMs !== undefined
+        ? { syncIntervalMs: config.nexusSyncIntervalMs }
+        : {}),
       rebuildBackend: (policy: unknown): PermissionBackend => {
         // Parse nexus policy as { rules: { allow, deny, ask } }.
         // If malformed or empty, fall back to TUI backend unchanged.
@@ -1822,6 +2005,50 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       },
     });
     permBackend = nexusPermBackend;
+
+    // assert-remote-policy-loaded-at-boot: await ready + verify activation,
+    // bounded by nexusBootSyncDeadlineMs. Dispose the backend before throwing
+    // so a rejected boot does not leak a live polling timer + open transport.
+    if (nexusBootMode === "assert-remote-policy-loaded-at-boot") {
+      const deadline = config.nexusBootSyncDeadlineMs ?? 30_000;
+      let timerHandle: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const timeoutP = new Promise<"timeout">((resolve) => {
+          timerHandle = setTimeout(() => resolve("timeout"), deadline);
+          // unref so a successful boot does not keep the event loop alive
+          // until the deadline elapses on short-lived/headless runs.
+          if (
+            typeof timerHandle === "object" &&
+            timerHandle !== null &&
+            "unref" in timerHandle &&
+            typeof (timerHandle as { unref?: () => void }).unref === "function"
+          ) {
+            (timerHandle as { unref: () => void }).unref();
+          }
+        });
+        const raceResult = await Promise.race([
+          nexusPermBackend.ready.then(() => "ready" as const),
+          timeoutP,
+        ]);
+        if (raceResult === "timeout") {
+          nexusPermBackend.abortInFlightSync();
+          nexusPermBackend.dispose();
+          throw new Error(
+            `nexus initial policy sync exceeded nexusBootSyncDeadlineMs=${String(deadline)}ms ` +
+              `under ${nexusBootMode}.`,
+          );
+        }
+        if (!nexusPermBackend.isCentralizedPolicyActive()) {
+          nexusPermBackend.dispose();
+          throw new Error(
+            `nexus initial policy sync resolved without activating remote policy under ${nexusBootMode}. ` +
+              "Likely cause: malformed policy.json, marker mismatch, or transport error during sync.",
+          );
+        }
+      } finally {
+        if (timerHandle !== undefined) clearTimeout(timerHandle);
+      }
+    }
   }
 
   const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
@@ -3050,17 +3277,180 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // --- Nexus audit middleware (opt-in via config.nexusTransport) ---
     // Batches audit entries to Nexus alongside any NDJSON/SQLite sinks.
     // No signing: Nexus is an append-only store with its own integrity.
+    //
+    // Poison wiring (opt-in via nexusAuditPoisonOnError): mirrors the
+    // NDJSON/SQLite per-sink latch + admission-gate pattern above. Honest
+    // scoping: post-failure containment, NOT synchronous-flush parity
+    // (Nexus is remote/buffered). Synchronous flush at every boundary
+    // would wedge the agent loop on a remote round-trip per call.
     // let: retained so shutdown can flush.
     let nexusAuditMwForShutdown: { readonly flush: () => Promise<void> } | undefined;
-    if (config.nexusTransport !== undefined) {
-      const nexusSink = createNexusAuditSink({ transport: config.nexusTransport });
+    if (config.nexusTransport !== undefined && nexusAuditWanted) {
+      // HARD REJECT: local-bridge audit is unsafe today (the long-lived
+      // bridge cannot be probed and write failures cannot be cleanly
+      // isolated from the shared subprocess channel under poison mode).
+      if (
+        config.nexusTransport.kind === "local-bridge" &&
+        config.nexusAuditPoisonOnError === true
+      ) {
+        throw new Error(
+          "nexusAuditPoisonOnError is not supported on local-bridge transport. " +
+            "Use HTTP transport, or disable the poison guard.",
+        );
+      }
+      const nexusPoisonError: { err?: unknown } = {};
+      const nexusOnError =
+        config.nexusAuditPoisonOnError === true
+          ? (err: unknown): void => {
+              if (nexusPoisonError.err === undefined) {
+                nexusPoisonError.err = err;
+                console.error(
+                  "[koi/cli] nexus audit sink poisoned — no further audit writes accepted:",
+                  err,
+                );
+                process.exitCode = 1;
+              }
+            }
+          : (err: unknown): void => {
+              console.warn("[koi/cli] nexus audit write failed (best-effort):", err);
+            };
+      const innerNexusSink = createNexusAuditSink({
+        transport: config.nexusTransport,
+        onError: nexusOnError,
+      });
+      // poisonedSink wrapper: short-circuits log() once latch is set so
+      // post-poison records surface as observable failures (matches the
+      // NDJSON/SQLite wrapper above; no-op when poison guard disabled).
+      const nexusOriginalLog = innerNexusSink.log.bind(innerNexusSink);
+      const nexusSink: typeof innerNexusSink = {
+        ...innerNexusSink,
+        log: async (entry: AuditEntry): Promise<void> => {
+          if (nexusPoisonError.err !== undefined) {
+            throw new Error(
+              "nexus audit sink poisoned — previous write failure prevents further writes",
+              { cause: nexusPoisonError.err },
+            );
+          }
+          return nexusOriginalLog(entry);
+        },
+      };
       const nexusAuditMw = createAuditMiddleware({ sink: nexusSink });
       complianceRecorders.push(
-        createAuditSinkComplianceRecorder(nexusSink, { sessionId: getLiveSessionId }),
+        createAuditSinkComplianceRecorder(nexusSink, {
+          sessionId: getLiveSessionId,
+          ...(config.nexusAuditPoisonOnError === true
+            ? {
+                onError: (err: unknown): void => {
+                  // Latch the per-sink poison so the next admission boundary
+                  // refuses new work. Do NOT process.exit() here — Nexus
+                  // writes are async, and a hard-exit from a fire-and-forget
+                  // callback would strand mid-session work, bypass cleanup,
+                  // and skip the surrounding poison-latch flow. Synchronous
+                  // fail-stop on every operation requires a local required
+                  // sink (NDJSON/SQLite); honest scoping per spec.
+                  if (nexusPoisonError.err === undefined) {
+                    nexusPoisonError.err = err;
+                    console.error(
+                      "[koi/cli] nexus compliance write failed — sink poisoned, refusing further work at next boundary:",
+                      err,
+                    );
+                    process.exitCode = 1;
+                  }
+                },
+              }
+            : {}),
+        }),
       );
-      auditPresetExtras.push(nexusAuditMw);
-      // Use nexus sink for ledger query if SQLite is not already doing it
-      // (nexus supports .query() so /trajectory audit lane works)
+      // Wrap the audit middleware to fail admission boundaries when poisoned.
+      // Mirrors the NDJSON/SQLite required-sink guard surface so post-poison
+      // model/tool calls cannot run inside an already-open turn.
+      const guardedNexusAuditMw: KoiMiddleware =
+        config.nexusAuditPoisonOnError === true
+          ? {
+              ...nexusAuditMw,
+              onSessionStart: async (ctx) => {
+                if (nexusPoisonError.err !== undefined) {
+                  throw new Error("nexus audit sink poisoned — cannot record session_start", {
+                    cause: nexusPoisonError.err,
+                  });
+                }
+                await nexusAuditMw.onSessionStart?.(ctx);
+              },
+              onBeforeTurn: async (ctx) => {
+                if (nexusPoisonError.err !== undefined) {
+                  throw new Error(
+                    "nexus audit sink poisoned — refusing new turn to preserve audit trail",
+                    { cause: nexusPoisonError.err },
+                  );
+                }
+                return nexusAuditMw.onBeforeTurn?.(ctx);
+              },
+              wrapModelCall: async (ctx, request, next) => {
+                if (nexusPoisonError.err !== undefined) {
+                  throw new Error("nexus audit sink poisoned — refusing model call mid-turn", {
+                    cause: nexusPoisonError.err,
+                  });
+                }
+                if (nexusAuditMw.wrapModelCall !== undefined) {
+                  return nexusAuditMw.wrapModelCall(ctx, request, next);
+                }
+                return next(request);
+              },
+              wrapModelStream: (ctx, request, next) => {
+                if (nexusPoisonError.err !== undefined) {
+                  throw new Error("nexus audit sink poisoned — refusing model stream mid-turn", {
+                    cause: nexusPoisonError.err,
+                  });
+                }
+                const inner = nexusAuditMw.wrapModelStream
+                  ? nexusAuditMw.wrapModelStream(ctx, request, next)
+                  : next(request);
+                // Stop yielding chunks if the sink poisons during the stream
+                return (async function* (): AsyncIterable<
+                  Awaited<ReturnType<typeof next>> extends AsyncIterable<infer U> ? U : never
+                > {
+                  for await (const chunk of inner) {
+                    if (nexusPoisonError.err !== undefined) {
+                      throw new Error(
+                        "nexus audit sink poisoned mid-stream — aborting model stream",
+                        { cause: nexusPoisonError.err },
+                      );
+                    }
+                    yield chunk;
+                  }
+                })();
+              },
+              wrapToolCall: async (ctx, request, next) => {
+                if (nexusPoisonError.err !== undefined) {
+                  throw new Error("nexus audit sink poisoned — refusing tool call mid-turn", {
+                    cause: nexusPoisonError.err,
+                  });
+                }
+                if (nexusAuditMw.wrapToolCall !== undefined) {
+                  return nexusAuditMw.wrapToolCall(ctx, request, next);
+                }
+                return next(request);
+              },
+              onPermissionDecision: async (ctx, query, decision) => {
+                if (nexusPoisonError.err !== undefined) {
+                  throw new Error(
+                    "nexus audit sink poisoned — refusing permission decision mid-turn",
+                    { cause: nexusPoisonError.err },
+                  );
+                }
+                return nexusAuditMw.onPermissionDecision?.(ctx, query, decision);
+              },
+              onSessionEnd: async (ctx) => {
+                if (nexusPoisonError.err !== undefined) {
+                  throw new Error("nexus audit sink poisoned — cannot record session_end", {
+                    cause: nexusPoisonError.err,
+                  });
+                }
+                await nexusAuditMw.onSessionEnd?.(ctx);
+              },
+            }
+          : nexusAuditMw;
+      auditPresetExtras.push(guardedNexusAuditMw);
       if (ledgerAuditSink === undefined) {
         ledgerAuditSink = nexusSink;
       }

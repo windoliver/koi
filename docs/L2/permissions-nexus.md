@@ -91,3 +91,20 @@ const hooks = createNexusDelegationHooks({ transport });
 | `isRevoked` error | Return `true` (fail-closed) |
 | `onGrant` failure | Throw (grant rolled back) |
 | `onRevoke` failure | Swallow |
+
+## Boot-sync controls (#1401 Phase 2)
+
+For boot modes that must positively confirm a remote policy load (see
+`docs/L3/cli.md`, "Nexus boot modes"), the backend exposes:
+
+- `bootSyncDeadlineMs?: number` — caps the initial sync read; threaded
+  through to `transport.call({ deadlineMs, signal })`.
+- `abortInFlightSync()` — aborts the in-flight initial-sync `read`. Backed
+  by an internal `AbortController` so the underlying transport call is
+  truly cancelled (not just bookkeeping).
+- `isCentralizedPolicyActive()` — true once the first successful Nexus
+  read installed remote policy; used by `assert-remote-policy-loaded-at-boot`
+  to refuse to boot when the sync resolved without activating remote rules.
+
+`dispose()` also calls `abortInFlightSync()` to ensure rejected boots do
+not leak polling timers or open transport reads.

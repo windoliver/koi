@@ -17,7 +17,9 @@ export function createHttpTransport(config: NexusFileSystemConfig): NexusTranspo
   });
 
   return {
+    kind: "http",
     call: base.call,
+    health: base.health,
     close: base.close,
     // HTTP transport has no bridge subprocess — notifications are local-only.
     subscribe: (): (() => void) => (): void => {},

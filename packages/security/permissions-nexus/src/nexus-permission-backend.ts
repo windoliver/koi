@@ -1,5 +1,5 @@
 import type { PermissionBackend, PermissionDecision, PermissionQuery } from "@koi/core";
-import type { NexusTransport } from "@koi/nexus-client";
+import { extractReadContent, type NexusTransport } from "@koi/nexus-client";
 import type { NexusVersionTag } from "./types.js";
 
 export interface NexusPermissionBackendConfig {
@@ -8,6 +8,13 @@ export interface NexusPermissionBackendConfig {
   readonly rebuildBackend: (policy: unknown) => PermissionBackend;
   readonly syncIntervalMs?: number | undefined;
   readonly policyPath?: string | undefined;
+  /**
+   * Per-call deadline applied to each `read` during the initial policy sync.
+   * Threaded into `transport.call(...)` so the assert-remote-policy-loaded
+   * boot mode can bound startup duration. Falls back to the transport's
+   * default when undefined.
+   */
+  readonly bootSyncDeadlineMs?: number | undefined;
 }
 
 export interface NexusPermissionBackend extends PermissionBackend {
@@ -21,6 +28,22 @@ export interface NexusPermissionBackend extends PermissionBackend {
     queries: readonly PermissionQuery[],
   ) => Promise<readonly PermissionDecision[]>;
   readonly dispose: () => void;
+  /**
+   * True iff the initial sync produced a centralized policy that was actually
+   * activated (rebuildBackend succeeded AND supportsDefaultDenyMarker matched).
+   * False if `ready` resolved via local-fallback (transport error, 404,
+   * malformed policy, marker mismatch). Used by `assert-remote-policy-loaded
+   * -at-boot` to gate startup AFTER awaiting `ready`.
+   */
+  readonly isCentralizedPolicyActive: () => boolean;
+  /**
+   * Aborts an in-flight initial sync. Sets the mutation guard so any late
+   * `initializePolicy()` resolution after dispose CANNOT mutate state. The
+   * caller-bounded JS-side wait in `assert-remote-policy-loaded-at-boot` uses
+   * this on deadline expiry. On local-bridge this delivers state-correctness
+   * via the mutation guard but does not shorten Python read latency.
+   */
+  readonly abortInFlightSync: () => void;
   /** @internal Exposed for testing poll logic without real timers. */
   readonly _poll: () => Promise<void>;
 }
@@ -41,24 +64,38 @@ export function createNexusPermissionBackend(
   // let justified: lifecycle flags
   let timer: ReturnType<typeof setInterval> | undefined;
   let disposed = false;
+  // let justified: mutation guard — set by abortInFlightSync()/dispose() to
+  // reject late initializePolicy()/doPoll() resolutions that arrive after
+  // the runtime has decided to bail (e.g., assert-remote-policy-loaded-at-boot
+  // deadline expired). Local-bridge cannot shorten the in-flight Python read,
+  // but this guard guarantees state-correctness when the late reply lands.
+  let syncAborted = false;
+  // let justified: tracks whether initial sync activated a centralized policy
+  let centralizedPolicyActive = false;
+  // AbortController for the initial sync — abortInFlightSync()/dispose()
+  // signals the transport so HTTP can cancel mid-flight (TCP read drops)
+  // and local-bridge resets the subprocess. Without this, the underlying
+  // transport.call would continue running long after the boot-time
+  // deadline expired, even though the JS side has already given up.
+  const bootSyncAbort = new AbortController();
+  const bootCallOpts: { readonly deadlineMs?: number; readonly signal: AbortSignal } = {
+    ...(config.bootSyncDeadlineMs !== undefined ? { deadlineMs: config.bootSyncDeadlineMs } : {}),
+    signal: bootSyncAbort.signal,
+  };
 
   function extractString(value: unknown): string {
-    if (typeof value === "string") return value;
-    if (
-      typeof value === "object" &&
-      value !== null &&
-      "content" in value &&
-      typeof (value as { content: unknown }).content === "string"
-    ) {
-      return (value as { content: string }).content;
-    }
-    throw new Error("unexpected NFS read response shape");
+    const r = extractReadContent(value);
+    if (!r.ok) throw new Error(r.error.message);
+    return r.value;
   }
 
   async function initializePolicy(): Promise<void> {
-    const versionResult = await config.transport.call<unknown>("read", {
-      path: `${policyPath}/version.json`,
-    });
+    const versionResult = await config.transport.call<unknown>(
+      "read",
+      { path: `${policyPath}/version.json` },
+      bootCallOpts,
+    );
+    if (syncAborted) return;
 
     if (!versionResult.ok) {
       if (versionResult.error.code === "NOT_FOUND") {
@@ -77,9 +114,12 @@ export function createNexusPermissionBackend(
       return;
     }
 
-    const policyResult = await config.transport.call<unknown>("read", {
-      path: `${policyPath}/policy.json`,
-    });
+    const policyResult = await config.transport.call<unknown>(
+      "read",
+      { path: `${policyPath}/policy.json` },
+      bootCallOpts,
+    );
+    if (syncAborted) return;
     if (!policyResult.ok) return;
 
     try {
@@ -94,8 +134,10 @@ export function createNexusPermissionBackend(
         );
         return;
       }
+      if (syncAborted) return;
       localBackend = rebuiltBackend;
       lastSeenVersion = tag.version;
+      centralizedPolicyActive = true;
     } catch {
       console.warn("[permissions-nexus] malformed Nexus policy on startup, using local rules");
     }
@@ -144,8 +186,10 @@ export function createNexusPermissionBackend(
           );
           return;
         }
+        if (disposed) return;
         localBackend = rebuiltBackend;
         lastSeenVersion = tag.version;
+        centralizedPolicyActive = true;
       }
     } catch {
       console.warn("[permissions-nexus] malformed Nexus policy during sync, skipping update");
@@ -184,6 +228,8 @@ export function createNexusPermissionBackend(
 
   function dispose(): void {
     disposed = true;
+    syncAborted = true;
+    bootSyncAbort.abort();
     if (timer !== undefined) {
       clearInterval(timer);
       timer = undefined;
@@ -191,11 +237,22 @@ export function createNexusPermissionBackend(
     void localBackend.dispose?.();
   }
 
+  function abortInFlightSync(): void {
+    syncAborted = true;
+    bootSyncAbort.abort();
+  }
+
+  function isCentralizedPolicyActive(): boolean {
+    return centralizedPolicyActive;
+  }
+
   const base: NexusPermissionBackend = {
     check,
     checkBatch,
     dispose,
     ready,
+    abortInFlightSync,
+    isCentralizedPolicyActive,
     _poll: poll,
   };
 
