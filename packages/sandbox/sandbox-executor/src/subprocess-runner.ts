@@ -76,7 +76,6 @@ async function main(): Promise<void> {
       error: "subprocess-runner: module has no default export",
     });
     process.exit(1);
-    return;
   }
 
   if (typeof mod.default !== "function") {
@@ -85,7 +84,6 @@ async function main(): Promise<void> {
       error: "subprocess-runner: module default export must be a function",
     });
     process.exit(1);
-    return;
   }
 
   try {
