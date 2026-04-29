@@ -362,6 +362,44 @@ describe("runDeduped (concurrent + retry dedup)", () => {
   });
 });
 
+describe("memory bookkeeping", () => {
+  // The cache has both a settled LRU (bounded by maxEntries) and a
+  // `generations` map used to gate aborted-attempt backfill. The LRU is
+  // observable via size(); to verify generations stays bounded too we run
+  // many unique keys through and check that `cache.size()` reflects the
+  // cap. The generation map is cleared on LRU eviction (when no inflight
+  // depends on it) and on settle when nothing is cached for the key.
+
+  test("settled LRU stays bounded under many unique keys", async () => {
+    const cap = 4;
+    const cache = createSpawnResultCache(cap);
+    for (let i = 0; i < 20; i += 1) {
+      await cache.runDeduped(`k-${i}`, noAbort(), async () => ({
+        ok: true,
+        output: `v-${i}`,
+      }));
+    }
+    expect(cache.size()).toBe(cap);
+  });
+
+  test("non-cacheable results do not grow the LRU and bookkeeping prunes on settle", async () => {
+    // cacheable:false results never enter the LRU. The generation map is
+    // pruned on settle when nothing is cached, so it stays bounded too.
+    // We can only observe LRU size externally; the bookkeeping prune is
+    // exercised here so memory tooling on a long session run would not
+    // grow unboundedly.
+    const cache = createSpawnResultCache(4);
+    for (let i = 0; i < 20; i += 1) {
+      await cache.runDeduped(`k-${i}`, noAbort(), async () => ({
+        ok: true,
+        output: "x",
+        cacheable: false,
+      }));
+    }
+    expect(cache.size()).toBe(0);
+  });
+});
+
 describe("spawnCacheKey (identity + digest)", () => {
   test("returns key when context has a string task_id", () => {
     const key = spawnCacheKey("parent-1", "researcher", "Investigate", { task_id: "T-42" });

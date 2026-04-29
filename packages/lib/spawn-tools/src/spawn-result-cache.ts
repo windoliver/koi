@@ -1,5 +1,6 @@
 /**
- * SpawnResultCache — bounded LRU for idempotent agent_spawn retries.
+ * SpawnResultCache — bounded LRU + per-key in-flight coalescing for
+ * idempotent agent_spawn retries.
  *
  * Key shape: `${parentAgentId}::${agentName}::${taskId}::${digest}` where
  * `digest` is a hash of (agentName, description, context). Including the
@@ -8,19 +9,24 @@
  * work. Without `context.task_id` (or context entirely) the key is
  * `undefined` and dedup is skipped.
  *
- * `runDeduped` checks the settled-result LRU before invoking the factory.
- * On a hit, the cached output is returned immediately (after a fresh abort
- * check). On a miss, the factory runs to settlement; success is cached if
- * the result is cacheable. Failures are NOT cached.
+ * `runDeduped` operates two layers:
+ *   1. Settled-result LRU. Repeat retries after the spawn finished hit
+ *      this cache without re-invoking the factory.
+ *   2. Per-key in-flight registry. Concurrent same-key callers attach to
+ *      the driver's Promise so only one factory invocation runs per
+ *      overlap window. `cacheable: false` placeholders propagate to all
+ *      waiters; only cacheable results land in the LRU.
  *
- * Concurrent in-flight sharing is intentionally NOT performed. Sharing an
- * unsettled Promise would let a second caller receive a placeholder
- * `{ok:true}` admission for non-streaming spawns (deferred / on-demand)
- * before any child has actually completed, which is incorrect for
- * partial-failure recovery. The cost of this conservative choice is that
- * two concurrent calls within the same overlap window each invoke the
- * factory; the cost is bounded by how rare same-key in-flight overlap is
- * in practice. See `docs/L2/spawn-tools.md` "Known limitations" §3.
+ * Cancellation: when a driver's signal aborts, the inflight slot is
+ * evicted immediately so a retry meant to replace the aborted attempt
+ * drives its own spawn. The orphaned factory promise still runs in the
+ * background and may backfill the cache on settle, but only if the
+ * captured generation still matches the latest (no newer attempt has
+ * superseded) and the cache slot is still empty.
+ *
+ * Failures are NOT cached. Inflight slot lifecycle is bound to the
+ * factory promise settling, not to the driver's await observation,
+ * so an aborted driver doesn't strand late waiters.
  *
  * LRU is Map insertion-order: `get` promotes (delete + re-insert), `set`
  * evicts the oldest at capacity. Sync — no async overhead on the hot path.
@@ -106,6 +112,12 @@ export function createSpawnResultCache(
       const oldest = cache.keys().next().value;
       if (oldest !== undefined) {
         cache.delete(oldest);
+        // Prune the evicted key's generation entry too so the bookkeeping
+        // map stays bounded by the LRU cap. Skip if there's still an
+        // in-flight attempt depending on its generation.
+        if (!inflight.has(oldest)) {
+          generations.delete(oldest);
+        }
       }
     }
     cache.set(key, output);
@@ -193,9 +205,19 @@ export function createSpawnResultCache(
           set(key, settled.output);
         }
         if (inflight.get(key) === factoryPromise) inflight.delete(key);
+        // Prune the generation entry once nothing depends on it: no
+        // in-flight attempt for this key and no cached value. Otherwise
+        // long-running sessions with many unique task_ids would leak the
+        // generations map without bound.
+        if (generations.get(key) === myGeneration && !inflight.has(key) && !cache.has(key)) {
+          generations.delete(key);
+        }
       },
       () => {
         if (inflight.get(key) === factoryPromise) inflight.delete(key);
+        if (generations.get(key) === myGeneration && !inflight.has(key) && !cache.has(key)) {
+          generations.delete(key);
+        }
       },
     );
 
