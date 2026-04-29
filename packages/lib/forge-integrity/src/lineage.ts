@@ -399,17 +399,44 @@ function safeVerify(
  */
 function isWellFormedIntegrityResult(raw: unknown): raw is IntegrityResult {
   if (raw === null || typeof raw !== "object") return false;
-  const r = raw as { readonly kind?: unknown; readonly ok?: unknown };
+  const r = raw as Record<string, unknown>;
   if (typeof r.kind !== "string") return false;
+  // Validate the per-variant fields too: a verifier that returns
+  // `{ kind: "ok", ok: true }` without a canonical brickId/builderId is
+  // partial-result malformed and must not be trusted as authoritative.
+  const isCanonicalBrickId = typeof r.brickId === "string" && isBrickId(r.brickId);
+  const isNonEmptyString = (v: unknown): boolean => typeof v === "string" && v.length > 0;
   switch (r.kind) {
     case "ok":
-      return r.ok === true;
+      return r.ok === true && isCanonicalBrickId && isNonEmptyString(r.builderId);
     case "content_mismatch":
+      return (
+        r.ok === false &&
+        isCanonicalBrickId &&
+        typeof r.expectedId === "string" &&
+        isBrickId(r.expectedId) &&
+        typeof r.actualId === "string" &&
+        isBrickId(r.actualId) &&
+        isNonEmptyString(r.builderId)
+      );
     case "producer_mismatch":
+      return (
+        r.ok === false &&
+        isCanonicalBrickId &&
+        isNonEmptyString(r.expectedBuilderId) &&
+        isNonEmptyString(r.claimedBuilderId)
+      );
     case "producer_unknown":
+      return r.ok === false && isCanonicalBrickId && isNonEmptyString(r.expectedBuilderId);
     case "recompute_failed":
+      return (
+        r.ok === false &&
+        isCanonicalBrickId &&
+        isNonEmptyString(r.builderId) &&
+        typeof r.reason === "string"
+      );
     case "malformed":
-      return r.ok === false;
+      return r.ok === false && typeof r.reason === "string";
     default:
       return false;
   }

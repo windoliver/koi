@@ -193,6 +193,23 @@ describe("lineage", () => {
     if (result.kind === "integrity_failed") expect(result.reason).toBe("recompute_failed");
   });
 
+  test("isDerivedFrom rejects a verifier returning { kind: 'ok', ok: true } without canonical brickId/builderId", async () => {
+    const root = makeTool();
+    const child = makeTool({ implementation: "v2", parentBrickId: root.id });
+    // Adversarial verifier returns the discriminant + ok:true but is missing
+    // brickId/builderId — a partial-result malformed verdict that must
+    // not be trusted as authoritative.
+    const partialVerify = Object.assign(() => ({ kind: "ok", ok: true }), {
+      coversLineage: () => true,
+    }) as unknown as ReturnType<typeof createBrickVerifier>;
+    const result = await isDerivedFrom(child, root.id, fixtureStore([root]), {
+      verify: partialVerify,
+      producerBuilderId: "koi/forge",
+    });
+    expect(result.kind).toBe("integrity_failed");
+    if (result.kind === "integrity_failed") expect(result.reason).toBe("recompute_failed");
+  });
+
   test("isDerivedFrom rejects a verifier returning a malformed { kind: 'ok' } without ok:true", async () => {
     const root = makeTool();
     const child = makeTool({ implementation: "v2", parentBrickId: root.id });

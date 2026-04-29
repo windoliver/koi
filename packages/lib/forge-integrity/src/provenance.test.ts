@@ -346,4 +346,25 @@ describe("createForgeProvenance", () => {
     (externals as Record<string, unknown>).name = "evil";
     expect(prov.buildDefinition.externalParameters).toEqual({ name: "csv-parse", schemaVer: 1 });
   });
+
+  test("rejects NaN/Infinity in externalParameters because they do not survive JSON round-trip", () => {
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        externalParameters: { ratio: Number.NaN },
+      }),
+    ).toThrow(/non-finite/);
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        externalParameters: { rate: Number.POSITIVE_INFINITY },
+      }),
+    ).toThrow(/non-finite/);
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        externalParameters: { nested: { neg: Number.NEGATIVE_INFINITY } },
+      }),
+    ).toThrow(/non-finite/);
+  });
 });

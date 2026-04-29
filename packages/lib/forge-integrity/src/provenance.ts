@@ -283,7 +283,15 @@ function findNonPlainValue(value: unknown): string | undefined {
     const { node, path, depth } = frame;
     if (node === null) continue;
     const t = typeof node;
-    if (t === "string" || t === "number" || t === "boolean") continue;
+    if (t === "string" || t === "boolean") continue;
+    if (t === "number") {
+      // NaN/Infinity round-trip to `null` through JSON.stringify, which
+      // means a provenance record accepted here would mutate semantically
+      // when persisted, signed, or compared after serialization. Reject
+      // them at the boundary so trust-bearing metadata stays stable.
+      if (!Number.isFinite(node)) return `${path} is non-finite number`;
+      continue;
+    }
     if (t !== "object") return `${path} is ${t}`;
     if (seen.has(node as object)) continue;
     seen.add(node as object);
