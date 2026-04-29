@@ -51,11 +51,31 @@ function normalizeContext(
   return { ok: true, value: JSON.parse(serialized) as JsonObject };
 }
 
+/**
+ * Recursively sort object keys so that two contexts with identical data but
+ * different insertion order produce the same byte representation. The same
+ * canonical form feeds both the child's prompt and the cache digest, so the
+ * cache cannot collapse two calls whose prompt text would otherwise differ.
+ */
+function canonicalize(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(canonicalize);
+  const obj = value as Record<string, unknown>;
+  const sorted: Record<string, unknown> = {};
+  for (const k of Object.keys(obj).sort()) {
+    sorted[k] = canonicalize(obj[k]);
+  }
+  return sorted;
+}
+
 function descriptionWithContext(description: string, context: JsonObject | undefined): string {
   if (context === undefined) return description;
-  // `context` here has already been round-tripped through JSON, so this
-  // serialization can never throw.
-  const serialized = JSON.stringify(context, null, 2);
+  // Context is already round-tripped through JSON in normalizeContext, so
+  // this serialization never throws. Canonicalize keys so the child sees
+  // the same prompt regardless of insertion order — and the cache key
+  // (which hashes the same canonical form) stays in lockstep with what
+  // the child actually receives.
+  const serialized = JSON.stringify(canonicalize(context), null, 2);
   return `${description}\n\nStructured context:\n${serialized}`;
 }
 
@@ -99,7 +119,7 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
       const childDescription = descriptionWithContext(description, context);
 
       const invokeSpawn = async (): Promise<
-        | { readonly ok: true; readonly output: string; readonly cacheable?: boolean }
+        | { readonly ok: true; readonly output: string }
         | { readonly ok: false; readonly error: string }
       > => {
         const result = await config.spawnFn({
@@ -110,12 +130,7 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
           agentId: config.agentId,
         });
         if (!result.ok) return { ok: false, error: result.error.message };
-        // Empty output indicates deferred/on-demand delivery — `spawnFn` returned
-        // before the child finished. Caching that placeholder would mask a later
-        // child failure on retry, so we report success to the caller but keep
-        // the cache entry from being created.
-        const cacheable = result.output.length > 0;
-        return { ok: true, output: result.output, cacheable };
+        return { ok: true, output: result.output };
       };
 
       const cacheKey =

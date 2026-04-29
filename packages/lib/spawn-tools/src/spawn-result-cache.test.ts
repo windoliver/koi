@@ -129,21 +129,32 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     expect(cache.get("k")).toBeUndefined();
   });
 
-  test("cacheable:false skips the settled cache (deferred-delivery safety)", async () => {
+  test("cacheable:false skips the settled cache (explicit opt-out for callers)", async () => {
     const cache = createSpawnResultCache(8);
     let calls = 0;
     const factory = async () => {
       calls += 1;
-      return { ok: true as const, output: "", cacheable: false };
+      return { ok: true as const, output: "x", cacheable: false };
     };
     const first = await cache.runDeduped("k", factory);
     const second = await cache.runDeduped("k", factory);
-    expect(first).toEqual({ ok: true, output: "", deduplicated: false });
-    // Second call must spawn fresh — empty deferred admission must not
-    // mask a later real failure.
-    expect(second).toEqual({ ok: true, output: "", deduplicated: false });
+    expect(first).toEqual({ ok: true, output: "x", deduplicated: false });
+    expect(second).toEqual({ ok: true, output: "x", deduplicated: false });
     expect(calls).toBe(2);
     expect(cache.get("k")).toBeUndefined();
+  });
+
+  test("successful empty-output result is cached like any other success", async () => {
+    const cache = createSpawnResultCache(8);
+    let calls = 0;
+    const factory = async () => {
+      calls += 1;
+      return { ok: true as const, output: "" };
+    };
+    await cache.runDeduped("k", factory);
+    const second = await cache.runDeduped("k", factory);
+    expect(second).toEqual({ ok: true, output: "", deduplicated: true });
+    expect(calls).toBe(1);
   });
 
   test("rejected factory propagates and clears inflight", async () => {

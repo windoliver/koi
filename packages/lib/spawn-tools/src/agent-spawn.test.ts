@@ -285,16 +285,11 @@ describe("agent_spawn", () => {
       expect(typeof calls[0]?.context?.when).toBe("string");
     });
 
-    test("empty-output spawn (deferred-delivery proxy) is not cached — retry re-spawns", async () => {
+    test("childDescription canonicalizes context keys so the prompt matches the cache digest", async () => {
       const calls: SpawnRequest[] = [];
-      let attempt = 0;
       const fn: SpawnFn = async (request) => {
         calls.push(request);
-        attempt += 1;
-        // First attempt: empty admission (proxy for deferred mode).
-        // Second attempt: real completed output.
-        if (attempt === 1) return { ok: true, output: "" };
-        return { ok: true, output: "real-result" };
+        return { ok: true, output: "out" };
       };
       const tool = createAgentSpawnTool({
         spawnFn: fn,
@@ -304,20 +299,33 @@ describe("agent_spawn", () => {
         resultCache: createSpawnResultCache(),
       });
 
-      const args = {
+      // Same logical context, different insertion order. The child must see
+      // the same prompt text both times, AND the second call must dedup.
+      const a = await tool.execute({
         agent_name: "researcher",
         description: "X",
-        context: { task_id: "T-1" },
-      };
-      const first = await tool.execute(args);
-      const second = await tool.execute(args);
+        context: { task_id: "T-1", scope: "src/a", limit: 5 },
+      });
+      const b = await tool.execute({
+        agent_name: "researcher",
+        description: "X",
+        context: { limit: 5, scope: "src/a", task_id: "T-1" },
+      });
 
-      expect(first).toMatchObject({ ok: true, output: "" });
-      expect((first as { deduplicated?: boolean }).deduplicated).toBeUndefined();
-      // Empty admission must not mask the later real result.
-      expect(second).toMatchObject({ ok: true, output: "real-result" });
-      expect((second as { deduplicated?: boolean }).deduplicated).toBeUndefined();
-      expect(calls).toHaveLength(2);
+      expect(a).toMatchObject({ ok: true });
+      expect(b).toMatchObject({ ok: true, deduplicated: true });
+      expect(calls).toHaveLength(1);
+      // First call's description carries canonical (alphabetical) keys.
+      expect(calls[0]?.description).toContain("Structured context:");
+      const ctxBlock = calls[0]?.description.split("Structured context:\n")[1];
+      expect(ctxBlock).toBeDefined();
+      // Keys appear in alphabetical order: limit, scope, task_id.
+      const limitIdx = ctxBlock?.indexOf('"limit"') ?? -1;
+      const scopeIdx = ctxBlock?.indexOf('"scope"') ?? -1;
+      const taskIdIdx = ctxBlock?.indexOf('"task_id"') ?? -1;
+      expect(limitIdx).toBeGreaterThanOrEqual(0);
+      expect(limitIdx).toBeLessThan(scopeIdx);
+      expect(scopeIdx).toBeLessThan(taskIdIdx);
     });
 
     test("retry with changed non-task_id context field bypasses cache", async () => {

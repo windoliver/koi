@@ -118,9 +118,11 @@ re-invoke `spawnFn` or inject duplicate output back into the parent session.
   a `task_id` we cannot identify the same logical spawn across retries, so
   dedup is skipped silently and the spawn proceeds.
 - **Scope**: caches successful outputs only — failed spawns stay retryable.
-  Empty-output successes are NOT cached (treated as a deferred / on-demand
-  delivery admission, where the child has not yet finished). The factory
-  signals this via `cacheable: false` on the `SpawnFactoryResult`.
+  Empty-output successes are cached like any other success (the L0
+  `SpawnResult` contract treats `""` as a valid completed output). Callers
+  wiring deferred / on-demand delivery semantics can opt a single result out
+  of caching with `cacheable: false` on the factory return value, but the
+  default `agent_spawn` flow does not infer cacheability from output length.
 - **Default cache**: `createSpawnTools` provisions a `SpawnResultCache` when
   the caller does not supply one, so the feature is on by default. Pass an
   explicit `resultCache` to share across multiple factory calls in the same
