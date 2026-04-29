@@ -1,170 +1,137 @@
 # @koi/middleware-rlm — Recursive Language Model Middleware
 
-Virtualizes unbounded input outside the context window and gives the model tools to programmatically examine, chunk, and recursively sub-query it. Works with any engine adapter (engine-pi, engine-loop, etc.) as a transparent middleware layer.
+Segments oversized model requests into model-sized chunks, dispatches each
+chunk through the downstream chain, and reassembles the responses in
+order. Sits in the middleware chain via `wrapModelCall` and is engine-agnostic.
 
 ---
 
 ## Why It Exists
 
-LLM context windows are finite. When an agent receives a 50 MB JSON file, a 200-page document, or a full codebase, it cannot load the content into context and reason over it directly. Without a solution, the agent either truncates (losing information) or fails.
+LLM context windows are finite. When an agent receives a large user input
+(50 MB JSON, a long document) the model cannot reason over it directly. The
+RLM middleware solves the simplest, most common variant of this problem:
 
-`@koi/middleware-rlm` solves this by:
+1. **Detect oversized input** — estimate tokens against a configured threshold
+2. **Segment** — split the largest user text block into char-bounded chunks
+3. **Dispatch** — call the downstream model once per chunk
+4. **Reassemble** — concatenate the chunked responses (sum usage, retain ids)
 
-1. **Injecting `rlm_process` tool** — the model sees a tool it can call when input is too large
-2. **Intercepting tool calls** — when the model calls `rlm_process`, the middleware runs a REPL loop internally
-3. **Virtualizing input** — the full text lives outside context; the sub-agent accesses it through tools (`examine`, `chunk`, `input_info`)
-4. **Recursive delegation** — for deeply nested inputs, the sub-agent can spawn child RLM agents via `rlm_query`
-5. **Using the composed middleware chain** — sub-LLM calls go through model-router, retry, etc.
+This package intentionally implements only the segment/reassemble pattern.
+Richer designs (REPL loops, code-execution sandboxes, recursive sub-agents)
+were prototyped in v1 (see `archive/v1/packages/middleware/middleware-rlm`)
+and deferred to a future package built on top of a real sub-agent abstraction
+rather than packed into a single middleware.
 
 ---
 
 ## Architecture
 
 ```
-Agent (engine-pi / engine-loop / any)
+Agent
   │
-  ▼  model call
-┌─────────────────────────────────┐
-│ wrapModelCall (RLM middleware)  │
-│  1. Capture `next` handler      │  ← stored in closure for REPL loop
-│  2. Inject rlm_process tool     │
-│  3. Call next(enriched request) │
-└─────────────────────────────────┘
-  │
-  ▼  model returns tool_call: rlm_process
-┌─────────────────────────────────┐
-│ wrapToolCall (RLM middleware)   │
-│  if toolId === "rlm_process":   │
-│    run REPL loop using captured │
-│    model handler for llm_query  │
-│  else:                          │
-│    next(request)  ← passthrough │
-└─────────────────────────────────┘
+  ▼  ModelRequest
+┌──────────────────────────────────┐
+│ wrapModelCall (RLM middleware)   │
+│  estimator.estimateMessages(req) │
+│  if tokens <= threshold:         │  ──→  next(req)
+│  else:                           │
+│    segments = segmentRequest(req)│
+│    for seg of segments:          │
+│      responses.push(next(seg))   │
+│    return reassemble(responses)  │
+└──────────────────────────────────┘
 ```
 
-`@koi/middleware-rlm` is an **L2 feature package** — depends only on L0 (`@koi/core`) and L0u (`@koi/resolve`). Zero external dependencies.
+L2 feature package — runtime deps on `@koi/core` (L0) and
+`@koi/token-estimator` (L0u). No external dependencies.
 
-### Internal Tools (given to the REPL sub-agent)
-
-| Tool | Purpose |
-|------|---------|
-| `input_info` | Returns metadata: format, size, chunks, structure hints, preview |
-| `examine` | Reads a byte range from the virtualized input (max 50K chars) |
-| `chunk` | Lists chunk descriptors (metadata only, not content) |
-| `llm_query` | Makes a single sub-call to the model |
-| `llm_query_batched` | Parallel sub-calls with semaphore-controlled concurrency |
-| `rlm_query` | Spawns a child RLM agent for recursive processing |
-| `FINAL` | Submits the final answer and exits the REPL loop |
+`wrapModelStream` is intentionally not implemented: streaming requests are
+forwarded unchanged because reassembling chunked deltas across multiple
+downstream streams is materially more complex than the current scope.
+Callers that need RLM behavior should use the non-streaming path.
 
 ---
 
 ## Usage
 
-### As Middleware (recommended)
-
 ```typescript
 import { createRlmMiddleware } from "@koi/middleware-rlm";
 
 const rlm = createRlmMiddleware({
-  maxIterations: 30,
-  contextWindowTokens: 128_000,
+  maxInputTokens: 32_000,
+  maxChunkChars: 8_000,
 });
 
-// Add to any agent's middleware chain
 const middleware = [rlm, modelRouter, retry];
 ```
 
-### As MiddlewareBundle (with ECS registration)
-
-```typescript
-import { createRlmBundle } from "@koi/middleware-rlm";
-
-const { middleware, providers } = createRlmBundle({
-  contextWindowTokens: 128_000,
-});
-
-// Register middleware + tool provider
-agent.use(middleware);
-for (const p of providers) agent.attach(p);
-```
-
-### In a Manifest
+### Manifest
 
 ```yaml
 middleware:
   - name: rlm
     options:
-      maxIterations: 30
-      chunkSize: 4000
-```
-
-The calling agent sees `rlm_process` in its tool list and invokes it when it encounters input too large to fit in context:
-
-```
-rlm_process({ input: "...50MB of JSON...", question: "List all users with admin role" })
-→ "Found 12 admin users: alice, bob, ..."
+      maxInputTokens: 32000
+      maxChunkChars: 8000
 ```
 
 ---
 
 ## Configuration
 
-### `RlmMiddlewareConfig`
+### `RlmConfig`
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `priority` | 300 | Middleware priority (before model-router) |
-| `rootModel` | — | Model ID for root-level REPL calls |
-| `subCallModel` | — | Model ID for sub-calls (llm_query, compaction) |
-| `maxIterations` | 30 | Max REPL loop iterations before forced stop |
-| `maxInputBytes` | 100 MB | Max input size in bytes |
-| `chunkSize` | 4,000 | Characters per chunk |
-| `previewLength` | 200 | Characters shown in metadata preview |
-| `compactionThreshold` | 0.8 | Fraction of context window that triggers compaction |
-| `contextWindowTokens` | 100,000 | Total context window for budget tracking |
-| `maxConcurrency` | 5 | Max parallel calls in `llm_query_batched` |
-| `spawnRlmChild` | — | Callback to spawn child RLM agent |
-| `onEvent` | — | Event callback for observability |
-| `scriptRunner` | — | Script runner for code-execution mode (see below) |
+| `maxInputTokens` | 32 000 | Threshold (in estimated tokens). Requests at or below pass through unchanged. |
+| `maxChunkChars` | 8 000 | Maximum characters per segment of the split text block. |
+| `estimator` | `HEURISTIC_ESTIMATOR` | Token estimator used for the threshold check. |
+| `priority` | 200 | Middleware priority. Sits before model-router/retry so per-segment fallback works. |
+| `onEvent` | — | Optional callback receiving `RlmEvent` (`passthrough`, `segmented`, `segment-completed`). Errors thrown by the callback are swallowed. |
+
+Validate ahead of construction with `validateRlmConfig(config)` —
+returns a `Result<RlmConfig, KoiError>`.
 
 ---
 
-## Code-Execution Mode
+## Segmentation
 
-When `scriptRunner` is provided in the config, the REPL loop switches from **tool-dispatch** (model calls predefined tools) to **code-execution** (model writes JavaScript code blocks). This is strictly more powerful — the model can use loops, regex, string slicing, and arbitrary logic.
+`segmentRequest(request, maxChunkChars)`:
 
-### How it works
+1. Locate the largest text block across all user messages.
+2. If absent or already within `maxChunkChars`, return `[request]`.
+3. Otherwise call `splitText(text, maxChunkChars)` which prefers paragraph
+   boundaries (`\n\n`), then line boundaries, and finally hard-cuts.
+4. Re-emit one `ModelRequest` per chunk with that block's text replaced by
+   `Segment k/N:\n${chunk}` and all other messages, system prompt, and tools
+   carried verbatim.
 
-1. The model receives a system prompt describing available functions (`readInput`, `inputInfo`, `llm_query`, `SUBMIT`, etc.)
-2. The model responds with reasoning + a ` ```javascript ` code block
-3. The middleware extracts the code, prepends function wrappers, and executes it in a WASM sandbox
-4. Console output is fed back to the model as history
-5. The loop repeats until `SUBMIT()` is called or `maxIterations` is reached
+`splitText(text, maxChars)` is exported for unit testing and reuse.
 
-### Available functions in code-execution mode
+## Reassembly
 
-| Function | Description |
-|----------|-------------|
-| `readInput(offset, length)` | Read a slice of the virtualized input |
-| `inputInfo()` | Get input metadata (format, size, chunks, preview) |
-| `llm_query(prompt)` | Single sub-LLM query |
-| `llm_query_batched(prompts)` | Parallel sub-LLM queries |
-| `SUBMIT(answer)` | Submit final answer |
+`reassembleResponses(parts)`:
 
-### Enabling code-execution mode
+- `content` → `parts.map(p => p.content).join("\n\n")`
+- `model`, `responseId`, `metadata` from the first part
+- `stopReason` from the last part
+- `usage` summed across parts (cache fields aggregated when present)
+- `richContent` concatenated when any part carries it
 
-Code-execution mode requires a script runner, which depends on `@koi/code-executor` (a peer L2 package). Since middleware-rlm is L2 and cannot import peer L2, the runner is injected via config. Use `@koi/rlm-stack` (L3) for automatic wiring:
-
-```typescript
-import { createRlmStack } from "@koi/rlm-stack";
-
-const { middleware, providers } = createRlmStack({
-  contextWindowTokens: 128_000,
-});
-```
+Throws if `parts` is empty.
 
 ---
 
-## Key Design Insight
+## Events
 
-The middleware captures the `next` handler from `wrapModelCall` — this is the downstream middleware chain (model-router → terminal). When the REPL loop makes `llm_query` sub-calls, they go through retry/fallback but do NOT re-enter the RLM middleware (no infinite recursion). The outer audit middleware sees aggregate metrics.
+`RlmEvent` is a discriminated union emitted via `onEvent`:
+
+| `kind` | Payload | Meaning |
+|--------|---------|---------|
+| `passthrough` | `{ tokens }` | Request fit within `maxInputTokens`; `next` called once. |
+| `segmented` | `{ tokens, segmentCount }` | Request exceeded the threshold; about to dispatch N chunks. |
+| `segment-completed` | `{ index, count }` | Chunk `index` returned successfully (one per chunk). |
+
+Telemetry callback failures are swallowed — observers cannot influence
+middleware behavior.
