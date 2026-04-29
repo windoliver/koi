@@ -115,6 +115,32 @@ describe("formatErrorForChannel discriminated output", () => {
     });
   });
 
+  describe("forward-compatibility for unknown error codes", () => {
+    it("returns a generic safe message for unrecognized codes (version skew)", () => {
+      const futureError = {
+        code: "BRAND_NEW_FUTURE_CODE",
+        message: "from a newer producer",
+        retryable: false,
+      } as unknown as KoiError;
+      const out = formatErrorForChannel(futureError);
+      expect(out).toEqual({
+        kind: "text",
+        text: "Something went wrong. Please try again later.",
+      });
+    });
+
+    it("formatErrorTextForChannel never returns undefined for unknown codes", () => {
+      const futureError = {
+        code: "SOMETHING_NEW",
+        message: "x",
+        retryable: false,
+      } as unknown as KoiError;
+      const text = formatErrorTextForChannel(futureError);
+      expect(typeof text).toBe("string");
+      expect(text.length).toBeGreaterThan(0);
+    });
+  });
+
   describe("safety: non-VALIDATION codes never leak raw message", () => {
     it("INTERNAL output omits the raw message", () => {
       const err = baseError("INTERNAL", "boom-internal-detail");

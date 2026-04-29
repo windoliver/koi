@@ -4,7 +4,7 @@
  * Sequential FIFO queue. Pauses on rate-limit errors and retries with
  * exponential backoff. The default policy is intentionally narrower than
  * `@koi/errors.isRetryable()`: it auto-retries only the transport-class
- * codes RATE_LIMIT and TIMEOUT, because state-gated codes such
+ * codes RATE_LIMIT (server-acknowledged throttling), because state-gated codes such
  * as AUTH_REQUIRED and RESOURCE_EXHAUSTED are recoverable only after
  * external intervention and must not be re-issued in a tight loop.
  *
@@ -43,7 +43,7 @@ export interface RateLimiterConfig {
   /**
    * Decides whether an error should be retried independent of any retry-after
    * hint. Defaults to a narrow transport allowlist: `KoiError` with code in
-   * { RATE_LIMIT, TIMEOUT }. Pass a custom predicate (e.g.
+   * { RATE_LIMIT }. Pass a custom predicate (e.g.
    * `(e) => isKoiError(e) && isKoiRetryable(e)`) to broaden the policy.
    */
   readonly isRetryable?: (error: unknown) => boolean;
@@ -75,26 +75,26 @@ interface QueueEntry {
 
 /**
  * Codes that are safe to auto-retry inline within a single send queue.
- * These are transport-level transient conditions where the next attempt
- * stands a real chance of succeeding without external intervention AND
- * where re-issuing the operation cannot produce a duplicate user-visible
- * side effect.
+ * The default policy is intentionally the narrowest possible set: only
+ * server-acknowledged throttling, where the remote side has explicitly
+ * told us the request was rejected and asked us to wait.
  *
  * Deliberately excluded:
+ *   - TIMEOUT            → request status is unknown; the remote may have
+ *                          accepted the message before the local timeout
+ *                          fired, so retrying a non-idempotent send risks
+ *                          duplicate user-visible output. Adapters with
+ *                          provider-side dedupe (idempotency keys, message
+ *                          IDs) opt in via a custom `isRetryable`.
  *   - CONFLICT           → typically a CAS / already-exists mismatch; replaying
  *                          a partially-successful send could duplicate output.
- *                          Adapters with replay-safe conflict semantics opt in
- *                          via a custom `isRetryable`.
  *   - AUTH_REQUIRED      → recoverable only after the user completes OAuth.
  *   - RESOURCE_EXHAUSTED → recoverable only after capacity is freed; tight retry would just thrash.
  *   - PERMISSION / VALIDATION / NOT_FOUND / STALE_REF / INTERNAL / UNAVAILABLE / HEARTBEAT_TIMEOUT
  *                        → either permanent or require operator action.
  *   - EXTERNAL           → defaults to retryable=false in RETRYABLE_DEFAULTS; opt-in via callback.
  */
-const TRANSPORT_RETRY_CODES: ReadonlySet<KoiErrorCode> = new Set<KoiErrorCode>([
-  "RATE_LIMIT",
-  "TIMEOUT",
-]);
+const TRANSPORT_RETRY_CODES: ReadonlySet<KoiErrorCode> = new Set<KoiErrorCode>(["RATE_LIMIT"]);
 
 /** Returns the retry-after hint only when it is a finite, non-negative number. */
 const sanitizeRetryAfterMs = (raw: unknown): number | undefined => {

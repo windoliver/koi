@@ -46,6 +46,13 @@ function sanitizeValidationMessage(raw: string): string {
     : stripped;
 }
 
+/**
+ * Fallback message for unknown error codes — version skew (newer producer,
+ * deserialized remote error, forward-compat path) must never collapse to
+ * undefined or empty user output.
+ */
+const UNKNOWN_CODE_MESSAGE = "Something went wrong. Please try again later.";
+
 const USER_MESSAGES: Readonly<Record<KoiErrorCode, string>> = {
   VALIDATION: "", // VALIDATION uses error.message directly (user-relevant input feedback)
   NOT_FOUND: "The requested resource was not found.",
@@ -101,7 +108,14 @@ export function formatErrorForChannel(error: KoiError): ChannelErrorOutput {
       error,
     };
   }
-  return { kind: "text", text: USER_MESSAGES[error.code] };
+  // Use Object.hasOwn to fall back safely on unrecognized codes (version
+  // skew, deserialized remote errors). Indexing a Record with an unknown
+  // string returns undefined at runtime, which would surface as empty
+  // channel output otherwise.
+  const text = Object.hasOwn(USER_MESSAGES, error.code)
+    ? USER_MESSAGES[error.code]
+    : UNKNOWN_CODE_MESSAGE;
+  return { kind: "text", text };
 }
 
 /**

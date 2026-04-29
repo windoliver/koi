@@ -144,17 +144,32 @@ describe("createRateLimiter", () => {
       expect(sleepSpy).toHaveBeenCalledWith(750);
     });
 
-    it("retries a KoiError whose code is in the retryable set", async () => {
+    it("retries a KoiError whose code is in the retryable set (RATE_LIMIT)", async () => {
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 1, initialDelayMs: 25, jitter: false },
       });
       let attempts = 0;
       await limiter.enqueue(async () => {
         attempts++;
-        if (attempts < 2) throw koiError({ code: "TIMEOUT" });
+        if (attempts < 2) throw koiError({ code: "RATE_LIMIT" });
       });
       expect(attempts).toBe(2);
       expect(sleepSpy).toHaveBeenCalledWith(25);
+    });
+
+    it("does not auto-retry TIMEOUT — request status is unknown", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
+      });
+      let attempts = 0;
+      await expect(
+        limiter.enqueue(async () => {
+          attempts++;
+          throw koiError({ code: "TIMEOUT", retryable: true });
+        }),
+      ).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(attempts).toBe(1);
+      expect(sleepSpy).not.toHaveBeenCalled();
     });
 
     it("rejects a KoiError whose code is not retryable without re-issuing", async () => {
@@ -272,9 +287,9 @@ describe("createRateLimiter", () => {
         await expect(
           limiter.enqueue(async () => {
             attempts++;
-            throw koiError({ code: "TIMEOUT" });
+            throw koiError({ code: "RATE_LIMIT" });
           }),
-        ).rejects.toMatchObject({ code: "TIMEOUT" });
+        ).rejects.toMatchObject({ code: "RATE_LIMIT" });
 
         expect(attempts).toBe(4);
         // First retry: prevDelayMs is undefined; subsequent retries pass the prior delay.
@@ -426,8 +441,8 @@ describe("createRateLimiter", () => {
         },
       });
       await expect(
-        limiter.enqueue(() => Promise.reject(koiError({ code: "TIMEOUT" }))),
-      ).rejects.toMatchObject({ code: "TIMEOUT" });
+        limiter.enqueue(() => Promise.reject(koiError({ code: "RATE_LIMIT" }))),
+      ).rejects.toMatchObject({ code: "RATE_LIMIT" });
       expect(
         reports.some(
           ([s, e]) => s === "sleep" && e instanceof Error && e.message === "clock-broken",
@@ -459,13 +474,13 @@ describe("createRateLimiter", () => {
     let attempts = 0;
     const failing = limiter.enqueue(async () => {
       attempts++;
-      throw koiError({ code: "TIMEOUT" });
+      throw koiError({ code: "RATE_LIMIT" });
     });
     const completed: string[] = [];
     const after = limiter.enqueue(async () => {
       completed.push("ok");
     });
-    await expect(failing).rejects.toMatchObject({ code: "TIMEOUT" });
+    await expect(failing).rejects.toMatchObject({ code: "RATE_LIMIT" });
     await after;
     expect(completed).toEqual(["ok"]);
     expect(attempts).toBe(1);
