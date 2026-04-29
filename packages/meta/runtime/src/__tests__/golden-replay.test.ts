@@ -15500,20 +15500,15 @@ describe("Golden: @koi/sandbox-executor", () => {
     expect(typeof executor.execute).toBe("function");
   });
 
-  test("createSubprocessExecutor execute returns TIMEOUT error for code that never exits", async () => {
+  test("timeout returns SandboxError TIMEOUT", async () => {
     const { createSubprocessExecutor } = await import("@koi/sandbox-executor");
 
-    const executor = createSubprocessExecutor({ bunPath: "bun" });
-    // Code that immediately returns success — validates the happy path protocol
-    const code = `
-export default async function run(input: unknown): Promise<unknown> {
-  return { echo: input };
-}
-`;
-    const result = await executor.execute(code, { hello: "world" }, 10_000);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.output).toBeDefined();
-    }
+    // externalIsolation: true bypasses the default-deny guard (no context needed here,
+    // but guard only triggers when context is provided — no context → no guard trigger)
+    const exec = createSubprocessExecutor({ externalIsolation: true });
+    const code = `export default async () => { while (true) { /* spin */ } };`;
+    const r = await exec.execute(code, null, 250);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("TIMEOUT");
   });
 });

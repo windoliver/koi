@@ -99,4 +99,16 @@ describe("createDockerAdapter", () => {
     if (r.ok) throw new Error("Expected ok: false");
     expect(r.error.code).toBe("UNAVAILABLE");
   });
+
+  // Fix 2: profile with denyRead → create() rejects with helpful error
+  test("create(profile) throws when profile has denyRead (unsupported Docker semantics)", async () => {
+    const r = await createDockerAdapter({ client: stubClient });
+    if (!r.ok) throw new Error("setup failed");
+    const profileWithDenyRead = {
+      filesystem: { defaultReadAccess: "open" as const, denyRead: ["/etc"] },
+      network: { allow: false },
+      resources: {},
+    };
+    await expect(r.value.create(profileWithDenyRead)).rejects.toThrow("Invalid profile");
+  });
 });

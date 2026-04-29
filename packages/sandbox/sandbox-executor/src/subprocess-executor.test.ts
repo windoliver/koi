@@ -79,7 +79,8 @@ describe("createSubprocessExecutor", () => {
       "export default async () => ({ source: 'code' });",
       null,
       5000,
-      { workspacePath: ws, entryPath },
+      // networkAllowed: true acknowledges unconfined execution (no externalIsolation in this test)
+      { workspacePath: ws, entryPath, networkAllowed: true },
     );
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(`Expected ok, got: ${result.error.message}`);
@@ -107,7 +108,7 @@ describe("createSubprocessExecutor", () => {
     expect(result.value.output).toEqual({ secret: undefined });
   });
 
-  // Fail-closed: default (no externalIsolation) — networkAllowed=false → PERMISSION
+  // Default-deny: networkAllowed=false without externalIsolation → PERMISSION
   test("returns PERMISSION when networkAllowed=false without externalIsolation", async () => {
     const executor = createSubprocessExecutor();
     const code = "export default async () => ({});";
@@ -117,7 +118,7 @@ describe("createSubprocessExecutor", () => {
     expect(result.error.code).toBe("PERMISSION");
   });
 
-  // Fail-closed: default (no externalIsolation) — resourceLimits → PERMISSION
+  // Default-deny: resourceLimits set without externalIsolation → PERMISSION
   test("returns PERMISSION when resourceLimits set without externalIsolation", async () => {
     const executor = createSubprocessExecutor();
     const code = "export default async () => ({});";
@@ -129,13 +130,24 @@ describe("createSubprocessExecutor", () => {
     expect(result.error.code).toBe("PERMISSION");
   });
 
-  // Fail-closed: benign context (no isolation fields) — still executes normally
-  test("executes normally when context has no isolation fields", async () => {
+  // Default-deny: context={} with networkAllowed omitted → PERMISSION (omission = denial)
+  test("returns PERMISSION when context is empty object with no externalIsolation (default-deny on omission)", async () => {
+    const executor = createSubprocessExecutor();
+    const code = "export default async () => ({});";
+    // Empty context: networkAllowed is omitted (undefined) — treated as denial by default-deny
+    const result = await executor.execute(code, null, 5000, {});
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected error");
+    expect(result.error.code).toBe("PERMISSION");
+  });
+
+  // Default-deny bypass: context.networkAllowed=true acknowledges unconfined execution
+  test("executes normally when context.networkAllowed=true without externalIsolation (caller acknowledges unconfined)", async () => {
     const executor = createSubprocessExecutor();
     const code = "export default async () => ({ ok: true });";
-    // Pass a context object with no isolation fields (networkAllowed/resourceLimits absent).
-    // An empty object satisfies the guard — the executor should proceed normally.
-    const result = await executor.execute(code, null, 5000, {});
+    // Explicitly setting networkAllowed: true is the caller's acknowledgement
+    // that this execution is unconfined — the guard allows it through.
+    const result = await executor.execute(code, null, 5000, { networkAllowed: true });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(`Expected ok, got: ${result.error.message}`);
     expect(result.value.output).toEqual({ ok: true });

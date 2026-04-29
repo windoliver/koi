@@ -64,8 +64,11 @@ function buildAdapter(
     value: {
       name: "docker",
       create: async (profile: SandboxProfile) => {
-        const { opts } = mapProfileToDockerOpts(profile, image);
-        const container = await client.createContainer(opts);
+        const mapping = mapProfileToDockerOpts(profile, image);
+        if (!mapping.ok) {
+          throw new Error(`Invalid profile: ${mapping.error.message}`, { cause: mapping.error });
+        }
+        const container = await client.createContainer(mapping.value.opts);
         return createDockerInstance(container);
       },
     },

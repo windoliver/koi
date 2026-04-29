@@ -10,20 +10,59 @@
  *   - nexusMounts → bind mount source:mountPath (rw)
  *
  * NOT translated (requires OS-level or Nexus FUSE implementation):
- *   - filesystem.defaultReadAccess / denyRead / denyWrite — Docker has no
- *     fine-grained path-deny; use a restrictive base image instead.
+ *   - filesystem.denyRead / denyWrite — Docker has no fine-grained path-deny;
+ *     use @koi/sandbox-os or a restrictive base image instead. Profiles with
+ *     denyRead/denyWrite are REJECTED (fail-closed) to prevent silent drops.
+ *   - filesystem.defaultReadAccess other than "open" — Docker only supports
+ *     allow-list bind mounts; "deny"/"closed" defaults require OS-level support.
  *   - NexusFuseMount.nexusUrl / apiKey / agentId — credentials are out of
  *     scope for this adapter; Nexus FUSE daemon must be running on the host
  *     and the mount point must already exist before container creation.
  */
 
-import type { SandboxProfile } from "@koi/core";
+import type { KoiError, Result, SandboxProfile } from "@koi/core";
 import { resolveDockerNetwork } from "./network.js";
 import type { DockerCreateOpts } from "./types.js";
 
 export interface ProfileMapping {
   readonly opts: DockerCreateOpts;
   readonly networkMode: "none" | "bridge";
+}
+
+/**
+ * Validate that a SandboxProfile uses only filesystem semantics the Docker
+ * adapter can actually enforce via bind mounts. Returns a KoiError if the
+ * profile contains deny-list or deny-default fields that Docker cannot translate.
+ */
+export function validateProfileForDocker(profile: SandboxProfile): KoiError | undefined {
+  const fs = profile.filesystem;
+  if (fs.denyRead !== undefined && fs.denyRead.length > 0) {
+    return {
+      code: "VALIDATION",
+      message:
+        "sandbox-docker does not support SandboxProfile.filesystem.denyRead; use @koi/sandbox-os or compose a deny layer",
+      retryable: false,
+      context: { unsupported: "denyRead" },
+    };
+  }
+  if (fs.denyWrite !== undefined && fs.denyWrite.length > 0) {
+    return {
+      code: "VALIDATION",
+      message:
+        "sandbox-docker does not support SandboxProfile.filesystem.denyWrite; use @koi/sandbox-os or compose a deny layer",
+      retryable: false,
+      context: { unsupported: "denyWrite" },
+    };
+  }
+  if (fs.defaultReadAccess !== undefined && fs.defaultReadAccess !== "open") {
+    return {
+      code: "VALIDATION",
+      message:
+        "sandbox-docker only supports defaultReadAccess: open (allow-list of bind mounts); use @koi/sandbox-os for deny-by-default semantics",
+      retryable: false,
+    };
+  }
+  return undefined;
 }
 
 /** Build the list of Docker bind-mount strings from a filesystem policy. */
@@ -49,7 +88,13 @@ function buildBinds(profile: SandboxProfile): readonly string[] {
   return binds;
 }
 
-export function mapProfileToDockerOpts(profile: SandboxProfile, image: string): ProfileMapping {
+export function mapProfileToDockerOpts(
+  profile: SandboxProfile,
+  image: string,
+): Result<ProfileMapping, KoiError> {
+  const validationError = validateProfileForDocker(profile);
+  if (validationError !== undefined) return { ok: false, error: validationError };
+
   const { networkMode } = resolveDockerNetwork(profile.network);
   const binds = buildBinds(profile);
 
@@ -63,5 +108,5 @@ export function mapProfileToDockerOpts(profile: SandboxProfile, image: string): 
     ...(profile.env !== undefined ? { env: profile.env } : {}),
     ...(binds.length > 0 ? { binds } : {}),
   };
-  return { opts, networkMode };
+  return { ok: true, value: { opts, networkMode } };
 }

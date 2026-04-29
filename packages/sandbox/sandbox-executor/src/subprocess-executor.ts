@@ -9,19 +9,27 @@
  *   argv[3] = JSON-encoded input
  *   stderr  = __KOI_RESULT__\n<json>\n  (framed protocol output)
  *
- * Isolation note (fail-closed):
- *   By default this executor REFUSES to execute when the caller passes
- *   ExecutionContext fields that require real OS-level enforcement
- *   (networkAllowed=false, resourceLimits). The fail-closed guard exists
- *   because this package can only signal those constraints via env vars
- *   (KOI_NETWORK_ALLOWED, KOI_MAX_MEMORY_MB, KOI_MAX_PIDS) but cannot
- *   enforce them — doing so would create a silent trust-boundary leak.
+ * Isolation note (fail-closed, default-deny):
+ *   This executor uses DEFAULT-DENY semantics for network and resource isolation.
+ *   When the caller supplies an ExecutionContext and externalIsolation is NOT true,
+ *   the executor refuses to proceed unless the caller explicitly opts in to
+ *   unconfined execution by setting context.networkAllowed = true.
  *
- *   To opt out of the guard, set externalIsolation: true in the config.
- *   This asserts that real isolation is provided externally — e.g., by
- *   composing with @koi/sandbox-os, running inside a container, or
- *   operating in a fully trusted environment. Only then are the env-var
- *   signals passed through (existing behaviour).
+ *   The guard fires whenever:
+ *     - context.networkAllowed !== true (omitted OR false) — both mean "caller
+ *       wants confined execution" which this package cannot enforce on its own
+ *     - context.resourceLimits !== undefined — resource limits require OS-level
+ *       enforcement (cgroups, rlimits) unavailable in plain subprocess mode
+ *
+ *   This prevents silent trust-boundary leaks: callers who omit networkAllowed
+ *   get a hard refusal, not silently unconfined execution.
+ *
+ *   To opt out of the guard, callers have two choices:
+ *   A) Set externalIsolation: true in the config — asserts that real isolation
+ *      is provided externally (e.g., composing with @koi/sandbox-os, running
+ *      inside a Docker container). Env-var signals are then passed through.
+ *   B) Set context.networkAllowed = true explicitly — acknowledges that this
+ *      call runs unconfined; the executor proceeds without OS enforcement.
  *
  * Process-group kill note:
  *   When `setsid` is available (Linux/macOS), the child is spawned as a new
@@ -291,17 +299,25 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
       timeoutMs: number,
       context?: ExecutionContext,
     ): Promise<ExecuteResult> => {
-      // Fail-closed guard: refuse isolation fields we cannot enforce ourselves.
-      // Callers that compose @koi/sandbox-os (or run in a trusted env) must set
-      // externalIsolation: true to opt out and receive the env-var passthrough.
+      // Fail-closed guard (default-deny): refuse execution when context is present
+      // and externalIsolation is not asserted.
+      //
+      // Default-deny semantics:
+      //   - context.networkAllowed !== true means "caller wants confined execution"
+      //     (both undefined/omitted and false trigger this — omission is denial)
+      //   - context.resourceLimits !== undefined means OS-level enforcement required
+      //
+      // Bypass: set externalIsolation: true (real isolation provided externally)
+      //     OR: set context.networkAllowed: true (explicit acknowledgement of
+      //         unconfined execution, no resource limits)
       if (externalIsolation !== true && context !== undefined) {
-        const wantsIsolation =
-          context.networkAllowed === false || context.resourceLimits !== undefined;
-        if (wantsIsolation) {
+        const wantsRestricted =
+          context.networkAllowed !== true || context.resourceLimits !== undefined;
+        if (wantsRestricted) {
           const error: SandboxError = {
             code: "PERMISSION",
             message:
-              "subprocess-executor cannot enforce networkAllowed/resourceLimits without external isolation; pass externalIsolation: true after composing @koi/sandbox-os or an equivalent backend",
+              "subprocess-executor cannot enforce network/resource isolation; pass externalIsolation:true (after composing @koi/sandbox-os) or set context.networkAllowed:true to acknowledge unconfined execution",
             durationMs: 0,
           };
           return { ok: false, error };
