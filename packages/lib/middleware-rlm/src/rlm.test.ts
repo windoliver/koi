@@ -1463,6 +1463,44 @@ describe("createRlmMiddleware", () => {
     expect(combined).toContain("completed-text");
   });
 
+  test("SegmentAbortError exposes KoiError fields directly so retry analyzers can classify it", async () => {
+    // semantic-retry's default-analyzer classifies failures by reading
+    // `code` / `retryable` / `retryAfterMs` directly off the thrown
+    // error object, NOT by walking into metadata. Mirror those fields
+    // onto the SegmentAbortError instance so the existing analyzer
+    // path keeps working on oversized-turn failures.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let call = 0; // let: per-test counter
+    const handler: ModelHandler = async (_req) => {
+      call += 1;
+      if (call === 1) return { content: "seg1", model: "test" } satisfies ModelResponse;
+      const err = new Error("rate limited");
+      Object.assign(err, { code: "RATE_LIMIT", retryable: true, retryAfterMs: 7000 });
+      throw err;
+    };
+    let caught: unknown;
+    try {
+      await mw.wrapModelCall?.(turnCtx(), { messages: [userMessage("x".repeat(400))] }, handler);
+    } catch (err: unknown) {
+      caught = err;
+    }
+    if (!(caught instanceof Error) || !("segmentResponse" in caught)) {
+      throw new Error("expected SegmentAbortError");
+    }
+    const aborted = caught as unknown as Error & {
+      readonly code?: string;
+      readonly retryable?: boolean;
+      readonly retryAfterMs?: number;
+    };
+    expect(aborted.code).toBe("RATE_LIMIT");
+    expect(aborted.retryable).toBe(true);
+    expect(aborted.retryAfterMs).toBe(7000);
+  });
+
   test("describeCapabilities returns a label", () => {
     const mw = createRlmMiddleware();
     const cap = mw.describeCapabilities?.(turnCtx());

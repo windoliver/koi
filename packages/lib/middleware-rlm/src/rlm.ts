@@ -292,6 +292,19 @@ export class SegmentAbortError extends Error {
         readonly cacheWriteTokens?: number;
       }
     | undefined;
+  /**
+   * KoiError-shaped fields mirrored directly onto the error so
+   * existing retry analyzers (e.g. `@koi/middleware-semantic-retry`'s
+   * default-analyzer) that classify by inspecting the thrown error's
+   * own `code`/`retryable`/`retryAfterMs` continue to work — they do
+   * NOT walk into `segmentResponse.metadata`. Without this, an
+   * oversized RATE_LIMIT/TIMEOUT failure becomes an opaque
+   * `SegmentAbortError` and falls through to `unknown` retry
+   * handling, losing the existing backoff/budget behavior.
+   */
+  readonly code: string | undefined;
+  readonly retryable: boolean | undefined;
+  readonly retryAfterMs: number | undefined;
   constructor(args: {
     readonly message: string;
     readonly index: number;
@@ -307,6 +320,10 @@ export class SegmentAbortError extends Error {
     this.toolCallAborts = args.toolCallAborts;
     this.completedSegments = args.completedSegments;
     this.completedUsage = aggregateCompletedUsage(args.completedSegments);
+    const meta = (args.response.metadata ?? {}) as Record<string, unknown>;
+    this.code = typeof meta.errorCode === "string" ? meta.errorCode : undefined;
+    this.retryable = typeof meta.retryable === "boolean" ? meta.retryable : undefined;
+    this.retryAfterMs = typeof meta.retryAfterMs === "number" ? meta.retryAfterMs : undefined;
   }
 }
 
