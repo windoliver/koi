@@ -130,11 +130,11 @@ describe("lineage", () => {
     }
   });
 
-  test("isDerivedFrom verifies each ancestor against its OWN claimed builder", async () => {
-    // Lineage that crosses a builder rotation: child claims producer A,
-    // ancestor claims producer B. Both producers are in the registry, so
-    // the chain validates. Pinning ancestor verification to the child's
-    // producer would have rejected this legitimate mixed-producer chain.
+  test("isDerivedFrom rejects an ancestor relabeled to a different registered producer", async () => {
+    // Tampered ancestor self-asserts a different builder.id to try to
+    // self-select a more permissive registered recompute. Since the walk
+    // verifies every ancestor under the caller-declared producerBuilderId,
+    // the relabel must fail closed (producer_mismatch).
     const ancestor = makeTool({ implementation: "ancestor", builderId: "koi/forge-v2" });
     const child = makeTool({
       implementation: "child",
@@ -148,12 +148,12 @@ describe("lineage", () => {
       },
       { lineageBoundBuilders: new Set(["koi/forge", "koi/forge-v2"]) },
     );
-    const store = fixtureStore([ancestor]);
-    const result = await isDerivedFrom(child, ancestor.id, store, {
+    const result = await isDerivedFrom(child, ancestor.id, fixtureStore([ancestor]), {
       verify: multiVerify,
       producerBuilderId: "koi/forge",
     });
-    expect(result.kind).toBe("derived");
+    expect(result.kind).toBe("integrity_failed");
+    if (result.kind === "integrity_failed") expect(result.reason).toBe("producer_mismatch");
   });
 
   test("isDerivedFrom is bounded by MAX_LINEAGE_DEPTH", () => {
@@ -171,6 +171,23 @@ describe("lineage", () => {
     ) as unknown as ReturnType<typeof createBrickVerifier>;
     const result = await isDerivedFrom(child, root.id, fixtureStore([root]), {
       verify: throwingVerify,
+      producerBuilderId: "koi/forge",
+    });
+    expect(result.kind).toBe("integrity_failed");
+    if (result.kind === "integrity_failed") expect(result.reason).toBe("recompute_failed");
+  });
+
+  test("isDerivedFrom rejects a verifier returning a malformed { kind: 'ok' } without ok:true", async () => {
+    const root = makeTool();
+    const child = makeTool({ implementation: "v2", parentBrickId: root.id });
+    // Adversarial verifier that returns a shape-incomplete success: `kind`
+    // says ok but `ok` is missing/false. Without strict shape validation
+    // this would slip past the gate as a successful integrity check.
+    const malformedVerify = Object.assign(() => ({ kind: "ok" }), {
+      coversLineage: () => true,
+    }) as unknown as ReturnType<typeof createBrickVerifier>;
+    const result = await isDerivedFrom(child, root.id, fixtureStore([root]), {
+      verify: malformedVerify,
       producerBuilderId: "koi/forge",
     });
     expect(result.kind).toBe("integrity_failed");

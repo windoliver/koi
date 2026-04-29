@@ -37,12 +37,12 @@ export type LineageOutcome =
 export interface IsDerivedFromOptions {
   /**
    * Required when the caller intends to trust the result for policy or
-   * dedup. The child is verified under `producerBuilderId`; each loaded
-   * ancestor is verified under its OWN claimed `provenance.builder.id` so
-   * lineage can legitimately cross producer rotations/renames without
-   * collapsing the chain. Trust still flows through the verifier's frozen
-   * registry — an ancestor claiming an unregistered builder fails closed
-   * with `integrity_failed` (producer_unknown).
+   * dedup. The child AND every loaded ancestor are verified under the
+   * single `producerBuilderId` declared here — selecting a verifier from
+   * each ancestor's self-asserted `provenance.builder.id` would let a
+   * tampered record self-select a more permissive registered recompute.
+   * Cross-producer lineage requires authenticated builder-transition
+   * records, which are out of scope for this package.
    */
   readonly verify: BrickVerifier;
   readonly producerBuilderId: string;
@@ -252,34 +252,19 @@ async function walk(
       };
     }
     if (options !== undefined) {
-      // Verify each ancestor against its OWN claimed builder.id, not the
-      // child's. Lineage may legitimately cross builder renames/rotations,
-      // and pinning the entire chain to one producer would reject valid
-      // mixed-producer ancestry. Trust flows through the verifier's frozen
-      // registry: an ancestor whose claimed builder is unregistered surfaces
-      // as `producer_unknown` and fails the walk closed.
-      const ancestorBuilderId = result.value.provenance?.builder?.id;
-      if (typeof ancestorBuilderId !== "string" || ancestorBuilderId.length === 0) {
-        return {
-          kind: "malformed",
-          at: parentId,
-          reason: "loaded ancestor missing provenance.builder.id",
-        };
-      }
-      if (!coversLineageSafe(options.verify, ancestorBuilderId)) {
-        return {
-          kind: "integrity_failed",
-          at: parentId,
-          producerBuilderId: ancestorBuilderId,
-          reason: "lineage_unbound",
-        };
-      }
-      const verdict = safeVerify(options.verify, result.value, ancestorBuilderId);
+      // Verify each ancestor under the SAME `producerBuilderId` the caller
+      // declared up front. Selecting a verifier from the loaded ancestor's
+      // own `provenance.builder.id` would let a tampered record self-select
+      // a more permissive registered recompute and pass. Mixed-producer
+      // lineage requires authenticated builder-transition records, which
+      // are out of scope for this package; until that exists, a single
+      // trusted producer per chain is the only sound model.
+      const verdict = safeVerify(options.verify, result.value, options.producerBuilderId);
       if (verdict.kind !== "ok") {
         return {
           kind: "integrity_failed",
           at: parentId,
-          producerBuilderId: ancestorBuilderId,
+          producerBuilderId: options.producerBuilderId,
           reason: verdict.kind,
         };
       }
@@ -365,11 +350,7 @@ function safeVerify(
       reason: err instanceof Error ? err.message : String(err),
     };
   }
-  if (
-    raw === null ||
-    typeof raw !== "object" ||
-    typeof (raw as { kind?: unknown }).kind !== "string"
-  ) {
+  if (!isWellFormedIntegrityResult(raw)) {
     return {
       kind: "recompute_failed",
       ok: false,
@@ -379,5 +360,31 @@ function safeVerify(
       reason: "verifier returned a non-IntegrityResult value",
     };
   }
-  return raw as IntegrityResult;
+  return raw;
+}
+
+/**
+ * Validate the full `IntegrityResult` discriminated-union shape rather
+ * than trusting an arbitrary `{ kind: string }`. A custom or version-
+ * skewed verifier might otherwise return `{ kind: "ok" }` (without
+ * `ok: true`) and bypass the integrity gate. We require the discriminant
+ * AND its companion `ok` boolean to be consistent before treating the
+ * verdict as authoritative.
+ */
+function isWellFormedIntegrityResult(raw: unknown): raw is IntegrityResult {
+  if (raw === null || typeof raw !== "object") return false;
+  const r = raw as { readonly kind?: unknown; readonly ok?: unknown };
+  if (typeof r.kind !== "string") return false;
+  switch (r.kind) {
+    case "ok":
+      return r.ok === true;
+    case "content_mismatch":
+    case "producer_mismatch":
+    case "producer_unknown":
+    case "recompute_failed":
+    case "malformed":
+      return r.ok === false;
+    default:
+      return false;
+  }
 }
