@@ -18,9 +18,9 @@ describe("formatErrorForChannel", () => {
 
   describe("VALIDATION message sanitization", () => {
     it("strips markdown link delimiters so hostile messages cannot inject clickable links", () => {
-      const err = baseError("VALIDATION", "click [here](https://evil.com) to fix");
+      const err = baseError("VALIDATION", "click [here](more details here) to fix");
       const out = formatErrorForChannel(err);
-      expect(out).toBe("Invalid input: click herehttps://evil.com to fix");
+      expect(out).toBe("Invalid input: click heremore details here to fix");
       expect(out).not.toContain("[");
       expect(out).not.toContain("(");
     });
@@ -39,6 +39,37 @@ describe("formatErrorForChannel", () => {
       expect(out).not.toContain("\n");
       expect(out).not.toContain("\r");
       expect(out).not.toContain("\x00");
+    });
+
+    it("redacts bare http(s) URLs that channels would auto-linkify", () => {
+      const err = baseError("VALIDATION", "see https://attacker.example/x?y=1 for details");
+      const out = formatErrorForChannel(err);
+      expect(out).toBe("Invalid input: see link removed for details");
+      expect(out).not.toContain("attacker.example");
+      expect(out).not.toContain("https://");
+    });
+
+    it("redacts ws:// and ftp:// URLs", () => {
+      const err = baseError("VALIDATION", "or use ws://evil.test/socket");
+      const out = formatErrorForChannel(err);
+      expect(out).toBe("Invalid input: or use link removed");
+      expect(out).not.toContain("ws://");
+    });
+
+    it("redacts www.host bare hostnames that auto-link in chat clients", () => {
+      const err = baseError("VALIDATION", "go to www.attacker.example/path now");
+      const out = formatErrorForChannel(err);
+      expect(out).toBe("Invalid input: go to link removed now");
+      expect(out).not.toContain("www.");
+    });
+
+    it("redacts URLs even when wrapped in markdown link syntax", () => {
+      const err = baseError("VALIDATION", "click [here](https://evil.example) please");
+      const out = formatErrorForChannel(err);
+      expect(out).not.toContain("https://");
+      expect(out).not.toContain("evil.example");
+      expect(out).not.toContain("(");
+      expect(out).not.toContain(")");
     });
 
     it("caps long messages with an ellipsis", () => {

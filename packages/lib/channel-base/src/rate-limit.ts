@@ -173,7 +173,15 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
               break;
             }
             prevDelayMs = delay;
-            await sleep(delay);
+            // Wrap sleep so a sleeper rejection (clock corruption, monkey-
+            // patched timers, etc.) does not abandon the in-flight entry —
+            // we treat it as terminal failure for this entry and resume
+            // draining instead of leaving the caller hanging forever.
+            try {
+              await sleep(delay);
+            } catch {
+              break;
+            }
           }
         }
 

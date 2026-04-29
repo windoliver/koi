@@ -377,6 +377,26 @@ describe("createRateLimiter", () => {
     });
   });
 
+  it("rejects the in-flight entry and continues the queue when sleep throws", async () => {
+    sleepSpy.mockImplementationOnce(() => Promise.reject(new Error("clock broken")));
+    const limiter = createRateLimiter({
+      retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 3, initialDelayMs: 10, jitter: false },
+    });
+    let attempts = 0;
+    const failing = limiter.enqueue(async () => {
+      attempts++;
+      throw koiError({ code: "TIMEOUT" });
+    });
+    const completed: string[] = [];
+    const after = limiter.enqueue(async () => {
+      completed.push("ok");
+    });
+    await expect(failing).rejects.toMatchObject({ code: "TIMEOUT" });
+    await after;
+    expect(completed).toEqual(["ok"]);
+    expect(attempts).toBe(1);
+  });
+
   describe("classifier safety: queue keeps draining when hooks throw", () => {
     it("treats a throwing extractRetryAfterMs as non-retryable and continues the queue", async () => {
       const limiter = createRateLimiter({

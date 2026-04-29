@@ -28,6 +28,11 @@ const VALIDATION_MAX_LEN = 200;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: regex precisely targets ASCII control characters to strip them
 const CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
 const MARKDOWN_LINK_DELIMS = /[[\]()<>]/g;
+// Crude URL matcher — matches an http(s)://, ftp(s)://, ws(s):// or `www.`
+// prefix and consumes the URL body up to the next whitespace. Most chat
+// surfaces auto-linkify these even without explicit markdown.
+const URL_LIKE = /\b(?:https?|ftps?|wss?):\/\/\S+/gi;
+const WWW_LIKE = /\bwww\.\S+/gi;
 
 /**
  * Sanitizes the VALIDATION message before it is concatenated into channel
@@ -44,7 +49,11 @@ const MARKDOWN_LINK_DELIMS = /[[\]()<>]/g;
  * coarse channel-base safety net.
  */
 function sanitizeValidationMessage(raw: string): string {
-  const stripped = raw.replace(CONTROL_CHARS, " ").replace(MARKDOWN_LINK_DELIMS, "");
+  const stripped = raw
+    .replace(CONTROL_CHARS, " ")
+    .replace(URL_LIKE, "link removed")
+    .replace(WWW_LIKE, "link removed")
+    .replace(MARKDOWN_LINK_DELIMS, "");
   return stripped.length > VALIDATION_MAX_LEN
     ? `${stripped.slice(0, VALIDATION_MAX_LEN)}…`
     : stripped;
