@@ -15,6 +15,11 @@ const verify = createBrickVerifier(
   { lineageBoundBuilders: new Set(["koi/forge"]) },
 );
 
+// Test-only equivalence predicate: tests that don't care about
+// classification/markers/verification pass alwaysEquiv to the helper.
+// Real callers must compose a predicate that reflects their policy.
+const alwaysEquiv = (): boolean => true;
+
 function notImplemented<T>(): T {
   throw new Error("not implemented");
 }
@@ -227,13 +232,58 @@ describe("lineage", () => {
     if (result.kind === "integrity_failed") expect(result.reason).toBe("recompute_failed");
   });
 
+  test("safeVerify rejects an ok verdict bound to a different brick.id", async () => {
+    const root = makeTool();
+    const child = makeTool({ implementation: "v2", parentBrickId: root.id });
+    const stranger = makeTool({ implementation: "stranger" }).id;
+    // Stale verifier returns ok but for the WRONG brick — must not be
+    // accepted as authoritative for the brick we asked about.
+    const wrongBrickVerify = Object.assign(
+      () => ({ kind: "ok", ok: true, brickId: stranger, builderId: "koi/forge" }),
+      { coversLineage: () => true },
+    ) as unknown as ReturnType<typeof createBrickVerifier>;
+    const result = await isDerivedFrom(child, root.id, fixtureStore([root]), {
+      verify: wrongBrickVerify,
+      producerBuilderId: "koi/forge",
+    });
+    expect(result.kind).toBe("integrity_failed");
+    if (result.kind === "integrity_failed") expect(result.reason).toBe("recompute_failed");
+  });
+
+  test("safeVerify rejects an ok verdict reporting a different builderId", async () => {
+    const root = makeTool();
+    const child = makeTool({ implementation: "v2", parentBrickId: root.id });
+    const wrongBuilderVerify = Object.assign(
+      (b: BrickArtifact) => ({ kind: "ok", ok: true, brickId: b.id, builderId: "different" }),
+      { coversLineage: () => true },
+    ) as unknown as ReturnType<typeof createBrickVerifier>;
+    const result = await isDerivedFrom(child, root.id, fixtureStore([root]), {
+      verify: wrongBuilderVerify,
+      producerBuilderId: "koi/forge",
+    });
+    expect(result.kind).toBe("integrity_failed");
+    if (result.kind === "integrity_failed") expect(result.reason).toBe("recompute_failed");
+  });
+
+  test("findContentEquivalentById requires a provenanceEquivalent predicate; rejects when caller says false", () => {
+    const a = makeTool({ implementation: "code" });
+    const b = makeTool({ implementation: "code" });
+    // Caller's policy says these are NOT equivalent (e.g. classification
+    // differs). The helper must respect that and return undefined even
+    // though canonical ids match.
+    const neverEquiv = () => false;
+    expect(findContentEquivalentById([a], b, "koi/forge", verify, neverEquiv)).toBeUndefined();
+  });
+
   test("findContentEquivalentById tolerates a verifier that throws", () => {
     const a = makeTool({ implementation: "code" });
     const b = makeTool({ implementation: "code" });
     const throwingVerify = (() => {
       throw new Error("boom");
     }) as unknown as ReturnType<typeof createBrickVerifier>;
-    expect(findContentEquivalentById([a], b, "koi/forge", throwingVerify)).toBeUndefined();
+    expect(
+      findContentEquivalentById([a], b, "koi/forge", throwingVerify, alwaysEquiv),
+    ).toBeUndefined();
   });
 
   test("isDerivedFrom normalizes a malformed store.load resolved payload to malformed", async () => {
@@ -294,13 +344,13 @@ describe("lineage", () => {
   test("findContentEquivalentById detects verified content-equivalent brick within one producer", () => {
     const a = makeTool({ implementation: "code" });
     const b = makeTool({ implementation: "code" });
-    expect(findContentEquivalentById([a], b, "koi/forge", verify)?.id).toBe(a.id);
+    expect(findContentEquivalentById([a], b, "koi/forge", verify, alwaysEquiv)?.id).toBe(a.id);
   });
 
   test("findContentEquivalentById returns undefined when no match", () => {
     const a = makeTool({ implementation: "code" });
     const novel = makeTool({ implementation: "different" });
-    expect(findContentEquivalentById([a], novel, "koi/forge", verify)).toBeUndefined();
+    expect(findContentEquivalentById([a], novel, "koi/forge", verify, alwaysEquiv)).toBeUndefined();
   });
 
   test("findContentEquivalentById rejects a poisoned store entry that fails verification", () => {
@@ -308,11 +358,13 @@ describe("lineage", () => {
     // A poisoned entry shares the candidate id but tampered content cannot
     // recompute to the same canonical id. The verifier must catch it.
     const poisoned: BrickArtifact = { ...real, implementation: "// poisoned" } as BrickArtifact;
-    expect(findContentEquivalentById([poisoned], real, "koi/forge", verify)).toBeUndefined();
+    expect(
+      findContentEquivalentById([poisoned], real, "koi/forge", verify, alwaysEquiv),
+    ).toBeUndefined();
     // The real one verifies and is returned.
-    expect(findContentEquivalentById([poisoned, real], real, "koi/forge", verify)?.id).toBe(
-      real.id,
-    );
+    expect(
+      findContentEquivalentById([poisoned, real], real, "koi/forge", verify, alwaysEquiv)?.id,
+    ).toBe(real.id);
   });
 
   test("findContentEquivalentById rejects an unverified candidate even if stored brick verifies", () => {
@@ -324,7 +376,9 @@ describe("lineage", () => {
       ...trusted,
       implementation: "// attacker payload",
     } as BrickArtifact;
-    expect(findContentEquivalentById([trusted], fabricated, "koi/forge", verify)).toBeUndefined();
+    expect(
+      findContentEquivalentById([trusted], fabricated, "koi/forge", verify, alwaysEquiv),
+    ).toBeUndefined();
   });
 
   test("isDerivedFrom rejects a tampered child whose parentBrickId points at a real ancestor", async () => {

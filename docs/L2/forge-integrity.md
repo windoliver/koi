@@ -46,12 +46,14 @@ signed-attestation check (out of scope for this package).
   — legacy unverified walk. Result is **untrusted**; intended only for
   debug tools / UI hints / pre-verification triage. Production trust paths
   must use `isDerivedFrom`.
-- `findContentEquivalentById(bricks, candidate, producerBuilderId, verify): BrickArtifact | undefined`
+- `findContentEquivalentById(bricks, candidate, producerBuilderId, verify, provenanceEquivalent): BrickArtifact | undefined`
   — finds the first stored brick whose canonical *content* matches
-  `candidate`. **NOT a trust-equivalence helper.** A canonical id covers
-  content (name/version/scope/owner/implementation) but not provenance
-  fields like `classification`/`contentMarkers`/`verification`; callers
-  must compare those explicitly before substituting one brick for another.
+  `candidate` AND for which the caller-supplied
+  `provenanceEquivalent(candidate, stored)` predicate returns `true`. The
+  predicate is **required** because canonical id covers
+  content only (name/version/scope/owner/implementation) and not
+  provenance fields like `classification`/`contentMarkers`/`verification`
+  — the caller's policy must decide whether substitution is safe.
 
 ## Lineage trust model
 

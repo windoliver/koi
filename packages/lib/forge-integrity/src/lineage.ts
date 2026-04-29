@@ -299,18 +299,31 @@ async function walk(
 }
 
 /**
- * Returns the first brick in `bricks` whose canonical *content* matches
- * `candidate` under the named producer's recompute.
+ * Caller-supplied predicate that decides whether two bricks with the same
+ * canonical content id are also equivalent under the policy/provenance
+ * fields the caller cares about (classification, contentMarkers,
+ * verification, etc.). The predicate is INVOKED ONLY after both bricks
+ * have passed integrity verification under the named producer.
  *
- * **NOT a trust-equivalence helper.** A producer's canonical id covers
- * artifact content (name/version/scope/owner/implementation) but does NOT
- * cover provenance fields such as `classification`, `contentMarkers`, or
- * `verification`. Two bricks with the same id can therefore differ in
- * sensitivity or verification state. Callers must NOT use this result as
- * grounds to substitute a stored brick for a candidate when classification
- * or verification metadata could matter — compare those fields explicitly,
- * or model the decision at a higher layer that has access to the trust
- * policy.
+ * Returning `true` means "safe to substitute one for the other in the
+ * caller's specific context" — the predicate must therefore know the
+ * caller's policy. There is no safe default; the helper takes the
+ * predicate explicitly to keep that decision out of this package.
+ */
+export type ProvenanceEquivalent = (a: BrickArtifact, b: BrickArtifact) => boolean;
+
+/**
+ * Returns the first stored brick whose canonical *content* matches
+ * `candidate` under the named producer's recompute AND for which
+ * `provenanceEquivalent(candidate, stored)` returns `true`.
+ *
+ * The canonical id covers artifact content (name/version/scope/owner/
+ * implementation) but does NOT cover provenance fields such as
+ * `classification`, `contentMarkers`, or `verification`. Two bricks with
+ * the same id can differ in sensitivity or verification state, so this
+ * helper REQUIRES the caller to supply a `provenanceEquivalent` predicate
+ * that decides whether substituting one for the other is safe in the
+ * caller's specific policy context.
  *
  * Verifying the candidate first prevents an attacker-controlled artifact
  * from aliasing onto a trusted stored brick by id alone. A poisoned store
@@ -322,14 +335,21 @@ export function findContentEquivalentById(
   candidate: BrickArtifact,
   producerBuilderId: string,
   verify: BrickVerifier,
+  provenanceEquivalent: ProvenanceEquivalent,
 ): BrickArtifact | undefined {
+  if (typeof provenanceEquivalent !== "function") return undefined;
   const candidateVerdict = safeVerify(verify, candidate, producerBuilderId);
   if (candidateVerdict.kind !== "ok") return undefined;
   const candidateId = candidate.id;
   return bricks.find((b) => {
     if (b.id !== candidateId) return false;
     const result = safeVerify(verify, b, producerBuilderId);
-    return result.kind === "ok";
+    if (result.kind !== "ok") return false;
+    try {
+      return provenanceEquivalent(candidate, b) === true;
+    } catch {
+      return false;
+    }
   });
 }
 
@@ -384,6 +404,37 @@ function safeVerify(
         typeof brick?.id === "string" ? (brick.id as BrickId) : ("sha256:unknown" as BrickId),
       builderId: expectedBuilderId,
       reason: "verifier returned a non-IntegrityResult value",
+    };
+  }
+  // Bind the verdict to the brick we asked about. A buggy or stale
+  // verifier can return a shape-valid `ok` for some OTHER brick — without
+  // this check the lineage/dedup gate would collapse from "this exact
+  // brick verified" to "some verifier said ok somewhere".
+  const expectedBrickId = typeof brick?.id === "string" ? brick.id : undefined;
+  const claimedBrickId = (raw as { readonly brickId?: unknown }).brickId;
+  if (
+    expectedBrickId !== undefined &&
+    typeof claimedBrickId === "string" &&
+    claimedBrickId !== expectedBrickId
+  ) {
+    return {
+      kind: "recompute_failed",
+      ok: false,
+      brickId: expectedBrickId as BrickId,
+      builderId: expectedBuilderId,
+      reason: `verifier returned verdict for a different brick (claimed ${claimedBrickId})`,
+    };
+  }
+  // Also bind to the requested builder identity. A verifier that reports
+  // ok under a different builderId than the one the caller asked about
+  // must not be trusted as authoritative.
+  if (raw.kind === "ok" && raw.builderId !== expectedBuilderId) {
+    return {
+      kind: "recompute_failed",
+      ok: false,
+      brickId: (expectedBrickId ?? "sha256:unknown") as BrickId,
+      builderId: expectedBuilderId,
+      reason: `verifier returned ok under a different builderId (${raw.builderId})`,
     };
   }
   return raw;
