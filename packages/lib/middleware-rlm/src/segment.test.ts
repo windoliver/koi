@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { InboundMessage, ModelRequest } from "@koi/core";
-import { SiblingTextBlocksError, segmentRequest, splitText } from "./segment.js";
+import {
+  SiblingNonTextBlocksError,
+  SiblingTextBlocksError,
+  segmentRequest,
+  splitText,
+} from "./segment.js";
 
 function userMessage(text: string): InboundMessage {
   return {
@@ -170,6 +175,25 @@ describe("segmentRequest", () => {
     expect(() => segmentRequest(makeRequest([msg]), 100)).toThrow(SiblingTextBlocksError);
   });
 
+  test("throws SiblingNonTextBlocksError when the oversized message has non-text siblings", () => {
+    // A multimodal turn carrying an image + an oversized text block must
+    // not be segmented: replacing only the text block leaves the image
+    // intact in every chunked request, so each downstream call replays
+    // and re-bills the same attachment N times while reassembly only
+    // concatenates the answers. Fail closed and ask the caller to route
+    // the multimodal payload through an explicit reducer.
+    const big = "x".repeat(300);
+    const msg: InboundMessage = {
+      senderId: "user",
+      timestamp: 0,
+      content: [
+        { kind: "image", url: "https://example.com/x.png" },
+        { kind: "text", text: big },
+      ],
+    };
+    expect(() => segmentRequest(makeRequest([msg]), 100)).toThrow(SiblingNonTextBlocksError);
+  });
+
   test("throws MultipleOversizedBlocksError when more than one user-role block exceeds maxChunkChars", () => {
     // A true multi-block partition would require an explicit reducer
     // stage. Cross-product fan-out would duplicate work and corrupt
@@ -310,7 +334,12 @@ describe("segmentRequest", () => {
     }
   });
 
-  test("preserves non-text blocks alongside the chunked text block", () => {
+  test("fails closed when the oversized message has non-text siblings instead of duplicating them", () => {
+    // Earlier behavior duplicated the image across every chunk. That
+    // re-bills the multimodal attachment N times while reassembly only
+    // concatenates the answers — corruption + cost regression. Fail
+    // closed so the caller routes multimodal turns through an explicit
+    // reducer or moves the attachment to its own message.
     const big = "y".repeat(300);
     const msg: InboundMessage = {
       senderId: "user",
@@ -320,17 +349,7 @@ describe("segmentRequest", () => {
         { kind: "text", text: big },
       ],
     };
-    const req = makeRequest([msg]);
-    const out = segmentRequest(req, 100);
-    expect(out.length).toBeGreaterThan(1);
-    for (const seg of out) {
-      const blocks = seg.messages[0]?.content ?? [];
-      expect(blocks[0]).toEqual({ kind: "image", url: "http://example/img.png" });
-      const text = blocks[1];
-      if (text === undefined || text.kind !== "text") {
-        throw new Error("expected text block at index 1");
-      }
-    }
+    expect(() => segmentRequest(makeRequest([msg]), 100)).toThrow(SiblingNonTextBlocksError);
   });
 
   test("only segments the single largest user text block", () => {

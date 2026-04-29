@@ -11,6 +11,7 @@ export { reassembleResponses, SEGMENT_SEPARATOR } from "./reassemble.js";
 export { createRlmMiddleware, SegmentAbortError } from "./rlm.js";
 export {
   MultipleOversizedBlocksError,
+  SiblingNonTextBlocksError,
   SiblingTextBlocksError,
   segmentRequest,
   splitText,

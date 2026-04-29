@@ -127,6 +127,31 @@ export class SiblingTextBlocksError extends Error {
 }
 
 /**
+ * Error thrown by `segmentRequest` when the oversized user message also
+ * carries non-text content blocks (image / file / audio / tool_call /
+ * tool_result / etc.). Segmentation only rewrites the oversized text
+ * block, so any sibling non-text content would be replayed on every
+ * chunked request — causing the model to re-process the same image or
+ * attachment N times while reassembly still concatenates N independent
+ * answers as if it had been seen once. That is user-visible duplication,
+ * inflated multimodal cost / latency, and possible per-segment budget
+ * overruns. Fail closed so the caller routes multimodal turns through
+ * an explicit reducer rather than silently fanning out.
+ */
+export class SiblingNonTextBlocksError extends Error {
+  readonly siblingCount: number;
+  constructor(siblingCount: number) {
+    super(
+      `RLM cannot segment a request whose oversized user message contains ${String(
+        siblingCount,
+      )} non-text content block(s) (image / file / audio / tool_call / tool_result). Each chunk would replay the same attachment, while reassembly only concatenates the answers — duplicating multimodal cost and corrupting reassembly. Move the attachment to a separate message or run an explicit multimodal reducer before invoking RLM.`,
+    );
+    this.name = "SiblingNonTextBlocksError";
+    this.siblingCount = siblingCount;
+  }
+}
+
+/**
  * Split text into chunks no larger than `maxChars`, preferring paragraph,
  * then line, then hard-cut boundaries. Output chunks concatenated with the
  * separators they were split on reproduce the input.
@@ -280,21 +305,30 @@ export function segmentRequest(
   const target = oversized[0];
   if (target === undefined) return [request];
 
-  // Guard against duplicating sibling text on every chunk. Replacing the
-  // oversized block alone would leave any other text blocks in the same
-  // message untouched, so each downstream call would see the sibling
-  // text repeated alongside its chunk — turning byte-faithful tasks into
-  // N-fold corruption. Image / non-text blocks are fine; only sibling
-  // text drives this guard.
+  // Guard against duplicating siblings on every chunk. Replacing the
+  // oversized block alone leaves the rest of the message intact, so
+  // each downstream call would see the same sibling content alongside
+  // its own chunk — turning byte-faithful tasks into N-fold corruption
+  // and re-billing every multimodal attachment N times.
+  //   - Sibling TEXT  → SiblingTextBlocksError
+  //   - Sibling NON-TEXT (image / file / audio / tool_call / tool_result)
+  //                   → SiblingNonTextBlocksError
   const targetMsg = request.messages[target.messageIndex];
   if (targetMsg !== undefined) {
     let siblingTextCount = 0; // let: counter while scanning siblings
+    let siblingNonTextCount = 0; // let: counter while scanning siblings
     for (let j = 0; j < targetMsg.content.length; j++) {
       if (j === target.blockIndex) continue;
       const block = targetMsg.content[j];
-      if (block !== undefined && block.kind === "text") siblingTextCount += 1;
+      if (block === undefined) continue;
+      if (block.kind === "text") {
+        siblingTextCount += 1;
+      } else {
+        siblingNonTextCount += 1;
+      }
     }
     if (siblingTextCount > 0) throw new SiblingTextBlocksError(siblingTextCount);
+    if (siblingNonTextCount > 0) throw new SiblingNonTextBlocksError(siblingNonTextCount);
   }
 
   const chunks = splitText(target.text, maxChunkChars);
