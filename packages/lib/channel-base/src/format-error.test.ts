@@ -94,6 +94,14 @@ describe("formatErrorForChannel discriminated output", () => {
       expect(out).not.toMatch(/[`*_~]/);
     });
 
+    it("strips Unicode bidi/format/zero-width controls", () => {
+      // ZWSP / RLO / LRO / PDF / ZWJ — invisible characters often used to
+      // hide or reorder text in chat/HTML surfaces.
+      const out = safeText("safe​‮txet‬‍word");
+      expect(out).toBe("Invalid input: safetxetword");
+      expect(out).not.toMatch(/[​-‏‪-‮⁦-⁩﻿]/);
+    });
+
     it("strips header, table, image, escape, and entity sigils", () => {
       const out = safeText("# header | cell ! image &amp; \\escape");
       expect(out).not.toMatch(/[#|!&\\]/);

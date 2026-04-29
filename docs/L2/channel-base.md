@@ -356,7 +356,7 @@ There is intentionally no verbose / developer mode; CLI tooling that needs raw d
 
 | Function | Returns | Purpose |
 |----------|---------|---------|
-| `createRateLimiter(config?)` | `RateLimiter` | FIFO send queue with retry-after honoring + exponential backoff |
+| `createRateLimiter(config?)` | `RateLimiter` | FIFO send queue with retry-after honoring, exponential backoff, and a per-send watchdog (`sendTimeoutMs` defaults to 30s; rejects with `code: "TIMEOUT"` when a send hangs and fires `onSendTimeout` so operators can detect a wedged channel) |
 | `createChannelRegistry(entries)` | `ChannelRegistry` | Snapshot-based name → factory map for adapter discovery |
 
 ### Types

@@ -32,6 +32,14 @@ import type { KoiError, KoiErrorCode } from "@koi/core";
 const VALIDATION_MAX_LEN = 200;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: regex precisely targets ASCII control characters to strip them
 const CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
+// Unicode bidi / formatting / zero-width controls that can hide or
+// reorder text without being visible — defeats the plain-text claim
+// without an explicit strip pass:
+//   U+200B–U+200F  ZWSP, ZWNJ, ZWJ, LRM, RLM
+//   U+202A–U+202E  bidi embeddings + override
+//   U+2066–U+2069  isolate controls (LRI, RLI, FSI, PDI)
+//   U+FEFF         byte order mark / zero-width no-break space
+const UNICODE_CONTROL_CHARS = /[​-‏‪-‮⁦-⁩﻿]/g;
 // Characters that drive formatting, mentions, links, or escaping on at
 // least one common chat transport (Slack/Discord/Markdown/HTML/Teams).
 // Stripping rather than escaping because we can't know the destination
@@ -55,8 +63,12 @@ const WWW_LIKE = /\bwww\.\S+/gi;
  * encoding for HTML surfaces) on top of this pass.
  */
 function sanitizeValidationMessage(raw: string): string {
+  // NFC-normalize first so canonical-equivalent sequences (e.g. composed
+  // vs decomposed accents) hit the strip passes consistently.
   const stripped = raw
+    .normalize("NFC")
     .replace(CONTROL_CHARS, " ")
+    .replace(UNICODE_CONTROL_CHARS, "")
     .replace(URL_LIKE, "link removed")
     .replace(WWW_LIKE, "link removed")
     .replace(FORMATTING_CHARS, "");

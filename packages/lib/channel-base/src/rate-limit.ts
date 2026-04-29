@@ -15,7 +15,7 @@
  * never re-issued.
  */
 
-import type { KoiErrorCode } from "@koi/core";
+import type { KoiError, KoiErrorCode } from "@koi/core";
 import {
   computeBackoff,
   DEFAULT_RETRY_CONFIG,
@@ -58,7 +58,25 @@ export interface RateLimiterConfig {
     stage: "extract" | "classify" | "backoff" | "sleep",
     error: unknown,
   ) => void;
+  /**
+   * Maximum time to wait for a single `entry.fn()` invocation before
+   * treating it as wedged. A hung provider call would otherwise block the
+   * strict-FIFO queue indefinitely and silently drop every later send.
+   * When the deadline elapses, the in-flight entry is rejected with a
+   * `KoiError` of code `TIMEOUT` and the drain loop advances. Defaults to
+   * 30s. Pass `0` or `Infinity` to opt out (e.g. for transports that
+   * already enforce their own timeout).
+   */
+  readonly sendTimeoutMs?: number;
+  /**
+   * Called once per send attempt that exceeds `sendTimeoutMs`. Operators
+   * use this to detect a wedged channel — a quiet queue with no completed
+   * sends is otherwise indistinguishable from no traffic.
+   */
+  readonly onSendTimeout?: () => void;
 }
+
+const DEFAULT_SEND_TIMEOUT_MS = 30_000;
 
 export interface RateLimiter {
   /** Enqueues a send. Resolves when the send completes (after any retries). */
@@ -116,6 +134,8 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
   const retryConfig = config?.retry ?? DEFAULT_RETRY_CONFIG;
   const extractRetryAfterMs = config?.extractRetryAfterMs ?? defaultExtractRetryAfterMs;
   const isRetryable = config?.isRetryable ?? defaultIsRetryable;
+  const sendTimeoutMs = config?.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
+  const sendTimeoutEnabled = Number.isFinite(sendTimeoutMs) && sendTimeoutMs > 0;
 
   // let justified: mutable queue state, immutable swap on each mutation
   let queue: readonly QueueEntry[] = [];
@@ -153,6 +173,41 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
     }
   };
 
+  // Races `fn()` against the configured send deadline. If the timer
+  // fires first we abandon the in-flight send (its real promise still
+  // resolves/rejects later — we just stop waiting on it) and reject this
+  // attempt with a TIMEOUT KoiError so retry classification and the
+  // operator hook see a structured failure instead of a hang. With a
+  // disabled deadline (0 / Infinity) this is a transparent passthrough.
+  const runWithDeadline = (fn: () => Promise<void>): Promise<void> => {
+    if (!sendTimeoutEnabled) return fn();
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        try {
+          config?.onSendTimeout?.();
+        } catch {
+          // observer hook misbehaved — keep the queue moving
+        }
+        const timeoutError: KoiError = {
+          code: "TIMEOUT",
+          message: `channel send did not settle within ${sendTimeoutMs}ms`,
+          retryable: false,
+        };
+        reject(timeoutError);
+      }, sendTimeoutMs);
+      fn().then(
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        (err: unknown) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
+    });
+  };
+
   const drain = async (): Promise<void> => {
     if (processing) return;
     processing = true;
@@ -168,7 +223,7 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         let prevDelayMs: number | undefined;
         for (let attempt = 0; attempt <= retryConfig.maxRetries; attempt++) {
           try {
-            await entry.fn();
+            await runWithDeadline(entry.fn);
             lastError = undefined;
             break;
           } catch (error: unknown) {

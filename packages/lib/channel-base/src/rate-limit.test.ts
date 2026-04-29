@@ -523,7 +523,7 @@ describe("createRateLimiter", () => {
   });
 
   it("size() reflects pending items", async () => {
-    const limiter = createRateLimiter();
+    const limiter = createRateLimiter({ sendTimeoutMs: 0 });
     expect(limiter.size()).toBe(0);
     let release: (() => void) | undefined;
     const blocker = new Promise<void>((res) => {
@@ -535,5 +535,79 @@ describe("createRateLimiter", () => {
     release?.();
     await Promise.all([p1, p2]);
     expect(limiter.size()).toBe(0);
+  });
+
+  describe("sendTimeoutMs prevents a hung send from wedging the queue", () => {
+    it("rejects the in-flight entry with TIMEOUT KoiError after the deadline", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+        sendTimeoutMs: 25,
+      });
+      const start = Date.now();
+      await expect(limiter.enqueue(() => new Promise<void>(() => {}))).rejects.toMatchObject({
+        code: "TIMEOUT",
+      });
+      // Should reject at roughly sendTimeoutMs, not hang on the never-settling promise.
+      expect(Date.now() - start).toBeLessThan(2_000);
+    });
+
+    it("calls onSendTimeout for each timed-out attempt", async () => {
+      const onSendTimeout = mock(() => {});
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+        sendTimeoutMs: 15,
+        onSendTimeout,
+      });
+      await expect(limiter.enqueue(() => new Promise<void>(() => {}))).rejects.toMatchObject({
+        code: "TIMEOUT",
+      });
+      expect(onSendTimeout).toHaveBeenCalledTimes(1);
+    });
+
+    it("continues draining the queue after a hung entry is timed out", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+        sendTimeoutMs: 15,
+      });
+      const hung = limiter.enqueue(() => new Promise<void>(() => {}));
+      const completed: string[] = [];
+      const after = limiter.enqueue(async () => {
+        completed.push("ok");
+      });
+      await expect(hung).rejects.toMatchObject({ code: "TIMEOUT" });
+      await after;
+      expect(completed).toEqual(["ok"]);
+    });
+
+    it("opting out with sendTimeoutMs:0 leaves a hung send pending (no auto-reject)", async () => {
+      const limiter = createRateLimiter({ sendTimeoutMs: 0 });
+      let release: (() => void) | undefined;
+      const blocker = new Promise<void>((res) => {
+        release = res;
+      });
+      const p = limiter.enqueue(() => blocker);
+      // Race the send against a short sleeper; the limiter must NOT have rejected p.
+      const winner = await Promise.race([
+        p.then(() => "settled" as const),
+        new Promise<"timer">((res) => setTimeout(() => res("timer"), 60)),
+      ]);
+      expect(winner).toBe("timer");
+      release?.();
+      await p;
+    });
+
+    it("swallows a thrown onSendTimeout hook so the queue keeps draining", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+        sendTimeoutMs: 15,
+        onSendTimeout: () => {
+          throw new Error("hook-broken");
+        },
+      });
+      const hung = limiter.enqueue(() => new Promise<void>(() => {}));
+      const after = limiter.enqueue(() => Promise.resolve());
+      await expect(hung).rejects.toMatchObject({ code: "TIMEOUT" });
+      await after;
+    });
   });
 });
