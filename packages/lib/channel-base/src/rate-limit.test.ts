@@ -187,6 +187,42 @@ describe("createRateLimiter", () => {
     });
   });
 
+  describe("caller-supplied policy hooks", () => {
+    it("retries when only extractRetryAfterMs is provided (no isRetryable)", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 2, jitter: false },
+        extractRetryAfterMs: (e) =>
+          e instanceof Error && e.message === "throttled" ? 75 : undefined,
+      });
+      let attempts = 0;
+      await limiter.enqueue(async () => {
+        attempts++;
+        if (attempts < 2) throw new Error("throttled");
+      });
+      expect(attempts).toBe(2);
+      expect(sleepSpy).toHaveBeenCalledWith(75);
+    });
+
+    it("retries when only isRetryable is provided (no extractor)", async () => {
+      const limiter = createRateLimiter({
+        retry: {
+          ...errors.DEFAULT_RETRY_CONFIG,
+          maxRetries: 1,
+          initialDelayMs: 30,
+          jitter: false,
+        },
+        isRetryable: () => true,
+      });
+      let attempts = 0;
+      await limiter.enqueue(async () => {
+        attempts++;
+        if (attempts < 2) throw new Error("transient");
+      });
+      expect(attempts).toBe(2);
+      expect(sleepSpy).toHaveBeenCalledWith(30);
+    });
+  });
+
   describe("retryAfterMs alone does not force retry for non-transport codes", () => {
     it("AUTH_REQUIRED with retryAfterMs is rejected immediately, not re-issued", async () => {
       const limiter = createRateLimiter({

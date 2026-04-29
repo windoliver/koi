@@ -2,12 +2,17 @@
  * Rate-limit-aware send queue for channel adapters.
  *
  * Sequential FIFO queue. Pauses on rate-limit errors and retries with
- * exponential backoff. Defaults honor `KoiError` retry metadata: a
- * `KoiError` with `retryAfterMs` set, `retryable: true`, or a code that
- * `@koi/errors.isRetryable()` classifies as retryable will be retried.
- * Callers can override either policy hook for transports that need
- * different semantics. Non-`KoiError` exceptions reject immediately so
- * non-idempotent sends are never re-issued.
+ * exponential backoff. The default policy is intentionally narrower than
+ * `@koi/errors.isRetryable()`: it auto-retries only the transport-class
+ * codes RATE_LIMIT, TIMEOUT, and CONFLICT, because state-gated codes such
+ * as AUTH_REQUIRED and RESOURCE_EXHAUSTED are recoverable only after
+ * external intervention and must not be re-issued in a tight loop.
+ *
+ * Callers with domain knowledge can broaden retry semantics through the
+ * `extractRetryAfterMs` and `isRetryable` config hooks; either hook
+ * returning a defined retry signal opts the error into retry. Non-KoiError
+ * exceptions reject immediately by default so non-idempotent sends are
+ * never re-issued.
  */
 
 import type { KoiErrorCode } from "@koi/core";
@@ -23,18 +28,23 @@ export interface RateLimiterConfig {
   /** Retry configuration for rate-limited sends. */
   readonly retry?: RetryConfig;
   /**
-   * Extracts a retry-after delay (in ms) from a caught error.
-   * Return undefined if the error does not carry a retry hint.
-   * Defaults to reading `error.retryAfterMs` when the error is a `KoiError`.
-   * A defined value also classifies the error as retryable.
+   * Extracts a retry-after delay (in ms) from a caught error. Returning a
+   * defined value both schedules the next attempt's delay AND classifies
+   * the error as retryable — caller-supplied extractors are trusted because
+   * they encode adapter-specific knowledge.
+   *
+   * The built-in default returns `error.retryAfterMs` only when the error
+   * is a `KoiError` whose code is in the transport-retry allowlist
+   * (RATE_LIMIT, TIMEOUT, CONFLICT). State-gated codes like AUTH_REQUIRED
+   * intentionally produce undefined even if they carry `retryAfterMs`, so
+   * the queue does not auto-retry them.
    */
   readonly extractRetryAfterMs?: (error: unknown) => number | undefined;
   /**
-   * Decides whether a non-rate-limit error should be retried.
-   * Defaults to honoring `KoiError` retry semantics — `error.retryable` true
-   * or a code in the retryable set per `@koi/errors.isRetryable()`. Override
-   * for transports that need different rules; passing `() => false` opts
-   * out of any retry that is not driven by an explicit retry-after.
+   * Decides whether an error should be retried independent of any retry-after
+   * hint. Defaults to a narrow transport allowlist: `KoiError` with code in
+   * { RATE_LIMIT, TIMEOUT, CONFLICT }. Pass a custom predicate (e.g.
+   * `(e) => isKoiError(e) && isKoiRetryable(e)`) to broaden the policy.
    */
   readonly isRetryable?: (error: unknown) => boolean;
 }
@@ -77,8 +87,11 @@ const sanitizeRetryAfterMs = (raw: unknown): number | undefined => {
   return raw;
 };
 
-const defaultExtractRetryAfterMs = (error: unknown): number | undefined =>
-  isKoiError(error) ? sanitizeRetryAfterMs(error.retryAfterMs) : undefined;
+const defaultExtractRetryAfterMs = (error: unknown): number | undefined => {
+  if (!isKoiError(error)) return undefined;
+  if (!TRANSPORT_RETRY_CODES.has(error.code)) return undefined;
+  return sanitizeRetryAfterMs(error.retryAfterMs);
+};
 
 const defaultIsRetryable = (error: unknown): boolean =>
   isKoiError(error) && TRANSPORT_RETRY_CODES.has(error.code);
@@ -131,12 +144,14 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
           } catch (error: unknown) {
             lastError = error;
 
-            // Retry decision must always come from the classifier — a stray
-            // retryAfterMs on a non-transport code (e.g. AUTH_REQUIRED) must
-            // not be enough to re-issue a non-idempotent send.
-            if (!safeIsRetryable(error) || attempt >= retryConfig.maxRetries) break;
-
+            // A defined retry-after hint OR a positive isRetryable verdict
+            // opts the error into a retry. The default extractor already
+            // refuses to emit a hint for state-gated codes, so this OR is
+            // safe; callers who provide a custom extractor are trusted to
+            // know what their hint means.
             const retryAfterMs = sanitizeRetryAfterMs(safeExtract(error));
+            const retryable = retryAfterMs !== undefined || safeIsRetryable(error);
+            if (!retryable || attempt >= retryConfig.maxRetries) break;
 
             // Route through computeBackoff so the provider hint is clamped to
             // maxBackoffMs and falls back to backoff when the hint is absent.
