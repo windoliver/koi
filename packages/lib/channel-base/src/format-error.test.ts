@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { KoiError } from "@koi/core";
-import { formatErrorForChannel, formatErrorTextForChannel } from "./format-error.js";
+import { classifyErrorForChannel, formatErrorForChannel } from "./format-error.js";
 
 const baseError = (code: KoiError["code"], message: string, extra?: Partial<KoiError>): KoiError =>
   ({
@@ -10,10 +10,10 @@ const baseError = (code: KoiError["code"], message: string, extra?: Partial<KoiE
     ...extra,
   }) satisfies KoiError;
 
-describe("formatErrorForChannel discriminated output", () => {
+describe("classifyErrorForChannel discriminated output", () => {
   it("returns kind:'validation' with sanitized safeText for VALIDATION", () => {
     const err = baseError("VALIDATION", "field 'x' is required");
-    const out = formatErrorForChannel(err);
+    const out = classifyErrorForChannel(err);
     expect(out).toEqual({
       kind: "validation",
       safeText: "Invalid input: field 'x' is required",
@@ -24,7 +24,7 @@ describe("formatErrorForChannel discriminated output", () => {
     const err = baseError("AUTH_REQUIRED", "oauth needed", {
       context: { authorizationUrl: "https://issuer.example/oauth" },
     });
-    const out = formatErrorForChannel(err);
+    const out = classifyErrorForChannel(err);
     expect(out.kind).toBe("auth-required");
     if (out.kind === "auth-required") {
       expect(out.safeText).toBe("Authorization is required to continue.");
@@ -33,11 +33,11 @@ describe("formatErrorForChannel discriminated output", () => {
   });
 
   it("returns kind:'text' with canned message for everything else", () => {
-    expect(formatErrorForChannel(baseError("NOT_FOUND", "x"))).toEqual({
+    expect(classifyErrorForChannel(baseError("NOT_FOUND", "x"))).toEqual({
       kind: "text",
       text: "The requested resource was not found.",
     });
-    expect(formatErrorForChannel(baseError("RATE_LIMIT", "x"))).toEqual({
+    expect(classifyErrorForChannel(baseError("RATE_LIMIT", "x"))).toEqual({
       kind: "text",
       text: "Too many requests. Please wait a moment.",
     });
@@ -45,7 +45,7 @@ describe("formatErrorForChannel discriminated output", () => {
 
   describe("VALIDATION sanitization (delivered via safeText)", () => {
     const safeText = (msg: string): string => {
-      const out = formatErrorForChannel(baseError("VALIDATION", msg));
+      const out = classifyErrorForChannel(baseError("VALIDATION", msg));
       if (out.kind !== "validation") throw new Error("expected validation kind");
       return out.safeText;
     };
@@ -120,7 +120,7 @@ describe("formatErrorForChannel discriminated output", () => {
 
     it("does not expose raw error.message back to the adapter", () => {
       const raw = "click [here](https://evil.example) please";
-      const out = formatErrorForChannel(baseError("VALIDATION", raw));
+      const out = classifyErrorForChannel(baseError("VALIDATION", raw));
       if (out.kind !== "validation") throw new Error("expected validation kind");
       expect(out).not.toHaveProperty("rawMessage");
       expect(out.safeText).not.toContain("https://");
@@ -132,7 +132,7 @@ describe("formatErrorForChannel discriminated output", () => {
       const err = baseError("AUTH_REQUIRED", "x", {
         context: { authorizationUrl: "https://attacker.example/spoof" },
       });
-      const out = formatErrorForChannel(err);
+      const out = classifyErrorForChannel(err);
       if (out.kind !== "auth-required") throw new Error("expected auth-required");
       expect(out.safeText).toBe("Authorization is required to continue.");
       expect(out.safeText).not.toContain("attacker.example");
@@ -142,7 +142,7 @@ describe("formatErrorForChannel discriminated output", () => {
       const err = baseError("AUTH_REQUIRED", "oauth needed", {
         context: { authorizationUrl: "https://issuer.example", scope: "read" },
       });
-      const out = formatErrorForChannel(err);
+      const out = classifyErrorForChannel(err);
       if (out.kind !== "auth-required") throw new Error("expected auth-required");
       expect(out.error.context).toEqual({
         authorizationUrl: "https://issuer.example",
@@ -158,20 +158,20 @@ describe("formatErrorForChannel discriminated output", () => {
         message: "from a newer producer",
         retryable: false,
       } as unknown as KoiError;
-      const out = formatErrorForChannel(futureError);
+      const out = classifyErrorForChannel(futureError);
       expect(out).toEqual({
         kind: "text",
         text: "Something went wrong. Please try again later.",
       });
     });
 
-    it("formatErrorTextForChannel never returns undefined for unknown codes", () => {
+    it("formatErrorForChannel never returns undefined for unknown codes", () => {
       const futureError = {
         code: "SOMETHING_NEW",
         message: "x",
         retryable: false,
       } as unknown as KoiError;
-      const text = formatErrorTextForChannel(futureError);
+      const text = formatErrorForChannel(futureError);
       expect(typeof text).toBe("string");
       expect(text.length).toBeGreaterThan(0);
     });
@@ -180,7 +180,7 @@ describe("formatErrorForChannel discriminated output", () => {
   describe("safety: non-VALIDATION codes never leak raw message", () => {
     it("INTERNAL output omits the raw message", () => {
       const err = baseError("INTERNAL", "boom-internal-detail");
-      const out = formatErrorForChannel(err);
+      const out = classifyErrorForChannel(err);
       expect(out).toEqual({
         kind: "text",
         text: "Something went wrong. Please try again later.",
@@ -189,7 +189,7 @@ describe("formatErrorForChannel discriminated output", () => {
 
     it("RATE_LIMIT output omits retryAfterMs and raw message", () => {
       const err = baseError("RATE_LIMIT", "throttled", { retryAfterMs: 5_000 });
-      const out = formatErrorForChannel(err);
+      const out = classifyErrorForChannel(err);
       if (out.kind !== "text") throw new Error("expected text kind");
       expect(out.text).toBe("Too many requests. Please wait a moment.");
       expect(out.text).not.toContain("5000");
@@ -198,7 +198,7 @@ describe("formatErrorForChannel discriminated output", () => {
 
     it("never includes cause", () => {
       const err = baseError("INTERNAL", "boom", { cause: new Error("secret stack trace") });
-      const out = formatErrorForChannel(err);
+      const out = classifyErrorForChannel(err);
       if (out.kind !== "text") throw new Error("expected text kind");
       expect(out.text).not.toContain("secret stack trace");
     });
@@ -207,46 +207,46 @@ describe("formatErrorForChannel discriminated output", () => {
       const err = baseError("NOT_FOUND", "missing", {
         context: { userId: "secret-user-id" },
       });
-      const out = formatErrorForChannel(err);
+      const out = classifyErrorForChannel(err);
       if (out.kind !== "text") throw new Error("expected text kind");
       expect(out.text).not.toContain("secret-user-id");
     });
   });
 });
 
-describe("formatErrorTextForChannel collapse helper", () => {
+describe("formatErrorForChannel collapse helper", () => {
   it("returns canned text for plain codes", () => {
-    expect(formatErrorTextForChannel(baseError("NOT_FOUND", "x"))).toBe(
+    expect(formatErrorForChannel(baseError("NOT_FOUND", "x"))).toBe(
       "The requested resource was not found.",
     );
-    expect(formatErrorTextForChannel(baseError("PERMISSION", "x"))).toBe(
+    expect(formatErrorForChannel(baseError("PERMISSION", "x"))).toBe(
       "You don't have permission to perform this action.",
     );
-    expect(formatErrorTextForChannel(baseError("CONFLICT", "x"))).toBe(
+    expect(formatErrorForChannel(baseError("CONFLICT", "x"))).toBe(
       "A conflict occurred. Please try again.",
     );
-    expect(formatErrorTextForChannel(baseError("TIMEOUT", "x"))).toBe(
+    expect(formatErrorForChannel(baseError("TIMEOUT", "x"))).toBe(
       "The operation timed out. Please try again.",
     );
-    expect(formatErrorTextForChannel(baseError("EXTERNAL", "x"))).toBe(
+    expect(formatErrorForChannel(baseError("EXTERNAL", "x"))).toBe(
       "An external service is temporarily unavailable.",
     );
-    expect(formatErrorTextForChannel(baseError("STALE_REF", "x"))).toBe(
+    expect(formatErrorForChannel(baseError("STALE_REF", "x"))).toBe(
       "The referenced element is no longer valid. Please try again.",
     );
-    expect(formatErrorTextForChannel(baseError("RESOURCE_EXHAUSTED", "x"))).toBe(
+    expect(formatErrorForChannel(baseError("RESOURCE_EXHAUSTED", "x"))).toBe(
       "Capacity limit reached. Please try again shortly.",
     );
-    expect(formatErrorTextForChannel(baseError("UNAVAILABLE", "x"))).toBe(
+    expect(formatErrorForChannel(baseError("UNAVAILABLE", "x"))).toBe(
       "The service is currently unavailable.",
     );
-    expect(formatErrorTextForChannel(baseError("HEARTBEAT_TIMEOUT", "x"))).toBe(
+    expect(formatErrorForChannel(baseError("HEARTBEAT_TIMEOUT", "x"))).toBe(
       "The worker stopped responding.",
     );
   });
 
   it("returns sanitized validation safeText", () => {
-    expect(formatErrorTextForChannel(baseError("VALIDATION", "field 'x' missing"))).toBe(
+    expect(formatErrorForChannel(baseError("VALIDATION", "field 'x' missing"))).toBe(
       "Invalid input: field 'x' missing",
     );
   });
@@ -255,6 +255,6 @@ describe("formatErrorTextForChannel collapse helper", () => {
     const err = baseError("AUTH_REQUIRED", "x", {
       context: { authorizationUrl: "https://attacker.example" },
     });
-    expect(formatErrorTextForChannel(err)).toBe("Authorization is required to continue.");
+    expect(formatErrorForChannel(err)).toBe("Authorization is required to continue.");
   });
 });

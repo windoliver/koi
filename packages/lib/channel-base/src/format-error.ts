@@ -139,10 +139,15 @@ export type ChannelErrorOutput =
     };
 
 /**
- * Formats a KoiError for channel output. See module docstring for the
- * three discriminants and the trust contract on each.
+ * Classifies a KoiError into a discriminated channel output. See module
+ * docstring for the three discriminants and the trust contract on each.
+ *
+ * Adapters that need to surface OAuth handoff metadata (`auth-required`)
+ * or apply transport-specific escaping on top of the validation sanitizer
+ * (`validation.safeText`) should call this. Adapters that just want a
+ * single safe string should call `formatErrorForChannel` instead.
  */
-export function formatErrorForChannel(error: KoiError): ChannelErrorOutput {
+export function classifyErrorForChannel(error: KoiError): ChannelErrorOutput {
   if (error.code === "VALIDATION") {
     return {
       kind: "validation",
@@ -167,16 +172,16 @@ export function formatErrorForChannel(error: KoiError): ChannelErrorOutput {
 }
 
 /**
- * Convenience helper for adapters that have no special handling for
- * validation or auth-required cases — collapses the discriminated union
- * to a single string. Equivalent to using `safeText` for validation /
- * auth-required and `text` for everything else.
+ * Returns a single safe string for direct channel output. Collapses
+ * `classifyErrorForChannel` to its safe-text form: `safeText` for
+ * validation / auth-required, the canned `text` for everything else.
  *
- * Adapters that surface OAuth handoff or want stricter validator-text
- * escaping should call `formatErrorForChannel` directly instead.
+ * This is the primary helper most adapters should call. The string return
+ * type means it concatenates safely into channel payloads without any
+ * conversion.
  */
-export function formatErrorTextForChannel(error: KoiError): string {
-  const out = formatErrorForChannel(error);
+export function formatErrorForChannel(error: KoiError): string {
+  const out = classifyErrorForChannel(error);
   switch (out.kind) {
     case "text":
       return out.text;
