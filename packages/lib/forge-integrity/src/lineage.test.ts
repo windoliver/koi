@@ -136,6 +136,29 @@ describe("lineage", () => {
     expect(findDuplicateById([poisoned, real], real.id, "koi/forge", verify)?.id).toBe(real.id);
   });
 
+  test("isDerivedFrom returns malformed when store returns a brick with a different id", async () => {
+    const root = makeTool({ implementation: "v1" });
+    const mid = makeTool({ implementation: "v2", parentBrickId: root.id });
+    const child = makeTool({ implementation: "v3", parentBrickId: mid.id });
+    // Cache confusion: load(mid.id) returns root (different id).
+    const wrong = makeTool({ implementation: "wrong" });
+    const cacheConfusedStore: ForgeStore = {
+      save: () => Promise.resolve({ ok: true, value: undefined }),
+      load: (_id: BrickId) =>
+        Promise.resolve({ ok: true, value: wrong } as Result<BrickArtifact, KoiError>),
+      search: () => notImplemented(),
+      remove: () => notImplemented(),
+      update: () => notImplemented(),
+      exists: () => Promise.resolve({ ok: true, value: false }),
+    };
+    const result = await isDerivedFrom(child, root.id, cacheConfusedStore);
+    expect(result.kind).toBe("malformed");
+    if (result.kind === "malformed") {
+      expect(result.at).toBe(mid.id);
+      expect(result.reason).toContain("expected");
+    }
+  });
+
   test("isDerivedFrom returns malformed when child has no provenance", async () => {
     const broken = { id: "sha256:zzz" } as unknown as BrickArtifact;
     const root = makeTool();

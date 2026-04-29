@@ -234,6 +234,34 @@ describe("createForgeProvenance", () => {
     ).toThrow(/evolutionKind/);
   });
 
+  test("rejects null/array/primitive externalParameters root", () => {
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        externalParameters: null as unknown as Readonly<Record<string, unknown>>,
+      }),
+    ).toThrow(/plain object/);
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        externalParameters: [1, 2] as unknown as Readonly<Record<string, unknown>>,
+      }),
+    ).toThrow(/plain object/);
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        externalParameters: "scalar" as unknown as Readonly<Record<string, unknown>>,
+      }),
+    ).toThrow(/plain object/);
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        // Class-instance roots are non-plain.
+        externalParameters: new Date(0) as unknown as Readonly<Record<string, unknown>>,
+      }),
+    ).toThrow(/plain object/);
+  });
+
   test("rejects conflicting demandId between top-level and externalParameters", () => {
     expect(() =>
       createForgeProvenance({

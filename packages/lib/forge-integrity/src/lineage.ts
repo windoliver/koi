@@ -105,6 +105,16 @@ export async function isDerivedFrom(
     if (loadedShape.kind === "malformed") {
       return { kind: "malformed", at: parentId, reason: loadedShape.reason };
     }
+    // Bind the response to the requested id: a corrupt/stale/cache-confused
+    // store returning a different brick must not let us traverse a foreign
+    // ancestry chain. Fail closed as malformed at the boundary.
+    if (loadedShape.id !== parentId) {
+      return {
+        kind: "malformed",
+        at: parentId,
+        reason: `store returned brick with id ${loadedShape.id}, expected ${parentId}`,
+      };
+    }
     parentId = loadedShape.parentBrickId;
     steps += 1;
   }

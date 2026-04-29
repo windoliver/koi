@@ -68,6 +68,19 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
     }
   }
   validateVerification(options.verification);
+  // Root must be a plain object — null, arrays, and primitives are rejected
+  // before any clone/hasOwn step so malformed caller input cannot persist
+  // into provenance records (and Object.hasOwn cannot throw on null below).
+  if (
+    options.externalParameters === null ||
+    typeof options.externalParameters !== "object" ||
+    Array.isArray(options.externalParameters) ||
+    !isPlainObjectRoot(options.externalParameters)
+  ) {
+    throw new Error(
+      "createForgeProvenance: externalParameters must be a plain object (not null, array, or primitive)",
+    );
+  }
   // Provenance is immutable, audit-visible metadata; restrict structured
   // inputs to JSON-plain values so we can guarantee a deep freeze. Map/Set/
   // Date instances survive `Object.freeze` with mutable APIs intact, so we
@@ -145,6 +158,11 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
     ...(options.evolutionKind !== undefined ? { evolutionKind: options.evolutionKind } : {}),
   };
   return Object.freeze(provenance);
+}
+
+function isPlainObjectRoot(value: object): boolean {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
 }
 
 function requireNonEmptyString(name: string, value: unknown): void {
