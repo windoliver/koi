@@ -77,6 +77,13 @@ export function createSpawnResultCache(
   }
 
   const cache = new Map<string, string>();
+  // Monotonic generation counter per key. Each runDeduped invocation that
+  // reaches the factory bumps the generation and remembers the value it
+  // owned; an aborted attempt's late background settle only writes to the
+  // cache if it still owns the latest generation (i.e. no newer attempt
+  // has started since). This prevents an older attempt's output from
+  // clobbering a fresher in-flight retry's slot on settle.
+  const generations = new Map<string, number>();
 
   function get(key: string): string | undefined {
     const entry = cache.get(key);
@@ -140,6 +147,12 @@ export function createSpawnResultCache(
       return { ok: true, output: settled, deduplicated: true };
     }
 
+    // Claim a fresh generation for this attempt. Any later attempt for
+    // the same key bumps this counter, so the abort backfill below can
+    // detect that a newer attempt has superseded ours.
+    const myGeneration = (generations.get(key) ?? 0) + 1;
+    generations.set(key, myGeneration);
+
     const factoryPromise = factory();
     let result: SpawnFactoryResult;
     try {
@@ -149,15 +162,23 @@ export function createSpawnResultCache(
         // Caller is gone, but the spawn may still complete in the background
         // (e.g. the engine doesn't abort instantly, or returns the admission
         // before observing the signal). If it does and the result is
-        // cacheable, record it — a retry that arrives later should attach
-        // to the cached output instead of launching a duplicate child.
+        // cacheable AND no newer attempt has started, record it — a retry
+        // that arrives later should attach to the cached output instead
+        // of launching a duplicate child.
         //
-        // Race guard: a parallel retry may have already populated the cache
-        // for this key with a fresher result. Only backfill if the slot is
-        // still empty so we never regress to an older attempt's output.
+        // Race guards:
+        //   - generation check: ensures a newer in-flight attempt's eventual
+        //     output wins, even if it hasn't settled yet when ours does.
+        //   - cache.has() check: belt-and-suspenders for the case where the
+        //     newer attempt has already settled.
         void factoryPromise.then(
           (settled) => {
-            if (settled.ok && settled.cacheable !== false && !cache.has(key)) {
+            if (
+              settled.ok &&
+              settled.cacheable !== false &&
+              generations.get(key) === myGeneration &&
+              !cache.has(key)
+            ) {
               set(key, settled.output);
             }
           },

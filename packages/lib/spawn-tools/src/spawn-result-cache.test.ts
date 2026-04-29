@@ -253,6 +253,63 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     expect(cache.get("k")).toBe("B-output");
   });
 
+  test("aborted attempt's late settle does NOT cache when a newer in-flight retry has started but not yet settled", async () => {
+    // The harder race: A starts and aborts. B starts (newer generation) and
+    // is still running. A's orphaned factoryPromise then settles. With only
+    // a cache.has() guard, A would win and B's eventual output would never
+    // see the cache (B's success path also sets, so B would still write —
+    // but a third call C arriving between A-settle and B-settle would
+    // dedup to A-output and skip even invoking the factory). The
+    // generation counter blocks A's late settle once B has claimed the slot.
+    const cache = createSpawnResultCache(8);
+    let releaseA: () => void = () => {};
+    let releaseB: () => void = () => {};
+    const factoryA = (): Promise<{ ok: true; output: string }> =>
+      new Promise((resolve) => {
+        releaseA = () => resolve({ ok: true, output: "A-output" });
+      });
+    const factoryB = (): Promise<{ ok: true; output: string }> =>
+      new Promise((resolve) => {
+        releaseB = () => resolve({ ok: true, output: "B-output" });
+      });
+
+    const ctrlA = new AbortController();
+    const aPromise = cache.runDeduped("k", ctrlA.signal, factoryA);
+    await Promise.resolve();
+    ctrlA.abort(new Error("A timed out"));
+    await aPromise;
+
+    // B starts (newer generation) but doesn't settle yet.
+    const bPromise = cache.runDeduped("k", noAbort(), factoryB);
+    await Promise.resolve();
+
+    // A's orphaned factory finally settles. Generation guard must block.
+    releaseA();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(cache.get("k")).toBeUndefined();
+
+    // A third call C arrives while B is still in-flight. Must NOT dedup
+    // to A-output (because A was blocked above); must invoke its own
+    // factory because the cache is still empty.
+    let cCalls = 0;
+    const factoryC = async (): Promise<{ ok: true; output: string }> => {
+      cCalls += 1;
+      return { ok: true, output: "C-output" };
+    };
+    const cResult = await cache.runDeduped("k", noAbort(), factoryC);
+    expect(cResult).toMatchObject({ ok: true, output: "C-output" });
+    expect(cCalls).toBe(1);
+
+    // Finally B settles. C's value already won the cache; B's also writes
+    // but that's the natural last-writer-wins behavior for two genuine
+    // post-A retries — the property under test is that A cannot poison
+    // either of them.
+    releaseB();
+    await bPromise;
+    expect(cache.get("k")).toBe("B-output");
+  });
+
   test("aborting one of two concurrent callers cancels only that caller; the other proceeds", async () => {
     const cache = createSpawnResultCache(8);
     let releaseFirst: () => void = () => {};
