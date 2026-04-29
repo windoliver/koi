@@ -23,18 +23,39 @@ const schema = z.object({
     .describe("Optional structured context passed to the child agent as additional input."),
 });
 
-function descriptionWithContext(description: string, context: JsonObject | undefined): string {
-  if (context === undefined) return description;
+/**
+ * Round-trip the context through JSON to produce a canonical payload that is
+ * shared by the description block, the cache digest, and the forwarded
+ * `spawnFn` request. This guarantees that what we hash is exactly what the
+ * child sees:
+ *   - `Date` → ISO string (matches `JSON.stringify` behavior)
+ *   - `BigInt`, cyclic refs, etc. → throws → fail closed with a clean error
+ *   - Plain JSON values pass through unchanged
+ */
+function normalizeContext(
+  context: unknown,
+):
+  | { readonly ok: true; readonly value: JsonObject | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (context === undefined) return { ok: true, value: undefined };
   let serialized: string | undefined;
   try {
-    serialized = JSON.stringify(context, null, 2);
-  } catch {
-    // BigInt, cyclic refs, or other non-JSON-safe values fall back to the
-    // bare description so the tool still returns a clean structured error
-    // (computeRequestDigest below will surface the failure).
-    return description;
+    serialized = JSON.stringify(context);
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: `context is not JSON-serializable: ${message}` };
   }
-  if (serialized === undefined) return description;
+  if (serialized === undefined) {
+    return { ok: false, error: "context is not JSON-serializable" };
+  }
+  return { ok: true, value: JSON.parse(serialized) as JsonObject };
+}
+
+function descriptionWithContext(description: string, context: JsonObject | undefined): string {
+  if (context === undefined) return description;
+  // `context` here has already been round-tripped through JSON, so this
+  // serialization can never throw.
+  const serialized = JSON.stringify(context, null, 2);
   return `${description}\n\nStructured context:\n${serialized}`;
 }
 
@@ -68,23 +89,23 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
         return { ok: false, error: parsed.error.message };
       }
 
-      const { agent_name, description, context } = parsed.data;
-      const childDescription = descriptionWithContext(
-        description,
-        context as JsonObject | undefined,
-      );
+      const { agent_name, description, context: rawContext } = parsed.data;
+
+      const normalized = normalizeContext(rawContext);
+      if (!normalized.ok) {
+        return { ok: false, error: normalized.error };
+      }
+      const context = normalized.value;
+      const childDescription = descriptionWithContext(description, context);
 
       const invokeSpawn = async (): Promise<
-        | {
-            readonly ok: true;
-            readonly output: string;
-          }
+        | { readonly ok: true; readonly output: string }
         | { readonly ok: false; readonly error: string }
       > => {
         const result = await config.spawnFn({
           agentName: agent_name,
           description: childDescription,
-          ...(context !== undefined ? { context: context as JsonObject } : {}),
+          ...(context !== undefined ? { context } : {}),
           signal: config.signal,
           agentId: config.agentId,
         });

@@ -211,7 +211,9 @@ describe("spawnCacheKey (identity + digest)", () => {
     expect(a).toBe(b);
   });
 
-  test("returns undefined for non-JSON-safe context (BigInt) instead of throwing", () => {
+  test("returns undefined for non-JSON-safe context (BigInt) instead of throwing — defense in depth", () => {
+    // The tool layer normalizes context before reaching here, but the cache
+    // helper must remain robust if a caller bypasses normalization.
     const ctx = { task_id: "T-1", count: 5n };
     expect(() => spawnCacheKey("p", "r", "X", ctx)).not.toThrow();
     expect(spawnCacheKey("p", "r", "X", ctx)).toBeUndefined();

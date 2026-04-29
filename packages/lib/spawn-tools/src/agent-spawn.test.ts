@@ -218,7 +218,7 @@ describe("agent_spawn", () => {
       expect((second as { deduplicated?: boolean }).deduplicated).toBeUndefined();
     });
 
-    test("non-JSON-safe context (BigInt) does not throw — falls back to bare description, no dedup", async () => {
+    test("non-JSON-safe context (BigInt) fails closed with a structured error — no spawn invoked", async () => {
       const calls: SpawnRequest[] = [];
       const fn: SpawnFn = async (request) => {
         calls.push(request);
@@ -232,17 +232,57 @@ describe("agent_spawn", () => {
         resultCache: createSpawnResultCache(),
       });
 
-      // BigInt is forbidden by JSON.stringify; tool must not throw.
-      await expect(
-        tool.execute({
-          agent_name: "researcher",
-          description: "X",
-          context: { task_id: "T-1", count: 5n },
-        }),
-      ).resolves.toMatchObject({ ok: true, output: "ok" });
+      const result = await tool.execute({
+        agent_name: "researcher",
+        description: "X",
+        context: { task_id: "T-1", count: 5n },
+      });
+      expect(result).toMatchObject({ ok: false });
+      expect((result as { error: string }).error).toContain("not JSON-serializable");
+      // Spawn must NOT be invoked with malformed context.
+      expect(calls).toHaveLength(0);
+    });
+
+    test("Date in context normalizes to ISO string — same ISO ⇒ cache hit, different ISO ⇒ fresh spawn", async () => {
+      const calls: SpawnRequest[] = [];
+      const fn: SpawnFn = async (request) => {
+        calls.push(request);
+        return { ok: true, output: `n=${calls.length}` };
+      };
+      const tool = createAgentSpawnTool({
+        spawnFn: fn,
+        board: {} as ManagedTaskBoard,
+        agentId: "parent" as AgentId,
+        signal: AbortSignal.timeout(5_000),
+        resultCache: createSpawnResultCache(),
+      });
+
+      // Same logical timestamp passed via two different Date instances:
+      const t = "2025-01-01T00:00:00.000Z";
+      await tool.execute({
+        agent_name: "researcher",
+        description: "X",
+        context: { task_id: "T-1", when: new Date(t) },
+      });
+      const second = await tool.execute({
+        agent_name: "researcher",
+        description: "X",
+        context: { task_id: "T-1", when: new Date(t) },
+      });
       expect(calls).toHaveLength(1);
-      // Description still falls back cleanly (no Structured context block).
-      expect(calls[0]?.description).toBe("X");
+      expect(second).toMatchObject({ ok: true, deduplicated: true });
+
+      // A different Date value must NOT collide with the cached entry.
+      await tool.execute({
+        agent_name: "researcher",
+        description: "X",
+        context: { task_id: "T-1", when: new Date("2025-02-01T00:00:00.000Z") },
+      });
+      expect(calls).toHaveLength(2);
+
+      // Forwarded context.when is the ISO string, not a Date instance.
+      expect(calls[0]?.context?.when).toBe(t);
+      expect(typeof calls[0]?.context?.when).toBe("string");
     });
 
     test("retry with changed non-task_id context field bypasses cache", async () => {
