@@ -275,6 +275,32 @@ describe("lineage", () => {
     expect(findContentEquivalentById([a], b, "koi/forge", verify, neverEquiv)).toBeUndefined();
   });
 
+  test("findContentEquivalentById fails closed on non-array or corrupt bricks input", () => {
+    const a = makeTool({ implementation: "code" });
+    expect(
+      findContentEquivalentById(
+        undefined as unknown as readonly BrickArtifact[],
+        a,
+        "koi/forge",
+        verify,
+        alwaysEquiv,
+      ),
+    ).toBeUndefined();
+    expect(
+      findContentEquivalentById(
+        null as unknown as readonly BrickArtifact[],
+        a,
+        "koi/forge",
+        verify,
+        alwaysEquiv,
+      ),
+    ).toBeUndefined();
+    // List with null/non-object entries: must skip and return undefined,
+    // not throw.
+    const dirty = [null, "not-a-brick", { partial: true }] as unknown as readonly BrickArtifact[];
+    expect(findContentEquivalentById(dirty, a, "koi/forge", verify, alwaysEquiv)).toBeUndefined();
+  });
+
   test("findContentEquivalentById tolerates a verifier that throws", () => {
     const a = makeTool({ implementation: "code" });
     const b = makeTool({ implementation: "code" });

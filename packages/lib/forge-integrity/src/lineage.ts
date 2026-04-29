@@ -338,19 +338,28 @@ export function findContentEquivalentById(
   provenanceEquivalent: ProvenanceEquivalent,
 ): BrickArtifact | undefined {
   if (typeof provenanceEquivalent !== "function") return undefined;
+  // A degraded store/search layer can hand us a non-array, undefined, or
+  // a list containing null/malformed entries. Fail closed (no match)
+  // rather than throwing on the boundary — one bad row must not take
+  // down the dedup write path.
+  if (!Array.isArray(bricks)) return undefined;
   const candidateVerdict = safeVerify(verify, candidate, producerBuilderId);
   if (candidateVerdict.kind !== "ok") return undefined;
   const candidateId = candidate.id;
-  return bricks.find((b) => {
-    if (b.id !== candidateId) return false;
-    const result = safeVerify(verify, b, producerBuilderId);
-    if (result.kind !== "ok") return false;
+  for (const b of bricks) {
+    if (b === null || typeof b !== "object") continue;
+    if ((b as { readonly id?: unknown }).id !== candidateId) continue;
+    const result = safeVerify(verify, b as BrickArtifact, producerBuilderId);
+    if (result.kind !== "ok") continue;
+    let equiv = false;
     try {
-      return provenanceEquivalent(candidate, b) === true;
+      equiv = provenanceEquivalent(candidate, b as BrickArtifact) === true;
     } catch {
-      return false;
+      continue;
     }
-  });
+    if (equiv) return b as BrickArtifact;
+  }
+  return undefined;
 }
 
 /**
