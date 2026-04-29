@@ -180,9 +180,32 @@ const defaultIsRetryable = (error: unknown): boolean =>
 
 export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
   const retryConfig = config?.retry ?? DEFAULT_RETRY_CONFIG;
+  // Fail fast on invalid retry config: a negative maxRetries (e.g. from a
+  // bad env/JSON parse) would skip the for-loop entirely, causing every
+  // enqueue() to resolve as success without ever invoking the transport.
+  // That is silent data loss on the send path.
+  if (!Number.isInteger(retryConfig.maxRetries) || retryConfig.maxRetries < 0) {
+    throw new Error(
+      `RateLimiterConfig.retry.maxRetries must be a non-negative integer, got ${String(
+        retryConfig.maxRetries,
+      )}`,
+    );
+  }
   const extractRetryAfterMs = config?.extractRetryAfterMs ?? defaultExtractRetryAfterMs;
   const isRetryable = config?.isRetryable ?? defaultIsRetryable;
   const sendTimeoutMs = config?.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
+  // Only the documented opt-out values (0 or Infinity) disable the
+  // watchdog. NaN, negative numbers, or other malformed inputs would
+  // otherwise silently fall through to the passthrough path and let a
+  // hung provider wedge the queue forever — exactly the failure mode this
+  // feature exists to prevent.
+  if (typeof sendTimeoutMs !== "number" || Number.isNaN(sendTimeoutMs) || sendTimeoutMs < 0) {
+    throw new Error(
+      `RateLimiterConfig.sendTimeoutMs must be a non-negative number (or Infinity to opt out), got ${String(
+        sendTimeoutMs,
+      )}`,
+    );
+  }
   const sendTimeoutEnabled = Number.isFinite(sendTimeoutMs) && sendTimeoutMs > 0;
   const advanceOnTimeout = config?.advanceOnTimeout ?? false;
 

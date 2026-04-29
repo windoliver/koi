@@ -29,6 +29,33 @@ describe("createRateLimiter", () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
+  describe("config validation rejects malformed inputs at construction", () => {
+    it("throws when retry.maxRetries is negative (would silently drop sends)", () => {
+      expect(() =>
+        createRateLimiter({ retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: -1 } }),
+      ).toThrow(/maxRetries/);
+    });
+
+    it("throws when retry.maxRetries is non-integer", () => {
+      expect(() =>
+        createRateLimiter({ retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 1.5 } }),
+      ).toThrow(/maxRetries/);
+    });
+
+    it("throws when sendTimeoutMs is NaN (would disable the watchdog)", () => {
+      expect(() => createRateLimiter({ sendTimeoutMs: Number.NaN })).toThrow(/sendTimeoutMs/);
+    });
+
+    it("throws when sendTimeoutMs is negative", () => {
+      expect(() => createRateLimiter({ sendTimeoutMs: -5 })).toThrow(/sendTimeoutMs/);
+    });
+
+    it("accepts the documented opt-out values 0 and Infinity", () => {
+      expect(() => createRateLimiter({ sendTimeoutMs: 0 })).not.toThrow();
+      expect(() => createRateLimiter({ sendTimeoutMs: Number.POSITIVE_INFINITY })).not.toThrow();
+    });
+  });
+
   it("serializes concurrent sends in FIFO order", async () => {
     const limiter = createRateLimiter();
     const order: number[] = [];
