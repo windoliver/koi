@@ -169,19 +169,18 @@ describe("segmentRequest", () => {
     expect(segmentRequest(makeRequest([toolMsg]), 100)).toEqual([makeRequest([toolMsg])]);
   });
 
-  test("treats bare senderId === 'system' as user-role (matches openai-compat resolver)", () => {
-    // The trusted openai-compat resolver only privileges 'system:*'; a
-    // bare 'system' senderId falls through to user role at the adapter
-    // boundary. RLM must mirror that or engine paths emitting bare
-    // 'system' (e.g. stop-hook feedback) will fail closed when oversized.
+  test("never chunks bare senderId === 'system' (trust boundary, even though openai-compat treats it as user)", () => {
+    // The two canonical resolvers disagree: openai-compat treats bare
+    // 'system' as user, model-router/normalize treats it as system.
+    // Take the conservative stance — never chunk privileged-looking
+    // content. Oversized bare-system messages are a compaction concern.
     const big = "p".repeat(300);
     const bareSystem: InboundMessage = {
       senderId: "system",
       timestamp: 0,
       content: [{ kind: "text", text: big }],
     };
-    const out = segmentRequest(makeRequest([bareSystem]), 100);
-    expect(out.length).toBeGreaterThan(1);
+    expect(segmentRequest(makeRequest([bareSystem]), 100)).toEqual([makeRequest([bareSystem])]);
   });
 
   test("ignores oversized text blocks under system:* senders (handled by compaction, not RLM)", () => {

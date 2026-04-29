@@ -68,13 +68,29 @@ describe("reassembleResponses", () => {
     ]);
   });
 
-  test("preserves caller metadata alongside rlmSegments", () => {
+  test("merges caller metadata across segments with last-write-wins", () => {
+    // Later-segment signals like `terminatedBy`, `blockedByHook`, and
+    // recovery metadata must survive reassembly so downstream delivery
+    // / observability paths see them. First-only metadata would silently
+    // lose those signals when only later segments emit them.
     const out = reassembleResponses([
-      part("a", { metadata: { callerKey: "v1" } }),
-      part("b", { metadata: { callerKey: "v2" } }),
+      part("a", { metadata: { firstOnly: "1", shared: "from-a" } }),
+      part("b", { metadata: { shared: "from-b", lastOnly: "2" } }),
     ]);
-    expect(out.metadata?.callerKey).toBe("v1");
+    expect(out.metadata?.firstOnly).toBe("1");
+    expect(out.metadata?.lastOnly).toBe("2");
+    // last-write-wins for conflicting keys — preserves later-segment
+    // failure / recovery signals over earlier transient metadata.
+    expect(out.metadata?.shared).toBe("from-b");
     expect(out.metadata?.rlmSegments).toBeDefined();
+  });
+
+  test("preserves later-segment terminatedBy signal even when first segment is clean", () => {
+    const out = reassembleResponses([
+      part("a"),
+      part("b", { metadata: { terminatedBy: "activity-timeout" } }),
+    ]);
+    expect(out.metadata?.terminatedBy).toBe("activity-timeout");
   });
 
   test("sums usage across parts and aggregates cache fields when present", () => {

@@ -190,8 +190,18 @@ export function reassembleResponses(
   const richContent = buildMergedRichContent(parts, separator);
   const stopReason = pickStopReason(parts);
   const provenance = buildProvenance(parts);
-  const baseMetadata: JsonObject = first.metadata ?? {};
-  const metadata: JsonObject = { ...baseMetadata, rlmSegments: provenance };
+  // Merge metadata across every segment with last-write-wins per key.
+  // Later-segment signals like `terminatedBy`, `blockedByHook`, recovery
+  // metadata, and routing decisions must survive the merge so downstream
+  // delivery / query / observability paths see them. Hard-coding
+  // first.metadata would silently lose those signals when only later
+  // segments carry them. rlmSegments still reflects full provenance.
+  const mergedMetadata: JsonObject = {};
+  for (const p of parts) {
+    if (p.metadata === undefined) continue;
+    Object.assign(mergedMetadata, p.metadata);
+  }
+  const metadata: JsonObject = { ...mergedMetadata, rlmSegments: provenance };
 
   const out: ModelResponse = {
     content,

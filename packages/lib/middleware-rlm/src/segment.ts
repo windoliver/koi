@@ -37,11 +37,15 @@ interface TargetLocation {
  *   4. default user
  */
 function isUserRoleMessage(msg: InboundMessage): boolean {
-  // openai-compat trusted-mode resolver matches `system:*` only; a bare
-  // senderId === "system" falls through to user role at the adapter
-  // boundary, so RLM must NOT exempt it here or compatible engine paths
-  // (e.g. stop-hook feedback) will fail closed when oversized.
-  if (msg.senderId.startsWith("system:")) return false;
+  // The two canonical resolvers in this repo disagree on bare
+  // `senderId === "system"`: openai-compat treats it as user; the
+  // shared model-router normalizer treats it as system. Take the
+  // conservative trust-boundary stance and exclude bare "system" from
+  // chunking — letting RLM rewrite privileged instructions chunk-by-
+  // chunk would be a real security regression on any cross-middleware
+  // path that treats bare "system" as system content. Oversized bare-
+  // system content is a compaction concern, not RLM's.
+  if (msg.senderId === "system" || msg.senderId.startsWith("system:")) return false;
   if (msg.metadata !== undefined) {
     const role = msg.metadata.role;
     if (role === "assistant" || role === "tool") return false;

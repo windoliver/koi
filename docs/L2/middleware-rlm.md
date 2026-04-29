@@ -140,13 +140,14 @@ returns a `Result<RlmConfig, KoiError>`.
 `segmentRequest(request, maxChunkChars)`:
 
 1. Find every user-role text block whose length exceeds `maxChunkChars`.
-   "User-role" follows the openai-compat adapter's trusted-mode role
-   resolver: messages with `senderId.startsWith("system:")`,
-   `senderId === "assistant" | "tool"`, or `metadata.role === "assistant" | "tool"`
-   are excluded. Bare `senderId === "system"` falls through to user role
-   (matching the resolver). Tool results and resumed assistant messages
-   are therefore never chunked, which preserves tool-call linkage and
-   conversation semantics.
+   "User-role" combines both canonical resolvers conservatively: messages
+   with `senderId === "system" | "system:*" | "assistant" | "tool"`, or
+   `metadata.role === "assistant" | "tool"` are excluded. Anything else
+   is user content. Bare `senderId === "system"` is reserved (the
+   openai-compat resolver treats it as user, but the shared
+   `mapSenderIdToRole` normalizer treats it as system; the trust-boundary
+   stance is to never chunk it). Oversized bare-system content is a
+   compaction concern, not RLM's.
 2. If none, return `[request]` unchanged.
 3. If exactly one, call `splitText(text, maxChunkChars)` (prefers
    paragraph boundaries, then line boundaries, finally hard-cuts) and
@@ -188,6 +189,11 @@ The synthetic response:
   complete answer instead of dropping plain-content segments.
   When no segment has richContent, the field is omitted entirely so
   the stream path falls back to `content`.
+- `metadata` is a **last-write-wins merge** across every segment's
+  `metadata`, with `rlmSegments` appended for full provenance. This
+  preserves later-segment signals like `terminatedBy`, `blockedByHook`,
+  and recovery metadata that downstream delivery / observability paths
+  rely on; first-only metadata would silently drop them.
 - `metadata.rlmSegments` → `[{ index, model, stopReason, responseId }, …]`
   for every segment, so callers can audit per-segment routing or safety
   metadata that the merged top-level fields would otherwise hide
