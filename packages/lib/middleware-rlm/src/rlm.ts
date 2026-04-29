@@ -965,12 +965,11 @@ async function* rlmWrapModelStream(
   if (merged.content.length > 0) {
     yield { kind: "text_delta", delta: merged.content };
   }
-  if (merged.usage !== undefined) {
-    yield {
-      kind: "usage",
-      inputTokens: merged.usage.inputTokens,
-      outputTokens: merged.usage.outputTokens,
-    };
-  }
+  // Do NOT emit a post-reassembly aggregate `usage` chunk: per-segment
+  // upstream usage is already forwarded as a heartbeat the moment it
+  // arrives, and the canonical aggregate is carried by
+  // `done.response.usage`. Emitting both would double-count tokens for
+  // any downstream observer or budget enforcer that totals stream
+  // `usage` events.
   yield { kind: "done", response: merged };
 }

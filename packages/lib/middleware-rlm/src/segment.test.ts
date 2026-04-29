@@ -289,6 +289,22 @@ describe("segmentRequest", () => {
     ]);
   });
 
+  test("honors trusted metadata.role === 'system' (privileged content must not be chunked)", () => {
+    // A trusted message stamped role: "system" carries privileged
+    // instructions; rewriting it chunk-by-chunk would change instruction
+    // semantics across calls and weaken the trust boundary the option
+    // claims to mirror. Same exclusion as literal `system*` senderIds.
+    const sysMsg: InboundMessage = {
+      senderId: "user:1",
+      timestamp: 0,
+      content: [{ kind: "text", text: "s".repeat(500) }],
+      metadata: { role: "system" },
+    };
+    expect(segmentRequest(makeRequest([sysMsg]), 100, { trustMetadataRole: true })).toEqual([
+      makeRequest([sysMsg]),
+    ]);
+  });
+
   test("never chunks bare senderId === 'system' (trust boundary, even though openai-compat treats it as user)", () => {
     // The two canonical resolvers disagree: openai-compat treats bare
     // 'system' as user, model-router/normalize treats it as system.

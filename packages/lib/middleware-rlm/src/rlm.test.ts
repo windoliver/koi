@@ -422,9 +422,11 @@ describe("createRlmMiddleware", () => {
     if (done === undefined || done.kind !== "done") throw new Error("expected done chunk");
     expect(done.response.content.startsWith("seg1")).toBe(true);
     expect(done.response.model).toBe("stream-model");
-    const usage = chunks.find((c) => c.kind === "usage");
-    if (usage === undefined || usage.kind !== "usage") throw new Error("expected usage chunk");
-    expect(usage.inputTokens).toBeGreaterThan(0);
+    // Aggregate usage lives on `done.response.usage`. We deliberately
+    // do NOT emit a post-reassembly stream `usage` chunk — only
+    // upstream usage heartbeats — so downstream observers totaling
+    // stream usage events are not double-charged.
+    expect(done.response.usage?.inputTokens).toBeGreaterThan(0);
   });
 
   test("wrapModelStream preserves segment text when upstream emits text_delta and done.response.content is empty", async () => {
@@ -1247,16 +1249,21 @@ describe("createRlmMiddleware", () => {
     if (iter === undefined) throw new Error("expected wrapModelStream");
     const ordered: ModelChunk[] = [];
     for await (const c of iter) ordered.push(c);
-    // We expect at least one heartbeat usage per segment + the
-    // post-reassembly aggregate usage. With N segments the consumer
-    // therefore observes >= N+1 usage chunks. The first usage must
-    // land BEFORE the merged terminal text_delta — proving the
-    // timeout layer would see in-flight progress, not silence.
+    // Consumer must see one heartbeat usage per segment (no post-
+    // reassembly aggregate — that would double-count tokens for
+    // downstream budget enforcers; the canonical aggregate lives in
+    // `done.response.usage`). The first heartbeat must land BEFORE the
+    // merged terminal text_delta — proving the timeout layer would see
+    // in-flight progress, not silence.
     const usageChunks = ordered.filter((c) => c.kind === "usage");
     const firstUsageIdx = ordered.findIndex((c) => c.kind === "usage");
     const finalTextIdx = ordered.findIndex((c) => c.kind === "text_delta");
-    expect(usageChunks.length).toBeGreaterThanOrEqual(segmentCount + 1);
+    expect(usageChunks.length).toBe(segmentCount);
     expect(firstUsageIdx).toBeLessThan(finalTextIdx);
+    const done = ordered.find((c) => c.kind === "done");
+    if (done === undefined || done.kind !== "done") throw new Error("expected done");
+    expect(done.response.usage?.inputTokens).toBe(segmentCount * 4);
+    expect(done.response.usage?.outputTokens).toBe(segmentCount * 1);
   });
 
   test("describeCapabilities returns a label", () => {

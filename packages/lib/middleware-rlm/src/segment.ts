@@ -51,7 +51,11 @@ function isUserRoleMessage(msg: InboundMessage, trustMetadataRole: boolean): boo
   if (msg.senderId === "system" || msg.senderId.startsWith("system:")) return false;
   if (trustMetadataRole && msg.metadata !== undefined) {
     const role = msg.metadata.role;
-    if (role === "assistant" || role === "tool") return false;
+    // Trusted system role must follow the same exclusion as literal
+    // `system*` senderIds: rewriting privileged instructions chunk-by-
+    // chunk would change instruction semantics across calls and
+    // weaken the trust-boundary guarantees the option claims to mirror.
+    if (role === "system" || role === "assistant" || role === "tool") return false;
     if (role === "user") return true;
   }
   if (msg.senderId === "assistant" || msg.senderId === "tool") return false;
