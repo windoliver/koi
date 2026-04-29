@@ -222,34 +222,46 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
     }
   };
 
-  // Runs `fn(signal)` against the configured deadline.
+  // Runs `fn(signal)` and returns two promises with independent contracts:
   //
-  // Default (strict FIFO + single-flight): on timeout we abort the signal,
-  // reject the caller with a TIMEOUT KoiError, and AWAIT the underlying
-  // promise inline before the drain loop advances. This preserves the
-  // at-most-one-in-flight invariant — even an abort-ignoring transport
-  // cannot trigger concurrent sends. Liveness depends on the transport
-  // honoring abort.
+  //   `result`  — caller-facing. Settles no later than `sendTimeoutMs`.
+  //               Resolves on send success, rejects on send failure, or
+  //               rejects with TIMEOUT KoiError when the watchdog fires.
   //
-  // `advanceOnTimeout: true`: queue advances immediately on timeout; the
-  // underlying promise is observed in the background, surfacing late
-  // settlement through `onLateSuccess` / `onLateFailure`. Single-flight
-  // is no longer guaranteed — only safe with wire-level idempotency.
+  //   `settled` — drain-loop-facing. Resolves when the underlying send
+  //               actually settles, OR after the abort-grace backstop
+  //               (`sendTimeoutMs` again) — whichever comes first. The
+  //               drain loop awaits this in default mode to preserve
+  //               single-flight; in `advanceOnTimeout` mode it ignores it.
+  //
+  // The grace backstop is critical: it prevents an abort-ignoring transport
+  // from holding the queue forever. After `sendTimeoutMs` past the deadline
+  // (so 2× total), the drain loop advances regardless, accepting that the
+  // send is permanently indeterminate. Compliant transports settle far
+  // faster than the grace and preserve strict FIFO.
   //
   // Disabled deadline (0 / Infinity): transparent passthrough.
-  const runWithDeadline = async (fn: SendFn): Promise<void> => {
+  interface DeadlineRun {
+    readonly result: Promise<void>;
+    readonly settled: Promise<void>;
+  }
+  const runWithDeadline = (fn: SendFn): DeadlineRun => {
     if (!sendTimeoutEnabled) {
       const passthrough = new AbortController();
-      return fn(passthrough.signal);
+      const fnPromise = fn(passthrough.signal);
+      return { result: fnPromise, settled: fnPromise.catch(() => {}) };
     }
     const controller = new AbortController();
     const fnPromise = fn(controller.signal);
-    // let justified: timer handle managed by the deadline race
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    // let justified: tracks which arm of the race fired
+    // let justified: tracks whether the watchdog fired
     let timedOut = false;
-    const deadlinePromise = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => {
+    // Caller-facing: bounded by sendTimeoutMs.
+    const result = new Promise<void>((resolve, reject) => {
+      // let justified: race winner
+      let resolved = false;
+      const timer = setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
         timedOut = true;
         controller.abort();
         try {
@@ -264,48 +276,66 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         };
         reject(timeoutError);
       }, sendTimeoutMs);
+      fnPromise.then(
+        (value) => {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (err) => {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
     });
-    try {
-      await Promise.race([fnPromise, deadlinePromise]);
-    } catch (err) {
-      if (timedOut) {
-        const timeoutError: KoiError = {
-          code: "TIMEOUT",
-          message: `channel send did not settle within ${sendTimeoutMs}ms`,
-          retryable: false,
-        };
-        if (advanceOnTimeout) {
-          // Liveness mode: don't await fnPromise; observe it in the
-          // background for telemetry so the caller knows the message may
-          // have landed late. Hook errors are swallowed.
-          fnPromise.then(
-            () => {
-              try {
-                config?.onLateSuccess?.();
-              } catch {
-                // telemetry hook misbehaved — non-fatal
-              }
-            },
-            (lateErr) => {
-              try {
-                config?.onLateFailure?.(lateErr);
-              } catch {
-                // telemetry hook misbehaved — non-fatal
-              }
-            },
-          );
-        } else {
-          // Strict FIFO: wait for the underlying send to settle so we
-          // never have two concurrent in-flight sends. The error here is
-          // the abort propagating through the transport; swallow it.
-          await fnPromise.catch(() => {});
+    // Telemetry: fires whenever the underlying send eventually settles
+    // (independent of the grace backstop). Hook errors are swallowed.
+    fnPromise.then(
+      () => {
+        if (!timedOut) return;
+        try {
+          config?.onLateSuccess?.();
+        } catch {
+          // telemetry hook misbehaved — non-fatal
         }
-        throw timeoutError;
-      }
-      throw err;
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
+      },
+      (lateErr) => {
+        if (!timedOut) return;
+        try {
+          config?.onLateFailure?.(lateErr);
+        } catch {
+          // telemetry hook misbehaved — non-fatal
+        }
+      },
+    );
+    // Drain-facing: settles when the underlying send finishes OR after a
+    // grace backstop that starts AT THE DEADLINE (so total stall is bounded
+    // at 2× sendTimeoutMs even when the transport ignores abort). Until the
+    // deadline we just wait on fnPromise — the grace only matters for the
+    // abort-ignored window.
+    const settled = new Promise<void>((resolveSettled) => {
+      // let justified: race winner across fnPromise / grace timer
+      let done = false;
+      // let justified: armed only after the deadline fires
+      let graceTimer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (): void => {
+        if (done) return;
+        done = true;
+        if (graceTimer !== undefined) clearTimeout(graceTimer);
+        resolveSettled();
+      };
+      fnPromise.then(finish, finish);
+      // Arm the grace backstop only when the watchdog actually fires.
+      // Wait for the result promise to reject, then start the grace timer.
+      result.catch(() => {
+        if (!timedOut || done) return;
+        graceTimer = setTimeout(finish, sendTimeoutMs);
+      });
+    });
+    return { result, settled };
   };
 
   const drain = async (): Promise<void> => {
@@ -321,9 +351,13 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         let lastError: unknown;
         // let justified: feeds decorrelated jitter so the window widens
         let prevDelayMs: number | undefined;
+        // let justified: collects per-attempt settle promises for FIFO
+        let lastSettled: Promise<void> | undefined;
         for (let attempt = 0; attempt <= retryConfig.maxRetries; attempt++) {
+          const run = runWithDeadline(entry.fn);
+          lastSettled = run.settled;
           try {
-            await runWithDeadline(entry.fn);
+            await run.result;
             lastError = undefined;
             break;
           } catch (error: unknown) {
@@ -367,10 +401,19 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
           }
         }
 
+        // Caller is signaled immediately; the queue's advance is gated
+        // separately by the per-attempt settle promise. In default
+        // (strict-FIFO) mode we await the most recent settle so the next
+        // entry never overlaps with a still-running send. In liveness mode
+        // we skip the wait — the grace backstop inside runWithDeadline
+        // already caps how long settle can stall.
         if (lastError !== undefined) {
           entry.reject(lastError);
         } else {
           entry.resolve();
+        }
+        if (!advanceOnTimeout && lastSettled !== undefined) {
+          await lastSettled;
         }
       }
     } finally {

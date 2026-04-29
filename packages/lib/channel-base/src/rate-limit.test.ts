@@ -582,30 +582,64 @@ describe("createRateLimiter", () => {
       expect(completed).toEqual(["ok"]);
     });
 
-    it("default mode preserves single-flight: queue waits for in-flight send to settle (FIFO)", async () => {
+    it("default mode preserves single-flight when transport settles within grace window", async () => {
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
-        sendTimeoutMs: 15,
+        sendTimeoutMs: 50,
       });
       const events: string[] = [];
-      // Slow-to-cancel send: ignores the abort and finishes 80ms later.
-      const slowAfterAbort: SendFn = () =>
+      // Slow-but-compliant: resolves 20ms after the deadline (well inside
+      // the 50ms grace backstop). FIFO must be preserved.
+      const slowButSettles: SendFn = () =>
         new Promise<void>((resolve) => {
           setTimeout(() => {
             events.push("A-finished");
             resolve();
-          }, 80);
+          }, 70);
         });
-      const a = limiter.enqueue(slowAfterAbort);
+      const a = limiter.enqueue(slowButSettles);
       const b = limiter.enqueue(async () => {
         events.push("B-sent");
       });
       await expect(a).rejects.toMatchObject({ code: "TIMEOUT" });
       await b;
-      // Strict FIFO: A's underlying send must finish before B is delivered,
-      // even though A was rejected to the caller at the deadline. This
-      // preserves the at-most-one-in-flight invariant.
       expect(events).toEqual(["A-finished", "B-sent"]);
+    });
+
+    it("grace backstop unwedges the queue when a transport ignores abort forever", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+        sendTimeoutMs: 25,
+      });
+      // Abort-ignoring transport that never settles. Without the grace
+      // backstop the queue would wedge forever.
+      const ignoresAbort: SendFn = () => new Promise<void>(() => {});
+      const start = Date.now();
+      const a = limiter.enqueue(ignoresAbort);
+      const bDelivered: string[] = [];
+      const b = limiter.enqueue(async () => {
+        bDelivered.push("ok");
+      });
+      await expect(a).rejects.toMatchObject({ code: "TIMEOUT" });
+      await b;
+      expect(bDelivered).toEqual(["ok"]);
+      // Total stall is bounded at ~2× sendTimeoutMs (deadline + grace).
+      expect(Date.now() - start).toBeLessThan(500);
+    });
+
+    it("rejects the caller promptly at the deadline regardless of underlying send", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+        sendTimeoutMs: 20,
+      });
+      // Transport that takes 200ms, far longer than sendTimeoutMs.
+      const slow: SendFn = () => new Promise<void>((resolve) => setTimeout(resolve, 200));
+      const start = Date.now();
+      await expect(limiter.enqueue(slow)).rejects.toMatchObject({ code: "TIMEOUT" });
+      const elapsed = Date.now() - start;
+      // Caller-facing rejection fires at sendTimeoutMs, NOT at fnPromise
+      // settlement. Allow some scheduler slack.
+      expect(elapsed).toBeLessThan(80);
     });
 
     describe("advanceOnTimeout: true (liveness mode, opt-in)", () => {
