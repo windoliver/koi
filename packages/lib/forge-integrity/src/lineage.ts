@@ -63,6 +63,8 @@ type LineageShape =
   | { readonly kind: "ok"; readonly id: BrickId; readonly parentBrickId: BrickId | undefined }
   | { readonly kind: "malformed"; readonly reason: string };
 
+const ALLOWED_EVOLUTION_KINDS = new Set(["fix", "derived", "captured"]);
+
 function inspectLineageShape(brick: BrickArtifact): LineageShape {
   if (brick === null || typeof brick !== "object") {
     return { kind: "malformed", reason: "brick is not an object" };
@@ -79,6 +81,26 @@ function inspectLineageShape(brick: BrickArtifact): LineageShape {
     return {
       kind: "malformed",
       reason: "brick.provenance.parentBrickId is not a canonical BrickId",
+    };
+  }
+  // Enforce createForgeProvenance's both-or-neither invariant: if a parent
+  // is present, evolutionKind must also be present and a known value. A
+  // record returned by the store with one but not the other is corrupt
+  // (partial migration, version skew, tamper) and must surface as
+  // malformed before any lineage decision is made on it.
+  const evolutionKind = provenance.evolutionKind;
+  const hasParent = parent !== undefined;
+  const hasEvolutionKind = evolutionKind !== undefined;
+  if (hasParent !== hasEvolutionKind) {
+    return {
+      kind: "malformed",
+      reason: "brick.provenance.parentBrickId and evolutionKind must be both set or both omitted",
+    };
+  }
+  if (hasEvolutionKind && !ALLOWED_EVOLUTION_KINDS.has(evolutionKind as string)) {
+    return {
+      kind: "malformed",
+      reason: `brick.provenance.evolutionKind "${String(evolutionKind)}" is not a known value`,
     };
   }
   return { kind: "ok", id: brick.id, parentBrickId: parent };
@@ -277,21 +299,25 @@ async function walk(
 }
 
 /**
- * Returns the first brick in `bricks` whose stored `id` equals `candidate.id`
- * AND for which BOTH the candidate AND the stored brick verify under
- * `producerBuilderId`.
+ * Returns the first brick in `bricks` whose canonical *content* matches
+ * `candidate` under the named producer's recompute.
+ *
+ * **NOT a trust-equivalence helper.** A producer's canonical id covers
+ * artifact content (name/version/scope/owner/implementation) but does NOT
+ * cover provenance fields such as `classification`, `contentMarkers`, or
+ * `verification`. Two bricks with the same id can therefore differ in
+ * sensitivity or verification state. Callers must NOT use this result as
+ * grounds to substitute a stored brick for a candidate when classification
+ * or verification metadata could matter — compare those fields explicitly,
+ * or model the decision at a higher layer that has access to the trust
+ * policy.
  *
  * Verifying the candidate first prevents an attacker-controlled artifact
- * from aliasing onto a trusted stored brick by id alone: an upstream caller
- * that passes an unverified or fabricated candidate would otherwise be told
- * "duplicate" the moment any stored brick happened to share that id.
- *
- * Stored bricks can claim any `provenance.builder.id`; equality of `BrickId`
- * alone is not safe as a cross-producer dedup key. A poisoned store entry
- * that squats on a candidate id but cannot recompute to the same canonical
- * content is rejected by the per-stored verification.
+ * from aliasing onto a trusted stored brick by id alone. A poisoned store
+ * entry that squats on a candidate id but cannot recompute to the same
+ * canonical content is rejected by the per-stored verification.
  */
-export function findDuplicateById(
+export function findContentEquivalentById(
   bricks: readonly BrickArtifact[],
   candidate: BrickArtifact,
   producerBuilderId: string,

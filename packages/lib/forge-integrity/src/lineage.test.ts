@@ -3,7 +3,7 @@ import type { BrickArtifact, BrickId, ForgeStore, KoiError, Result } from "@koi/
 import { makeTool, recomputeFixtureId } from "./__tests__/fixtures.js";
 import { createBrickVerifier } from "./integrity.js";
 import {
-  findDuplicateById,
+  findContentEquivalentById,
   getParentBrickId,
   isDerivedFrom,
   isDerivedFromUnchecked,
@@ -156,6 +156,22 @@ describe("lineage", () => {
     if (result.kind === "integrity_failed") expect(result.reason).toBe("producer_mismatch");
   });
 
+  test("isDerivedFrom rejects ancestor with parentBrickId but missing evolutionKind", async () => {
+    const root = makeTool();
+    const mid = makeTool({ implementation: "v2", parentBrickId: root.id });
+    const child = makeTool({ implementation: "v3", parentBrickId: mid.id });
+    // Corrupt `mid` by stripping evolutionKind — violates createForgeProvenance's
+    // both-or-neither invariant. Lineage walk must surface it as malformed.
+    const corruptMid = {
+      ...mid,
+      provenance: { ...mid.provenance, evolutionKind: undefined },
+    } as unknown as BrickArtifact;
+    const store = fixtureStore([root, corruptMid, child]);
+    const result = await isDerivedFromUnchecked(child, root.id, store);
+    expect(result.kind).toBe("malformed");
+    if (result.kind === "malformed") expect(result.reason).toContain("evolutionKind");
+  });
+
   test("isDerivedFrom is bounded by MAX_LINEAGE_DEPTH", () => {
     expect(MAX_LINEAGE_DEPTH).toBeGreaterThan(0);
   });
@@ -194,13 +210,13 @@ describe("lineage", () => {
     if (result.kind === "integrity_failed") expect(result.reason).toBe("recompute_failed");
   });
 
-  test("findDuplicateById tolerates a verifier that throws", () => {
+  test("findContentEquivalentById tolerates a verifier that throws", () => {
     const a = makeTool({ implementation: "code" });
     const b = makeTool({ implementation: "code" });
     const throwingVerify = (() => {
       throw new Error("boom");
     }) as unknown as ReturnType<typeof createBrickVerifier>;
-    expect(findDuplicateById([a], b, "koi/forge", throwingVerify)).toBeUndefined();
+    expect(findContentEquivalentById([a], b, "koi/forge", throwingVerify)).toBeUndefined();
   });
 
   test("isDerivedFrom normalizes a malformed store.load resolved payload to malformed", async () => {
@@ -258,29 +274,31 @@ describe("lineage", () => {
     expect(r4.kind).toBe("malformed");
   });
 
-  test("findDuplicateById detects verified content-equivalent brick within one producer", () => {
+  test("findContentEquivalentById detects verified content-equivalent brick within one producer", () => {
     const a = makeTool({ implementation: "code" });
     const b = makeTool({ implementation: "code" });
-    expect(findDuplicateById([a], b, "koi/forge", verify)?.id).toBe(a.id);
+    expect(findContentEquivalentById([a], b, "koi/forge", verify)?.id).toBe(a.id);
   });
 
-  test("findDuplicateById returns undefined when no match", () => {
+  test("findContentEquivalentById returns undefined when no match", () => {
     const a = makeTool({ implementation: "code" });
     const novel = makeTool({ implementation: "different" });
-    expect(findDuplicateById([a], novel, "koi/forge", verify)).toBeUndefined();
+    expect(findContentEquivalentById([a], novel, "koi/forge", verify)).toBeUndefined();
   });
 
-  test("findDuplicateById rejects a poisoned store entry that fails verification", () => {
+  test("findContentEquivalentById rejects a poisoned store entry that fails verification", () => {
     const real = makeTool({ implementation: "code" });
     // A poisoned entry shares the candidate id but tampered content cannot
     // recompute to the same canonical id. The verifier must catch it.
     const poisoned: BrickArtifact = { ...real, implementation: "// poisoned" } as BrickArtifact;
-    expect(findDuplicateById([poisoned], real, "koi/forge", verify)).toBeUndefined();
+    expect(findContentEquivalentById([poisoned], real, "koi/forge", verify)).toBeUndefined();
     // The real one verifies and is returned.
-    expect(findDuplicateById([poisoned, real], real, "koi/forge", verify)?.id).toBe(real.id);
+    expect(findContentEquivalentById([poisoned, real], real, "koi/forge", verify)?.id).toBe(
+      real.id,
+    );
   });
 
-  test("findDuplicateById rejects an unverified candidate even if stored brick verifies", () => {
+  test("findContentEquivalentById rejects an unverified candidate even if stored brick verifies", () => {
     const trusted = makeTool({ implementation: "trusted" });
     // Attacker fabricates a candidate that claims trusted.id but whose
     // content cannot recompute to it. Without candidate verification the
@@ -289,7 +307,7 @@ describe("lineage", () => {
       ...trusted,
       implementation: "// attacker payload",
     } as BrickArtifact;
-    expect(findDuplicateById([trusted], fabricated, "koi/forge", verify)).toBeUndefined();
+    expect(findContentEquivalentById([trusted], fabricated, "koi/forge", verify)).toBeUndefined();
   });
 
   test("isDerivedFrom rejects a tampered child whose parentBrickId points at a real ancestor", async () => {

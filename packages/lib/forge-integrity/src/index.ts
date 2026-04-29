@@ -24,7 +24,7 @@ export { createBrickVerifier } from "./integrity.js";
 
 export type { IsDerivedFromOptions, LineageOutcome } from "./lineage.js";
 export {
-  findDuplicateById,
+  findContentEquivalentById,
   getParentBrickId,
   isDerivedFrom,
   isDerivedFromUnchecked,
