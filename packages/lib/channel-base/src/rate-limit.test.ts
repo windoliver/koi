@@ -59,7 +59,7 @@ describe("createRateLimiter", () => {
     expect(sleepSpy).toHaveBeenCalledWith(250);
   });
 
-  it("falls back to computeBackoff when not rate-limited", async () => {
+  it("falls back to computeBackoff when isRetryable returns true", async () => {
     const limiter = createRateLimiter({
       retry: {
         ...errors.DEFAULT_RETRY_CONFIG,
@@ -67,6 +67,7 @@ describe("createRateLimiter", () => {
         initialDelayMs: 50,
         jitter: false,
       },
+      isRetryable: () => true,
     });
     let attempts = 0;
     await limiter.enqueue(async () => {
@@ -77,10 +78,39 @@ describe("createRateLimiter", () => {
     expect(sleepSpy).toHaveBeenCalledWith(50);
   });
 
-  it("continues processing queue after a failed item", async () => {
+  it("does not retry non-rate-limit errors by default", async () => {
     const limiter = createRateLimiter({
-      retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+      retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5, initialDelayMs: 10, jitter: false },
     });
+    let attempts = 0;
+    const fn = async (): Promise<void> => {
+      attempts++;
+      throw new Error("permission denied");
+    };
+    await expect(limiter.enqueue(fn)).rejects.toThrow("permission denied");
+    expect(attempts).toBe(1);
+    expect(sleepSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not sleep on the terminal attempt of an exhausted retry-after", async () => {
+    const limiter = createRateLimiter({
+      retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 1, initialDelayMs: 10, jitter: false },
+      extractRetryAfterMs: () => 250,
+    });
+    let attempts = 0;
+    const fn = async (): Promise<void> => {
+      attempts++;
+      throw new Error("429");
+    };
+    await expect(limiter.enqueue(fn)).rejects.toThrow("429");
+    expect(attempts).toBe(2);
+    // One sleep between attempts 0 and 1; no sleep after the terminal attempt
+    expect(sleepSpy).toHaveBeenCalledTimes(1);
+    expect(sleepSpy).toHaveBeenCalledWith(250);
+  });
+
+  it("continues processing queue after a failed item", async () => {
+    const limiter = createRateLimiter();
     const completed: string[] = [];
     const failing = limiter.enqueue(() => Promise.reject(new Error("x")));
     const succeeding = limiter.enqueue(async () => {

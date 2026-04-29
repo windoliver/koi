@@ -285,23 +285,27 @@ All builders handle `exactOptionalPropertyTypes` compliance — optional fields 
 
 ## Error Formatting
 
-`formatErrorForChannel(error, options?)` converts `KoiError` to safe, user-friendly strings:
+`formatErrorForChannel(error)` converts `KoiError` to a fixed user-safe string:
 
 ```
-KoiErrorCode     Default Message                              Verbose
-────────────     ───────────                                  ───────
-VALIDATION       "Invalid input: {message}"                   same
-NOT_FOUND        "The requested resource was not found."      + "(message)"
-PERMISSION       "You don't have permission..."               + "(message)"
-CONFLICT         "A conflict occurred..."                     + "(message)"
-RATE_LIMIT       "Too many requests..."                       + "(retry after Xms)"
-TIMEOUT          "The operation timed out..."                 + "(message)"
-EXTERNAL         "An external service is unavailable..."      + "(message)"
-INTERNAL         "Something went wrong..."                    + "(message)"
-STALE_REF        "The referenced element is no longer valid." + "(message)"
+KoiErrorCode        Message
+────────────        ───────
+VALIDATION          "Invalid input: {message}"
+NOT_FOUND           "The requested resource was not found."
+PERMISSION          "You don't have permission to perform this action."
+CONFLICT            "A conflict occurred. Please try again."
+RATE_LIMIT          "Too many requests. Please wait a moment."
+TIMEOUT             "The operation timed out. Please try again."
+EXTERNAL            "An external service is temporarily unavailable."
+INTERNAL            "Something went wrong. Please try again later."
+STALE_REF           "The referenced element is no longer valid. Please try again."
+AUTH_REQUIRED       "Authorization is required to continue."
+RESOURCE_EXHAUSTED  "Capacity limit reached. Please try again shortly."
+UNAVAILABLE         "The service is currently unavailable."
+HEARTBEAT_TIMEOUT   "The worker stopped responding."
 ```
 
-Never leaks `error.cause`, `error.context`, or stack traces. Verbose mode is for developer-facing channels (CLI).
+Strictly user-safe by construction: never reads `error.cause`, `error.context`, stack traces, or — outside of `VALIDATION` — `error.message`. There is intentionally no verbose / developer mode; CLI tooling that needs raw diagnostics formats `error.code` / `error.message` through its own sanitizer.
 
 ---
 
@@ -328,7 +332,7 @@ Never leaks `error.cause`, `error.context`, or stack traces. Verbose mode is for
 | Function | Returns | Purpose |
 |----------|---------|---------|
 | `renderBlocks(blocks, capabilities)` | `readonly ContentBlock[]` | Downgrade unsupported blocks to text |
-| `formatErrorForChannel(error, options?)` | `string` | Safe user-facing error message |
+| `formatErrorForChannel(error)` | `string` | Safe user-facing error message (canned per `KoiErrorCode`, no leakage) |
 
 ### Resilience & Discovery
 
@@ -344,7 +348,6 @@ Never leaks `error.cause`, `error.context`, or stack traces. Verbose mode is for
 | `ChannelAdapterConfig<E>` | Configuration for `createChannelAdapter()` |
 | `MessageNormalizer<E>` | `(event: E) => InboundMessage \| null \| Promise<InboundMessage \| null>` |
 | `ContentBlock` | Re-exported union from `@koi/core` |
-| `FormatErrorOptions` | `{ verbose?: boolean }` |
 | `RateLimiter` | `{ enqueue, size }` — sequential queued sends with retry |
 | `RateLimiterConfig` | `{ retry?, extractRetryAfterMs? }` |
 | `ChannelFactory` | `(config: unknown) => ChannelAdapter` |

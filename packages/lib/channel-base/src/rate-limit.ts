@@ -1,9 +1,13 @@
 /**
  * Rate-limit-aware send queue for channel adapters.
  *
- * Pauses the queue on 429 / rate-limit errors and retries
- * with exponential backoff. Errors from individual sends
- * are propagated to the caller; the queue keeps draining.
+ * Pauses the queue on 429 / rate-limit errors and retries with exponential
+ * backoff. Only errors classified as retryable trigger a retry — permanent
+ * failures (validation, permission, etc.) reject immediately so a remote
+ * side-effect that already succeeded once is never re-issued.
+ *
+ * Errors from individual sends are propagated to the caller; the queue
+ * keeps draining.
  */
 
 import { computeBackoff, DEFAULT_RETRY_CONFIG, type RetryConfig, sleep } from "@koi/errors";
@@ -14,8 +18,17 @@ export interface RateLimiterConfig {
   /**
    * Extracts a retry-after delay (in ms) from a caught error.
    * Return undefined if the error is not a rate-limit error.
+   * A defined value also classifies the error as retryable.
    */
   readonly extractRetryAfterMs?: (error: unknown) => number | undefined;
+  /**
+   * Decides whether a non-rate-limit error should be retried.
+   * Defaults to `false` — sends are not idempotent in general, so the safe
+   * default is to retry only when the platform explicitly says "try again
+   * later" via `extractRetryAfterMs`. Override for transports where retrying
+   * a thrown error is provably safe.
+   */
+  readonly isRetryable?: (error: unknown) => boolean;
 }
 
 export interface RateLimiter {
@@ -34,6 +47,7 @@ interface QueueEntry {
 export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
   const retryConfig = config?.retry ?? DEFAULT_RETRY_CONFIG;
   const extractRetryAfterMs = config?.extractRetryAfterMs;
+  const isRetryable = config?.isRetryable ?? (() => false);
 
   // let justified: mutable queue state, immutable swap on each mutation
   let queue: readonly QueueEntry[] = [];
@@ -58,12 +72,16 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
           break;
         } catch (error: unknown) {
           lastError = error;
+
           const retryAfterMs = extractRetryAfterMs?.(error);
-          if (retryAfterMs !== undefined) {
-            await sleep(retryAfterMs);
-          } else if (attempt < retryConfig.maxRetries) {
-            await sleep(computeBackoff(attempt, retryConfig));
-          }
+          const retryable = retryAfterMs !== undefined || isRetryable(error);
+
+          // Stop on permanent failures or when the budget is spent — the queue
+          // must not sleep on the terminal attempt and must never re-issue a
+          // send for an error the caller did not classify as retryable.
+          if (!retryable || attempt >= retryConfig.maxRetries) break;
+
+          await sleep(retryAfterMs ?? computeBackoff(attempt, retryConfig));
         }
       }
 

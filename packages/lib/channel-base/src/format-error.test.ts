@@ -87,31 +87,19 @@ describe("formatErrorForChannel", () => {
     );
   });
 
-  describe("verbose", () => {
-    it("appends original message for non-RATE_LIMIT codes", () => {
-      const err = baseError("INTERNAL", "boom");
-      expect(formatErrorForChannel(err, { verbose: true })).toBe(
-        "Something went wrong. Please try again later. (boom)",
-      );
+  describe("safety: non-VALIDATION codes never leak raw message", () => {
+    it("INTERNAL output omits the raw message", () => {
+      const err = baseError("INTERNAL", "boom-internal-detail");
+      expect(formatErrorForChannel(err)).toBe("Something went wrong. Please try again later.");
+      expect(formatErrorForChannel(err)).not.toContain("boom-internal-detail");
     });
 
-    it("appends retryAfterMs for RATE_LIMIT when present", () => {
+    it("RATE_LIMIT output omits retryAfterMs and raw message", () => {
       const err = baseError("RATE_LIMIT", "throttled", { retryAfterMs: 5_000 });
-      expect(formatErrorForChannel(err, { verbose: true })).toBe(
-        "Too many requests. Please wait a moment. (retry after 5000ms)",
-      );
-    });
-
-    it("falls back to message for RATE_LIMIT without retryAfterMs", () => {
-      const err = baseError("RATE_LIMIT", "throttled");
-      expect(formatErrorForChannel(err, { verbose: true })).toBe(
-        "Too many requests. Please wait a moment. (throttled)",
-      );
-    });
-
-    it("VALIDATION verbose still shows raw message", () => {
-      const err = baseError("VALIDATION", "field x");
-      expect(formatErrorForChannel(err, { verbose: true })).toBe("Invalid input: field x");
+      const out = formatErrorForChannel(err);
+      expect(out).toBe("Too many requests. Please wait a moment.");
+      expect(out).not.toContain("5000");
+      expect(out).not.toContain("throttled");
     });
   });
 
