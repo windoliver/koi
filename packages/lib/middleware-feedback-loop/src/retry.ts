@@ -1,4 +1,4 @@
-import type { KoiError } from "@koi/core";
+import { type KoiError, RETRYABLE_DEFAULTS } from "@koi/core";
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
 import { isKoiError, isRetryable, KoiRuntimeError, toKoiError } from "@koi/errors";
 import { runGates } from "./gate.js";
@@ -28,10 +28,16 @@ export function resolveRetryable(err: unknown): boolean {
       const hasCode = typeof c.code === "string";
       const hasRetryable = typeof c.retryable === "boolean";
       if (hasCode || hasRetryable) {
+        const code = (hasCode ? (c.code as string) : "EXTERNAL") as KoiError["code"];
+        // Preserve "missing retryable" semantics: when the partial cause
+        // omits `retryable`, fall back to the code's default classification
+        // (RETRYABLE_DEFAULTS) so transient codes like RATE_LIMIT / TIMEOUT
+        // still retry. When the producer DID set `retryable`, route through
+        // isRetryable so the hard non-retryable floor still applies.
         const synthesized: KoiError = {
-          code: (hasCode ? (c.code as string) : "EXTERNAL") as KoiError["code"],
+          code,
           message: err.message,
-          retryable: hasRetryable ? (c.retryable as boolean) : false,
+          retryable: hasRetryable ? (c.retryable as boolean) : RETRYABLE_DEFAULTS[code],
         };
         return isRetryable(synthesized);
       }

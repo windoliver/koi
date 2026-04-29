@@ -109,6 +109,47 @@ describe("runWithRetry", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  it("retries partial-cause RATE_LIMIT with no retryable field (inherits code default)", async () => {
+    // Regression: loop-5 round 6. A common adapter shape
+    //   throw new Error("429", { cause: { code: "RATE_LIMIT" } })
+    // omits `retryable`. The synthesized KoiError must inherit the
+    // RETRYABLE_DEFAULTS default (true for RATE_LIMIT) so transient
+    // throttling still triggers retry.
+    let calls = 0;
+    const next = mock(async () => {
+      calls++;
+      if (calls === 1) throw new Error("429", { cause: { code: "RATE_LIMIT" } });
+      return goodResponse;
+    });
+    const result = await runWithRetry(baseRequest, next, {
+      validators: [],
+      gates: [],
+      repairStrategy: defaultRepairStrategy,
+      validationMaxAttempts: 3,
+      transportMaxAttempts: 2,
+    });
+    expect(result).toBe(goodResponse);
+    expect(calls).toBe(2);
+  });
+
+  it("retries partial-cause TIMEOUT with no retryable field (inherits code default)", async () => {
+    let calls = 0;
+    const next = mock(async () => {
+      calls++;
+      if (calls === 1) throw new Error("504", { cause: { code: "TIMEOUT" } });
+      return goodResponse;
+    });
+    const result = await runWithRetry(baseRequest, next, {
+      validators: [],
+      gates: [],
+      repairStrategy: defaultRepairStrategy,
+      validationMaxAttempts: 3,
+      transportMaxAttempts: 2,
+    });
+    expect(result).toBe(goodResponse);
+    expect(calls).toBe(2);
+  });
+
   it("does NOT retry partial-cause errors with hard non-retryable code mislabeled as retryable: true", async () => {
     // Regression: loop-5 round 4 finding 1. Adapters often throw
     //   throw new Error("denied", { cause: { code: "PERMISSION", retryable: true } })
