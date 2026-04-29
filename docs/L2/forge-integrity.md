@@ -36,16 +36,20 @@ signed-attestation check (out of scope for this package).
   subtrees) is deep-frozen.
 - `getParentBrickId(brick): BrickId | undefined` — defensive accessor for
   `provenance.parentBrickId`. Returns `undefined` for malformed shapes.
-- `isDerivedFrom(child, ancestor, store, options): Promise<LineageOutcome>`
-  — bounded walk of `provenance.parentBrickId` upwards.
-  `options.verify` + `options.producerBuilderId` are **required**.
-  Returns a typed `LineageOutcome` of `derived | not_derived |
-  depth_exceeded | cycle_detected | missing_link | store_error |
-  malformed | integrity_failed`.
 - `isDerivedFromUnchecked(child, ancestor, store): Promise<LineageOutcome>`
-  — legacy unverified walk. Result is **untrusted**; intended only for
-  debug tools / UI hints / pre-verification triage. Production trust paths
-  must use `isDerivedFrom`.
+  — bounded walk of `provenance.parentBrickId` upwards. Result is
+  **untrusted**: an attacker who can write to the store can rewrite a
+  parent pointer, so this helper is only for diagnostics, UI hints, or
+  pre-verification triage. Returns a typed `LineageOutcome` of
+  `derived | not_derived | depth_exceeded | cycle_detected | missing_link
+  | store_error | malformed`.
+
+The trusted lineage API (`isDerivedFrom`, requiring a lineage-bound
+producer) is intentionally not exported in this release — no shipped
+producer currently binds lineage fields into its canonical id, so the
+helper would fail closed on every real call. It will be exposed in a
+follow-up release alongside the `@koi/forge-tools` change that extends
+the canonical recompute to cover `parentBrickId`/`evolutionKind`.
 - `findContentEquivalentById(bricks, candidate, producerBuilderId, verify, provenanceEquivalent): BrickArtifact | undefined`
   — finds the first stored brick whose canonical *content* matches
   `candidate` AND for which the caller-supplied
@@ -55,30 +59,21 @@ signed-attestation check (out of scope for this package).
   provenance fields like `classification`/`contentMarkers`/`verification`
   — the caller's policy must decide whether substitution is safe.
 
-## Lineage trust model
+## Lineage trust model (deferred)
 
-`isDerivedFrom` is fail-closed by default: it returns
-`integrity_failed` with reason `lineage_unbound` for any producer not
-listed in `options.lineageBoundBuilders` at verifier-construction time.
+A trusted `isDerivedFrom` helper is implemented internally but is not
+exported in this release. Integrity verification only proves
+`brick.id === recompute(brick)`; if the producer's recompute does not
+hash `provenance.parentBrickId`/`evolutionKind`, an attacker can rewrite
+the parent pointer while keeping a valid id, and a walk would still
+report `derived`. The trusted helper therefore requires the operator to
+declare which producers are lineage-bound (via
+`createBrickVerifier`'s `lineageBoundBuilders`), and `@koi/forge-tools`
+does not yet hash those fields.
 
-This is intentional. Integrity verification only proves
-`brick.id === recompute(brick)`. If the producer's recompute does not hash
-`provenance.parentBrickId`/`evolutionKind`, an attacker can rewrite the
-parent pointer while keeping a valid id, and an unverified walk would
-still report `derived`. A producer is only safe to mark lineage-bound
-once its canonical recompute provably includes those lineage fields.
-
-**Today no shipped producer is lineage-bound.** `@koi/forge-tools`
-recomputes ids from name/description/version/scope/owner/content only.
-Consumers that need trusted lineage queries must:
-
-1. Extend their producer's canonical recompute to cover
-   `parentBrickId` and `evolutionKind`, and
-2. Pass that `builderId` in `lineageBoundBuilders` when constructing the
-   verifier.
-
-Until then, lineage queries fail closed under `isDerivedFrom`. Use
-`isDerivedFromUnchecked` only for non-policy-bearing diagnostics.
+The follow-up release will (a) extend the producer's canonical recompute
+to cover lineage fields and (b) re-export `isDerivedFrom`. Until then,
+only `isDerivedFromUnchecked` is exposed and its result is untrusted.
 
 ## Wiring
 

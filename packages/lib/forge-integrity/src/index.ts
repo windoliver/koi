@@ -22,11 +22,18 @@ export type {
 // passed into the verifier on each call.
 export { createBrickVerifier } from "./integrity.js";
 
-export type { IsDerivedFromOptions, LineageOutcome } from "./lineage.js";
+export type { LineageOutcome, ProvenanceEquivalent } from "./lineage.js";
+// `isDerivedFrom` (the trusted lineage API requiring a lineage-bound
+// producer) is intentionally NOT exported in this release. No shipped
+// producer currently binds lineage fields into its canonical id, so the
+// trusted helper would fail closed for every real call. It will be
+// exposed in a follow-up release alongside the producer change that
+// extends the canonical recompute to cover `parentBrickId`/
+// `evolutionKind`. Use `isDerivedFromUnchecked` only for diagnostics
+// where the result is explicitly untrusted.
 export {
   findContentEquivalentById,
   getParentBrickId,
-  isDerivedFrom,
   isDerivedFromUnchecked,
   MAX_LINEAGE_DEPTH,
 } from "./lineage.js";
