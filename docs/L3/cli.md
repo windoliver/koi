@@ -6,6 +6,10 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **Phase-2 bug-bash fixes (#2072)**: TUI / runtime-factory wiring tidied up — no L2 dep set changes. `tui-command.ts` defers `microcompact`, `createAgentSummary`, `createArgvGate` + `runUntilPass`, and the browser provider behind dynamic `await import()` in their respective use sites so cold-start no longer pays for post-paint features eagerly. `runtime-factory.ts` now installs the audit-middleware compliance recorder (`createAuditMiddlewareComplianceRecorder`) so governance events share the chained signing path, and moves the audit-sink close into a manifest-middleware shutdown hook so it runs **after** `runtime.dispose()` fires `audit.onSessionEnd` (otherwise the closing `session_end` record was silently dropped at /quit). `bin.ts` removed the one-off `KOI_BOOT_TRACE` probe to keep the post-fast-path purity gate (#1637) green. The `@koi/middleware-permissions` fix (out-of-workspace `fs_read` no longer bypassed by stored grants) flows through unchanged wiring.
+
+- **Optimization middlewares not auto-wired into TUI (#1420)**: `@koi/middleware-reflex`, `@koi/middleware-turn-ack`, and `@koi/middleware-prompt-cache` ship in `@koi/runtime` for golden-query coverage but are intentionally absent from the CLI/TUI dependency stack. All three are `koi.optional: true` and require explicit configuration: reflex needs a user-supplied `rules[]` array, turn-ack would conflict with the TUI's existing status indicator, and prompt-cache has no model adapter consuming `CACHE_HINTS_KEY` yet. They are listed in `EXEMPT` in `scripts/check-cli-wiring.ts` with justification. Adding them later requires no API changes — instantiate `createReflexMiddleware({ rules })` / `createTurnAckMiddleware({ debounceMs })` / `createPromptCacheMiddleware()` and pass into the TUI runtime middleware list.
+
 - **`@koi/forge-tools` wired into TUI preset stacks (#2068)**: `@koi/forge-tools` added as a direct CLI dependency and registered as a `forge` preset stack in `DEFAULT_STACKS` (`packages/meta/cli/src/preset-stacks/forge.ts`). The stack constructs a single in-memory `ForgeStore` per process and exposes four `createSingleToolProvider`-backed tools — `forge_tool`, `forge_middleware`, `forge_list`, `forge_inspect` — so the TUI agent can synthesize and inspect content-addressed bricks at runtime. The store is process-scoped and ephemeral; bricks are lost on restart. No TUI rendering changes — the tools surface through the standard tool-call UI and permission flow.
 
 - **TUI single-writer policy enforcement (#1940)**: `@koi/tui` now forbids direct `process.stdout.write` / `console.log` while the renderer owns the terminal — both corrupt frame composition. CLI integration: `tui-command.ts` does not need code changes for this (no direct stdout writes from CLI-side rendering paths), but the new `scripts/check-tui-single-writer.ts` CI gate runs alongside `bun run test` / `bun run lint` and hard-fails the workflow on policy violations. Clipboard writes (Ctrl+C selection copy, message-list copy) flow through `renderer.copyToClipboardOSC52()` instead of raw OSC 52 escape sequences. See `docs/L2/tui.md` for the full policy + exception-marker rules. No new CLI dependencies introduced.
@@ -16,6 +20,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
   now covers structured `agent_spawn.context` forwarding, fail-closed
   `execute_code` budget exhaustion, foreground Bash timeout clamping, and clamped
   web-search abort timers.
+
+- **Per-child Nexus delegation (#1473)**: `@koi/nexus-delegation` added as a direct CLI dependency. When a manifest declares `delegation: { backend: "nexus" }` AND `NEXUS_URL` is set in the environment, `tui-command.ts` instantiates a `NexusDelegationProvider` (via `createNexusDelegationProvider`) and includes it in `extraProviders` so the parent agent gets a `DelegationComponent` keyed under the `DELEGATION` token. `@koi/engine`'s `spawnChildAgent` consumes this component to mint a per-child Nexus API key on every spawn (attenuated capability scope, parent-attenuated `add_grants`/`remove_grants`), inject it into the child's ENV (`NEXUS_API_KEY`), and revoke it on child termination. Dispose path bounds revoke at `REVOKE_DISPOSE_TIMEOUT_MS = 5000` so host teardown cannot complete with a per-child key still active server-side. Manifest with `backend: nexus` but missing `NEXUS_URL` fails fast at startup. Manifests with `backend: memory` (or no `delegation.backend` field) continue to use the in-memory HMAC/Ed25519 grants from `@koi/governance-delegation`.
 
 - **Nexus permissions + audit auto-wiring (#1399)**: `@koi/permissions-nexus`, `@koi/audit-sink-nexus`, and `@koi/nexus-client` added as direct CLI dependencies. When a manifest declares `filesystem.backend: nexus` (HTTP transport with `url` + `apiKey`), `tui-command.ts` automatically instantiates a `NexusPermissionBackend` (via `createNexusPermissionBackend`) and a `NexusAuditSink` (via `createNexusAuditSink`) wired to the same Nexus server. Both share the `@koi/nexus-client` transport. No flag required — the backend selector in the manifest drives both. Agents using a local filesystem backend continue to use the existing SQLite permission store and NDJSON audit sink; the nexus variants activate only when the manifest declares a nexus filesystem.
 
@@ -840,3 +846,28 @@ Replaced `conn.triggerAuth!()` non-null assertions in `connection.test.ts` with 
 ## @koi/scheduler `RunStoreFilter` update (PR #2052)
 
 `RunStoreFilter.status` now accepts `"dead_letter"` in addition to `"completed"` and `"failed"`, aligning with `TaskHistoryFilter.status` from `@koi/core`.
+
+---
+
+## Resilience preset stack (#1419)
+
+Three new L2 dependencies added to `packages/meta/cli`:
+`@koi/middleware-circuit-breaker`, `@koi/middleware-call-limits`,
+`@koi/middleware-call-dedup`. A new `resilienceStack` is registered in
+`DEFAULT_STACKS` and contributes three intercept-phase middlewares with
+TUI-tuned defaults:
+
+- `koi:circuit-breaker` — failureThreshold 5 within a 60s window, 30s
+  cooldown, default per-provider keying.
+- `koi:model-call-limit` — 200 model calls per session, refunded on
+  failed/abandoned attempts.
+- `koi:tool-call-limit` — 500 global tool calls per session,
+  exitBehavior `error`.
+
+`@koi/middleware-call-dedup` is a dependency but **not** auto-instantiated
+by the stack — dedup requires an explicit `include` allowlist of
+deterministic tools and is opt-in via `RuntimeConfig.callDedup`.
+
+End-to-end verified via TUI: glob tool call shows
+`koi:circuit-breaker` + `koi:model-call-limit` + `koi:tool-call-limit`
+spans on both model and tool paths in `/trajectory`.

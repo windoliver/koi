@@ -1,5 +1,9 @@
-export type { AuditSinkComplianceRecorderCtx } from "./compliance-recorder.js";
+export type {
+  AuditAppender,
+  AuditSinkComplianceRecorderCtx,
+} from "./compliance-recorder.js";
 export {
+  createAuditMiddlewareComplianceRecorder,
   createAuditSinkComplianceRecorder,
   fanOutComplianceRecorder,
 } from "./compliance-recorder.js";

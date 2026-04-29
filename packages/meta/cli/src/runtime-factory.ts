@@ -77,11 +77,6 @@ import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
 import type { GovernanceConfig, KoiRuntime } from "@koi/engine";
 import { createGovernanceController, createKoi } from "@koi/engine";
-import {
-  createForgeDemandDetector,
-  type ForgeDemandConfig,
-  validateForgeDemandConfig,
-} from "@koi/forge-demand";
 import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
 import {
   createJsonlApprovalStore,
@@ -860,15 +855,6 @@ export interface KoiRuntimeConfig {
    * quarantine thresholds — observe-only posture).
    */
   readonly feedbackLoop?: FeedbackLoopConfig | undefined;
-  /**
-   * Opt-in: activate `@koi/forge-demand` detector. Auto-wires
-   * feedback-loop's healthHandle when feedbackLoop is also configured
-   * with `forgeHealth`. Caller must supply `onSessionAttached` (F96/F101);
-   * the TUI env-var path provides a logging stub that captures scoped
-   * handles per session for later inspection.
-   * Surface via `KOI_FORGE_DEMAND_ENABLED=true` in the TUI.
-   */
-  readonly forgeDemand?: ForgeDemandConfig | undefined;
   /**
    * Subset of filesystem operations to expose (#1777). `undefined`
    * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
@@ -3105,62 +3091,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
     // --- Feedback-loop middleware (opt-in via config.feedbackLoop) ---
     // Model-response validation + tool-health tracking. No shutdown resources.
-    const feedbackLoopMw =
-      config.feedbackLoop !== undefined
-        ? createFeedbackLoopMiddleware(config.feedbackLoop)
-        : undefined;
-    if (feedbackLoopMw !== undefined) {
-      auditPresetExtras.push(feedbackLoopMw);
-    }
-
-    // --- Forge-demand detector (opt-in via config.forgeDemand) ---
-    // Priority 445 — outer of feedback-loop (450) so the detector observes
-    // committed state. Auto-wires feedback-loop's healthHandle into
-    // forge-demand when feedbackLoop is configured with forgeHealth (F64/F66).
-    // Mirrors the auto-wire logic in @koi/runtime's createRuntime so the CLI
-    // and the standalone runtime stay behaviorally aligned.
-    if (config.forgeDemand !== undefined) {
-      const validated = validateForgeDemandConfig(config.forgeDemand);
-      if (!validated.ok) {
-        throw new Error(
-          `Invalid forgeDemand config: ${validated.error.message}` +
-            (validated.error.context !== undefined
-              ? ` (${JSON.stringify(validated.error.context)})`
-              : ""),
-        );
-      }
-      // F96/F101: onSessionAttached is the only surface that can dismiss
-      // signals; without it a re-emitting condition consumes the session
-      // budget and silently suppresses unrelated demand work.
-      if (validated.value.onSessionAttached === undefined) {
-        throw new Error(
-          "forgeDemand requires `config.forgeDemand.onSessionAttached`. " +
-            "Pass an onSessionAttached callback or set KOI_FORGE_DEMAND_ENABLED " +
-            "via the TUI which installs a logging stub.",
-        );
-      }
-      const baseForgeConfig = validated.value;
-      // Auto-wire feedback-loop's healthHandle when its forgeHealth is
-      // configured (live trackers exist). Suppressed otherwise so a
-      // dormant performance_degradation trigger emits a loud warning
-      // rather than a silent no-op (F64 regression).
-      const installedHandle =
-        feedbackLoopMw !== undefined && config.feedbackLoop?.forgeHealth !== undefined
-          ? feedbackLoopMw.healthHandle
-          : undefined;
-      const finalForgeConfig =
-        baseForgeConfig.healthTracker === undefined && installedHandle !== undefined
-          ? { ...baseForgeConfig, healthTracker: installedHandle }
-          : baseForgeConfig;
-      if (finalForgeConfig.healthTracker === undefined) {
-        console.warn(
-          "[forge-demand] performance_degradation trigger is dormant: " +
-            "no healthTracker on config.forgeDemand and no feedback-loop " +
-            "with forgeHealth to auto-wire.",
-        );
-      }
-      const forgeDemandHandle = createForgeDemandDetector(finalForgeConfig);
-      auditPresetExtras.push(forgeDemandHandle.middleware);
+    if (config.feedbackLoop !== undefined) {
+      auditPresetExtras.push(createFeedbackLoopMiddleware(config.feedbackLoop));
     }
 
     // --- Pre-build shared GovernanceController so it is shared between:

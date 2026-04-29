@@ -17,6 +17,18 @@ import type { PermissionsMiddlewareConfig } from "./config.js";
 import type { DenialTracker } from "./denial-tracker.js";
 import { validateApprovalDecision } from "./middleware-internals.js";
 
+// Mirror the IS_DEFAULT_ASK marker from `@koi/permissions/rule-evaluator`.
+// We re-declare via Symbol.for so we don't take a runtime dep on that
+// package — the symbol identity is shared globally via the registry.
+// Set on fall-through asks (no rule matched). Absent on explicit ask
+// rules — those represent a deliberate policy decision (e.g. fs_read
+// out-of-workspace, write rules, network rules) that user-stored
+// always-allow grants must NOT silently bypass.
+const IS_DEFAULT_ASK_MARKER: symbol = Symbol.for("@koi/permissions/default-fallthrough-ask");
+function isDefaultFallthroughAsk(decision: PermissionDecision): boolean {
+  return (decision as Record<symbol, unknown>)[IS_DEFAULT_ASK_MARKER] === true;
+}
+
 // Re-declare locally to avoid repeating the return type everywhere
 type ValidatedApproval =
   | { readonly kind: "allow" }
@@ -125,6 +137,15 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
       });
     }
 
+    // Always-allow grants (session + persistent) override the ask only when
+    // the ask is a default fall-through (no rule matched). Explicit ask rules
+    // — e.g. the TUI fs_read "out-of-workspace approve to read" rule, or any
+    // policy-installed `effect: "ask"` — represent deliberate policy decisions
+    // that user-stored grants must NOT silently bypass: a `[!] Always` press
+    // approving an in-workspace fs_read of `src/foo.ts` would otherwise
+    // authorize `/etc/passwd` on every later session.
+    const grantOverrideAllowed = isDefaultFallthroughAsk(decision);
+
     // Check persistent always-allow grants (cross-session, SQLite-backed).
     // Fail-open: if the store throws (corrupt DB, lock contention), fall through
     // to the session check and ultimately to the user prompt. This is fail-safe —
@@ -135,7 +156,7 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
     // to the per-process agentId for multi-agent runtimes.
     const persistentUserId = ctx.session.userId;
     const persistentAid = persistentAgentId ?? ctx.session.agentId;
-    if (persistentStore !== undefined && persistentUserId !== undefined) {
+    if (grantOverrideAllowed && persistentStore !== undefined && persistentUserId !== undefined) {
       // Narrow try/catch to store reads only — dispatch and next() must not be
       // inside the catch so audit failures abort execution rather than falling
       // through to a second approval prompt.
@@ -224,9 +245,13 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
     // later invocation of the same prefix. When enrichment is off,
     // grantKey falls back to the plain tool id, preserving the original
     // one-approve-per-tool behavior.
+    //
+    // Same gating as persistent grants: explicit ask rules (e.g. fs_read
+    // out-of-workspace) must not be silently bypassed by an [a] session
+    // grant taken on a different in-rule path.
     const alwaysAllowKey = `${ctx.session.agentId}\0${grantKey}`;
     const sessionAlwaysAllowed = alwaysAllowedBySession.get(ctx.session.sessionId as string);
-    if (sessionAlwaysAllowed?.has(alwaysAllowKey)) {
+    if (grantOverrideAllowed && sessionAlwaysAllowed?.has(alwaysAllowKey)) {
       const alwaysAllowStartMs = clock();
       getTracker(ctx.session.sessionId as string).record({
         toolId: resource,

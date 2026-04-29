@@ -42,12 +42,10 @@ import type {
   ComponentProvider,
   ContentBlock,
   EngineEvent,
-  ForgeDemandSignal,
   GovernanceController,
   InboundMessage,
   JsonObject,
   RichTrajectoryStep,
-  SessionContext,
   SessionId,
   SessionTranscript,
   SkillComponent,
@@ -59,8 +57,6 @@ import { GOVERNANCE, sessionId } from "@koi/core";
 import { formatCost, formatTokens } from "@koi/core/cost-tracker";
 import type { DisplayableResumedMessage } from "@koi/core/message";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
-import type { SessionScopedForgeDemandHandle } from "@koi/forge-demand";
-import { createDefaultForgeDemandConfig } from "@koi/forge-demand";
 import { createAuthNotificationHandler } from "@koi/fs-nexus";
 import type { PatternRule } from "@koi/governance-defaults";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
@@ -1082,6 +1078,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestGovernance: import("./manifest.js").ManifestGovernanceConfig | undefined;
   let manifestSupervision: import("@koi/core").SupervisionConfig | undefined;
   let manifestAudit: import("./manifest.js").ManifestAuditConfig | undefined;
+  let manifestDelegation: import("./manifest.js").ManifestDelegationConfig | undefined;
   let manifestLoadPath: string | undefined; // tracks which path was loaded, for TOCTOU revalidation
   // Mirror start.ts: when resuming without an explicit --manifest, bypass
   // auto-discovery so the cwd manifest cannot silently override the model,
@@ -1137,6 +1134,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestGovernance = manifestResult.value.governance;
     manifestSupervision = manifestResult.value.supervision;
     manifestAudit = manifestResult.value.audit;
+    manifestDelegation = manifestResult.value.delegation;
     manifestLoadPath = resolvedManifestPath;
 
     // Fail-closed audit intent enforcement — applies regardless of KOI_ALLOW_MANIFEST_FILE_SINKS.
@@ -1999,6 +1997,32 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Nexus delegation provider — wired when manifest declares `delegation:
+  // backend: nexus` AND NEXUS_URL env var is set. Spawned children get a
+  // per-child Nexus API key that is revoked on termination. When omitted, the
+  // built-in in-memory delegation backend (HMAC/Ed25519 grants) is used.
+  // ---------------------------------------------------------------------------
+  let nexusDelegationProvider: import("@koi/core").ComponentProvider | undefined;
+  if (manifestDelegation?.backend === "nexus") {
+    const nexusUrl = process.env.NEXUS_URL;
+    if (nexusUrl === undefined || nexusUrl.trim() === "") {
+      process.stderr.write(
+        "koi tui: manifest declares delegation.backend: nexus but NEXUS_URL env var is not set. " +
+          "Set NEXUS_URL=http://host:port (e.g. http://localhost:2026) or change the manifest to backend: memory.\n",
+      );
+      process.exit(1);
+    }
+    const { createNexusDelegationApi, createNexusDelegationProvider } = await import(
+      "@koi/nexus-delegation"
+    );
+    const nexusDelegationApi = createNexusDelegationApi({
+      url: nexusUrl,
+      ...(process.env.NEXUS_API_KEY !== undefined ? { apiKey: process.env.NEXUS_API_KEY } : {}),
+    });
+    nexusDelegationProvider = createNexusDelegationProvider({ api: nexusDelegationApi });
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -2098,6 +2122,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     childSkillInjector: childSkillInjectorMw,
     extraProviders: [
       skillProvider,
+      ...(nexusDelegationProvider !== undefined ? [nexusDelegationProvider] : []),
       ...artifactExtraProviders,
       ...(process.env.KOI_BROWSER_MOCK === "1"
         ? [
@@ -2260,28 +2285,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Activates model-response validation + tool-health tracking with an
     // empty config (observe-only, no validators, no quarantine thresholds).
     ...(process.env.KOI_FEEDBACK_LOOP_ENABLED === "true" ? { feedbackLoop: {} } : {}),
-    // KOI_FORGE_DEMAND_ENABLED=true opts into @koi/forge-demand. Logs each
-    // emitted demand signal to stderr; performance_degradation stays dormant
-    // unless feedback-loop is also configured with forgeHealth.
-    ...(process.env.KOI_FORGE_DEMAND_ENABLED === "true"
-      ? {
-          forgeDemand: {
-            ...createDefaultForgeDemandConfig(),
-            onSessionAttached: (
-              session: SessionContext,
-              _scoped: SessionScopedForgeDemandHandle,
-            ): void => {
-              process.stderr.write(`[forge-demand] session attached: ${session.sessionId}\n`);
-            },
-            onDemand: (signal: ForgeDemandSignal): void => {
-              process.stderr.write(
-                `[forge-demand] demand: trigger=${signal.trigger.kind} ` +
-                  `confidence=${signal.confidence.toFixed(2)}\n`,
-              );
-            },
-          },
-        }
-      : {}),
     extraMiddleware: [securityBridge.middleware],
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call

@@ -333,6 +333,7 @@ export { DEFAULT_DEGENERACY_CONFIG } from "./degeneracy.js";
 export type {
   CapabilityProof,
   CircuitBreakerConfig,
+  DelegationBackend,
   DelegationComponent,
   DelegationConfig,
   DelegationDenyReason,

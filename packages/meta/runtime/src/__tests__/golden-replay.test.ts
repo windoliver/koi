@@ -26,6 +26,7 @@ import { createS3BlobStore } from "@koi/artifacts-s3";
 import { runBlobStoreContract } from "@koi/blob-cas/contract";
 import type {
   Agent,
+  ChannelStatus,
   EngineAdapter,
   EngineEvent,
   EngineInput,
@@ -33,6 +34,7 @@ import type {
   JsonObject,
   KoiMiddleware,
   ModelChunk,
+  ModelHandler,
   ModelRequest,
   ModelResponse,
   SkillComponent,
@@ -50,6 +52,12 @@ import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createPlanMiddleware, WRITE_PLAN_TOOL_NAME } from "@koi/middleware-planning";
+import {
+  CACHE_HINTS_KEY,
+  createPromptCacheMiddleware,
+  readCacheHints,
+} from "@koi/middleware-prompt-cache";
+import { createReflexMiddleware, textOf } from "@koi/middleware-reflex";
 import { createReportMiddleware } from "@koi/middleware-report";
 import {
   buildEmptyBoardNudge,
@@ -57,6 +65,7 @@ import {
   createTaskAnchorMiddleware,
   formatTaskList,
 } from "@koi/middleware-task-anchor";
+import { createTurnAckMiddleware } from "@koi/middleware-turn-ack";
 import { createTurnPreludeMiddleware } from "@koi/middleware-turn-prelude";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
@@ -14898,5 +14907,493 @@ describe("Golden: @koi/audit-sink-nexus", () => {
     expect(entries).toHaveLength(2);
     expect(entries[0]?.timestamp).toBe(100);
     expect(entries[1]?.timestamp).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/nexus-delegation (standalone — no LLM required)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/nexus-delegation", () => {
+  test("NexusDelegationBackend.grant() returns nexus proof with token", async () => {
+    const { createNexusDelegationBackend, createNexusDelegationApi } = await import(
+      "@koi/nexus-delegation"
+    );
+    const { agentId } = await import("@koi/core");
+
+    let capturedBody: Record<string, unknown> | undefined;
+    const mockFetch = async (
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      capturedBody = JSON.parse((init?.body as string) ?? "{}") as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          delegation_id: "del-golden-1",
+          worker_agent_id: "child-golden",
+          api_key: "golden-child-key",
+          mount_table: ["fs://workspace"],
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          delegation_mode: "copy",
+          warmup_success: true,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const api = createNexusDelegationApi({
+      url: "http://nexus.test",
+      fetch: mockFetch as unknown as typeof fetch,
+    });
+    const backend = createNexusDelegationBackend({ api, agentId: agentId("parent-golden") });
+
+    const grant = await backend.grant(
+      { permissions: { allow: ["read_file"], deny: [] } },
+      agentId("child-golden"),
+    );
+
+    expect(grant.proof.kind).toBe("nexus");
+    if (grant.proof.kind === "nexus") {
+      expect(grant.proof.token).toBe("golden-child-key");
+    }
+    expect(grant.issuerId).toBe(agentId("parent-golden"));
+    // Real Nexus v2 uses worker_id (parent inferred from API key auth)
+    expect(capturedBody?.worker_id).toBe(agentId("child-golden"));
+    expect(capturedBody?.worker_name).toBe(agentId("child-golden"));
+    expect(capturedBody?.namespace_mode).toBe("copy");
+    expect(capturedBody?.add_grants).toEqual(["read_file"]);
+  });
+
+  test("NexusDelegationBackend.revoke() removes grant and calls DELETE", async () => {
+    const { createNexusDelegationBackend, createNexusDelegationApi } = await import(
+      "@koi/nexus-delegation"
+    );
+    const { agentId, delegationId } = await import("@koi/core");
+
+    const calls: { method: string; url: string }[] = [];
+    const mockFetch = async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      calls.push({ method: (init?.method ?? "GET").toUpperCase(), url: input as string });
+      if ((init?.method ?? "").toUpperCase() === "POST") {
+        return new Response(
+          JSON.stringify({
+            delegation_id: "del-golden-revoke",
+            worker_agent_id: "child-revoke",
+            api_key: "key-to-revoke",
+            mount_table: ["fs://workspace"],
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            delegation_mode: "copy",
+            warmup_success: true,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(null, { status: 204 });
+    };
+
+    const api = createNexusDelegationApi({
+      url: "http://nexus.test",
+      fetch: mockFetch as unknown as typeof fetch,
+    });
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: agentId("parent-revoke"),
+      verifyCacheTtlMs: 0,
+    });
+
+    await backend.grant({ permissions: { allow: ["read_file"] } }, agentId("child-revoke"));
+    await backend.revoke(delegationId("del-golden-revoke"));
+
+    const deleteCall = calls.find((c) => c.method === "DELETE");
+    expect(deleteCall).toBeDefined();
+    expect(deleteCall?.url).toContain("del-golden-revoke");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-circuit-breaker (2 queries)
+//
+// Standalone — no cassette. The middleware shape and lifecycle hooks are
+// asserted directly. Replay coverage is gated on cassette plumbing for
+// model-failure storms (#1419 follow-up).
+// ---------------------------------------------------------------------------
+
+function stubTurnCtx(): import("@koi/core").TurnContext {
+  type Ctx = import("@koi/core").TurnContext;
+  const sid = sessionId("golden-stub");
+  const rid = runId("r-stub");
+  return {
+    session: { agentId: "a", sessionId: sid, runId: rid, metadata: {} },
+    turnIndex: 0,
+    turnId: `${rid}-0` as Ctx["turnId"],
+    messages: [],
+    metadata: {},
+  };
+}
+
+describe("Golden: @koi/middleware-circuit-breaker", () => {
+  test("middleware exposes name 'koi:circuit-breaker' with intercept phase + wrapModelCall", async () => {
+    const { createCircuitBreakerMiddleware } = await import("@koi/middleware-circuit-breaker");
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 3, failureWindowMs: 10_000, cooldownMs: 1000 },
+    });
+    expect(mw.name).toBe("koi:circuit-breaker");
+    expect(mw.phase).toBe("intercept");
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapModelStream).toBe("function");
+    expect(typeof mw.onSessionEnd).toBe("function");
+    expect(typeof mw.describeCapabilities).toBe("function");
+  });
+
+  test("describeCapabilities labels the breaker state", async () => {
+    const { createCircuitBreakerMiddleware } = await import("@koi/middleware-circuit-breaker");
+    const mw = createCircuitBreakerMiddleware({
+      breaker: { failureThreshold: 5, failureWindowMs: 20_000, cooldownMs: 30_000 },
+    });
+    const ctx = stubTurnCtx();
+    const cap = mw.describeCapabilities?.(ctx);
+    expect(cap).toBeDefined();
+    expect(cap?.label).toBe("circuit-breaker");
+    expect(typeof cap?.description).toBe("string");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-call-limits (2 queries)
+//
+// Standalone — exercise both factories directly. Cap behavior under live
+// streams is covered by the package's unit tests.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-call-limits", () => {
+  test("model factory yields 'koi:model-call-limit' with wrapModelCall + wrapModelStream", async () => {
+    const { createModelCallLimitMiddleware } = await import("@koi/middleware-call-limits");
+    const mw = createModelCallLimitMiddleware({ limit: 4 });
+    expect(mw.name).toBe("koi:model-call-limit");
+    expect(mw.phase).toBe("intercept");
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapModelStream).toBe("function");
+    expect(mw.describeCapabilities?.(stubTurnCtx())?.description).toContain("4");
+  });
+
+  test("tool factory yields 'koi:tool-call-limit' with wrapToolCall + namespaced global", async () => {
+    const { createToolCallLimitMiddleware, createInMemoryCallLimitStore } = await import(
+      "@koi/middleware-call-limits"
+    );
+    const store = createInMemoryCallLimitStore();
+    const mw = createToolCallLimitMiddleware({
+      limits: { web_fetch: 2 },
+      globalLimit: 10,
+      store,
+    });
+    expect(mw.name).toBe("koi:tool-call-limit");
+    expect(typeof mw.wrapToolCall).toBe("function");
+    // Global namespace must not collide with a tool literally named '__global__'.
+    const r = store.incrementIfBelow("tool-global:s-1", 10);
+    expect(r.allowed).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-call-dedup (2 queries)
+//
+// Standalone — config validation + middleware shape. Cache short-circuit
+// behavior is covered by the package's own tests.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-call-dedup", () => {
+  test("middleware exposes 'koi:call-dedup' with wrapToolCall and observe hooks", async () => {
+    const { createCallDedupMiddleware } = await import("@koi/middleware-call-dedup");
+    const mw = createCallDedupMiddleware({
+      include: ["pure_calc"],
+      ttlMs: 1000,
+      maxEntries: 16,
+    });
+    expect(mw.name).toBe("koi:call-dedup");
+    expect(typeof mw.wrapToolCall).toBe("function");
+    expect(typeof mw.onSessionEnd).toBe("function");
+  });
+
+  test("default exclude list covers scheduler + mutating tool families", async () => {
+    const { DEFAULT_EXCLUDE, validateCallDedupConfig } = await import("@koi/middleware-call-dedup");
+    // Scheduler mutations must never be cached (round-30 fix).
+    expect(DEFAULT_EXCLUDE).toContain("sleep");
+    expect(DEFAULT_EXCLUDE).toContain("cancel_sleep");
+    expect(DEFAULT_EXCLUDE).toContain("schedule_cron");
+    expect(DEFAULT_EXCLUDE).toContain("cancel_schedule");
+    // Validation rejects empty instanceNonce.
+    const result = validateCallDedupConfig({ include: ["x"], instanceNonce: "" });
+    expect(result.ok).toBe(false);
+  });
+});
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-reflex (3 standalone queries, no LLM)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-reflex", () => {
+  function makeReflexCtx(messages: readonly InboundMessage[]): TurnContext {
+    return {
+      session: {
+        agentId: "reflex-golden",
+        sessionId: sessionId("reflex-g"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      },
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages,
+      metadata: {},
+    };
+  }
+
+  function modelMessage(text: string): InboundMessage {
+    return { senderId: "user:1", timestamp: 0, content: [{ kind: "text", text }] };
+  }
+
+  test("matched rule short-circuits the model call", async () => {
+    const mw = createReflexMiddleware({
+      rules: [
+        {
+          name: "ping",
+          match: (m) => textOf(m) === "ping",
+          respond: () => "pong",
+        },
+      ],
+    });
+    let modelCalled = false;
+    const next: ModelHandler = async () => {
+      modelCalled = true;
+      return { content: "from-model", model: "test" };
+    };
+
+    const res = await mw.wrapModelCall?.(
+      makeReflexCtx([modelMessage("ping")]),
+      { messages: [] },
+      next,
+    );
+    expect(modelCalled).toBe(false);
+    expect(res?.content).toBe("pong");
+    expect(res?.model).toBe("koi:reflex");
+    expect(res?.stopReason).toBe("stop");
+    expect(res?.metadata?.reflexHit).toBe(true);
+  });
+
+  test("non-matching message falls through to next handler unchanged", async () => {
+    const mw = createReflexMiddleware({
+      rules: [{ name: "ping", match: (m) => textOf(m) === "ping", respond: () => "pong" }],
+    });
+    const fallback: ModelResponse = { content: "from-model", model: "test" };
+    const next: ModelHandler = async () => fallback;
+    const res = await mw.wrapModelCall?.(
+      makeReflexCtx([modelMessage("hello")]),
+      { messages: [] },
+      next,
+    );
+    expect(res).toBe(fallback);
+  });
+
+  test("public textOf helper ignores non-text content blocks", () => {
+    const text = textOf({
+      senderId: "user:1",
+      timestamp: 0,
+      content: [
+        { kind: "text", text: "a" },
+        { kind: "image", url: "x://y" },
+        { kind: "text", text: "b" },
+      ],
+    });
+    expect(text).toBe("a\nb");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-turn-ack (2 standalone queries, no LLM)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-turn-ack", () => {
+  function makeTurnAckCtx(
+    sendStatus: (s: ChannelStatus) => Promise<void>,
+    turnIndex = 0,
+  ): TurnContext {
+    return {
+      session: {
+        agentId: "turn-ack-golden",
+        sessionId: sessionId("ta-g"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      },
+      turnIndex,
+      turnId: `${runId("r1")}-${String(turnIndex)}` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+      sendStatus,
+    };
+  }
+
+  test("slow turn: processing emitted after debounce, idle on completion", async () => {
+    const tasks: (() => void)[] = [];
+    const scheduler = {
+      setTimeout: (h: () => void, _ms: number) => {
+        tasks.push(h);
+        return tasks.length - 1;
+      },
+      clearTimeout: (_id: unknown) => {},
+    };
+    const statuses: ChannelStatus[] = [];
+    const mw = createTurnAckMiddleware({ scheduler });
+    const ctx = makeTurnAckCtx(async (s) => {
+      statuses.push(s);
+    });
+
+    await mw.onBeforeTurn?.(ctx);
+    expect(tasks).toHaveLength(1);
+    tasks[0]?.();
+    await new Promise((r) => setImmediate(r));
+    expect(statuses.map((s) => s.kind)).toEqual(["processing"]);
+
+    await mw.onAfterTurn?.(ctx);
+    await new Promise((r) => setImmediate(r));
+    expect(statuses.map((s) => s.kind)).toEqual(["processing", "idle"]);
+    for (const s of statuses) expect(s.turnIndex).toBe(0);
+  });
+
+  test("fast turn: processing skipped, only idle emitted", async () => {
+    let cleared = 0;
+    const scheduler = {
+      setTimeout: (_h: () => void, _ms: number) => 1,
+      clearTimeout: (_id: unknown) => {
+        cleared += 1;
+      },
+    };
+    const statuses: ChannelStatus[] = [];
+    const mw = createTurnAckMiddleware({ scheduler });
+    const ctx = makeTurnAckCtx(async (s) => {
+      statuses.push(s);
+    });
+
+    await mw.onBeforeTurn?.(ctx);
+    await mw.onAfterTurn?.(ctx);
+    await new Promise((r) => setImmediate(r));
+
+    expect(cleared).toBeGreaterThanOrEqual(1);
+    expect(statuses.map((s) => s.kind)).toEqual(["idle"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-prompt-cache (3 standalone queries, no LLM)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-prompt-cache", () => {
+  function makeReorderCtx(): TurnContext {
+    return {
+      session: {
+        agentId: "pc-golden",
+        sessionId: sessionId("pc-g"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      },
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+  }
+
+  function makeMsg(senderId: string, text: string): InboundMessage {
+    return { senderId, timestamp: 0, content: [{ kind: "text", text }] };
+  }
+
+  test("attaches CacheHints when static prefix exceeds threshold", async () => {
+    const mw = createPromptCacheMiddleware();
+    let captured: ModelRequest | undefined;
+    const next: ModelHandler = async (req) => {
+      captured = req;
+      return { content: "ok", model: req.model ?? "x" };
+    };
+
+    await mw.wrapModelCall?.(
+      makeReorderCtx(),
+      {
+        model: "claude-sonnet-4-5",
+        messages: [makeMsg("user:1", "u"), makeMsg("system", "x".repeat(5000))],
+      },
+      next,
+    );
+
+    expect(captured?.messages[0]?.senderId).toBe("system");
+    const hints = readCacheHints(captured?.metadata);
+    expect(hints?.provider).toBe("anthropic");
+    expect(hints?.lastStableIndex).toBe(0);
+    expect(hints?.staticPrefixTokens).toBeGreaterThanOrEqual(1024);
+    expect(captured?.metadata?.[CACHE_HINTS_KEY]).toBeDefined();
+  });
+
+  test("static prefix below threshold: passes request through unchanged", async () => {
+    const mw = createPromptCacheMiddleware();
+    const original: ModelRequest = {
+      model: "claude-sonnet-4-5",
+      messages: [makeMsg("system", "tiny"), makeMsg("user:1", "u")],
+    };
+    let captured: ModelRequest | undefined;
+    const next: ModelHandler = async (req) => {
+      captured = req;
+      return { content: "ok", model: req.model ?? "x" };
+    };
+
+    await mw.wrapModelCall?.(makeReorderCtx(), original, next);
+    expect(captured).toBe(original);
+  });
+
+  test("known provider not in allow-list: skips reorder + hints", async () => {
+    const mw = createPromptCacheMiddleware({ providers: ["anthropic"] });
+    const original: ModelRequest = {
+      model: "gpt-4o",
+      messages: [makeMsg("user:1", "u"), makeMsg("system", "x".repeat(5000))],
+    };
+    let captured: ModelRequest | undefined;
+    const next: ModelHandler = async (req) => {
+      captured = req;
+      return { content: "ok", model: req.model ?? "x" };
+    };
+
+    await mw.wrapModelCall?.(makeReorderCtx(), original, next);
+    expect(captured).toBe(original);
+    expect(readCacheHints(captured?.metadata)).toBeUndefined();
+  });
+
+  test("trajectory fixture contains prompt-cache MW spans across both model rounds", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/prompt-cache.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly extra?: Record<string, unknown>;
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("prompt-cache");
+    expect(doc.steps.length).toBeGreaterThan(0);
+
+    // Prompt-cache MW span fires on every model round. The recorded query
+    // exercises a tool loop, so we expect at least 2 prompt-cache spans
+    // (one before tool call, one after the tool result is fed back).
+    const pcSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "prompt-cache",
+    );
+    expect(pcSpans.length).toBeGreaterThanOrEqual(2);
+    for (const span of pcSpans) {
+      expect(span.extra?.phase).toBe("resolve");
+      expect(span.extra?.priority).toBe(150);
+      expect(span.extra?.nextCalled).toBe(true);
+    }
+
+    // The tool call must still execute end-to-end through the middleware chain
+    // — proves prompt-cache reordering did not break correctness.
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
   });
 });

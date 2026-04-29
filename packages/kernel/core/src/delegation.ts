@@ -248,6 +248,17 @@ export type NamespaceMode = "copy" | "clean" | "shared";
 // Delegation config (manifest integration)
 // ---------------------------------------------------------------------------
 
+/**
+ * Backend identifier for delegation routing.
+ *
+ * - `memory`: In-process capability verifier (HMAC/Ed25519 signed grants, no network).
+ * - `nexus`:  Nexus REST API (per-child API key issuance + cascading revocation).
+ *
+ * Consumers (CLI, runtime) read this field to decide which `ComponentProvider`
+ * to wire at assembly time. Defaults to `"memory"` when omitted.
+ */
+export type DelegationBackend = "memory" | "nexus";
+
 /** Configuration for the delegation subsystem, embedded in AgentManifest. */
 export interface DelegationConfig {
   readonly enabled: boolean;
@@ -266,6 +277,11 @@ export interface DelegationConfig {
    * Defaults to "copy" (parent access minus denials).
    */
   readonly namespaceMode?: NamespaceMode;
+  /**
+   * Which backend provides the DelegationComponent. Defaults to `"memory"`.
+   * Consumers (CLI, runtime) wire the matching `ComponentProvider` at assembly time.
+   */
+  readonly backend?: DelegationBackend;
 }
 
 // ---------------------------------------------------------------------------

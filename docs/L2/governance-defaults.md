@@ -4,6 +4,10 @@ L2 package providing stock implementations of the governance contracts so `creat
 
 Complements [`@koi/governance-core`](./governance-core.md) — that package defines the middleware; this package defines the defaults it plugs into.
 
+## Recent updates
+
+- **Compliance recorder routes through audit middleware** (S20-S22 bug bash, #2072): `compliance-recorder.ts` now consumes the `createAuditMiddlewareComplianceRecorder` factory exported by `@koi/middleware-audit` instead of calling `sink.log()` directly. Compliance events therefore inherit the audit middleware's hash-chain and Ed25519 signing pipeline, eliminating unsigned `compliance_event` rows that previously broke chain integrity for verifiers walking the NDJSON.
+
 ---
 
 ## Why It Exists

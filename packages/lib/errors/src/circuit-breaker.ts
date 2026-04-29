@@ -37,6 +37,15 @@ export interface CircuitBreaker {
   readonly isAllowed: () => boolean;
   readonly recordSuccess: () => CircuitBreakerSnapshot;
   readonly recordFailure: (statusCode?: number) => CircuitBreakerSnapshot;
+  /**
+   * Release a HALF_OPEN probe slot without recording success or failure.
+   * Use when the probe was abandoned for purely local reasons (consumer
+   * cancellation, caller timeout, downstream short-circuit) so that
+   * provider health is not penalized by client-side events. Leaves the
+   * circuit in HALF_OPEN with `probeInFlight=false`, so the next caller
+   * is allowed to take the probe slot. No-op if no probe is in flight.
+   */
+  readonly releaseProbe: () => CircuitBreakerSnapshot;
   readonly getSnapshot: () => CircuitBreakerSnapshot;
   readonly reset: () => void;
 }
@@ -186,6 +195,17 @@ export function createCircuitBreaker(
       }
 
       return snapshot(now);
+    },
+
+    releaseProbe(): CircuitBreakerSnapshot {
+      // Only clears the probe slot when actually held in HALF_OPEN. In
+      // any other state (CLOSED — never took a probe; OPEN — probe
+      // already converted to failure) this is a no-op so callers can
+      // call it from a `finally` without state-checking.
+      if (state === "HALF_OPEN" && probeInFlight) {
+        probeInFlight = false;
+      }
+      return snapshot();
     },
 
     getSnapshot(): CircuitBreakerSnapshot {
