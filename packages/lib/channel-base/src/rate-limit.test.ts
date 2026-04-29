@@ -941,6 +941,22 @@ describe("createRateLimiter", () => {
       expect(attempts).toBe(1);
     });
 
+    it("non-Promise return from a JS callback resolves instead of orphaning the queue", async () => {
+      // Regression: Round 9 finding 1. The package is consumable from
+      // plain JS, so a buggy adapter may return undefined instead of a
+      // Promise. invoke() must normalize via Promise.resolve so the
+      // queue entry settles and subsequent sends proceed.
+      const limiter = createRateLimiter();
+      // biome-ignore lint/suspicious/noExplicitAny: simulating untyped JS caller
+      const badReturn: any = () => undefined;
+      await limiter.enqueue(badReturn);
+      const completed: string[] = [];
+      await limiter.enqueue(async () => {
+        completed.push("ok");
+      });
+      expect(completed).toEqual(["ok"]);
+    });
+
     it("synchronous throws in the send callback reject the caller and unblock the queue", async () => {
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },

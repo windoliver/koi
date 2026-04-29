@@ -287,12 +287,15 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
      */
     readonly lateOutcome: () => LateOutcome;
   }
-  // Wraps fn(signal) so a synchronous throw becomes a rejected promise —
-  // otherwise the throw escapes runWithDeadline before any catch path is
-  // armed, orphaning the queue entry's caller forever.
+  // Wraps fn(signal) so a synchronous throw becomes a rejected promise
+  // and a non-Promise return becomes a resolved one — otherwise the
+  // throw or the .then access on a non-thenable escapes runWithDeadline
+  // before any catch path is armed, orphaning the queue entry's caller
+  // forever. The package is consumable from plain JS, so we cannot rely
+  // on the SendFn return type alone.
   const invoke = (fn: SendFn, signal: AbortSignal): Promise<void> => {
     try {
-      return fn(signal);
+      return Promise.resolve(fn(signal));
     } catch (syncErr) {
       return Promise.reject(syncErr);
     }
