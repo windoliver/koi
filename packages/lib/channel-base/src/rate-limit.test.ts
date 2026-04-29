@@ -582,58 +582,88 @@ describe("createRateLimiter", () => {
       expect(completed).toEqual(["ok"]);
     });
 
-    it("advances the queue immediately when a send ignores abort (liveness over strict FIFO)", async () => {
+    it("default mode preserves single-flight: queue waits for in-flight send to settle (FIFO)", async () => {
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
         sendTimeoutMs: 15,
       });
-      // Abort-ignoring send: never honors the signal. Without liveness this
-      // would wedge the queue forever.
-      const ignoresAbort: SendFn = () => new Promise<void>(() => {});
-      const a = limiter.enqueue(ignoresAbort);
-      const bDelivered: string[] = [];
+      const events: string[] = [];
+      // Slow-to-cancel send: ignores the abort and finishes 80ms later.
+      const slowAfterAbort: SendFn = () =>
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            events.push("A-finished");
+            resolve();
+          }, 80);
+        });
+      const a = limiter.enqueue(slowAfterAbort);
       const b = limiter.enqueue(async () => {
-        bDelivered.push("ok");
+        events.push("B-sent");
       });
       await expect(a).rejects.toMatchObject({ code: "TIMEOUT" });
       await b;
-      expect(bDelivered).toEqual(["ok"]);
+      // Strict FIFO: A's underlying send must finish before B is delivered,
+      // even though A was rejected to the caller at the deadline. This
+      // preserves the at-most-one-in-flight invariant.
+      expect(events).toEqual(["A-finished", "B-sent"]);
     });
 
-    it("surfaces late settlement via onLateSuccess for telemetry without affecting the caller", async () => {
-      const onLateSuccess = mock(() => {});
-      const limiter = createRateLimiter({
-        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
-        sendTimeoutMs: 15,
-        onLateSuccess,
-      });
-      // Slow-to-cancel send: ignores abort and finishes 60ms later.
-      const slowAfterAbort: SendFn = () =>
-        new Promise<void>((resolve) => {
-          setTimeout(() => resolve(), 60);
+    describe("advanceOnTimeout: true (liveness mode, opt-in)", () => {
+      it("advances the queue immediately when a send ignores abort", async () => {
+        const limiter = createRateLimiter({
+          retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+          sendTimeoutMs: 15,
+          advanceOnTimeout: true,
         });
-      await expect(limiter.enqueue(slowAfterAbort)).rejects.toMatchObject({ code: "TIMEOUT" });
-      // Wait long enough for the underlying promise to resolve and the
-      // background observer to run.
-      await new Promise((res) => setTimeout(res, 80));
-      expect(onLateSuccess).toHaveBeenCalledTimes(1);
-    });
+        // Abort-ignoring send: never honors the signal. In strict-FIFO mode
+        // this would wedge the queue forever.
+        const ignoresAbort: SendFn = () => new Promise<void>(() => {});
+        const a = limiter.enqueue(ignoresAbort);
+        const bDelivered: string[] = [];
+        const b = limiter.enqueue(async () => {
+          bDelivered.push("ok");
+        });
+        await expect(a).rejects.toMatchObject({ code: "TIMEOUT" });
+        await b;
+        expect(bDelivered).toEqual(["ok"]);
+      });
 
-    it("surfaces late rejection via onLateFailure for telemetry", async () => {
-      const onLateFailure = mock((_e: unknown) => {});
-      const limiter = createRateLimiter({
-        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
-        sendTimeoutMs: 15,
-        onLateFailure,
-      });
-      const slowReject: SendFn = () =>
-        new Promise<void>((_resolve, reject) => {
-          setTimeout(() => reject(new Error("late-boom")), 60);
+      it("surfaces late resolution via onLateSuccess for telemetry", async () => {
+        const onLateSuccess = mock(() => {});
+        const limiter = createRateLimiter({
+          retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+          sendTimeoutMs: 15,
+          advanceOnTimeout: true,
+          onLateSuccess,
         });
-      await expect(limiter.enqueue(slowReject)).rejects.toMatchObject({ code: "TIMEOUT" });
-      await new Promise((res) => setTimeout(res, 80));
-      expect(onLateFailure).toHaveBeenCalledTimes(1);
-      expect(onLateFailure).toHaveBeenCalledWith(expect.objectContaining({ message: "late-boom" }));
+        const slowAfterAbort: SendFn = () =>
+          new Promise<void>((resolve) => {
+            setTimeout(() => resolve(), 60);
+          });
+        await expect(limiter.enqueue(slowAfterAbort)).rejects.toMatchObject({ code: "TIMEOUT" });
+        await new Promise((res) => setTimeout(res, 80));
+        expect(onLateSuccess).toHaveBeenCalledTimes(1);
+      });
+
+      it("surfaces late rejection via onLateFailure for telemetry", async () => {
+        const onLateFailure = mock((_e: unknown) => {});
+        const limiter = createRateLimiter({
+          retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+          sendTimeoutMs: 15,
+          advanceOnTimeout: true,
+          onLateFailure,
+        });
+        const slowReject: SendFn = () =>
+          new Promise<void>((_resolve, reject) => {
+            setTimeout(() => reject(new Error("late-boom")), 60);
+          });
+        await expect(limiter.enqueue(slowReject)).rejects.toMatchObject({ code: "TIMEOUT" });
+        await new Promise((res) => setTimeout(res, 80));
+        expect(onLateFailure).toHaveBeenCalledTimes(1);
+        expect(onLateFailure).toHaveBeenCalledWith(
+          expect.objectContaining({ message: "late-boom" }),
+        );
+      });
     });
 
     it("opting out with sendTimeoutMs:0 leaves a hung send pending (no auto-reject)", async () => {

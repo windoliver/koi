@@ -78,17 +78,31 @@ export interface RateLimiterConfig {
    * Called when a previously-timed-out send finally resolves. The caller
    * already received a `TIMEOUT` rejection, so this is a telemetry-only
    * signal: it tells operators the message was likely delivered after the
-   * deadline. Use it to detect "late success / unknown status" sends so
-   * higher layers can suppress retries or reconcile delivery state.
+   * deadline. Only fires when `advanceOnTimeout` is enabled (strict-FIFO
+   * mode awaits the underlying promise inline before advancing).
    */
   readonly onLateSuccess?: () => void;
   /**
    * Called when a previously-timed-out send eventually rejects. Telemetry
-   * only — the caller already saw a `TIMEOUT`. Useful to distinguish
-   * "transport rejected after abort" from "transport ignored abort forever"
-   * (the latter never invokes either late-* hook).
+   * only — the caller already saw a `TIMEOUT`. Only fires when
+   * `advanceOnTimeout` is enabled.
    */
   readonly onLateFailure?: (error: unknown) => void;
+  /**
+   * Default `false` (strict FIFO + single-flight): on timeout, the queue
+   * waits for the underlying send to actually settle before advancing.
+   * This preserves the rate limiter's core invariant — at most one send
+   * is in flight at a time — at the cost of liveness when a transport
+   * ignores `AbortSignal` indefinitely.
+   *
+   * Set `true` only for transports that enforce idempotency at the wire
+   * level (provider-side message IDs, dedupe keys). Liveness mode advances
+   * the queue immediately on timeout and observes late settlement through
+   * `onLateSuccess` / `onLateFailure`. WARNING: enabling this without
+   * transport-level dedupe can produce duplicate user-visible output if a
+   * timed-out send eventually succeeds.
+   */
+  readonly advanceOnTimeout?: boolean;
 }
 
 const DEFAULT_SEND_TIMEOUT_MS = 30_000;
@@ -97,16 +111,18 @@ const DEFAULT_SEND_TIMEOUT_MS = 30_000;
  * Send callback. Receives an `AbortSignal` that is fired when the queue's
  * watchdog deadline (`sendTimeoutMs`) elapses.
  *
- * Liveness > strict FIFO for abort-ignoring transports. When the deadline
- * fires the queue advances immediately and the caller receives a `TIMEOUT`
- * `KoiError` (retryable=false: delivery status is unknown). The underlying
- * promise is observed in the background via `onLateSuccess` / `onLateFailure`
- * for telemetry — late-resolving sends are NOT converted into success for
- * the original caller (they already saw the rejection), they just become
- * observable for reconciliation. Strict FIFO is therefore guaranteed only
- * for transports that honor `signal.aborted` and settle promptly; provider
- * adapters that ignore abort must enforce idempotency at the transport
- * layer (message IDs, dedupe keys) to avoid duplicate user-visible output.
+ * Default mode (strict FIFO + single-flight): the caller is rejected with
+ * a `TIMEOUT` `KoiError` at the deadline, but the queue does NOT advance
+ * until the underlying promise settles. This guarantees at-most-one
+ * in-flight send. Cost: a transport that ignores `signal.aborted` can hold
+ * the queue indefinitely. Adapters MUST honor abort to keep the queue
+ * live.
+ *
+ * Liveness mode (`advanceOnTimeout: true`): queue advances on timeout
+ * regardless of the underlying promise's state. Late settlement surfaces
+ * through `onLateSuccess` / `onLateFailure`. Use only when the transport
+ * provides wire-level idempotency (message IDs, dedupe keys); otherwise
+ * a late-resolving send can produce duplicate user-visible output.
  */
 export type SendFn = (signal: AbortSignal) => Promise<void>;
 
@@ -168,6 +184,7 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
   const isRetryable = config?.isRetryable ?? defaultIsRetryable;
   const sendTimeoutMs = config?.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
   const sendTimeoutEnabled = Number.isFinite(sendTimeoutMs) && sendTimeoutMs > 0;
+  const advanceOnTimeout = config?.advanceOnTimeout ?? false;
 
   // let justified: mutable queue state, immutable swap on each mutation
   let queue: readonly QueueEntry[] = [];
@@ -205,51 +222,41 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
     }
   };
 
-  // Runs `fn(signal)` against the configured deadline. If the timer fires
-  // first the queue advances immediately (liveness over strict FIFO): the
-  // caller is rejected with a TIMEOUT KoiError and the underlying promise
-  // is observed in the background, surfacing late settlement through the
-  // `onLateSuccess` / `onLateFailure` telemetry hooks without holding the
-  // queue open. With a disabled deadline (0 / Infinity) this is a
-  // transparent passthrough.
-  const runWithDeadline = (fn: SendFn): Promise<void> => {
+  // Runs `fn(signal)` against the configured deadline.
+  //
+  // Default (strict FIFO + single-flight): on timeout we abort the signal,
+  // reject the caller with a TIMEOUT KoiError, and AWAIT the underlying
+  // promise inline before the drain loop advances. This preserves the
+  // at-most-one-in-flight invariant — even an abort-ignoring transport
+  // cannot trigger concurrent sends. Liveness depends on the transport
+  // honoring abort.
+  //
+  // `advanceOnTimeout: true`: queue advances immediately on timeout; the
+  // underlying promise is observed in the background, surfacing late
+  // settlement through `onLateSuccess` / `onLateFailure`. Single-flight
+  // is no longer guaranteed — only safe with wire-level idempotency.
+  //
+  // Disabled deadline (0 / Infinity): transparent passthrough.
+  const runWithDeadline = async (fn: SendFn): Promise<void> => {
     if (!sendTimeoutEnabled) {
       const passthrough = new AbortController();
       return fn(passthrough.signal);
     }
     const controller = new AbortController();
     const fnPromise = fn(controller.signal);
-    return new Promise<void>((resolve, reject) => {
-      // let justified: tracks which arm of the race resolved first
-      let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
+    // let justified: timer handle managed by the deadline race
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // let justified: tracks which arm of the race fired
+    let timedOut = false;
+    const deadlinePromise = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
         controller.abort();
         try {
           config?.onSendTimeout?.();
         } catch {
           // observer hook misbehaved — keep the queue moving
         }
-        // Observe the underlying send for telemetry; never let it block
-        // the queue. Hook errors are swallowed so misbehaving observers
-        // can't wedge subsequent sends.
-        fnPromise.then(
-          () => {
-            try {
-              config?.onLateSuccess?.();
-            } catch {
-              // observer hook misbehaved — telemetry-only path
-            }
-          },
-          (lateErr) => {
-            try {
-              config?.onLateFailure?.(lateErr);
-            } catch {
-              // observer hook misbehaved — telemetry-only path
-            }
-          },
-        );
         const timeoutError: KoiError = {
           code: "TIMEOUT",
           message: `channel send did not settle within ${sendTimeoutMs}ms`,
@@ -257,21 +264,48 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         };
         reject(timeoutError);
       }, sendTimeoutMs);
-      fnPromise.then(
-        (value) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve(value);
-        },
-        (err) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          reject(err);
-        },
-      );
     });
+    try {
+      await Promise.race([fnPromise, deadlinePromise]);
+    } catch (err) {
+      if (timedOut) {
+        const timeoutError: KoiError = {
+          code: "TIMEOUT",
+          message: `channel send did not settle within ${sendTimeoutMs}ms`,
+          retryable: false,
+        };
+        if (advanceOnTimeout) {
+          // Liveness mode: don't await fnPromise; observe it in the
+          // background for telemetry so the caller knows the message may
+          // have landed late. Hook errors are swallowed.
+          fnPromise.then(
+            () => {
+              try {
+                config?.onLateSuccess?.();
+              } catch {
+                // telemetry hook misbehaved — non-fatal
+              }
+            },
+            (lateErr) => {
+              try {
+                config?.onLateFailure?.(lateErr);
+              } catch {
+                // telemetry hook misbehaved — non-fatal
+              }
+            },
+          );
+        } else {
+          // Strict FIFO: wait for the underlying send to settle so we
+          // never have two concurrent in-flight sends. The error here is
+          // the abort propagating through the transport; swallow it.
+          await fnPromise.catch(() => {});
+        }
+        throw timeoutError;
+      }
+      throw err;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   };
 
   const drain = async (): Promise<void> => {
