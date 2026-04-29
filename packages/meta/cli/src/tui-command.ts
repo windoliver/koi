@@ -72,6 +72,7 @@ import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import {
   createProgressiveSkillProvider,
+  createScopedSkillsRuntime,
   createSkillInjectorMiddleware,
   createSkillsRuntime,
 } from "@koi/skills-runtime";
@@ -1540,6 +1541,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // same scope.
   const scopedCredentials = buildScopedCredentials(manifestCredentials);
 
+  // gov-15: wrap the SkillsRuntime so EVERY read path (discover, load,
+  // loadAll, query, loadReference) filters out skills whose
+  // `requires.credentials.ref` is not in scope. This is the runtime-level
+  // gate that closes the Skill-tool bypass: the Skill tool calls
+  // runtime.load(name) directly, so provider-attach-only filtering would
+  // leave the body reachable. The wrapper makes out-of-scope skills look
+  // NOT_FOUND from every angle.
+  const baseSkillsRuntime = createSkillsRuntime();
+  const gatedSkillsRuntime =
+    scopedCredentials !== undefined
+      ? createScopedSkillsRuntime(baseSkillsRuntime, scopedCredentials)
+      : baseSkillsRuntime;
+
   // createProgressiveSkillProvider bundles session-snapshot pinning: bodies
   // loaded at attach time are stored in a session-local Map that is not subject
   // to LRU eviction, ensuring the Skill tool always returns the body that was
@@ -1548,7 +1562,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     provider: skillProvider,
     pinnedRuntime: skillRuntime,
     reload: reloadSkillComponents,
-  } = createProgressiveSkillProvider(createSkillsRuntime(), {
+  } = createProgressiveSkillProvider(gatedSkillsRuntime, {
     ...(scopedCredentials !== undefined ? { credentials: scopedCredentials } : {}),
   });
   // Lazy agent ref — middleware created before createKoiRuntime assembles agent.
