@@ -10,7 +10,8 @@ export function validateDockerConfig(
   if (config.client === undefined) {
     const error: KoiError = {
       code: "UNAVAILABLE",
-      message: "Docker client not provided and default-client probe not yet wired",
+      message:
+        "Docker client is required; provide a DockerClient via config.client or ensure the Docker daemon is reachable",
       retryable: false,
     };
     return { ok: false, error };

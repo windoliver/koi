@@ -12,8 +12,8 @@ export function mapProfileToDockerOpts(profile: SandboxProfile, image: string): 
   const opts: DockerCreateOpts = {
     image,
     networkMode,
-    ...(profile.resources?.maxPids !== undefined ? { pidsLimit: profile.resources.maxPids } : {}),
-    ...(profile.resources?.maxMemoryMb !== undefined
+    ...(profile.resources.maxPids !== undefined ? { pidsLimit: profile.resources.maxPids } : {}),
+    ...(profile.resources.maxMemoryMb !== undefined
       ? { memoryMb: profile.resources.maxMemoryMb }
       : {}),
     ...(profile.env !== undefined ? { env: profile.env } : {}),

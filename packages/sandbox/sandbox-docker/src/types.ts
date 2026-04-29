@@ -25,7 +25,7 @@ export interface DockerContainer {
 
 export interface DockerCreateOpts {
   readonly image: string;
-  readonly networkMode: "none" | "bridge" | string;
+  readonly networkMode: "none" | "bridge";
   readonly env?: Readonly<Record<string, string>>;
   readonly memoryMb?: number;
   readonly pidsLimit?: number;
