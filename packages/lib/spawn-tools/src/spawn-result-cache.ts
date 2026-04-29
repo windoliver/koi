@@ -87,8 +87,14 @@ export function createSpawnResultCache(
   // first attempt's Promise so only one factory invocation runs per key
   // overlap window. The flag carries the cacheability of the eventual
   // result — `cacheable: false` is propagated to all waiters so they
-  // honor the same persistence semantics.
-  const inflight = new Map<string, Promise<SpawnFactoryResult>>();
+  // honor the same persistence semantics. `subscribers` reference-counts
+  // attached callers (driver + each waiter) so the slot is only evicted
+  // when *every* caller has either aborted or observed the result.
+  interface InflightEntry {
+    readonly promise: Promise<SpawnFactoryResult>;
+    subscribers: number;
+  }
+  const inflight = new Map<string, InflightEntry>();
   // Monotonic generation counter per key. Each runDeduped invocation that
   // reaches the factory bumps the generation and remembers the value it
   // owned; an aborted attempt's late background settle only writes to the
@@ -172,13 +178,19 @@ export function createSpawnResultCache(
     // writes to the LRU on settle (via the registered .then handler).
     const pending = inflight.get(key);
     if (pending !== undefined) {
+      pending.subscribers += 1;
       try {
-        const shared = await awaitWithAbort(pending, signal);
+        const shared = await awaitWithAbort(pending.promise, signal);
         if (!shared.ok) return { ok: false, error: shared.error };
         return { ok: true, output: shared.output, deduplicated: true };
       } catch (err) {
         if (signal.aborted) return abortedResult(signal);
         throw err;
+      } finally {
+        pending.subscribers -= 1;
+        // Don't evict the slot here — the .then handler is the
+        // authoritative cleanup path and will remove the entry when the
+        // factory promise settles.
       }
     }
 
@@ -193,7 +205,8 @@ export function createSpawnResultCache(
     // the .then handler below), independent of when the driver's await
     // observes the result — so an aborted driver doesn't strand waiters.
     const factoryPromise = factory();
-    inflight.set(key, factoryPromise);
+    const entry: InflightEntry = { promise: factoryPromise, subscribers: 1 };
+    inflight.set(key, entry);
     factoryPromise.then(
       (settled) => {
         if (
@@ -204,7 +217,7 @@ export function createSpawnResultCache(
         ) {
           set(key, settled.output);
         }
-        if (inflight.get(key) === factoryPromise) inflight.delete(key);
+        if (inflight.get(key) === entry) inflight.delete(key);
         // Prune the generation entry once nothing depends on it: no
         // in-flight attempt for this key and no cached value. Otherwise
         // long-running sessions with many unique task_ids would leak the
@@ -214,7 +227,7 @@ export function createSpawnResultCache(
         }
       },
       () => {
-        if (inflight.get(key) === factoryPromise) inflight.delete(key);
+        if (inflight.get(key) === entry) inflight.delete(key);
         if (generations.get(key) === myGeneration && !inflight.has(key) && !cache.has(key)) {
           generations.delete(key);
         }
@@ -226,14 +239,17 @@ export function createSpawnResultCache(
       result = await awaitWithAbort(factoryPromise, signal);
     } catch (err) {
       if (signal.aborted) {
-        // Driver aborted. Evict the inflight slot immediately so a retry
-        // arriving in the abort window drives its own spawn instead of
-        // coalescing to a logical attempt that the caller already gave up
-        // on. The .then handler above still runs when the orphan settles,
-        // backfilling the cache only if no newer attempt has bumped the
-        // generation (conservative: keeps the abort-completed result for
-        // future retries when no one supersedes it).
-        if (inflight.get(key) === factoryPromise) inflight.delete(key);
+        // Driver aborted. Decrement our subscription. Only evict the
+        // inflight slot if no waiter is still attached — otherwise the
+        // surviving waiter would lose coalescing and a retry arriving
+        // before the orphan settles would launch a duplicate child.
+        // When the slot stays alive, retries that arrive before settle
+        // attach to it; when the orphan settles, the .then handler does
+        // the cache backfill (with generation + has() guards).
+        entry.subscribers -= 1;
+        if (entry.subscribers <= 0 && inflight.get(key) === entry) {
+          inflight.delete(key);
+        }
         return abortedResult(signal);
       }
       throw err;

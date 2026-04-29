@@ -267,6 +267,75 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     expect(cache.get("k")).toBe("B-output");
   });
 
+  test("driver abort with a surviving waiter keeps the inflight slot, so a third retry coalesces too", async () => {
+    // A drives, B attaches as waiter, A aborts. The slot must stay
+    // because B is still subscribed. C arrives before the factory
+    // settles — it must attach to the same in-flight Promise (one child).
+    const cache = createSpawnResultCache(8);
+    let calls = 0;
+    let release: () => void = () => {};
+    const factory = (): Promise<{ ok: true; output: string }> => {
+      calls += 1;
+      return new Promise((resolve) => {
+        release = () => resolve({ ok: true, output: "shared" });
+      });
+    };
+
+    const ctrlA = new AbortController();
+    const aPromise = cache.runDeduped("k", ctrlA.signal, factory);
+    const bPromise = cache.runDeduped("k", noAbort(), factory);
+    await Promise.resolve();
+
+    ctrlA.abort(new Error("A cancelled"));
+    const aResult = await aPromise;
+    expect(aResult.ok).toBe(false);
+
+    // C retries before factory settles. Must coalesce to B's promise,
+    // NOT launch a second child.
+    const cPromise = cache.runDeduped("k", noAbort(), factory);
+    await Promise.resolve();
+
+    release();
+    const [bResult, cResult] = await Promise.all([bPromise, cPromise]);
+    expect(calls).toBe(1); // exactly one child total
+    expect(bResult).toMatchObject({ ok: true, output: "shared" });
+    expect(cResult).toMatchObject({ ok: true, output: "shared", deduplicated: true });
+  });
+
+  test("driver abort with NO waiters evicts the slot, letting the next retry drive a fresh spawn", async () => {
+    // A drives alone, A aborts. No surviving waiters, so the slot is
+    // evicted. A retry meant to replace A drives its own factory.
+    const cache = createSpawnResultCache(8);
+    let calls = 0;
+    let releaseA: () => void = () => {};
+    const factoryA = (): Promise<{ ok: true; output: string }> => {
+      calls += 1;
+      return new Promise((resolve) => {
+        releaseA = () => resolve({ ok: true, output: "A-output" });
+      });
+    };
+    const factoryB = async (): Promise<{ ok: true; output: string }> => {
+      calls += 1;
+      return { ok: true, output: "B-output" };
+    };
+
+    const ctrlA = new AbortController();
+    const aPromise = cache.runDeduped("k", ctrlA.signal, factoryA);
+    await Promise.resolve();
+    ctrlA.abort(new Error("A cancelled"));
+    await aPromise;
+
+    const bResult = await cache.runDeduped("k", noAbort(), factoryB);
+    expect(bResult).toMatchObject({ ok: true, output: "B-output" });
+    expect(calls).toBe(2);
+
+    // Settle A's orphan; generation guard blocks backfill.
+    releaseA();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(cache.get("k")).toBe("B-output");
+  });
+
   test("aborted attempt's late settle does NOT cache when a newer in-flight retry has bumped the generation", async () => {
     // Race: A starts and aborts (driver gives up). On abort, A's inflight
     // slot is evicted so a retry can drive a fresh spawn. B retries —
