@@ -922,3 +922,112 @@ describe("revalidateAuditPathContainment", () => {
     expect(result).toContain("hard link");
   });
 });
+
+// ---------------------------------------------------------------------------
+// network block (gov-15) — outbound URL scope
+// ---------------------------------------------------------------------------
+
+describe("loadManifestConfig: network block (gov-15)", () => {
+  let dir: string;
+  const writeManifest = (yaml: string): string => {
+    const p = join(dir, "koi.manifest.yaml");
+    writeFileSync(p, yaml);
+    return p;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-manifest-gov15-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("omits network when block absent", async () => {
+    const p = writeManifest(["model:", "  name: google/gemini-2.0-flash-001"].join("\n"));
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.network).toBeUndefined();
+  });
+
+  test("parses network.allow with one entry", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "network:",
+        "  allow:",
+        '    - "https://api.example.com/*"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.network).toEqual({ allow: ["https://api.example.com/*"] });
+  });
+
+  test("parses network.allow with multiple entries", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "network:",
+        "  allow:",
+        '    - "https://api.example.com/*"',
+        '    - "https://*.public.example/*"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.network?.allow.length).toBe(2);
+  });
+
+  test("treats empty allow array as undefined (no scope)", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "network:", "  allow: []"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.network).toBeUndefined();
+  });
+
+  test("rejects non-string allow entries", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "network:", "  allow:", "    - 123"].join(
+        "\n",
+      ),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("non-empty strings");
+  });
+
+  test("rejects malformed URLPattern entries", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "network:",
+        "  allow:",
+        '    - "://broken"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("not a valid URLPattern");
+  });
+
+  test("rejects network as a non-object", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "network: yes"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.network");
+  });
+});

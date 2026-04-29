@@ -313,6 +313,26 @@ export interface ManifestConfig {
    *     backend: nexus
    */
   readonly delegation: ManifestDelegationConfig | undefined;
+  /**
+   * Optional outbound-network scope (gov-15). When set, the CLI wraps the
+   * web tools' `fetch` with `@koi/governance-scope`'s `createScopedFetcher`
+   * so any URL not matching one of the supplied URLPattern strings fails
+   * closed before the request hits the network.
+   *
+   *   network:
+   *     allow:
+   *       - "https://api.example.com/*"
+   *       - "https://*.public.example/*"
+   *
+   * Each entry is parsed via `new URLPattern(string)`. A malformed pattern
+   * fails the manifest load with an actionable error.
+   */
+  readonly network: ManifestNetworkConfig | undefined;
+}
+
+/** Manifest-declared outbound-network scope (gov-15). */
+export interface ManifestNetworkConfig {
+  readonly allow: readonly string[];
 }
 
 /** Manifest-declared delegation backend selector. */
@@ -622,6 +642,11 @@ export async function loadManifestConfig(
     }
   }
 
+  const networkResult = parseManifestNetwork(raw.network);
+  if (!networkResult.ok) {
+    return { ok: false, error: networkResult.error };
+  }
+
   return {
     ok: true,
     value: {
@@ -636,6 +661,7 @@ export async function loadManifestConfig(
       supervision: supervisionResult.value,
       audit: auditResult.value,
       delegation: delegationResult.value,
+      network: networkResult.value,
     },
   };
 }
@@ -651,6 +677,54 @@ export async function loadManifestConfig(
  * Returns `{ ok: true, value: undefined }` when the section is absent so
  * manifests without supervision stay opt-out.
  */
+function parseManifestNetwork(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: ManifestNetworkConfig | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error:
+        'manifest.network must be an object, e.g. network: { allow: ["https://api.example.com/*"] }',
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+  const allow = obj.allow;
+  if (allow === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (!Array.isArray(allow)) {
+    return { ok: false, error: "manifest.network.allow must be an array of URLPattern strings" };
+  }
+  if (!allow.every((p): p is string => typeof p === "string" && p.length > 0)) {
+    return {
+      ok: false,
+      error: "manifest.network.allow entries must be non-empty strings",
+    };
+  }
+  // Validate each pattern parses cleanly so a typo fails fast at load time
+  // rather than throwing inside the request path.
+  for (const pattern of allow) {
+    try {
+      new URLPattern(pattern);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        ok: false,
+        error: `manifest.network.allow entry ${JSON.stringify(pattern)} is not a valid URLPattern: ${msg}`,
+      };
+    }
+  }
+  if (allow.length === 0) {
+    return { ok: true, value: undefined };
+  }
+  return { ok: true, value: { allow } };
+}
+
 function parseManifestDelegation(
   raw: unknown,
 ):

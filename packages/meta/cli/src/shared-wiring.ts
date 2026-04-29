@@ -42,6 +42,7 @@ import {
 } from "@koi/core";
 import { createSystemPromptMiddleware } from "@koi/engine";
 import { createLocalFileSystem } from "@koi/fs-local";
+import { createScopedFetcher } from "@koi/governance-scope";
 import type { CreateHookMiddlewareOptions, RegisteredHook } from "@koi/hooks";
 import {
   createHookMiddleware,
@@ -1003,6 +1004,19 @@ export interface CoreProvidersConfig {
    */
   readonly includeWebFetch?: boolean;
   /**
+   * Outbound-network scope (gov-15). When provided, the web tools'
+   * inner `fetch` is wrapped with `createScopedFetcher` so any URL not
+   * matching one of the supplied URLPattern strings fails closed before
+   * the request hits the network. Each entry is parsed via
+   * `new URLPattern(string)` at config-build time.
+   *
+   * Composes with `@koi/url-safety`'s SSRF defenses: web-executor still
+   * runs `resolveAndValidateUrl` first; the scope wrapper sits inside
+   * the executor's `fetchFn`, so per-redirect scope checks are inherited
+   * by any caller that wraps with `createSafeFetcher`.
+   */
+  readonly networkScope?: { readonly allow: readonly string[] } | undefined;
+  /**
    * Host-specific extra providers appended after the core set (e.g. TUI's
    * bash_background, task tools, memory, notebook, spawn). Added here
    * rather than by the caller splicing arrays so the assembly order is
@@ -1120,6 +1134,17 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   }
 
   if (includeWeb) {
+    // gov-15: when manifest declares `network.allow`, wrap the inner fetch
+    // with a URLPattern allowlist before the web-executor sees it. The
+    // executor's own pre-flight (resolveAndValidateUrl) still runs first —
+    // scope is an additional fail-closed gate, not a replacement.
+    const networkAllow = config.networkScope?.allow;
+    const fetchFn =
+      networkAllow !== undefined && networkAllow.length > 0
+        ? createScopedFetcher(globalThis.fetch, {
+            allow: networkAllow.map((p) => new URLPattern(p)),
+          })
+        : undefined;
     const webExecutor = createWebExecutor({
       allowHttps: true,
       cacheTtlMs: resolveWebCacheTtlMs(process.env),
@@ -1128,6 +1153,7 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
       // operator semantics (incidents, fast-moving topics) and shouldn't
       // be silently enabled just because fetch caching is.
       searchCacheTtlMs: 0,
+      ...(fetchFn !== undefined ? { fetchFn } : {}),
     });
     providers.push(
       createWebProvider({

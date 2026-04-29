@@ -863,6 +863,13 @@ export interface KoiRuntimeConfig {
    */
   readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
   /**
+   * Outbound-network scope (gov-15). Forwarded into `buildCoreProviders` so
+   * the web tools' inner `fetch` is wrapped with `createScopedFetcher`.
+   * `undefined` leaves the existing url-safety SSRF defenses in place
+   * with no additional URLPattern allowlist.
+   */
+  readonly networkScope?: { readonly allow: readonly string[] } | undefined;
+  /**
    * Active filesystem backend to use for `fs_read`, `fs_write`, and
    * `fs_edit` tools, AND for the checkpoint preset stack's backend
    * discriminator (capture + rewind dispatch).
@@ -1891,6 +1898,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     ...(config.filesystemOperations !== undefined
       ? { filesystemOperations: config.filesystemOperations }
       : {}),
+    ...(config.networkScope !== undefined ? { networkScope: config.networkScope } : {}),
   });
 
   // --- @koi/skills-runtime + @koi/skill-tool: on-demand skill discovery and loading ---
