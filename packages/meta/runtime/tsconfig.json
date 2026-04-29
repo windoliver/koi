@@ -9,6 +9,7 @@
     { "path": "../../kernel/core" },
     { "path": "../../lib/decision-ledger" },
     { "path": "../../lib/agent-discovery" },
+    { "path": "../../lib/agent-monitor" },
     { "path": "../../lib/agent-procfs" },
     { "path": "../../lib/agent-runtime" },
     { "path": "../../lib/agent-summary" },

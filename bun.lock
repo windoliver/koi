@@ -119,6 +119,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/agent-monitor": {
+      "name": "@koi/agent-monitor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/agent-procfs": {
       "name": "@koi/agent-procfs",
       "version": "0.0.0",
@@ -1044,6 +1051,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/agent-discovery": "workspace:*",
+        "@koi/agent-monitor": "workspace:*",
         "@koi/agent-procfs": "workspace:*",
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
@@ -1912,6 +1920,8 @@
     "@koi-agent/cli": ["@koi-agent/cli@workspace:packages/meta/cli"],
 
     "@koi/agent-discovery": ["@koi/agent-discovery@workspace:packages/lib/agent-discovery"],
+
+    "@koi/agent-monitor": ["@koi/agent-monitor@workspace:packages/lib/agent-monitor"],
 
     "@koi/agent-procfs": ["@koi/agent-procfs@workspace:packages/lib/agent-procfs"],
 

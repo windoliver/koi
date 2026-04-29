@@ -15626,3 +15626,56 @@ describe("Golden: @koi/agent-discovery", () => {
     expect(shared?.source).toBe("mcp");
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/agent-monitor (2 queries)
+//
+// Standalone — no cassette replay. Validates middleware identity and
+// tool_rate_exceeded firing per docs/L2/agent-monitor.md.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/agent-monitor", () => {
+  test("middleware identity (name + priority + describeCapabilities)", async () => {
+    const { createAgentMonitorMiddleware, AGENT_MONITOR_PRIORITY } = await import(
+      "@koi/agent-monitor"
+    );
+    const mw = createAgentMonitorMiddleware({});
+    expect(mw.name).toBe("agent-monitor");
+    expect(mw.priority).toBe(AGENT_MONITOR_PRIORITY);
+    expect(mw.priority).toBe(350);
+    expect(mw.describeCapabilities?.()).toBeUndefined();
+  });
+
+  test("tool_rate_exceeded fires after >maxToolCallsPerTurn calls", async () => {
+    const { createAgentMonitorMiddleware } = await import("@koi/agent-monitor");
+    const core = await import("@koi/core");
+    const signals: Array<{ kind: string }> = [];
+    const mw = createAgentMonitorMiddleware({
+      thresholds: { maxToolCallsPerTurn: 1 },
+      onAnomaly: (s) => {
+        signals.push(s);
+      },
+    });
+    const session = {
+      agentId: "a",
+      sessionId: core.sessionId("s") as never,
+      runId: core.runId("r"),
+      metadata: {},
+    };
+    await mw.onSessionStart?.(session as never);
+    const ctx = {
+      session,
+      turnIndex: 0,
+      turnId: core.turnId(session.runId, 0) as never,
+      messages: [],
+      metadata: {},
+    };
+    await mw.onBeforeTurn?.(ctx as never);
+    const next = async (): Promise<{ output: string }> => ({ output: "ok" });
+    for (let i = 0; i < 2; i++) {
+      await mw.wrapToolCall?.(ctx as never, { toolId: `t${i}`, input: {} } as never, next as never);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    expect(signals.some((s) => s.kind === "tool_rate_exceeded")).toBe(true);
+  });
+});

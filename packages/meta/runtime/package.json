@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@koi/agent-discovery": "workspace:*",
+    "@koi/agent-monitor": "workspace:*",
     "@koi/agent-procfs": "workspace:*",
     "@koi/agent-runtime": "workspace:*",
     "@koi/agent-summary": "workspace:*",
