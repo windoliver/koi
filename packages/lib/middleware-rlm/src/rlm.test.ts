@@ -1249,21 +1249,74 @@ describe("createRlmMiddleware", () => {
     if (iter === undefined) throw new Error("expected wrapModelStream");
     const ordered: ModelChunk[] = [];
     for await (const c of iter) ordered.push(c);
-    // Consumer must see one heartbeat usage per segment (no post-
-    // reassembly aggregate — that would double-count tokens for
-    // downstream budget enforcers; the canonical aggregate lives in
-    // `done.response.usage`). The first heartbeat must land BEFORE the
-    // merged terminal text_delta — proving the timeout layer would see
-    // in-flight progress, not silence.
+    // Consumer must see at least one heartbeat usage per segment
+    // (zero-token heartbeat per text_delta + the forwarded upstream
+    // usage). The first heartbeat must land BEFORE the merged terminal
+    // text_delta — proving the timeout layer would see in-flight
+    // progress, not silence. The canonical aggregate lives on
+    // `done.response.usage`; no post-reassembly aggregate stream chunk
+    // is emitted, so summing stream usage chunks must equal exactly the
+    // forwarded upstream usage (zero-token heartbeats add 0).
     const usageChunks = ordered.filter((c) => c.kind === "usage");
     const firstUsageIdx = ordered.findIndex((c) => c.kind === "usage");
     const finalTextIdx = ordered.findIndex((c) => c.kind === "text_delta");
-    expect(usageChunks.length).toBe(segmentCount);
+    expect(usageChunks.length).toBeGreaterThanOrEqual(segmentCount);
     expect(firstUsageIdx).toBeLessThan(finalTextIdx);
+    let streamUsageInput = 0;
+    for (const u of usageChunks) {
+      if (u.kind === "usage") streamUsageInput += u.inputTokens;
+    }
+    expect(streamUsageInput).toBe(segmentCount * 4);
     const done = ordered.find((c) => c.kind === "done");
     if (done === undefined || done.kind !== "done") throw new Error("expected done");
     expect(done.response.usage?.inputTokens).toBe(segmentCount * 4);
     expect(done.response.usage?.outputTokens).toBe(segmentCount * 1);
+  });
+
+  test("wrapModelStream emits a heartbeat per text_delta even when upstream never emits usage chunks", async () => {
+    // Some adapters stream plain `text_delta` and emit final usage
+    // only on `done.response.usage`. Without a per-text heartbeat the
+    // runtime activity-timeout wrapper would see no events for the
+    // entire segment duration and abort a healthy oversized turn.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let segmentCount = 0; // let: per-segment counter
+    const upstream: ModelStreamHandler = async function* () {
+      segmentCount += 1;
+      const n = segmentCount;
+      yield { kind: "text_delta", delta: `seg${n}-a` };
+      yield { kind: "text_delta", delta: `seg${n}-b` };
+      yield {
+        kind: "done",
+        response: {
+          content: `seg${n}-aseg${n}-b`,
+          model: "stream-model",
+          stopReason: "stop" as const,
+          usage: { inputTokens: 3, outputTokens: 2 },
+        },
+      };
+    };
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    const ordered: ModelChunk[] = [];
+    for await (const c of iter) ordered.push(c);
+    // Two upstream text_deltas per segment → at least 2 heartbeats per
+    // segment. Sum of zero-token heartbeats must be 0 (no double-billing
+    // when text_delta arrives without upstream usage).
+    const usageChunks = ordered.filter((c) => c.kind === "usage");
+    expect(usageChunks.length).toBeGreaterThanOrEqual(segmentCount * 2);
+    let streamUsageInput = 0;
+    for (const u of usageChunks) {
+      if (u.kind === "usage") streamUsageInput += u.inputTokens;
+    }
+    expect(streamUsageInput).toBe(0);
+    const done = ordered.find((c) => c.kind === "done");
+    if (done === undefined || done.kind !== "done") throw new Error("expected done");
+    expect(done.response.usage?.inputTokens).toBe(segmentCount * 3);
   });
 
   test("describeCapabilities returns a label", () => {

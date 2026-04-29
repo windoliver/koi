@@ -663,6 +663,15 @@ async function* consumeStream(
       const chunk = result.value;
       if (chunk.kind === "text_delta") {
         streamedText += chunk.delta;
+        // Forward a zero-token usage heartbeat so the runtime
+        // activity-timeout wrapper sees outward progress even for
+        // text-only adapters that never emit `usage` chunks. Zero
+        // tokens means downstream budget enforcers totaling stream
+        // usage events are not affected; the canonical aggregate
+        // still lives on `done.response.usage`. We cannot forward
+        // the text itself before the safety guard runs in the outer
+        // segment loop.
+        yield { kind: "usage", inputTokens: 0, outputTokens: 0 };
         continue;
       }
       if (chunk.kind === "thinking_delta") {
