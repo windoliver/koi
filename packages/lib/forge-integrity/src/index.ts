@@ -15,7 +15,12 @@ export type {
   ProducerRegistry,
   RecomputeBrickId,
 } from "./integrity.js";
-export { createBrickVerifier, verifyBrickIntegrity } from "./integrity.js";
+// Only the factory entry point is part of the public surface. The raw
+// per-call `verifyBrickIntegrity` is intentionally NOT exported: callers
+// must bind a trusted registry once at startup via `createBrickVerifier`,
+// preventing request-scoped or attacker-controlled registries from being
+// passed into the verifier on each call.
+export { createBrickVerifier } from "./integrity.js";
 
 export type { LineageOutcome } from "./lineage.js";
 export {

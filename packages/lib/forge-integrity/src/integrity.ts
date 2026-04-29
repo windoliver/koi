@@ -138,6 +138,12 @@ function inspectArtifactShape(brick: BrickArtifact): ArtifactShape | string {
   return { id: brick.id, claimedBuilderId: builder.id };
 }
 
+/**
+ * INTERNAL — accepts a registry on every call. Use `createBrickVerifier`
+ * for any production call site so the registry is bound once at startup
+ * and cannot be supplied per-request. This function is not part of the
+ * public surface (see `index.ts`).
+ */
 export function verifyBrickIntegrity(
   brick: BrickArtifact,
   registry: ProducerRegistry,
