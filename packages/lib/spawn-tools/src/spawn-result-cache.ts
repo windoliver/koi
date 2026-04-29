@@ -17,12 +17,15 @@
  *      overlap window. `cacheable: false` placeholders propagate to all
  *      waiters; only cacheable results land in the LRU.
  *
- * Cancellation: when a driver's signal aborts, the inflight slot is
- * evicted immediately so a retry meant to replace the aborted attempt
- * drives its own spawn. The orphaned factory promise still runs in the
- * background and may backfill the cache on settle, but only if the
- * captured generation still matches the latest (no newer attempt has
- * superseded) and the cache slot is still empty.
+ * Cancellation: when a driver's signal aborts and no waiters remain,
+ * the inflight slot AND the per-key generation entry are released
+ * immediately. Bounded memory matters more than salvaging an orphan
+ * factory's late completion: never-resolving factories (stuck children
+ * after parent timeout) would otherwise leak generation bookkeeping
+ * indefinitely, defeating the cap. A retry on the same key drives a
+ * fresh spawn. If a waiter is still attached, the slot stays alive so
+ * coalescing semantics hold; the .then handler does the cache backfill
+ * (with generation + cache.has() guards).
  *
  * Failures are NOT cached. Inflight slot lifecycle is bound to the
  * factory promise settling, not to the driver's await observation,
@@ -92,6 +95,7 @@ export function createSpawnResultCache(
   // when *every* caller has either aborted or observed the result.
   interface InflightEntry {
     readonly promise: Promise<SpawnFactoryResult>;
+    readonly generation: number;
     subscribers: number;
   }
   const inflight = new Map<string, InflightEntry>();
@@ -201,6 +205,14 @@ export function createSpawnResultCache(
         // every observer abandoned.
         if (pending.subscribers <= 0 && inflight.get(key) === pending) {
           inflight.delete(key);
+          // Prune generation bookkeeping for the abandoned attempt: if its
+          // factory promise never settles, the .then handlers below won't
+          // run, so we must release the per-key metadata here. Guarded on
+          // generations.get matching the abandoned entry's generation —
+          // any newer attempt would have bumped it.
+          if (generations.get(key) === pending.generation && !cache.has(key)) {
+            generations.delete(key);
+          }
         }
       }
     }
@@ -216,7 +228,11 @@ export function createSpawnResultCache(
     // the .then handler below), independent of when the driver's await
     // observes the result — so an aborted driver doesn't strand waiters.
     const factoryPromise = factory();
-    const entry: InflightEntry = { promise: factoryPromise, subscribers: 1 };
+    const entry: InflightEntry = {
+      promise: factoryPromise,
+      generation: myGeneration,
+      subscribers: 1,
+    };
     inflight.set(key, entry);
     factoryPromise.then(
       (settled) => {
@@ -260,6 +276,11 @@ export function createSpawnResultCache(
         entry.subscribers -= 1;
         if (entry.subscribers <= 0 && inflight.get(key) === entry) {
           inflight.delete(key);
+          // Same prune as the waiter abandonment path: if the orphan
+          // factory never settles, release generation bookkeeping now.
+          if (generations.get(key) === myGeneration && !cache.has(key)) {
+            generations.delete(key);
+          }
         }
         return abortedResult(signal);
       }

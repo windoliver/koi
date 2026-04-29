@@ -198,18 +198,18 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     expect(calls).toBe(0);
   });
 
-  test("caller abort during in-flight factory still records a successful background admission", async () => {
-    // Race: parent times out just after spawnFn was invoked. The spawn may
-    // still complete in the background; if it does and the result is
-    // cacheable, a retry must find the cached entry instead of launching a
-    // duplicate child.
+  test("caller abort with no waiters drops the orphan; a retry drives a fresh spawn", async () => {
+    // When the driver aborts and no waiters are attached, the inflight
+    // slot AND the per-key generation entry are released immediately —
+    // bounded memory matters more than salvaging an orphan factory's
+    // late completion. A retry on the same key drives a fresh spawn.
     const cache = createSpawnResultCache(8);
     let release: () => void = () => {};
     let calls = 0;
     const factory = (): Promise<{ ok: true; output: string }> => {
       calls += 1;
       return new Promise((resolve) => {
-        release = () => resolve({ ok: true, output: "background-completed" });
+        release = () => resolve({ ok: true, output: `call-${calls}` });
       });
     };
 
@@ -220,17 +220,20 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     const a = await aPromise;
     expect(a.ok).toBe(false);
 
-    // Engine eventually completes the spawn even after the caller aborted.
+    // Orphan settles after abort. With abort-path pruning, the .then
+    // handler sees no matching generation entry and skips backfill.
     release();
-    // Let the background .then handler run.
     await Promise.resolve();
     await Promise.resolve();
-    expect(cache.get("k")).toBe("background-completed");
+    expect(cache.size()).toBe(0);
 
-    // A retry now hits the cache, no second spawn.
-    const b = await cache.runDeduped("k", noAbort(), factory);
-    expect(b).toEqual({ ok: true, output: "background-completed", deduplicated: true });
-    expect(calls).toBe(1);
+    // Retry drives a fresh spawn.
+    const bPromise = cache.runDeduped("k", noAbort(), factory);
+    await Promise.resolve();
+    release();
+    const b = await bPromise;
+    expect(b).toEqual({ ok: true, output: "call-2", deduplicated: false });
+    expect(calls).toBe(2);
   });
 
   test("aborted attempt's late background settle does NOT overwrite a fresher retry's cached result", async () => {
@@ -523,6 +526,38 @@ describe("memory bookkeeping", () => {
       }));
     }
     expect(cache.size()).toBe(0);
+  });
+
+  test("aborted never-resolving spawns release per-key bookkeeping", async () => {
+    // Regression: previously the `generations` map only pruned via the
+    // factory promise's settle handlers. If the factory never resolved
+    // after the caller aborted (stuck child), the per-key entry stayed
+    // forever and unique-key churn grew memory without bound. Now the
+    // abort path itself prunes when it evicts the inflight slot.
+    const cache = createSpawnResultCache(4);
+    for (let i = 0; i < 50; i += 1) {
+      const ctrl = new AbortController();
+      // Factory never resolves — simulates a hung child after parent abort.
+      const factoryPromise = cache.runDeduped(
+        `stuck-${i}`,
+        ctrl.signal,
+        () => new Promise(() => {}),
+      );
+      ctrl.abort();
+      const r = await factoryPromise;
+      expect(r.ok).toBe(false);
+    }
+    // LRU must remain empty (no successes), and a fresh attempt on any
+    // of the abandoned keys must drive a new spawn — proving the per-key
+    // state was released and didn't shadow the retry.
+    expect(cache.size()).toBe(0);
+    let calls = 0;
+    const r = await cache.runDeduped("stuck-0", noAbort(), async () => {
+      calls += 1;
+      return { ok: true, output: "fresh" };
+    });
+    expect(r).toEqual({ ok: true, output: "fresh", deduplicated: false });
+    expect(calls).toBe(1);
   });
 });
 
