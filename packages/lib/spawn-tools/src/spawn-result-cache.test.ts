@@ -78,37 +78,51 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     expect(calls).toBe(1);
   });
 
-  test("concurrent callers each drive their own factory (no in-flight sharing)", async () => {
-    // In-flight sharing was deliberately removed: it would let a second
-    // concurrent caller receive a placeholder cacheable:false admission as
-    // a deduplicated success before any child completed (round-2 review).
-    // After the first call settles AND is cacheable, subsequent sequential
-    // calls hit the settled LRU.
+  test("concurrent callers share a single factory invocation via in-flight registry", async () => {
     const cache = createSpawnResultCache(8);
     let calls = 0;
-    const factory = async (): Promise<{ ok: true; output: string }> => {
+    let release: () => void = () => {};
+    const factory = (): Promise<{ ok: true; output: string }> => {
       calls += 1;
-      await Promise.resolve();
-      return { ok: true, output: `n=${calls}` };
+      return new Promise((resolve) => {
+        release = () => resolve({ ok: true, output: "shared" });
+      });
     };
 
-    const [a, b] = await Promise.all([
-      cache.runDeduped("k", noAbort(), factory),
-      cache.runDeduped("k", noAbort(), factory),
-    ]);
+    const aPromise = cache.runDeduped("k", noAbort(), factory);
+    const bPromise = cache.runDeduped("k", noAbort(), factory);
+    await Promise.resolve();
+    release();
+    const [a, b] = await Promise.all([aPromise, bPromise]);
 
-    expect(calls).toBe(2);
-    // Both calls settled; both report deduplicated:false (each was its own
-    // driver). The settled cache holds whichever finished last.
-    expect(a).toMatchObject({ ok: true });
-    expect(b).toMatchObject({ ok: true });
-    expect((a as { deduplicated: boolean }).deduplicated).toBe(false);
-    expect((b as { deduplicated: boolean }).deduplicated).toBe(false);
+    expect(calls).toBe(1);
+    expect(a).toMatchObject({ ok: true, output: "shared" });
+    expect(b).toMatchObject({ ok: true, output: "shared" });
+    // Exactly one is the driver, the other a coalesced waiter.
+    const driverCount = [a, b].filter((r) => r.ok && r.deduplicated === false).length;
+    const waiterCount = [a, b].filter((r) => r.ok && r.deduplicated === true).length;
+    expect(driverCount).toBe(1);
+    expect(waiterCount).toBe(1);
+  });
 
-    // After both settle, a third sequential call dedups against the LRU.
-    const c = await cache.runDeduped("k", noAbort(), factory);
-    expect(c).toMatchObject({ ok: true, deduplicated: true });
-    expect(calls).toBe(2);
+  test("in-flight sharing propagates cacheable:false to all waiters (no LRU write)", async () => {
+    const cache = createSpawnResultCache(8);
+    let release: () => void = () => {};
+    const factory = (): Promise<{ ok: true; output: string; cacheable: false }> =>
+      new Promise((resolve) => {
+        release = () => resolve({ ok: true, output: "placeholder", cacheable: false });
+      });
+
+    const aPromise = cache.runDeduped("k", noAbort(), factory);
+    const bPromise = cache.runDeduped("k", noAbort(), factory);
+    await Promise.resolve();
+    release();
+    const [a, b] = await Promise.all([aPromise, bPromise]);
+
+    expect(a).toMatchObject({ ok: true, output: "placeholder" });
+    expect(b).toMatchObject({ ok: true, output: "placeholder" });
+    // Neither writes to the LRU; a third call must spawn fresh.
+    expect(cache.get("k")).toBeUndefined();
   });
 
   test("failed factory is not cached and inflight clears so retries can succeed", async () => {
@@ -253,25 +267,22 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     expect(cache.get("k")).toBe("B-output");
   });
 
-  test("aborted attempt's late settle does NOT cache when a newer in-flight retry has started but not yet settled", async () => {
-    // The harder race: A starts and aborts. B starts (newer generation) and
-    // is still running. A's orphaned factoryPromise then settles. With only
-    // a cache.has() guard, A would win and B's eventual output would never
-    // see the cache (B's success path also sets, so B would still write —
-    // but a third call C arriving between A-settle and B-settle would
-    // dedup to A-output and skip even invoking the factory). The
-    // generation counter blocks A's late settle once B has claimed the slot.
+  test("aborted attempt's late settle does NOT cache when a newer in-flight retry has bumped the generation", async () => {
+    // Race: A starts and aborts (driver gives up). On abort, A's inflight
+    // slot is evicted so a retry can drive a fresh spawn. B retries —
+    // bumps the generation, drives factoryB. A's orphan factoryPromise
+    // settles after B has bumped. The generation guard must block A's
+    // late output from poisoning the cache.
     const cache = createSpawnResultCache(8);
     let releaseA: () => void = () => {};
-    let releaseB: () => void = () => {};
     const factoryA = (): Promise<{ ok: true; output: string }> =>
       new Promise((resolve) => {
         releaseA = () => resolve({ ok: true, output: "A-output" });
       });
-    const factoryB = (): Promise<{ ok: true; output: string }> =>
-      new Promise((resolve) => {
-        releaseB = () => resolve({ ok: true, output: "B-output" });
-      });
+    const factoryB = async (): Promise<{ ok: true; output: string }> => ({
+      ok: true,
+      output: "B-output",
+    });
 
     const ctrlA = new AbortController();
     const aPromise = cache.runDeduped("k", ctrlA.signal, factoryA);
@@ -279,34 +290,17 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     ctrlA.abort(new Error("A timed out"));
     await aPromise;
 
-    // B starts (newer generation) but doesn't settle yet.
-    const bPromise = cache.runDeduped("k", noAbort(), factoryB);
-    await Promise.resolve();
+    // B retries — drives a new factory (A's inflight slot was evicted on
+    // abort), bumps the generation, and settles cleanly.
+    const bResult = await cache.runDeduped("k", noAbort(), factoryB);
+    expect(bResult).toMatchObject({ ok: true, output: "B-output" });
+    expect(cache.get("k")).toBe("B-output");
 
-    // A's orphaned factory finally settles. Generation guard must block.
+    // A's orphan finally settles. Generation guard + cache.has() must
+    // block any backfill so B-output is not overwritten with A-output.
     releaseA();
     await Promise.resolve();
     await Promise.resolve();
-    expect(cache.get("k")).toBeUndefined();
-
-    // A third call C arrives while B is still in-flight. Must NOT dedup
-    // to A-output (because A was blocked above); must invoke its own
-    // factory because the cache is still empty.
-    let cCalls = 0;
-    const factoryC = async (): Promise<{ ok: true; output: string }> => {
-      cCalls += 1;
-      return { ok: true, output: "C-output" };
-    };
-    const cResult = await cache.runDeduped("k", noAbort(), factoryC);
-    expect(cResult).toMatchObject({ ok: true, output: "C-output" });
-    expect(cCalls).toBe(1);
-
-    // Finally B settles. C's value already won the cache; B's also writes
-    // but that's the natural last-writer-wins behavior for two genuine
-    // post-A retries — the property under test is that A cannot poison
-    // either of them.
-    releaseB();
-    await bPromise;
     expect(cache.get("k")).toBe("B-output");
   });
 

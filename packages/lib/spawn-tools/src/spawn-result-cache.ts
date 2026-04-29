@@ -77,6 +77,12 @@ export function createSpawnResultCache(
   }
 
   const cache = new Map<string, string>();
+  // Per-key in-flight registry. Concurrent same-key callers attach to the
+  // first attempt's Promise so only one factory invocation runs per key
+  // overlap window. The flag carries the cacheability of the eventual
+  // result — `cacheable: false` is propagated to all waiters so they
+  // honor the same persistence semantics.
+  const inflight = new Map<string, Promise<SpawnFactoryResult>>();
   // Monotonic generation counter per key. Each runDeduped invocation that
   // reaches the factory bumps the generation and remembers the value it
   // owned; an aborted attempt's late background settle only writes to the
@@ -147,52 +153,74 @@ export function createSpawnResultCache(
       return { ok: true, output: settled, deduplicated: true };
     }
 
+    // In-flight coalescing: if another caller is already running the same
+    // key, attach to its Promise. Both callers receive identical
+    // `SpawnFactoryResult`; cacheable=false placeholders propagate to all
+    // waiters so they share the same admission semantics. Only the driver
+    // writes to the LRU on settle (via the registered .then handler).
+    const pending = inflight.get(key);
+    if (pending !== undefined) {
+      try {
+        const shared = await awaitWithAbort(pending, signal);
+        if (!shared.ok) return { ok: false, error: shared.error };
+        return { ok: true, output: shared.output, deduplicated: true };
+      } catch (err) {
+        if (signal.aborted) return abortedResult(signal);
+        throw err;
+      }
+    }
+
     // Claim a fresh generation for this attempt. Any later attempt for
     // the same key bumps this counter, so the abort backfill below can
     // detect that a newer attempt has superseded ours.
     const myGeneration = (generations.get(key) ?? 0) + 1;
     generations.set(key, myGeneration);
 
+    // Driver path: invoke the factory, register in the inflight map so
+    // concurrent waiters can attach. Inflight slot clears on settle (via
+    // the .then handler below), independent of when the driver's await
+    // observes the result — so an aborted driver doesn't strand waiters.
     const factoryPromise = factory();
+    inflight.set(key, factoryPromise);
+    factoryPromise.then(
+      (settled) => {
+        if (
+          settled.ok &&
+          settled.cacheable !== false &&
+          generations.get(key) === myGeneration &&
+          !cache.has(key)
+        ) {
+          set(key, settled.output);
+        }
+        if (inflight.get(key) === factoryPromise) inflight.delete(key);
+      },
+      () => {
+        if (inflight.get(key) === factoryPromise) inflight.delete(key);
+      },
+    );
+
     let result: SpawnFactoryResult;
     try {
       result = await awaitWithAbort(factoryPromise, signal);
     } catch (err) {
       if (signal.aborted) {
-        // Caller is gone, but the spawn may still complete in the background
-        // (e.g. the engine doesn't abort instantly, or returns the admission
-        // before observing the signal). If it does and the result is
-        // cacheable AND no newer attempt has started, record it — a retry
-        // that arrives later should attach to the cached output instead
-        // of launching a duplicate child.
-        //
-        // Race guards:
-        //   - generation check: ensures a newer in-flight attempt's eventual
-        //     output wins, even if it hasn't settled yet when ours does.
-        //   - cache.has() check: belt-and-suspenders for the case where the
-        //     newer attempt has already settled.
-        void factoryPromise.then(
-          (settled) => {
-            if (
-              settled.ok &&
-              settled.cacheable !== false &&
-              generations.get(key) === myGeneration &&
-              !cache.has(key)
-            ) {
-              set(key, settled.output);
-            }
-          },
-          () => {
-            /* ignored — caller already received abortedResult */
-          },
-        );
+        // Driver aborted. Evict the inflight slot immediately so a retry
+        // arriving in the abort window drives its own spawn instead of
+        // coalescing to a logical attempt that the caller already gave up
+        // on. The .then handler above still runs when the orphan settles,
+        // backfilling the cache only if no newer attempt has bumped the
+        // generation (conservative: keeps the abort-completed result for
+        // future retries when no one supersedes it).
+        if (inflight.get(key) === factoryPromise) inflight.delete(key);
         return abortedResult(signal);
       }
       throw err;
     }
 
     if (result.ok) {
-      if (result.cacheable !== false) set(key, result.output);
+      // The .then above already wrote to the cache when cacheable; we
+      // don't need to write here again. (Idempotent — set is a no-op
+      // overwrite if both fire, but the .then's guards are stricter.)
       return { ok: true, output: result.output, deduplicated: false };
     }
     return { ok: false, error: result.error };
