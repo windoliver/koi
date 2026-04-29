@@ -4,6 +4,7 @@
  */
 
 export type {
+  BrickVerifier,
   IntegrityContentMismatch,
   IntegrityMalformed,
   IntegrityOk,
@@ -14,7 +15,7 @@ export type {
   ProducerRegistry,
   RecomputeBrickId,
 } from "./integrity.js";
-export { verifyBrickIntegrity } from "./integrity.js";
+export { createBrickVerifier, verifyBrickIntegrity } from "./integrity.js";
 
 export type { LineageOutcome } from "./lineage.js";
 export {
@@ -25,4 +26,4 @@ export {
 } from "./lineage.js";
 
 export type { CreateProvenanceOptions } from "./provenance.js";
-export { createForgeProvenance } from "./provenance.js";
+export { createForgeProvenance, MAX_PROVENANCE_DEPTH } from "./provenance.js";

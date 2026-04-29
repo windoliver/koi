@@ -1,13 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifact, BrickId, ForgeStore, KoiError, Result } from "@koi/core";
 import { computeBrickId } from "@koi/hash";
-import { makeTool } from "./__tests__/fixtures.js";
+import { makeTool, recomputeFixtureId } from "./__tests__/fixtures.js";
+import { createBrickVerifier } from "./integrity.js";
 import {
   findDuplicateById,
   getParentBrickId,
   isDerivedFrom,
   MAX_LINEAGE_DEPTH,
 } from "./lineage.js";
+
+const verify = createBrickVerifier({ "koi/forge": recomputeFixtureId });
 
 function notImplemented<T>(): T {
   throw new Error("not implemented");
@@ -111,21 +114,26 @@ describe("lineage", () => {
     expect(MAX_LINEAGE_DEPTH).toBeGreaterThan(0);
   });
 
-  test("findDuplicateById detects content-equivalent brick by id within one producer", () => {
+  test("findDuplicateById detects verified content-equivalent brick within one producer", () => {
     const a = makeTool({ implementation: "code" });
     const b = makeTool({ implementation: "code" });
-    expect(findDuplicateById([a], b.id, "koi/forge")?.id).toBe(a.id);
+    expect(findDuplicateById([a], b.id, "koi/forge", verify)?.id).toBe(a.id);
   });
 
   test("findDuplicateById returns undefined when no match", () => {
     const a = makeTool({ implementation: "code" });
     const novel = computeBrickId("tool", "different");
-    expect(findDuplicateById([a], novel, "koi/forge")).toBeUndefined();
+    expect(findDuplicateById([a], novel, "koi/forge", verify)).toBeUndefined();
   });
 
-  test("findDuplicateById refuses to alias across producers (same id, different builder)", () => {
-    const a = makeTool({ implementation: "code" });
-    expect(findDuplicateById([a], a.id, "another/builder/v1")).toBeUndefined();
+  test("findDuplicateById rejects a poisoned store entry that fails verification", () => {
+    const real = makeTool({ implementation: "code" });
+    // A poisoned entry shares the candidate id but tampered content cannot
+    // recompute to the same canonical id. The verifier must catch it.
+    const poisoned: BrickArtifact = { ...real, implementation: "// poisoned" } as BrickArtifact;
+    expect(findDuplicateById([poisoned], real.id, "koi/forge", verify)).toBeUndefined();
+    // The real one verifies and is returned.
+    expect(findDuplicateById([poisoned, real], real.id, "koi/forge", verify)?.id).toBe(real.id);
   });
 
   test("isDerivedFrom returns malformed when child has no provenance", async () => {

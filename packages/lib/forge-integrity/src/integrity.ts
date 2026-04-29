@@ -86,6 +86,36 @@ export type RecomputeBrickId = (brick: BrickArtifact) => BrickId;
 /** Registry mapping `provenance.builder.id` to the producer's recompute. */
 export type ProducerRegistry = Readonly<Record<string, RecomputeBrickId>>;
 
+/**
+ * Verifier function bound to a frozen, validated `ProducerRegistry`. The
+ * recommended entry point for callers — the registry is owned by the
+ * operator at construction time, not passed at every call site. Returned
+ * verifiers cannot be coerced to use a different registry.
+ */
+export type BrickVerifier = (brick: BrickArtifact, expectedBuilderId: string) => IntegrityResult;
+
+/**
+ * Build a `BrickVerifier` bound to an immutable copy of `registry`. Each
+ * entry is validated upfront (must be a function); the registry itself is
+ * frozen and the verifier closure prevents callers from substituting one.
+ *
+ * Throws synchronously on construction if `registry` is malformed.
+ */
+export function createBrickVerifier(registry: ProducerRegistry): BrickVerifier {
+  if (registry === null || typeof registry !== "object") {
+    throw new Error("createBrickVerifier: registry must be an object");
+  }
+  const owned: Record<string, RecomputeBrickId> = Object.create(null);
+  for (const [k, v] of Object.entries(registry)) {
+    if (typeof v !== "function") {
+      throw new Error(`createBrickVerifier: registry["${k}"] is not a function`);
+    }
+    owned[k] = v;
+  }
+  const frozen: ProducerRegistry = Object.freeze(owned);
+  return (brick, expectedBuilderId) => verifyBrickIntegrity(brick, frozen, expectedBuilderId);
+}
+
 interface ArtifactShape {
   readonly id: BrickId;
   readonly claimedBuilderId: string;

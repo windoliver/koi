@@ -101,6 +101,14 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
     );
   }
 
+  if (
+    options.demandId !== undefined &&
+    Object.hasOwn(options.externalParameters, "demandId") &&
+    options.externalParameters.demandId !== options.demandId
+  ) {
+    throw new Error("createForgeProvenance: demandId conflicts with externalParameters.demandId");
+  }
+
   const externalParameters: Readonly<Record<string, unknown>> = deepFreeze(
     options.demandId !== undefined
       ? { ...structuredClone(options.externalParameters), demandId: options.demandId }

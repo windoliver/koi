@@ -13,6 +13,7 @@
  */
 
 import type { BrickArtifact, BrickId, ForgeStore, KoiError } from "@koi/core";
+import type { BrickVerifier } from "./integrity.js";
 
 /** Maximum lineage walk depth — prevents infinite loops on malformed chains. */
 export const MAX_LINEAGE_DEPTH = 64;
@@ -112,20 +113,25 @@ export async function isDerivedFrom(
 
 /**
  * Returns the first brick in `bricks` whose stored `id` equals `candidateId`
- * AND whose `provenance.builder.id` equals `producerBuilderId`.
+ * AND whose recomputed identity passes `verify` for the named producer.
  *
- * `BrickId` is only globally unique within a single producer's identity
- * scheme: two producers can theoretically mint the same id from different
- * canonical inputs, so equality of `BrickId` alone is not safe as a
- * cross-producer dedup key. This helper requires the caller to scope the
- * lookup to a single producer to prevent false-positive aliasing.
+ * Stored bricks can claim any `provenance.builder.id`; equality of `BrickId`
+ * alone is not safe as a cross-producer dedup key, and the claimed builder
+ * is read from the unverified artifact. We therefore require the caller to
+ * supply a `BrickVerifier` and only treat a candidate as a duplicate if the
+ * stored brick verifies as `ok` under the expected producer's scheme. A
+ * poisoned store entry that squats on a candidate id but cannot recompute
+ * to the same canonical content is rejected.
  */
 export function findDuplicateById(
   bricks: readonly BrickArtifact[],
   candidateId: BrickId,
   producerBuilderId: string,
+  verify: BrickVerifier,
 ): BrickArtifact | undefined {
-  return bricks.find(
-    (b) => b.id === candidateId && b.provenance?.builder?.id === producerBuilderId,
-  );
+  return bricks.find((b) => {
+    if (b.id !== candidateId) return false;
+    const result = verify(b, producerBuilderId);
+    return result.kind === "ok";
+  });
 }

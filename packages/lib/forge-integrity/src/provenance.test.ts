@@ -234,6 +234,27 @@ describe("createForgeProvenance", () => {
     ).toThrow(/evolutionKind/);
   });
 
+  test("rejects conflicting demandId between top-level and externalParameters", () => {
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        demandId: "dem-A",
+        externalParameters: { demandId: "dem-B" },
+      }),
+    ).toThrow(/conflicts/);
+  });
+
+  test("accepts matching demandId in externalParameters (no rewrite)", () => {
+    const prov = createForgeProvenance({
+      ...baseOptions,
+      demandId: "dem-X",
+      externalParameters: { demandId: "dem-X", name: "csv" },
+    });
+    expect((prov.buildDefinition.externalParameters as { demandId: string }).demandId).toBe(
+      "dem-X",
+    );
+  });
+
   test("rejects deeply-nested externalParameters with a typed error (no stack overflow)", () => {
     const deep: Record<string, unknown> = {};
     let cursor = deep;

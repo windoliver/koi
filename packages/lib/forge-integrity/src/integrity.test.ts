@@ -3,7 +3,7 @@ import type { BrickArtifact, BrickId } from "@koi/core";
 import { brickId } from "@koi/core";
 import { makeTool, reBrandId, recomputeFixtureId, tamper } from "./__tests__/fixtures.js";
 import type { ProducerRegistry, RecomputeBrickId } from "./integrity.js";
-import { verifyBrickIntegrity } from "./integrity.js";
+import { createBrickVerifier, verifyBrickIntegrity } from "./integrity.js";
 
 const TRUSTED_BUILDER = "koi/forge";
 const trustedRegistry: ProducerRegistry = { [TRUSTED_BUILDER]: recomputeFixtureId };
@@ -164,6 +164,22 @@ describe("verifyBrickIntegrity", () => {
       TRUSTED_BUILDER,
     );
     expect(result.kind).toBe("malformed");
+  });
+
+  test("createBrickVerifier rejects malformed registries at construction time", () => {
+    expect(() => createBrickVerifier(null as unknown as ProducerRegistry)).toThrow(/registry/);
+    expect(() => createBrickVerifier({ bad: 42 as unknown as RecomputeBrickId })).toThrow(
+      /not a function/,
+    );
+  });
+
+  test("createBrickVerifier returns a verifier bound to a frozen registry", () => {
+    const reg: ProducerRegistry = { [TRUSTED_BUILDER]: recomputeFixtureId };
+    const v = createBrickVerifier(reg);
+    expect(v(makeTool(), TRUSTED_BUILDER).kind).toBe("ok");
+    // Mutating the original registry must not affect the verifier closure.
+    (reg as Record<string, RecomputeBrickId>)[TRUSTED_BUILDER] = ((b) => b.id) as RecomputeBrickId;
+    expect(v(tamper(makeTool()), TRUSTED_BUILDER).kind).toBe("content_mismatch");
   });
 
   test("recompute_failed when registered recompute is async (returns Promise)", () => {
