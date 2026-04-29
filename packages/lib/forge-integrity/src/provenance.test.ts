@@ -162,6 +162,58 @@ describe("createForgeProvenance", () => {
     ).toThrow(/JSON-plain/);
   });
 
+  test("rejects invalid classification values at runtime", () => {
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        classification: "topsecret" as unknown as "secret",
+      }),
+    ).toThrow(/classification/);
+  });
+
+  test("rejects unknown contentMarker values at runtime", () => {
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        contentMarkers: ["badmarker"] as unknown as readonly never[],
+      }),
+    ).toThrow(/contentMarker/);
+  });
+
+  test("rejects malformed verification (missing booleans, non-finite duration)", () => {
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        verification: { passed: "yes" } as unknown as typeof passingVerification,
+      }),
+    ).toThrow(/passed/);
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        verification: {
+          passed: true,
+          sandbox: true,
+          totalDurationMs: Number.NaN,
+          stageResults: [],
+        },
+      }),
+    ).toThrow(/totalDurationMs/);
+  });
+
+  test("rejects malformed stage digests", () => {
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        verification: {
+          passed: true,
+          sandbox: true,
+          totalDurationMs: 1,
+          stageResults: [{ stage: "", passed: true, durationMs: 1 }],
+        },
+      }),
+    ).toThrow(/stage/);
+  });
+
   test("rejects function values inside externalParameters", () => {
     expect(() =>
       createForgeProvenance({

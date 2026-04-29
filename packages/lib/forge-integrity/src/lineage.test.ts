@@ -70,6 +70,26 @@ describe("lineage", () => {
     expect(result.kind).toBe("not_derived");
   });
 
+  test("isDerivedFrom normalizes thrown/rejected store loads to store_error", async () => {
+    const root = makeTool();
+    const mid = makeTool({ implementation: "v2", parentBrickId: root.id });
+    const child = makeTool({ implementation: "v3", parentBrickId: mid.id });
+    const throwingStore: ForgeStore = {
+      save: () => Promise.resolve({ ok: true, value: undefined }),
+      load: () => Promise.reject(new Error("backend disposed")),
+      search: () => notImplemented(),
+      remove: () => notImplemented(),
+      update: () => notImplemented(),
+      exists: () => Promise.resolve({ ok: true, value: false }),
+    };
+    const result = await isDerivedFrom(child, root.id, throwingStore);
+    expect(result.kind).toBe("store_error");
+    if (result.kind === "store_error") {
+      expect(result.error.message).toContain("backend disposed");
+      expect(result.at).toBe(mid.id);
+    }
+  });
+
   test("isDerivedFrom surfaces store_error rather than collapsing to not_derived", async () => {
     const root = makeTool({ implementation: "v1" });
     // Walk has to load `mid` to keep climbing past it; with the store
@@ -91,16 +111,21 @@ describe("lineage", () => {
     expect(MAX_LINEAGE_DEPTH).toBeGreaterThan(0);
   });
 
-  test("findDuplicateById detects content-equivalent brick by id", () => {
+  test("findDuplicateById detects content-equivalent brick by id within one producer", () => {
     const a = makeTool({ implementation: "code" });
     const b = makeTool({ implementation: "code" });
-    expect(findDuplicateById([a], b.id)?.id).toBe(a.id);
+    expect(findDuplicateById([a], b.id, "koi/forge")?.id).toBe(a.id);
   });
 
   test("findDuplicateById returns undefined when no match", () => {
     const a = makeTool({ implementation: "code" });
     const novel = computeBrickId("tool", "different");
-    expect(findDuplicateById([a], novel)).toBeUndefined();
+    expect(findDuplicateById([a], novel, "koi/forge")).toBeUndefined();
+  });
+
+  test("findDuplicateById refuses to alias across producers (same id, different builder)", () => {
+    const a = makeTool({ implementation: "code" });
+    expect(findDuplicateById([a], a.id, "another/builder/v1")).toBeUndefined();
   });
 
   test("isDerivedFrom returns malformed when child has no provenance", async () => {

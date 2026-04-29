@@ -42,10 +42,30 @@ export interface CreateProvenanceOptions {
   readonly evolutionKind?: EvolutionKind | undefined;
 }
 
+const ALLOWED_CLASSIFICATIONS = new Set<DataClassification>(["public", "internal", "secret"]);
+const ALLOWED_MARKERS = new Set<ContentMarker>(["credentials", "pii", "phi", "payment"]);
+
 export function createForgeProvenance(options: CreateProvenanceOptions): ForgeProvenance {
   if (options.finishedAt < options.startedAt) {
     throw new Error("createForgeProvenance: finishedAt < startedAt");
   }
+  // Runtime validation of trust-bearing fields. TypeScript guards the typed
+  // call sites; the runtime checks defend the JS / version-skew boundary so
+  // policy/audit consumers can rely on shape invariants.
+  if (!ALLOWED_CLASSIFICATIONS.has(options.classification)) {
+    throw new Error(
+      `createForgeProvenance: classification must be one of ${[...ALLOWED_CLASSIFICATIONS].join(", ")}`,
+    );
+  }
+  if (!Array.isArray(options.contentMarkers)) {
+    throw new Error("createForgeProvenance: contentMarkers must be an array");
+  }
+  for (const m of options.contentMarkers) {
+    if (!ALLOWED_MARKERS.has(m)) {
+      throw new Error(`createForgeProvenance: invalid contentMarker "${String(m)}"`);
+    }
+  }
+  validateVerification(options.verification);
   // Provenance is immutable, audit-visible metadata; restrict structured
   // inputs to JSON-plain values so we can guarantee a deep freeze. Map/Set/
   // Date instances survive `Object.freeze` with mutable APIs intact, so we
@@ -110,6 +130,38 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
     ...(options.evolutionKind !== undefined ? { evolutionKind: options.evolutionKind } : {}),
   };
   return Object.freeze(provenance);
+}
+
+function validateVerification(v: ForgeVerificationSummary): void {
+  if (v === null || typeof v !== "object") {
+    throw new Error("createForgeProvenance: verification must be an object");
+  }
+  if (typeof v.passed !== "boolean") {
+    throw new Error("createForgeProvenance: verification.passed must be boolean");
+  }
+  if (typeof v.sandbox !== "boolean") {
+    throw new Error("createForgeProvenance: verification.sandbox must be boolean");
+  }
+  if (typeof v.totalDurationMs !== "number" || !Number.isFinite(v.totalDurationMs)) {
+    throw new Error("createForgeProvenance: verification.totalDurationMs must be finite number");
+  }
+  if (!Array.isArray(v.stageResults)) {
+    throw new Error("createForgeProvenance: verification.stageResults must be an array");
+  }
+  for (const s of v.stageResults) {
+    if (s === null || typeof s !== "object") {
+      throw new Error("createForgeProvenance: verification.stageResults[*] must be an object");
+    }
+    if (typeof s.stage !== "string" || s.stage.length === 0) {
+      throw new Error("createForgeProvenance: stageResults[*].stage must be non-empty string");
+    }
+    if (typeof s.passed !== "boolean") {
+      throw new Error("createForgeProvenance: stageResults[*].passed must be boolean");
+    }
+    if (typeof s.durationMs !== "number" || !Number.isFinite(s.durationMs)) {
+      throw new Error("createForgeProvenance: stageResults[*].durationMs must be finite number");
+    }
+  }
 }
 
 function deepFreeze<T>(value: T): T {

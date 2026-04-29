@@ -84,7 +84,20 @@ export async function isDerivedFrom(
     if (steps >= MAX_LINEAGE_DEPTH) return { kind: "depth_exceeded", depth: steps };
     seen.add(parentId);
 
-    const result = await store.load(parentId);
+    let result: Awaited<ReturnType<ForgeStore["load"]>>;
+    try {
+      result = await store.load(parentId);
+    } catch (err: unknown) {
+      // Backends may throw/reject on I/O failure, timeout, disposal, or
+      // version skew. Normalize all such cases into a typed store_error so
+      // callers never see an uncaught rejection from this helper.
+      const error: KoiError = {
+        code: "INTERNAL",
+        message: err instanceof Error ? err.message : String(err),
+        retryable: true,
+      };
+      return { kind: "store_error", at: parentId, error };
+    }
     if (!result.ok) return { kind: "store_error", at: parentId, error: result.error };
 
     const loadedShape = inspectLineageShape(result.value);
@@ -98,14 +111,21 @@ export async function isDerivedFrom(
 }
 
 /**
- * Returns the first brick in `bricks` whose stored `id` equals `candidateId`.
- * Since `BrickId` is content-addressed, equality of IDs implies equality of
- * canonical content under the producer's identity scheme — a hit means the
- * candidate is a duplicate.
+ * Returns the first brick in `bricks` whose stored `id` equals `candidateId`
+ * AND whose `provenance.builder.id` equals `producerBuilderId`.
+ *
+ * `BrickId` is only globally unique within a single producer's identity
+ * scheme: two producers can theoretically mint the same id from different
+ * canonical inputs, so equality of `BrickId` alone is not safe as a
+ * cross-producer dedup key. This helper requires the caller to scope the
+ * lookup to a single producer to prevent false-positive aliasing.
  */
 export function findDuplicateById(
   bricks: readonly BrickArtifact[],
   candidateId: BrickId,
+  producerBuilderId: string,
 ): BrickArtifact | undefined {
-  return bricks.find((b) => b.id === candidateId);
+  return bricks.find(
+    (b) => b.id === candidateId && b.provenance?.builder?.id === producerBuilderId,
+  );
 }
