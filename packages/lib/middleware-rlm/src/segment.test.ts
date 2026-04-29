@@ -74,18 +74,45 @@ describe("segmentRequest", () => {
     expect(out.length).toBeGreaterThan(1);
   });
 
-  test("each segment carries a Segment k/N annotation", () => {
+  test("rewrites the user payload with raw chunk text only — no synthetic labels", () => {
+    // The middleware must not inject ordinal markers into the user content,
+    // because exact-copy and structured-transformation prompts would echo
+    // them. Per-segment ordering lives in reassembly metadata, not in the
+    // payload sent to the model.
     const big = "x".repeat(300);
     const req = makeRequest([userMessage(big)]);
     const out = segmentRequest(req, 100);
     expect(out.length).toBe(3);
-    out.forEach((seg, i) => {
+    let recovered = ""; // let: rejoin chunks to verify no synthetic prefix
+    for (const seg of out) {
       const block = seg.messages[0]?.content[0];
       if (block === undefined || block.kind !== "text") {
         throw new Error("expected text block");
       }
-      expect(block.text.startsWith(`Segment ${i + 1}/${out.length}:\n`)).toBe(true);
-    });
+      expect(block.text).not.toMatch(/^Segment \d+\/\d+/);
+      recovered += block.text;
+    }
+    expect(recovered).toBe(big);
+  });
+
+  test("recursively segments multiple oversized user text blocks in one request", () => {
+    // Two large user blocks must both be split. Without recursion the
+    // unchunked block would push every produced segment back over the
+    // budget at re-validation time and cause an avoidable hard failure.
+    const a = "a".repeat(300);
+    const b = "b".repeat(200);
+    const req = makeRequest([userMessage(a), userMessage(b)]);
+    const out = segmentRequest(req, 100);
+    // 3 chunks of A × 2 chunks of B = 6 segments
+    expect(out.length).toBe(6);
+    for (const seg of out) {
+      const aBlock = seg.messages[0]?.content[0];
+      const bBlock = seg.messages[1]?.content[0];
+      if (aBlock === undefined || aBlock.kind !== "text") throw new Error("expected text A");
+      if (bBlock === undefined || bBlock.kind !== "text") throw new Error("expected text B");
+      expect(aBlock.text.length).toBeLessThanOrEqual(100);
+      expect(bBlock.text.length).toBeLessThanOrEqual(100);
+    }
   });
 
   test("preserves system prompt, tools, and prior messages", () => {

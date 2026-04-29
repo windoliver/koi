@@ -46,10 +46,13 @@ Agent
 L2 feature package — runtime deps on `@koi/core` (L0) and
 `@koi/token-estimator` (L0u). No external dependencies.
 
-`wrapModelStream` is intentionally not implemented: streaming requests are
-forwarded unchanged because reassembling chunked deltas across multiple
-downstream streams is materially more complex than the current scope.
-Callers that need RLM behavior should use the non-streaming path.
+`wrapModelStream` is implemented as a fail-closed gate, not a segmenter.
+Stream reassembly across multiple downstream streams is out of scope, but
+silently letting oversized streamed requests bypass RLM would be a
+contract break (engines with native `modelStream` skip call-only
+middleware on the streaming path). Small streamed requests forward
+unchanged; oversized ones throw — route them through the non-streaming
+path or compose with a compaction middleware.
 
 ### Token accounting
 
@@ -134,15 +137,19 @@ returns a `Result<RlmConfig, KoiError>`.
 
 `segmentRequest(request, maxChunkChars)`:
 
-1. Locate the largest text block across all user messages.
-2. If absent or already within `maxChunkChars`, return `[request]`.
+1. Locate the largest user text block whose length exceeds `maxChunkChars`.
+2. If every user text block already fits, return `[request]` unchanged.
 3. Otherwise call `splitText(text, maxChunkChars)` which prefers paragraph
    boundaries (`\n\n`), then line boundaries, and finally hard-cuts.
-4. Re-emit one `ModelRequest` per chunk with that block's text replaced by
-   `Segment k/N:\n${chunk}` and all other messages, system prompt, and tools
-   carried verbatim.
+4. Re-emit one `ModelRequest` per chunk with the **raw chunk text** replacing
+   the original block — no synthetic `Segment k/N:` prefix, so exact-copy
+   and structured-transformation prompts remain byte-safe.
+5. **Recurse** on each produced segment so a request with multiple
+   oversized user text blocks fans out across the cross product of their
+   chunks instead of failing closed at re-validation.
 
-`splitText(text, maxChars)` is exported for unit testing and reuse.
+All other messages, the system prompt, and the tools list are carried
+verbatim. `splitText(text, maxChars)` is exported for unit testing and reuse.
 
 ## Reassembly
 

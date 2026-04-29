@@ -2,19 +2,23 @@
  * RLM middleware factory — gates the downstream chain on input size and
  * splits oversized requests into segmented `next()` calls.
  *
- * Streaming requests pass through unchanged. Segmentation only applies
- * to the non-streaming `wrapModelCall` path because reassembling chunked
- * deltas across multiple downstream streams adds complexity that v2
- * phase-3 explicitly defers.
+ * `wrapModelCall` does the segment/dispatch/reassemble dance.
+ * `wrapModelStream` fails closed when the request exceeds the budget:
+ * streaming reassembly across multiple downstream streams is out of
+ * scope, but silently letting oversized streamed requests bypass the
+ * gate would be a contract break (engines with native `modelStream`
+ * skip call-only middleware on the streaming path).
  */
 
 import type {
   CapabilityFragment,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
   ModelStopReason,
+  ModelStreamHandler,
   TokenEstimator,
   TurnContext,
 } from "@koi/core";
@@ -179,6 +183,34 @@ export function createRlmMiddleware(config?: RlmConfig): KoiMiddleware {
     priority: cfg.priority,
     phase: "intercept",
     wrapModelCall: (ctx, req, next) => rlmWrapModelCall(cfg, ctx, req, next),
+    wrapModelStream: (ctx, req, next) => rlmWrapModelStream(cfg, ctx, req, next),
     describeCapabilities: () => capability,
   } satisfies KoiMiddleware;
+}
+
+/**
+ * Streaming gate: reassembling chunked text deltas across multiple
+ * downstream streams is out of scope, so we run the same threshold check
+ * as the non-streaming path and fail closed when it trips. Small requests
+ * forward unchanged. Failing closed (rather than silent passthrough) is
+ * critical: engines with native `modelStream` skip call-only middleware
+ * on the streaming path, so a missing hook would create a covert bypass.
+ */
+async function* rlmWrapModelStream(
+  cfg: ResolvedConfig,
+  _ctx: TurnContext,
+  request: ModelRequest,
+  next: ModelStreamHandler,
+): AsyncIterable<ModelChunk> {
+  const tokens = await estimateRequestTokens(cfg, request);
+  if (tokens <= cfg.maxInputTokens) {
+    emit(cfg, { kind: "passthrough", tokens });
+    yield* next(request);
+    return;
+  }
+  throw new Error(
+    `RLM cannot segment streaming requests (${String(tokens)} tokens > ${String(
+      cfg.maxInputTokens,
+    )}-token threshold). Stream reassembly across downstream streams is out of scope; route oversized turns through the non-streaming path or compose with a compaction middleware.`,
+  );
 }

@@ -17,10 +17,14 @@ interface TargetLocation {
 }
 
 /**
- * Locate the longest text block across all user messages. Returns
- * `undefined` if no text block exists.
+ * Locate the longest user text block strictly larger than `minChars`.
+ * Returns `undefined` when every user text block is already within bounds —
+ * the caller signals "nothing left to chunk".
  */
-function findLargestTextBlock(messages: readonly InboundMessage[]): TargetLocation | undefined {
+function findLargestOversizedTextBlock(
+  messages: readonly InboundMessage[],
+  minChars: number,
+): TargetLocation | undefined {
   let best: TargetLocation | undefined;
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
@@ -29,6 +33,7 @@ function findLargestTextBlock(messages: readonly InboundMessage[]): TargetLocati
     for (let j = 0; j < msg.content.length; j++) {
       const block = msg.content[j];
       if (block === undefined || block.kind !== "text") continue;
+      if (block.text.length <= minChars) continue;
       if (best === undefined || block.text.length > best.text.length) {
         best = { messageIndex: i, blockIndex: j, text: block.text };
       }
@@ -131,24 +136,39 @@ function replaceTextBlock(
 }
 
 /**
- * Segment a request into N requests, each with one chunk of the largest
- * user text block. Returns `[request]` unchanged if no text block can be
- * segmented (no user text or the block already fits).
+ * Segment a request into N requests by iteratively splitting every user text
+ * block that exceeds `maxChunkChars`. The user payload is rewritten verbatim
+ * with the chunk text only — no synthetic ordinal labels — so exact-copy and
+ * structured-transformation prompts remain byte-safe.
+ *
+ * Recursion: after splitting the largest oversized block, every produced
+ * segment is fed back through `segmentRequest`, so a request with multiple
+ * oversized text blocks fans out into the cross product of their chunks
+ * rather than rejecting valid multi-block input. Returns `[request]`
+ * unchanged when every user text block already fits within `maxChunkChars`.
+ *
+ * Per-segment ordinal information is intentionally not threaded into the
+ * `ModelRequest` — the caller (RLM middleware) sees the flat list and
+ * reconstructs ordering through reassembly metadata, keeping the user
+ * payload free of middleware bookkeeping.
  */
 export function segmentRequest(
   request: ModelRequest,
   maxChunkChars: number,
 ): readonly ModelRequest[] {
-  const target = findLargestTextBlock(request.messages);
+  const target = findLargestOversizedTextBlock(request.messages, maxChunkChars);
   if (target === undefined) return [request];
-  if (target.text.length <= maxChunkChars) return [request];
-
   const chunks = splitText(target.text, maxChunkChars);
   if (chunks.length <= 1) return [request];
 
-  return chunks.map((chunk, i) => {
-    const annotated = `Segment ${i + 1}/${chunks.length}:\n${chunk}`;
-    const messages = replaceTextBlock(request.messages, target, annotated);
-    return { ...request, messages };
-  });
+  const out: ModelRequest[] = [];
+  for (const chunk of chunks) {
+    const messages = replaceTextBlock(request.messages, target, chunk);
+    const reduced: ModelRequest = { ...request, messages };
+    // The chunked block may not have been the only oversized one; recurse
+    // on this reduced request so multi-block oversized inputs fan out
+    // across every offending block instead of failing closed downstream.
+    for (const sub of segmentRequest(reduced, maxChunkChars)) out.push(sub);
+  }
+  return out;
 }

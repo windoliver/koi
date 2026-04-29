@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type {
   InboundMessage,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   TurnContext,
 } from "@koi/core";
 import { runId, sessionId, turnId } from "@koi/core";
@@ -68,8 +70,8 @@ describe("createRlmMiddleware", () => {
 
   test("segments oversized requests and reassembles in order", async () => {
     // Heuristic estimator: 300-char message → 4 + 75 = 79 tokens. Each
-    // 100-char chunk → ~12 tokens after the Segment k/N prefix. Threshold
-    // of 30 splits the request into 3 segments, each under budget.
+    // 100-char chunk → ~29 tokens via the heuristic. Threshold of 50
+    // splits the request into 3 segments, each under budget.
     const events: RlmEvent[] = [];
     const mw = createRlmMiddleware({
       maxInputTokens: 50,
@@ -302,6 +304,46 @@ describe("createRlmMiddleware", () => {
     expect(Array.isArray(segs)).toBe(true);
     if (!Array.isArray(segs)) throw new Error("expected array");
     expect(segs.length).toBe(3);
+  });
+
+  test("wrapModelStream forwards small requests unchanged", async () => {
+    const mw = createRlmMiddleware({ maxInputTokens: 1_000, maxChunkChars: 100 });
+    const upstream: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "ok" };
+      yield {
+        kind: "done",
+        response: { content: "ok", model: "test" },
+      };
+    };
+    const chunks: ModelChunk[] = [];
+    for await (const c of mw.wrapModelStream?.(
+      turnCtx(),
+      { messages: [userMessage("hi")] },
+      upstream,
+    ) ?? []) {
+      chunks.push(c);
+    }
+    expect(chunks.length).toBe(2);
+  });
+
+  test("wrapModelStream fails closed for oversized requests", async () => {
+    const mw = createRlmMiddleware({ maxInputTokens: 5, maxChunkChars: 100 });
+    const upstream: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "should-not-arrive" };
+    };
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    let threw = false; // let: we expect the iterator's first pull to reject
+    try {
+      for await (const _c of iter) {
+        // unreachable
+      }
+    } catch (err: unknown) {
+      threw = true;
+      expect(String(err)).toMatch(/streaming requests/i);
+    }
+    expect(threw).toBe(true);
   });
 
   test("describeCapabilities returns a label", () => {
