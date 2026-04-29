@@ -11,13 +11,12 @@ const baseError = (code: KoiError["code"], message: string, extra?: Partial<KoiE
   }) satisfies KoiError;
 
 describe("formatErrorForChannel discriminated output", () => {
-  it("returns kind:'validation' with safeText and rawMessage for VALIDATION", () => {
+  it("returns kind:'validation' with sanitized safeText for VALIDATION", () => {
     const err = baseError("VALIDATION", "field 'x' is required");
     const out = formatErrorForChannel(err);
     expect(out).toEqual({
       kind: "validation",
       safeText: "Invalid input: field 'x' is required",
-      rawMessage: "field 'x' is required",
     });
   });
 
@@ -72,8 +71,8 @@ describe("formatErrorForChannel discriminated output", () => {
     });
 
     it("replaces ASCII control characters with spaces", () => {
-      const out = safeText("bad\nfield\rname\x00here\x07!");
-      expect(out).toBe("Invalid input: bad field name here !");
+      const out = safeText("bad\nfield\rname\x00here\x07end");
+      expect(out).toBe("Invalid input: bad field name here end");
     });
 
     it("caps long messages with an ellipsis", () => {
@@ -82,11 +81,29 @@ describe("formatErrorForChannel discriminated output", () => {
       expect(out.endsWith("…")).toBe(true);
     });
 
-    it("preserves rawMessage even when safeText is sanitized", () => {
+    it("strips @mentions so hostile text cannot trigger mass-notification", () => {
+      expect(safeText("invalid @everyone please fix")).toBe(
+        "Invalid input: invalid everyone please fix",
+      );
+      expect(safeText("ping @channel")).not.toContain("@");
+    });
+
+    it("strips backticks and emphasis markers (markdown formatting)", () => {
+      const out = safeText("nope `code` *bold* _under_ ~strike~");
+      expect(out).toBe("Invalid input: nope code bold under strike");
+      expect(out).not.toMatch(/[`*_~]/);
+    });
+
+    it("strips header, table, image, escape, and entity sigils", () => {
+      const out = safeText("# header | cell ! image &amp; \\escape");
+      expect(out).not.toMatch(/[#|!&\\]/);
+    });
+
+    it("does not expose raw error.message back to the adapter", () => {
       const raw = "click [here](https://evil.example) please";
       const out = formatErrorForChannel(baseError("VALIDATION", raw));
       if (out.kind !== "validation") throw new Error("expected validation kind");
-      expect(out.rawMessage).toBe(raw);
+      expect(out).not.toHaveProperty("rawMessage");
       expect(out.safeText).not.toContain("https://");
     });
   });

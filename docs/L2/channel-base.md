@@ -290,14 +290,14 @@ All builders handle `exactOptionalPropertyTypes` compliance — optional fields 
 ```
 ChannelErrorOutput =
   | { kind: "text"; text: string }
-  | { kind: "validation"; safeText: string; rawMessage: string }
+  | { kind: "validation"; safeText: string }
   | { kind: "auth-required"; safeText: string; error: KoiError }
 ```
 
 | Discriminant | When | Adapter contract |
 |---|---|---|
-| `text` | All canned codes (NOT_FOUND, RATE_LIMIT, …) | Render `text` directly. Channel-base guarantees no leakage. |
-| `validation` | `KoiErrorCode === "VALIDATION"` | Render `safeText` (sanitized — control chars stripped, scheme/`www.` URLs redacted, markdown link delims removed, length-capped) OR re-escape `rawMessage` through the adapter's own format-specific escaper if the default policy is too coarse. |
+| `text` | All canned codes (NOT_FOUND, RATE_LIMIT, …) | Render `text` directly. Channel-base guarantees no leakage. Unknown / forward-version codes fall back to a generic safe message. |
+| `validation` | `KoiErrorCode === "VALIDATION"` | Render `safeText` — plain text only, with control chars stripped, scheme/`www.` URLs redacted, markdown/mention/formatting/escape characters (`@`, `` ` ``, `*`, `_`, `~`, `#`, `\|`, `!`, `&`, `\`, `[`, `]`, `(`, `)`, `<`, `>`, `{`, `}`) stripped, and length-capped. Adapters that render to marked-up transports (HTML, etc.) MUST still apply their own transport-specific escaping on top. The raw `error.message` is intentionally NOT exposed; adapters needing structured field errors consume `KoiError.context`. |
 | `auth-required` | `KoiErrorCode === "AUTH_REQUIRED"` | Inspect `error.context` and validate any auth handoff URL against the adapter's own trust configuration before rendering a clickable link. Fall back to `safeText` if no auth UX path is available — leaves the user without a recovery action but never phishes them. |
 
 The canned messages are:

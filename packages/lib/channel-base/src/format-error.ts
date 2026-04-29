@@ -7,12 +7,13 @@
  *   - `kind: "text"` — canned, fully user-safe string. Concatenate into
  *     channel output as-is.
  *   - `kind: "validation"` — the validator's own message is user-relevant
- *     input feedback. The helper provides a pre-sanitized `safeText` (no
- *     control chars, no markdown link delimiters, scheme/`www.` URLs
- *     redacted, length-capped). Adapters MAY use `safeText` directly, OR
- *     re-render the raw `rawMessage` through their own format-specific
- *     escaper if they need a stricter or looser policy than the coarse
- *     default.
+ *     input feedback. The helper returns a pre-sanitized plain-text
+ *     `safeText` only (formatting/mention/URL/control characters
+ *     stripped or redacted, length-capped). The raw `error.message` is
+ *     deliberately NOT exposed: adapters that route around the sanitizer
+ *     would re-introduce the URL/phishing/mention surface this helper
+ *     exists to close. Adapters that need richer validation UX should
+ *     consume `KoiError.context` for structured field errors.
  *   - `kind: "auth-required"` — the channel-base layer cannot decide
  *     whether `error.context.authorizationUrl` (or any other auth handoff
  *     metadata) belongs to the configured OAuth issuer for the current
@@ -31,16 +32,34 @@ import type { KoiError, KoiErrorCode } from "@koi/core";
 const VALIDATION_MAX_LEN = 200;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: regex precisely targets ASCII control characters to strip them
 const CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
-const MARKDOWN_LINK_DELIMS = /[[\]()<>]/g;
+// Characters that drive formatting, mentions, links, or escaping on at
+// least one common chat transport (Slack/Discord/Markdown/HTML/Teams).
+// Stripping rather than escaping because we can't know the destination
+// transport at this layer; the sanitizer's contract is "plain text".
+const FORMATTING_CHARS = /[@`*_~#|!&\\[\]()<>{}]/g;
 const URL_LIKE = /\b(?:https?|ftps?|wss?):\/\/\S+/gi;
 const WWW_LIKE = /\bwww\.\S+/gi;
 
+/**
+ * Reduces a validator-controlled string to inert plain text:
+ *   - replaces ASCII control chars with spaces;
+ *   - redacts http/https/ws/ftp URLs and `www.` hostnames;
+ *   - strips formatting/mention/escape characters that any common chat
+ *     transport (Slack, Discord, Markdown, HTML, Teams) would interpret
+ *     as a link, mention, code span, emphasis, header, table cell, image,
+ *     entity, or escape;
+ *   - caps the length.
+ *
+ * The output is "plain text" only. Adapters that render to a marked-up
+ * transport must still apply transport-specific escaping (e.g. HTML-
+ * encoding for HTML surfaces) on top of this pass.
+ */
 function sanitizeValidationMessage(raw: string): string {
   const stripped = raw
     .replace(CONTROL_CHARS, " ")
     .replace(URL_LIKE, "link removed")
     .replace(WWW_LIKE, "link removed")
-    .replace(MARKDOWN_LINK_DELIMS, "");
+    .replace(FORMATTING_CHARS, "");
   return stripped.length > VALIDATION_MAX_LEN
     ? `${stripped.slice(0, VALIDATION_MAX_LEN)}…`
     : stripped;
@@ -76,10 +95,19 @@ export type ChannelErrorOutput =
     }
   | {
       readonly kind: "validation";
-      /** Sanitized text safe to concatenate into any channel transport. */
+      /**
+       * Plain-text rendering of the validator's message, with formatting,
+       * mention, URL, and control characters stripped/redacted. Adapters
+       * that render to marked-up transports (HTML, etc.) must still apply
+       * their own transport-specific escaping on top.
+       *
+       * Adapters that need richer validation UX (structured field errors,
+       * for example) should treat `KoiError.context` as their structured
+       * input — this helper deliberately does not expose `error.message`
+       * so adapters cannot accidentally route attacker-controlled text
+       * around the URL/formatting redaction performed here.
+       */
       readonly safeText: string;
-      /** Raw validator message; adapters may re-escape this themselves. */
-      readonly rawMessage: string;
     }
   | {
       readonly kind: "auth-required";
@@ -98,7 +126,6 @@ export function formatErrorForChannel(error: KoiError): ChannelErrorOutput {
     return {
       kind: "validation",
       safeText: `Invalid input: ${sanitizeValidationMessage(error.message)}`,
-      rawMessage: error.message,
     };
   }
   if (error.code === "AUTH_REQUIRED") {
