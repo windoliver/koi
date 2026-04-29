@@ -1215,6 +1215,50 @@ describe("createRlmMiddleware", () => {
     expect(aborted.completedUsage?.inputTokens).toBe(5);
   });
 
+  test("wrapModelStream forwards per-segment usage chunks as heartbeats so activity-timeout sees outward progress", async () => {
+    // The runtime activity-timeout wrapper only resets its idle clock
+    // on emitted engine events. If RLM buffered all usage / text until
+    // every segment finished, a healthy oversized streamed turn that
+    // emitted no thinking_delta would look idle to the wrapper and be
+    // killed mid-flight. Each upstream `usage` chunk must surface
+    // immediately so the timeout layer counts it as progress.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let segmentCount = 0; // let: per-segment counter
+    const upstream: ModelStreamHandler = async function* () {
+      segmentCount += 1;
+      const n = segmentCount;
+      yield { kind: "text_delta", delta: `seg${n}` };
+      yield { kind: "usage", inputTokens: 4, outputTokens: 1 };
+      yield {
+        kind: "done",
+        response: {
+          content: `seg${n}`,
+          model: "stream-model",
+          stopReason: "stop" as const,
+        },
+      };
+    };
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    const ordered: ModelChunk[] = [];
+    for await (const c of iter) ordered.push(c);
+    // We expect at least one heartbeat usage per segment + the
+    // post-reassembly aggregate usage. With N segments the consumer
+    // therefore observes >= N+1 usage chunks. The first usage must
+    // land BEFORE the merged terminal text_delta — proving the
+    // timeout layer would see in-flight progress, not silence.
+    const usageChunks = ordered.filter((c) => c.kind === "usage");
+    const firstUsageIdx = ordered.findIndex((c) => c.kind === "usage");
+    const finalTextIdx = ordered.findIndex((c) => c.kind === "text_delta");
+    expect(usageChunks.length).toBeGreaterThanOrEqual(segmentCount + 1);
+    expect(firstUsageIdx).toBeLessThan(finalTextIdx);
+  });
+
   test("describeCapabilities returns a label", () => {
     const mw = createRlmMiddleware();
     const cap = mw.describeCapabilities?.(turnCtx());

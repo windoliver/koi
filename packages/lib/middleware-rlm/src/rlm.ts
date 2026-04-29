@@ -488,10 +488,21 @@ interface ConsumedSegment {
   readonly thinkingText: string;
 }
 
-async function consumeStream(
+/**
+ * Async generator over a single segment's downstream stream.
+ *
+ * Yields safe heartbeat chunks (`usage`) as the upstream emits them so
+ * the runtime activity-timeout wrapper sees outward progress and does
+ * not classify a healthy oversized streamed turn as idle. Text and
+ * thinking_delta chunks are still buffered (not yielded here) — they
+ * cannot leak before the segment passes the safety guards in the
+ * outer loop. The terminal `ConsumedSegment` is returned via the
+ * generator's `TReturn`, accessible on the final `IteratorResult.value`.
+ */
+async function* consumeStream(
   request: ModelRequest,
   next: ModelStreamHandler,
-): Promise<ConsumedSegment> {
+): AsyncGenerator<ModelChunk, ConsumedSegment, void> {
   let streamedInput = 0; // let: per-segment usage accumulator
   let streamedOutput = 0; // let: per-segment usage accumulator
   let sawUsage = false; // let: did the stream emit any `usage` chunks
@@ -666,6 +677,13 @@ async function consumeStream(
         streamedInput += chunk.inputTokens;
         streamedOutput += chunk.outputTokens;
         sawUsage = true;
+        // Forward upstream usage as a heartbeat so the runtime
+        // activity-timeout wrapper sees outward progress and does not
+        // classify a healthy oversized streamed turn (whose
+        // text/thinking we are intentionally buffering until the
+        // safety guard) as idle. Usage chunks carry no model content,
+        // so this is safe to surface before reassembly.
+        yield { kind: "usage", inputTokens: chunk.inputTokens, outputTokens: chunk.outputTokens };
         continue;
       }
       if (chunk.kind === "done") {
@@ -884,7 +902,18 @@ async function* rlmWrapModelStream(
     }
     let consumed: ConsumedSegment;
     try {
-      consumed = await consumeStream(seg, next);
+      // Manually drive the segment generator so we can forward its
+      // safe heartbeat chunks (usage) to the consumer in real time —
+      // critical for keeping the runtime activity-timeout layer happy
+      // — while still capturing the terminal `ConsumedSegment` from
+      // the generator's return value.
+      const gen = consumeStream(seg, next);
+      let result = await gen.next();
+      while (result.done !== true) {
+        yield result.value;
+        result = await gen.next();
+      }
+      consumed = result.value;
     } catch (err: unknown) {
       // A thrown downstream failure (provider blew up before yielding,
       // iterator rejected, etc.) must still surface completedSegments /
