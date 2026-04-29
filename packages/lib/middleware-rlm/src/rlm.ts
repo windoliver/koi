@@ -588,14 +588,13 @@ async function* consumeStream(
   try {
     iterator = next(request)[Symbol.asyncIterator]();
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+    // Preserve KoiError-shaped retry/backoff metadata
+    // (`code`/`retryable`/`retryAfterMs`) the same way the call path
+    // and post-init streaming failures do — so a structured rate-limit
+    // or timeout thrown before the first chunk does not become an
+    // opaque hard failure for retry middleware.
     return {
-      response: {
-        content: "",
-        model: request.model ?? "",
-        stopReason: "error",
-        metadata: { rlmStreamError: message },
-      },
+      response: buildErrorResponse(request, err),
       thinkingText: "",
     };
   }
@@ -675,8 +674,16 @@ async function* consumeStream(
         // surfaced as a thrown promise, etc.). Synthesize a terminal
         // error response so the outer segment loop can wrap it with
         // SegmentAbortError.completedSegments and let callers resume.
+        // Preserve KoiError retry/backoff fields if present on the
+        // throwable.
         const message = err instanceof Error ? err.message : String(err);
-        return buildTerminalResponse({ errorMessage: message });
+        const fields = extractKoiErrorFields(err);
+        return buildTerminalResponse({
+          errorMessage: message,
+          ...(fields.code !== undefined ? { errorCode: fields.code } : {}),
+          ...(fields.retryable !== undefined ? { retryable: fields.retryable } : {}),
+          ...(fields.retryAfterMs !== undefined ? { retryAfterMs: fields.retryAfterMs } : {}),
+        });
       }
       if ("aborted" in settled && settled.aborted === true) {
         // Distinguish caller cancel from activity-timeout via the

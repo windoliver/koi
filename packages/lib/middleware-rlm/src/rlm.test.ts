@@ -1357,6 +1357,57 @@ describe("createRlmMiddleware", () => {
     expect(meta?.retryAfterMs).toBe(5000);
   });
 
+  test("wrapModelStream preserves KoiError retry metadata when stream construction throws", async () => {
+    // Stream init that throws BEFORE yielding the first chunk (provider
+    // 429 surfaced synchronously, hook fault, etc.) must still surface
+    // KoiError fields so retry/backoff middleware can act on them.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let call = 0; // let: per-test counter
+    const upstream: ModelStreamHandler = (_req) => {
+      call += 1;
+      if (call === 1) {
+        return (async function* () {
+          yield { kind: "text_delta", delta: "seg1" };
+          yield {
+            kind: "done",
+            response: {
+              content: "seg1",
+              model: "stream-model",
+              stopReason: "stop" as const,
+            },
+          };
+        })();
+      }
+      // Synchronously throw at construction time (before first yield).
+      const err = new Error("rate limited");
+      Object.assign(err, { code: "RATE_LIMIT", retryable: true, retryAfterMs: 1234 });
+      throw err;
+    };
+    const big = "x".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    let caught: unknown;
+    try {
+      for await (const _ of iter) {
+        // exhaust until segment loop wraps the thrown init failure
+      }
+    } catch (err: unknown) {
+      caught = err;
+    }
+    if (!(caught instanceof Error) || !("segmentResponse" in caught)) {
+      throw new Error("expected SegmentAbortError");
+    }
+    const aborted = caught as unknown as Error & { readonly segmentResponse: ModelResponse };
+    const meta = aborted.segmentResponse.metadata as Record<string, unknown> | undefined;
+    expect(meta?.errorCode).toBe("RATE_LIMIT");
+    expect(meta?.retryable).toBe(true);
+    expect(meta?.retryAfterMs).toBe(1234);
+  });
+
   test("describeCapabilities returns a label", () => {
     const mw = createRlmMiddleware();
     const cap = mw.describeCapabilities?.(turnCtx());
