@@ -54,4 +54,30 @@ describe("createDockerInstance", () => {
     expect(stopped).toBe(1);
     expect(removed).toBe(1);
   });
+
+  test("readFile and writeFile proxy to the underlying container", async () => {
+    let readPath = "";
+    let wroteAt = "";
+    let wroteBytes: Uint8Array | undefined;
+    const inst = createDockerInstance({
+      id: "stub",
+      exec: async (): Promise<DockerExecResult> => ({ exitCode: 0, stdout: "", stderr: "" }),
+      readFile: async (path): Promise<Uint8Array> => {
+        readPath = path;
+        return new TextEncoder().encode("hello");
+      },
+      writeFile: async (path, content): Promise<void> => {
+        wroteAt = path;
+        wroteBytes = content;
+      },
+      stop: async (): Promise<void> => {},
+      remove: async (): Promise<void> => {},
+    });
+    const got = await inst.readFile("/in.txt");
+    expect(new TextDecoder().decode(got)).toBe("hello");
+    expect(readPath).toBe("/in.txt");
+    await inst.writeFile("/out.txt", new TextEncoder().encode("payload"));
+    expect(wroteAt).toBe("/out.txt");
+    expect(wroteBytes !== undefined && new TextDecoder().decode(wroteBytes)).toBe("payload");
+  });
 });
