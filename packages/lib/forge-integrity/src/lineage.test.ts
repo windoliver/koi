@@ -154,6 +154,45 @@ describe("lineage", () => {
     expect(MAX_LINEAGE_DEPTH).toBeGreaterThan(0);
   });
 
+  test("isDerivedFrom normalizes a verifier that throws into integrity_failed", async () => {
+    const root = makeTool();
+    const child = makeTool({ implementation: "v2", parentBrickId: root.id });
+    const throwingVerify = (() => {
+      throw new Error("verifier exploded");
+    }) as unknown as ReturnType<typeof createBrickVerifier>;
+    const result = await isDerivedFrom(child, root.id, fixtureStore([root]), {
+      verify: throwingVerify,
+      producerBuilderId: "koi/forge",
+    });
+    expect(result.kind).toBe("integrity_failed");
+    if (result.kind === "integrity_failed") expect(result.reason).toBe("recompute_failed");
+  });
+
+  test("findDuplicateById tolerates a verifier that throws", () => {
+    const a = makeTool({ implementation: "code" });
+    const b = makeTool({ implementation: "code" });
+    const throwingVerify = (() => {
+      throw new Error("boom");
+    }) as unknown as ReturnType<typeof createBrickVerifier>;
+    expect(findDuplicateById([a], b, "koi/forge", throwingVerify)).toBeUndefined();
+  });
+
+  test("isDerivedFrom normalizes a malformed store.load resolved payload to malformed", async () => {
+    const root = makeTool();
+    const child = makeTool({ implementation: "v2", parentBrickId: root.id });
+    const brokenStore: ForgeStore = {
+      save: () => Promise.resolve({ ok: true, value: undefined }),
+      // Resolves a non-Result payload — must surface as malformed, not throw.
+      load: () => Promise.resolve(null as unknown as Result<BrickArtifact, KoiError>),
+      search: () => notImplemented(),
+      remove: () => notImplemented(),
+      update: () => notImplemented(),
+      exists: () => Promise.resolve({ ok: true, value: false }),
+    };
+    const result = await isDerivedFromUnchecked(child, root.id, brokenStore);
+    expect(result.kind).toBe("malformed");
+  });
+
   test("isDerivedFrom returns malformed for null/missing/wrong-shape options instead of throwing", async () => {
     const root = makeTool();
     const child = makeTool({ implementation: "v2", parentBrickId: root.id });

@@ -14,7 +14,7 @@
 
 import type { BrickArtifact, BrickId, ForgeStore, KoiError } from "@koi/core";
 import { isBrickId } from "@koi/hash";
-import type { BrickVerifier } from "./integrity.js";
+import type { BrickVerifier, IntegrityResult } from "./integrity.js";
 
 /** Maximum lineage walk depth — prevents infinite loops on malformed chains. */
 export const MAX_LINEAGE_DEPTH = 64;
@@ -155,7 +155,7 @@ async function walk(
   // before trusting its `parentBrickId`. Otherwise a tampered child whose
   // provenance points at a trusted ancestor would be accepted as derived.
   if (options !== undefined) {
-    const childVerdict = options.verify(child, options.producerBuilderId);
+    const childVerdict = safeVerify(options.verify, child, options.producerBuilderId);
     if (childVerdict.kind !== "ok") {
       return {
         kind: "integrity_failed",
@@ -193,16 +193,35 @@ async function walk(
       };
       return { kind: "store_error", at: parentId, error };
     }
+    // Validate the resolved Result shape before dereferencing. A buggy or
+    // version-skewed store that resolves null/undefined or omits `ok`/
+    // `error`/`value` must surface as a typed malformed outcome rather
+    // than crashing the caller on the trust boundary.
+    if (result === null || typeof result !== "object" || typeof result.ok !== "boolean") {
+      return {
+        kind: "malformed",
+        at: parentId,
+        reason: "store.load resolved a non-Result payload",
+      };
+    }
     if (!result.ok) {
+      const err = result.error;
+      if (err === null || typeof err !== "object" || typeof err.code !== "string") {
+        return {
+          kind: "malformed",
+          at: parentId,
+          reason: "store.load returned ok:false with malformed error",
+        };
+      }
       // Distinguish a legitimately-absent ancestor (cache eviction, lagging
       // replica, partial store) from a transport/backend failure. Callers
       // that need to fail-closed on either can collapse the cases; callers
       // that retain only recent ancestry can treat `missing_link` as
       // expected and surface a less alarming outcome to operators.
-      if (result.error.code === "NOT_FOUND") {
-        return { kind: "missing_link", at: parentId, error: result.error };
+      if (err.code === "NOT_FOUND") {
+        return { kind: "missing_link", at: parentId, error: err };
       }
-      return { kind: "store_error", at: parentId, error: result.error };
+      return { kind: "store_error", at: parentId, error: err };
     }
 
     const loadedShape = inspectLineageShape(result.value);
@@ -234,7 +253,7 @@ async function walk(
           reason: "loaded ancestor missing provenance.builder.id",
         };
       }
-      const verdict = options.verify(result.value, ancestorBuilderId);
+      const verdict = safeVerify(options.verify, result.value, ancestorBuilderId);
       if (verdict.kind !== "ok") {
         return {
           kind: "integrity_failed",
@@ -272,12 +291,55 @@ export function findDuplicateById(
   producerBuilderId: string,
   verify: BrickVerifier,
 ): BrickArtifact | undefined {
-  const candidateVerdict = verify(candidate, producerBuilderId);
+  const candidateVerdict = safeVerify(verify, candidate, producerBuilderId);
   if (candidateVerdict.kind !== "ok") return undefined;
   const candidateId = candidate.id;
   return bricks.find((b) => {
     if (b.id !== candidateId) return false;
-    const result = verify(b, producerBuilderId);
+    const result = safeVerify(verify, b, producerBuilderId);
     return result.kind === "ok";
   });
+}
+
+/**
+ * Invoke a caller-supplied `BrickVerifier` defensively. The verifier may be
+ * a custom implementation, not necessarily one minted by `createBrickVerifier`,
+ * so a synchronous throw or a non-result return must not escape into the
+ * caller. Both are normalized to `recompute_failed` so the surrounding
+ * helper surfaces `integrity_failed` / undefined rather than crashing on
+ * the trust boundary during exactly the check that should fail closed.
+ */
+function safeVerify(
+  verify: BrickVerifier,
+  brick: BrickArtifact,
+  expectedBuilderId: string,
+): IntegrityResult {
+  let raw: unknown;
+  try {
+    raw = verify(brick, expectedBuilderId);
+  } catch (err: unknown) {
+    return {
+      kind: "recompute_failed",
+      ok: false,
+      brickId:
+        typeof brick?.id === "string" ? (brick.id as BrickId) : ("sha256:unknown" as BrickId),
+      builderId: expectedBuilderId,
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+  if (
+    raw === null ||
+    typeof raw !== "object" ||
+    typeof (raw as { kind?: unknown }).kind !== "string"
+  ) {
+    return {
+      kind: "recompute_failed",
+      ok: false,
+      brickId:
+        typeof brick?.id === "string" ? (brick.id as BrickId) : ("sha256:unknown" as BrickId),
+      builderId: expectedBuilderId,
+      reason: "verifier returned a non-IntegrityResult value",
+    };
+  }
+  return raw as IntegrityResult;
 }
