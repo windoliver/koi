@@ -38,6 +38,7 @@ interface MakeToolOptions {
   readonly name?: string;
   readonly parentBrickId?: BrickId | undefined;
   readonly id?: BrickId | undefined;
+  readonly builderId?: string | undefined;
 }
 
 /**
@@ -54,10 +55,13 @@ export function recomputeFixtureId(brick: BrickArtifact): BrickId {
 export function makeTool(options: MakeToolOptions = {}): ToolArtifact {
   const implementation = options.implementation ?? "export default () => 1";
   const id = options.id ?? computeBrickId("tool", implementation);
+  const builder =
+    options.builderId !== undefined ? { id: options.builderId } : baseProvenance.builder;
+  const withBuilder: ForgeProvenance = { ...baseProvenance, builder };
   const provenance: ForgeProvenance =
     options.parentBrickId !== undefined
-      ? { ...baseProvenance, parentBrickId: options.parentBrickId, evolutionKind: "fix" }
-      : baseProvenance;
+      ? { ...withBuilder, parentBrickId: options.parentBrickId, evolutionKind: "fix" }
+      : withBuilder;
   return {
     id,
     kind: "tool",

@@ -24,6 +24,7 @@ export type LineageOutcome =
   | { readonly kind: "not_derived" }
   | { readonly kind: "depth_exceeded"; readonly depth: number }
   | { readonly kind: "cycle_detected"; readonly at: BrickId }
+  | { readonly kind: "missing_link"; readonly at: BrickId; readonly error: KoiError }
   | { readonly kind: "store_error"; readonly at: BrickId; readonly error: KoiError }
   | { readonly kind: "malformed"; readonly at?: BrickId; readonly reason: string }
   | {
@@ -36,10 +37,12 @@ export type LineageOutcome =
 export interface IsDerivedFromOptions {
   /**
    * Required when the caller intends to trust the result for policy or
-   * dedup. Each loaded ancestor is verified under the named producer's
-   * scheme before its `parentBrickId` is followed; an ancestor that fails
-   * integrity short-circuits with `integrity_failed` instead of letting a
-   * corrupt/adversarial record dictate the lineage walk.
+   * dedup. The child is verified under `producerBuilderId`; each loaded
+   * ancestor is verified under its OWN claimed `provenance.builder.id` so
+   * lineage can legitimately cross producer rotations/renames without
+   * collapsing the chain. Trust still flows through the verifier's frozen
+   * registry — an ancestor claiming an unregistered builder fails closed
+   * with `integrity_failed` (producer_unknown).
    */
   readonly verify: BrickVerifier;
   readonly producerBuilderId: string;
@@ -148,7 +151,17 @@ export async function isDerivedFrom(
       };
       return { kind: "store_error", at: parentId, error };
     }
-    if (!result.ok) return { kind: "store_error", at: parentId, error: result.error };
+    if (!result.ok) {
+      // Distinguish a legitimately-absent ancestor (cache eviction, lagging
+      // replica, partial store) from a transport/backend failure. Callers
+      // that need to fail-closed on either can collapse the cases; callers
+      // that retain only recent ancestry can treat `missing_link` as
+      // expected and surface a less alarming outcome to operators.
+      if (result.error.code === "NOT_FOUND") {
+        return { kind: "missing_link", at: parentId, error: result.error };
+      }
+      return { kind: "store_error", at: parentId, error: result.error };
+    }
 
     const loadedShape = inspectLineageShape(result.value);
     if (loadedShape.kind === "malformed") {
@@ -165,12 +178,26 @@ export async function isDerivedFrom(
       };
     }
     if (options !== undefined) {
-      const verdict = options.verify(result.value, options.producerBuilderId);
+      // Verify each ancestor against its OWN claimed builder.id, not the
+      // child's. Lineage may legitimately cross builder renames/rotations,
+      // and pinning the entire chain to one producer would reject valid
+      // mixed-producer ancestry. Trust flows through the verifier's frozen
+      // registry: an ancestor whose claimed builder is unregistered surfaces
+      // as `producer_unknown` and fails the walk closed.
+      const ancestorBuilderId = result.value.provenance?.builder?.id;
+      if (typeof ancestorBuilderId !== "string" || ancestorBuilderId.length === 0) {
+        return {
+          kind: "malformed",
+          at: parentId,
+          reason: "loaded ancestor missing provenance.builder.id",
+        };
+      }
+      const verdict = options.verify(result.value, ancestorBuilderId);
       if (verdict.kind !== "ok") {
         return {
           kind: "integrity_failed",
           at: parentId,
-          producerBuilderId: options.producerBuilderId,
+          producerBuilderId: ancestorBuilderId,
           reason: verdict.kind,
         };
       }
@@ -183,23 +210,29 @@ export async function isDerivedFrom(
 }
 
 /**
- * Returns the first brick in `bricks` whose stored `id` equals `candidateId`
- * AND whose recomputed identity passes `verify` for the named producer.
+ * Returns the first brick in `bricks` whose stored `id` equals `candidate.id`
+ * AND for which BOTH the candidate AND the stored brick verify under
+ * `producerBuilderId`.
+ *
+ * Verifying the candidate first prevents an attacker-controlled artifact
+ * from aliasing onto a trusted stored brick by id alone: an upstream caller
+ * that passes an unverified or fabricated candidate would otherwise be told
+ * "duplicate" the moment any stored brick happened to share that id.
  *
  * Stored bricks can claim any `provenance.builder.id`; equality of `BrickId`
- * alone is not safe as a cross-producer dedup key, and the claimed builder
- * is read from the unverified artifact. We therefore require the caller to
- * supply a `BrickVerifier` and only treat a candidate as a duplicate if the
- * stored brick verifies as `ok` under the expected producer's scheme. A
- * poisoned store entry that squats on a candidate id but cannot recompute
- * to the same canonical content is rejected.
+ * alone is not safe as a cross-producer dedup key. A poisoned store entry
+ * that squats on a candidate id but cannot recompute to the same canonical
+ * content is rejected by the per-stored verification.
  */
 export function findDuplicateById(
   bricks: readonly BrickArtifact[],
-  candidateId: BrickId,
+  candidate: BrickArtifact,
   producerBuilderId: string,
   verify: BrickVerifier,
 ): BrickArtifact | undefined {
+  const candidateVerdict = verify(candidate, producerBuilderId);
+  if (candidateVerdict.kind !== "ok") return undefined;
+  const candidateId = candidate.id;
   return bricks.find((b) => {
     if (b.id !== candidateId) return false;
     const result = verify(b, producerBuilderId);

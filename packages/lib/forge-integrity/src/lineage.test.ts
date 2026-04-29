@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifact, BrickId, ForgeStore, KoiError, Result } from "@koi/core";
-import { computeBrickId } from "@koi/hash";
 import { makeTool, recomputeFixtureId } from "./__tests__/fixtures.js";
 import { createBrickVerifier } from "./integrity.js";
 import {
@@ -110,6 +109,46 @@ describe("lineage", () => {
     }
   });
 
+  test("isDerivedFrom returns missing_link when store reports NOT_FOUND for an ancestor", async () => {
+    const root = makeTool({ implementation: "v1" });
+    const mid = makeTool({ implementation: "v2", parentBrickId: root.id });
+    const child = makeTool({ implementation: "v3", parentBrickId: mid.id });
+    // Cache eviction / lagging replica: the chain references `mid` but the
+    // backing store returns NOT_FOUND. This must surface as missing_link
+    // rather than a generic store_error so callers can distinguish a
+    // partial-store condition from a transport failure.
+    const store = fixtureStore([root, child]);
+    const result = await isDerivedFrom(child, root.id, store);
+    expect(result.kind).toBe("missing_link");
+    if (result.kind === "missing_link") {
+      expect(result.at).toBe(mid.id);
+      expect(result.error.code).toBe("NOT_FOUND");
+    }
+  });
+
+  test("isDerivedFrom verifies each ancestor against its OWN claimed builder", async () => {
+    // Lineage that crosses a builder rotation: child claims producer A,
+    // ancestor claims producer B. Both producers are in the registry, so
+    // the chain validates. Pinning ancestor verification to the child's
+    // producer would have rejected this legitimate mixed-producer chain.
+    const ancestor = makeTool({ implementation: "ancestor", builderId: "koi/forge-v2" });
+    const child = makeTool({
+      implementation: "child",
+      parentBrickId: ancestor.id,
+      builderId: "koi/forge",
+    });
+    const multiVerify = createBrickVerifier({
+      "koi/forge": recomputeFixtureId,
+      "koi/forge-v2": recomputeFixtureId,
+    });
+    const store = fixtureStore([ancestor]);
+    const result = await isDerivedFrom(child, ancestor.id, store, {
+      verify: multiVerify,
+      producerBuilderId: "koi/forge",
+    });
+    expect(result.kind).toBe("derived");
+  });
+
   test("isDerivedFrom is bounded by MAX_LINEAGE_DEPTH", () => {
     expect(MAX_LINEAGE_DEPTH).toBeGreaterThan(0);
   });
@@ -117,12 +156,12 @@ describe("lineage", () => {
   test("findDuplicateById detects verified content-equivalent brick within one producer", () => {
     const a = makeTool({ implementation: "code" });
     const b = makeTool({ implementation: "code" });
-    expect(findDuplicateById([a], b.id, "koi/forge", verify)?.id).toBe(a.id);
+    expect(findDuplicateById([a], b, "koi/forge", verify)?.id).toBe(a.id);
   });
 
   test("findDuplicateById returns undefined when no match", () => {
     const a = makeTool({ implementation: "code" });
-    const novel = computeBrickId("tool", "different");
+    const novel = makeTool({ implementation: "different" });
     expect(findDuplicateById([a], novel, "koi/forge", verify)).toBeUndefined();
   });
 
@@ -131,9 +170,21 @@ describe("lineage", () => {
     // A poisoned entry shares the candidate id but tampered content cannot
     // recompute to the same canonical id. The verifier must catch it.
     const poisoned: BrickArtifact = { ...real, implementation: "// poisoned" } as BrickArtifact;
-    expect(findDuplicateById([poisoned], real.id, "koi/forge", verify)).toBeUndefined();
+    expect(findDuplicateById([poisoned], real, "koi/forge", verify)).toBeUndefined();
     // The real one verifies and is returned.
-    expect(findDuplicateById([poisoned, real], real.id, "koi/forge", verify)?.id).toBe(real.id);
+    expect(findDuplicateById([poisoned, real], real, "koi/forge", verify)?.id).toBe(real.id);
+  });
+
+  test("findDuplicateById rejects an unverified candidate even if stored brick verifies", () => {
+    const trusted = makeTool({ implementation: "trusted" });
+    // Attacker fabricates a candidate that claims trusted.id but whose
+    // content cannot recompute to it. Without candidate verification the
+    // helper would alias the fabrication onto the trusted stored brick.
+    const fabricated: BrickArtifact = {
+      ...trusted,
+      implementation: "// attacker payload",
+    } as BrickArtifact;
+    expect(findDuplicateById([trusted], fabricated, "koi/forge", verify)).toBeUndefined();
   });
 
   test("isDerivedFrom rejects a tampered child whose parentBrickId points at a real ancestor", async () => {
