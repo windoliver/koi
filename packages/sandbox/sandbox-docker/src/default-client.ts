@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import type {
   DockerClient,
   DockerContainer,
@@ -5,6 +6,10 @@ import type {
   DockerExecOpts,
   DockerExecResult,
 } from "./types.js";
+
+function quoteShellArg(arg: string): string {
+  return `'${arg.replace(/'/g, "'\\''")}'`;
+}
 
 async function runDocker(args: readonly string[], stdin?: string): Promise<DockerExecResult> {
   const proc = Bun.spawn(["docker", ...args], {
@@ -42,14 +47,20 @@ function makeContainer(id: string): DockerContainer {
       return runDocker(args, execOpts.stdin);
     },
     readFile: async (path: string): Promise<Uint8Array> => {
-      const r = await runDocker(["exec", id, "cat", path]);
-      if (r.exitCode !== 0) throw new Error(`readFile failed: ${r.stderr}`);
-      return new TextEncoder().encode(r.stdout);
+      const r = await runDocker(["exec", id, "base64", path]);
+      if (r.exitCode !== 0) {
+        throw new Error(`readFile failed for container ${id}`, { cause: r });
+      }
+      const buf = Buffer.from(r.stdout.trim(), "base64");
+      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
     },
     writeFile: async (path: string, content: Uint8Array): Promise<void> => {
-      const text = new TextDecoder().decode(content);
-      const r = await runDocker(["exec", "-i", id, "sh", "-c", `cat > ${path}`], text);
-      if (r.exitCode !== 0) throw new Error(`writeFile failed: ${r.stderr}`);
+      const b64 = Buffer.from(content).toString("base64");
+      const quotedPath = quoteShellArg(path);
+      const r = await runDocker(["exec", "-i", id, "sh", "-c", `base64 -d > ${quotedPath}`], b64);
+      if (r.exitCode !== 0) {
+        throw new Error(`writeFile failed for container ${id}`, { cause: r });
+      }
     },
     stop: async (): Promise<void> => {
       await runDocker(["stop", id]);
@@ -65,12 +76,12 @@ export function createDefaultDockerClient(): DockerClient {
     createContainer: async (opts: DockerCreateOpts): Promise<DockerContainer> => {
       const create = await runDocker(buildCreateArgs(opts));
       if (create.exitCode !== 0) {
-        throw new Error(`docker create failed: ${create.stderr}`, { cause: create });
+        throw new Error("docker create failed", { cause: create });
       }
       const id = create.stdout.trim();
       const start = await runDocker(["start", id]);
       if (start.exitCode !== 0) {
-        throw new Error(`docker start failed: ${start.stderr}`, { cause: start });
+        throw new Error("docker start failed", { cause: start });
       }
       return makeContainer(id);
     },
