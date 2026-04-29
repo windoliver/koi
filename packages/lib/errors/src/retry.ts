@@ -57,10 +57,20 @@ const NON_RETRYABLE_CODES: ReadonlySet<KoiErrorCode> = new Set([
 ]);
 
 /**
- * Determines whether an error should be retried based on its code.
+ * Determines whether an error should be retried.
+ *
+ * KoiError.retryable is part of the type contract — every well-formed
+ * KoiError carries an explicit boolean classification from its producer.
+ * Honor that classification verbatim: `true` means retry, `false` means
+ * do not retry, regardless of code-based defaults. This lets producers
+ * downgrade a normally-retryable code (e.g. TIMEOUT with delivery-unknown
+ * semantics) without callers blindly replaying it.
+ *
+ * If the field is missing (untyped JS caller, malformed object), fall
+ * back to code-based defaults as a safety net.
  */
 export function isRetryable(error: KoiError): boolean {
-  if (error.retryable) return true;
+  if (typeof error.retryable === "boolean") return error.retryable;
   if (NON_RETRYABLE_CODES.has(error.code)) return false;
   return RETRYABLE_CODES.has(error.code);
 }

@@ -940,6 +940,35 @@ describe("createRateLimiter", () => {
       expect(lateOutcomes).toEqual(["late-success"]);
     });
 
+    it("liveness mode does not reissue a send when the first attempt succeeds during the backoff sleep", async () => {
+      // Regression: loop-5 round 1 finding 2. The recheck before sleep
+      // does not cover a settlement that lands DURING the sleep window.
+      // The implementation now races sleep(delay) against run.settled
+      // and rechecks the late outcome after the sleep.
+      let attempts = 0;
+      const limiter = createRateLimiter({
+        retry: {
+          ...errors.DEFAULT_RETRY_CONFIG,
+          maxRetries: 1,
+          initialDelayMs: 80,
+          jitter: false,
+        },
+        isRetryable: (e) =>
+          typeof e === "object" && e !== null && (e as { code?: string }).code === "TIMEOUT",
+        sendTimeoutMs: 20,
+        advanceOnTimeout: true,
+      });
+      // First attempt: still pending after 20ms grace AND 20ms second wait,
+      // but resolves at +60ms — i.e. during the 80ms backoff sleep.
+      const fn: SendFn = () =>
+        new Promise<void>((resolve) => {
+          attempts++;
+          setTimeout(resolve, 60);
+        });
+      await limiter.enqueue(fn);
+      expect(attempts).toBe(1);
+    });
+
     it("liveness mode does not reissue a send when the first attempt succeeds during the second wait", async () => {
       // Regression: Round 7 finding 2. After computing backoff, we wait
       // again on run.settled (bounded in liveness). If the first attempt

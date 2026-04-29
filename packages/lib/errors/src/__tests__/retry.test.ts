@@ -9,7 +9,21 @@ import {
   withRetry,
 } from "../retry.js";
 
-function makeError(code: KoiError["code"], retryable = false, retryAfterMs?: number): KoiError {
+// Default retryable to the code's retryable-set membership so each test
+// case exercises the realistic producer contract. Tests that need to
+// override (e.g. delivery-unknown TIMEOUT with retryable: false) pass
+// the second argument explicitly.
+const RETRYABLE_BY_DEFAULT: ReadonlySet<KoiError["code"]> = new Set([
+  "CONFLICT",
+  "RATE_LIMIT",
+  "TIMEOUT",
+  "EXTERNAL",
+]);
+function makeError(
+  code: KoiError["code"],
+  retryable: boolean = RETRYABLE_BY_DEFAULT.has(code),
+  retryAfterMs?: number,
+): KoiError {
   return {
     code,
     message: `${code} error`,
@@ -146,6 +160,18 @@ describe("isRetryable", () => {
     expect(isRetryable(makeError("PERMISSION"))).toBe(false);
   });
 
+  test("explicit retryable: false on a normally-retryable code is honored", () => {
+    // Producer-classified delivery-unknown TIMEOUT must NOT be retried,
+    // even though TIMEOUT is in the retryable code set.
+    expect(isRetryable(makeError("TIMEOUT", false))).toBe(false);
+    expect(isRetryable(makeError("RATE_LIMIT", false))).toBe(false);
+  });
+
+  test("explicit retryable: true on a normally-non-retryable code is honored", () => {
+    expect(isRetryable(makeError("VALIDATION", true))).toBe(true);
+    expect(isRetryable(makeError("NOT_FOUND", true))).toBe(true);
+  });
+
   test("CONFLICT is retryable (matches RETRYABLE_DEFAULTS)", () => {
     expect(isRetryable(makeError("CONFLICT"))).toBe(true);
   });
@@ -241,7 +267,7 @@ describe("withRetry", () => {
       () => {
         attempts++;
         if (attempts === 1) {
-          throw makeError("RATE_LIMIT", false, 10);
+          throw makeError("RATE_LIMIT", true, 10);
         }
         return Promise.resolve("ok");
       },

@@ -593,11 +593,39 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
             // patched timers, etc.) does not abandon the in-flight entry —
             // we treat it as terminal failure for this entry and resume
             // draining instead of leaving the caller hanging forever.
+            //
+            // In liveness mode, race the backoff sleep against run.settled
+            // so a late real outcome that lands during the sleep window is
+            // observed before the next attempt is launched. Without this
+            // race, the prior attempt could resolve mid-sleep and we'd
+            // still issue a duplicate send. Strict mode does not need the
+            // race because run.settled was already awaited above.
             try {
-              await sleep(delay);
+              if (advanceOnTimeout) {
+                await Promise.race([sleep(delay), run.settled.then(() => undefined)]);
+              } else {
+                await sleep(delay);
+              }
             } catch (sleepError) {
               reportInternal("sleep", sleepError);
               break;
+            }
+            // Recheck once more after the sleep — in liveness mode the late
+            // outcome may have landed during sleep; in strict mode the
+            // earlier recheck still holds (settled was awaited before
+            // sleep), but checking again is cheap and self-documenting.
+            {
+              const lateAfterSleep = run.lateOutcome();
+              if (lateAfterSleep.kind === "success") {
+                lastError = undefined;
+                break;
+              }
+              if (lateAfterSleep.kind === "failure") {
+                lastError = lateAfterSleep.error;
+                const r2After = sanitizeRetryAfterMs(safeExtract(lateAfterSleep.error));
+                const r2Retryable = r2After !== undefined || safeIsRetryable(lateAfterSleep.error);
+                if (!r2Retryable) break;
+              }
             }
           }
         }
