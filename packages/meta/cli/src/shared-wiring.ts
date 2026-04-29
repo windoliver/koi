@@ -26,6 +26,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type {
   ComponentProvider,
+  CredentialComponent,
   HookConfig,
   InboundMessage,
   KoiMiddleware,
@@ -53,6 +54,7 @@ import type { McpResolver, McpServerConfig, OAuthAuthProvider } from "@koi/mcp";
 import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
 import type { SkillsMcpBridge } from "@koi/runtime";
 import {
+  createAuthedFetchTool,
   createCredentialsProvider,
   createEnvCredentials,
   createSkillsMcpBridge,
@@ -954,6 +956,29 @@ export function buildCoreMiddleware(config: CoreMiddlewareConfig): CoreMiddlewar
 // `AskUserQuestion`) are handled via the `additional` config field.
 // ---------------------------------------------------------------------------
 
+/**
+ * Builds the env-var-backed scoped `CredentialComponent` from a
+ * manifest-declared scope (or `undefined` when the manifest has no
+ * `credentials:` block). Returns `undefined` for empty / missing scope so
+ * callers can pass the result through without conditional construction:
+ *
+ *   const credentials = buildScopedCredentials(manifestCredentials);
+ *   buildCoreProviders({ ..., credentials });
+ *   createProgressiveSkillProvider(rt, { credentials });
+ *
+ * Sharing the same instance between the `CREDENTIALS` provider (consumed
+ * by brick activation) and the skills runtime (validates skill
+ * `requires.credentials` at attach time) ensures both enforce identical
+ * scope — a key policy guarantee that two independently-built components
+ * cannot offer.
+ */
+export function buildScopedCredentials(
+  scope: { readonly allow: readonly string[] } | undefined,
+): CredentialComponent | undefined {
+  if (scope === undefined || scope.allow.length === 0) return undefined;
+  return createScopedCredentials(createEnvCredentials(), { allow: scope.allow });
+}
+
 /** Wraps a single `Tool` as a named `ComponentProvider` for createKoi. */
 export function wrapToolAsProvider(tool: Tool): ComponentProvider {
   const name = tool.descriptor.name;
@@ -1034,7 +1059,19 @@ export interface CoreProvidersConfig {
    * trivially passes credential checks (backwards compatible — see
    * `validateCredentialRequires`).
    */
+  /** @deprecated Pass a pre-built `credentials` component instead. */
   readonly credentialsScope?: { readonly allow: readonly string[] } | undefined;
+  /**
+   * Pre-built `CredentialComponent` to register on the `CREDENTIALS`
+   * subsystem token. When set, takes precedence over `credentialsScope` so
+   * a single scoped instance can be shared with other consumers (e.g. the
+   * skills runtime, which validates `requires.credentials` at activation
+   * time using the SAME component the brick path will see at runtime).
+   *
+   * Build it via `buildScopedCredentials(manifest.credentials)` so call
+   * sites stay short.
+   */
+  readonly credentials?: CredentialComponent | undefined;
   /**
    * Host-specific extra providers appended after the core set (e.g. TUI's
    * bash_background, task tools, memory, notebook, spawn). Added here
@@ -1152,18 +1189,20 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     }
   }
 
+  // gov-15: when manifest declares `network.allow`, wrap the inner fetch
+  // with a URLPattern allowlist. Lifted out of the `includeWeb` block so
+  // the same scope-wrapped instance is shared with `authed_fetch` below.
+  // The executor's own pre-flight (resolveAndValidateUrl) still runs first —
+  // scope is an additional fail-closed gate, not a replacement.
+  const networkAllow = config.networkScope?.allow;
+  const fetchFn =
+    networkAllow !== undefined && networkAllow.length > 0
+      ? createScopedFetcher(globalThis.fetch, {
+          allow: networkAllow.map((p) => new URLPattern(p)),
+        })
+      : undefined;
+
   if (includeWeb) {
-    // gov-15: when manifest declares `network.allow`, wrap the inner fetch
-    // with a URLPattern allowlist before the web-executor sees it. The
-    // executor's own pre-flight (resolveAndValidateUrl) still runs first —
-    // scope is an additional fail-closed gate, not a replacement.
-    const networkAllow = config.networkScope?.allow;
-    const fetchFn =
-      networkAllow !== undefined && networkAllow.length > 0
-        ? createScopedFetcher(globalThis.fetch, {
-            allow: networkAllow.map((p) => new URLPattern(p)),
-          })
-        : undefined;
     const webExecutor = createWebExecutor({
       allowHttps: true,
       cacheTtlMs: resolveWebCacheTtlMs(process.env),
@@ -1187,15 +1226,40 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     providers.push(wrapToolAsProvider(bashTool));
   }
 
-  // gov-15: when manifest declares `credentials.allow`, register an env-var
-  // CredentialComponent wrapped with the scope allowlist. Brick activation
-  // (validateBrickCredentials in @koi/validation) is the legitimate consumer
-  // — agent-facing tools intentionally do NOT receive raw credentials.
-  const credentialsAllow = config.credentialsScope?.allow;
-  if (credentialsAllow !== undefined && credentialsAllow.length > 0) {
-    const baseCreds = createEnvCredentials();
-    const scopedCreds = createScopedCredentials(baseCreds, { allow: credentialsAllow });
-    providers.push(createCredentialsProvider(scopedCreds));
+  // gov-15: register the supplied scoped credentials component, falling back
+  // to the legacy in-builder construction path for callers that still pass
+  // `credentialsScope`. Brick activation (`validateCredentialRequires` in
+  // @koi/validation) is the legitimate consumer — agent-facing tools
+  // intentionally do NOT receive raw credentials. The `credentials` form
+  // lets the host share the SAME instance with the skills runtime so what
+  // the brick path sees and what skill activation enforces are guaranteed
+  // to be in sync.
+  let activeCredentials: CredentialComponent | undefined;
+  const directComponent = config.credentials;
+  if (directComponent !== undefined) {
+    activeCredentials = directComponent;
+    providers.push(createCredentialsProvider(directComponent));
+  } else {
+    const credentialsAllow = config.credentialsScope?.allow;
+    if (credentialsAllow !== undefined && credentialsAllow.length > 0) {
+      const baseCreds = createEnvCredentials();
+      const scopedCreds = createScopedCredentials(baseCreds, { allow: credentialsAllow });
+      activeCredentials = scopedCreds;
+      providers.push(createCredentialsProvider(scopedCreds));
+    }
+  }
+
+  // gov-15: when both a credentials component AND web is enabled, wire the
+  // `authed_fetch` tool — the canonical agent-facing consumer of CREDENTIALS.
+  // The same scope-wrapped fetch (when network.allow is set) gates URL access.
+  // Both gates are independent: a request must satisfy URL scope AND
+  // credential scope to succeed.
+  if (activeCredentials !== undefined) {
+    const authedFetchTool = createAuthedFetchTool({
+      credentials: activeCredentials,
+      ...(fetchFn !== undefined ? { fetchFn } : {}),
+    });
+    providers.push(wrapToolAsProvider(authedFetchTool));
   }
 
   if (config.additional !== undefined) {

@@ -114,7 +114,12 @@ import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
 import { createSecurityBridge, type SecurityBridge } from "./security-bridge.js";
-import { readSessionMeta, resumeSessionFromJsonl, writeSessionMeta } from "./shared-wiring.js";
+import {
+  buildScopedCredentials,
+  readSessionMeta,
+  resumeSessionFromJsonl,
+  writeSessionMeta,
+} from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
 import {
@@ -1527,6 +1532,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The Skill tool loads full bodies on-demand from the same runtime.
   // Startup I/O matches the old eager path (loadAll() still runs for
   // blocked-skill visibility); benefit is per-call token reduction.
+  // gov-15: build the scoped credentials component once and share the SAME
+  // instance with both the CREDENTIALS provider (consumed by brick activation
+  // via validateCredentialRequires) and the skills runtime (validates skill
+  // requires.credentials at attach time). Two independently-built components
+  // could drift; one shared instance guarantees both surfaces enforce the
+  // same scope.
+  const scopedCredentials = buildScopedCredentials(manifestCredentials);
+
   // createProgressiveSkillProvider bundles session-snapshot pinning: bodies
   // loaded at attach time are stored in a session-local Map that is not subject
   // to LRU eviction, ensuring the Skill tool always returns the body that was
@@ -1535,7 +1548,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     provider: skillProvider,
     pinnedRuntime: skillRuntime,
     reload: reloadSkillComponents,
-  } = createProgressiveSkillProvider(createSkillsRuntime());
+  } = createProgressiveSkillProvider(createSkillsRuntime(), {
+    ...(scopedCredentials !== undefined ? { credentials: scopedCredentials } : {}),
+  });
   // Lazy agent ref — middleware created before createKoiRuntime assembles agent.
   const skillAgentRef: { current: Agent | undefined } = { current: undefined };
   // Mutable live skill component map — refreshed on session reset via reloadSkillComponents().
@@ -2097,10 +2112,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
     // gov-15: outbound-network scope from manifest.network → web-tools fetch wrap.
     ...(manifestNetwork !== undefined ? { networkScope: { allow: manifestNetwork.allow } } : {}),
-    // gov-15: credentials scope from manifest.credentials → CREDENTIALS subsystem.
-    ...(manifestCredentials !== undefined
-      ? { credentialsScope: { allow: manifestCredentials.allow } }
-      : {}),
+    // gov-15: shared scoped CredentialComponent — same instance is registered
+    // on the CREDENTIALS subsystem token AND used by the progressive skill
+    // provider to gate skill `requires.credentials` at attach time.
+    ...(scopedCredentials !== undefined ? { credentials: scopedCredentials } : {}),
     // Nexus backend (when resolved above) is passed through so the checkpoint
     // stack stamps the correct backend name and the restore protocol dispatches
     // compensating ops through the right backend. Omitted when undefined —
