@@ -45,7 +45,12 @@ const UNICODE_CONTROL_CHARS = /[​-‏‪-‮⁦-⁩﻿]/g;
 // Stripping rather than escaping because we can't know the destination
 // transport at this layer; the sanitizer's contract is "plain text".
 const FORMATTING_CHARS = /[@`*_~#|!&\\[\]()<>{}]/g;
-const URL_LIKE = /\b(?:https?|ftps?|wss?):\/\/\S+/gi;
+// Match ANY scheme-form URI, not just http/ftp/ws. Many chat transports
+// (Slack, Discord, Teams, Gmail, VS Code) autolink or trigger client
+// actions on schemes like mailto:, file:, slack:, vscode:, sms:, tel:,
+// data:, javascript:, app://. Default to deny: strip any token of the
+// shape `<scheme>:<rest>` where scheme is a valid RFC 3986 scheme name.
+const URL_LIKE = /\b[a-z][a-z0-9+.-]*:[^\s]+/gi;
 const WWW_LIKE = /\bwww\.\S+/gi;
 // Bare-domain autolink trap: Slack/Discord/Teams/Gmail auto-link strings
 // like `evil.example/path` or `login.company.com` even without a scheme.

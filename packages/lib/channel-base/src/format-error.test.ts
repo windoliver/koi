@@ -64,6 +64,22 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(safeText("or use ws://evil.test/socket")).toBe("Invalid input: or use link removed");
     });
 
+    it("redacts non-http URI schemes that autolink or trigger client actions", () => {
+      // Regression: loop-5 round 3 finding 3. mailto:, file:, slack:,
+      // vscode:, sms:, tel:, data:, javascript:, custom app:// schemes
+      // all autolink or trigger client actions on common transports.
+      // The sanitizer's plain-text contract requires deny-by-default.
+      expect(safeText("contact mailto:attacker@example.com now")).toBe(
+        "Invalid input: contact link removed now",
+      );
+      expect(safeText("open file:///etc/passwd")).toBe("Invalid input: open link removed");
+      expect(safeText("see slack://channel?team=evil")).toBe("Invalid input: see link removed");
+      expect(safeText("run vscode://settings/edit")).toBe("Invalid input: run link removed");
+      expect(safeText("dial tel:+15551234567")).toBe("Invalid input: dial link removed");
+      expect(safeText("view data:text/html,<x>")).toBe("Invalid input: view link removed");
+      expect(safeText("javascript:alert(1)")).toBe("Invalid input: link removed");
+    });
+
     it("redacts www.host bare hostnames", () => {
       expect(safeText("go to www.attacker.example/path now")).toBe(
         "Invalid input: go to link removed now",

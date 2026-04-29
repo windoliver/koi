@@ -198,6 +198,34 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
       )}`,
     );
   }
+  // Backoff fields: malformed numbers (NaN, Infinity, negative) would let
+  // computeBackoff produce invalid delays that collapse retries into a
+  // hot loop or hammer rate-limited providers. Validate all numeric
+  // fields up-front and reject the limiter at construction.
+  if (!Number.isFinite(retryConfig.initialDelayMs) || retryConfig.initialDelayMs < 0) {
+    throw new Error(
+      `RateLimiterConfig.retry.initialDelayMs must be a finite non-negative number, got ${String(
+        retryConfig.initialDelayMs,
+      )}`,
+    );
+  }
+  if (
+    !Number.isFinite(retryConfig.maxBackoffMs) ||
+    retryConfig.maxBackoffMs < retryConfig.initialDelayMs
+  ) {
+    throw new Error(
+      `RateLimiterConfig.retry.maxBackoffMs must be a finite number >= initialDelayMs, got ${String(
+        retryConfig.maxBackoffMs,
+      )}`,
+    );
+  }
+  if (!Number.isFinite(retryConfig.backoffMultiplier) || retryConfig.backoffMultiplier <= 0) {
+    throw new Error(
+      `RateLimiterConfig.retry.backoffMultiplier must be a finite positive number, got ${String(
+        retryConfig.backoffMultiplier,
+      )}`,
+    );
+  }
   const extractRetryAfterMs = config?.extractRetryAfterMs ?? defaultExtractRetryAfterMs;
   const isRetryable = config?.isRetryable ?? defaultIsRetryable;
   const sendTimeoutMs = config?.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;

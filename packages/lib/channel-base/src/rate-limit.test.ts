@@ -54,6 +54,51 @@ describe("createRateLimiter", () => {
       expect(() => createRateLimiter({ sendTimeoutMs: 0 })).not.toThrow();
       expect(() => createRateLimiter({ sendTimeoutMs: Number.POSITIVE_INFINITY })).not.toThrow();
     });
+
+    it("throws when retry.initialDelayMs is NaN, negative, or Infinity", () => {
+      expect(() =>
+        createRateLimiter({
+          retry: { ...errors.DEFAULT_RETRY_CONFIG, initialDelayMs: Number.NaN },
+        }),
+      ).toThrow(/initialDelayMs/);
+      expect(() =>
+        createRateLimiter({ retry: { ...errors.DEFAULT_RETRY_CONFIG, initialDelayMs: -1 } }),
+      ).toThrow(/initialDelayMs/);
+      expect(() =>
+        createRateLimiter({
+          retry: { ...errors.DEFAULT_RETRY_CONFIG, initialDelayMs: Number.POSITIVE_INFINITY },
+        }),
+      ).toThrow(/initialDelayMs/);
+    });
+
+    it("throws when retry.maxBackoffMs is malformed or smaller than initialDelayMs", () => {
+      expect(() =>
+        createRateLimiter({ retry: { ...errors.DEFAULT_RETRY_CONFIG, maxBackoffMs: Number.NaN } }),
+      ).toThrow(/maxBackoffMs/);
+      expect(() =>
+        createRateLimiter({
+          retry: { ...errors.DEFAULT_RETRY_CONFIG, initialDelayMs: 1000, maxBackoffMs: 100 },
+        }),
+      ).toThrow(/maxBackoffMs/);
+    });
+
+    it("throws when retry.backoffMultiplier is not finite-positive", () => {
+      expect(() =>
+        createRateLimiter({
+          retry: { ...errors.DEFAULT_RETRY_CONFIG, backoffMultiplier: Number.NaN },
+        }),
+      ).toThrow(/backoffMultiplier/);
+      expect(() =>
+        createRateLimiter({
+          retry: { ...errors.DEFAULT_RETRY_CONFIG, backoffMultiplier: 0 },
+        }),
+      ).toThrow(/backoffMultiplier/);
+      expect(() =>
+        createRateLimiter({
+          retry: { ...errors.DEFAULT_RETRY_CONFIG, backoffMultiplier: -1 },
+        }),
+      ).toThrow(/backoffMultiplier/);
+    });
   });
 
   it("serializes concurrent sends in FIFO order", async () => {
