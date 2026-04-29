@@ -148,7 +148,7 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
         return direct.ok ? { ok: true, output: direct.output } : { ok: false, error: direct.error };
       }
 
-      const run = await config.resultCache.runDeduped(cacheKey, invokeSpawn);
+      const run = await config.resultCache.runDeduped(cacheKey, config.signal, invokeSpawn);
       if (!run.ok) return { ok: false, error: run.error };
       return run.deduplicated
         ? { ok: true, output: run.output, deduplicated: true }

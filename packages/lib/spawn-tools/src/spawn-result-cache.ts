@@ -51,8 +51,18 @@ export interface SpawnResultCache {
   readonly get: (key: string) => string | undefined;
   readonly set: (key: string, output: string) => void;
   readonly size: () => number;
+  /**
+   * Coordinated dedup. Checks the caller's `signal` before returning a cached
+   * entry or awaiting an in-flight Promise — a cancelled caller never receives
+   * a deduplicated success, because emitting a child output into an aborted
+   * parent turn would violate turn-boundary semantics. The driver caller (the
+   * one that actually invokes `factory`) is also raced against the signal so
+   * that a parent abort during background work surfaces an `AbortError`-shaped
+   * error instead of waiting for `spawnFn` to settle.
+   */
   readonly runDeduped: (
     key: string,
+    signal: AbortSignal,
     factory: () => Promise<SpawnFactoryResult>,
   ) => Promise<SpawnRunResult>;
 }
@@ -87,10 +97,43 @@ export function createSpawnResultCache(
     cache.set(key, output);
   }
 
+  function abortedResult(signal: AbortSignal): SpawnRunResult {
+    const reason = signal.reason;
+    const message =
+      reason instanceof Error ? reason.message : reason === undefined ? "aborted" : String(reason);
+    return { ok: false, error: `aborted: ${message}` };
+  }
+
+  async function awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+    if (!signal.aborted) {
+      return await new Promise<T>((resolve, reject) => {
+        const onAbort = (): void => {
+          signal.removeEventListener("abort", onAbort);
+          reject(signal.reason ?? new Error("aborted"));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        promise.then(
+          (value) => {
+            signal.removeEventListener("abort", onAbort);
+            resolve(value);
+          },
+          (err) => {
+            signal.removeEventListener("abort", onAbort);
+            reject(err);
+          },
+        );
+      });
+    }
+    throw signal.reason ?? new Error("aborted");
+  }
+
   async function runDeduped(
     key: string,
+    signal: AbortSignal,
     factory: () => Promise<SpawnFactoryResult>,
   ): Promise<SpawnRunResult> {
+    if (signal.aborted) return abortedResult(signal);
+
     const settled = get(key);
     if (settled !== undefined) {
       return { ok: true, output: settled, deduplicated: true };
@@ -98,22 +141,45 @@ export function createSpawnResultCache(
 
     const pending = inflight.get(key);
     if (pending !== undefined) {
-      const shared = await pending;
-      if (!shared.ok) return { ok: false, error: shared.error };
-      return { ok: true, output: shared.output, deduplicated: true };
+      try {
+        const shared = await awaitWithAbort(pending, signal);
+        if (!shared.ok) return { ok: false, error: shared.error };
+        return { ok: true, output: shared.output, deduplicated: true };
+      } catch (err) {
+        // Only convert to abortedResult when the signal actually fired —
+        // otherwise the underlying Promise rejected for a different reason
+        // and the caller should see that error.
+        if (signal.aborted) return abortedResult(signal);
+        throw err;
+      }
     }
 
     const promise = factory();
     inflight.set(key, promise);
+    // Inflight lifecycle is tied to the FACTORY promise settling, not to the
+    // driver's await. If the driver is aborted, the factory keeps running in
+    // the background and late waiters must still find the inflight slot.
+    // Cache writing happens here once for all callers, regardless of which
+    // await path observes the result.
+    promise.then(
+      (settled) => {
+        if (settled.ok && settled.cacheable !== false) set(key, settled.output);
+        inflight.delete(key);
+      },
+      () => {
+        inflight.delete(key);
+      },
+    );
+
     try {
-      const result = await promise;
+      const result = await awaitWithAbort(promise, signal);
       if (result.ok) {
-        if (result.cacheable !== false) set(key, result.output);
         return { ok: true, output: result.output, deduplicated: false };
       }
       return { ok: false, error: result.error };
-    } finally {
-      inflight.delete(key);
+    } catch (err) {
+      if (signal.aborted) return abortedResult(signal);
+      throw err;
     }
   }
 

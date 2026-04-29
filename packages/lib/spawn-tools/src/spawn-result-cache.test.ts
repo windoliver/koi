@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { createSpawnResultCache, spawnCacheKey } from "./spawn-result-cache.js";
 
+/** Never-aborting signal — used by tests that don't exercise cancellation. */
+function noAbort(): AbortSignal {
+  return new AbortController().signal;
+}
+
 describe("createSpawnResultCache (settled LRU)", () => {
   test("returns undefined for unknown keys", () => {
     const cache = createSpawnResultCache(8);
@@ -55,7 +60,7 @@ describe("createSpawnResultCache (settled LRU)", () => {
 describe("runDeduped (concurrent + retry dedup)", () => {
   test("first caller drives the spawn, settled result returns deduplicated:false", async () => {
     const cache = createSpawnResultCache(8);
-    const result = await cache.runDeduped("k", async () => ({ ok: true, output: "x" }));
+    const result = await cache.runDeduped("k", noAbort(), async () => ({ ok: true, output: "x" }));
     expect(result).toEqual({ ok: true, output: "x", deduplicated: false });
     expect(cache.get("k")).toBe("x");
   });
@@ -67,8 +72,8 @@ describe("runDeduped (concurrent + retry dedup)", () => {
       calls += 1;
       return { ok: true as const, output: "x" };
     };
-    await cache.runDeduped("k", factory);
-    const second = await cache.runDeduped("k", factory);
+    await cache.runDeduped("k", noAbort(), factory);
+    const second = await cache.runDeduped("k", noAbort(), factory);
     expect(second).toEqual({ ok: true, output: "x", deduplicated: true });
     expect(calls).toBe(1);
   });
@@ -84,8 +89,8 @@ describe("runDeduped (concurrent + retry dedup)", () => {
       });
     };
 
-    const aPromise = cache.runDeduped("k", factory);
-    const bPromise = cache.runDeduped("k", factory);
+    const aPromise = cache.runDeduped("k", noAbort(), factory);
+    const bPromise = cache.runDeduped("k", noAbort(), factory);
     // Allow both to register before settling.
     await Promise.resolve();
     releaseFactory();
@@ -109,11 +114,11 @@ describe("runDeduped (concurrent + retry dedup)", () => {
       if (attempt === 1) return { ok: false as const, error: "boom" };
       return { ok: true as const, output: "second" };
     };
-    const first = await cache.runDeduped("k", factory);
+    const first = await cache.runDeduped("k", noAbort(), factory);
     expect(first).toEqual({ ok: false, error: "boom" });
     expect(cache.get("k")).toBeUndefined();
 
-    const second = await cache.runDeduped("k", factory);
+    const second = await cache.runDeduped("k", noAbort(), factory);
     expect(second).toEqual({ ok: true, output: "second", deduplicated: false });
   });
 
@@ -121,8 +126,8 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     const cache = createSpawnResultCache(8);
     const factory = async () => ({ ok: false as const, error: "shared-fail" });
     const [a, b] = await Promise.all([
-      cache.runDeduped("k", factory),
-      cache.runDeduped("k", factory),
+      cache.runDeduped("k", noAbort(), factory),
+      cache.runDeduped("k", noAbort(), factory),
     ]);
     expect(a).toEqual({ ok: false, error: "shared-fail" });
     expect(b).toEqual({ ok: false, error: "shared-fail" });
@@ -136,8 +141,8 @@ describe("runDeduped (concurrent + retry dedup)", () => {
       calls += 1;
       return { ok: true as const, output: "x", cacheable: false };
     };
-    const first = await cache.runDeduped("k", factory);
-    const second = await cache.runDeduped("k", factory);
+    const first = await cache.runDeduped("k", noAbort(), factory);
+    const second = await cache.runDeduped("k", noAbort(), factory);
     expect(first).toEqual({ ok: true, output: "x", deduplicated: false });
     expect(second).toEqual({ ok: true, output: "x", deduplicated: false });
     expect(calls).toBe(2);
@@ -151,10 +156,87 @@ describe("runDeduped (concurrent + retry dedup)", () => {
       calls += 1;
       return { ok: true as const, output: "" };
     };
-    await cache.runDeduped("k", factory);
-    const second = await cache.runDeduped("k", factory);
+    await cache.runDeduped("k", noAbort(), factory);
+    const second = await cache.runDeduped("k", noAbort(), factory);
     expect(second).toEqual({ ok: true, output: "", deduplicated: true });
     expect(calls).toBe(1);
+  });
+
+  test("cache hit on an already-aborted signal returns abort error, not cached output", async () => {
+    const cache = createSpawnResultCache(8);
+    cache.set("k", "stale-cached");
+    const ctrl = new AbortController();
+    ctrl.abort(new Error("parent timeout"));
+    let calls = 0;
+    const factory = async () => {
+      calls += 1;
+      return { ok: true as const, output: "fresh" };
+    };
+    const result = await cache.runDeduped("k", ctrl.signal, factory);
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toContain("parent timeout");
+    // Cached entry must not be replayed into the aborted caller.
+    expect(calls).toBe(0);
+  });
+
+  test("aborting a waiter on an in-flight call surfaces an abort error to that waiter only", async () => {
+    const cache = createSpawnResultCache(8);
+    let releaseDriver: () => void = () => {};
+    const factory = (): Promise<{ ok: true; output: string }> =>
+      new Promise((resolve) => {
+        releaseDriver = () => resolve({ ok: true, output: "shared" });
+      });
+
+    const driverCtrl = new AbortController();
+    const waiterCtrl = new AbortController();
+
+    const driverPromise = cache.runDeduped("k", driverCtrl.signal, factory);
+    const waiterPromise = cache.runDeduped("k", waiterCtrl.signal, factory);
+    await Promise.resolve();
+
+    waiterCtrl.abort(new Error("waiter cancelled"));
+    const waiterResult = await waiterPromise;
+    expect(waiterResult.ok).toBe(false);
+    expect((waiterResult as { error: string }).error).toContain("waiter cancelled");
+
+    // Driver still completes normally.
+    releaseDriver();
+    const driverResult = await driverPromise;
+    expect(driverResult).toMatchObject({ ok: true, output: "shared", deduplicated: false });
+    expect(cache.get("k")).toBe("shared");
+  });
+
+  test("aborting the driver still lets the background spawn populate the cache for future retries", async () => {
+    const cache = createSpawnResultCache(8);
+    let releaseDriver: () => void = () => {};
+    const factory = (): Promise<{ ok: true; output: string }> =>
+      new Promise((resolve) => {
+        releaseDriver = () => resolve({ ok: true, output: "background-completed" });
+      });
+
+    const ctrl = new AbortController();
+    const driverPromise = cache.runDeduped("k", ctrl.signal, factory);
+    await Promise.resolve();
+    ctrl.abort(new Error("parent abort"));
+
+    const result = await driverPromise;
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toContain("parent abort");
+
+    // The factory promise is still in flight — let it settle.
+    releaseDriver();
+    // Wait a microtask so the .then handler that writes the cache runs.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(cache.get("k")).toBe("background-completed");
+  });
+
+  test("non-abort errors from awaited factory still propagate (no false abort wrapping)", async () => {
+    const cache = createSpawnResultCache(8);
+    const factory = async (): Promise<never> => {
+      throw new Error("not-an-abort");
+    };
+    await expect(cache.runDeduped("k", noAbort(), factory)).rejects.toThrow("not-an-abort");
   });
 
   test("rejected factory propagates and clears inflight", async () => {
@@ -162,14 +244,14 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     const factory = async (): Promise<never> => {
       throw new Error("explode");
     };
-    await expect(cache.runDeduped("k", factory)).rejects.toThrow("explode");
+    await expect(cache.runDeduped("k", noAbort(), factory)).rejects.toThrow("explode");
     // Inflight is cleared — a fresh call invokes the factory again.
     let calls = 0;
     const recover = async () => {
       calls += 1;
       return { ok: true as const, output: "recovered" };
     };
-    const result = await cache.runDeduped("k", recover);
+    const result = await cache.runDeduped("k", noAbort(), recover);
     expect(result).toEqual({ ok: true, output: "recovered", deduplicated: false });
     expect(calls).toBe(1);
   });
