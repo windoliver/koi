@@ -1036,6 +1036,7 @@
       "name": "@koi/runtime",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/agent-procfs": "workspace:*",
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
         "@koi/artifacts": "workspace:*",

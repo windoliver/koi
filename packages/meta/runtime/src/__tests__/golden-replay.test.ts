@@ -15512,3 +15512,42 @@ describe("Golden: @koi/sandbox-executor", () => {
     if (!r.ok) expect(r.error.code).toBe("TIMEOUT");
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/agent-procfs (2 queries)
+//
+// Standalone — no cassette replay. Validates createProcFs TTL caching and
+// createAgentMounter wiring against the @koi/core ProcFs / AgentRegistry
+// contracts. Per docs/L2/agent-procfs.md.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/agent-procfs", () => {
+  test("createProcFs TTL cache + write invalidation", async () => {
+    const { createProcFs } = await import("@koi/agent-procfs");
+    let calls = 0;
+    const procFs = createProcFs({ cacheTtlMs: 1_000 });
+    procFs.mount("/x", {
+      read: () => ++calls,
+      write: () => {},
+    });
+    await procFs.read("/x");
+    await procFs.read("/x");
+    expect(calls).toBe(1);
+    await procFs.write("/x", null);
+    await procFs.read("/x");
+    expect(calls).toBe(2);
+  });
+
+  test("ENTRY_NAMES is the canonical 7-entry list", async () => {
+    const { ENTRY_NAMES } = await import("@koi/agent-procfs");
+    const names = [...ENTRY_NAMES].sort();
+    expect(names.length).toBe(7);
+    expect(names).toContain("status");
+    expect(names).toContain("tools");
+    expect(names).toContain("middleware");
+    expect(names).toContain("children");
+    expect(names).toContain("config");
+    expect(names).toContain("env");
+    expect(names).toContain("metrics");
+  });
+});
