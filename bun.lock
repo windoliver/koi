@@ -1265,6 +1265,15 @@
         "@koi/gateway-types": "workspace:*",
       },
     },
+    "packages/net/gateway-http": {
+      "name": "@koi/gateway-http",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
+      },
+    },
     "packages/net/gateway-webhook": {
       "name": "@koi/gateway-webhook",
       "version": "0.0.0",
@@ -1943,6 +1952,8 @@
     "@koi/fs-scoped": ["@koi/fs-scoped@workspace:packages/lib/fs-scoped"],
 
     "@koi/gateway": ["@koi/gateway@workspace:packages/net/gateway"],
+
+    "@koi/gateway-http": ["@koi/gateway-http@workspace:packages/net/gateway-http"],
 
     "@koi/gateway-types": ["@koi/gateway-types@workspace:packages/lib/gateway-types"],
 
