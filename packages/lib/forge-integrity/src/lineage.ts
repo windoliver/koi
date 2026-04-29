@@ -106,6 +106,20 @@ export async function isDerivedFrom(
   if (childShape.kind === "malformed") {
     return { kind: "malformed", reason: childShape.reason };
   }
+  // When verification is requested, integrity-verify the child itself
+  // before trusting its `parentBrickId`. Otherwise a tampered child whose
+  // provenance points at a trusted ancestor would be accepted as derived.
+  if (options !== undefined) {
+    const childVerdict = options.verify(child, options.producerBuilderId);
+    if (childVerdict.kind !== "ok") {
+      return {
+        kind: "integrity_failed",
+        at: childShape.id,
+        producerBuilderId: options.producerBuilderId,
+        reason: childVerdict.kind,
+      };
+    }
+  }
 
   const seen = new Set<BrickId>([childShape.id]);
   let parentId = childShape.parentBrickId;

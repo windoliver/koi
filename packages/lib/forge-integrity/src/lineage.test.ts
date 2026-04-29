@@ -136,6 +136,23 @@ describe("lineage", () => {
     expect(findDuplicateById([poisoned, real], real.id, "koi/forge", verify)?.id).toBe(real.id);
   });
 
+  test("isDerivedFrom rejects a tampered child whose parentBrickId points at a real ancestor", async () => {
+    // Attacker supplies a child whose `implementation` is tampered so
+    // recompute fails, but whose `provenance.parentBrickId` points at a
+    // real, verifiable trusted ancestor stored under the legitimate id.
+    const trustedAncestor = makeTool({ implementation: "trusted" });
+    const tamperedChild = {
+      ...makeTool({ implementation: "evil", parentBrickId: trustedAncestor.id }),
+      implementation: "// post-hoc tamper",
+    } as BrickArtifact;
+    const store = fixtureStore([trustedAncestor]);
+    const result = await isDerivedFrom(tamperedChild, trustedAncestor.id, store, {
+      verify,
+      producerBuilderId: "koi/forge",
+    });
+    expect(result.kind).toBe("integrity_failed");
+  });
+
   test("isDerivedFrom rejects forged direct-parent edge by verifying the named ancestor", async () => {
     // Attacker constructs a child whose provenance.parentBrickId points at a
     // trusted ancestor id without ever being derived from it. Without
