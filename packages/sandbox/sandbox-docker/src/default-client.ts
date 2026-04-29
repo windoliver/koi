@@ -11,15 +11,36 @@ import type {
 const DEFAULT_EXEC_MAX_OUTPUT_BYTES = 1 * 1024 * 1024;
 
 /**
- * Build a minimal env object for docker CLI subprocesses.
- * Only PATH and HOME are forwarded from the host (required for docker to
- * locate the binary and its config dir). When socketPath is provided,
- * DOCKER_HOST is set to "unix://<socketPath>" so all docker commands
- * target that daemon socket instead of the default.
+ * Host env vars forwarded to docker CLI subprocesses.
+ *
+ * PATH and HOME are required for docker to locate the binary and its config dir.
+ * The DOCKER_* and XDG_CONFIG_HOME vars support non-default Docker contexts,
+ * TLS authentication, custom config directories, and API version pinning.
+ * DOCKER_HOST is included here so it is passed through when no socketPath is
+ * configured; it is overridden below when socketPath is explicitly set.
+ */
+const DOCKER_PASSTHROUGH_KEYS: readonly string[] = [
+  "PATH",
+  "HOME",
+  "DOCKER_HOST",
+  "DOCKER_CONTEXT",
+  "DOCKER_CONFIG",
+  "DOCKER_TLS_VERIFY",
+  "DOCKER_CERT_PATH",
+  "DOCKER_API_VERSION",
+  "XDG_CONFIG_HOME",
+];
+
+/**
+ * Build an env object for docker CLI subprocesses.
+ * Forwards DOCKER_* and related vars from the host so non-default Docker contexts,
+ * TLS, and custom config paths work correctly. When socketPath is provided,
+ * DOCKER_HOST is set to "unix://<socketPath>" (overriding any host DOCKER_HOST)
+ * so all docker commands target that daemon socket instead of the default.
  */
 export function buildDockerEnv(socketPath: string | undefined): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const k of ["PATH", "HOME"] as const) {
+  for (const k of DOCKER_PASSTHROUGH_KEYS) {
     const v = process.env[k];
     if (v !== undefined) env[k] = v;
   }

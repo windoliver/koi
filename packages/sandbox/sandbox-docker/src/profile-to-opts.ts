@@ -73,6 +73,26 @@ export function validateProfileForDocker(profile: SandboxProfile): KoiError | un
       retryable: false,
     };
   }
+
+  // Reject any ResourceLimits field that Docker cannot translate.
+  // Currently only maxPids (--pids-limit) and maxMemoryMb (--memory) are supported.
+  // timeoutMs and maxOpenFiles require OS-level enforcement (cgroups, rlimits).
+  // This guard is forward-compatible: if ResourceLimits gains new fields, they will
+  // be rejected here until explicit Docker translation is added.
+  if (profile.resources !== undefined) {
+    const supported = new Set<string>(["maxPids", "maxMemoryMb"]);
+    for (const key of Object.keys(profile.resources)) {
+      if (!supported.has(key)) {
+        return {
+          code: "VALIDATION",
+          message: `sandbox-docker does not support SandboxProfile.resources.${key}; use @koi/sandbox-os or compose external enforcement`,
+          retryable: false,
+          context: { unsupported: `resources.${key}` },
+        };
+      }
+    }
+  }
+
   return undefined;
 }
 

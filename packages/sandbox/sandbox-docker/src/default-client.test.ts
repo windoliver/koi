@@ -588,4 +588,94 @@ describe("createDefaultDockerClient", () => {
       spawnSpy.mockRestore();
     }
   });
+
+  // Fix 3: buildDockerEnv forwards DOCKER_CONTEXT when set in process.env
+  test("buildDockerEnv: forwards DOCKER_CONTEXT from process.env", () => {
+    process.env.DOCKER_CONTEXT = "test-ctx";
+    try {
+      const env = buildDockerEnv(undefined);
+      expect(env.DOCKER_CONTEXT).toBe("test-ctx");
+    } finally {
+      delete process.env.DOCKER_CONTEXT;
+    }
+  });
+
+  // Fix 3: buildDockerEnv forwards DOCKER_CONFIG when set in process.env
+  test("buildDockerEnv: forwards DOCKER_CONFIG from process.env", () => {
+    process.env.DOCKER_CONFIG = "/custom/.docker";
+    try {
+      const env = buildDockerEnv(undefined);
+      expect(env.DOCKER_CONFIG).toBe("/custom/.docker");
+    } finally {
+      delete process.env.DOCKER_CONFIG;
+    }
+  });
+
+  // Fix 3: buildDockerEnv forwards DOCKER_TLS_VERIFY and DOCKER_CERT_PATH
+  test("buildDockerEnv: forwards DOCKER_TLS_VERIFY and DOCKER_CERT_PATH", () => {
+    process.env.DOCKER_TLS_VERIFY = "1";
+    process.env.DOCKER_CERT_PATH = "/certs";
+    try {
+      const env = buildDockerEnv(undefined);
+      expect(env.DOCKER_TLS_VERIFY).toBe("1");
+      expect(env.DOCKER_CERT_PATH).toBe("/certs");
+    } finally {
+      delete process.env.DOCKER_TLS_VERIFY;
+      delete process.env.DOCKER_CERT_PATH;
+    }
+  });
+
+  // Fix 3: buildDockerEnv forwards DOCKER_API_VERSION and XDG_CONFIG_HOME
+  test("buildDockerEnv: forwards DOCKER_API_VERSION and XDG_CONFIG_HOME", () => {
+    process.env.DOCKER_API_VERSION = "1.41";
+    process.env.XDG_CONFIG_HOME = "/home/user/.config";
+    try {
+      const env = buildDockerEnv(undefined);
+      expect(env.DOCKER_API_VERSION).toBe("1.41");
+      expect(env.XDG_CONFIG_HOME).toBe("/home/user/.config");
+    } finally {
+      delete process.env.DOCKER_API_VERSION;
+      delete process.env.XDG_CONFIG_HOME;
+    }
+  });
+
+  // Fix 3: socketPath overrides any DOCKER_HOST from process.env
+  test("buildDockerEnv: socketPath overrides DOCKER_HOST from process.env", () => {
+    process.env.DOCKER_HOST = "tcp://remote:2376";
+    try {
+      const env = buildDockerEnv("/run/custom.sock");
+      // socketPath wins — host DOCKER_HOST must not survive
+      expect(env.DOCKER_HOST).toBe("unix:///run/custom.sock");
+    } finally {
+      delete process.env.DOCKER_HOST;
+    }
+  });
+
+  // Fix 3: vars not present in process.env are not included in the result
+  test("buildDockerEnv: does not include env keys absent from process.env", () => {
+    // Ensure none of the docker vars are in process.env for this test
+    const dockerKeys = [
+      "DOCKER_CONTEXT",
+      "DOCKER_CONFIG",
+      "DOCKER_TLS_VERIFY",
+      "DOCKER_CERT_PATH",
+      "DOCKER_API_VERSION",
+      "XDG_CONFIG_HOME",
+    ];
+    const saved: Record<string, string | undefined> = {};
+    for (const k of dockerKeys) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+    try {
+      const env = buildDockerEnv(undefined);
+      for (const k of dockerKeys) {
+        expect(env[k]).toBeUndefined();
+      }
+    } finally {
+      for (const k of dockerKeys) {
+        if (saved[k] !== undefined) process.env[k] = saved[k];
+      }
+    }
+  });
 });

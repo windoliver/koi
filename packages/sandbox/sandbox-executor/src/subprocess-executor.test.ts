@@ -267,6 +267,27 @@ describe("createSubprocessExecutor", () => {
     expect(result.value.output).toEqual({ bounded: true });
   });
 
+  // Fix 2 (stderr tail recovery): large stderr noise before the framing marker.
+  // With a 1 MB cap, 5 MB of noise pushes the marker past the cap — must be
+  // recovered from the 64 KB tail buffer rather than returning CRASH.
+  test("recovers framed result from stderr tail when total stderr exceeds maxOutputBytes (Fix 2 regression)", async () => {
+    // Use 1 MB cap so 5 MB of stderr noise triggers truncation.
+    const executor = createSubprocessExecutor({ maxOutputBytes: 1024 * 1024 });
+    const code = `
+      export default async (_input: unknown) => {
+        // Write 5 MB of stderr noise before the result — pushes marker past the 1 MB cap.
+        const chunk = "noise".repeat(200); // ~1 KB
+        for (let i = 0; i < 5000; i++) process.stderr.write(chunk);
+        return { recovered: true };
+      };
+    `;
+    const result = await executor.execute(code, null, 30000);
+    expect(result.ok).toBe(true);
+    if (!result.ok)
+      throw new Error(`Expected ok, got: ${result.error.code} - ${result.error.message}`);
+    expect(result.value.output).toEqual({ recovered: true });
+  });
+
   // Fix 3 (drain-not-kill): stdout exceeds the cap — child is not killed, it completes
   // normally. The call must finish without hanging (no blocked pipe) and without OOM.
   test("stdout exceeding cap does not kill child or hang — completes within timeout (Fix 3)", async () => {

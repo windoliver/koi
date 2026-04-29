@@ -195,46 +195,75 @@ function buildChildEnv(context?: ExecutionContext): Readonly<Record<string, stri
 
 /**
  * Read from a ReadableStream<Uint8Array> up to maxBytes, then drain silently.
- * Returns the decoded text and a truncated flag.
+ * Returns the decoded text, a truncated flag, and an optional tail buffer.
  *
- * When the cap is hit we STOP accumulating bytes but KEEP draining the pipe.
+ * When the cap is hit we STOP accumulating head bytes but KEEP draining the pipe.
  * Draining prevents the child from blocking on a full pipe buffer (which would
  * turn into a false TIMEOUT). The child is NOT killed here — only the timeout
- * timer kills the child. This means a noisy-but-correct child that logs more
- * than maxOutputBytes is not killed; it runs to completion, and if the stderr
- * framing marker was past the cap it will be classified as CRASH after exit.
+ * timer kills the child.
+ *
+ * When tailBytes > 0, a sliding tail buffer is maintained that always holds the
+ * last ~tailBytes characters of the stream. This allows the caller to search for
+ * the framing marker (which appears at the END of stderr) even when the total
+ * output exceeded maxBytes and the head was truncated.
+ *
+ * The tail is returned as a separate string so the caller can try parsing from
+ * it when the head parse fails and truncated=true.
  */
 async function readBoundedText(
   stream: ReadableStream<Uint8Array>,
   maxBytes: number,
-): Promise<{ readonly text: string; readonly truncated: boolean }> {
+  tailBytes = 0,
+): Promise<{ readonly text: string; readonly truncated: boolean; readonly tail: string }> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
-  // `let` justified: buf/total/truncated are accumulated across iterations
+  // `let` justified: buf/total/truncated/tailBuf are accumulated across iterations
   let total = 0;
   let truncated = false;
   let buf = "";
+  // `let` justified: tailBuf is a sliding window updated on every chunk
+  let tailBuf = "";
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
     if (value === undefined) continue;
-    if (truncated) continue; // already over cap — drain silently to keep pipe drained
-    const remaining = maxBytes - total;
-    if (remaining <= 0) {
-      truncated = true;
-      continue;
-    }
-    if (value.byteLength > remaining) {
-      buf += decoder.decode(value.subarray(0, remaining), { stream: true });
-      total += remaining;
-      truncated = true;
-    } else {
-      buf += decoder.decode(value, { stream: true });
-      total += value.byteLength;
+    const chunk = truncated
+      ? decoder.decode(value, { stream: true }) // still decode for tail — don't use stream:true for head
+      : (() => {
+          const remaining = maxBytes - total;
+          if (remaining <= 0) {
+            truncated = true;
+            return decoder.decode(value, { stream: true });
+          }
+          if (value.byteLength > remaining) {
+            buf += decoder.decode(value.subarray(0, remaining), { stream: true });
+            total += remaining;
+            truncated = true;
+            // decode the rest for tail tracking
+            return decoder.decode(value.subarray(remaining), { stream: true });
+          }
+          const decoded = decoder.decode(value, { stream: true });
+          buf += decoded;
+          total += value.byteLength;
+          return decoded;
+        })();
+    if (tailBytes > 0) {
+      tailBuf += chunk;
+      if (tailBuf.length > tailBytes) {
+        tailBuf = tailBuf.slice(tailBuf.length - tailBytes);
+      }
     }
   }
-  buf += decoder.decode();
-  return { text: buf, truncated };
+  // Flush the decoder.
+  const flushed = decoder.decode();
+  if (!truncated) buf += flushed;
+  if (tailBytes > 0 && flushed.length > 0) {
+    tailBuf += flushed;
+    if (tailBuf.length > tailBytes) {
+      tailBuf = tailBuf.slice(tailBuf.length - tailBytes);
+    }
+  }
+  return { text: buf, truncated, tail: tailBuf };
 }
 
 // ---------------------------------------------------------------------------
@@ -387,9 +416,14 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
         // Both streams are capped at maxOutputBytes: once the cap is hit, excess
         // bytes are discarded silently (pipe stays drained) so the child is not
         // blocked. The child is only killed by the timeout timer above.
+        //
+        // Stderr uses a 64 KB tail buffer so the framing marker (which appears at
+        // the END of stderr) can be recovered even when total stderr exceeded maxOutputBytes.
+        // Stdout does not need a tail — we only care about the head for diagnostics.
+        const STDERR_TAIL_BYTES = 64 * 1024;
         const [, stderrResult, exitCode] = await Promise.all([
           readBoundedText(proc.stdout, maxOutputBytes),
-          readBoundedText(proc.stderr, maxOutputBytes),
+          readBoundedText(proc.stderr, maxOutputBytes, STDERR_TAIL_BYTES),
           proc.exited,
         ]);
         clearTimeout(timer);
@@ -410,29 +444,27 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
           return { ok: false, error };
         }
 
-        // When stderr was truncated, the framing marker may have been cut off.
-        // Treat a truncated stderr the same as a missing marker → CRASH.
-        if (stderrResult.truncated) {
-          const snippet = `${stderrResult.text.slice(-2000)} [truncated]`;
-          const error: SandboxError = {
-            code: "CRASH",
-            message: "Sandbox stderr exceeded output limit; result marker may be missing",
-            durationMs,
-            stack: snippet,
-          };
-          return { ok: false, error };
-        }
-
-        // Search marker in full text; only apply maxOutputBytes to the snippet
-        // used in CRASH error messages (truncating before the search would miss
-        // markers that land past the cap and misclassify results as CRASH).
-        const framed = parseFramedResult(stderrResult.text);
+        // Search for the framing marker. The marker appears at the END of stderr,
+        // so try the head first, then fall back to the tail if the head was truncated.
+        // Only return CRASH if BOTH searches fail.
+        const framedFromHead = parseFramedResult(stderrResult.text);
+        const framed =
+          framedFromHead !== undefined
+            ? framedFromHead
+            : stderrResult.truncated
+              ? parseFramedResult(stderrResult.tail)
+              : undefined;
 
         if (framed === undefined) {
-          const snippet = stderrResult.text.slice(-2000).slice(0, maxOutputBytes);
+          const snippet = stderrResult.truncated
+            ? `${stderrResult.tail.slice(-2000)} [truncated — marker not found in head or tail]`
+            : stderrResult.text.slice(-2000).slice(0, maxOutputBytes);
+          const message = stderrResult.truncated
+            ? "Sandbox stderr exceeded output limit; result marker not found in head or tail"
+            : "Sandbox exited without result marker";
           const error: SandboxError = {
             code: "CRASH",
-            message: "Sandbox exited without result marker",
+            message,
             durationMs,
             stack: snippet,
           };

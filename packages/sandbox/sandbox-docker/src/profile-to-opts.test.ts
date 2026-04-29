@@ -172,6 +172,55 @@ describe("mapProfileToDockerOpts", () => {
     expect(r.value.opts.tmpfsMounts).toEqual(["/tmp"]);
   });
 
+  // Fix 1: unsupported resources field → VALIDATION (fail-closed)
+  test("returns ok:false VALIDATION when resources contains unsupported field timeoutMs", () => {
+    // ResourceLimits has timeoutMs which Docker cannot enforce — must be rejected.
+    const r = mapProfileToDockerOpts(
+      {
+        filesystem: { defaultReadAccess: "open" },
+        network: { allow: false },
+        resources: { maxPids: 64, timeoutMs: 5000 },
+      },
+      "ubuntu:22.04",
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("Expected ok: false");
+    expect(r.error.code).toBe("VALIDATION");
+    expect(r.error.message).toContain("resources.timeoutMs");
+  });
+
+  // Fix 1: unsupported resources field maxOpenFiles → VALIDATION
+  test("returns ok:false VALIDATION when resources contains unsupported field maxOpenFiles", () => {
+    const r = mapProfileToDockerOpts(
+      {
+        filesystem: { defaultReadAccess: "open" },
+        network: { allow: false },
+        resources: { maxOpenFiles: 256 },
+      },
+      "ubuntu:22.04",
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("Expected ok: false");
+    expect(r.error.code).toBe("VALIDATION");
+    expect(r.error.message).toContain("resources.maxOpenFiles");
+  });
+
+  // Fix 1: only supported fields (maxPids + maxMemoryMb) → ok
+  test("accepts resources with only supported fields maxPids and maxMemoryMb", () => {
+    const r = mapProfileToDockerOpts(
+      {
+        filesystem: { defaultReadAccess: "open" },
+        network: { allow: false },
+        resources: { maxPids: 32, maxMemoryMb: 128 },
+      },
+      "ubuntu:22.04",
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("Expected ok");
+    expect(r.value.opts.pidsLimit).toBe(32);
+    expect(r.value.opts.memoryMb).toBe(128);
+  });
+
   // Fix 2 (read-only rootfs): profile with no allow lists → readOnlyRoot is undefined
   test("profile with no allow lists leaves readOnlyRoot undefined (caller did not opt in)", () => {
     const r = mapProfileToDockerOpts(
