@@ -1,2 +1,22 @@
-// Public API exports — populated as modules land. See spec §types.ts.
-export {};
+export { DEFAULT_GATEWAY_HTTP_CONFIG } from "./defaults.js";
+export type {
+  AuditSink,
+  AuthAuditResult,
+  AuthOutcome,
+  ChannelAuthenticator,
+  ChannelRegistration,
+  CorsConfig,
+  Gateway,
+  GatewayFrame,
+  GatewayHttpConfig,
+  GatewayHttpDeps,
+  GatewayServer,
+  KoiError,
+  ProxyTrustConfig,
+  RateLimitConfig,
+  ReplayProtectionMode,
+  Result,
+  RoutingContext,
+  Session,
+  SessionResolver,
+} from "./types.js";
