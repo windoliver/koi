@@ -164,6 +164,28 @@ type BridgeNotification =
 | `rename(from, to)` | `rename` | Direct delegation |
 | `dispose()` | `transport.close()` | Cleanup transport connection |
 
+### Per-call options (#1401 Phase 2)
+
+`createLocalTransport` and the HTTP wrapper now thread `NexusCallOptions
+{ deadlineMs?, signal?, nonInteractive? }` through every `call()`. Callers
+that need a hard upper bound on a single RPC (e.g., probe/boot-sync reads)
+pass `nonInteractive: true` so the reader loop preserves the caller's
+deadline rather than upgrading it to the interactive-auth budget.
+
+### `kind` discriminator
+
+Every transport now carries a `kind: "http" | "local-bridge" | "probe"`
+discriminator. `assertProductionTransport` rejects missing `kind` and the
+disposable `"probe"` kind to prevent reusing a probe transport as the
+long-lived runtime transport.
+
+### Probe factory
+
+`createNexusProbeFactory(spawnConfig)` returns a sealed-capability factory
+that constructs disposable probe transports for the local-bridge boot
+health check. The spawn config is held in closure so probe credentials
+never live on the long-lived transport object.
+
 ---
 
 ## Error Mapping

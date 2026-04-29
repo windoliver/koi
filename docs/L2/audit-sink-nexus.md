@@ -40,3 +40,11 @@ Each entry is written to:
 - `log()` — fire-and-forget; write errors re-enqueue failed entries for retry on next flush
 - `flush()` — propagates write errors to caller; caller (middleware) applies its own error policy
 - `query()` — flushes first, then reads; list/read errors return empty for that file
+
+## onError callback (#1401 Phase 2)
+
+`createNexusAuditSink` accepts an optional `onError?: (err: KoiError) => void`
+hook. When set, write failures inside the background flush are reported to
+the callback instead of being silently swallowed. The CLI runtime wires this
+into the audit-poison latch so a Nexus write failure can fail-closed in
+parity with the NDJSON/SQLite sinks (see `docs/L3/cli.md`, "Audit poison").
