@@ -60,6 +60,18 @@ const BOUNDARY_UNDERSCORES = /(?<![A-Za-z0-9])_+|_+(?![A-Za-z0-9])/g;
 // shape `<scheme>:<rest>` where scheme is a valid RFC 3986 scheme name.
 const URL_LIKE = /\b[a-z][a-z0-9+.-]*:[^\s]+/gi;
 const WWW_LIKE = /\bwww\.\S+/gi;
+// IDN / Unicode bare-host trap: chat clients auto-link Internationalized
+// Domain Names (e.g. `例子.测试`) and mixed-script Punycode-bait
+// (`gооgle.com` with Cyrillic `о`). HOST_SHAPE (below) is ASCII-only by
+// design — a separate pass must catch any whitespace-bounded token that
+// contains both a `.` and at least one non-ASCII character.
+//
+// Pattern: a token (run of non-whitespace) that contains a `.` AND a
+// non-ASCII byte (>= U+0080). The negative-class anchor falls outside
+// printable ASCII (excluding the basic Latin set used for legitimate
+// identifier paths).
+// biome-ignore lint/suspicious/noControlCharactersInRegex: anchor for non-ASCII detection
+const UNICODE_HOST_LIKE = /(?=\S*[.])\S*[^\x00-\x7f\s]\S*/gu;
 // Bare-domain autolink trap: Slack/Discord/Teams/Gmail auto-link strings
 // like `evil.com` or `attacker.io/path` even without a scheme. Policy is
 // deny-by-default for host-shape tokens (a curated TLD allowlist is
@@ -179,6 +191,7 @@ function sanitizeValidationMessage(raw: string): string {
     .replace(FORMATTING_CHARS, "")
     .replace(URL_LIKE, "link removed")
     .replace(WWW_LIKE, "link removed")
+    .replace(UNICODE_HOST_LIKE, "link removed")
     .replace(HOST_SHAPE, redactBareDomain)
     .replace(BOUNDARY_UNDERSCORES, "");
   return stripped.length > VALIDATION_MAX_LEN
@@ -263,66 +276,91 @@ function extractAuthHandoff(error: KoiError): {
     // displayed. Adapters that need full granular display must consume
     // the original error.context themselves under their trust policy.
     const allowedToken = /^[A-Za-z0-9:/.\-_+=?&#~]+$/;
-    // Distinguish four cases for tokens:
+    // Allow-by-default for tokens with strict, recognizable shapes; deny
+    // everything else. The four accepted shapes:
     //
-    //   1. No colon (`read`, `email`): identifier — alphanumeric +
-    //      `_` `-` only. Rejects junk like `???` even though
-    //      `allowedToken` would accept it.
-    //   2. URI shape (`scheme://host/...`): scheme MUST be in
-    //      `URI_TOKEN_ALLOWED_SCHEMES` (https, api). Anything else
-    //      (`zoommtg://`, `slack://`, etc.) is rejected — chat surfaces
-    //      treat these as click-to-open-app handlers.
-    //   3. URN form (`urn:ietf:params:oauth:...`): allowed as a literal
-    //      `urn:...` opaque identifier.
-    //   4. Scope-name shape (`chat:write`, `read:user`,
-    //      `write:repo_hook`, `spotify:track:abc`): require strict
-    //      `identifier(:identifier)+` shape — alphanumeric + `_`,
-    //      first char alpha, NO URI-suffix characters (`/`, `?`,
-    //      `#`, `&`, `=`, `+`, `.`, `~`, `-`). Additionally reject any
-    //      prefix that names a known clickable URI scheme. This is
-    //      deny-by-default for unknown scheme-shaped tokens — better
-    //      to silently drop the whole `auth.scope` field than render
-    //      an attacker-controlled `zoommtg:join` as a clickable
-    //      handoff.
+    //   1. Plain identifier (no colon, alphanumeric + `_`/`-`):
+    //      `read`, `email`, `public_repo`.
+    //   2. Full URI of an allowed scheme: `https://...` or `api://...`.
+    //   3. URN: any `urn:...` opaque identifier.
+    //   4. Scope-name shape (`identifier(:identifier)+`) — but ONLY when
+    //      the leading prefix is in `KNOWN_SCOPE_NAMESPACES`. This is an
+    //      explicit allowlist of OAuth scope namespaces published by
+    //      mainstream providers (Slack, GitHub, Google, Microsoft,
+    //      Discord). Any other `identifier:identifier` token is rejected,
+    //      including unknown app-launch shapes like `raycast:open`,
+    //      `figma:open`, `obsidian:open`, `zoommtg:join`,
+    //      `spotify:track:abc` — many chat/desktop surfaces autolink
+    //      these as click-to-launch handoffs.
+    //
+    // Prefer dropping the whole `auth.scope` field over rendering an
+    // attacker-controlled clickable. Adapters that need richer scope
+    // display must consume `error.context` themselves under their trust
+    // policy.
     const URI_TOKEN_ALLOWED_SCHEMES: ReadonlySet<string> = new Set(["https", "api"]);
     const PLAIN_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]*$/;
     const SAFE_SCOPE_NAME = /^[A-Za-z][A-Za-z0-9_]*(?::[A-Za-z][A-Za-z0-9_]*)+$/;
-    // App- and OS-registered URI schemes that a chat surface can autolink
-    // into a click-to-launch handoff. Even when wrapped in an
-    // `identifier:identifier` shape (`zoommtg:join`, `spotify:track`),
-    // these names register OS-level handlers — keep them out of consent
-    // text rendered as scope.
-    const APP_SCHEME_PREFIXES: ReadonlySet<string> = new Set([
-      "http",
-      "ftp",
-      "ftps",
-      "mailto",
-      "javascript",
-      "vbscript",
-      "data",
-      "file",
-      "sms",
-      "tel",
-      "vscode",
-      "slack",
-      "app",
-      "intent",
-      "chrome",
-      "zoommtg",
-      "zoomus",
-      "zoom",
-      "msteams",
-      "msoutlook",
-      "skype",
-      "spotify",
-      "tg",
-      "whatsapp",
-      "discord",
-      "steam",
-      "fb",
-      "instagram",
-      "weixin",
-      "weibo",
+    // Known OAuth scope-name prefixes. Lowercase — matched
+    // case-insensitively against the leading namespace before the
+    // first colon. Maintained as a small explicit set instead of a
+    // denylist of known-bad app schemes (which is perpetually
+    // incomplete and reviewers correctly call out).
+    const KNOWN_SCOPE_NAMESPACES: ReadonlySet<string> = new Set([
+      // Slack
+      "chat",
+      "channels",
+      "groups",
+      "im",
+      "mpim",
+      "files",
+      "users",
+      "search",
+      "stars",
+      "emoji",
+      "reactions",
+      "pins",
+      "reminders",
+      "dnd",
+      "team",
+      "conversations",
+      "bookmarks",
+      "calls",
+      "commands",
+      "dialog",
+      "links",
+      // GitHub
+      "read",
+      "write",
+      "admin",
+      "repo",
+      "gist",
+      "notifications",
+      "user",
+      "public_repo",
+      "delete_repo",
+      "workflow",
+      "packages",
+      "security_events",
+      // Google common
+      "openid",
+      "profile",
+      "email",
+      // Generic verbs (broad CRUD scopes some issuers use)
+      "create",
+      "update",
+      "delete",
+      "manage",
+      "view",
+      "list",
+      // Microsoft Graph delegated permission shapes
+      "mail",
+      "calendars",
+      "contacts",
+      "directory",
+      "group",
+      "people",
+      "tasks",
+      "presence",
     ]);
     const isAllowedScopeToken = (t: string): boolean => {
       if (!allowedToken.test(t)) return false;
@@ -333,10 +371,10 @@ function extractAuthHandoff(error: KoiError): {
       if (t.startsWith(`${scheme}://`)) return URI_TOKEN_ALLOWED_SCHEMES.has(scheme);
       // urn:... opaque identifier form
       if (scheme === "urn") return true;
-      // Otherwise must be a strict scope-name (no URI-suffix chars) AND
-      // its prefix must not name a known clickable URI scheme.
+      // Otherwise must be a strict scope-name shape AND its leading
+      // namespace must be on the explicit allowlist.
       if (!SAFE_SCOPE_NAME.test(t)) return false;
-      return !APP_SCHEME_PREFIXES.has(scheme);
+      return KNOWN_SCOPE_NAMESPACES.has(scheme);
     };
     const normalized = scope
       .normalize("NFC")

@@ -135,6 +135,18 @@ describe("classifyErrorForChannel discriminated output", () => {
       );
     });
 
+    it("redacts internationalized / mixed-script bare hostnames (IDN bypass)", () => {
+      // Loop-6 round 4 finding (high): chat clients auto-link IDN
+      // hostnames like `例子.测试`, and mixed-script Punycode-bait like
+      // `gооgle.com` (Cyrillic `о`). The ASCII-only HOST_SHAPE pattern
+      // never sees these — a separate Unicode-aware pass is required.
+      expect(safeText("see 例子.测试 now")).toBe("Invalid input: see link removed now");
+      expect(safeText("visit аpple.com please")).toBe("Invalid input: visit link removed please");
+      expect(safeText("login at xn--mxn-bla.test/path")).toBe(
+        "Invalid input: login at link removed",
+      );
+    });
+
     it("redacts pure-alpha or digit-only dotted tokens (indistinguishable from real domains)", () => {
       // Loop-6 round 3 finding (high): `email`, `name`, `info`, `travel`,
       // `careers`, etc. are all real ICANN gTLDs. A pure-alpha
@@ -413,10 +425,17 @@ describe("classifyErrorForChannel discriminated output", () => {
         "zoommtg:join",
         "spotify:track:abc",
         "msteams:meeting",
-        "slack:open",
         // URI-suffix characters disqualify even unknown prefixes.
         "custom:scope?action=launch",
         "weird:scope#frag",
+        // Loop-6 round 4 finding: any unknown identifier:identifier
+        // token (raycast:open, figma:open, obsidian:open) must be
+        // rejected by the allowlist policy — not just the curated
+        // app-scheme denylist that previously let them through.
+        "raycast:open",
+        "figma:open",
+        "obsidian:open",
+        "myapp:launch",
       ];
       for (const bad of cases) {
         const err = baseError("AUTH_REQUIRED", "x", {
