@@ -56,8 +56,9 @@ describe("createRateLimiter", () => {
       e instanceof Error && e.message === "429" ? 250 : undefined,
     );
     const limiter = createRateLimiter({
-      retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 2 },
+      retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 2, jitter: false },
       extractRetryAfterMs: extract,
+      isRetryable: (e) => e instanceof Error && e.message === "429",
     });
     let attempts = 0;
     await limiter.enqueue(async () => {
@@ -104,14 +105,13 @@ describe("createRateLimiter", () => {
   it("does not sleep on the terminal attempt of an exhausted retry-after", async () => {
     const limiter = createRateLimiter({
       retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 1, initialDelayMs: 10, jitter: false },
-      extractRetryAfterMs: () => 250,
     });
     let attempts = 0;
     const fn = async (): Promise<void> => {
       attempts++;
-      throw new Error("429");
+      throw koiError({ code: "RATE_LIMIT", retryAfterMs: 250 });
     };
-    await expect(limiter.enqueue(fn)).rejects.toThrow("429");
+    await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "RATE_LIMIT" });
     expect(attempts).toBe(2);
     // One sleep between attempts 0 and 1; no sleep after the terminal attempt
     expect(sleepSpy).toHaveBeenCalledTimes(1);
@@ -184,6 +184,72 @@ describe("createRateLimiter", () => {
         }),
       ).rejects.toThrow("plain transport blip");
       expect(attempts).toBe(1);
+    });
+  });
+
+  describe("retryAfterMs alone does not force retry for non-transport codes", () => {
+    it("AUTH_REQUIRED with retryAfterMs is rejected immediately, not re-issued", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
+      });
+      let attempts = 0;
+      await expect(
+        limiter.enqueue(async () => {
+          attempts++;
+          throw koiError({ code: "AUTH_REQUIRED", retryable: true, retryAfterMs: 100 });
+        }),
+      ).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+      expect(attempts).toBe(1);
+      expect(sleepSpy).not.toHaveBeenCalled();
+    });
+
+    it("PERMISSION with retryAfterMs is rejected immediately, not re-issued", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 5 },
+      });
+      let attempts = 0;
+      await expect(
+        limiter.enqueue(async () => {
+          attempts++;
+          throw koiError({ code: "PERMISSION", retryAfterMs: 100 });
+        }),
+      ).rejects.toMatchObject({ code: "PERMISSION" });
+      expect(attempts).toBe(1);
+    });
+  });
+
+  describe("decorrelated jitter widens across retries", () => {
+    it("passes prevDelayMs to computeBackoff so the window grows", async () => {
+      const computeBackoffSpy = spyOn(errors, "computeBackoff");
+      try {
+        const limiter = createRateLimiter({
+          retry: {
+            ...errors.DEFAULT_RETRY_CONFIG,
+            maxRetries: 3,
+            initialDelayMs: 100,
+            maxBackoffMs: 10_000,
+            jitter: true,
+            jitterStrategy: "decorrelated",
+          },
+        });
+        let attempts = 0;
+        await expect(
+          limiter.enqueue(async () => {
+            attempts++;
+            throw koiError({ code: "TIMEOUT" });
+          }),
+        ).rejects.toMatchObject({ code: "TIMEOUT" });
+
+        expect(attempts).toBe(4);
+        // First retry: prevDelayMs is undefined; subsequent retries pass the prior delay.
+        const calls = computeBackoffSpy.mock.calls;
+        expect(calls.length).toBeGreaterThanOrEqual(3);
+        expect(calls[0]?.[4]).toBeUndefined();
+        expect(typeof calls[1]?.[4]).toBe("number");
+        expect(typeof calls[2]?.[4]).toBe("number");
+      } finally {
+        computeBackoffSpy.mockRestore();
+      }
     });
   });
 

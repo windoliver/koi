@@ -305,10 +305,9 @@ UNAVAILABLE         "The service is currently unavailable."
 HEARTBEAT_TIMEOUT   "The worker stopped responding."
 ```
 
-Strictly user-safe by construction. Never reads `error.cause`, stack traces, or — outside of two enumerated exceptions — `error.message` / `error.context`:
+Strictly user-safe by construction. Never reads `error.cause`, `error.context`, stack traces, or — outside of `VALIDATION` — `error.message`. VALIDATION is the one exception because its message is itself the user-relevant input feedback the platform must surface.
 
-- **VALIDATION**: the message itself is user-relevant input feedback.
-- **AUTH_REQUIRED**: an `error.context.authorizationUrl` is appended only when it parses as an `http(s)` URL — `javascript:`, `data:`, malformed strings, and non-string values are dropped silently.
+For `AUTH_REQUIRED` the helper deliberately returns only the canned message and does **not** surface any URL from `error.context`. The channel-base layer cannot validate that an arbitrary URL is the configured OAuth issuer for the current tenant, so embedding it would be a phishing primitive. Adapters that need to render an OAuth handoff must read structured auth metadata themselves and validate it against their own trust configuration before showing a clickable link.
 
 There is intentionally no verbose / developer mode; CLI tooling that needs raw diagnostics formats `error.code` / `error.message` through its own sanitizer.
 

@@ -2,14 +2,17 @@
  * User-facing error message formatting for channel adapters.
  *
  * Maps KoiErrorCode to fixed, user-friendly messages. Strictly user-safe by
- * construction: the function never reads `error.cause`, stack traces, or —
- * outside of two enumerated exceptions — `error.message` / `error.context`.
+ * construction: never reads `error.cause`, `error.context`, stack traces, or
+ * — outside of `VALIDATION` — `error.message`. VALIDATION is the one
+ * exception because its message is itself the user-relevant input feedback.
  *
- * Exceptions:
- *   - VALIDATION: the message itself is user-relevant input feedback.
- *   - AUTH_REQUIRED: per `KoiError` contract, the operation succeeds after
- *     the user completes OAuth, so we surface the authorization URL from
- *     `error.context.authorizationUrl` when it is a safe http(s) URL.
+ * Notably this helper does NOT surface authorization URLs for
+ * `AUTH_REQUIRED`. The channel-base layer cannot validate that a URL in
+ * `error.context` is the configured OAuth issuer for the current tenant —
+ * embedding raw URLs from arbitrary error sources would be a phishing
+ * primitive. Adapters that need to render an OAuth handoff must read
+ * structured auth metadata themselves and validate it against their own
+ * trust configuration before showing a clickable link.
  *
  * If callers need raw diagnostics for developer-facing channels (CLI logs,
  * debug panels), they should format `error.code` / `error.message`
@@ -36,35 +39,11 @@ const USER_MESSAGES: Readonly<Record<KoiErrorCode, string>> = {
 } as const;
 
 /**
- * Returns `error.context.authorizationUrl` only if it parses as an http(s)
- * URL. Anything else (non-string, javascript:, data:, malformed) is dropped
- * silently so a malicious payload cannot smuggle an unsafe scheme into a
- * user-visible message.
- */
-function safeAuthorizationUrl(error: KoiError): string | undefined {
-  const raw = error.context?.["authorizationUrl"];
-  if (typeof raw !== "string") return undefined;
-  try {
-    const parsed = new URL(raw);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
-    return parsed.toString();
-  } catch {
-    return undefined;
-  }
-}
-
-/**
  * Formats a KoiError into a user-safe string suitable for channel output.
  */
 export function formatErrorForChannel(error: KoiError): string {
   if (error.code === "VALIDATION") {
     return `Invalid input: ${error.message}`;
-  }
-  if (error.code === "AUTH_REQUIRED") {
-    const url = safeAuthorizationUrl(error);
-    return url === undefined
-      ? USER_MESSAGES.AUTH_REQUIRED
-      : `${USER_MESSAGES.AUTH_REQUIRED} ${url}`;
   }
   return USER_MESSAGES[error.code];
 }

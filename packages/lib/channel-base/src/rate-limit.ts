@@ -121,6 +121,8 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
 
         // let justified: tracks the last error across retry attempts
         let lastError: unknown;
+        // let justified: feeds decorrelated jitter so the window widens
+        let prevDelayMs: number | undefined;
         for (let attempt = 0; attempt <= retryConfig.maxRetries; attempt++) {
           try {
             await entry.fn();
@@ -129,29 +131,28 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
           } catch (error: unknown) {
             lastError = error;
 
-            // Hint sanitation lives in the safe wrapper, but a custom extractor
-            // can still return a hostile value — re-validate before trust.
-            const rawHint = safeExtract(error);
-            const retryAfterMs = sanitizeRetryAfterMs(rawHint);
-            const retryable = retryAfterMs !== undefined || safeIsRetryable(error);
+            // Retry decision must always come from the classifier — a stray
+            // retryAfterMs on a non-transport code (e.g. AUTH_REQUIRED) must
+            // not be enough to re-issue a non-idempotent send.
+            if (!safeIsRetryable(error) || attempt >= retryConfig.maxRetries) break;
 
-            // Stop on permanent failures or when the budget is spent — the queue
-            // must not sleep on the terminal attempt and must never re-issue a
-            // send for an error not classified as retryable.
-            if (!retryable || attempt >= retryConfig.maxRetries) break;
+            const retryAfterMs = sanitizeRetryAfterMs(safeExtract(error));
 
             // Route through computeBackoff so the provider hint is clamped to
             // maxBackoffMs and falls back to backoff when the hint is absent.
+            // Pass prevDelay so decorrelated jitter widens correctly across
+            // retries instead of collapsing to the base delay each time.
             // computeBackoff is pure but its config can technically throw if a
             // caller plugs in a malformed RNG — treat that as terminal failure
             // rather than wedging the queue.
             // let justified: mutable to preserve final delay across try/catch
             let delay: number;
             try {
-              delay = computeBackoff(attempt, retryConfig, retryAfterMs);
+              delay = computeBackoff(attempt, retryConfig, retryAfterMs, undefined, prevDelayMs);
             } catch {
               break;
             }
+            prevDelayMs = delay;
             await sleep(delay);
           }
         }
