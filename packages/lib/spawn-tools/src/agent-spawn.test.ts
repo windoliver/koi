@@ -218,6 +218,33 @@ describe("agent_spawn", () => {
       expect((second as { deduplicated?: boolean }).deduplicated).toBeUndefined();
     });
 
+    test("non-JSON-safe context (BigInt) does not throw — falls back to bare description, no dedup", async () => {
+      const calls: SpawnRequest[] = [];
+      const fn: SpawnFn = async (request) => {
+        calls.push(request);
+        return { ok: true, output: "ok" };
+      };
+      const tool = createAgentSpawnTool({
+        spawnFn: fn,
+        board: {} as ManagedTaskBoard,
+        agentId: "parent" as AgentId,
+        signal: AbortSignal.timeout(5_000),
+        resultCache: createSpawnResultCache(),
+      });
+
+      // BigInt is forbidden by JSON.stringify; tool must not throw.
+      await expect(
+        tool.execute({
+          agent_name: "researcher",
+          description: "X",
+          context: { task_id: "T-1", count: 5n },
+        }),
+      ).resolves.toMatchObject({ ok: true, output: "ok" });
+      expect(calls).toHaveLength(1);
+      // Description still falls back cleanly (no Structured context block).
+      expect(calls[0]?.description).toBe("X");
+    });
+
     test("retry with changed non-task_id context field bypasses cache", async () => {
       const calls: SpawnRequest[] = [];
       const fn: SpawnFn = async (request) => {

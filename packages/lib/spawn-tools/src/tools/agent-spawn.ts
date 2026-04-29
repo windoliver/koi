@@ -25,7 +25,15 @@ const schema = z.object({
 
 function descriptionWithContext(description: string, context: JsonObject | undefined): string {
   if (context === undefined) return description;
-  const serialized = JSON.stringify(context, null, 2);
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(context, null, 2);
+  } catch {
+    // BigInt, cyclic refs, or other non-JSON-safe values fall back to the
+    // bare description so the tool still returns a clean structured error
+    // (computeRequestDigest below will surface the failure).
+    return description;
+  }
   if (serialized === undefined) return description;
   return `${description}\n\nStructured context:\n${serialized}`;
 }

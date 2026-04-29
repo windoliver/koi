@@ -189,4 +189,38 @@ describe("spawnCacheKey (identity + digest)", () => {
     const d = spawnCacheKey("p1", "r", "X", { task_id: "T-2" });
     expect(new Set([a, b, c, d]).size).toBe(4);
   });
+
+  test("contexts with identical data but different key insertion order produce the same key", () => {
+    // Build with deliberately-different key orders. Same logical content.
+    const a = spawnCacheKey("p", "r", "X", { task_id: "T-1", scope: "src/a", limit: 5 });
+    const b = spawnCacheKey("p", "r", "X", { limit: 5, scope: "src/a", task_id: "T-1" });
+    const c = spawnCacheKey("p", "r", "X", { scope: "src/a", task_id: "T-1", limit: 5 });
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+  });
+
+  test("nested objects are also order-insensitive", () => {
+    const a = spawnCacheKey("p", "r", "X", {
+      task_id: "T-1",
+      filters: { include: ["a", "b"], exclude: ["c"] },
+    });
+    const b = spawnCacheKey("p", "r", "X", {
+      filters: { exclude: ["c"], include: ["a", "b"] },
+      task_id: "T-1",
+    });
+    expect(a).toBe(b);
+  });
+
+  test("returns undefined for non-JSON-safe context (BigInt) instead of throwing", () => {
+    const ctx = { task_id: "T-1", count: 5n };
+    expect(() => spawnCacheKey("p", "r", "X", ctx)).not.toThrow();
+    expect(spawnCacheKey("p", "r", "X", ctx)).toBeUndefined();
+  });
+
+  test("returns undefined for cyclic context instead of throwing", () => {
+    const ctx: Record<string, unknown> = { task_id: "T-1" };
+    ctx.self = ctx;
+    expect(() => spawnCacheKey("p", "r", "X", ctx)).not.toThrow();
+    expect(spawnCacheKey("p", "r", "X", ctx)).toBeUndefined();
+  });
 });

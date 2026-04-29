@@ -24,6 +24,8 @@
  * Cap of 256 covers realistic coordinator fan-out (issue #1709).
  */
 
+import { computeContentHash } from "@koi/hash";
+
 export const DEFAULT_SPAWN_CACHE_CAP = 256;
 
 export type SpawnFactoryResult =
@@ -131,6 +133,9 @@ export function spawnCacheKey(
   const taskId = context.task_id;
   if (typeof taskId !== "string" || taskId.length === 0) return undefined;
   const digest = computeRequestDigest(agentName, description, context);
+  // Non-serializable context (BigInt, cyclic refs) can't be hashed
+  // deterministically — skip the cache rather than crash the tool.
+  if (digest === undefined) return undefined;
   return `${parentAgentId}::${agentName}::${taskId}::${digest}`;
 }
 
@@ -138,11 +143,14 @@ function computeRequestDigest(
   agentName: string,
   description: string,
   context: Readonly<Record<string, unknown>>,
-): string {
-  const canonical = JSON.stringify({ agentName, description, context });
-  // JSON.stringify can return undefined if context contains a value that
-  // refuses serialization (e.g. bigint). Fall back to a structural marker
-  // so the key remains stable but still includes call identity.
-  if (canonical === undefined) return "non-serializable";
-  return Bun.hash(canonical).toString(36);
+): string | undefined {
+  // computeContentHash deterministically serializes with sorted object keys,
+  // so two contexts with identical data but different key insertion order
+  // produce the same digest — and therefore the same cache key.
+  // Returns the first 16 hex chars; full SHA-256 is overkill for a 256-entry LRU.
+  try {
+    return computeContentHash({ agentName, description, context }).slice(0, 16);
+  } catch {
+    return undefined;
+  }
 }
