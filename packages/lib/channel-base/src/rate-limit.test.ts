@@ -883,12 +883,62 @@ describe("createRateLimiter", () => {
           if (signal.aborted) onAbort();
           else signal.addEventListener("abort", onAbort, { once: true });
         });
-      // Final attempt's caller-facing error is upgraded to the real
-      // late RATE_LIMIT (strict mode awaits real settle on terminal).
-      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "RATE_LIMIT" });
+      // Final-attempt upgrade is bounded by sendTimeoutMs so an
+      // abort-ignoring transport cannot hang the caller. Late rejection
+      // here lands at +50ms (after the 20ms grace), so the caller sees
+      // the synthetic TIMEOUT and the late RATE_LIMIT flows to the late
+      // outcome callbacks (asserted in other tests).
+      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "TIMEOUT" });
       // Three attempts (initial + 2 retries), never overlapping.
       expect(attempts).toBe(3);
       expect(maxConcurrent).toBe(1);
+    });
+
+    it("strict-mode caller does not hang on a final-attempt deadline when the transport ignores abort", async () => {
+      // Regression: Round 7 finding 1. Final-attempt strict-mode upgrade
+      // must be bounded so an abort-ignoring transport cannot wedge the
+      // caller. The caller surfaces the synthetic TIMEOUT promptly even
+      // though the underlying send never settles.
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+        sendTimeoutMs: 20,
+      });
+      const neverSettles: SendFn = () => new Promise<void>(() => {});
+      const start = Date.now();
+      await expect(limiter.enqueue(neverSettles)).rejects.toMatchObject({
+        code: "TIMEOUT",
+      });
+      // Should complete in roughly sendTimeoutMs + a small grace, not 200+ms.
+      expect(Date.now() - start).toBeLessThan(150);
+    });
+
+    it("liveness mode does not reissue a send when the first attempt succeeds during the second wait", async () => {
+      // Regression: Round 7 finding 2. After computing backoff, we wait
+      // again on run.settled (bounded in liveness). If the first attempt
+      // resolves during this second wait, we must short-circuit instead
+      // of launching a duplicate send.
+      let attempts = 0;
+      const limiter = createRateLimiter({
+        retry: {
+          ...errors.DEFAULT_RETRY_CONFIG,
+          maxRetries: 1,
+          initialDelayMs: 50,
+        },
+        isRetryable: (e) =>
+          typeof e === "object" && e !== null && (e as { code?: string }).code === "TIMEOUT",
+        sendTimeoutMs: 20,
+        advanceOnTimeout: true,
+      });
+      // First attempt resolves at ~40ms — after the first 20ms grace
+      // (which classifies the synthetic TIMEOUT as retryable) and
+      // during the second wait (which is also bounded at 20ms).
+      const fn: SendFn = () =>
+        new Promise<void>((resolve) => {
+          attempts++;
+          setTimeout(resolve, 40);
+        });
+      await limiter.enqueue(fn);
+      expect(attempts).toBe(1);
     });
 
     it("synchronous throws in the send callback reject the caller and unblock the queue", async () => {

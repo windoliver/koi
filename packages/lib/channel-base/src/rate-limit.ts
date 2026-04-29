@@ -444,7 +444,15 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
             // real outcome surfaces via onLateSuccess/onLateFailure.
             if (attempt >= retryConfig.maxRetries) {
               if (isDeadlineTimeout && !advanceOnTimeout) {
-                await run.settled;
+                // Best-effort upgrade: bound the wait at sendTimeoutMs so
+                // an abort-ignoring transport cannot hang the caller. If
+                // the real outcome lands inside the grace window, surface
+                // it; otherwise the caller sees the synthetic TIMEOUT
+                // and the late outcome flows to onLateSuccess/onLateFailure.
+                await Promise.race([
+                  run.settled,
+                  new Promise<void>((res) => setTimeout(res, sendTimeoutMs)),
+                ]);
                 const late = run.lateOutcome();
                 if (late.kind === "success") {
                   lastError = undefined;
@@ -487,7 +495,9 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
                   new Promise<void>((res) => setTimeout(res, sendTimeoutMs)),
                 ]);
               } else {
-                // Strict mode: wait for real settlement.
+                // Strict mode: wait for real settlement so retries within
+                // the same entry never overlap. Final-attempt path
+                // bounds this wait separately to keep callers responsive.
                 await run.settled;
               }
               const late = run.lateOutcome();
@@ -541,6 +551,26 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
               ]);
             } else {
               await run.settled;
+            }
+            // Re-check the real outcome immediately before retrying. A late
+            // success that landed during the second wait must NOT be
+            // followed by a duplicate send; a late terminal failure
+            // overrides the synthetic TIMEOUT for caller rejection.
+            {
+              const lateBeforeRetry = run.lateOutcome();
+              if (lateBeforeRetry.kind === "success") {
+                lastError = undefined;
+                break;
+              }
+              if (lateBeforeRetry.kind === "failure") {
+                lastError = lateBeforeRetry.error;
+                // Reclassify against the real failure: if non-retryable,
+                // stop here instead of reissuing.
+                const lateRetryAfter = sanitizeRetryAfterMs(safeExtract(lateBeforeRetry.error));
+                const lateRetryable =
+                  lateRetryAfter !== undefined || safeIsRetryable(lateBeforeRetry.error);
+                if (!lateRetryable) break;
+              }
             }
             // Wrap sleep so a sleeper rejection (clock corruption, monkey-
             // patched timers, etc.) does not abandon the in-flight entry —
