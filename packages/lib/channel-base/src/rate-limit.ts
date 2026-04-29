@@ -644,8 +644,19 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         // mode caps the wait at the grace window so the queue cannot
         // wedge forever; users opt into this knowing single-flight
         // becomes best-effort.
+        //
+        // Exception: when the caller-facing error is `delivery-unknown`,
+        // the transport has already proven it ignores abort within the
+        // grace window. Continuing to await `lastSettled` unbounded
+        // would turn one bad provider call into a channel-wide outage.
+        // Bound the advance gate at one extra grace window so later
+        // sends can still proceed; the eventual real outcome still
+        // surfaces via onLateSuccess/onLateFailure.
+        const isDeliveryUnknown =
+          isKoiError(lastError) &&
+          (lastError.context as { phase?: string } | undefined)?.phase === "delivery-unknown";
         if (lastSettled !== undefined) {
-          if (advanceOnTimeout) {
+          if (advanceOnTimeout || isDeliveryUnknown) {
             await Promise.race([
               lastSettled,
               new Promise<void>((res) => setTimeout(res, sendTimeoutMs)),

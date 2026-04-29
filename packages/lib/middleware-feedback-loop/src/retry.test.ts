@@ -75,7 +75,12 @@ describe("runWithRetry", () => {
     let callCount = 0;
     const next = mock(async () => {
       callCount++;
-      if (callCount === 1) throw new Error("network");
+      if (callCount === 1)
+        throw {
+          code: "RATE_LIMIT",
+          message: "network",
+          retryable: true,
+        };
       return goodResponse;
     });
     const result = await runWithRetry(baseRequest, next, {

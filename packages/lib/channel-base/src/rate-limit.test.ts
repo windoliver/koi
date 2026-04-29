@@ -828,7 +828,10 @@ describe("createRateLimiter", () => {
         new Promise<void>((_resolve, reject) => {
           inFlight++;
           maxConcurrent = Math.max(maxConcurrent, inFlight);
-          // Slow honor: rejects 60ms after abort with a TIMEOUT KoiError.
+          // Honors abort within the final-attempt grace window so the
+          // late outcome is observed as a real terminal failure (not
+          // delivery-unknown). Strict mode then advances only after
+          // settle — no overlap with the next entry.
           const onAbort = (): void => {
             setTimeout(() => {
               inFlight--;
@@ -838,7 +841,7 @@ describe("createRateLimiter", () => {
                 retryable: false,
               };
               reject(e);
-            }, 60);
+            }, 10);
           };
           if (signal.aborted) onAbort();
           else signal.addEventListener("abort", onAbort, { once: true });
@@ -913,6 +916,33 @@ describe("createRateLimiter", () => {
         context: { phase: "delivery-unknown" },
       });
       // Should complete in roughly sendTimeoutMs + a small grace, not 200+ms.
+      expect(Date.now() - start).toBeLessThan(150);
+    });
+
+    it("strict-mode delivery-unknown does not wedge later enqueued sends", async () => {
+      // Regression: loop-5 round 2 finding 1. After a final-attempt
+      // delivery-unknown the unbounded queue-advance gate would still
+      // wait on lastSettled forever if the transport ignored abort,
+      // turning one bad send into a channel outage. The advance gate
+      // is now bounded for that specific terminal state.
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+        sendTimeoutMs: 20,
+      });
+      const neverSettles: SendFn = () => new Promise<void>(() => {});
+      const a = limiter.enqueue(neverSettles);
+      const completed: string[] = [];
+      const b = limiter.enqueue(async () => {
+        completed.push("ok");
+      });
+      await expect(a).rejects.toMatchObject({
+        context: { phase: "delivery-unknown" },
+      });
+      // b must complete despite a's transport never settling.
+      const start = Date.now();
+      await b;
+      expect(completed).toEqual(["ok"]);
+      // Should be bounded at ~sendTimeoutMs (one extra grace), not blocked forever.
       expect(Date.now() - start).toBeLessThan(150);
     });
 

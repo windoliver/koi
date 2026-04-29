@@ -167,9 +167,15 @@ describe("isRetryable", () => {
     expect(isRetryable(makeError("RATE_LIMIT", false))).toBe(false);
   });
 
-  test("explicit retryable: true on a normally-non-retryable code is honored", () => {
-    expect(isRetryable(makeError("VALIDATION", true))).toBe(true);
-    expect(isRetryable(makeError("NOT_FOUND", true))).toBe(true);
+  test("explicit retryable: true CANNOT escalate a hard non-retryable code", () => {
+    // Asymmetric trust: hard non-retryable codes (VALIDATION, NOT_FOUND,
+    // PERMISSION, INTERNAL) are floor-clamped to false even if a
+    // producer mis-sets retryable: true. Protects withRetry from
+    // replaying permanent failures due to bad error translation.
+    expect(isRetryable(makeError("VALIDATION", true))).toBe(false);
+    expect(isRetryable(makeError("NOT_FOUND", true))).toBe(false);
+    expect(isRetryable(makeError("PERMISSION", true))).toBe(false);
+    expect(isRetryable(makeError("INTERNAL", true))).toBe(false);
   });
 
   test("CONFLICT is retryable (matches RETRYABLE_DEFAULTS)", () => {
@@ -180,8 +186,9 @@ describe("isRetryable", () => {
     expect(isRetryable(makeError("INTERNAL"))).toBe(false);
   });
 
-  test("explicit retryable=true overrides code-based logic", () => {
-    expect(isRetryable(makeError("VALIDATION", true))).toBe(true);
+  test("explicit retryable=true cannot escalate VALIDATION (hard non-retryable floor)", () => {
+    // Asymmetric trust: hard non-retryable codes are floor-clamped.
+    expect(isRetryable(makeError("VALIDATION", true))).toBe(false);
   });
 });
 
