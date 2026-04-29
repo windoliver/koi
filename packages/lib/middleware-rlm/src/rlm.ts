@@ -126,6 +126,53 @@ function hasToolCallBlock(response: ModelResponse): boolean {
  * `consumeStream` builds for streamed aborts so observability /
  * delivery paths see a single contract.
  */
+/**
+ * Best-effort extractor for `KoiError`-shaped fields off a thrown value.
+ * Looks at the throwable itself and its `.cause`, since callers attach
+ * structured metadata at either layer. Returns only the fields that
+ * are present and shape-correct so the synthetic terminal response
+ * does not invent values. Without this, structured retry/backoff
+ * signals (`code`, `retryable`, `retryAfterMs`) would be discarded
+ * exactly on the partial-failure path where retry middleware needs
+ * them most.
+ */
+function extractKoiErrorFields(err: unknown): {
+  readonly code?: string;
+  readonly retryable?: boolean;
+  readonly retryAfterMs?: number;
+} {
+  const candidates: unknown[] = [];
+  if (err !== null && typeof err === "object") candidates.push(err);
+  if (err instanceof Error && err.cause !== undefined) candidates.push(err.cause);
+  for (const c of candidates) {
+    if (c === null || typeof c !== "object") continue;
+    const o = c as Record<string, unknown>;
+    const out: { code?: string; retryable?: boolean; retryAfterMs?: number } = {};
+    if (typeof o.code === "string") out.code = o.code;
+    if (typeof o.retryable === "boolean") out.retryable = o.retryable;
+    if (typeof o.retryAfterMs === "number") out.retryAfterMs = o.retryAfterMs;
+    if (out.code !== undefined || out.retryable !== undefined || out.retryAfterMs !== undefined) {
+      return out;
+    }
+  }
+  return {};
+}
+
+function buildErrorResponse(seg: ModelRequest, err: unknown): ModelResponse {
+  const message = err instanceof Error ? err.message : String(err);
+  const fields = extractKoiErrorFields(err);
+  const metadata: Record<string, unknown> = { rlmStreamError: message };
+  if (fields.code !== undefined) metadata.errorCode = fields.code;
+  if (fields.retryable !== undefined) metadata.retryable = fields.retryable;
+  if (fields.retryAfterMs !== undefined) metadata.retryAfterMs = fields.retryAfterMs;
+  return {
+    content: "",
+    model: seg.model ?? "",
+    stopReason: "error",
+    metadata,
+  };
+}
+
 function buildAbortResponse(seg: ModelRequest): ModelResponse {
   const signal = seg.signal;
   const isTimeout =
@@ -175,17 +222,13 @@ async function dispatchSegmented(
       // Wrap a thrown downstream failure (network blip, provider 5xx,
       // hook throw) so callers receive `completedSegments` /
       // `completedUsage` and can resume from this segment instead of
-      // paying to re-dispatch the chunks already completed.
-      const message = err instanceof Error ? err.message : String(err);
+      // paying to re-dispatch the chunks already completed. Preserve
+      // KoiError retry/backoff metadata so retry middleware can make
+      // correct decisions on partial failures.
       throw createSegmentAbortError({
         index: i,
         total: segments.length,
-        response: {
-          content: "",
-          model: seg.model ?? "",
-          stopReason: "error",
-          metadata: { rlmStreamError: message },
-        },
+        response: buildErrorResponse(seg, err),
         toolCallAborts: false,
         kind: "call",
         completedSegments: [...responses],
@@ -928,17 +971,12 @@ async function* rlmWrapModelStream(
       // iterator rejected, etc.) must still surface completedSegments /
       // completedUsage so callers can resume from `i` instead of paying
       // to re-dispatch every chunk. Wrap the bare exception in a
-      // SegmentAbortError carrying a synthetic terminal response.
-      const message = err instanceof Error ? err.message : String(err);
+      // SegmentAbortError carrying a synthetic terminal response that
+      // preserves KoiError retry/backoff metadata.
       throw createSegmentAbortError({
         index: i,
         total: segments.length,
-        response: {
-          content: "",
-          model: seg.model ?? "",
-          stopReason: "error",
-          metadata: { rlmStreamError: message },
-        },
+        response: buildErrorResponse(seg, err),
         toolCallAborts: false,
         kind: "stream",
         completedSegments: [...responses],

@@ -350,6 +350,27 @@ describe("segmentRequest", () => {
     }
   });
 
+  test("fails closed when a non-text block lives in a different message (not just same-message siblings)", () => {
+    // Earlier guard scoped the non-text check to the target message
+    // only; an image in a prior turn's message was passed through
+    // verbatim per segment, billing the same attachment N times.
+    // Scan all messages, fail closed if any non-text block exists.
+    const big = "y".repeat(300);
+    const priorImage: InboundMessage = {
+      senderId: "user",
+      timestamp: 0,
+      content: [{ kind: "image", url: "http://example/prior.png" }],
+    };
+    const oversizedTurn: InboundMessage = {
+      senderId: "user",
+      timestamp: 1,
+      content: [{ kind: "text", text: big }],
+    };
+    expect(() => segmentRequest(makeRequest([priorImage, oversizedTurn]), 100)).toThrow(
+      SiblingNonTextBlocksError,
+    );
+  });
+
   test("fails closed when the oversized message has non-text siblings instead of duplicating them", () => {
     // Earlier behavior duplicated the image across every chunk. That
     // re-bills the multimodal attachment N times while reassembly only

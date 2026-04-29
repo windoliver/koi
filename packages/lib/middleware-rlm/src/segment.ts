@@ -146,9 +146,9 @@ export class SiblingNonTextBlocksError extends Error {
   readonly siblingCount: number;
   constructor(siblingCount: number) {
     super(
-      `RLM cannot segment a request whose oversized user message contains ${String(
+      `RLM cannot segment a request that contains ${String(
         siblingCount,
-      )} non-text content block(s) (image / file / audio / tool_call / tool_result). Each chunk would replay the same attachment, while reassembly only concatenates the answers — duplicating multimodal cost and corrupting reassembly. Move the attachment to a separate message or run an explicit multimodal reducer before invoking RLM.`,
+      )} non-text content block(s) anywhere in its messages (image / file / audio / button / custom). Segmentation rewrites only the oversized text block, so each chunked request would replay the same attachment — duplicating multimodal cost and corrupting reassembly regardless of which message holds the attachment. Strip / summarize attachments upstream or run an explicit multimodal reducer before invoking RLM.`,
     );
     this.name = "SiblingNonTextBlocksError";
     this.siblingCount = siblingCount;
@@ -309,31 +309,37 @@ export function segmentRequest(
   const target = oversized[0];
   if (target === undefined) return [request];
 
-  // Guard against duplicating siblings on every chunk. Replacing the
-  // oversized block alone leaves the rest of the message intact, so
-  // each downstream call would see the same sibling content alongside
-  // its own chunk — turning byte-faithful tasks into N-fold corruption
-  // and re-billing every multimodal attachment N times.
-  //   - Sibling TEXT  → SiblingTextBlocksError
-  //   - Sibling NON-TEXT (image / file / audio / tool_call / tool_result)
-  //                   → SiblingNonTextBlocksError
-  const targetMsg = request.messages[target.messageIndex];
-  if (targetMsg !== undefined) {
-    let siblingTextCount = 0; // let: counter while scanning siblings
-    let siblingNonTextCount = 0; // let: counter while scanning siblings
-    for (let j = 0; j < targetMsg.content.length; j++) {
-      if (j === target.blockIndex) continue;
-      const block = targetMsg.content[j];
+  // Guard against duplicating content on every chunk. Segmentation
+  // rewrites only the target text block; every other block in every
+  // other message is passed through verbatim, so each downstream call
+  // would re-bill the same content alongside its own chunk —
+  // N-fold corruption for byte-faithful tasks and N-fold cost for
+  // multimodal attachments.
+  //
+  // Scope:
+  //   - Sibling TEXT in the target message  → SiblingTextBlocksError
+  //   - Non-text block ANYWHERE in the request (target message OR any
+  //     other message) → SiblingNonTextBlocksError. A multimodal
+  //     attachment in a prior turn is replayed every segment just like
+  //     one in the same message; the failure mode is identical.
+  let siblingTextCount = 0; // let: counter for target-message text siblings
+  let nonTextAnywhereCount = 0; // let: counter for non-text blocks across all messages
+  for (let i = 0; i < request.messages.length; i++) {
+    const msg = request.messages[i];
+    if (msg === undefined) continue;
+    for (let j = 0; j < msg.content.length; j++) {
+      if (i === target.messageIndex && j === target.blockIndex) continue;
+      const block = msg.content[j];
       if (block === undefined) continue;
       if (block.kind === "text") {
-        siblingTextCount += 1;
+        if (i === target.messageIndex) siblingTextCount += 1;
       } else {
-        siblingNonTextCount += 1;
+        nonTextAnywhereCount += 1;
       }
     }
-    if (siblingTextCount > 0) throw new SiblingTextBlocksError(siblingTextCount);
-    if (siblingNonTextCount > 0) throw new SiblingNonTextBlocksError(siblingNonTextCount);
   }
+  if (siblingTextCount > 0) throw new SiblingTextBlocksError(siblingTextCount);
+  if (nonTextAnywhereCount > 0) throw new SiblingNonTextBlocksError(nonTextAnywhereCount);
 
   const chunks = splitText(target.text, maxChunkChars);
   if (chunks.length <= 1) return [request];

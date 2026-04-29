@@ -1319,6 +1319,44 @@ describe("createRlmMiddleware", () => {
     expect(done.response.usage?.inputTokens).toBe(segmentCount * 3);
   });
 
+  test("wrapModelCall preserves KoiError retry metadata when wrapping a thrown segment failure", async () => {
+    // When a downstream segment throws a structured KoiError-shaped
+    // exception (rate limit, timeout), the retry middleware needs
+    // `code`, `retryable`, and `retryAfterMs` to make correct
+    // decisions. The synthetic terminal response must surface those
+    // fields in metadata, not strip them down to an opaque message.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let call = 0; // let: per-test counter
+    const handler: ModelHandler = async (_req) => {
+      call += 1;
+      if (call === 1) {
+        return { content: "seg1", model: "test" } satisfies ModelResponse;
+      }
+      // KoiError-shaped fields attached directly to the throwable.
+      const err = new Error("rate limited");
+      Object.assign(err, { code: "RATE_LIMIT", retryable: true, retryAfterMs: 5000 });
+      throw err;
+    };
+    let caught: unknown;
+    try {
+      await mw.wrapModelCall?.(turnCtx(), { messages: [userMessage("x".repeat(400))] }, handler);
+    } catch (err: unknown) {
+      caught = err;
+    }
+    if (!(caught instanceof Error) || !("segmentResponse" in caught)) {
+      throw new Error("expected SegmentAbortError");
+    }
+    const aborted = caught as unknown as Error & { readonly segmentResponse: ModelResponse };
+    const meta = aborted.segmentResponse.metadata as Record<string, unknown> | undefined;
+    expect(meta?.errorCode).toBe("RATE_LIMIT");
+    expect(meta?.retryable).toBe(true);
+    expect(meta?.retryAfterMs).toBe(5000);
+  });
+
   test("describeCapabilities returns a label", () => {
     const mw = createRlmMiddleware();
     const cap = mw.describeCapabilities?.(turnCtx());
