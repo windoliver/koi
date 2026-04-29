@@ -895,10 +895,12 @@ describe("createRateLimiter", () => {
     });
 
     it("strict-mode caller does not hang on a final-attempt deadline when the transport ignores abort", async () => {
-      // Regression: Round 7 finding 1. Final-attempt strict-mode upgrade
-      // must be bounded so an abort-ignoring transport cannot wedge the
-      // caller. The caller surfaces the synthetic TIMEOUT promptly even
-      // though the underlying send never settles.
+      // Regression: Round 7 finding 1 + Round 10 finding 1. Final-attempt
+      // strict-mode upgrade must be bounded so an abort-ignoring transport
+      // cannot wedge the caller. When the real outcome remains unknown
+      // after the grace window, surface a distinct delivery-unknown
+      // error (retryable: false, phase: "delivery-unknown") so callers
+      // do not conflate it with a normal retryable TIMEOUT.
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
         sendTimeoutMs: 20,
@@ -907,9 +909,35 @@ describe("createRateLimiter", () => {
       const start = Date.now();
       await expect(limiter.enqueue(neverSettles)).rejects.toMatchObject({
         code: "TIMEOUT",
+        retryable: false,
+        context: { phase: "delivery-unknown" },
       });
       // Should complete in roughly sendTimeoutMs + a small grace, not 200+ms.
       expect(Date.now() - start).toBeLessThan(150);
+    });
+
+    it("strict-mode never reports a definitive TIMEOUT for a send that succeeds after the grace window", async () => {
+      // Regression: Round 10 finding 1. If the transport eventually
+      // succeeds AFTER the bounded grace window, the caller must NOT
+      // have been told it was a normal TIMEOUT (which is retryable by
+      // default). The caller sees delivery-unknown — the contract
+      // says do not retry blindly.
+      const lateOutcomes: string[] = [];
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+        sendTimeoutMs: 20,
+        onLateSuccess: () => lateOutcomes.push("late-success"),
+      });
+      // Resolves at +60ms — well past the bounded final-attempt grace.
+      const slowSuccess: SendFn = () => new Promise<void>((resolve) => setTimeout(resolve, 60));
+      await expect(limiter.enqueue(slowSuccess)).rejects.toMatchObject({
+        code: "TIMEOUT",
+        retryable: false,
+        context: { phase: "delivery-unknown" },
+      });
+      // Late success eventually flows to the telemetry hook.
+      await new Promise<void>((res) => setTimeout(res, 80));
+      expect(lateOutcomes).toEqual(["late-success"]);
     });
 
     it("liveness mode does not reissue a send when the first attempt succeeds during the second wait", async () => {

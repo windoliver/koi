@@ -450,8 +450,13 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
                 // Best-effort upgrade: bound the wait at sendTimeoutMs so
                 // an abort-ignoring transport cannot hang the caller. If
                 // the real outcome lands inside the grace window, surface
-                // it; otherwise the caller sees the synthetic TIMEOUT
-                // and the late outcome flows to onLateSuccess/onLateFailure.
+                // it. Otherwise we cannot prove the send failed — the
+                // transport may still complete it. Surface a distinct
+                // `phase: "delivery-unknown"` error (retryable: false)
+                // so callers cannot conflate it with a normal TIMEOUT
+                // (which is retryable by default) and re-issue the same
+                // non-idempotent send. The eventual real outcome still
+                // flows to onLateSuccess/onLateFailure.
                 await Promise.race([
                   run.settled,
                   new Promise<void>((res) => setTimeout(res, sendTimeoutMs)),
@@ -461,8 +466,17 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
                   lastError = undefined;
                 } else if (late.kind === "failure") {
                   lastError = late.error;
+                } else {
+                  // late.kind === "abort-ignored": delivery state unknown.
+                  const unknown: KoiError = {
+                    code: "TIMEOUT",
+                    message:
+                      "channel send delivery unknown — transport did not honor abort within the grace window; the original send may still complete; do not retry blindly",
+                    retryable: false,
+                    context: { phase: "delivery-unknown" },
+                  };
+                  lastError = unknown;
                 }
-                // late.kind === "abort-ignored": keep synthetic TIMEOUT.
               }
               break;
             }

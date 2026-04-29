@@ -356,7 +356,7 @@ There is intentionally no verbose / developer mode; CLI tooling that needs raw d
 
 | Function | Returns | Purpose |
 |----------|---------|---------|
-| `createRateLimiter(config?)` | `RateLimiter` | FIFO send queue with retry-after honoring, exponential backoff, and a per-send watchdog. Send callbacks receive an `AbortSignal` (`SendFn = (signal) => Promise<void>`); when `sendTimeoutMs` (default 30s) elapses the signal aborts, the caller sees a `TIMEOUT` rejection, and the queue waits for the underlying promise to settle before advancing — preserving FIFO. Pass `sendTimeoutMs: 0` to opt out for transports that already enforce their own timeout. |
+| `createRateLimiter(config?)` | `RateLimiter` | FIFO send queue with retry-after honoring, exponential backoff, and a per-send watchdog. Send callbacks receive an `AbortSignal` (`SendFn = (signal) => Promise<void>`); when `sendTimeoutMs` (default 30s) elapses the signal aborts, the caller sees a `TIMEOUT` rejection, and the queue waits for the underlying promise to settle before advancing — preserving FIFO. Pass `sendTimeoutMs: 0` to opt out for transports that already enforce their own timeout. **Final-attempt strict-mode timeout contract:** if the transport never honors abort within an additional grace window, the caller is rejected with `code: "TIMEOUT"`, `retryable: false`, `context.phase: "delivery-unknown"` — distinct from a normal deadline TIMEOUT (`phase: "deadline-exceeded"`, retryable). Callers must NOT blindly retry a `delivery-unknown` send: the original may still complete. Use `onLateSuccess` / `onLateFailure` to observe the eventual real outcome. |
 | `createChannelRegistry(entries)` | `ChannelRegistry` | Snapshot-based name → factory map for adapter discovery |
 
 ### Types
