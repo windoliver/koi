@@ -49,9 +49,9 @@ describe("createForgeProvenance", () => {
     expect(prov.contentHash).toBe("sha256:cafebabe");
   });
 
-  test("uses caller-supplied verification verbatim — no defaults invented", () => {
+  test("uses caller-supplied verification — no defaults invented", () => {
     const prov = createForgeProvenance(baseOptions);
-    expect(prov.verification).toBe(passingVerification);
+    expect(prov.verification).toEqual(passingVerification);
     expect(prov.verification.passed).toBe(true);
     expect(prov.verification.sandbox).toBe(true);
     expect(prov.classification).toBe("public");
@@ -63,7 +63,7 @@ describe("createForgeProvenance", () => {
     const prov = createForgeProvenance({ ...baseOptions, verification: draftVerification });
     expect(prov.verification.passed).toBe(false);
     expect(prov.verification.sandbox).toBe(false);
-    expect(prov.verification).toBe(draftVerification);
+    expect(prov.verification).toEqual(draftVerification);
   });
 
   test("includes parentBrickId + evolutionKind when supplied", () => {
@@ -81,5 +81,36 @@ describe("createForgeProvenance", () => {
     expect(() =>
       createForgeProvenance({ ...baseOptions, startedAt: 100, finishedAt: 50 }),
     ).toThrow();
+  });
+
+  test("freezes verification so post-construction mutation throws in strict mode", () => {
+    const mutable: ForgeVerificationSummary = {
+      passed: false,
+      sandbox: false,
+      totalDurationMs: 0,
+      stageResults: [],
+    };
+    const prov = createForgeProvenance({ ...baseOptions, verification: mutable });
+    expect(Object.isFrozen(prov.verification)).toBe(true);
+    expect(Object.isFrozen(prov)).toBe(true);
+    // Mutating the original input must not leak into the stored verification.
+    Object.assign(mutable, { passed: true, sandbox: true });
+    expect(prov.verification.passed).toBe(false);
+    expect(prov.verification.sandbox).toBe(false);
+  });
+
+  test("freezes externalParameters and contentMarkers against post-construction mutation", () => {
+    const externals = { name: "csv-parse", schemaVer: 1 };
+    const markers = ["pii"] as const;
+    const prov = createForgeProvenance({
+      ...baseOptions,
+      externalParameters: externals,
+      contentMarkers: markers,
+    });
+    expect(Object.isFrozen(prov.buildDefinition.externalParameters)).toBe(true);
+    expect(Object.isFrozen(prov.contentMarkers)).toBe(true);
+    // Original input mutation does not leak.
+    (externals as Record<string, unknown>).name = "evil";
+    expect(prov.buildDefinition.externalParameters).toEqual({ name: "csv-parse", schemaVer: 1 });
   });
 });

@@ -3,9 +3,12 @@
  *
  * Records who created the brick, when, and from what demand. Verification
  * state (`passed`, `sandbox`, stage results) is REQUIRED from the caller —
- * this helper never manufactures optimistic verification metadata. A draft
- * or unsandboxed artifact must be reflected truthfully in its provenance so
- * downstream policy/trust code is not misled.
+ * this helper never manufactures optimistic verification metadata.
+ *
+ * All structured inputs (`verification`, `externalParameters`,
+ * `contentMarkers`) are deep-frozen via a defensive structured clone so
+ * callers cannot mutate trust/policy metadata after the provenance has
+ * been constructed.
  */
 
 import type {
@@ -42,35 +45,50 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
     throw new Error("createForgeProvenance: finishedAt < startedAt");
   }
 
-  const externalParameters: Readonly<Record<string, unknown>> =
+  const externalParameters: Readonly<Record<string, unknown>> = deepFreeze(
     options.demandId !== undefined
-      ? { ...options.externalParameters, demandId: options.demandId }
-      : options.externalParameters;
+      ? { ...structuredClone(options.externalParameters), demandId: options.demandId }
+      : structuredClone(options.externalParameters),
+  );
 
-  return {
-    source: {
+  const verification = deepFreeze(structuredClone(options.verification));
+  const contentMarkers = Object.freeze(
+    options.contentMarkers !== undefined ? [...options.contentMarkers] : [],
+  );
+
+  const provenance: ForgeProvenance = {
+    source: Object.freeze({
       origin: "forged",
       forgedBy: options.forgedBy,
       sessionId: options.sessionId,
-    },
-    buildDefinition: {
+    }),
+    buildDefinition: Object.freeze({
       buildType: options.buildType,
       externalParameters,
-    },
-    builder: { id: options.builderId },
-    metadata: {
+    }),
+    builder: Object.freeze({ id: options.builderId }),
+    metadata: Object.freeze({
       invocationId: options.invocationId,
       startedAt: options.startedAt,
       finishedAt: options.finishedAt,
       sessionId: options.sessionId,
       agentId: options.agentId,
       depth: options.depth ?? 0,
-    },
-    verification: options.verification,
+    }),
+    verification,
     classification: options.classification ?? "public",
-    contentMarkers: options.contentMarkers ?? [],
+    contentMarkers,
     contentHash: options.contentHash,
     ...(options.parentBrickId !== undefined ? { parentBrickId: options.parentBrickId } : {}),
     ...(options.evolutionKind !== undefined ? { evolutionKind: options.evolutionKind } : {}),
   };
+  return Object.freeze(provenance);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(v);
+  }
+  return Object.freeze(value);
 }

@@ -6,8 +6,10 @@
 export type {
   IntegrityContentMismatch,
   IntegrityOk,
+  IntegrityProducerUnknown,
   IntegrityRecomputeFailed,
   IntegrityResult,
+  ProducerRegistry,
   RecomputeBrickId,
 } from "./integrity.js";
 export { verifyBrickIntegrity } from "./integrity.js";
