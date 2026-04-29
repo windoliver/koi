@@ -13,6 +13,7 @@
  */
 
 import type { BrickArtifact, BrickId, ForgeStore, KoiError } from "@koi/core";
+import { isBrickId } from "@koi/hash";
 import type { BrickVerifier } from "./integrity.js";
 
 /** Maximum lineage walk depth — prevents infinite loops on malformed chains. */
@@ -63,16 +64,19 @@ function inspectLineageShape(brick: BrickArtifact): LineageShape {
   if (brick === null || typeof brick !== "object") {
     return { kind: "malformed", reason: "brick is not an object" };
   }
-  if (typeof brick.id !== "string" || brick.id.length === 0) {
-    return { kind: "malformed", reason: "brick.id missing or empty" };
+  if (typeof brick.id !== "string" || !isBrickId(brick.id)) {
+    return { kind: "malformed", reason: "brick.id is not a canonical BrickId" };
   }
   const provenance = brick.provenance;
   if (provenance === null || typeof provenance !== "object") {
     return { kind: "malformed", reason: "brick.provenance missing or not an object" };
   }
   const parent = provenance.parentBrickId;
-  if (parent !== undefined && (typeof parent !== "string" || parent.length === 0)) {
-    return { kind: "malformed", reason: "brick.provenance.parentBrickId malformed" };
+  if (parent !== undefined && (typeof parent !== "string" || !isBrickId(parent))) {
+    return {
+      kind: "malformed",
+      reason: "brick.provenance.parentBrickId is not a canonical BrickId",
+    };
   }
   return { kind: "ok", id: brick.id, parentBrickId: parent };
 }
@@ -95,6 +99,9 @@ export async function isDerivedFrom(
   store: ForgeStore,
   options?: IsDerivedFromOptions,
 ): Promise<LineageOutcome> {
+  if (typeof ancestor !== "string" || !isBrickId(ancestor)) {
+    return { kind: "malformed", reason: "ancestor is not a canonical BrickId" };
+  }
   const childShape = inspectLineageShape(child);
   if (childShape.kind === "malformed") {
     return { kind: "malformed", reason: childShape.reason };
@@ -105,10 +112,13 @@ export async function isDerivedFrom(
   let steps = 0;
 
   while (parentId !== undefined) {
-    if (parentId === ancestor) return { kind: "derived" };
     if (seen.has(parentId)) return { kind: "cycle_detected", at: parentId };
     if (steps >= MAX_LINEAGE_DEPTH) return { kind: "depth_exceeded", depth: steps };
     seen.add(parentId);
+    // Do NOT short-circuit on `parentId === ancestor` before loading and
+    // (when verification is requested) integrity-verifying that ancestor
+    // record. Otherwise a tampered child could rewrite its own
+    // `parentBrickId` to a trusted ancestor and forge a positive result.
 
     let result: Awaited<ReturnType<ForgeStore["load"]>>;
     try {
@@ -151,6 +161,7 @@ export async function isDerivedFrom(
         };
       }
     }
+    if (parentId === ancestor) return { kind: "derived" };
     parentId = loadedShape.parentBrickId;
     steps += 1;
   }

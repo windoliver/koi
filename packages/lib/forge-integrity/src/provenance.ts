@@ -19,6 +19,7 @@ import type {
   ForgeProvenance,
   ForgeVerificationSummary,
 } from "@koi/core";
+import { isBrickId } from "@koi/hash";
 
 export interface CreateProvenanceOptions {
   readonly forgedBy: string;
@@ -194,6 +195,11 @@ function validateScalars(o: CreateProvenanceOptions): void {
   }
   if (o.parentBrickId !== undefined) {
     requireNonEmptyString("parentBrickId", o.parentBrickId);
+    if (!isBrickId(o.parentBrickId)) {
+      throw new Error(
+        "createForgeProvenance: parentBrickId must be a canonical BrickId (sha256:<64-hex>)",
+      );
+    }
   }
   if (o.demandId !== undefined) requireNonEmptyString("demandId", o.demandId);
 }

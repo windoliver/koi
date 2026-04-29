@@ -136,6 +136,41 @@ describe("lineage", () => {
     expect(findDuplicateById([poisoned, real], real.id, "koi/forge", verify)?.id).toBe(real.id);
   });
 
+  test("isDerivedFrom rejects forged direct-parent edge by verifying the named ancestor", async () => {
+    // Attacker constructs a child whose provenance.parentBrickId points at a
+    // trusted ancestor id without ever being derived from it. Without
+    // verification the bypass succeeds; with verification it must not.
+    const trustedAncestor = makeTool({ implementation: "trusted" });
+    const forgedChild = makeTool({ implementation: "evil", parentBrickId: trustedAncestor.id });
+    // Stash a tampered version under the trusted id so the load returns
+    // matching id but content fails recompute.
+    const tampered = { ...trustedAncestor, implementation: "// tampered" } as BrickArtifact;
+    const store: ForgeStore = {
+      save: () => Promise.resolve({ ok: true, value: undefined }),
+      load: () => Promise.resolve({ ok: true, value: tampered } as Result<BrickArtifact, KoiError>),
+      search: () => notImplemented(),
+      remove: () => notImplemented(),
+      update: () => notImplemented(),
+      exists: () => Promise.resolve({ ok: true, value: false }),
+    };
+    const result = await isDerivedFrom(forgedChild, trustedAncestor.id, store, {
+      verify,
+      producerBuilderId: "koi/forge",
+    });
+    expect(result.kind).toBe("integrity_failed");
+  });
+
+  test("isDerivedFrom rejects non-canonical ancestor argument as malformed", async () => {
+    const root = makeTool();
+    const child = makeTool({ implementation: "v2", parentBrickId: root.id });
+    const result = await isDerivedFrom(
+      child,
+      "not-a-brick-id" as unknown as BrickId,
+      fixtureStore([root]),
+    );
+    expect(result.kind).toBe("malformed");
+  });
+
   test("isDerivedFrom integrity-verifies each loaded ancestor when verify option is supplied", async () => {
     const root = makeTool({ implementation: "v1" });
     const mid = makeTool({ implementation: "v2", parentBrickId: root.id });

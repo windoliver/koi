@@ -217,6 +217,16 @@ describe("createForgeProvenance", () => {
     expect(() => createForgeProvenance({ ...baseOptions, depth: Number.NaN })).toThrow(/depth/);
   });
 
+  test("rejects non-canonical parentBrickId (must be sha256:<64-hex>)", () => {
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        parentBrickId: "not-canonical" as unknown as BrickId,
+        evolutionKind: "fix",
+      }),
+    ).toThrow(/canonical BrickId/);
+  });
+
   test("rejects empty parentBrickId or invalid evolutionKind", () => {
     expect(() =>
       createForgeProvenance({
