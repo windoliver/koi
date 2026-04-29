@@ -47,3 +47,23 @@ export interface Session {
   readonly metadata: Readonly<Record<string, unknown>>;
   readonly routing?: RoutingContext | undefined;
 }
+
+// ---------------------------------------------------------------------------
+// Gateway ingestor contract
+// ---------------------------------------------------------------------------
+
+/**
+ * Runtime ingestor contract for gateway implementations.
+ * `@koi/gateway` (L2) implements this; `@koi/gateway-http` (L2) consumes it
+ * via dependency injection so neither package depends on the other.
+ */
+export interface Gateway {
+  /** Ingest a frame produced by the HTTP ingestion path (or any caller). */
+  readonly ingest: (session: Session, frame: GatewayFrame) => void | Promise<void>;
+  /** Stop accepting NEW frames from external WS clients; existing ingest() callers continue. */
+  readonly pauseIngress: () => void | Promise<void>;
+  /** Force-close all WS sessions immediately. */
+  readonly forceClose: () => void | Promise<void>;
+  /** Number of active WS connections. */
+  readonly activeConnections: () => number;
+}
