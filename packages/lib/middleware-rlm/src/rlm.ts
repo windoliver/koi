@@ -760,13 +760,28 @@ async function consumeStream(
       // Skip without losing forward progress.
     }
   } finally {
-    // Best-effort iterator release on every non-`done` exit. Fire-and-
-    // forget so a generator stuck in a forever-await cannot hang the
-    // cleanup itself; ignore any rejection.
+    // Iterator cleanup — await with a safety timeout so downstream
+    // `finally` blocks (e.g., session-transcript writing turn entries)
+    // complete before the surrounding code observes turn-end /
+    // SegmentAbortError. Mirrors the bounded-wait contract in
+    // packages/lib/query-engine/src/consume-stream.ts. Without awaiting,
+    // an oversized streamed turn races observer persistence on every
+    // abort/error path. 200ms is generous for local fs writes but short
+    // enough that a misbehaving iterator cannot hang the turn.
     if (!exitedOnDone) {
-      iterator.return?.().catch(() => {
-        // closing a hung iterator is best-effort
-      });
+      try {
+        const ret = iterator.return?.();
+        if (ret !== undefined) {
+          await Promise.race([
+            ret.catch(() => {
+              // closing a hung iterator is best-effort
+            }),
+            new Promise<void>((resolve) => setTimeout(resolve, 200)),
+          ]);
+        }
+      } catch {
+        // swallow synchronous cleanup errors
+      }
     }
   }
 }
