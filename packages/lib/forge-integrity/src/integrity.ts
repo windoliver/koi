@@ -92,17 +92,45 @@ export type ProducerRegistry = Readonly<Record<string, RecomputeBrickId>>;
  * recommended entry point for callers — the registry is owned by the
  * operator at construction time, not passed at every call site. Returned
  * verifiers cannot be coerced to use a different registry.
+ *
+ * `coversLineage(expectedBuilderId)` reports whether the registered
+ * producer's canonical recompute scheme covers provenance lineage fields
+ * (`parentBrickId`, `evolutionKind`). This is a separate operator-supplied
+ * declaration, not something the verifier can prove from a single
+ * recompute call. Lineage-trusting callers (`isDerivedFrom`) MUST consult
+ * this and fail closed when a producer is not lineage-bound — without it,
+ * an attacker can rewrite `parentBrickId` while leaving `id` unchanged.
  */
-export type BrickVerifier = (brick: BrickArtifact, expectedBuilderId: string) => IntegrityResult;
+export interface BrickVerifier {
+  (brick: BrickArtifact, expectedBuilderId: string): IntegrityResult;
+  readonly coversLineage: (expectedBuilderId: string) => boolean;
+}
+
+export interface CreateBrickVerifierOptions {
+  /**
+   * Set of `builderId`s whose canonical recompute scheme is operator-
+   * declared to cover provenance lineage fields (parentBrickId,
+   * evolutionKind). Default: empty — `isDerivedFrom` will reject lineage
+   * questions for any producer that is not explicitly opted in.
+   */
+  readonly lineageBoundBuilders?: ReadonlySet<string>;
+}
 
 /**
  * Build a `BrickVerifier` bound to an immutable copy of `registry`. Each
  * entry is validated upfront (must be a function); the registry itself is
  * frozen and the verifier closure prevents callers from substituting one.
  *
+ * `options.lineageBoundBuilders` declares which producers' canonical
+ * recompute covers lineage. The set is frozen into the verifier closure;
+ * callers cannot widen it after construction.
+ *
  * Throws synchronously on construction if `registry` is malformed.
  */
-export function createBrickVerifier(registry: ProducerRegistry): BrickVerifier {
+export function createBrickVerifier(
+  registry: ProducerRegistry,
+  options: CreateBrickVerifierOptions = {},
+): BrickVerifier {
   if (registry === null || typeof registry !== "object") {
     throw new Error("createBrickVerifier: registry must be an object");
   }
@@ -114,7 +142,18 @@ export function createBrickVerifier(registry: ProducerRegistry): BrickVerifier {
     owned[k] = v;
   }
   const frozen: ProducerRegistry = Object.freeze(owned);
-  return (brick, expectedBuilderId) => verifyBrickIntegrity(brick, frozen, expectedBuilderId);
+  const lineageBound = new Set<string>(options.lineageBoundBuilders ?? []);
+  const fn = ((brick: BrickArtifact, expectedBuilderId: string) =>
+    verifyBrickIntegrity(brick, frozen, expectedBuilderId)) as BrickVerifier & {
+    coversLineage: (id: string) => boolean;
+  };
+  Object.defineProperty(fn, "coversLineage", {
+    value: (id: string) => lineageBound.has(id),
+    writable: false,
+    configurable: false,
+    enumerable: true,
+  });
+  return Object.freeze(fn);
 }
 
 interface ArtifactShape {

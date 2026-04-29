@@ -10,7 +10,10 @@ import {
   MAX_LINEAGE_DEPTH,
 } from "./lineage.js";
 
-const verify = createBrickVerifier({ "koi/forge": recomputeFixtureId });
+const verify = createBrickVerifier(
+  { "koi/forge": recomputeFixtureId },
+  { lineageBoundBuilders: new Set(["koi/forge"]) },
+);
 
 function notImplemented<T>(): T {
   throw new Error("not implemented");
@@ -138,10 +141,13 @@ describe("lineage", () => {
       parentBrickId: ancestor.id,
       builderId: "koi/forge",
     });
-    const multiVerify = createBrickVerifier({
-      "koi/forge": recomputeFixtureId,
-      "koi/forge-v2": recomputeFixtureId,
-    });
+    const multiVerify = createBrickVerifier(
+      {
+        "koi/forge": recomputeFixtureId,
+        "koi/forge-v2": recomputeFixtureId,
+      },
+      { lineageBoundBuilders: new Set(["koi/forge", "koi/forge-v2"]) },
+    );
     const store = fixtureStore([ancestor]);
     const result = await isDerivedFrom(child, ancestor.id, store, {
       verify: multiVerify,
@@ -157,9 +163,12 @@ describe("lineage", () => {
   test("isDerivedFrom normalizes a verifier that throws into integrity_failed", async () => {
     const root = makeTool();
     const child = makeTool({ implementation: "v2", parentBrickId: root.id });
-    const throwingVerify = (() => {
-      throw new Error("verifier exploded");
-    }) as unknown as ReturnType<typeof createBrickVerifier>;
+    const throwingVerify = Object.assign(
+      () => {
+        throw new Error("verifier exploded");
+      },
+      { coversLineage: () => true },
+    ) as unknown as ReturnType<typeof createBrickVerifier>;
     const result = await isDerivedFrom(child, root.id, fixtureStore([root]), {
       verify: throwingVerify,
       producerBuilderId: "koi/forge",
@@ -191,6 +200,22 @@ describe("lineage", () => {
     };
     const result = await isDerivedFromUnchecked(child, root.id, brokenStore);
     expect(result.kind).toBe("malformed");
+  });
+
+  test("isDerivedFrom fails closed when producer is not declared lineage-bound", async () => {
+    // Same registered recompute, but `lineageBoundBuilders` is empty:
+    // the verifier still says content-id matches, yet the lineage walk
+    // must refuse to trust parentBrickId because no operator declared
+    // that the canonical recompute covers lineage fields.
+    const contentOnlyVerify = createBrickVerifier({ "koi/forge": recomputeFixtureId });
+    const ancestor = makeTool({ implementation: "ancestor" });
+    const child = makeTool({ implementation: "child", parentBrickId: ancestor.id });
+    const result = await isDerivedFrom(child, ancestor.id, fixtureStore([ancestor]), {
+      verify: contentOnlyVerify,
+      producerBuilderId: "koi/forge",
+    });
+    expect(result.kind).toBe("integrity_failed");
+    if (result.kind === "integrity_failed") expect(result.reason).toBe("lineage_unbound");
   });
 
   test("isDerivedFrom returns malformed for null/missing/wrong-shape options instead of throwing", async () => {

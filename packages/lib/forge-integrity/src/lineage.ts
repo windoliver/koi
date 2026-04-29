@@ -155,6 +155,19 @@ async function walk(
   // before trusting its `parentBrickId`. Otherwise a tampered child whose
   // provenance points at a trusted ancestor would be accepted as derived.
   if (options !== undefined) {
+    // The producer's canonical recompute must cover lineage fields (parent
+    // pointer, evolution kind) before this walk can be trusted. Without
+    // that operator-supplied declaration an attacker can rewrite
+    // `parentBrickId` while keeping `brick.id` valid under a content-only
+    // recompute, and the walk would still report `derived`. Fail closed.
+    if (!coversLineageSafe(options.verify, options.producerBuilderId)) {
+      return {
+        kind: "integrity_failed",
+        at: childShape.id,
+        producerBuilderId: options.producerBuilderId,
+        reason: "lineage_unbound",
+      };
+    }
     const childVerdict = safeVerify(options.verify, child, options.producerBuilderId);
     if (childVerdict.kind !== "ok") {
       return {
@@ -253,6 +266,14 @@ async function walk(
           reason: "loaded ancestor missing provenance.builder.id",
         };
       }
+      if (!coversLineageSafe(options.verify, ancestorBuilderId)) {
+        return {
+          kind: "integrity_failed",
+          at: parentId,
+          producerBuilderId: ancestorBuilderId,
+          reason: "lineage_unbound",
+        };
+      }
       const verdict = safeVerify(options.verify, result.value, ancestorBuilderId);
       if (verdict.kind !== "ok") {
         return {
@@ -299,6 +320,23 @@ export function findDuplicateById(
     const result = safeVerify(verify, b, producerBuilderId);
     return result.kind === "ok";
   });
+}
+
+/**
+ * Defensively probe the verifier's `coversLineage` declaration. A custom
+ * verifier may not implement the property, or its `coversLineage` may
+ * throw; in either case we fail closed (false) so lineage walks never
+ * trust a producer that hasn't been explicitly declared lineage-bound.
+ */
+function coversLineageSafe(verify: BrickVerifier, builderId: string): boolean {
+  try {
+    const fn = (verify as { coversLineage?: unknown }).coversLineage;
+    if (typeof fn !== "function") return false;
+    const result = fn.call(verify, builderId);
+    return result === true;
+  } catch {
+    return false;
+  }
 }
 
 /**
