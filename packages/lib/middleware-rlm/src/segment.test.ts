@@ -134,6 +134,41 @@ describe("segmentRequest", () => {
     expect(out.length).toBeGreaterThan(1);
   });
 
+  test("does not chunk senderId === 'tool' even when oversized", () => {
+    // Tool results carry tool_call/tool_result correlation. Splitting them
+    // into 'user-like' chunks would break tool linkage and corrupt
+    // conversation semantics.
+    const toolMsg: InboundMessage = {
+      senderId: "tool",
+      timestamp: 0,
+      content: [{ kind: "text", text: "z".repeat(500) }],
+    };
+    expect(segmentRequest(makeRequest([toolMsg]), 100)).toEqual([makeRequest([toolMsg])]);
+  });
+
+  test("respects trusted metadata.role override (assistant)", () => {
+    // L1 / session-repair set metadata.role for non-escalating roles.
+    // RLM must honor that override so resumed assistant content is not
+    // reclassified as chunkable user input.
+    const assistantMsg: InboundMessage = {
+      senderId: "user:1",
+      timestamp: 0,
+      content: [{ kind: "text", text: "z".repeat(500) }],
+      metadata: { role: "assistant" },
+    };
+    expect(segmentRequest(makeRequest([assistantMsg]), 100)).toEqual([makeRequest([assistantMsg])]);
+  });
+
+  test("respects trusted metadata.role override (tool)", () => {
+    const toolMsg: InboundMessage = {
+      senderId: "user:tooluser",
+      timestamp: 0,
+      content: [{ kind: "text", text: "z".repeat(500) }],
+      metadata: { role: "tool" },
+    };
+    expect(segmentRequest(makeRequest([toolMsg]), 100)).toEqual([makeRequest([toolMsg])]);
+  });
+
   test("ignores oversized text blocks under system:* senders (handled by compaction, not RLM)", () => {
     const sysMsg: InboundMessage = {
       senderId: "system:root",

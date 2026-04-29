@@ -23,12 +23,27 @@ interface TargetLocation {
  * `watch-patterns` and `user:1` are eligible for chunking just like
  * literal `"user"` messages.
  */
-function isUserRoleSender(senderId: string): boolean {
-  if (senderId === "assistant") return false;
-  // Match mapSenderIdToRole exactly: only literal "system" or "system:*"
-  // are system-role. Look-alike senders such as "systemic-user" or
-  // "system2" are user content and must be eligible for chunking.
-  if (senderId === "system" || senderId.startsWith("system:")) return false;
+/**
+ * True for any message that the openai-compat adapter resolves as user
+ * role under trusted-mode L1 conventions. RLM lives downstream of the
+ * engine, so trusted-mode is the correct assumption — and middleware
+ * MUST NOT chunk assistant/tool/system content even when senderId looks
+ * neutral.
+ *
+ * Resolution order mirrors `resolveRole` in `model-openai-compat`:
+ *   1. system:* senderIds → system (never user-role)
+ *   2. metadata.role override (trusted) for assistant/tool/user
+ *   3. senderId === "assistant" or "tool" heuristic
+ *   4. default user
+ */
+function isUserRoleMessage(msg: InboundMessage): boolean {
+  if (msg.senderId === "system" || msg.senderId.startsWith("system:")) return false;
+  if (msg.metadata !== undefined) {
+    const role = msg.metadata.role;
+    if (role === "assistant" || role === "tool") return false;
+    if (role === "user") return true;
+  }
+  if (msg.senderId === "assistant" || msg.senderId === "tool") return false;
   return true;
 }
 
@@ -46,7 +61,7 @@ function findOversizedTextBlocks(
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg === undefined) continue;
-    if (!isUserRoleSender(msg.senderId)) continue;
+    if (!isUserRoleMessage(msg)) continue;
     for (let j = 0; j < msg.content.length; j++) {
       const block = msg.content[j];
       if (block === undefined || block.kind !== "text") continue;

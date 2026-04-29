@@ -102,15 +102,29 @@ describe("reassembleResponses", () => {
     expect(out.usage).toBeUndefined();
   });
 
-  test("concatenates richContent when any part has it", () => {
+  test("rebuilds richContent so plain-content segments are not dropped on the stream path", () => {
+    // The engine's synthesized modelStream path replays richContent and
+    // ignores content when richContent is set. A partial richContent would
+    // silently drop the text of the middle segment from any stream
+    // consumer. Reassembly therefore reconstructs the full ordered view,
+    // synthesizing a text block for content-only segments and inserting
+    // text separators that mirror the content join.
     const out = reassembleResponses([
       part("a", { richContent: [{ kind: "text", text: "x" }] }),
-      part("b"),
+      part("middle"),
       part("c", { richContent: [{ kind: "text", text: "y" }] }),
     ]);
     expect(out.richContent).toEqual([
       { kind: "text", text: "x" },
+      { kind: "text", text: "\n\n" },
+      { kind: "text", text: "middle" },
+      { kind: "text", text: "\n\n" },
       { kind: "text", text: "y" },
     ]);
+  });
+
+  test("omits richContent when no part carries it (stream path falls back to content)", () => {
+    const out = reassembleResponses([part("a"), part("b")]);
+    expect(out.richContent).toBeUndefined();
   });
 });

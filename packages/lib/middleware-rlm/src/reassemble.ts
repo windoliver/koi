@@ -77,17 +77,50 @@ function sumUsage(parts: readonly ModelResponse[]): UsageTotals | undefined {
   };
 }
 
-function concatRichContent(
+/**
+ * Reconstruct merged `richContent` across segments without losing the text
+ * carried in plain `content` for segments that did not return richContent.
+ *
+ * The engine's synthesized `modelStream` path replays `richContent` and
+ * ignores `content` when `richContent` is present, so a partial richContent
+ * would silently drop text from the stream view of an otherwise complete
+ * answer. We rebuild the full ordered representation:
+ *
+ *   - For each segment, push the segment's own `richContent` blocks if
+ *     present, otherwise synthesize a single text block from its `content`
+ *     (no-op when both are empty).
+ *   - Insert a `\n\n` text separator between segments to mirror the
+ *     `content` field's join semantics.
+ *
+ * Returns `undefined` when no segment carries `richContent` — the merged
+ * response keeps `content` only and the stream path falls back to it.
+ */
+function buildMergedRichContent(
   parts: readonly ModelResponse[],
 ): readonly ModelContentBlock[] | undefined {
-  const blocks: ModelContentBlock[] = [];
-  let any = false; // let: presence flag for richContent across parts
-  for (const part of parts) {
-    if (part.richContent === undefined) continue;
-    any = true;
-    for (const block of part.richContent) blocks.push(block);
+  let anyRich = false; // let: presence flag for richContent across parts
+  for (const p of parts) {
+    if (p.richContent !== undefined && p.richContent.length > 0) {
+      anyRich = true;
+      break;
+    }
   }
-  return any ? blocks : undefined;
+  if (!anyRich) return undefined;
+
+  const blocks: ModelContentBlock[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0) {
+      blocks.push({ kind: "text", text: SEGMENT_SEPARATOR });
+    }
+    const part = parts[i];
+    if (part === undefined) continue;
+    if (part.richContent !== undefined && part.richContent.length > 0) {
+      for (const block of part.richContent) blocks.push(block);
+    } else if (part.content.length > 0) {
+      blocks.push({ kind: "text", text: part.content });
+    }
+  }
+  return blocks;
 }
 
 function buildProvenance(parts: readonly ModelResponse[]): readonly SegmentProvenance[] {
@@ -141,7 +174,7 @@ export function reassembleResponses(parts: readonly ModelResponse[]): ModelRespo
 
   const content = parts.map((p) => p.content).join(SEGMENT_SEPARATOR);
   const usage = sumUsage(parts);
-  const richContent = concatRichContent(parts);
+  const richContent = buildMergedRichContent(parts);
   const stopReason = pickStopReason(parts);
   const provenance = buildProvenance(parts);
   const baseMetadata: JsonObject = first.metadata ?? {};

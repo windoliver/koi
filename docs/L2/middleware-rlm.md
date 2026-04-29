@@ -139,8 +139,12 @@ returns a `Result<RlmConfig, KoiError>`.
 `segmentRequest(request, maxChunkChars)`:
 
 1. Find every user-role text block whose length exceeds `maxChunkChars`.
-   "User-role" matches the model adapter's `mapSenderIdToRole`: any
-   `senderId` that is not `assistant` or does not start with `system`.
+   "User-role" follows the openai-compat adapter's trusted-mode role
+   resolver: messages with `senderId === "system" | "system:*"`,
+   `senderId === "assistant" | "tool"`, or `metadata.role === "assistant" | "tool"`
+   are excluded. Everything else is treated as user content. Tool results
+   and resumed assistant messages are therefore never chunked, which
+   preserves tool-call linkage and conversation semantics.
 2. If none, return `[request]` unchanged.
 3. If exactly one, call `splitText(text, maxChunkChars)` (prefers
    paragraph boundaries, then line boundaries, finally hard-cuts) and
@@ -174,7 +178,14 @@ The synthetic response:
   `tool_use`, `error`, `hook_blocked`); falls back to the last part's reason
   when every segment finished with `stop`
 - `usage` summed across parts (cache fields aggregated when present)
-- `richContent` concatenated when any part carries it
+- `richContent` rebuilt as the full ordered representation when any
+  segment carries it: per-segment richContent blocks are interleaved
+  with `\n\n` text separators, and segments without richContent
+  contribute a synthesized text block from their `content`. This
+  guarantees the engine's synthesized `modelStream` path replays the
+  complete answer instead of dropping plain-content segments.
+  When no segment has richContent, the field is omitted entirely so
+  the stream path falls back to `content`.
 - `metadata.rlmSegments` → `[{ index, model, stopReason, responseId }, …]`
   for every segment, so callers can audit per-segment routing or safety
   metadata that the merged top-level fields would otherwise hide
