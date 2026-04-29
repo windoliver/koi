@@ -8,7 +8,7 @@
  * wired into the golden harness, it must also be wired into the TUI.
  *
  * Phase 1: @koi/runtime deps must appear in @koi-agent/cli dependencies
- * Phase 2: @koi/runtime deps must be imported in tui-runtime.ts
+ * Phase 2: @koi/runtime deps must be imported in the TUI runtime wiring sources
  *
  * Usage: bun scripts/check-cli-wiring.ts
  */
@@ -18,7 +18,13 @@ import { L0_PACKAGES, L0U_PACKAGES, L1_PACKAGES } from "./layers.js";
 const ROOT = new URL("../", import.meta.url).pathname;
 const CLI_PKG_PATH = `${ROOT}packages/meta/cli/package.json`;
 const RUNTIME_PKG_PATH = `${ROOT}packages/meta/runtime/package.json`;
-const TUI_RUNTIME_PATH = `${ROOT}packages/meta/cli/src/tui-runtime.ts`;
+const TUI_IMPORT_ANALYSIS_PATHS: readonly string[] = [
+  `${ROOT}packages/meta/cli/src/tui-command.ts`,
+  `${ROOT}packages/meta/cli/src/runtime-factory.ts`,
+  `${ROOT}packages/meta/cli/src/shared-wiring.ts`,
+  `${ROOT}packages/meta/cli/src/plugin-activation.ts`,
+];
+const TUI_PRESET_STACKS_GLOB = "packages/meta/cli/src/preset-stacks/*.ts";
 
 /**
  * Packages in @koi/runtime that are intentionally not wired into the TUI.
@@ -50,6 +56,45 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/middleware-turn-ack",
   // Prompt-cache middleware — opt-in (koi.optional: true), no adapter consumes CACHE_HINTS_KEY yet
   "@koi/middleware-prompt-cache",
+  // S3 artifact backend — optional storage adapter; TUI wires local @koi/artifacts.
+  "@koi/artifacts-s3",
+  // Team memory sync — golden/runtime-only batch sync, no interactive TUI surface.
+  "@koi/memory-team-sync",
+  // Strict agentic middleware — golden cassette policy harness, not default TUI policy.
+  "@koi/middleware-strict-agentic",
+  // Outcome evaluator — LLM-as-judge cassette harness, not default TUI middleware.
+  "@koi/outcome-evaluator",
+  // Browser tools — require a BrowserDriver/backend that TUI does not construct.
+  "@koi/tool-browser",
+  // Browser drivers — only used when a browser backend is explicitly configured.
+  "@koi/browser-ext",
+  "@koi/browser-playwright",
+  // Debug package — opt-in (koi.optional: true), not part of default TUI runtime.
+  "@koi/debug",
+  // Demand-forge package — opt-in (koi.optional: true), not default TUI middleware.
+  "@koi/forge-demand",
+  // Gateway stack — server/webhook transports, not interactive local TUI wiring.
+  "@koi/gateway",
+  "@koi/gateway-webhook",
+  // Delegation/security helpers — require explicit delegation or Nexus configuration.
+  "@koi/governance-delegation",
+  "@koi/governance-security",
+  "@koi/nexus-delegation",
+  // Local IPC backend — multi-agent routing backend, not default single TUI session.
+  "@koi/ipc-local",
+  // Long-running harness — alternate execution mode, not default interactive TUI wiring.
+  "@koi/long-running",
+  // Optional middleware packages that require explicit host configuration.
+  "@koi/middleware-call-dedup",
+  "@koi/middleware-collective-memory",
+  "@koi/middleware-degenerate",
+  "@koi/middleware-output-verifier",
+  // Scratchpad/workspace/toolset components are opt-in runtime providers.
+  "@koi/scratchpad-local",
+  "@koi/toolsets",
+  "@koi/workspace",
+  // Temporal adapter — optional durable execution backend, not default local TUI.
+  "@koi/temporal",
 ]);
 
 /**
@@ -63,8 +108,12 @@ const INFRA_ONLY: ReadonlySet<string> = new Set([
   "@koi/query-engine",
   // Used by tui-command.ts or koi start, not tui-runtime.ts
   "@koi/channel-cli",
+  "@koi/daemon",
   "@koi/harness",
+  "@koi/lsp",
   "@koi/model-openai-compat",
+  // TUI spawn is wired through @koi/engine's createSpawnToolProvider.
+  "@koi/spawn-tools",
 ]);
 
 function getKoiDeps(deps: Record<string, string> | undefined): readonly string[] {
@@ -74,6 +123,25 @@ function getKoiDeps(deps: Record<string, string> | undefined): readonly string[]
 
 function isInfraLayer(name: string): boolean {
   return L0_PACKAGES.has(name) || L0U_PACKAGES.has(name) || L1_PACKAGES.has(name);
+}
+
+async function collectTuiImportAnalysisSource(): Promise<{
+  readonly source: string;
+  readonly paths: readonly string[];
+}> {
+  const paths: string[] = [];
+  for (const path of TUI_IMPORT_ANALYSIS_PATHS) {
+    if (await Bun.file(path).exists()) paths.push(path);
+  }
+
+  const glob = new Bun.Glob(TUI_PRESET_STACKS_GLOB);
+  for await (const path of glob.scan({ cwd: ROOT, absolute: true })) {
+    paths.push(path);
+  }
+
+  paths.sort();
+  const source = (await Promise.all(paths.map((path) => Bun.file(path).text()))).join("\n");
+  return { source, paths };
 }
 
 interface PackageJson {
@@ -157,16 +225,16 @@ async function main(): Promise<void> {
     console.log(`\n✅ All ${requiredForTui.length} @koi/runtime L2 deps are in CLI dependencies.`);
   }
 
-  // ── Phase 2: tui-runtime.ts import analysis ─────────────────────────────
+  // ── Phase 2: TUI runtime wiring import analysis ─────────────────────────
 
-  const tuiRuntimeFile = Bun.file(TUI_RUNTIME_PATH);
-  if (!(await tuiRuntimeFile.exists())) {
-    console.log("\n⏭️  tui-runtime.ts not found — skipping import analysis.");
+  const tuiWiring = await collectTuiImportAnalysisSource();
+  if (tuiWiring.paths.length === 0) {
+    console.log("\n⏭️  TUI runtime wiring sources not found — skipping import analysis.");
     if (failed) process.exit(1);
     return;
   }
 
-  const source = await tuiRuntimeFile.text();
+  const source = tuiWiring.source;
   const importRegex = /(?:from|import)\s+["'](@koi\/[^/"']+)/g;
   const cliImports = new Set<string>();
   for (const match of source.matchAll(importRegex)) {
@@ -185,19 +253,22 @@ async function main(): Promise<void> {
 
   if (notImported.length > 0) {
     console.error(
-      `\n${notImported.length} @koi/runtime L2 package(s) not imported in tui-runtime.ts:\n`,
+      `\n${notImported.length} @koi/runtime L2 package(s) not imported in TUI wiring sources:\n`,
     );
     for (const name of notImported.sort()) {
       console.error(`  ✗ ${name}`);
     }
     console.error(
-      "\n  Fix: import and wire in packages/meta/cli/src/tui-runtime.ts," +
+      "\n  Fix: import and wire in the TUI runtime wiring sources," +
         "\n  or add to EXEMPT in scripts/check-cli-wiring.ts with justification.\n",
     );
     failed = true;
   } else {
     const checked = requiredForTui.filter((n) => !INFRA_ONLY.has(n)).length;
-    console.log(`✅ All ${checked} @koi/runtime L2 packages are imported in tui-runtime.ts.`);
+    console.log(
+      `✅ All ${checked} @koi/runtime L2 packages are imported in TUI wiring sources ` +
+        `(${String(tuiWiring.paths.length)} files).`,
+    );
   }
 
   if (EXEMPT.size > 0) {

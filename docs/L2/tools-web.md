@@ -4,6 +4,14 @@ Wraps HTTP fetching and web search as 2 Koi Tool components: `web_fetch` and `we
 
 ---
 
+## Recent updates
+
+Review lifecycle hardening (#2081): `createWebExecutor().fetch()` and
+`createWebExecutor().search()` now unregister caller-provided abort listeners
+when the operation settles. This preserves the existing timeout clamps and abort
+semantics while avoiding listener retention when callers reuse an `AbortSignal`
+across repeated web operations.
+
 ## Why It Exists
 
 Agents that research, browse, or verify information need live web access. Raw `fetch` calls are unstructured, lack SSRF protection, and bypass the middleware chain. There's no standard way to plug web operations into Koi's interposition layer.
