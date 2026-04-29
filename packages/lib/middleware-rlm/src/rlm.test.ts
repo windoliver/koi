@@ -84,7 +84,9 @@ describe("createRlmMiddleware", () => {
     const req: ModelRequest = { messages: [userMessage(big)] };
     const out = await mw.wrapModelCall?.(turnCtx(), req, rec.handler);
     expect(rec.calls.length).toBe(3);
-    expect(out?.content).toBe("R0\n\nR1\n\nR2");
+    // Byte-faithful concat is the default. Callers that want a delimiter
+    // must opt in via `segmentSeparator`.
+    expect(out?.content).toBe("R0R1R2");
     expect(out?.usage).toEqual({ inputTokens: 3, outputTokens: 3 });
     const segmented = events.find((e) => e.kind === "segmented");
     if (segmented?.kind !== "segmented") throw new Error("expected segmented event");
@@ -152,7 +154,7 @@ describe("createRlmMiddleware", () => {
     const big = "q".repeat(300);
     const out = await mw.wrapModelCall?.(turnCtx(), { messages: [userMessage(big)] }, handler);
     expect(order).toEqual([0, 1, 2]);
-    expect(out?.content).toBe("seg0\n\nseg1\n\nseg2");
+    expect(out?.content).toBe("seg0seg1seg2");
   });
 
   test("segmentation tolerates a faulty onEvent callback", async () => {
@@ -167,7 +169,7 @@ describe("createRlmMiddleware", () => {
     const rec = recordingHandler(() => "ok");
     const big = "w".repeat(300);
     const out = await mw.wrapModelCall?.(turnCtx(), { messages: [userMessage(big)] }, rec.handler);
-    expect(out?.content).toBe("ok\n\nok\n\nok");
+    expect(out?.content).toBe("okokok");
   });
 
   test("fails closed when oversized but no single user text block exceeds maxChunkChars", async () => {

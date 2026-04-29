@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelResponse } from "@koi/core";
-import { reassembleResponses, SEGMENT_SEPARATOR } from "./reassemble.js";
+import { reassembleResponses } from "./reassemble.js";
 
 function part(content: string, overrides: Partial<ModelResponse> = {}): ModelResponse {
   return { content, model: "gpt-x", ...overrides };
@@ -16,9 +16,14 @@ describe("reassembleResponses", () => {
     expect(reassembleResponses([only])).toBe(only);
   });
 
-  test("concatenates content in the input order", () => {
+  test("concatenates content byte-faithfully by default (no synthetic separator)", () => {
     const out = reassembleResponses([part("first"), part("second"), part("third")]);
-    expect(out.content).toBe(`first${SEGMENT_SEPARATOR}second${SEGMENT_SEPARATOR}third`);
+    expect(out.content).toBe("firstsecondthird");
+  });
+
+  test("uses the caller-supplied separator when provided", () => {
+    const out = reassembleResponses([part("first"), part("second"), part("third")], "\n\n");
+    expect(out.content).toBe("first\n\nsecond\n\nthird");
   });
 
   test("retains the first response's model and responseId", () => {
@@ -106,14 +111,30 @@ describe("reassembleResponses", () => {
     // The engine's synthesized modelStream path replays richContent and
     // ignores content when richContent is set. A partial richContent would
     // silently drop the text of the middle segment from any stream
-    // consumer. Reassembly therefore reconstructs the full ordered view,
-    // synthesizing a text block for content-only segments and inserting
-    // text separators that mirror the content join.
+    // consumer. Reassembly reconstructs the full ordered view,
+    // synthesizing a text block for content-only segments. Default
+    // separator is empty so byte-faithful tasks remain intact.
     const out = reassembleResponses([
       part("a", { richContent: [{ kind: "text", text: "x" }] }),
       part("middle"),
       part("c", { richContent: [{ kind: "text", text: "y" }] }),
     ]);
+    expect(out.richContent).toEqual([
+      { kind: "text", text: "x" },
+      { kind: "text", text: "middle" },
+      { kind: "text", text: "y" },
+    ]);
+  });
+
+  test("interleaves separator text blocks into richContent when one is provided", () => {
+    const out = reassembleResponses(
+      [
+        part("a", { richContent: [{ kind: "text", text: "x" }] }),
+        part("middle"),
+        part("c", { richContent: [{ kind: "text", text: "y" }] }),
+      ],
+      "\n\n",
+    );
     expect(out.richContent).toEqual([
       { kind: "text", text: "x" },
       { kind: "text", text: "\n\n" },

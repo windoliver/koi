@@ -169,6 +169,21 @@ describe("segmentRequest", () => {
     expect(segmentRequest(makeRequest([toolMsg]), 100)).toEqual([makeRequest([toolMsg])]);
   });
 
+  test("treats bare senderId === 'system' as user-role (matches openai-compat resolver)", () => {
+    // The trusted openai-compat resolver only privileges 'system:*'; a
+    // bare 'system' senderId falls through to user role at the adapter
+    // boundary. RLM must mirror that or engine paths emitting bare
+    // 'system' (e.g. stop-hook feedback) will fail closed when oversized.
+    const big = "p".repeat(300);
+    const bareSystem: InboundMessage = {
+      senderId: "system",
+      timestamp: 0,
+      content: [{ kind: "text", text: big }],
+    };
+    const out = segmentRequest(makeRequest([bareSystem]), 100);
+    expect(out.length).toBeGreaterThan(1);
+  });
+
   test("ignores oversized text blocks under system:* senders (handled by compaction, not RLM)", () => {
     const sysMsg: InboundMessage = {
       senderId: "system:root",

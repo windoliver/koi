@@ -15,8 +15,12 @@
 
 import type { JsonObject, ModelContentBlock, ModelResponse, ModelStopReason } from "@koi/core";
 
-/** Separator inserted between segment text bodies in the combined content. */
-export const SEGMENT_SEPARATOR = "\n\n";
+/**
+ * Legacy named export — historic callers relied on the constant. The default
+ * separator is now empty (byte-faithful concat); set
+ * `RlmConfig.segmentSeparator` if a delimiter is needed.
+ */
+export const SEGMENT_SEPARATOR = "";
 
 /** Stop reasons that signal an incomplete response we must NOT silently merge. */
 const ABORTING_STOP_REASONS: ReadonlySet<ModelStopReason> = new Set<ModelStopReason>([
@@ -97,6 +101,7 @@ function sumUsage(parts: readonly ModelResponse[]): UsageTotals | undefined {
  */
 function buildMergedRichContent(
   parts: readonly ModelResponse[],
+  separator: string,
 ): readonly ModelContentBlock[] | undefined {
   let anyRich = false; // let: presence flag for richContent across parts
   for (const p of parts) {
@@ -109,8 +114,8 @@ function buildMergedRichContent(
 
   const blocks: ModelContentBlock[] = [];
   for (let i = 0; i < parts.length; i++) {
-    if (i > 0) {
-      blocks.push({ kind: "text", text: SEGMENT_SEPARATOR });
+    if (i > 0 && separator.length > 0) {
+      blocks.push({ kind: "text", text: separator });
     }
     const part = parts[i];
     if (part === undefined) continue;
@@ -159,9 +164,17 @@ function pickStopReason(parts: readonly ModelResponse[]): ModelStopReason | unde
  *   - `metadata.rlmSegments` — array of `{ index, model, stopReason, responseId }`
  *     for every segment, so callers can audit per-segment routing/safety
  *
+ * @param parts segmented responses to combine; must be non-empty
+ * @param separator string inserted between segment bodies. Defaults to
+ *   `""` for byte-faithful concatenation; pass `"\n\n"` (or other) for
+ *   summarization-style outputs that benefit from readable boundaries.
+ *
  * @throws if `parts` is empty.
  */
-export function reassembleResponses(parts: readonly ModelResponse[]): ModelResponse {
+export function reassembleResponses(
+  parts: readonly ModelResponse[],
+  separator = "",
+): ModelResponse {
   if (parts.length === 0) {
     throw new Error("reassembleResponses requires at least one response");
   }
@@ -172,9 +185,9 @@ export function reassembleResponses(parts: readonly ModelResponse[]): ModelRespo
   }
   if (parts.length === 1) return first;
 
-  const content = parts.map((p) => p.content).join(SEGMENT_SEPARATOR);
+  const content = parts.map((p) => p.content).join(separator);
   const usage = sumUsage(parts);
-  const richContent = buildMergedRichContent(parts);
+  const richContent = buildMergedRichContent(parts, separator);
   const stopReason = pickStopReason(parts);
   const provenance = buildProvenance(parts);
   const baseMetadata: JsonObject = first.metadata ?? {};

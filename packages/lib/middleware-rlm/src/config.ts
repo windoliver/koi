@@ -67,6 +67,9 @@ export function validateRlmConfig(config: unknown): Result<RlmConfig, KoiError> 
   ) {
     return validationError("'acknowledgeSegmentLocalContract' must be a boolean");
   }
+  if (c.segmentSeparator !== undefined && typeof c.segmentSeparator !== "string") {
+    return validationError("'segmentSeparator' must be a string");
+  }
 
   return { ok: true, value: c as RlmConfig };
 }

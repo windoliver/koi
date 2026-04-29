@@ -128,6 +128,7 @@ middleware:
 | `priority` | 200 | Middleware priority. Sits before model-router/retry so per-segment fallback works. |
 | `onEvent` | — | Optional callback receiving `RlmEvent` (`passthrough`, `segmented`, `segment-completed`). Errors thrown by the callback are swallowed. |
 | `acknowledgeSegmentLocalContract` | `false` | **Required opt-in.** Setting this to `true` acknowledges that the caller's task is the in-order union of segment-local answers (extraction, transformation, summarization-per-chunk). When `false`, oversized requests fail closed rather than silently returning a synthesized concatenation that may corrupt global-aggregation tasks. |
+| `segmentSeparator` | `""` | String inserted between per-segment outputs during reassembly. Empty by default for byte-faithful concatenation (exact-copy and JSON/CSV/code transforms stay intact). Set to `"\n\n"` (or other) for summarization-style outputs. |
 
 Validate ahead of construction with `validateRlmConfig(config)` —
 returns a `Result<RlmConfig, KoiError>`.
@@ -140,11 +141,12 @@ returns a `Result<RlmConfig, KoiError>`.
 
 1. Find every user-role text block whose length exceeds `maxChunkChars`.
    "User-role" follows the openai-compat adapter's trusted-mode role
-   resolver: messages with `senderId === "system" | "system:*"`,
+   resolver: messages with `senderId.startsWith("system:")`,
    `senderId === "assistant" | "tool"`, or `metadata.role === "assistant" | "tool"`
-   are excluded. Everything else is treated as user content. Tool results
-   and resumed assistant messages are therefore never chunked, which
-   preserves tool-call linkage and conversation semantics.
+   are excluded. Bare `senderId === "system"` falls through to user role
+   (matching the resolver). Tool results and resumed assistant messages
+   are therefore never chunked, which preserves tool-call linkage and
+   conversation semantics.
 2. If none, return `[request]` unchanged.
 3. If exactly one, call `splitText(text, maxChunkChars)` (prefers
    paragraph boundaries, then line boundaries, finally hard-cuts) and
@@ -172,7 +174,7 @@ reassembled output back into another model call.
 
 The synthetic response:
 
-- `content` → `parts.map(p => p.content).join("\n\n")`
+- `content` → `parts.map(p => p.content).join(segmentSeparator)` (default `""`)
 - `model`, `responseId` taken from the first part for backward compatibility
 - `stopReason` → the strongest non-success reason across parts (`length`,
   `tool_use`, `error`, `hook_blocked`); falls back to the last part's reason

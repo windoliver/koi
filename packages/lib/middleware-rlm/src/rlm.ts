@@ -27,7 +27,12 @@ import { validateRlmConfig } from "./config.js";
 import { reassembleResponses } from "./reassemble.js";
 import { segmentRequest } from "./segment.js";
 import type { RlmConfig, RlmEvent } from "./types.js";
-import { DEFAULT_MAX_CHUNK_CHARS, DEFAULT_MAX_INPUT_TOKENS, DEFAULT_PRIORITY } from "./types.js";
+import {
+  DEFAULT_MAX_CHUNK_CHARS,
+  DEFAULT_MAX_INPUT_TOKENS,
+  DEFAULT_PRIORITY,
+  DEFAULT_SEGMENT_SEPARATOR,
+} from "./types.js";
 
 interface ResolvedConfig {
   readonly maxInputTokens: number;
@@ -36,6 +41,7 @@ interface ResolvedConfig {
   readonly priority: number;
   readonly onEvent: ((event: RlmEvent) => void) | undefined;
   readonly acknowledgeSegmentLocalContract: boolean;
+  readonly segmentSeparator: string;
 }
 
 function resolveConfig(config: RlmConfig): ResolvedConfig {
@@ -46,6 +52,7 @@ function resolveConfig(config: RlmConfig): ResolvedConfig {
     priority: config.priority ?? DEFAULT_PRIORITY,
     onEvent: config.onEvent,
     acknowledgeSegmentLocalContract: config.acknowledgeSegmentLocalContract ?? false,
+    segmentSeparator: config.segmentSeparator ?? DEFAULT_SEGMENT_SEPARATOR,
   };
 }
 
@@ -125,7 +132,7 @@ async function dispatchSegmented(
     responses.push(response);
     emit(cfg, { kind: "segment-completed", index: i, count: segments.length });
   }
-  return reassembleResponses(responses);
+  return reassembleResponses(responses, cfg.segmentSeparator);
 }
 
 async function rlmWrapModelCall(

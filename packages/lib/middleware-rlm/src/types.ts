@@ -39,6 +39,15 @@ export interface RlmConfig {
   /** Telemetry callback. Errors thrown by the callback are swallowed. */
   readonly onEvent?: (event: RlmEvent) => void;
   /**
+   * String inserted between per-segment outputs during reassembly. Defaults
+   * to `""` (byte-faithful concatenation) so structural transforms like
+   * JSON/CSV/code regeneration and exact-copy prompts are not corrupted by
+   * synthetic blank lines. Set to `"\n\n"` (or any other delimiter) for
+   * summarization-style tasks where readable boundaries help the caller
+   * parse the merged answer.
+   */
+  readonly segmentSeparator?: string;
+  /**
    * Required opt-in. RLM concatenates per-segment outputs; the result is
    * only correct when the original task is the in-order union of
    * segment-local answers (extraction, transformation, summarization-
@@ -55,6 +64,13 @@ export interface RlmConfig {
 
 /** Default token threshold (~32K tokens of text under heuristic estimation). */
 export const DEFAULT_MAX_INPUT_TOKENS = 32_000;
+
+/**
+ * Default separator between segmented response bodies. Empty so reassembly
+ * is byte-faithful by default; callers opt into a delimiter via
+ * `RlmConfig.segmentSeparator`.
+ */
+export const DEFAULT_SEGMENT_SEPARATOR = "";
 
 /** Default segment size in characters (~2K tokens under heuristic estimation). */
 export const DEFAULT_MAX_CHUNK_CHARS = 8_000;
