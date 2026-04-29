@@ -618,14 +618,13 @@ describe("createRateLimiter", () => {
       expect(completed).toEqual(["ok"]);
     });
 
-    it("default mode preserves single-flight when transport settles within grace window", async () => {
+    it("default mode rejects the caller at the deadline AND preserves single-flight FIFO", async () => {
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
         sendTimeoutMs: 50,
       });
       const events: string[] = [];
-      // Slow-but-compliant: resolves 20ms after the deadline (well inside
-      // the 50ms grace backstop). FIFO must be preserved.
+      // Slow-but-compliant: resolves 20ms after the deadline.
       const slowButSettles: SendFn = () =>
         new Promise<void>((resolve) => {
           setTimeout(() => {
@@ -637,20 +636,20 @@ describe("createRateLimiter", () => {
       const b = limiter.enqueue(async () => {
         events.push("B-sent");
       });
-      // Late success after deadline: real outcome wins → caller resolves.
-      await expect(a).resolves.toBeUndefined();
+      // Caller rejected at the deadline (synthetic TIMEOUT).
+      await expect(a).rejects.toMatchObject({ code: "TIMEOUT" });
       await b;
-      // FIFO preserved: A's send finished before B was delivered.
+      // Strict FIFO: A's underlying send must finish before B is sent.
       expect(events).toEqual(["A-finished", "B-sent"]);
     });
 
-    it("grace backstop unwedges the queue when a transport ignores abort forever", async () => {
+    it("grace backstop unwedges the queue ONLY in liveness mode", async () => {
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
         sendTimeoutMs: 25,
+        advanceOnTimeout: true,
       });
-      // Abort-ignoring transport that never settles. Without the grace
-      // backstop the queue would wedge forever.
+      // Abort-ignoring transport that never settles.
       const ignoresAbort: SendFn = () => new Promise<void>(() => {});
       const start = Date.now();
       const a = limiter.enqueue(ignoresAbort);
@@ -765,7 +764,10 @@ describe("createRateLimiter", () => {
             reject(rateLimitErr);
           }, 50);
         });
-      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "RATE_LIMIT" });
+      // Final attempt's caller-facing error is the synthetic TIMEOUT
+      // (prompt rejection on no-more-retries) — late RATE_LIMIT only
+      // affects internal retry classification on non-final attempts.
+      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "TIMEOUT" });
       // Two attempts ran but never overlapped.
       expect(maxConcurrent).toBe(1);
     });
@@ -809,6 +811,80 @@ describe("createRateLimiter", () => {
       await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "PERMISSION" });
       // Real terminal error wins over synthetic TIMEOUT — no retries.
       expect(attempts).toBe(1);
+    });
+
+    it("strict mode never overlaps next-entry advance with a still-running send", async () => {
+      // Abort-honoring slow transport: settles via abort 80ms after start.
+      // No grace backstop in default mode → next entry MUST wait.
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 0 },
+        sendTimeoutMs: 20,
+      });
+      let inFlight = 0;
+      let maxConcurrent = 0;
+      const slowAbortHonoring: SendFn = (signal) =>
+        new Promise<void>((_resolve, reject) => {
+          inFlight++;
+          maxConcurrent = Math.max(maxConcurrent, inFlight);
+          // Slow honor: rejects 60ms after abort with a TIMEOUT KoiError.
+          const onAbort = (): void => {
+            setTimeout(() => {
+              inFlight--;
+              const e: KoiError = {
+                code: "TIMEOUT",
+                message: "abort honored",
+                retryable: false,
+              };
+              reject(e);
+            }, 60);
+          };
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        });
+      const a = limiter.enqueue(slowAbortHonoring);
+      const b = limiter.enqueue(async () => {
+        // Fail loudly if A is still in-flight when B starts.
+        expect(inFlight).toBe(0);
+      });
+      await expect(a).rejects.toMatchObject({ code: "TIMEOUT" });
+      await b;
+      expect(maxConcurrent).toBe(1);
+    });
+
+    it("strict mode never overlaps retry attempts of the same fn", async () => {
+      // Custom isRetryable opts TIMEOUT into retry. Each attempt rejects
+      // late (after the deadline) with a retryable code. Strict mode must
+      // serialize: attempt N+1 never starts while attempt N is in flight.
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 2, initialDelayMs: 0 },
+        sendTimeoutMs: 20,
+      });
+      let inFlight = 0;
+      let maxConcurrent = 0;
+      let attempts = 0;
+      const fn: SendFn = (signal) =>
+        new Promise<void>((_resolve, reject) => {
+          attempts++;
+          inFlight++;
+          maxConcurrent = Math.max(maxConcurrent, inFlight);
+          const onAbort = (): void => {
+            setTimeout(() => {
+              inFlight--;
+              const e: KoiError = {
+                code: "RATE_LIMIT",
+                message: "throttled",
+                retryable: true,
+              };
+              reject(e);
+            }, 50);
+          };
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        });
+      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "TIMEOUT" });
+      // Three attempts (initial + 2 retries), never overlapping.
+      expect(attempts).toBe(3);
+      expect(maxConcurrent).toBe(1);
     });
 
     it("synchronous throws in the send callback reject the caller and unblock the queue", async () => {

@@ -108,21 +108,28 @@ export interface RateLimiterConfig {
 const DEFAULT_SEND_TIMEOUT_MS = 30_000;
 
 /**
- * Send callback. Receives an `AbortSignal` that is fired when the queue's
+ * Send callback. Receives an `AbortSignal` that fires when the queue's
  * watchdog deadline (`sendTimeoutMs`) elapses.
  *
- * Default mode (strict FIFO + single-flight): the caller is rejected with
- * a `TIMEOUT` `KoiError` at the deadline, but the queue does NOT advance
- * until the underlying promise settles. This guarantees at-most-one
- * in-flight send. Cost: a transport that ignores `signal.aborted` can hold
- * the queue indefinitely. Adapters MUST honor abort to keep the queue
- * live.
+ * The caller-facing `enqueue()` promise rejects at the deadline on the
+ * final attempt (no retries remaining). For attempts that may retry,
+ * `enqueue()` may settle later — the loop waits for the underlying send
+ * to actually finish so the retry decision can use the real outcome
+ * instead of the synthetic deadline TIMEOUT.
  *
- * Liveness mode (`advanceOnTimeout: true`): queue advances on timeout
- * regardless of the underlying promise's state. Late settlement surfaces
- * through `onLateSuccess` / `onLateFailure`. Use only when the transport
- * provides wire-level idempotency (message IDs, dedupe keys); otherwise
- * a late-resolving send can produce duplicate user-visible output.
+ * Default mode (strict FIFO + single-flight): the queue NEVER advances or
+ * retries while the underlying promise is still pending. This guarantees
+ * at-most-one in-flight send and FIFO delivery for any transport that
+ * honors `signal.aborted`. A transport that ignores abort will hold the
+ * queue indefinitely — that is the documented cost of strict mode and
+ * the reason adapters MUST honor abort.
+ *
+ * Liveness mode (`advanceOnTimeout: true`): queue advance and retries
+ * are bounded by an extra grace window of `sendTimeoutMs`. Late
+ * settlement still surfaces through `onLateSuccess` / `onLateFailure`.
+ * Single-flight is best-effort — abort-ignoring transports can produce
+ * overlapping sends, so use this only with wire-level idempotency
+ * (message IDs, dedupe keys).
  */
 export type SendFn = (signal: AbortSignal) => Promise<void>;
 
@@ -383,30 +390,16 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
         }
       },
     );
-    // Drain-facing: settles when the underlying send finishes OR after a
-    // grace backstop that starts AT THE DEADLINE (so total stall is bounded
-    // at 2× sendTimeoutMs even when the transport ignores abort). Until the
-    // deadline we just wait on fnPromise — the grace only matters for the
-    // abort-ignored window.
-    const settled = new Promise<void>((resolveSettled) => {
-      // let justified: race winner across fnPromise / grace timer
-      let done = false;
-      // let justified: armed only after the deadline fires
-      let graceTimer: ReturnType<typeof setTimeout> | undefined;
-      const finish = (): void => {
-        if (done) return;
-        done = true;
-        if (graceTimer !== undefined) clearTimeout(graceTimer);
-        resolveSettled();
-      };
-      fnPromise.then(finish, finish);
-      // Arm the grace backstop only when the watchdog actually fires.
-      // Wait for the result promise to reject, then start the grace timer.
-      result.catch(() => {
-        if (!timedOut || done) return;
-        graceTimer = setTimeout(finish, sendTimeoutMs);
-      });
-    });
+    // Drain-facing: settles ONLY when the underlying send actually
+    // resolves or rejects. No grace surrogate — the drain loop in
+    // strict-FIFO mode (advanceOnTimeout: false) needs this to truly
+    // mean "in-flight is over" so it can guarantee single-flight and
+    // FIFO. Grace-based liveness lives in the drain loop (gated on the
+    // `advanceOnTimeout` flag), not in this primitive.
+    const settled = fnPromise.then(
+      () => {},
+      () => {},
+    );
     return { result, settled, lateOutcome: () => outcome };
   };
 
@@ -436,13 +429,27 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
             lastError = error;
 
             // For deadline-exceeded TIMEOUTs (synthetic watchdog rejection,
-            // not a transport-reported TIMEOUT), the caller-facing error
-            // and the retry decision must reflect the underlying send's
-            // REAL outcome, not the synthetic timeout. Otherwise an
-            // idempotent-retry config could re-issue a send that actually
-            // succeeded late, or replay after a definitive terminal error
-            // like PERMISSION; or the caller could see TIMEOUT for a send
-            // that the transport reported a structured error for.
+            // Skip retry analysis when no retries remain. This also
+            // ensures the caller is rejected promptly at the deadline on
+            // the final attempt — we do not delay caller-facing
+            // settlement to wait for late outcome on a terminal failure.
+            if (attempt >= retryConfig.maxRetries) break;
+
+            // For deadline-exceeded TIMEOUTs (synthetic watchdog rejection,
+            // not a transport-reported TIMEOUT), the retry decision must
+            // be based on the underlying send's REAL outcome, not the
+            // synthetic timeout. Wait for fnPromise to actually settle
+            // before classifying, so:
+            //   - a late success skips the retry (entry succeeded);
+            //   - a late terminal error replaces the synthetic TIMEOUT
+            //     for retry classification and caller-facing rejection;
+            //   - retries gate on real settlement, never overlapping
+            //     with a still-running attempt.
+            // In strict-FIFO mode this also doubles as the queue's
+            // single-flight gate. With an abort-ignoring transport this
+            // wait is unbounded — that's the documented price of strict
+            // mode; users who need liveness must opt into
+            // `advanceOnTimeout: true`.
             // let justified: mutable so we can re-classify on late outcome
             let classifyError: unknown = error;
             if (
@@ -450,34 +457,30 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
               error.code === "TIMEOUT" &&
               (error.context as { phase?: string } | undefined)?.phase === "deadline-exceeded"
             ) {
-              await run.settled;
+              if (advanceOnTimeout) {
+                // Liveness: bound the late-outcome wait so an
+                // abort-ignoring transport cannot delay retries forever.
+                // After the grace, classify on the synthetic TIMEOUT.
+                await Promise.race([
+                  run.settled,
+                  new Promise<void>((res) => setTimeout(res, sendTimeoutMs)),
+                ]);
+              } else {
+                // Strict mode: wait for real settlement.
+                await run.settled;
+              }
               const late = run.lateOutcome();
               if (late.kind === "success") {
-                // Underlying send succeeded after the deadline. Treat the
-                // entry as resolved and skip the retry path entirely.
                 lastError = undefined;
                 break;
               }
               if (late.kind === "failure") {
-                // Real terminal error arrived after the deadline. Use it
-                // for both retry classification and the caller-facing
-                // rejection. Custom isRetryable / extractRetryAfterMs
-                // hooks need to see the actual provider error (e.g. SDK
-                // 429s, plain Errors from non-Koi transports) — discarding
-                // them here would silently swallow retryable failures and
-                // mis-classify terminal ones. Adapters that honor abort
-                // and reject with a generic abort error get that error
-                // surfaced too; if they want TIMEOUT semantics, they
-                // should reject with a TIMEOUT KoiError on abort.
                 classifyError = late.error;
                 lastError = late.error;
               }
-              // late.kind === "abort-ignored": grace expired without a
-              // real outcome. Keep the synthetic TIMEOUT.
+              // late.kind === "abort-ignored": no real outcome yet.
+              // Keep the synthetic TIMEOUT for classification.
             }
-
-            // Skip retry analysis when no retries remain.
-            if (attempt >= retryConfig.maxRetries) break;
 
             // A defined retry-after hint OR a positive isRetryable verdict
             // opts the error into a retry. The default extractor already
@@ -504,14 +507,20 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
               break;
             }
             prevDelayMs = delay;
-            // Always wait for the previous attempt to settle before
-            // reissuing the same send fn — even in liveness mode. The
-            // `advanceOnTimeout` knob governs only when the queue
-            // advances to the NEXT entry; retrying the SAME entry must
-            // never start a fresh invocation while the previous one is
-            // still running, or we could fan two concurrent invocations
-            // of a non-idempotent send onto the same transport.
-            await run.settled;
+            // Wait for the previous attempt's underlying send to settle
+            // before reissuing. In strict mode this is unbounded (price
+            // of single-flight); in liveness mode the late-outcome
+            // resolution above already bounded the wait at sendTimeoutMs,
+            // so settled is either resolved (real outcome) or unbounded
+            // again — cap it here for liveness too.
+            if (advanceOnTimeout) {
+              await Promise.race([
+                run.settled,
+                new Promise<void>((res) => setTimeout(res, sendTimeoutMs)),
+              ]);
+            } else {
+              await run.settled;
+            }
             // Wrap sleep so a sleeper rejection (clock corruption, monkey-
             // patched timers, etc.) does not abandon the in-flight entry —
             // we treat it as terminal failure for this entry and resume
@@ -525,19 +534,29 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
           }
         }
 
-        // Caller is signaled immediately; the queue's advance is gated
-        // separately by the per-attempt settle promise. In default
-        // (strict-FIFO) mode we await the most recent settle so the next
-        // entry never overlaps with a still-running send. In liveness mode
-        // we skip the wait — the grace backstop inside runWithDeadline
-        // already caps how long settle can stall.
+        // Resolve the caller first — they should not wait on the queue's
+        // advance bookkeeping.
         if (lastError !== undefined) {
           entry.reject(lastError);
         } else {
           entry.resolve();
         }
-        if (!advanceOnTimeout && lastSettled !== undefined) {
-          await lastSettled;
+        // Queue advance gate. Strict mode (default) waits for the real
+        // underlying send to settle before pulling the next entry —
+        // single-flight is preserved even when a transport ignores
+        // abort, at the cost of liveness on bad transports. Liveness
+        // mode caps the wait at the grace window so the queue cannot
+        // wedge forever; users opt into this knowing single-flight
+        // becomes best-effort.
+        if (lastSettled !== undefined) {
+          if (advanceOnTimeout) {
+            await Promise.race([
+              lastSettled,
+              new Promise<void>((res) => setTimeout(res, sendTimeoutMs)),
+            ]);
+          } else {
+            await lastSettled;
+          }
         }
       }
     } finally {
