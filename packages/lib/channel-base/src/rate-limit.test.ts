@@ -727,6 +727,32 @@ describe("createRateLimiter", () => {
       });
     });
 
+    it("retry waits for prior settle even in liveness mode (no overlapping invocations of the same fn)", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 1, initialDelayMs: 0 },
+        sendTimeoutMs: 30,
+        advanceOnTimeout: true,
+        isRetryable: (e: unknown): boolean =>
+          typeof e === "object" && e !== null && (e as { code?: string }).code === "TIMEOUT",
+      });
+      let inFlight = 0;
+      let maxConcurrent = 0;
+      const fn: SendFn = () =>
+        new Promise<void>((resolve) => {
+          inFlight++;
+          maxConcurrent = Math.max(maxConcurrent, inFlight);
+          // Settles 50ms after start; deadline at 30ms, grace ends 60ms after.
+          setTimeout(() => {
+            inFlight--;
+            resolve();
+          }, 50);
+        });
+      await expect(limiter.enqueue(fn)).rejects.toMatchObject({ code: "TIMEOUT" });
+      // Even with advanceOnTimeout=true, retries of the same fn must not
+      // overlap — the second attempt must wait for the first to settle.
+      expect(maxConcurrent).toBe(1);
+    });
+
     it("retry waits for prior attempt to settle before re-issuing the send (no overlap)", async () => {
       // Custom isRetryable opts TIMEOUT into retry. Without the per-attempt
       // settle gate, a TIMEOUT on attempt 1 would re-invoke the same fn while

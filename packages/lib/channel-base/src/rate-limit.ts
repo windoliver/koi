@@ -421,14 +421,14 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
               break;
             }
             prevDelayMs = delay;
-            // Before reissuing the same send fn, wait for the previous
-            // attempt's underlying promise to settle (capped by the grace
-            // backstop). Without this gate, two concurrent invocations of
-            // the same non-idempotent send could race after a timeout
-            // when a custom isRetryable opts TIMEOUT back in.
-            if (!advanceOnTimeout) {
-              await run.settled;
-            }
+            // Always wait for the previous attempt to settle before
+            // reissuing the same send fn — even in liveness mode. The
+            // `advanceOnTimeout` knob governs only when the queue
+            // advances to the NEXT entry; retrying the SAME entry must
+            // never start a fresh invocation while the previous one is
+            // still running, or we could fan two concurrent invocations
+            // of a non-idempotent send onto the same transport.
+            await run.settled;
             // Wrap sleep so a sleeper rejection (clock corruption, monkey-
             // patched timers, etc.) does not abandon the in-flight entry —
             // we treat it as terminal failure for this entry and resume
