@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { validateDockerConfig } from "./validate.js";
 
 describe("validateDockerConfig", () => {
-  test("returns error when no client and no socketPath defaults available", () => {
-    const result = validateDockerConfig({ client: undefined });
+  test("returns error when no client provided", () => {
+    const result = validateDockerConfig({});
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("UNAVAILABLE");
