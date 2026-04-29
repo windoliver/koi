@@ -89,6 +89,21 @@ capability banners or tool schemas slip past the gate.
 The middleware throws (rather than silently forwarding the oversize request)
 in three situations where its segmentation strategy cannot uphold its contract:
 
+- **Observe-phase middleware sees N events per oversized turn.** Both
+  `wrapModelCall` and `wrapModelStream` dispatch each segment through
+  the *full* downstream chain — that is the only `next` handler a
+  middleware has access to. So observe-phase middleware (e.g.
+  `@koi/session:transcript`, `@koi/middleware-audit`,
+  cost/report aggregators) commit / record once per segment, not once
+  per logical user turn. Hosts whose persistence layer keys off
+  `request.messages.at(-1)` will durably store one oversized user turn
+  as N partial turns. `metadata.rlmSegments` on the merged response
+  records the per-segment provenance so callers can correlate after
+  the fact, but the duplication itself is inherent to the simple
+  "segment + reassemble at this layer" design. Operators that need
+  single-turn semantics for transcript/audit must run RLM as an
+  engine-adapter wrapper (so the rest of the chain runs once on the
+  merged request) instead of as a chain middleware.
 - **Tools are present.** Each segment would receive the same tool list, the
   model would emit independent tool calls per segment, and reassembly would
   concatenate them — turning one user turn into N side-effecting tool batches.

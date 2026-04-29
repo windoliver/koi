@@ -476,139 +476,145 @@ async function consumeStream(
     };
   }
 
-  while (true) {
-    const nextPromise = iterator.next();
-    const settled =
-      abortPromise === undefined
-        ? await nextPromise
-        : await Promise.race([nextPromise, abortPromise]);
-    if ("aborted" in settled && settled.aborted === true) {
-      // Abort wins. Best-effort close of the upstream iterator without
-      // awaiting — a generator stuck in `await new Promise(() =>
-      // undefined)` will never honor `.return()` until control returns
-      // to it, so awaiting that here would just re-create the hang we
-      // are escaping. Fire-and-forget release; ignore any rejection.
+  // Track whether we exited cleanly via the `done` chunk. Any other
+  // exit (abort, error chunk, streamed tool_call, missing terminal) is
+  // an early termination that must release the upstream iterator so
+  // the base stream handler runs its own resume/cleanup logic. Without
+  // this, the agent can stay in `wait(model_stream)` and leak provider
+  // / network resources on exactly the failure paths RLM is supposed
+  // to hard-stop.
+  let exitedOnDone = false; // let: gates iterator cleanup in finally
+  try {
+    while (true) {
+      const nextPromise = iterator.next();
+      const settled =
+        abortPromise === undefined
+          ? await nextPromise
+          : await Promise.race([nextPromise, abortPromise]);
+      if ("aborted" in settled && settled.aborted === true) {
+        // Distinguish caller cancel from activity-timeout via the
+        // signal's reason (matches the query-engine consumer's
+        // mapping). Both terminate the segmented run, but the
+        // metadata flag lets delivery / observability paths key off
+        // the right semantic.
+        const isTimeout =
+          signal !== undefined &&
+          signal.reason instanceof DOMException &&
+          signal.reason.name === "TimeoutError";
+        return buildTerminalResponse({
+          stopReason: "error",
+          errorMessage: isTimeout ? "Stream timed out" : "Stream cancelled",
+          interrupted: true,
+          // Match the runtime's existing sentinel — `delivery-policy.ts`
+          // and `runtime-factory.ts` key timeout handling off the literal
+          // `"activity-timeout"`. Inventing a different value would
+          // skip those recovery branches on oversized streamed turns.
+          terminatedBy: isTimeout ? "activity-timeout" : "abort",
+        });
+      }
+      const result = settled as IteratorResult<ModelChunk>;
+      if (result.done === true) {
+        return buildTerminalResponse({ errorMessage: "stream ended without 'done' chunk" });
+      }
+      const chunk = result.value;
+      if (chunk.kind === "text_delta") {
+        streamedText += chunk.delta;
+        continue;
+      }
+      if (chunk.kind === "usage") {
+        streamedInput += chunk.inputTokens;
+        streamedOutput += chunk.outputTokens;
+        sawUsage = true;
+        continue;
+      }
+      if (chunk.kind === "done") {
+        const response = chunk.response;
+        model = response.model;
+        if (response.responseId !== undefined) responseId = response.responseId;
+        // Three-step backfill order: prefer the explicit content
+        // field; fall back to accumulated text_delta chunks; finally
+        // synthesize from richContent text blocks. Adapters that emit
+        // final text only in richContent (no top-level content, no
+        // streamed deltas) would otherwise reassemble to an empty
+        // answer.
+        let content = response.content;
+        if (content.length === 0) content = streamedText;
+        if (content.length === 0 && response.richContent !== undefined) {
+          let richText = "";
+          for (const block of response.richContent) {
+            if (block.kind === "text") richText += block.text;
+          }
+          content = richText;
+        }
+        const usage =
+          response.usage ??
+          (sawUsage ? { inputTokens: streamedInput, outputTokens: streamedOutput } : undefined);
+        exitedOnDone = true; // generator already finished — no return() needed
+        return {
+          ...response,
+          content,
+          ...(usage !== undefined ? { usage } : {}),
+        };
+      }
+      if (
+        chunk.kind === "tool_call_start" ||
+        chunk.kind === "tool_call_delta" ||
+        chunk.kind === "tool_call_end"
+      ) {
+        // Streamed tool calls are a structured fail-closed signal even
+        // if the terminal `done.response` does not echo them in
+        // richContent / stopReason. Synthesize a terminal response
+        // carrying stopReason='tool_use' + a richContent tool_call
+        // placeholder so dispatchSegmented's stopReason guard +
+        // hasToolCallBlock check both abort reassembly.
+        const toolCallBlock: ModelContentBlock = {
+          kind: "tool_call",
+          id: chunk.kind === "tool_call_start" ? chunk.callId : chunk.callId,
+          name: chunk.kind === "tool_call_start" ? chunk.toolName : "unknown",
+          arguments: {},
+        };
+        const usage = sawUsage
+          ? { inputTokens: streamedInput, outputTokens: streamedOutput }
+          : undefined;
+        return {
+          content: streamedText,
+          model,
+          ...(usage !== undefined ? { usage } : {}),
+          stopReason: "tool_use",
+          ...(responseId !== undefined ? { responseId } : {}),
+          richContent: [toolCallBlock],
+        };
+      }
+      if (chunk.kind === "error") {
+        // Structured stream failure: fold what we have into a
+        // terminal response with `stopReason: "error"`, preserving
+        // provider/hook metadata (code/retryable/retryAfterMs).
+        if (chunk.usage !== undefined) {
+          streamedInput += chunk.usage.inputTokens;
+          streamedOutput += chunk.usage.outputTokens;
+          sawUsage = true;
+        }
+        return buildTerminalResponse({
+          stopReason: "error",
+          errorMessage: chunk.message,
+          ...(chunk.code !== undefined ? { errorCode: chunk.code } : {}),
+          ...(chunk.retryable !== undefined ? { retryable: chunk.retryable } : {}),
+          ...(chunk.retryAfterMs !== undefined ? { retryAfterMs: chunk.retryAfterMs } : {}),
+        });
+      }
+      // Unknown chunk kinds (thinking_delta, etc.) are not
+      // informative for the segmented call/reassemble path. Skip
+      // without losing forward progress.
+    }
+  } finally {
+    // Best-effort iterator release on every non-`done` exit. Fire-and-
+    // forget so a generator stuck in a forever-await cannot hang the
+    // cleanup itself; ignore any rejection.
+    if (!exitedOnDone) {
       iterator.return?.().catch(() => {
         // closing a hung iterator is best-effort
       });
-      // Distinguish caller cancel from activity-timeout via the
-      // signal's reason (matches the query-engine consumer's mapping).
-      // Both terminate the segmented run, but the metadata flag lets
-      // delivery / observability paths key off the right semantic.
-      const isTimeout =
-        signal !== undefined &&
-        signal.reason instanceof DOMException &&
-        signal.reason.name === "TimeoutError";
-      return buildTerminalResponse({
-        stopReason: "error",
-        errorMessage: isTimeout ? "Stream timed out" : "Stream cancelled",
-        interrupted: true,
-        // Match the runtime's existing sentinel — `delivery-policy.ts`
-        // and `runtime-factory.ts` key timeout handling off the literal
-        // `"activity-timeout"`. Inventing a different value would skip
-        // those recovery branches on oversized streamed turns.
-        terminatedBy: isTimeout ? "activity-timeout" : "abort",
-      });
     }
-    const result = settled as IteratorResult<ModelChunk>;
-    if (result.done === true) {
-      return buildTerminalResponse({ errorMessage: "stream ended without 'done' chunk" });
-    }
-    const chunk = result.value;
-    if (chunk.kind === "text_delta") {
-      streamedText += chunk.delta;
-      continue;
-    }
-    if (chunk.kind === "usage") {
-      streamedInput += chunk.inputTokens;
-      streamedOutput += chunk.outputTokens;
-      sawUsage = true;
-      continue;
-    }
-    if (chunk.kind === "done") {
-      const response = chunk.response;
-      model = response.model;
-      if (response.responseId !== undefined) responseId = response.responseId;
-      // Three-step backfill order: prefer the explicit content field;
-      // fall back to accumulated text_delta chunks; finally synthesize
-      // from richContent text blocks. Adapters that emit final text
-      // only in richContent (no top-level content, no streamed deltas)
-      // would otherwise reassemble to an empty answer.
-      let content = response.content;
-      if (content.length === 0) content = streamedText;
-      if (content.length === 0 && response.richContent !== undefined) {
-        let richText = "";
-        for (const block of response.richContent) {
-          if (block.kind === "text") richText += block.text;
-        }
-        content = richText;
-      }
-      const usage =
-        response.usage ??
-        (sawUsage ? { inputTokens: streamedInput, outputTokens: streamedOutput } : undefined);
-      return {
-        ...response,
-        content,
-        ...(usage !== undefined ? { usage } : {}),
-      };
-    }
-    if (
-      chunk.kind === "tool_call_start" ||
-      chunk.kind === "tool_call_delta" ||
-      chunk.kind === "tool_call_end"
-    ) {
-      // Streamed tool calls are a structured fail-closed signal even if
-      // the terminal `done.response` does not echo them in richContent
-      // / stopReason. Synthesize a terminal response carrying
-      // stopReason='tool_use' + a richContent tool_call placeholder so
-      // dispatchSegmented's stopReason guard + hasToolCallBlock check
-      // both abort reassembly. Without this, an adapter that surfaces
-      // tool use only via streaming chunks would silently bypass RLM's
-      // tool-fan-out safety invariant.
-      const toolCallBlock: ModelContentBlock = {
-        kind: "tool_call",
-        id: chunk.kind === "tool_call_start" ? chunk.callId : chunk.callId,
-        name: chunk.kind === "tool_call_start" ? chunk.toolName : "unknown",
-        arguments: {},
-      };
-      const usage = sawUsage
-        ? { inputTokens: streamedInput, outputTokens: streamedOutput }
-        : undefined;
-      return {
-        content: streamedText,
-        model,
-        ...(usage !== undefined ? { usage } : {}),
-        stopReason: "tool_use",
-        ...(responseId !== undefined ? { responseId } : {}),
-        richContent: [toolCallBlock],
-      };
-    }
-    if (chunk.kind === "error") {
-      // Structured stream failure: fold what we have (partial text +
-      // streamed usage) into a synthetic terminal response with
-      // `stopReason: "error"`. The segment-level stopReason guard in
-      // dispatchSegmented / wrapModelStream then aborts reassembly,
-      // surfacing the failure to the caller with the accumulated state
-      // intact instead of throwing a bare exception that loses it.
-      // Preserve provider/hook metadata (code, retryable, retryAfterMs)
-      // so retry / backoff signals are not stripped on the RLM path.
-      if (chunk.usage !== undefined) {
-        streamedInput += chunk.usage.inputTokens;
-        streamedOutput += chunk.usage.outputTokens;
-        sawUsage = true;
-      }
-      return buildTerminalResponse({
-        stopReason: "error",
-        errorMessage: chunk.message,
-        ...(chunk.code !== undefined ? { errorCode: chunk.code } : {}),
-        ...(chunk.retryable !== undefined ? { retryable: chunk.retryable } : {}),
-        ...(chunk.retryAfterMs !== undefined ? { retryAfterMs: chunk.retryAfterMs } : {}),
-      });
-    }
-    // Unknown / non-text chunk kinds (tool_call_*, thinking_delta, etc.)
-    // are not informative for the segmented call/reassemble path — RLM
-    // already aborts on tool_call blocks via `hasToolCallBlock` once
-    // done arrives. Skip them here without losing forward progress.
   }
 }
 
