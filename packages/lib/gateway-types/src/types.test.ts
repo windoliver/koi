@@ -90,4 +90,14 @@ describe("Gateway contract", () => {
     };
     expect(stub.activeConnections()).toBe(0);
   });
+
+  test("activeConnections may be async", async () => {
+    const stub: Gateway = {
+      ingest() {},
+      pauseIngress() {},
+      forceClose() {},
+      activeConnections: async () => 5,
+    };
+    expect(await stub.activeConnections()).toBe(5);
+  });
 });

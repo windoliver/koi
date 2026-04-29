@@ -60,10 +60,10 @@ export interface Session {
 export interface Gateway {
   /** Ingest a frame produced by the HTTP ingestion path (or any caller). */
   readonly ingest: (session: Session, frame: GatewayFrame) => void | Promise<void>;
-  /** Stop accepting NEW frames from external WS clients; existing ingest() callers continue. */
+  /** Stop accepting NEW frames from external transports (e.g., WS clients); existing internal `ingest()` callers continue. */
   readonly pauseIngress: () => void | Promise<void>;
-  /** Force-close all WS sessions immediately. */
+  /** Force-close all transport-attached sessions (e.g., WS connections) immediately. */
   readonly forceClose: () => void | Promise<void>;
-  /** Number of active WS connections. */
-  readonly activeConnections: () => number;
+  /** Number of active transport-attached connections (e.g., WS sessions). HTTP ingestion does not count toward this. */
+  readonly activeConnections: () => number | Promise<number>;
 }
