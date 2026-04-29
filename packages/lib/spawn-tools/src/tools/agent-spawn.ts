@@ -119,7 +119,7 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
       const childDescription = descriptionWithContext(description, context);
 
       const invokeSpawn = async (): Promise<
-        | { readonly ok: true; readonly output: string }
+        | { readonly ok: true; readonly output: string; readonly cacheable?: boolean }
         | { readonly ok: false; readonly error: string }
       > => {
         const result = await config.spawnFn({
@@ -130,7 +130,12 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
           agentId: config.agentId,
         });
         if (!result.ok) return { ok: false, error: result.error.message };
-        return { ok: true, output: result.output };
+        // Propagate cacheability from the engine. Non-streaming delivery
+        // implementations return `cacheable: false` so we don't cache a
+        // placeholder admission as if it were a completed result.
+        return result.cacheable === false
+          ? { ok: true, output: result.output, cacheable: false }
+          : { ok: true, output: result.output };
       };
 
       const cacheKey =

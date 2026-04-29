@@ -119,10 +119,12 @@ re-invoke `spawnFn` or inject duplicate output back into the parent session.
   dedup is skipped silently and the spawn proceeds.
 - **Scope**: caches successful outputs only — failed spawns stay retryable.
   Empty-output successes are cached like any other success (the L0
-  `SpawnResult` contract treats `""` as a valid completed output). Callers
-  wiring deferred / on-demand delivery semantics can opt a single result out
-  of caching with `cacheable: false` on the factory return value, but the
-  default `agent_spawn` flow does not infer cacheability from output length.
+  `SpawnResult` contract treats `""` as a valid completed output). Engine
+  adapters using non-streaming delivery (deferred / on-demand) should set
+  `cacheable: false` on the `SpawnResult` they return so the placeholder
+  admission isn't replayed for retries — `agent_spawn` propagates that
+  flag to the cache layer. Default streaming spawns (the common case)
+  leave `cacheable` undefined and are cached normally.
 - **Default cache**: `createSpawnTools` provisions a `SpawnResultCache` when
   the caller does not supply one, so the feature is on by default. Pass an
   explicit `resultCache` to share across multiple factory calls in the same

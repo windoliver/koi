@@ -285,6 +285,47 @@ describe("agent_spawn", () => {
       expect(typeof calls[0]?.context?.when).toBe("string");
     });
 
+    test("spawnFn signaling cacheable:false (deferred/on-demand delivery) is not cached — retry re-spawns", async () => {
+      // Simulates an engine adapter that returns success before the child
+      // finishes (deferred delivery). The first call's placeholder admission
+      // must not mask the later real result on retry.
+      const calls: SpawnRequest[] = [];
+      let attempt = 0;
+      const fn: SpawnFn = async (request) => {
+        calls.push(request);
+        attempt += 1;
+        if (attempt === 1) {
+          // Deferred delivery: placeholder admission, child still running.
+          return { ok: true, output: "spawn-id-abc", cacheable: false };
+        }
+        // Recovery retry after background delivery failed: real spawn.
+        return { ok: true, output: "real-final-output" };
+      };
+
+      const tool = createAgentSpawnTool({
+        spawnFn: fn,
+        board: {} as ManagedTaskBoard,
+        agentId: "parent" as AgentId,
+        signal: AbortSignal.timeout(5_000),
+        resultCache: createSpawnResultCache(),
+      });
+
+      const args = {
+        agent_name: "researcher",
+        description: "X",
+        context: { task_id: "T-1" },
+      };
+      const first = await tool.execute(args);
+      const second = await tool.execute(args);
+
+      expect(first).toMatchObject({ ok: true, output: "spawn-id-abc" });
+      expect((first as { deduplicated?: boolean }).deduplicated).toBeUndefined();
+      // Retry must reach spawnFn — placeholder must NOT be replayed.
+      expect(second).toMatchObject({ ok: true, output: "real-final-output" });
+      expect((second as { deduplicated?: boolean }).deduplicated).toBeUndefined();
+      expect(calls).toHaveLength(2);
+    });
+
     test("childDescription canonicalizes context keys so the prompt matches the cache digest", async () => {
       const calls: SpawnRequest[] = [];
       const fn: SpawnFn = async (request) => {
