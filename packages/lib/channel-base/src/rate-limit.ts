@@ -4,7 +4,7 @@
  * Sequential FIFO queue. Pauses on rate-limit errors and retries with
  * exponential backoff. The default policy is intentionally narrower than
  * `@koi/errors.isRetryable()`: it auto-retries only the transport-class
- * codes RATE_LIMIT, TIMEOUT, and CONFLICT, because state-gated codes such
+ * codes RATE_LIMIT and TIMEOUT, because state-gated codes such
  * as AUTH_REQUIRED and RESOURCE_EXHAUSTED are recoverable only after
  * external intervention and must not be re-issued in a tight loop.
  *
@@ -35,7 +35,7 @@ export interface RateLimiterConfig {
    *
    * The built-in default returns `error.retryAfterMs` only when the error
    * is a `KoiError` whose code is in the transport-retry allowlist
-   * (RATE_LIMIT, TIMEOUT, CONFLICT). State-gated codes like AUTH_REQUIRED
+   * (RATE_LIMIT, TIMEOUT). State-gated codes like AUTH_REQUIRED
    * intentionally produce undefined even if they carry `retryAfterMs`, so
    * the queue does not auto-retry them.
    */
@@ -43,10 +43,21 @@ export interface RateLimiterConfig {
   /**
    * Decides whether an error should be retried independent of any retry-after
    * hint. Defaults to a narrow transport allowlist: `KoiError` with code in
-   * { RATE_LIMIT, TIMEOUT, CONFLICT }. Pass a custom predicate (e.g.
+   * { RATE_LIMIT, TIMEOUT }. Pass a custom predicate (e.g.
    * `(e) => isKoiError(e) && isKoiRetryable(e)`) to broaden the policy.
    */
   readonly isRetryable?: (error: unknown) => boolean;
+  /**
+   * Called when the retry machinery itself fails — a thrown classifier,
+   * malformed `computeBackoff` config, or rejected `sleep`. The default
+   * `swallow` behavior preserves queue progress, but operators that want
+   * a diagnostic breadcrumb can supply this hook to surface the broken
+   * retry path. Hook errors are themselves swallowed.
+   */
+  readonly onInternalError?: (
+    stage: "extract" | "classify" | "backoff" | "sleep",
+    error: unknown,
+  ) => void;
 }
 
 export interface RateLimiter {
@@ -111,19 +122,33 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
   // let justified: re-entrancy guard for the drain loop
   let processing = false;
 
+  const reportInternal = (
+    stage: "extract" | "classify" | "backoff" | "sleep",
+    error: unknown,
+  ): void => {
+    if (config?.onInternalError === undefined) return;
+    try {
+      config.onInternalError(stage, error);
+    } catch {
+      // Hook itself misbehaved — swallow so the queue keeps draining.
+    }
+  };
+
   // Wrap classifier hooks so a thrown user callback never wedges the queue —
   // we treat a thrown classifier as "not retryable" and reject the entry below.
   const safeExtract = (error: unknown): number | undefined => {
     try {
       return extractRetryAfterMs(error);
-    } catch {
+    } catch (hookError) {
+      reportInternal("extract", hookError);
       return undefined;
     }
   };
   const safeIsRetryable = (error: unknown): boolean => {
     try {
       return isRetryable(error);
-    } catch {
+    } catch (hookError) {
+      reportInternal("classify", hookError);
       return false;
     }
   };
@@ -169,7 +194,8 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
             let delay: number;
             try {
               delay = computeBackoff(attempt, retryConfig, retryAfterMs, undefined, prevDelayMs);
-            } catch {
+            } catch (backoffError) {
+              reportInternal("backoff", backoffError);
               break;
             }
             prevDelayMs = delay;
@@ -179,7 +205,8 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
             // draining instead of leaving the caller hanging forever.
             try {
               await sleep(delay);
-            } catch {
+            } catch (sleepError) {
+              reportInternal("sleep", sleepError);
               break;
             }
           }

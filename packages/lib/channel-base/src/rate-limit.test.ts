@@ -377,6 +377,80 @@ describe("createRateLimiter", () => {
     });
   });
 
+  describe("onInternalError surfaces retry-path failures", () => {
+    it("reports a thrown extractRetryAfterMs as 'extract'", async () => {
+      const reports: Array<readonly [string, unknown]> = [];
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 2 },
+        extractRetryAfterMs: () => {
+          throw new Error("ext-broken");
+        },
+        onInternalError: (stage, err) => {
+          reports.push([stage, err]);
+        },
+      });
+      await expect(limiter.enqueue(() => Promise.reject(new Error("send-fail")))).rejects.toThrow(
+        "send-fail",
+      );
+      expect(
+        reports.some(
+          ([s, e]) => s === "extract" && e instanceof Error && e.message === "ext-broken",
+        ),
+      ).toBe(true);
+    });
+
+    it("reports a thrown isRetryable as 'classify'", async () => {
+      const reports: Array<readonly [string, unknown]> = [];
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 2 },
+        isRetryable: () => {
+          throw new Error("classify-broken");
+        },
+        onInternalError: (stage, err) => {
+          reports.push([stage, err]);
+        },
+      });
+      await expect(limiter.enqueue(() => Promise.reject(new Error("send-fail")))).rejects.toThrow(
+        "send-fail",
+      );
+      expect(reports.some(([s]) => s === "classify")).toBe(true);
+    });
+
+    it("reports a thrown sleep as 'sleep'", async () => {
+      sleepSpy.mockImplementationOnce(() => Promise.reject(new Error("clock-broken")));
+      const reports: Array<readonly [string, unknown]> = [];
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 3, initialDelayMs: 10, jitter: false },
+        onInternalError: (stage, err) => {
+          reports.push([stage, err]);
+        },
+      });
+      await expect(
+        limiter.enqueue(() => Promise.reject(koiError({ code: "TIMEOUT" }))),
+      ).rejects.toMatchObject({ code: "TIMEOUT" });
+      expect(
+        reports.some(
+          ([s, e]) => s === "sleep" && e instanceof Error && e.message === "clock-broken",
+        ),
+      ).toBe(true);
+    });
+
+    it("swallows hook errors so they cannot wedge the queue", async () => {
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 1 },
+        isRetryable: () => {
+          throw new Error("classify-broken");
+        },
+        onInternalError: () => {
+          throw new Error("hook-broken");
+        },
+      });
+      await expect(limiter.enqueue(() => Promise.reject(new Error("send-fail")))).rejects.toThrow(
+        "send-fail",
+      );
+    });
+  });
+
   it("rejects the in-flight entry and continues the queue when sleep throws", async () => {
     sleepSpy.mockImplementationOnce(() => Promise.reject(new Error("clock broken")));
     const limiter = createRateLimiter({
