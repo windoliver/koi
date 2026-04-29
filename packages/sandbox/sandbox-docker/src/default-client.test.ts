@@ -171,6 +171,39 @@ describe("createDefaultDockerClient", () => {
     }
   });
 
+  // Fix 1 regression: child exits before deadline but produces large output.
+  // Timer must be cleared when proc.exited resolves — post-exit drain time does NOT count.
+  // Result must be success (exitCode 0), docker kill must NOT be called.
+  test("container.exec: child exits before deadline with large output — success, docker kill NOT called", async () => {
+    let callCount = 0;
+    const spawnedArgs: string[][] = [];
+    const largeOutput = "x".repeat(512 * 1024); // 512 KB
+    // @ts-expect-error — test stub: returning a partial SubProcess for coverage
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
+      callCount += 1;
+      spawnedArgs.push(args);
+      if (callCount <= 2) return fakeProc({ stdout: "fastid\n", stderr: "", exitCode: 0 });
+      // 3rd call = docker exec — resolves immediately (child already exited), but has large output.
+      return fakeProc({ stdout: largeOutput, stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      const container = await client.createContainer({
+        image: "ubuntu:22.04",
+        networkMode: "none",
+      });
+      // 500 ms deadline — child exits instantly, large output drains after.
+      const r = await container.exec("cat /big", { timeoutMs: 500 });
+      // Child exited naturally before deadline → success, NOT timeout.
+      expect(r.exitCode).toBe(0);
+      // docker kill --signal=KILL must NOT have been spawned (child exited cleanly).
+      const dockerKillCall = spawnedArgs.find((a) => a[1] === "kill" && a[2] === "--signal=KILL");
+      expect(dockerKillCall).toBeUndefined();
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
   test("container.exec: abort signal fires mid-flight → docker kill spawned with containerId", async () => {
     let callCount = 0;
     const spawnedArgs: string[][] = [];

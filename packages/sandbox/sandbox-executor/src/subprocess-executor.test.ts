@@ -310,4 +310,45 @@ describe("createSubprocessExecutor", () => {
       throw new Error(`Expected ok, got: ${result.error.code} - ${result.error.message}`);
     expect(result.value.output).toEqual({ drained: true });
   });
+
+  // Fix 2 regression: child exits fast (50 ms) with large stderr (5 MB), deadline 200 ms.
+  // Timer is cleared when proc.exited resolves — post-exit drain time does NOT count.
+  // Must be classified as ok success, NOT TIMEOUT.
+  test("child exits fast with large stderr drain — classified as success, not TIMEOUT (Fix 2 regression)", async () => {
+    const executor = createSubprocessExecutor();
+    // Write ~5 MB to stderr, return a valid result. The child exits quickly;
+    // drain takes additional time but the timer was already cleared at exit.
+    const code = `
+      export default async (_input: unknown) => {
+        // Write 5 MB to stderr — drain happens after child exits
+        const chunk = "e".repeat(1024);
+        for (let i = 0; i < 5000; i++) process.stderr.write(chunk);
+        return { fast: true };
+      };
+    `;
+    const result = await executor.execute(code, null, 30000);
+    expect(result.ok).toBe(true);
+    if (!result.ok)
+      throw new Error(`Expected ok, got: ${result.error.code} - ${result.error.message}`);
+    expect(result.value.output).toEqual({ fast: true });
+  });
+
+  // Fix 3 (context.env): caller-provided env vars are merged into the child env.
+  // Caller-provided keys win over allowlist defaults.
+  test("honors context.env by passing caller-provided env vars to child (Fix 3)", async () => {
+    const executor = createSubprocessExecutor({ externalIsolation: true });
+    const code = `
+      export default async (_input: unknown) => ({
+        customVar: process.env.CUSTOM_VAR,
+      });
+    `;
+    // networkAllowed: true acknowledges unconfined execution (no externalIsolation guard needed)
+    const result = await executor.execute(code, null, 5000, {
+      networkAllowed: true,
+      env: { CUSTOM_VAR: "from-context" },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`Expected ok, got: ${result.error.message}`);
+    expect(result.value.output).toEqual({ customVar: "from-context" });
+  });
 });

@@ -188,6 +188,14 @@ function buildChildEnv(context?: ExecutionContext): Readonly<Record<string, stri
         env.KOI_MAX_PIDS = String(context.resourceLimits.maxPids);
       }
     }
+
+    // Layer 4: caller-provided env (wins over all earlier layers).
+    // No allowlist filter — caller explicitly opted in by populating this field.
+    if (context.env !== undefined) {
+      for (const [k, v] of Object.entries(context.env)) {
+        env[k] = v;
+      }
+    }
   }
 
   return env;
@@ -399,10 +407,10 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
         const proc = Bun.spawn(cmd, spawnOpts);
 
         // Kill the process (group) after timeout.
-        // `let` justified: `killed` is a mutable flag set inside the timer callback.
-        let killed = false;
+        // `let` justified: `timedOut` is a mutable flag set inside the timer callback.
+        let timedOut = false;
         const timer = setTimeout(() => {
-          killed = true;
+          timedOut = true;
           killChild(proc, usedSetsid);
         }, timeoutMs);
 
@@ -410,29 +418,33 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
         // underlying object supports it at runtime — check defensively.
         if ("unref" in timer && typeof timer.unref === "function") timer.unref();
 
-        // Drain stdout AND stderr concurrently using bounded readers.
-        // A chatty child that fills the stdout pipe buffer will deadlock if we only
-        // await proc.exited while leaving stdout unread. Start both drains first.
-        // Both streams are capped at maxOutputBytes: once the cap is hit, excess
-        // bytes are discarded silently (pipe stays drained) so the child is not
-        // blocked. The child is only killed by the timeout timer above.
+        // Start bounded drain readers BEFORE awaiting exit — they must run concurrently
+        // to prevent pipe-buffer deadlock (chatty child fills the pipe → deadlock if we
+        // await proc.exited first without draining). Both streams are capped at
+        // maxOutputBytes; excess bytes are discarded silently (pipe stays drained).
         //
         // Stderr uses a 64 KB tail buffer so the framing marker (which appears at
         // the END of stderr) can be recovered even when total stderr exceeded maxOutputBytes.
         // Stdout does not need a tail — we only care about the head for diagnostics.
         const STDERR_TAIL_BYTES = 64 * 1024;
-        const [, stderrResult, exitCode] = await Promise.all([
-          readBoundedText(proc.stdout, maxOutputBytes),
-          readBoundedText(proc.stderr, maxOutputBytes, STDERR_TAIL_BYTES),
-          proc.exited,
-        ]);
+        const stdoutP = readBoundedText(proc.stdout, maxOutputBytes);
+        const stderrP = readBoundedText(proc.stderr, maxOutputBytes, STDERR_TAIL_BYTES);
+
+        // Await child exit FIRST so the timer is cleared as soon as the child exits —
+        // post-exit drain time does not count against the deadline. If the timer fired
+        // before the child exited, timedOut will already be true.
+        const exitCode = await proc.exited;
         clearTimeout(timer);
+
+        // Drain both pipes (they are already closed after child exit — this just
+        // consumes any buffered bytes and resolves the reader promises).
+        const [, stderrResult] = await Promise.all([stdoutP, stderrP]);
 
         const durationMs = Date.now() - start;
 
         // Killed or OOM
-        if (killed || exitCode === 137 || exitCode === -9) {
-          const errorCode: SandboxErrorCode = classifyKilledCode(killed, exitCode ?? -1);
+        if (timedOut || exitCode === 137 || exitCode === -9) {
+          const errorCode: SandboxErrorCode = classifyKilledCode(timedOut, exitCode ?? -1);
           const error: SandboxError = {
             code: errorCode,
             message:

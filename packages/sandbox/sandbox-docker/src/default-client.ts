@@ -229,18 +229,22 @@ async function runDockerExecBounded(
   };
   signal?.addEventListener("abort", onAbort, { once: true });
 
-  // Drain both streams with byte-cap to prevent host OOM from adversarial containers.
-  // Excess bytes beyond the cap are discarded silently (pipe stays drained so the
-  // docker CLI does not stall). The container is NOT killed on cap — only on
-  // timeout or abort (see above).
-  const [stdoutResult, stderrResult, exitCode] = await Promise.all([
-    readBoundedText(proc.stdout, maxBytes),
-    readBoundedText(proc.stderr, maxBytes),
-    proc.exited,
-  ]);
+  // Start bounded drain readers BEFORE awaiting exit — they must run concurrently to
+  // prevent pipe-buffer deadlock (adversarial container fills the pipe → docker CLI stalls
+  // if readers are not running). Both streams are capped at maxBytes; excess bytes are
+  // discarded silently so the docker CLI process does not stall on a full pipe buffer.
+  const stdoutP = readBoundedText(proc.stdout, maxBytes);
+  const stderrP = readBoundedText(proc.stderr, maxBytes);
 
+  // Await child exit FIRST so the timer is cleared as soon as the child exits —
+  // post-exit drain time does not count against the deadline. If timedOut was already
+  // set by the timer callback before exit, the kill has already been issued.
+  const exitCode = await proc.exited;
   if (timer !== undefined) clearTimeout(timer);
   signal?.removeEventListener("abort", onAbort);
+
+  // Drain both pipes (already closed after child exit — just consumes buffered bytes).
+  const [stdoutResult, stderrResult] = await Promise.all([stdoutP, stderrP]);
 
   const truncated = stdoutResult.truncated || stderrResult.truncated;
 

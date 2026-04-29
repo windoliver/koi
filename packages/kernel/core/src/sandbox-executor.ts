@@ -53,6 +53,12 @@ export interface ExecutionContext {
     readonly maxMemoryMb?: number;
     readonly maxPids?: number;
   };
+  /**
+   * Additional environment variables to inject into the child process.
+   * Caller-provided keys win over the allowlist defaults.
+   * NO allowlist filter is applied — caller explicitly opted in by populating this field.
+   */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 export interface SandboxExecutor {
