@@ -66,34 +66,39 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
         context as JsonObject | undefined,
       );
 
+      const invokeSpawn = async (): Promise<
+        | {
+            readonly ok: true;
+            readonly output: string;
+          }
+        | { readonly ok: false; readonly error: string }
+      > => {
+        const result = await config.spawnFn({
+          agentName: agent_name,
+          description: childDescription,
+          ...(context !== undefined ? { context: context as JsonObject } : {}),
+          signal: config.signal,
+          agentId: config.agentId,
+        });
+        if (!result.ok) return { ok: false, error: result.error.message };
+        return { ok: true, output: result.output };
+      };
+
       const cacheKey =
         config.resultCache !== undefined
-          ? spawnCacheKey(config.agentId, agent_name, context)
+          ? spawnCacheKey(config.agentId, agent_name, description, context)
           : undefined;
-      if (cacheKey !== undefined && config.resultCache !== undefined) {
-        const cached = config.resultCache.get(cacheKey);
-        if (cached !== undefined) {
-          return { ok: true, output: cached, deduplicated: true };
-        }
+
+      if (cacheKey === undefined || config.resultCache === undefined) {
+        const direct = await invokeSpawn();
+        return direct.ok ? { ok: true, output: direct.output } : { ok: false, error: direct.error };
       }
 
-      const result = await config.spawnFn({
-        agentName: agent_name,
-        description: childDescription,
-        ...(context !== undefined ? { context: context as JsonObject } : {}),
-        signal: config.signal,
-        agentId: config.agentId,
-      });
-
-      if (!result.ok) {
-        return { ok: false, error: result.error.message };
-      }
-
-      if (cacheKey !== undefined && config.resultCache !== undefined) {
-        config.resultCache.set(cacheKey, result.output);
-      }
-
-      return { ok: true, output: result.output };
+      const run = await config.resultCache.runDeduped(cacheKey, invokeSpawn);
+      if (!run.ok) return { ok: false, error: run.error };
+      return run.deduplicated
+        ? { ok: true, output: run.output, deduplicated: true }
+        : { ok: true, output: run.output };
     },
   };
 }

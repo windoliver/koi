@@ -110,7 +110,10 @@ implementations that have not yet adopted the structured field.
 provided, the tool deduplicates retried calls so a duplicate spawn does not
 re-invoke `spawnFn` or inject duplicate output back into the parent session.
 
-- **Cache key**: `${parentAgentId}::${agent_name}::${context.task_id}`
+- **Cache key**: `${parentAgentId}::${agent_name}::${task_id}::${digest}` where
+  `digest` hashes (`agent_name`, `description`, full `context`). A retry with
+  the same `task_id` but updated instructions or context produces a fresh key
+  and a fresh spawn — the cache never replays stale output for changed work.
 - **Activation**: only when `context.task_id` is a non-empty string. Without
   a `task_id` we cannot identify the same logical spawn across retries, so
   dedup is skipped silently and the spawn proceeds.
@@ -119,9 +122,11 @@ re-invoke `spawnFn` or inject duplicate output back into the parent session.
   Map insertion-order, sync `get`/`set` — no async overhead on the hot path.
 - **Result shape on hit**: `{ ok: true, output, deduplicated: true }` so
   callers (and tests) can distinguish cached from fresh.
-- **Concurrency**: dedup catches sequential retries, not concurrent races —
-  two simultaneous in-flight calls both invoke `spawnFn` because the cache
-  is populated only on settle. The third (sequential) retry is deduped.
+- **Concurrency**: dedup covers both sequential retries (settled cache) and
+  concurrent races (in-flight Promise map). The first caller drives the spawn;
+  later callers with the same key await the same Promise. Inflight entries
+  clear in `finally`, so a rejection or failure result frees the slot for
+  the next attempt.
 
 The runtime (or autonomous spawn bridge from #1553) creates the cache once
 and reuses it across `createSpawnTools` invocations within a session so

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createSpawnResultCache, spawnCacheKey } from "./spawn-result-cache.js";
 
-describe("createSpawnResultCache", () => {
+describe("createSpawnResultCache (settled LRU)", () => {
   test("returns undefined for unknown keys", () => {
     const cache = createSpawnResultCache(8);
     expect(cache.get("missing")).toBeUndefined();
@@ -38,7 +38,6 @@ describe("createSpawnResultCache", () => {
     const cache = createSpawnResultCache(2);
     cache.set("a", "1");
     cache.set("b", "2");
-    // Touch "a" — now "b" is the oldest
     expect(cache.get("a")).toBe("1");
     cache.set("c", "3");
     expect(cache.get("b")).toBeUndefined();
@@ -53,34 +52,141 @@ describe("createSpawnResultCache", () => {
   });
 });
 
-describe("spawnCacheKey", () => {
+describe("runDeduped (concurrent + retry dedup)", () => {
+  test("first caller drives the spawn, settled result returns deduplicated:false", async () => {
+    const cache = createSpawnResultCache(8);
+    const result = await cache.runDeduped("k", async () => ({ ok: true, output: "x" }));
+    expect(result).toEqual({ ok: true, output: "x", deduplicated: false });
+    expect(cache.get("k")).toBe("x");
+  });
+
+  test("retry after settled returns deduplicated:true without re-invoking factory", async () => {
+    const cache = createSpawnResultCache(8);
+    let calls = 0;
+    const factory = async () => {
+      calls += 1;
+      return { ok: true as const, output: "x" };
+    };
+    await cache.runDeduped("k", factory);
+    const second = await cache.runDeduped("k", factory);
+    expect(second).toEqual({ ok: true, output: "x", deduplicated: true });
+    expect(calls).toBe(1);
+  });
+
+  test("concurrent callers share a single factory invocation", async () => {
+    const cache = createSpawnResultCache(8);
+    let calls = 0;
+    let releaseFactory: () => void = () => {};
+    const factory = (): Promise<{ ok: true; output: string }> => {
+      calls += 1;
+      return new Promise((resolve) => {
+        releaseFactory = () => resolve({ ok: true, output: "shared" });
+      });
+    };
+
+    const aPromise = cache.runDeduped("k", factory);
+    const bPromise = cache.runDeduped("k", factory);
+    // Allow both to register before settling.
+    await Promise.resolve();
+    releaseFactory();
+    const [a, b] = await Promise.all([aPromise, bPromise]);
+
+    expect(calls).toBe(1);
+    // Exactly one is the driver (deduplicated:false), the other is a shared waiter.
+    const driverCount = [a, b].filter((r) => r.ok && r.deduplicated === false).length;
+    const waiterCount = [a, b].filter((r) => r.ok && r.deduplicated === true).length;
+    expect(driverCount).toBe(1);
+    expect(waiterCount).toBe(1);
+    expect(a).toMatchObject({ ok: true, output: "shared" });
+    expect(b).toMatchObject({ ok: true, output: "shared" });
+  });
+
+  test("failed factory is not cached and inflight clears so retries can succeed", async () => {
+    const cache = createSpawnResultCache(8);
+    let attempt = 0;
+    const factory = async () => {
+      attempt += 1;
+      if (attempt === 1) return { ok: false as const, error: "boom" };
+      return { ok: true as const, output: "second" };
+    };
+    const first = await cache.runDeduped("k", factory);
+    expect(first).toEqual({ ok: false, error: "boom" });
+    expect(cache.get("k")).toBeUndefined();
+
+    const second = await cache.runDeduped("k", factory);
+    expect(second).toEqual({ ok: true, output: "second", deduplicated: false });
+  });
+
+  test("concurrent callers all see the same failure and none cache it", async () => {
+    const cache = createSpawnResultCache(8);
+    const factory = async () => ({ ok: false as const, error: "shared-fail" });
+    const [a, b] = await Promise.all([
+      cache.runDeduped("k", factory),
+      cache.runDeduped("k", factory),
+    ]);
+    expect(a).toEqual({ ok: false, error: "shared-fail" });
+    expect(b).toEqual({ ok: false, error: "shared-fail" });
+    expect(cache.get("k")).toBeUndefined();
+  });
+
+  test("rejected factory propagates and clears inflight", async () => {
+    const cache = createSpawnResultCache(8);
+    const factory = async (): Promise<never> => {
+      throw new Error("explode");
+    };
+    await expect(cache.runDeduped("k", factory)).rejects.toThrow("explode");
+    // Inflight is cleared — a fresh call invokes the factory again.
+    let calls = 0;
+    const recover = async () => {
+      calls += 1;
+      return { ok: true as const, output: "recovered" };
+    };
+    const result = await cache.runDeduped("k", recover);
+    expect(result).toEqual({ ok: true, output: "recovered", deduplicated: false });
+    expect(calls).toBe(1);
+  });
+});
+
+describe("spawnCacheKey (identity + digest)", () => {
   test("returns key when context has a string task_id", () => {
-    const key = spawnCacheKey("parent-1", "researcher", { task_id: "T-42" });
-    expect(key).toBe("parent-1::researcher::T-42");
+    const key = spawnCacheKey("parent-1", "researcher", "Investigate", { task_id: "T-42" });
+    expect(key).toMatch(/^parent-1::researcher::T-42::[a-z0-9]+$/);
   });
 
   test("returns undefined without context", () => {
-    expect(spawnCacheKey("parent-1", "researcher", undefined)).toBeUndefined();
+    expect(spawnCacheKey("parent-1", "researcher", "X", undefined)).toBeUndefined();
   });
 
-  test("returns undefined when task_id is missing", () => {
-    expect(spawnCacheKey("parent-1", "researcher", { other: "x" })).toBeUndefined();
+  test("returns undefined when task_id is missing or non-string or empty", () => {
+    expect(spawnCacheKey("p", "r", "X", { other: "x" })).toBeUndefined();
+    expect(spawnCacheKey("p", "r", "X", { task_id: 123 })).toBeUndefined();
+    expect(spawnCacheKey("p", "r", "X", { task_id: null })).toBeUndefined();
+    expect(spawnCacheKey("p", "r", "X", { task_id: "" })).toBeUndefined();
   });
 
-  test("returns undefined when task_id is not a string", () => {
-    expect(spawnCacheKey("parent-1", "researcher", { task_id: 123 })).toBeUndefined();
-    expect(spawnCacheKey("parent-1", "researcher", { task_id: null })).toBeUndefined();
+  test("same identity + same description + same context produces same key", () => {
+    const a = spawnCacheKey("p", "r", "Same work", { task_id: "T-1", files: ["a.ts"] });
+    const b = spawnCacheKey("p", "r", "Same work", { task_id: "T-1", files: ["a.ts"] });
+    expect(a).toBe(b);
   });
 
-  test("returns undefined when task_id is an empty string", () => {
-    expect(spawnCacheKey("parent-1", "researcher", { task_id: "" })).toBeUndefined();
+  test("changed description produces a different key (no stale replay)", () => {
+    const a = spawnCacheKey("p", "r", "First instructions", { task_id: "T-1" });
+    const b = spawnCacheKey("p", "r", "Updated instructions", { task_id: "T-1" });
+    expect(a).not.toBe(b);
   });
 
-  test("distinguishes calls by parentAgentId, agentName, and taskId", () => {
-    const a = spawnCacheKey("parent-1", "researcher", { task_id: "T-1" });
-    const b = spawnCacheKey("parent-2", "researcher", { task_id: "T-1" });
-    const c = spawnCacheKey("parent-1", "coder", { task_id: "T-1" });
-    const d = spawnCacheKey("parent-1", "researcher", { task_id: "T-2" });
+  test("changed context (non task_id field) produces a different key", () => {
+    const a = spawnCacheKey("p", "r", "X", { task_id: "T-1", scope: "src/a" });
+    const b = spawnCacheKey("p", "r", "X", { task_id: "T-1", scope: "src/b" });
+    expect(a).not.toBe(b);
+  });
+
+  test("distinguishes by parentAgentId, agentName, and taskId", () => {
+    const a = spawnCacheKey("p1", "r", "X", { task_id: "T-1" });
+    const b = spawnCacheKey("p2", "r", "X", { task_id: "T-1" });
+    const c = spawnCacheKey("p1", "coder", "X", { task_id: "T-1" });
+    const d = spawnCacheKey("p1", "r", "X", { task_id: "T-2" });
     expect(new Set([a, b, c, d]).size).toBe(4);
   });
 });

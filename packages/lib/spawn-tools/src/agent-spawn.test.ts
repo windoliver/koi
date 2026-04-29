@@ -147,16 +147,14 @@ describe("agent_spawn", () => {
       expect(calls).toHaveLength(2);
     });
 
-    test("concurrent calls with same task_id both spawn (cache only seals after settle)", async () => {
-      // Documents current behavior: cache is populated on settle, so two
-      // simultaneous in-flight calls both invoke spawnFn. Dedup catches
-      // *retries* (sequential), not concurrent races. A future enhancement
-      // could add an in-flight Promise map if concurrent dedup is needed.
+    test("concurrent calls with same task_id share a single spawn invocation", async () => {
       const calls: SpawnRequest[] = [];
+      let release: () => void = () => {};
       const fn: SpawnFn = async (request) => {
         calls.push(request);
-        await Promise.resolve();
-        return { ok: true, output: `n-${calls.length}` };
+        return new Promise((resolve) => {
+          release = () => resolve({ ok: true, output: "shared-output" });
+        });
       };
 
       const tool = createAgentSpawnTool({
@@ -172,14 +170,78 @@ describe("agent_spawn", () => {
         description: "X",
         context: { task_id: "T-7" },
       };
-      const [a, b] = await Promise.all([tool.execute(args), tool.execute(args)]);
+      const aPromise = tool.execute(args);
+      const bPromise = tool.execute(args);
+      // Allow both to register on the inflight map before resolving.
+      await Promise.resolve();
+      release();
+      const [a, b] = await Promise.all([aPromise, bPromise]);
+
+      expect(calls).toHaveLength(1);
+      expect(a).toMatchObject({ ok: true, output: "shared-output" });
+      expect(b).toMatchObject({ ok: true, output: "shared-output" });
+      // Exactly one of the two carries deduplicated:true (the late waiter).
+      const dedupCount = [a, b].filter(
+        (r): r is { ok: true; output: string; deduplicated: true } =>
+          (r as { deduplicated?: boolean }).deduplicated === true,
+      ).length;
+      expect(dedupCount).toBe(1);
+    });
+
+    test("retry with changed description bypasses cache (no stale replay)", async () => {
+      const calls: SpawnRequest[] = [];
+      const fn: SpawnFn = async (request) => {
+        calls.push(request);
+        return { ok: true, output: `desc:${request.description.slice(0, 5)}` };
+      };
+      const tool = createAgentSpawnTool({
+        spawnFn: fn,
+        board: {} as ManagedTaskBoard,
+        agentId: "parent" as AgentId,
+        signal: AbortSignal.timeout(5_000),
+        resultCache: createSpawnResultCache(),
+      });
+
+      await tool.execute({
+        agent_name: "researcher",
+        description: "First instructions",
+        context: { task_id: "T-1" },
+      });
+      const second = await tool.execute({
+        agent_name: "researcher",
+        description: "Updated instructions",
+        context: { task_id: "T-1" },
+      });
 
       expect(calls).toHaveLength(2);
-      expect(a).toMatchObject({ ok: true });
-      expect(b).toMatchObject({ ok: true });
-      // After both settle, a third sequential retry returns the cached value.
-      const c = await tool.execute(args);
-      expect(c).toMatchObject({ ok: true, deduplicated: true });
+      expect(second).toMatchObject({ ok: true });
+      expect((second as { deduplicated?: boolean }).deduplicated).toBeUndefined();
+    });
+
+    test("retry with changed non-task_id context field bypasses cache", async () => {
+      const calls: SpawnRequest[] = [];
+      const fn: SpawnFn = async (request) => {
+        calls.push(request);
+        return { ok: true, output: "out" };
+      };
+      const tool = createAgentSpawnTool({
+        spawnFn: fn,
+        board: {} as ManagedTaskBoard,
+        agentId: "parent" as AgentId,
+        signal: AbortSignal.timeout(5_000),
+        resultCache: createSpawnResultCache(),
+      });
+
+      await tool.execute({
+        agent_name: "researcher",
+        description: "X",
+        context: { task_id: "T-1", scope: "src/a" },
+      });
+      await tool.execute({
+        agent_name: "researcher",
+        description: "X",
+        context: { task_id: "T-1", scope: "src/b" },
+      });
       expect(calls).toHaveLength(2);
     });
 
