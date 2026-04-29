@@ -1051,6 +1051,8 @@
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
         "@koi/gateway": "workspace:*",
+        "@koi/gateway-http": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
         "@koi/gateway-webhook": "workspace:*",
         "@koi/governance-approval-tiers": "workspace:*",
         "@koi/governance-core": "workspace:*",

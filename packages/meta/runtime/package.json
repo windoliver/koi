@@ -33,6 +33,8 @@
     "@koi/file-type": "workspace:*",
     "@koi/forge-demand": "workspace:*",
     "@koi/forge-tools": "workspace:*",
+    "@koi/gateway-http": "workspace:*",
+    "@koi/gateway-types": "workspace:*",
     "@koi/gateway-webhook": "workspace:*",
     "@koi/fs-local": "workspace:*",
     "@koi/fs-nexus": "workspace:*",
