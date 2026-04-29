@@ -40,7 +40,7 @@ describe("createProcFs", () => {
     const entry: WritableProcEntry = {
       read: () => val,
       write: (v) => {
-        val = v as number;
+        if (typeof v === "number") val = v;
       },
     };
     const procFs = createProcFs({ cacheTtlMs: 10_000 });

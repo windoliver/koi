@@ -12,7 +12,7 @@ interface CacheEntry {
 const DEFAULT_TTL_MS = 1_000;
 
 function isWritable(e: ProcEntry | WritableProcEntry): e is WritableProcEntry {
-  return typeof (e as WritableProcEntry).write === "function";
+  return "write" in e && typeof e.write === "function";
 }
 
 export function createProcFs(config: ProcFsConfig = {}): ProcFs {
