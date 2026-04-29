@@ -123,27 +123,34 @@ describe("createDefaultDockerClient", () => {
 
   test("container.exec: honours timeoutMs by arming timer (timer fires → exitCode 124)", async () => {
     let callCount = 0;
+    const spawnedArgs: string[][] = [];
     // @ts-expect-error — test stub: returning a partial SubProcess for coverage
-    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) => {
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
       callCount += 1;
+      spawnedArgs.push(args);
       if (callCount <= 2) return fakeProc({ stdout: "tid\n", stderr: "", exitCode: 0 });
-      // Simulate a slow process: exited resolves quickly after kill() is called.
-      // `let` justified: resolveExited is captured from Promise constructor and called by kill.
-      let resolveExited: (code: number) => void = () => undefined;
-      const exitedP = new Promise<number>((res) => {
-        resolveExited = res;
-      });
-      const kill = mock(() => {
-        // Simulate process being killed — resolve exited immediately.
-        resolveExited(-9);
-      });
-      return {
-        stdout: new Response(new TextEncoder().encode("")).body,
-        stderr: new Response(new TextEncoder().encode("")).body,
-        exited: exitedP,
-        exitCode: null,
-        kill,
-      };
+      // 3rd call = docker exec (the actual workload — never resolves until killed)
+      if (callCount === 3) {
+        // Simulate a slow process: exited resolves quickly after kill() is called.
+        // `let` justified: resolveExited is captured from Promise constructor and called by kill.
+        let resolveExited: (code: number) => void = () => undefined;
+        const exitedP = new Promise<number>((res) => {
+          resolveExited = res;
+        });
+        const kill = mock(() => {
+          // Simulate process being killed — resolve exited immediately.
+          resolveExited(-9);
+        });
+        return {
+          stdout: new Response(new TextEncoder().encode("")).body,
+          stderr: new Response(new TextEncoder().encode("")).body,
+          exited: exitedP,
+          exitCode: null,
+          kill,
+        };
+      }
+      // 4th+ call = docker kill --signal=KILL <id> (best-effort container kill)
+      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
     });
     try {
       const client = createDefaultDockerClient();
@@ -155,6 +162,64 @@ describe("createDefaultDockerClient", () => {
       const r = await container.exec("sleep 100", { timeoutMs: 5 });
       // Timer fires → timedOut=true → exitCode 124
       expect(r.exitCode).toBe(124);
+      // Verify docker kill --signal=KILL <containerId> was also spawned
+      const dockerKillCall = spawnedArgs.find((a) => a[1] === "kill" && a[2] === "--signal=KILL");
+      expect(dockerKillCall).toBeDefined();
+      expect(dockerKillCall?.[3]).toBe("tid");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  test("container.exec: abort signal fires mid-flight → docker kill spawned with containerId", async () => {
+    let callCount = 0;
+    const spawnedArgs: string[][] = [];
+    const ac = new AbortController();
+    // @ts-expect-error — test stub: returning a partial SubProcess for coverage
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
+      callCount += 1;
+      spawnedArgs.push(args);
+      if (callCount <= 2) return fakeProc({ stdout: "abid\n", stderr: "", exitCode: 0 });
+      // 3rd call = docker exec — resolves only after abort fires.
+      if (callCount === 3) {
+        // `let` justified: resolveExited is assigned inside Promise constructor.
+        let resolveExited: (code: number) => void = () => undefined;
+        const exitedP = new Promise<number>((res) => {
+          resolveExited = res;
+        });
+        const kill = mock(() => {
+          resolveExited(-9);
+        });
+        // Fire abort immediately in the next microtask so the exec is mid-flight.
+        Promise.resolve()
+          .then(() => {
+            ac.abort();
+          })
+          .catch((_: unknown) => undefined);
+        return {
+          stdout: new Response(new TextEncoder().encode("")).body,
+          stderr: new Response(new TextEncoder().encode("")).body,
+          exited: exitedP,
+          exitCode: null,
+          kill,
+        };
+      }
+      // 4th+ call = docker kill --signal=KILL (best-effort container kill)
+      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      const container = await client.createContainer({
+        image: "ubuntu:22.04",
+        networkMode: "none",
+      });
+      const r = await container.exec("sleep 100", { signal: ac.signal });
+      // Abort → exitCode 130.
+      expect(r.exitCode).toBe(130);
+      // docker kill --signal=KILL <containerId> should have been spawned.
+      const dockerKillCall = spawnedArgs.find((a) => a[1] === "kill" && a[2] === "--signal=KILL");
+      expect(dockerKillCall).toBeDefined();
+      expect(dockerKillCall?.[3]).toBe("abid");
     } finally {
       spawnSpy.mockRestore();
     }
@@ -399,15 +464,22 @@ describe("createDefaultDockerClient", () => {
     }
   });
 
-  // Fix 3: bounded exec returns truncated=true when output hits the byte cap
-  test("container.exec: returns truncated=true when output exceeds maxOutputBytes", async () => {
+  // Fix 2 (drain-not-kill): output cap → truncated=true, original exit code preserved, no kill on cap
+  test("container.exec: drain-not-kill on output cap — truncated=true, original exitCode preserved", async () => {
     let callCount = 0;
+    const killCalls: string[][] = [];
     // Generate a string slightly larger than our test cap (64 bytes)
     const bigOutput = "x".repeat(128);
     // @ts-expect-error — test stub: returning a partial SubProcess for coverage
-    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) => {
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
       callCount += 1;
       if (callCount <= 2) return fakeProc({ stdout: "trid\n", stderr: "", exitCode: 0 });
+      // Capture any docker kill calls that happen after the 3rd spawn (the exec).
+      if (args[1] === "kill") {
+        killCalls.push(args);
+        return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+      }
+      // The exec process completes naturally with exitCode 0.
       return fakeProc({ stdout: bigOutput, stderr: "", exitCode: 0 });
     });
     try {
@@ -418,8 +490,13 @@ describe("createDefaultDockerClient", () => {
       });
       // Set a small cap so the 128-byte output triggers truncation
       const r = await container.exec("cat /big", { maxOutputBytes: 64 });
+      // Truncation happened but the process was NOT killed on cap — drain-not-kill.
       expect(r.truncated).toBe(true);
       expect(r.stdout.length).toBeLessThanOrEqual(64);
+      // Original exit code (0) is preserved — NOT artificially 137 or -9.
+      expect(r.exitCode).toBe(0);
+      // No docker kill should have been spawned (cap alone does not kill).
+      expect(killCalls.length).toBe(0);
     } finally {
       spawnSpy.mockRestore();
     }

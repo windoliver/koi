@@ -32,19 +32,17 @@ function quoteShellArg(arg: string): string {
 }
 
 /**
- * Read from a ReadableStream<Uint8Array> up to maxBytes, then cancel the rest.
+ * Read from a ReadableStream<Uint8Array> up to maxBytes, then drain silently.
  * Returns the decoded text and a truncated flag.
  *
- * Prevents an adversarial container from OOMing the host by producing
- * unbounded output — we stop consuming (and cancel the stream) once the cap
- * is hit. When `onTruncate` is provided, it is called once the moment
- * truncation occurs — callers can use it to kill the child process immediately
- * so it stops producing output and unblocks proc.exited.
+ * Prevents an adversarial container from OOMing the host by capping accumulated
+ * bytes, while continuing to drain the pipe so the docker CLI does not stall on
+ * a full pipe buffer (which would produce a false TIMEOUT). The container is NOT
+ * killed here — only timeout/abort triggers kill (via docker kill in Fix 1).
  */
 async function readBoundedText(
   stream: ReadableStream<Uint8Array>,
   maxBytes: number,
-  onTruncate?: () => void,
 ): Promise<{ readonly text: string; readonly truncated: boolean }> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -56,25 +54,19 @@ async function readBoundedText(
     const { value, done } = await reader.read();
     if (done) break;
     if (value === undefined) continue;
+    if (truncated) continue; // already over cap — drain silently to keep pipe drained
     const remaining = maxBytes - total;
     if (remaining <= 0) {
       truncated = true;
-      onTruncate?.();
-      reader.cancel().catch((_: unknown) => {
-        // cancel errors are safe to ignore — we've already stopped reading
-      });
-      break;
+      continue;
     }
-    const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value;
-    buf += decoder.decode(chunk, { stream: true });
-    total += chunk.byteLength;
-    if (chunk.byteLength < value.byteLength) {
+    if (value.byteLength > remaining) {
+      buf += decoder.decode(value.subarray(0, remaining), { stream: true });
+      total += remaining;
       truncated = true;
-      onTruncate?.();
-      reader.cancel().catch((_: unknown) => {
-        // cancel errors are safe to ignore — we've already stopped reading
-      });
-      break;
+    } else {
+      buf += decoder.decode(value, { stream: true });
+      total += value.byteLength;
     }
   }
   buf += decoder.decode();
@@ -129,16 +121,51 @@ async function runDockerWithTimeout(
 }
 
 /**
+ * Issue a best-effort `docker kill --signal=KILL <containerId>` to terminate
+ * the in-container workload. The local docker CLI process is killed separately
+ * by the caller. Errors are swallowed — the container may already be gone.
+ * Clamped to a 2-second safety timeout so we never block the caller indefinitely.
+ */
+async function killContainerWorkload(
+  containerId: string,
+  env: Record<string, string>,
+): Promise<void> {
+  try {
+    const killProc = Bun.spawn(["docker", "kill", "--signal=KILL", containerId], {
+      env,
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore" as const,
+    });
+    // Race: either the kill resolves or we give up after 2 s.
+    await Promise.race([
+      killProc.exited,
+      new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, 2000);
+        if ("unref" in t && typeof t.unref === "function") t.unref();
+      }),
+    ]);
+  } catch (_: unknown) {
+    // best-effort — swallow all errors
+  }
+}
+
+/**
  * Run a docker exec command with bounded output capture and optional cwd/timeout/signal.
  * Applies readBoundedText to both stdout and stderr to prevent host OOM.
  * When signal is pre-aborted, returns immediately without spawning.
- * When signal fires mid-flight, kills the process and returns exitCode 130.
- * When output cap is hit, kills the process immediately so it stops producing output.
+ * When signal fires mid-flight or timeout fires:
+ *   - sends SIGKILL to the local docker CLI process (proc.kill(9))
+ *   - ALSO spawns `docker kill --signal=KILL <containerId>` so the in-container
+ *     workload is terminated (the docker CLI kill alone only kills the client process).
+ * When output cap is hit, excess bytes are drained silently (drain-not-kill); the
+ * container is allowed to complete naturally and truncated:true is returned.
  */
 async function runDockerExecBounded(
+  containerId: string,
   args: readonly string[],
   execOpts: DockerExecOpts,
-  env?: Record<string, string>,
+  env: Record<string, string>,
 ): Promise<DockerExecResult> {
   const maxBytes = execOpts.maxOutputBytes ?? DEFAULT_EXEC_MAX_OUTPUT_BYTES;
   const timeoutMs = execOpts.timeoutMs;
@@ -154,7 +181,7 @@ async function runDockerExecBounded(
       execOpts.stdin !== undefined ? new TextEncoder().encode(execOpts.stdin) : ("ignore" as const),
     stdout: "pipe",
     stderr: "pipe",
-    ...(env !== undefined ? { env } : {}),
+    env,
   });
 
   // `let` justified: timedOut/aborted are mutated inside callbacks.
@@ -166,6 +193,9 @@ async function runDockerExecBounded(
     timer = setTimeout(() => {
       timedOut = true;
       proc.kill(9);
+      // Also kill the in-container workload — the local docker CLI kill alone
+      // only kills the client process; the container-side process keeps running.
+      void killContainerWorkload(containerId, env);
     }, timeoutMs);
     if ("unref" in timer && typeof timer.unref === "function") timer.unref();
   }
@@ -173,22 +203,18 @@ async function runDockerExecBounded(
   const onAbort = (): void => {
     aborted = true;
     proc.kill(9);
+    // Same as timeout: also kill the in-container workload.
+    void killContainerWorkload(containerId, env);
   };
   signal?.addEventListener("abort", onAbort, { once: true });
 
-  // Kill immediately when output cap is hit so proc.exited resolves promptly.
-  // `let` justified: killTriggered is a shared one-shot guard across both readers.
-  let killTriggered = false;
-  const triggerKill = (): void => {
-    if (killTriggered) return;
-    killTriggered = true;
-    proc.kill(9);
-  };
-
   // Drain both streams with byte-cap to prevent host OOM from adversarial containers.
+  // Excess bytes beyond the cap are discarded silently (pipe stays drained so the
+  // docker CLI does not stall). The container is NOT killed on cap — only on
+  // timeout or abort (see above).
   const [stdoutResult, stderrResult, exitCode] = await Promise.all([
-    readBoundedText(proc.stdout, maxBytes, triggerKill),
-    readBoundedText(proc.stderr, maxBytes, triggerKill),
+    readBoundedText(proc.stdout, maxBytes),
+    readBoundedText(proc.stderr, maxBytes),
     proc.exited,
   ]);
 
@@ -250,7 +276,7 @@ function makeContainer(id: string, env: Record<string, string>): DockerContainer
     id,
     exec: async (cmd: string, execOpts: DockerExecOpts = {}): Promise<DockerExecResult> => {
       const args = buildExecArgs(id, cmd, execOpts);
-      return runDockerExecBounded(args, execOpts, env);
+      return runDockerExecBounded(id, args, execOpts, env);
     },
     readFile: async (path: string): Promise<Uint8Array> => {
       const r = await runDocker(["exec", id, "base64", path], undefined, env);
