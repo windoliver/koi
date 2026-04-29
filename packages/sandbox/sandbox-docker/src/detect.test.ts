@@ -37,4 +37,20 @@ describe("detectDocker", () => {
       spawnSpy.mockRestore();
     }
   });
+
+  // Fix 2 (socketPath): default probe passes DOCKER_HOST env when socketPath given
+  test("default probe sets DOCKER_HOST in env when socketPath is provided", async () => {
+    const fakeProc = { exited: Promise.resolve(0) };
+    // @ts-expect-error — test stub: Bun.spawn returns a partial subprocess for coverage
+    const spawnSpy = spyOn(Bun, "spawn").mockReturnValue(fakeProc);
+    try {
+      const result = await detectDocker({ socketPath: "/var/run/docker.sock" });
+      expect(result.available).toBe(true);
+      // Inspect the opts (second arg) from the spawn call to verify DOCKER_HOST was set.
+      const opts = spawnSpy.mock.calls[0]?.[1] as { env?: Record<string, string> } | undefined;
+      expect(opts?.env?.DOCKER_HOST).toBe("unix:///var/run/docker.sock");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
 });

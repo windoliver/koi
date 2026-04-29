@@ -28,12 +28,37 @@ export interface SubprocessExecutorConfig {
   readonly bunPath?: string;       // default: "bun"
   readonly maxOutputBytes?: number; // default: 10 MiB
   readonly cwd?: string;
+  /**
+   * Caller asserts that real isolation is provided externally (e.g., by composing
+   * with @koi/sandbox-os, running in a container, or operating in a trusted env).
+   * When false (default), the executor refuses ExecutionContext fields that would
+   * require enforcement (networkAllowed=false, resourceLimits) — failing closed
+   * prevents silent trust-boundary leaks.
+   */
+  readonly externalIsolation?: boolean;
 }
 
 export function createSubprocessExecutor(
   config?: SubprocessExecutorConfig,
 ): SandboxExecutor;
 ```
+
+## Isolation / fail-closed default
+
+`subprocess-executor` can only *signal* isolation constraints (via env vars such as
+`KOI_NETWORK_ALLOWED=0`, `KOI_MAX_MEMORY_MB`, `KOI_MAX_PIDS`) — it cannot *enforce*
+them without OS-level support. To prevent silent trust-boundary leaks, the executor
+**fails closed** by default:
+
+- Passing `context: { networkAllowed: false }` without `externalIsolation: true`
+  returns `{ ok: false, error: { code: "PERMISSION" } }` immediately.
+- Same for any `context.resourceLimits` value.
+- Context fields that do not require enforcement (e.g., `workspacePath`, `entryPath`)
+  are always honoured and never trigger the guard.
+
+To opt out of the guard — for example when composing with `@koi/sandbox-os` which
+wraps the process with real OS isolation — set `externalIsolation: true` in the
+config. The env-var signals are then forwarded to the child process as before.
 
 `executor.execute(code, input, timeoutMs, context?)`:
 

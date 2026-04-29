@@ -28,7 +28,17 @@ export async function createDockerAdapter(
 
   // Slow path: probe Docker availability before constructing default client.
   const probe = config.probe;
-  const availability = await detectDocker(probe !== undefined ? { probe } : {});
+  const socketPath = config.socketPath;
+  // Build detectOpts without optional keys set to `undefined` (exactOptionalPropertyTypes).
+  const detectOpts =
+    probe !== undefined && socketPath !== undefined
+      ? { probe, socketPath }
+      : probe !== undefined
+        ? { probe }
+        : socketPath !== undefined
+          ? { socketPath }
+          : {};
+  const availability = await detectDocker(detectOpts);
   if (!availability.available) {
     return {
       ok: false,
@@ -40,7 +50,7 @@ export async function createDockerAdapter(
     };
   }
 
-  const client = createDefaultDockerClient();
+  const client = createDefaultDockerClient(socketPath !== undefined ? { socketPath } : undefined);
   const image = config.image ?? "ubuntu:22.04";
   return buildAdapter(client, image);
 }

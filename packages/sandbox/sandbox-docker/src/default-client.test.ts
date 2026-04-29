@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, mock, spyOn, test } from "bun:test";
-import { createDefaultDockerClient } from "./default-client.js";
+import { buildDockerEnv, createDefaultDockerClient } from "./default-client.js";
 
 /** Minimal shape of a Bun subprocess used by runDockerWithTimeout. */
 interface FakeProc {
@@ -423,5 +423,39 @@ describe("createDefaultDockerClient", () => {
     } finally {
       spawnSpy.mockRestore();
     }
+  });
+
+  // Fix 2 (socketPath): DOCKER_HOST=unix://<path> is set when socketPath configured.
+  // We verify via buildDockerEnv (unit-tested below) + the factory env integration:
+  // createDefaultDockerClient builds env once at factory time and passes it to every
+  // Bun.spawn call. The mock captures call args via .mock.calls[n][1].env.
+  test("createDefaultDockerClient: passes DOCKER_HOST env when socketPath configured", async () => {
+    // @ts-expect-error — test stub: returning a partial SubProcess for coverage
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) =>
+      fakeProc({ stdout: "sockid\n", stderr: "", exitCode: 0 }),
+    );
+    try {
+      const client = createDefaultDockerClient({ socketPath: "/custom/path/docker.sock" });
+      await client.createContainer({ image: "ubuntu:22.04", networkMode: "none" });
+      // Inspect env from each spawn call — it's the second argument.
+      for (const callArgs of spawnSpy.mock.calls) {
+        const opts = callArgs[1] as { env?: Record<string, string> } | undefined;
+        expect(opts?.env?.DOCKER_HOST).toBe("unix:///custom/path/docker.sock");
+      }
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Fix 2 (buildDockerEnv): no socketPath → no DOCKER_HOST
+  test("buildDockerEnv: does not set DOCKER_HOST when socketPath is undefined", () => {
+    const env = buildDockerEnv(undefined);
+    expect(env.DOCKER_HOST).toBeUndefined();
+  });
+
+  // Fix 2 (buildDockerEnv): socketPath set → DOCKER_HOST present
+  test("buildDockerEnv: sets DOCKER_HOST when socketPath is provided", () => {
+    const env = buildDockerEnv("/run/docker.sock");
+    expect(env.DOCKER_HOST).toBe("unix:///run/docker.sock");
   });
 });

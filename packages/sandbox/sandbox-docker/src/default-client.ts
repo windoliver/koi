@@ -10,6 +10,23 @@ import type {
 /** Default maximum output bytes for docker exec (1 MiB). */
 const DEFAULT_EXEC_MAX_OUTPUT_BYTES = 1 * 1024 * 1024;
 
+/**
+ * Build a minimal env object for docker CLI subprocesses.
+ * Only PATH and HOME are forwarded from the host (required for docker to
+ * locate the binary and its config dir). When socketPath is provided,
+ * DOCKER_HOST is set to "unix://<socketPath>" so all docker commands
+ * target that daemon socket instead of the default.
+ */
+export function buildDockerEnv(socketPath: string | undefined): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const k of ["PATH", "HOME"] as const) {
+    const v = process.env[k];
+    if (v !== undefined) env[k] = v;
+  }
+  if (socketPath !== undefined) env.DOCKER_HOST = `unix://${socketPath}`;
+  return env;
+}
+
 function quoteShellArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
@@ -65,7 +82,7 @@ async function readBoundedText(
 }
 
 /**
- * Run a docker command with optional stdin and timeout.
+ * Run a docker command with optional stdin, timeout, and env override.
  * Drains stdout and stderr concurrently via Promise.all to prevent pipe-buffer deadlock.
  * When timeoutMs is set, kills the process after the deadline and returns exitCode 124
  * (the same sentinel that classify.ts maps to TIMEOUT).
@@ -77,11 +94,13 @@ async function runDockerWithTimeout(
   args: readonly string[],
   stdin?: string,
   timeoutMs?: number,
+  env?: Record<string, string>,
 ): Promise<DockerExecResult> {
   const proc = Bun.spawn(["docker", ...args], {
     stdin: stdin !== undefined ? new TextEncoder().encode(stdin) : "ignore",
     stdout: "pipe",
     stderr: "pipe",
+    ...(env !== undefined ? { env } : {}),
   });
 
   // `let` justified: timedOut and timer are mutated inside the callback.
@@ -119,6 +138,7 @@ async function runDockerWithTimeout(
 async function runDockerExecBounded(
   args: readonly string[],
   execOpts: DockerExecOpts,
+  env?: Record<string, string>,
 ): Promise<DockerExecResult> {
   const maxBytes = execOpts.maxOutputBytes ?? DEFAULT_EXEC_MAX_OUTPUT_BYTES;
   const timeoutMs = execOpts.timeoutMs;
@@ -134,6 +154,7 @@ async function runDockerExecBounded(
       execOpts.stdin !== undefined ? new TextEncoder().encode(execOpts.stdin) : ("ignore" as const),
     stdout: "pipe",
     stderr: "pipe",
+    ...(env !== undefined ? { env } : {}),
   });
 
   // `let` justified: timedOut/aborted are mutated inside callbacks.
@@ -190,8 +211,12 @@ async function runDockerExecBounded(
 }
 
 /** Convenience wrapper for calls that do not need a timeout. */
-async function runDocker(args: readonly string[], stdin?: string): Promise<DockerExecResult> {
-  return runDockerWithTimeout(args, stdin, undefined);
+async function runDocker(
+  args: readonly string[],
+  stdin?: string,
+  env?: Record<string, string>,
+): Promise<DockerExecResult> {
+  return runDockerWithTimeout(args, stdin, undefined, env);
 }
 
 function buildCreateArgs(opts: DockerCreateOpts): readonly string[] {
@@ -218,15 +243,15 @@ function buildExecArgs(id: string, cmd: string, execOpts: DockerExecOpts): reado
   return args;
 }
 
-function makeContainer(id: string): DockerContainer {
+function makeContainer(id: string, env: Record<string, string>): DockerContainer {
   return {
     id,
     exec: async (cmd: string, execOpts: DockerExecOpts = {}): Promise<DockerExecResult> => {
       const args = buildExecArgs(id, cmd, execOpts);
-      return runDockerExecBounded(args, execOpts);
+      return runDockerExecBounded(args, execOpts, env);
     },
     readFile: async (path: string): Promise<Uint8Array> => {
-      const r = await runDocker(["exec", id, "base64", path]);
+      const r = await runDocker(["exec", id, "base64", path], undefined, env);
       if (r.exitCode !== 0) {
         throw new Error(`readFile failed for container ${id}`, { cause: r });
       }
@@ -236,19 +261,23 @@ function makeContainer(id: string): DockerContainer {
     writeFile: async (path: string, content: Uint8Array): Promise<void> => {
       const b64 = Buffer.from(content).toString("base64");
       const quotedPath = quoteShellArg(path);
-      const r = await runDocker(["exec", "-i", id, "sh", "-c", `base64 -d > ${quotedPath}`], b64);
+      const r = await runDocker(
+        ["exec", "-i", id, "sh", "-c", `base64 -d > ${quotedPath}`],
+        b64,
+        env,
+      );
       if (r.exitCode !== 0) {
         throw new Error(`writeFile failed for container ${id}`, { cause: r });
       }
     },
     stop: async (): Promise<void> => {
-      const r = await runDocker(["stop", id]);
+      const r = await runDocker(["stop", id], undefined, env);
       if (r.exitCode !== 0) {
         throw new Error(`docker stop failed for ${id}`, { cause: r });
       }
     },
     remove: async (): Promise<void> => {
-      const r = await runDocker(["rm", "-f", id]);
+      const r = await runDocker(["rm", "-f", id], undefined, env);
       if (r.exitCode !== 0) {
         throw new Error(`docker rm -f failed for ${id}`, { cause: r });
       }
@@ -256,29 +285,34 @@ function makeContainer(id: string): DockerContainer {
   };
 }
 
-export function createDefaultDockerClient(): DockerClient {
+export interface DefaultDockerClientConfig {
+  readonly socketPath?: string;
+}
+
+export function createDefaultDockerClient(config?: DefaultDockerClientConfig): DockerClient {
+  const env = buildDockerEnv(config?.socketPath);
   return {
     createContainer: async (opts: DockerCreateOpts): Promise<DockerContainer> => {
-      const create = await runDocker(buildCreateArgs(opts));
+      const create = await runDocker(buildCreateArgs(opts), undefined, env);
       if (create.exitCode !== 0) {
         throw new Error("docker create failed", { cause: create });
       }
       const id = create.stdout.trim();
       try {
-        const start = await runDocker(["start", id]);
+        const start = await runDocker(["start", id], undefined, env);
         if (start.exitCode !== 0) {
           throw new Error(`docker start failed for ${id}`, { cause: start });
         }
       } catch (e: unknown) {
         // Best-effort: remove the orphaned container. Don't mask the original error.
         try {
-          await runDocker(["rm", "-f", id]);
+          await runDocker(["rm", "-f", id], undefined, env);
         } catch (_: unknown) {
           // ignore: original error wins
         }
         throw e;
       }
-      return makeContainer(id);
+      return makeContainer(id, env);
     },
   };
 }

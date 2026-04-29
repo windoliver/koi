@@ -9,14 +9,19 @@
  *   argv[3] = JSON-encoded input
  *   stderr  = __KOI_RESULT__\n<json>\n  (framed protocol output)
  *
- * Network isolation note:
- *   This executor CANNOT enforce network isolation by itself — it only sets the
- *   KOI_NETWORK_ALLOWED=0 env var as a signal. Real enforcement (namespaces,
- *   firewall rules, seccomp) requires composition with @koi/sandbox-os.
+ * Isolation note (fail-closed):
+ *   By default this executor REFUSES to execute when the caller passes
+ *   ExecutionContext fields that require real OS-level enforcement
+ *   (networkAllowed=false, resourceLimits). The fail-closed guard exists
+ *   because this package can only signal those constraints via env vars
+ *   (KOI_NETWORK_ALLOWED, KOI_MAX_MEMORY_MB, KOI_MAX_PIDS) but cannot
+ *   enforce them — doing so would create a silent trust-boundary leak.
  *
- * Resource limits note:
- *   KOI_MAX_MEMORY_MB and KOI_MAX_PIDS are informational env vars. Real OS-level
- *   enforcement requires composition with @koi/sandbox-os.
+ *   To opt out of the guard, set externalIsolation: true in the config.
+ *   This asserts that real isolation is provided externally — e.g., by
+ *   composing with @koi/sandbox-os, running inside a container, or
+ *   operating in a fully trusted environment. Only then are the env-var
+ *   signals passed through (existing behaviour).
  *
  * Process-group kill note:
  *   When `setsid` is available (Linux/macOS), the child is spawned as a new
@@ -65,6 +70,14 @@ export interface SubprocessExecutorConfig {
   readonly bunPath?: string;
   readonly maxOutputBytes?: number;
   readonly cwd?: string;
+  /**
+   * Caller asserts that real isolation is provided externally (e.g., by composing
+   * with @koi/sandbox-os, running in a container, or operating in a trusted env).
+   * When false (default), the executor refuses ExecutionContext fields that would
+   * require enforcement (networkAllowed=false, resourceLimits) since this package
+   * cannot enforce them on its own — failing closed prevents silent trust-boundary leaks.
+   */
+  readonly externalIsolation?: boolean;
 }
 
 /** Resolve the runner script path relative to this file's location. */
@@ -267,6 +280,7 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
   const bunPath = config?.bunPath ?? DEFAULT_BUN_PATH;
   const maxOutputBytes = config?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const cwdOverride = config?.cwd;
+  const externalIsolation = config?.externalIsolation ?? false;
 
   const runnerPath = resolveRunnerPath();
 
@@ -277,6 +291,23 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
       timeoutMs: number,
       context?: ExecutionContext,
     ): Promise<ExecuteResult> => {
+      // Fail-closed guard: refuse isolation fields we cannot enforce ourselves.
+      // Callers that compose @koi/sandbox-os (or run in a trusted env) must set
+      // externalIsolation: true to opt out and receive the env-var passthrough.
+      if (externalIsolation !== true && context !== undefined) {
+        const wantsIsolation =
+          context.networkAllowed === false || context.resourceLimits !== undefined;
+        if (wantsIsolation) {
+          const error: SandboxError = {
+            code: "PERMISSION",
+            message:
+              "subprocess-executor cannot enforce networkAllowed/resourceLimits without external isolation; pass externalIsolation: true after composing @koi/sandbox-os or an equivalent backend",
+            durationMs: 0,
+          };
+          return { ok: false, error };
+        }
+      }
+
       // If context.entryPath is set, use it directly without writing a temp file.
       // A temp dir is still created for cleanup symmetry but left empty.
       const hasTempCode = context?.entryPath === undefined;

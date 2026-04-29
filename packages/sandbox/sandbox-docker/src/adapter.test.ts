@@ -73,4 +73,30 @@ describe("createDockerAdapter", () => {
     if (!r.ok) throw new Error("Expected ok");
     expect(r.value.name).toBe("docker");
   });
+
+  // Fix 2 (socketPath): when socketPath configured + probe succeeds, adapter is built
+  test("builds adapter when socketPath configured and probe succeeds", async () => {
+    // Provide a successful probe (probe receives socketPath-aware default probe under the hood,
+    // but for this test we use an explicit probe to avoid spawning real docker).
+    const successProbe = async (): Promise<number> => 0;
+    const r = await createDockerAdapter({
+      socketPath: "/custom/docker.sock",
+      probe: successProbe,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error(`Expected ok, got: ${r.error.message}`);
+    expect(r.value.name).toBe("docker");
+  });
+
+  // Fix 2 (socketPath): when socketPath configured + probe fails, returns UNAVAILABLE
+  test("returns UNAVAILABLE when socketPath configured but probe fails", async () => {
+    const failProbe = async (): Promise<number> => 1;
+    const r = await createDockerAdapter({
+      socketPath: "/custom/docker.sock",
+      probe: failProbe,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("Expected ok: false");
+    expect(r.error.code).toBe("UNAVAILABLE");
+  });
 });

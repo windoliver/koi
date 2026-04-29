@@ -1,3 +1,5 @@
+import { buildDockerEnv } from "./default-client.js";
+
 export interface DockerAvailability {
   readonly available: boolean;
   readonly reason?: string;
@@ -5,18 +7,23 @@ export interface DockerAvailability {
 
 export interface DetectOptions {
   readonly probe?: () => Promise<number>;
+  readonly socketPath?: string;
 }
 
-async function defaultProbe(): Promise<number> {
-  const proc = Bun.spawn(["docker", "version", "--format", "{{.Server.Version}}"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  return await proc.exited;
+function makeDefaultProbe(socketPath: string | undefined): () => Promise<number> {
+  return async (): Promise<number> => {
+    const env = buildDockerEnv(socketPath);
+    const proc = Bun.spawn(["docker", "version", "--format", "{{.Server.Version}}"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env,
+    });
+    return await proc.exited;
+  };
 }
 
 export async function detectDocker(options: DetectOptions = {}): Promise<DockerAvailability> {
-  const probe = options.probe ?? defaultProbe;
+  const probe = options.probe ?? makeDefaultProbe(options.socketPath);
 
   try {
     const code = await probe();

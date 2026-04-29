@@ -107,9 +107,43 @@ describe("createSubprocessExecutor", () => {
     expect(result.value.output).toEqual({ secret: undefined });
   });
 
-  // Fix 1: context.networkAllowed=false propagates KOI_NETWORK_ALLOWED=0
-  test("propagates KOI_NETWORK_ALLOWED=0 env var when networkAllowed is false", async () => {
+  // Fail-closed: default (no externalIsolation) — networkAllowed=false → PERMISSION
+  test("returns PERMISSION when networkAllowed=false without externalIsolation", async () => {
     const executor = createSubprocessExecutor();
+    const code = "export default async () => ({});";
+    const result = await executor.execute(code, null, 5000, { networkAllowed: false });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected error");
+    expect(result.error.code).toBe("PERMISSION");
+  });
+
+  // Fail-closed: default (no externalIsolation) — resourceLimits → PERMISSION
+  test("returns PERMISSION when resourceLimits set without externalIsolation", async () => {
+    const executor = createSubprocessExecutor();
+    const code = "export default async () => ({});";
+    const result = await executor.execute(code, null, 5000, {
+      resourceLimits: { maxMemoryMb: 64 },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected error");
+    expect(result.error.code).toBe("PERMISSION");
+  });
+
+  // Fail-closed: benign context (no isolation fields) — still executes normally
+  test("executes normally when context has no isolation fields", async () => {
+    const executor = createSubprocessExecutor();
+    const code = "export default async () => ({ ok: true });";
+    // Pass a context object with no isolation fields (networkAllowed/resourceLimits absent).
+    // An empty object satisfies the guard — the executor should proceed normally.
+    const result = await executor.execute(code, null, 5000, {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`Expected ok, got: ${result.error.message}`);
+    expect(result.value.output).toEqual({ ok: true });
+  });
+
+  // externalIsolation: true — networkAllowed=false propagates KOI_NETWORK_ALLOWED=0
+  test("propagates KOI_NETWORK_ALLOWED=0 env var when networkAllowed=false and externalIsolation=true", async () => {
+    const executor = createSubprocessExecutor({ externalIsolation: true });
     // The user code returns the env var value so we can assert it was set
     const code = `
       export default async (_input: unknown) => ({
@@ -123,9 +157,9 @@ describe("createSubprocessExecutor", () => {
     expect(output).toEqual({ networkAllowed: "0" });
   });
 
-  // Fix 1: resourceLimits propagate KOI_MAX_MEMORY_MB and KOI_MAX_PIDS
-  test("propagates resource limit env vars when resourceLimits are set", async () => {
-    const executor = createSubprocessExecutor();
+  // externalIsolation: true — resourceLimits propagate KOI_MAX_MEMORY_MB and KOI_MAX_PIDS
+  test("propagates resource limit env vars when resourceLimits are set and externalIsolation=true", async () => {
+    const executor = createSubprocessExecutor({ externalIsolation: true });
     const code = `
       export default async (_input: unknown) => ({
         memMb: process.env.KOI_MAX_MEMORY_MB,
