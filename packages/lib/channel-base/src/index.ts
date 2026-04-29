@@ -11,7 +11,8 @@ export type { ChannelAdapterConfig, MessageNormalizer } from "./channel-adapter-
 export { createChannelAdapter } from "./channel-adapter-factory.js";
 export type { ChannelFactory, ChannelRegistry } from "./channel-registry.js";
 export { createChannelRegistry } from "./channel-registry.js";
-export { formatErrorForChannel } from "./format-error.js";
+export type { ChannelErrorOutput } from "./format-error.js";
+export { formatErrorForChannel, formatErrorTextForChannel } from "./format-error.js";
 export type { RateLimiter, RateLimiterConfig } from "./rate-limit.js";
 export { createRateLimiter } from "./rate-limit.js";
 export { renderBlocks } from "./render-blocks.js";

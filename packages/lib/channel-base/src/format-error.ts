@@ -1,25 +1,29 @@
 /**
- * User-facing error message formatting for channel adapters.
+ * User-facing error formatting for channel adapters.
  *
- * Maps KoiErrorCode to fixed, user-friendly messages. Strictly user-safe by
- * construction: never reads `error.cause`, `error.context`, stack traces, or
- * — outside of `VALIDATION` — `error.message`. VALIDATION is the one
- * exception because its message is itself the user-relevant input feedback;
- * the message is sanitized through `sanitizeValidationMessage` before being
- * concatenated into channel output.
+ * Returns a discriminated union so adapters handle the three trust classes
+ * explicitly:
  *
- * Notably this helper does NOT surface authorization URLs for
- * `AUTH_REQUIRED`. The channel-base layer cannot validate that a URL in
- * `error.context` is the configured OAuth issuer for the current tenant —
- * embedding raw URLs from arbitrary error sources would be a phishing
- * primitive. Adapters that need to render an OAuth handoff must read
- * structured auth metadata themselves and validate it against their own
- * trust configuration before showing a clickable link.
+ *   - `kind: "text"` — canned, fully user-safe string. Concatenate into
+ *     channel output as-is.
+ *   - `kind: "validation"` — the validator's own message is user-relevant
+ *     input feedback. The helper provides a pre-sanitized `safeText` (no
+ *     control chars, no markdown link delimiters, scheme/`www.` URLs
+ *     redacted, length-capped). Adapters MAY use `safeText` directly, OR
+ *     re-render the raw `rawMessage` through their own format-specific
+ *     escaper if they need a stricter or looser policy than the coarse
+ *     default.
+ *   - `kind: "auth-required"` — the channel-base layer cannot decide
+ *     whether `error.context.authorizationUrl` (or any other auth handoff
+ *     metadata) belongs to the configured OAuth issuer for the current
+ *     tenant. Adapters MUST inspect the original `error` themselves and
+ *     validate any URL/handoff against their own trust configuration
+ *     before showing a clickable link. The canned `safeText` is provided
+ *     as a fallback for adapters that have no auth UX path; using it
+ *     leaves the user without a recovery action.
  *
- * If callers need raw diagnostics for developer-facing channels (CLI logs,
- * debug panels), they should format `error.code` / `error.message`
- * themselves through their own sanitizer — that path is intentionally not
- * provided here so it cannot be reached accidentally.
+ * The function never reads `error.cause`, stack traces, or — outside of
+ * the cases above — `error.message` / `error.context`.
  */
 
 import type { KoiError, KoiErrorCode } from "@koi/core";
@@ -28,26 +32,9 @@ const VALIDATION_MAX_LEN = 200;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: regex precisely targets ASCII control characters to strip them
 const CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
 const MARKDOWN_LINK_DELIMS = /[[\]()<>]/g;
-// Crude URL matcher — matches an http(s)://, ftp(s)://, ws(s):// or `www.`
-// prefix and consumes the URL body up to the next whitespace. Most chat
-// surfaces auto-linkify these even without explicit markdown.
 const URL_LIKE = /\b(?:https?|ftps?|wss?):\/\/\S+/gi;
 const WWW_LIKE = /\bwww\.\S+/gi;
 
-/**
- * Sanitizes the VALIDATION message before it is concatenated into channel
- * output. The message originates from validators whose text we don't fully
- * control, so we:
- *   - replace ASCII control characters with spaces — many channel transports
- *     treat them as protocol delimiters or formatting escapes;
- *   - strip the markdown autolink/inline-link delimiters `[`, `]`, `(`,
- *     `)`, `<`, `>` so a hostile validator string cannot construct a
- *     clickable link in markdown-rendering channels;
- *   - cap the length so a pathological message cannot pin a channel.
- *
- * Per-channel adapters do their own format-specific escaping on top of this
- * coarse channel-base safety net.
- */
 function sanitizeValidationMessage(raw: string): string {
   const stripped = raw
     .replace(CONTROL_CHARS, " ")
@@ -75,12 +62,64 @@ const USER_MESSAGES: Readonly<Record<KoiErrorCode, string>> = {
   HEARTBEAT_TIMEOUT: "The worker stopped responding.",
 } as const;
 
+export type ChannelErrorOutput =
+  | {
+      readonly kind: "text";
+      readonly text: string;
+    }
+  | {
+      readonly kind: "validation";
+      /** Sanitized text safe to concatenate into any channel transport. */
+      readonly safeText: string;
+      /** Raw validator message; adapters may re-escape this themselves. */
+      readonly rawMessage: string;
+    }
+  | {
+      readonly kind: "auth-required";
+      /** Canned fallback when the adapter has no auth UX path. */
+      readonly safeText: string;
+      /** Original error for the adapter to inspect for auth metadata. */
+      readonly error: KoiError;
+    };
+
 /**
- * Formats a KoiError into a user-safe string suitable for channel output.
+ * Formats a KoiError for channel output. See module docstring for the
+ * three discriminants and the trust contract on each.
  */
-export function formatErrorForChannel(error: KoiError): string {
+export function formatErrorForChannel(error: KoiError): ChannelErrorOutput {
   if (error.code === "VALIDATION") {
-    return `Invalid input: ${sanitizeValidationMessage(error.message)}`;
+    return {
+      kind: "validation",
+      safeText: `Invalid input: ${sanitizeValidationMessage(error.message)}`,
+      rawMessage: error.message,
+    };
   }
-  return USER_MESSAGES[error.code];
+  if (error.code === "AUTH_REQUIRED") {
+    return {
+      kind: "auth-required",
+      safeText: USER_MESSAGES.AUTH_REQUIRED,
+      error,
+    };
+  }
+  return { kind: "text", text: USER_MESSAGES[error.code] };
+}
+
+/**
+ * Convenience helper for adapters that have no special handling for
+ * validation or auth-required cases — collapses the discriminated union
+ * to a single string. Equivalent to using `safeText` for validation /
+ * auth-required and `text` for everything else.
+ *
+ * Adapters that surface OAuth handoff or want stricter validator-text
+ * escaping should call `formatErrorForChannel` directly instead.
+ */
+export function formatErrorTextForChannel(error: KoiError): string {
+  const out = formatErrorForChannel(error);
+  switch (out.kind) {
+    case "text":
+      return out.text;
+    case "validation":
+    case "auth-required":
+      return out.safeText;
+  }
 }

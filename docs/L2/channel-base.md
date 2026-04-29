@@ -285,7 +285,22 @@ All builders handle `exactOptionalPropertyTypes` compliance — optional fields 
 
 ## Error Formatting
 
-`formatErrorForChannel(error)` converts `KoiError` to a fixed user-safe string:
+`formatErrorForChannel(error)` returns a discriminated union so adapters handle the three trust classes explicitly. `formatErrorTextForChannel(error)` is a convenience helper that collapses the union back to a single string for adapters that don't have specialized auth or validation UX.
+
+```
+ChannelErrorOutput =
+  | { kind: "text"; text: string }
+  | { kind: "validation"; safeText: string; rawMessage: string }
+  | { kind: "auth-required"; safeText: string; error: KoiError }
+```
+
+| Discriminant | When | Adapter contract |
+|---|---|---|
+| `text` | All canned codes (NOT_FOUND, RATE_LIMIT, …) | Render `text` directly. Channel-base guarantees no leakage. |
+| `validation` | `KoiErrorCode === "VALIDATION"` | Render `safeText` (sanitized — control chars stripped, scheme/`www.` URLs redacted, markdown link delims removed, length-capped) OR re-escape `rawMessage` through the adapter's own format-specific escaper if the default policy is too coarse. |
+| `auth-required` | `KoiErrorCode === "AUTH_REQUIRED"` | Inspect `error.context` and validate any auth handoff URL against the adapter's own trust configuration before rendering a clickable link. Fall back to `safeText` if no auth UX path is available — leaves the user without a recovery action but never phishes them. |
+
+The canned messages are:
 
 ```
 KoiErrorCode        Message
@@ -305,9 +320,7 @@ UNAVAILABLE         "The service is currently unavailable."
 HEARTBEAT_TIMEOUT   "The worker stopped responding."
 ```
 
-Strictly user-safe by construction. Never reads `error.cause`, `error.context`, stack traces, or — outside of `VALIDATION` — `error.message`. VALIDATION is the one exception because its message is itself the user-relevant input feedback the platform must surface.
-
-For `AUTH_REQUIRED` the helper deliberately returns only the canned message and does **not** surface any URL from `error.context`. The channel-base layer cannot validate that an arbitrary URL is the configured OAuth issuer for the current tenant, so embedding it would be a phishing primitive. Adapters that need to render an OAuth handoff must read structured auth metadata themselves and validate it against their own trust configuration before showing a clickable link.
+The `text` and `safeText` outputs never leak `error.cause`, stack traces, or — outside of the `validation` discriminant's `rawMessage` field — `error.message`. The `auth-required` discriminant exposes the original `error` so adapters can read `error.context` themselves; that is the explicit handoff point at which trust validation moves to the adapter layer.
 
 There is intentionally no verbose / developer mode; CLI tooling that needs raw diagnostics formats `error.code` / `error.message` through its own sanitizer.
 
@@ -336,7 +349,8 @@ There is intentionally no verbose / developer mode; CLI tooling that needs raw d
 | Function | Returns | Purpose |
 |----------|---------|---------|
 | `renderBlocks(blocks, capabilities)` | `readonly ContentBlock[]` | Downgrade unsupported blocks to text |
-| `formatErrorForChannel(error)` | `string` | Safe user-facing error message (canned per `KoiErrorCode`, no leakage) |
+| `formatErrorForChannel(error)` | `ChannelErrorOutput` | Discriminated union so adapters handle text / validation / auth-required explicitly |
+| `formatErrorTextForChannel(error)` | `string` | Convenience collapse to a single string for adapters with no auth/validation UX |
 
 ### Resilience & Discovery
 
@@ -352,6 +366,7 @@ There is intentionally no verbose / developer mode; CLI tooling that needs raw d
 | `ChannelAdapterConfig<E>` | Configuration for `createChannelAdapter()` |
 | `MessageNormalizer<E>` | `(event: E) => InboundMessage \| null \| Promise<InboundMessage \| null>` |
 | `ContentBlock` | Re-exported union from `@koi/core` |
+| `ChannelErrorOutput` | Discriminated union returned by `formatErrorForChannel` |
 | `RateLimiter` | `{ enqueue, size }` — sequential queued sends with retry |
 | `RateLimiterConfig` | `{ retry?, extractRetryAfterMs? }` |
 | `ChannelFactory` | `(config: unknown) => ChannelAdapter` |
