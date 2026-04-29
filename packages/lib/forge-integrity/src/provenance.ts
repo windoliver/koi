@@ -50,6 +50,9 @@ const ALLOWED_EVOLUTION_KINDS = new Set<EvolutionKind>(["fix", "derived", "captu
 /** Bound on object/array nesting we will traverse — defends against stack-blowing inputs. */
 export const MAX_PROVENANCE_DEPTH = 32;
 
+/** Canonical hex sha256 digest, e.g. `sha256:<64 lowercase hex>`. */
+const CONTENT_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
+
 export function createForgeProvenance(options: CreateProvenanceOptions): ForgeProvenance {
   validateScalars(options);
   if (options.finishedAt < options.startedAt) {
@@ -184,6 +187,15 @@ function validateScalars(o: CreateProvenanceOptions): void {
   requireNonEmptyString("agentId", o.agentId);
   requireNonEmptyString("invocationId", o.invocationId);
   requireNonEmptyString("contentHash", o.contentHash);
+  // Validate the canonical hash format (sha256:<64 lowercase hex>) so
+  // garbage, truncated, wrong-algorithm, or placeholder values cannot be
+  // frozen into audit-visible provenance. Once a record is persisted or
+  // signed, a malformed contentHash is permanent and expensive to undo.
+  if (!CONTENT_HASH_PATTERN.test(o.contentHash)) {
+    throw new Error(
+      `createForgeProvenance: contentHash must be canonical sha256:<64-hex>, got "${o.contentHash}"`,
+    );
+  }
   requireNonEmptyString("buildType", o.buildType);
   requireNonEmptyString("builderId", o.builderId);
   requireFiniteNumber("startedAt", o.startedAt);

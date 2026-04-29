@@ -26,7 +26,7 @@ const baseOptions: CreateProvenanceOptions = {
   invocationId: "inv-42",
   startedAt: 1_700_000_000_000,
   finishedAt: 1_700_000_001_500,
-  contentHash: "sha256:cafebabe",
+  contentHash: "sha256:cafebabe000000000000000000000000000000000000000000000000000000ff",
   buildType: "koi.forge.tool/v1",
   externalParameters: { name: "csv-parse" },
   builderId: "koi/forge/pipeline/v1",
@@ -50,7 +50,9 @@ describe("createForgeProvenance", () => {
       name: "csv-parse",
       demandId: "dem-9",
     });
-    expect(prov.contentHash).toBe("sha256:cafebabe");
+    expect(prov.contentHash).toBe(
+      "sha256:cafebabe000000000000000000000000000000000000000000000000000000ff",
+    );
   });
 
   test("uses caller-supplied verification + classification — no defaults invented", () => {
@@ -210,6 +212,28 @@ describe("createForgeProvenance", () => {
     );
     expect(() => createForgeProvenance({ ...baseOptions, forgedBy: "" })).toThrow(/forgedBy/);
     expect(() => createForgeProvenance({ ...baseOptions, buildType: "" })).toThrow(/buildType/);
+  });
+
+  test("rejects non-canonical contentHash (wrong algorithm, truncated, placeholder, uppercase)", () => {
+    // Wrong algorithm
+    expect(() =>
+      createForgeProvenance({ ...baseOptions, contentHash: "md5:abcdef0123456789" }),
+    ).toThrow(/canonical sha256/);
+    // Truncated
+    expect(() => createForgeProvenance({ ...baseOptions, contentHash: "sha256:cafebabe" })).toThrow(
+      /canonical sha256/,
+    );
+    // Placeholder string
+    expect(() =>
+      createForgeProvenance({ ...baseOptions, contentHash: "sha256:placeholder" }),
+    ).toThrow(/canonical sha256/);
+    // Uppercase hex (canonical form is lowercase only)
+    expect(() =>
+      createForgeProvenance({
+        ...baseOptions,
+        contentHash: "sha256:CAFEBABE000000000000000000000000000000000000000000000000000000FF",
+      }),
+    ).toThrow(/canonical sha256/);
   });
 
   test("rejects negative or non-finite depth", () => {

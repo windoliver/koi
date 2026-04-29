@@ -30,7 +30,7 @@ const baseProvenance: ForgeProvenance = {
   verification: passingVerification,
   classification: "public",
   contentMarkers: [],
-  contentHash: "sha256:placeholder",
+  contentHash: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
 };
 
 interface MakeToolOptions {

@@ -22,21 +22,17 @@ export type {
 // passed into the verifier on each call.
 export { createBrickVerifier } from "./integrity.js";
 
-export type { LineageOutcome, ProvenanceEquivalent } from "./lineage.js";
-// `isDerivedFrom` (the trusted lineage API requiring a lineage-bound
-// producer) is intentionally NOT exported in this release. No shipped
-// producer currently binds lineage fields into its canonical id, so the
-// trusted helper would fail closed for every real call. It will be
-// exposed in a follow-up release alongside the producer change that
-// extends the canonical recompute to cover `parentBrickId`/
-// `evolutionKind`. Use `isDerivedFromUnchecked` only for diagnostics
-// where the result is explicitly untrusted.
-export {
-  findContentEquivalentById,
-  getParentBrickId,
-  isDerivedFromUnchecked,
-  MAX_LINEAGE_DEPTH,
-} from "./lineage.js";
+export type { ProvenanceEquivalent } from "./lineage.js";
+// Both lineage helpers (`isDerivedFrom`, `isDerivedFromUnchecked`) are
+// intentionally NOT exported in this release. The trusted variant
+// requires a producer that hashes `parentBrickId`/`evolutionKind` into
+// its canonical id (no shipped producer does yet); the unchecked variant
+// would otherwise be the only lineage API and is unsafe on
+// attacker-controlled or stale stores. Both will land together in the
+// follow-up that extends `@koi/forge-tools` to cover lineage fields. The
+// `getParentBrickId` accessor is exported so callers can implement
+// narrow, non-policy-bearing inspections without a walk.
+export { findContentEquivalentById, getParentBrickId } from "./lineage.js";
 
 export type { CreateProvenanceOptions } from "./provenance.js";
 export { createForgeProvenance, MAX_PROVENANCE_DEPTH } from "./provenance.js";
