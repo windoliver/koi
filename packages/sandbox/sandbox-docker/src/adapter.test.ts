@@ -14,14 +14,14 @@ const stubClient: DockerClient = {
 };
 
 describe("createDockerAdapter", () => {
-  test("returns a SandboxAdapter named 'docker'", () => {
-    const r = createDockerAdapter({ client: stubClient });
+  test("returns a SandboxAdapter named 'docker' when client provided", async () => {
+    const r = await createDockerAdapter({ client: stubClient });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.name).toBe("docker");
   });
 
   test("create(profile) yields a SandboxInstance with working exec", async () => {
-    const r = createDockerAdapter({ client: stubClient });
+    const r = await createDockerAdapter({ client: stubClient });
     if (!r.ok) throw new Error("setup failed");
     const inst = await r.value.create({
       filesystem: { defaultReadAccess: "open" },
@@ -33,19 +33,43 @@ describe("createDockerAdapter", () => {
     expect(out.stdout).toBe("ok");
   });
 
-  // Fix 5: missing client falls back to default — must return ok: true
-  test("createDockerAdapter({}) returns ok: true using default client", () => {
-    const r = createDockerAdapter({});
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.name).toBe("docker");
+  // Fail-closed: when no client + probe returns unavailable → ok: false, UNAVAILABLE
+  test("returns ok: false with UNAVAILABLE when detectDocker probe fails", async () => {
+    const unavailableProbe = async (): Promise<number> => 1;
+    const r = await createDockerAdapter({ probe: unavailableProbe });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("Expected ok: false");
+    expect(r.error.code).toBe("UNAVAILABLE");
   });
 
-  // Fix 5: explicit client is preserved and not replaced
-  test("explicit client is preserved in resolved config", () => {
-    const r = createDockerAdapter({ client: stubClient });
+  // Fail-closed: detectDocker probe throws → ok: false, UNAVAILABLE
+  test("returns ok: false with UNAVAILABLE when probe throws", async () => {
+    const throwingProbe = async (): Promise<number> => {
+      throw new Error("cannot reach docker");
+    };
+    const r = await createDockerAdapter({ probe: throwingProbe });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("Expected ok: false");
+    expect(r.error.code).toBe("UNAVAILABLE");
+  });
+
+  // Slow path: probe succeeds → build adapter with default client
+  test("returns ok: true with default client when probe succeeds", async () => {
+    const successProbe = async (): Promise<number> => 0;
+    const r = await createDockerAdapter({ probe: successProbe });
     expect(r.ok).toBe(true);
-    // The adapter should be usable with the stub client (verified by exec call)
-    // We cannot inspect the resolved config directly, but we can verify create() works.
+    if (!r.ok) throw new Error(`Expected ok, got: ${r.error.message}`);
+    expect(r.value.name).toBe("docker");
+  });
+
+  // Explicit client is preserved (sync path — no probe called)
+  test("explicit client skips probe and returns ok: true", async () => {
+    // If probe were called, it would fail — but explicit client skips probe.
+    const failProbe = async (): Promise<number> => {
+      throw new Error("should not be called");
+    };
+    const r = await createDockerAdapter({ client: stubClient, probe: failProbe });
+    expect(r.ok).toBe(true);
     if (!r.ok) throw new Error("Expected ok");
     expect(r.value.name).toBe("docker");
   });

@@ -33,6 +33,20 @@ import type {
 /** Framing marker emitted by subprocess-runner on stderr. */
 const RESULT_MARKER = "__KOI_RESULT__\n";
 
+/**
+ * Allowlist of host env vars that are safe to pass into the sandbox child.
+ * All other host env vars (credentials, tokens, etc.) are scrubbed.
+ */
+const SAFE_ENV_KEYS: readonly string[] = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "NODE_ENV",
+  "BUN_INSTALL",
+  "LANG",
+  "LC_ALL",
+];
+
 /** Default maximum output bytes read from stderr (10 MiB). */
 const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 
@@ -101,24 +115,40 @@ function classifyKilledCode(timerFired: boolean, exitCode: number): SandboxError
   return "CRASH";
 }
 
-/** Build env vars to propagate from ExecutionContext to the child process. */
-function buildContextEnv(context?: ExecutionContext): Readonly<Record<string, string>> {
-  if (context === undefined) return {};
-  // `let` justified: env is built incrementally from context fields
+/**
+ * Build a sanitized child env:
+ * 1. Start with {}.
+ * 2. Copy from process.env only the keys in SAFE_ENV_KEYS (skip undefined values).
+ * 3. Layer in KOI_* signal vars from context.
+ * 4. Merge context.env if present (caller-provided wins).
+ */
+function buildChildEnv(context?: ExecutionContext): Readonly<Record<string, string>> {
+  // `let` justified: env is built incrementally in three layers
   const env: Record<string, string> = {};
-  if (context.networkAllowed === false) {
-    // Signal: caller requested no network. Real enforcement needs @koi/sandbox-os.
-    env.KOI_NETWORK_ALLOWED = "0";
+
+  // Layer 1: safe host env vars only
+  for (const key of SAFE_ENV_KEYS) {
+    const val = process.env[key];
+    if (val !== undefined) env[key] = val;
   }
-  if (context.resourceLimits !== undefined) {
-    // Informational: real enforcement is OS-level (requires @koi/sandbox-os).
-    if (context.resourceLimits.maxMemoryMb !== undefined) {
-      env.KOI_MAX_MEMORY_MB = String(context.resourceLimits.maxMemoryMb);
+
+  // Layer 2: KOI signal vars from context
+  if (context !== undefined) {
+    if (context.networkAllowed === false) {
+      // Signal: caller requested no network. Real enforcement needs @koi/sandbox-os.
+      env.KOI_NETWORK_ALLOWED = "0";
     }
-    if (context.resourceLimits.maxPids !== undefined) {
-      env.KOI_MAX_PIDS = String(context.resourceLimits.maxPids);
+    if (context.resourceLimits !== undefined) {
+      // Informational: real enforcement is OS-level (requires @koi/sandbox-os).
+      if (context.resourceLimits.maxMemoryMb !== undefined) {
+        env.KOI_MAX_MEMORY_MB = String(context.resourceLimits.maxMemoryMb);
+      }
+      if (context.resourceLimits.maxPids !== undefined) {
+        env.KOI_MAX_PIDS = String(context.resourceLimits.maxPids);
+      }
     }
   }
+
   return env;
 }
 
@@ -153,8 +183,8 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
         // Determine working directory: per-invocation context wins over config-level cwd.
         const cwd = context?.workspacePath ?? cwdOverride;
 
-        const contextEnv = buildContextEnv(context);
-        const hasEnv = Object.keys(contextEnv).length > 0;
+        // Always build a sanitized child env — never inherit parent's full process.env.
+        const childEnv = buildChildEnv(context);
 
         const spawnOpts = {
           stdout: "pipe" as const,
@@ -162,7 +192,7 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
           // Ignore stdin so the sandboxed child cannot read from parent's stdin.
           stdin: "ignore" as const,
           ...(cwd !== undefined ? { cwd } : {}),
-          ...(hasEnv ? { env: { ...process.env, ...contextEnv } } : {}),
+          env: childEnv,
         };
 
         const proc = Bun.spawn(

@@ -87,6 +87,26 @@ describe("createSubprocessExecutor", () => {
     expect(result.value.output).toEqual({ source: "entry" });
   });
 
+  // Security: host env vars not in SAFE_ENV_KEYS must not leak into child
+  test("does not leak arbitrary host env vars into child process", async () => {
+    process.env.SECRET_FOR_TEST = "leaked";
+    const executor = createSubprocessExecutor();
+    const code = `
+      export default async (_input: unknown) => ({
+        secret: process.env.SECRET_FOR_TEST,
+      });
+    `;
+    let result: Awaited<ReturnType<typeof executor.execute>>;
+    try {
+      result = await executor.execute(code, null, 5000);
+    } finally {
+      delete process.env.SECRET_FOR_TEST;
+    }
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`Expected ok, got: ${result.error.message}`);
+    expect(result.value.output).toEqual({ secret: undefined });
+  });
+
   // Fix 1: context.networkAllowed=false propagates KOI_NETWORK_ALLOWED=0
   test("propagates KOI_NETWORK_ALLOWED=0 env var when networkAllowed is false", async () => {
     const executor = createSubprocessExecutor();

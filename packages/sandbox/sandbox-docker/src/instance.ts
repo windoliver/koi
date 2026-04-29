@@ -27,8 +27,16 @@ export function createDockerInstance(container: DockerContainer): SandboxInstanc
     readFile: (path): Promise<Uint8Array> => container.readFile(path),
     writeFile: (path, content): Promise<void> => container.writeFile(path, content),
     destroy: async (): Promise<void> => {
-      await container.stop();
+      // Attempt stop, but always proceed to remove for best-effort cleanup.
+      // If stop fails, we still try remove — then surface the stop error.
+      let stopError: unknown;
+      try {
+        await container.stop();
+      } catch (e: unknown) {
+        stopError = e;
+      }
       await container.remove();
+      if (stopError !== undefined) throw stopError;
     },
   };
 }

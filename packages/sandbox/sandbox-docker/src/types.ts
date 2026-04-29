@@ -41,6 +41,12 @@ export interface DockerAdapterConfig {
   readonly socketPath?: string;
   readonly image?: string;
   readonly client?: DockerClient;
+  /**
+   * Optional probe function injected for testing.
+   * Defaults to running `docker version` via detectDocker().
+   * Only used when client is not provided (the availability-probe code path).
+   */
+  readonly probe?: () => Promise<number>;
 }
 
 export interface ResolvedDockerConfig {

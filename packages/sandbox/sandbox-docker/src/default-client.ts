@@ -96,10 +96,16 @@ function makeContainer(id: string): DockerContainer {
       }
     },
     stop: async (): Promise<void> => {
-      await runDocker(["stop", id]);
+      const r = await runDocker(["stop", id]);
+      if (r.exitCode !== 0) {
+        throw new Error(`docker stop failed for ${id}`, { cause: r });
+      }
     },
     remove: async (): Promise<void> => {
-      await runDocker(["rm", "-f", id]);
+      const r = await runDocker(["rm", "-f", id]);
+      if (r.exitCode !== 0) {
+        throw new Error(`docker rm -f failed for ${id}`, { cause: r });
+      }
     },
   };
 }

@@ -295,6 +295,46 @@ describe("createDefaultDockerClient", () => {
     }
   });
 
+  test("container.stop: throws when docker stop returns nonzero", async () => {
+    let callCount = 0;
+    // @ts-expect-error — test stub: returning a partial SubProcess for coverage
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) => {
+      callCount += 1;
+      if (callCount <= 2) return fakeProc({ stdout: "stopfail\n", stderr: "", exitCode: 0 });
+      return fakeProc({ stdout: "", stderr: "cannot stop", exitCode: 1 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      const container = await client.createContainer({
+        image: "ubuntu:22.04",
+        networkMode: "none",
+      });
+      await expect(container.stop()).rejects.toThrow("docker stop failed");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  test("container.remove: throws when docker rm -f returns nonzero", async () => {
+    let callCount = 0;
+    // @ts-expect-error — test stub: returning a partial SubProcess for coverage
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) => {
+      callCount += 1;
+      if (callCount <= 2) return fakeProc({ stdout: "rmfail\n", stderr: "", exitCode: 0 });
+      return fakeProc({ stdout: "", stderr: "cannot remove", exitCode: 1 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      const container = await client.createContainer({
+        image: "ubuntu:22.04",
+        networkMode: "none",
+      });
+      await expect(container.remove()).rejects.toThrow("docker rm -f failed");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
   test("buildCreateArgs: passes pidsLimit, memoryMb, binds, capAdd, env to docker create", async () => {
     const createArgs: string[][] = [];
     let callCount = 0;

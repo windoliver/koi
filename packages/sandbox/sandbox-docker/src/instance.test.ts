@@ -55,6 +55,22 @@ describe("createDockerInstance", () => {
     expect(removed).toBe(1);
   });
 
+  test("destroy calls remove even when stop throws, then re-throws stop error", async () => {
+    let removed = 0;
+    const inst = createDockerInstance({
+      ...stubContainer({ exitCode: 0, stdout: "", stderr: "" }),
+      stop: async (): Promise<void> => {
+        throw new Error("docker stop failed for stub");
+      },
+      remove: async (): Promise<void> => {
+        removed += 1;
+      },
+    });
+    await expect(inst.destroy()).rejects.toThrow("docker stop failed for stub");
+    // remove must have been called despite stop throwing
+    expect(removed).toBe(1);
+  });
+
   test("readFile and writeFile proxy to the underlying container", async () => {
     let readPath = "";
     let wroteAt = "";

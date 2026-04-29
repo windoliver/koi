@@ -15460,12 +15460,12 @@ describe("Golden: @koi/sandbox-docker", () => {
   test("createDockerAdapter returns UNAVAILABLE error when client is missing", async () => {
     const { createDockerAdapter } = await import("@koi/sandbox-docker");
 
-    // Config with no client — should return an UNAVAILABLE error Result
-    const result = createDockerAdapter({ image: "ubuntu:22.04" });
+    // Use a probe that returns nonzero so Docker is reported unavailable (no real daemon needed)
+    const unavailableProbe = async (): Promise<number> => 1;
+    const result = await createDockerAdapter({ image: "ubuntu:22.04", probe: unavailableProbe });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("UNAVAILABLE");
-      expect(result.error.message).toContain("Docker client is required");
     }
   });
 
@@ -15477,27 +15477,9 @@ describe("Golden: @koi/sandbox-docker", () => {
       createContainer: async () => {
         throw new Error("not used in this test");
       },
-      startContainer: async () => {
-        throw new Error("not used in this test");
-      },
-      execInContainer: async () => {
-        throw new Error("not used in this test");
-      },
-      stopContainer: async () => {
-        throw new Error("not used in this test");
-      },
-      removeContainer: async () => {
-        throw new Error("not used in this test");
-      },
-      readFile: async () => {
-        throw new Error("not used in this test");
-      },
-      writeFile: async () => {
-        throw new Error("not used in this test");
-      },
     };
 
-    const result = createDockerAdapter({ image: "ubuntu:22.04", client: stubClient });
+    const result = await createDockerAdapter({ image: "ubuntu:22.04", client: stubClient });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.name).toBe("docker");
