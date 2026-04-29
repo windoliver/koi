@@ -1020,6 +1020,7 @@
         "@koi/governance-core": "workspace:*",
         "@koi/governance-defaults": "workspace:*",
         "@koi/governance-delegation": "workspace:*",
+        "@koi/governance-scope": "workspace:*",
         "@koi/governance-security": "workspace:*",
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",

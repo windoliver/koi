@@ -84,6 +84,7 @@
     { "path": "../../security/governance-core" },
     { "path": "../../security/governance-defaults" },
     { "path": "../../security/governance-delegation" },
+    { "path": "../../security/governance-scope" },
     { "path": "../../security/governance-security" },
     { "path": "../../lib/bash-ast" },
     { "path": "../../lib/bash-security" },

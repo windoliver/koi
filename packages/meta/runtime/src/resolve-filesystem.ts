@@ -17,6 +17,7 @@ import {
   validateNexusFileSystemConfig,
 } from "@koi/fs-nexus";
 import { createScopedFileSystem } from "@koi/fs-scoped";
+import { createScopedFs } from "@koi/governance-scope";
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -30,6 +31,68 @@ const fileSystemConfigSchema = z
     operations: z.array(z.enum(["read", "write", "edit"])).optional(),
   })
   .strict();
+
+// ---------------------------------------------------------------------------
+// Glob-allowlist scope (gov-15) — multi-glob alternative to single-root scope.
+// Activated when manifest options.allow is provided as a non-empty string[].
+// ---------------------------------------------------------------------------
+
+interface GlobScope {
+  readonly allow: readonly string[];
+  readonly mode: "ro" | "rw";
+}
+
+function extractGlobScope(
+  options: Record<string, unknown> | undefined,
+  cwd: string,
+  backendType: "local" | "nexus",
+): GlobScope | undefined {
+  if (options === undefined || options === null) return undefined;
+  const allowRaw = options.allow;
+  if (!Array.isArray(allowRaw) || allowRaw.length === 0) return undefined;
+  if (!allowRaw.every((p): p is string => typeof p === "string" && p.length > 0)) return undefined;
+
+  const mode = options.mode;
+  const resolvedMode: "ro" | "rw" = mode === "rw" ? "rw" : "ro";
+
+  // For local backends, normalize each glob's static prefix the same way
+  // extractScope normalizes a single root: resolve relative segments
+  // against cwd, then realpathSync the static prefix so symlinked paths
+  // (e.g. macOS /var → /private/var) line up with what scoped-fs sees
+  // after realpath. The wildcard tail (after the first `*` / `?`) is
+  // re-appended verbatim. Nexus/remote backends keep their patterns
+  // lexical to avoid resolving remote paths through the local FS.
+  const resolved =
+    backendType === "local" ? allowRaw.map((p) => normalizeAllowPattern(p, cwd)) : allowRaw;
+
+  return { allow: resolved, mode: resolvedMode };
+}
+
+function normalizeAllowPattern(pattern: string, cwd: string): string {
+  // Find first wildcard to split prefix from glob tail.
+  const wildcardIdx = pattern.search(/[*?]/);
+  if (wildcardIdx === -1) {
+    // No wildcard — treat as a single concrete path; realpath if possible.
+    const abs = resolve(cwd, pattern);
+    try {
+      return realpathSync(abs);
+    } catch {
+      return abs;
+    }
+  }
+  // Split at the last separator before the wildcard so the prefix is a
+  // real directory rather than half a glob segment.
+  const prefixEnd = pattern.lastIndexOf("/", wildcardIdx);
+  const prefix = prefixEnd === -1 ? "" : pattern.slice(0, prefixEnd);
+  const tail = prefixEnd === -1 ? pattern : pattern.slice(prefixEnd);
+  if (prefix === "") return pattern;
+  const absPrefix = resolve(cwd, prefix);
+  try {
+    return realpathSync(absPrefix) + tail;
+  } catch {
+    return absPrefix + tail;
+  }
+}
 
 /**
  * Validate raw manifest input as a FileSystemConfig.
@@ -119,19 +182,27 @@ export function resolveFileSystem(
   cwd: string,
 ): FileSystemBackend {
   const backendKind = config?.backend ?? "local";
-  // Extract scope early so local backend can use the scope root as its cwd.
-  const scope = extractScope(
-    config?.options as Record<string, unknown> | undefined,
-    cwd,
-    backendKind,
-  );
+  const optionsRecord = config?.options as Record<string, unknown> | undefined;
+  // Glob-allowlist scope (gov-15) takes precedence over legacy single-root.
+  const globScope = extractGlobScope(optionsRecord, cwd, backendKind);
+  // Legacy single-root scope: only consulted when glob scope is absent.
+  const scope = globScope === undefined ? extractScope(optionsRecord, cwd, backendKind) : undefined;
 
   let backend: FileSystemBackend;
   if (backendKind === "local") {
-    // When a scope root is declared, root the local backend there so that
-    // path operations are relative to the scope — the scoped wrapper then
-    // enforces the boundary as an additional guard.
-    backend = createLocalFileSystem(scope !== undefined ? scope.root : cwd);
+    // Single-root scope: root the local backend at the scope root so its
+    // own workspace check aligns with the scope boundary.
+    // Glob scope: the scope wrapper IS the boundary, so opt the local
+    // backend out of its workspace check via allowExternalPaths — otherwise
+    // a glob like /tmp/x/** would be rejected by the local backend before
+    // our wrapper sees it.
+    if (scope !== undefined) {
+      backend = createLocalFileSystem(scope.root);
+    } else if (globScope !== undefined) {
+      backend = createLocalFileSystem(cwd, { allowExternalPaths: true });
+    } else {
+      backend = createLocalFileSystem(cwd);
+    }
   } else {
     // backend === "nexus"
     const validated = validateNexusFileSystemConfig(config?.options ?? {});
@@ -141,6 +212,9 @@ export function resolveFileSystem(
     backend = createNexusFileSystem(validated.value);
   }
 
+  if (globScope !== undefined) {
+    return createScopedFs(backend, globScope);
+  }
   if (scope !== undefined) {
     return createScopedFileSystem(backend, scope);
   }
@@ -266,17 +340,25 @@ export async function resolveFileSystemAsync(
   const operations = config?.operations;
 
   // Extract scope once — applied to every backend return path below.
-  const scope = extractScope(
-    config?.options as Record<string, unknown> | undefined,
-    cwd,
-    fsBackend,
-  );
+  const optionsRecord = config?.options as Record<string, unknown> | undefined;
+  const globScope = extractGlobScope(optionsRecord, cwd, fsBackend);
+  const scope = globScope === undefined ? extractScope(optionsRecord, cwd, fsBackend) : undefined;
 
   // Non-nexus or nexus-http → synchronous resolution (no async needed)
   if (fsBackend === "local") {
-    // When scope root is declared, root the local backend there (same as sync path).
-    const rawBackend = createLocalFileSystem(scope !== undefined ? scope.root : cwd);
-    const backend = scope !== undefined ? createScopedFileSystem(rawBackend, scope) : rawBackend;
+    // See resolveFileSystem for the rationale on allowExternalPaths under glob scope.
+    const rawBackend =
+      scope !== undefined
+        ? createLocalFileSystem(scope.root)
+        : globScope !== undefined
+          ? createLocalFileSystem(cwd, { allowExternalPaths: true })
+          : createLocalFileSystem(cwd);
+    const backend =
+      globScope !== undefined
+        ? createScopedFs(rawBackend, globScope)
+        : scope !== undefined
+          ? createScopedFileSystem(rawBackend, scope)
+          : rawBackend;
     return { backend, operations, transport: undefined };
   }
 
@@ -358,7 +440,11 @@ export async function resolveFileSystemAsync(
       },
     };
     const backend =
-      scope !== undefined ? createScopedFileSystem(nexusWrapped, scope) : nexusWrapped;
+      globScope !== undefined
+        ? createScopedFs(nexusWrapped, globScope)
+        : scope !== undefined
+          ? createScopedFileSystem(nexusWrapped, scope)
+          : nexusWrapped;
     return { backend, operations, transport };
   }
 
@@ -369,6 +455,10 @@ export async function resolveFileSystemAsync(
   }
   const nexusHttpBackend = createNexusFileSystem(validated.value);
   const backend =
-    scope !== undefined ? createScopedFileSystem(nexusHttpBackend, scope) : nexusHttpBackend;
+    globScope !== undefined
+      ? createScopedFs(nexusHttpBackend, globScope)
+      : scope !== undefined
+        ? createScopedFileSystem(nexusHttpBackend, scope)
+        : nexusHttpBackend;
   return { backend, operations, transport: undefined };
 }

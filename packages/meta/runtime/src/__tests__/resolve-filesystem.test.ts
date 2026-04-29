@@ -297,3 +297,70 @@ describe("resolveFileSystemAsync — scoped wrapping", () => {
     expect(result.backend.name).toBe("scoped(nexus)");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Glob-allowlist scope (gov-15) — multi-glob via @koi/governance-scope
+// ---------------------------------------------------------------------------
+
+describe("resolveFileSystem — glob scope (gov-15)", () => {
+  test("wraps with glob scope when options.allow is provided", () => {
+    const backend = resolveFileSystem(
+      { backend: "local", options: { allow: [`${tmpBase}/**`], mode: "ro" } },
+      tmpBase,
+    );
+    expect(backend.name).toBe("scoped(local)");
+  });
+
+  test("glob scope blocks reads outside allow list", async () => {
+    const inside = mkdtempSync(join(tmpBase, "inside-"));
+    const outside = mkdtempSync(join(tmpBase, "outside-"));
+    writeFileSync(join(inside, "ok.txt"), "ok");
+    writeFileSync(join(outside, "secret.txt"), "secret");
+    const backend = resolveFileSystem(
+      { backend: "local", options: { allow: [`${inside}/**`], mode: "ro" } },
+      tmpBase,
+    );
+    const okRead = await backend.read(join(inside, "ok.txt"));
+    expect(okRead.ok).toBe(true);
+    const blocked = await backend.read(join(outside, "secret.txt"));
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.error.code).toBe("PERMISSION");
+  });
+
+  test("glob scope supports multiple allow patterns", async () => {
+    const a = mkdtempSync(join(tmpBase, "a-"));
+    const b = mkdtempSync(join(tmpBase, "b-"));
+    writeFileSync(join(a, "a.txt"), "a");
+    writeFileSync(join(b, "b.txt"), "b");
+    const backend = resolveFileSystem(
+      { backend: "local", options: { allow: [`${a}/**`, `${b}/**`], mode: "ro" } },
+      tmpBase,
+    );
+    expect((await backend.read(join(a, "a.txt"))).ok).toBe(true);
+    expect((await backend.read(join(b, "b.txt"))).ok).toBe(true);
+  });
+
+  test("glob scope takes precedence over single-root scope when both present", () => {
+    const backend = resolveFileSystem(
+      {
+        backend: "local",
+        options: { root: tmpBase, mode: "rw", allow: [`${tmpBase}/**`] },
+      },
+      tmpBase,
+    );
+    expect(backend.name).toBe("scoped(local)");
+  });
+
+  test("ignores empty allow array", () => {
+    const backend = resolveFileSystem({ backend: "local", options: { allow: [] } }, tmpBase);
+    expect(backend.name).toBe("local");
+  });
+
+  test("async path also wires glob scope", async () => {
+    const result = await resolveFileSystemAsync(
+      { backend: "local", options: { allow: [`${tmpBase}/**`], mode: "ro" } },
+      tmpBase,
+    );
+    expect(result.backend.name).toBe("scoped(local)");
+  });
+});
