@@ -305,7 +305,12 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(out.auth.scope).not.toMatch(/‮/);
     });
 
-    it("caps oversized auth scope with an ellipsis", () => {
+    it("omits oversized auth scope entirely (all-or-nothing consent UX)", () => {
+      // Regression: loop-5 round 5 finding 1. Truncating the scope list
+      // misleads consent UX — the user may approve broader access than
+      // what the channel displayed. If the full validated list would
+      // exceed the cap, omit scope entirely so adapters fall back to
+      // generic auth handoff text.
       const err = baseError("AUTH_REQUIRED", "x", {
         context: {
           authorizationUrl: "https://issuer.example",
@@ -314,10 +319,21 @@ describe("classifyErrorForChannel discriminated output", () => {
       });
       const out = classifyErrorForChannel(err);
       if (out.kind !== "auth-required") throw new Error("expected auth-required");
-      expect(out.auth.scope).toBeDefined();
-      // Capped at 200 + ellipsis.
-      expect(out.auth.scope?.length).toBeLessThanOrEqual(201);
-      expect(out.auth.scope?.endsWith("…")).toBe(true);
+      expect(out.auth.scope).toBeUndefined();
+    });
+
+    it("omits scope when ANY token fails validation (no partial display)", () => {
+      // Regression: loop-5 round 5. Mixed valid/invalid tokens must
+      // never produce a misleading subset. Drop the whole field.
+      const err = baseError("AUTH_REQUIRED", "x", {
+        context: {
+          authorizationUrl: "https://issuer.example",
+          scope: "drive.readonly @everyone email",
+        },
+      });
+      const out = classifyErrorForChannel(err);
+      if (out.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(out.auth.scope).toBeUndefined();
     });
 
     it("returns an empty auth object when context has no candidate-safe fields", () => {

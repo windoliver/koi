@@ -159,22 +159,29 @@ function extractAuthHandoff(error: KoiError): {
     // simple word (`read`, `email`) or a URI-shaped identifier
     // (`https://www.googleapis.com/auth/drive`, `api://resource/.default`).
     // We tokenize and admit ONLY tokens whose chars are valid in real
-    // OAuth scopes: alphanumeric plus `: / . - _ + = ? & # ~`. This
-    // preserves legitimate URI scopes while rejecting tokens that carry
-    // chat-formatting payloads (`@everyone`, backticks, mentions,
-    // markdown sigils, etc.) — the trust-boundary protection adapters
-    // rely on when rendering this into an OAuth consent prompt.
+    // OAuth scopes: alphanumeric plus `: / . - _ + = ? & # ~`.
+    //
+    // All-or-nothing display: if ANY non-empty token fails validation, or
+    // if the joined result would exceed the length cap, omit `auth.scope`
+    // entirely. Showing a partial scope list is a consent-UX hazard — the
+    // user may approve an OAuth grant broader than what the channel
+    // displayed. Adapters that need full granular display must consume
+    // the original error.context themselves under their trust policy.
     const allowedToken = /^[A-Za-z0-9:/.\-_+=?&#~]+$/;
-    const tokens = scope
+    const normalized = scope
       .normalize("NFC")
       .replace(CONTROL_CHARS, " ")
-      .replace(UNICODE_CONTROL_CHARS, "")
-      .split(/\s+/)
-      .filter((t) => t.length > 0 && allowedToken.test(t));
-    const sanitized = tokens.join(" ");
-    if (sanitized.length > 0) {
-      out.scope =
-        sanitized.length > SCOPE_MAX_LEN ? `${sanitized.slice(0, SCOPE_MAX_LEN)}…` : sanitized;
+      .replace(UNICODE_CONTROL_CHARS, "");
+    const tokens = normalized.split(/\s+/).filter((t) => t.length > 0);
+    const allValid = tokens.length > 0 && tokens.every((t) => allowedToken.test(t));
+    if (allValid) {
+      const joined = tokens.join(" ");
+      // Reject (do not truncate) when the full scope cannot fit. A
+      // truncated scope list misleads the consent UX in the same way
+      // a partially-filtered list does.
+      if (joined.length <= SCOPE_MAX_LEN) {
+        out.scope = joined;
+      }
     }
   }
   return out;
