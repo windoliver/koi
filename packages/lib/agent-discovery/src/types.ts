@@ -1,7 +1,4 @@
-import type {
-  ExternalAgentDescriptor,
-  ExternalAgentTransport,
-} from "@koi/core";
+import type { ExternalAgentDescriptor, ExternalAgentTransport } from "@koi/core";
 
 export interface SystemCalls {
   readonly which: (binary: string) => Promise<string | null>;
@@ -55,8 +52,8 @@ export interface DiscoveryProviderConfig {
 }
 
 export interface DiscoveryHandle {
-  readonly discover: (
-    opts?: { readonly filter?: DiscoveryFilter },
-  ) => Promise<readonly ExternalAgentDescriptor[]>;
+  readonly discover: (opts?: {
+    readonly filter?: DiscoveryFilter;
+  }) => Promise<readonly ExternalAgentDescriptor[]>;
   readonly invalidate: () => void;
 }

@@ -9,14 +9,7 @@ export const SOURCE_PRIORITY = {
   path: 2,
 } as const;
 
-export const AGENT_KEYWORDS = [
-  "agent",
-  "assistant",
-  "code",
-  "chat",
-  "generate",
-  "review",
-] as const;
+export const AGENT_KEYWORDS = ["agent", "assistant", "code", "chat", "generate", "review"] as const;
 
 export const KNOWN_CLI_AGENTS: readonly KnownCliAgent[] = [
   {

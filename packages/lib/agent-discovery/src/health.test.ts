@@ -47,10 +47,7 @@ describe("checkAgentHealth", () => {
   });
 
   test("non-CLI returns unknown", async () => {
-    const r = await checkAgentHealth(
-      { ...cli, transport: "mcp", source: "mcp" },
-      makeSc(),
-    );
+    const r = await checkAgentHealth({ ...cli, transport: "mcp", source: "mcp" }, makeSc());
     expect(r.status).toBe("unknown");
   });
 
