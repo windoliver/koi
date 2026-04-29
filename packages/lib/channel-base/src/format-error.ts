@@ -122,7 +122,9 @@ function normalizeAuthUrl(raw: string): string | undefined {
   } catch {
     return undefined;
   }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return undefined;
+  // Only https — reject http (cleartext OAuth handoff is a credential
+  // exposure risk), as well as ftp/javascript/data/file/etc.
+  if (parsed.protocol !== "https:") return undefined;
   // URL.toString() canonicalizes (lowercases host, normalizes percent-
   // encoding) — that's what we want adapters to see and validate.
   return parsed.toString();

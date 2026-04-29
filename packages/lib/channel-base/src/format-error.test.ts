@@ -195,6 +195,14 @@ describe("classifyErrorForChannel discriminated output", () => {
       const ftpOut = classifyErrorForChannel(ftp);
       if (ftpOut.kind !== "auth-required") throw new Error("expected auth-required");
       expect(ftpOut.auth.unverifiedAuthorizationUrl).toBeUndefined();
+
+      // http: rejected — cleartext OAuth handoff exposes credentials.
+      const http = baseError("AUTH_REQUIRED", "x", {
+        context: { authorizationUrl: "http://issuer.example/auth" },
+      });
+      const httpOut = classifyErrorForChannel(http);
+      if (httpOut.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(httpOut.auth.unverifiedAuthorizationUrl).toBeUndefined();
     });
 
     it("strips control/bidi chars from the authorization URL before parsing", () => {
