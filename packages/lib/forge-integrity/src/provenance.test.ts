@@ -17,7 +17,9 @@ const draftVerification: ForgeVerificationSummary = {
   stageResults: [],
 };
 
-const baseOptions = {
+import type { CreateProvenanceOptions } from "./provenance.js";
+
+const baseOptions: CreateProvenanceOptions = {
   forgedBy: "agent-7",
   sessionId: "sess-x",
   agentId: "agent-7",
@@ -29,6 +31,8 @@ const baseOptions = {
   externalParameters: { name: "csv-parse" },
   builderId: "koi/forge/pipeline/v1",
   verification: passingVerification,
+  classification: "internal",
+  contentMarkers: [],
 };
 
 describe("createForgeProvenance", () => {
@@ -49,14 +53,24 @@ describe("createForgeProvenance", () => {
     expect(prov.contentHash).toBe("sha256:cafebabe");
   });
 
-  test("uses caller-supplied verification — no defaults invented", () => {
+  test("uses caller-supplied verification + classification — no defaults invented", () => {
     const prov = createForgeProvenance(baseOptions);
     expect(prov.verification).toEqual(passingVerification);
     expect(prov.verification.passed).toBe(true);
     expect(prov.verification.sandbox).toBe(true);
-    expect(prov.classification).toBe("public");
+    expect(prov.classification).toBe("internal");
     expect(prov.contentMarkers).toEqual([]);
     expect(prov.parentBrickId).toBeUndefined();
+  });
+
+  test("propagates secret classification + markers verbatim", () => {
+    const prov = createForgeProvenance({
+      ...baseOptions,
+      classification: "secret",
+      contentMarkers: ["credentials", "pii"],
+    });
+    expect(prov.classification).toBe("secret");
+    expect(prov.contentMarkers).toEqual(["credentials", "pii"]);
   });
 
   test("preserves draft verification (passed=false, sandbox=false) faithfully", () => {

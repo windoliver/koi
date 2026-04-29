@@ -13,18 +13,29 @@ function notImplemented<T>(): T {
   throw new Error("not implemented");
 }
 
-function fixtureStore(bricks: readonly BrickArtifact[]): ForgeStore {
+const NOT_FOUND_ERROR: KoiError = { code: "NOT_FOUND", message: "missing", retryable: false };
+
+function fixtureStore(
+  bricks: readonly BrickArtifact[],
+  options: { readonly loadError?: KoiError } = {},
+): ForgeStore {
   const map = new Map<BrickId, BrickArtifact>();
   for (const b of bricks) map.set(b.id, b);
   return {
     save: () => Promise.resolve({ ok: true, value: undefined } as Result<void, KoiError>),
     load: (id: BrickId) => {
+      if (options.loadError !== undefined) {
+        return Promise.resolve({ ok: false, error: options.loadError } as Result<
+          BrickArtifact,
+          KoiError
+        >);
+      }
       const hit = map.get(id);
       if (hit) return Promise.resolve({ ok: true, value: hit } as Result<BrickArtifact, KoiError>);
-      return Promise.resolve({
-        ok: false,
-        error: { code: "NOT_FOUND", message: "missing", retryable: false },
-      } as Result<BrickArtifact, KoiError>);
+      return Promise.resolve({ ok: false, error: NOT_FOUND_ERROR } as Result<
+        BrickArtifact,
+        KoiError
+      >);
     },
     search: () => notImplemented(),
     remove: () => notImplemented(),
@@ -39,30 +50,41 @@ describe("lineage", () => {
     expect(getParentBrickId(makeTool())).toBeUndefined();
   });
 
-  test("isDerivedFrom walks parent chain to find ancestor", async () => {
+  test("isDerivedFrom returns derived when ancestor is in the chain", async () => {
     const root = makeTool({ implementation: "v1" });
     const mid = makeTool({ implementation: "v2", parentBrickId: root.id });
     const leaf = makeTool({ implementation: "v3", parentBrickId: mid.id });
     const store = fixtureStore([root, mid, leaf]);
 
-    expect(await isDerivedFrom(leaf, root.id, store)).toBe(true);
-    expect(await isDerivedFrom(leaf, mid.id, store)).toBe(true);
-    expect(await isDerivedFrom(mid, root.id, store)).toBe(true);
+    expect((await isDerivedFrom(leaf, root.id, store)).kind).toBe("derived");
+    expect((await isDerivedFrom(leaf, mid.id, store)).kind).toBe("derived");
+    expect((await isDerivedFrom(mid, root.id, store)).kind).toBe("derived");
   });
 
-  test("isDerivedFrom returns false for unrelated ancestor", async () => {
+  test("isDerivedFrom returns not_derived for unrelated ancestor", async () => {
     const root = makeTool({ implementation: "v1" });
     const other = makeTool({ implementation: "unrelated" });
     const child = makeTool({ implementation: "v2", parentBrickId: root.id });
     const store = fixtureStore([root, other, child]);
-    expect(await isDerivedFrom(child, other.id, store)).toBe(false);
+    const result = await isDerivedFrom(child, other.id, store);
+    expect(result.kind).toBe("not_derived");
   });
 
-  test("isDerivedFrom fails closed on cycles", async () => {
-    const a = makeTool({ implementation: "a", parentBrickId: computeBrickId("tool", "b") });
-    const b = makeTool({ implementation: "b", parentBrickId: a.id });
-    const store = fixtureStore([a, b]);
-    expect(await isDerivedFrom(b, computeBrickId("tool", "missing"), store)).toBe(false);
+  test("isDerivedFrom surfaces store_error rather than collapsing to not_derived", async () => {
+    const root = makeTool({ implementation: "v1" });
+    // Walk has to load `mid` to keep climbing past it; with the store
+    // returning errors that load fails and we get store_error rather than
+    // a misleading not_derived.
+    const mid = makeTool({ implementation: "v2", parentBrickId: root.id });
+    const child = makeTool({ implementation: "v3", parentBrickId: mid.id });
+    const transient: KoiError = { code: "INTERNAL", message: "store outage", retryable: true };
+    const store = fixtureStore([], { loadError: transient });
+    const result = await isDerivedFrom(child, root.id, store);
+    expect(result.kind).toBe("store_error");
+    if (result.kind === "store_error") {
+      expect(result.error).toBe(transient);
+      expect(result.at).toBe(mid.id);
+    }
   });
 
   test("isDerivedFrom is bounded by MAX_LINEAGE_DEPTH", () => {

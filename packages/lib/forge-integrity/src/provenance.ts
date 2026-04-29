@@ -1,14 +1,14 @@
 /**
  * Build a `ForgeProvenance` record from minimal pipeline inputs.
  *
- * Records who created the brick, when, and from what demand. Verification
- * state (`passed`, `sandbox`, stage results) is REQUIRED from the caller —
- * this helper never manufactures optimistic verification metadata.
+ * The helper never invents trust- or policy-bearing metadata: `verification`,
+ * `classification`, and `contentMarkers` are all REQUIRED so a caller cannot
+ * silently downgrade a secret/internal artifact into the public bucket or
+ * stamp an unverified draft as `passed: true`.
  *
- * All structured inputs (`verification`, `externalParameters`,
- * `contentMarkers`) are deep-frozen via a defensive structured clone so
- * callers cannot mutate trust/policy metadata after the provenance has
- * been constructed.
+ * All structured inputs are deep-frozen via a defensive structured clone so
+ * callers cannot mutate trust/policy metadata after the provenance has been
+ * constructed.
  */
 
 import type {
@@ -32,9 +32,11 @@ export interface CreateProvenanceOptions {
   readonly externalParameters: Readonly<Record<string, unknown>>;
   readonly builderId: string;
   readonly verification: ForgeVerificationSummary;
+  /** Required — callers must declare data sensitivity explicitly. */
+  readonly classification: DataClassification;
+  /** Required — pass an empty array only when the producer has audited content. */
+  readonly contentMarkers: readonly ContentMarker[];
   readonly depth?: number | undefined;
-  readonly classification?: DataClassification | undefined;
-  readonly contentMarkers?: readonly ContentMarker[] | undefined;
   readonly demandId?: string | undefined;
   readonly parentBrickId?: BrickId | undefined;
   readonly evolutionKind?: EvolutionKind | undefined;
@@ -52,9 +54,7 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
   );
 
   const verification = deepFreeze(structuredClone(options.verification));
-  const contentMarkers = Object.freeze(
-    options.contentMarkers !== undefined ? [...options.contentMarkers] : [],
-  );
+  const contentMarkers = Object.freeze([...options.contentMarkers]);
 
   const provenance: ForgeProvenance = {
     source: Object.freeze({
@@ -76,7 +76,7 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
       depth: options.depth ?? 0,
     }),
     verification,
-    classification: options.classification ?? "public",
+    classification: options.classification,
     contentMarkers,
     contentHash: options.contentHash,
     ...(options.parentBrickId !== undefined ? { parentBrickId: options.parentBrickId } : {}),

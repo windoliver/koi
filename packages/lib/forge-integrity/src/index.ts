@@ -6,6 +6,7 @@
 export type {
   IntegrityContentMismatch,
   IntegrityOk,
+  IntegrityProducerMismatch,
   IntegrityProducerUnknown,
   IntegrityRecomputeFailed,
   IntegrityResult,
@@ -14,6 +15,7 @@ export type {
 } from "./integrity.js";
 export { verifyBrickIntegrity } from "./integrity.js";
 
+export type { LineageOutcome } from "./lineage.js";
 export {
   findDuplicateById,
   getParentBrickId,

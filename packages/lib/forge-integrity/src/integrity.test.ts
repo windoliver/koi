@@ -8,6 +8,10 @@ import { verifyBrickIntegrity } from "./integrity.js";
 const TRUSTED_BUILDER = "koi/forge";
 const trustedRegistry: ProducerRegistry = { [TRUSTED_BUILDER]: recomputeFixtureId };
 
+function verify(brick: BrickArtifact, registry: ProducerRegistry = trustedRegistry) {
+  return verifyBrickIntegrity(brick, registry, TRUSTED_BUILDER);
+}
+
 describe("verifyBrickIntegrity", () => {
   test("artifact hash is deterministic — same content → same recomputed id", () => {
     const a = makeTool({ implementation: "export const x = 1" });
@@ -17,7 +21,7 @@ describe("verifyBrickIntegrity", () => {
   });
 
   test("ok when stored id matches the trusted producer's recomputation", () => {
-    const result = verifyBrickIntegrity(makeTool(), trustedRegistry);
+    const result = verify(makeTool(), trustedRegistry);
     expect(result.kind).toBe("ok");
     expect(result.ok).toBe(true);
     if (result.kind === "ok") expect(result.builderId).toBe(TRUSTED_BUILDER);
@@ -25,7 +29,7 @@ describe("verifyBrickIntegrity", () => {
 
   test("content_mismatch when implementation has been tampered", () => {
     const original = makeTool();
-    const result = verifyBrickIntegrity(tamper(original), trustedRegistry);
+    const result = verify(tamper(original), trustedRegistry);
     expect(result.kind).toBe("content_mismatch");
     expect(result.ok).toBe(false);
     if (result.kind === "content_mismatch") {
@@ -36,15 +40,15 @@ describe("verifyBrickIntegrity", () => {
 
   test("content_mismatch when stored id does not match content", () => {
     const brick = reBrandId(makeTool(), "0".repeat(64));
-    const result = verifyBrickIntegrity(brick, trustedRegistry);
+    const result = verify(brick, trustedRegistry);
     expect(result.kind).toBe("content_mismatch");
   });
 
   test("producer_unknown when builder.id is not registered (rejects untrusted callers)", () => {
     const brick = makeTool();
-    const result = verifyBrickIntegrity(brick, {});
+    const result = verify(brick, {});
     expect(result.kind).toBe("producer_unknown");
-    if (result.kind === "producer_unknown") expect(result.builderId).toBe(TRUSTED_BUILDER);
+    if (result.kind === "producer_unknown") expect(result.expectedBuilderId).toBe(TRUSTED_BUILDER);
   });
 
   test("a hostile registry entry cannot certify a tampered brick by aliasing builder.id", () => {
@@ -55,7 +59,7 @@ describe("verifyBrickIntegrity", () => {
     // *as* the trusted producer must still match the trusted recompute.
     const hostile = (b: BrickArtifact): BrickId => b.id;
     const tamperedBrick = tamper(makeTool());
-    const result = verifyBrickIntegrity(tamperedBrick, { [TRUSTED_BUILDER]: hostile });
+    const result = verify(tamperedBrick, { [TRUSTED_BUILDER]: hostile });
     // This documents the residual trust requirement: the registry's recompute
     // function must match the producer's canonical scheme. Operators are
     // responsible for the recompute → builder mapping; the verifier prevents
@@ -71,18 +75,29 @@ describe("verifyBrickIntegrity", () => {
         throw new Error("identity scheme requires agentId");
       },
     };
-    const result = verifyBrickIntegrity(makeTool(), failing);
+    const result = verify(makeTool(), failing);
     expect(result.kind).toBe("recompute_failed");
     if (result.kind === "recompute_failed") expect(result.reason).toContain("agentId");
   });
 
-  test("delegates per-producer (multiple registered producers route by builder.id)", () => {
+  test("delegates per-producer (multiple registered producers route by expected id)", () => {
     const other = (_b: BrickArtifact): BrickId => brickId(`sha256:${"f".repeat(64)}`);
     const registry: ProducerRegistry = {
       [TRUSTED_BUILDER]: recomputeFixtureId,
       "another/builder/v1": other,
     };
-    const result = verifyBrickIntegrity(makeTool(), registry);
+    const result = verify(makeTool(), registry);
     expect(result.kind).toBe("ok");
+  });
+
+  test("producer_mismatch when artifact's claimed builder differs from expected", () => {
+    const brick = makeTool();
+    // brick's provenance.builder.id is "koi/forge"; verifier expects different.
+    const result = verifyBrickIntegrity(brick, trustedRegistry, "koi/forge/other");
+    expect(result.kind).toBe("producer_mismatch");
+    if (result.kind === "producer_mismatch") {
+      expect(result.expectedBuilderId).toBe("koi/forge/other");
+      expect(result.claimedBuilderId).toBe(TRUSTED_BUILDER);
+    }
   });
 });

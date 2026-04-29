@@ -1,16 +1,22 @@
 /**
  * Content-addressed integrity verification.
  *
- * Identity IS integrity — the canonical identity scheme is owned by the
- * package that produced the brick (e.g. `@koi/forge-tools`'s
- * `recomputeBrickIdFromArtifact`). This package never defines its own
- * scheme: doing so would silently diverge from producers and reject valid
- * persisted artifacts.
+ * **Scope: content-consistency only.** A successful result proves only that
+ * the brick's stored `id` matches the canonical recomputation under the
+ * expected producer's identity scheme. It does NOT establish producer
+ * authenticity — `provenance.builder.id` is read from the unverified
+ * artifact, so a brick fabricated under a trusted producer's name will pass
+ * here. Producer authenticity requires a separate signed-attestation check
+ * (out of scope for this package).
  *
- * Verification is bound to the producer named in `provenance.builder.id`:
- * callers register the recompute functions for the producers they trust,
- * and the verifier picks the one matching the brick's claimed builder.
- * This prevents arbitrary callbacks from certifying tampered bricks.
+ * The canonical identity scheme is owned by the producer (e.g.
+ * `@koi/forge-tools`'s `recomputeBrickIdFromArtifact`). Callers register the
+ * recompute functions for the producers they trust, and the verifier picks
+ * the one matching the `expectedBuilderId` supplied out-of-band by the
+ * caller. The artifact's self-asserted `provenance.builder.id` must match
+ * `expectedBuilderId`, otherwise the result is `producer_mismatch` — this
+ * prevents callers from being misled by an artifact that claims a different
+ * producer than the trust context they invoked verification under.
  */
 
 import type { BrickArtifact, BrickId } from "@koi/core";
@@ -31,11 +37,19 @@ export interface IntegrityContentMismatch {
   readonly builderId: string;
 }
 
+export interface IntegrityProducerMismatch {
+  readonly kind: "producer_mismatch";
+  readonly ok: false;
+  readonly brickId: BrickId;
+  readonly expectedBuilderId: string;
+  readonly claimedBuilderId: string;
+}
+
 export interface IntegrityProducerUnknown {
   readonly kind: "producer_unknown";
   readonly ok: false;
   readonly brickId: BrickId;
-  readonly builderId: string;
+  readonly expectedBuilderId: string;
 }
 
 export interface IntegrityRecomputeFailed {
@@ -49,6 +63,7 @@ export interface IntegrityRecomputeFailed {
 export type IntegrityResult =
   | IntegrityOk
   | IntegrityContentMismatch
+  | IntegrityProducerMismatch
   | IntegrityProducerUnknown
   | IntegrityRecomputeFailed;
 
@@ -59,18 +74,34 @@ export type RecomputeBrickId = (brick: BrickArtifact) => BrickId;
 export type ProducerRegistry = Readonly<Record<string, RecomputeBrickId>>;
 
 /**
- * Verify a brick by looking up the recompute function registered for its
- * claimed producer (`provenance.builder.id`). Fails closed when no producer
- * matches — callers cannot supply an arbitrary callback.
+ * Verify a brick by looking up the recompute function registered for the
+ * caller-supplied `expectedBuilderId`, then asserting that the artifact's
+ * self-asserted `provenance.builder.id` matches the same value. Fails closed
+ * on every mismatch — callers cannot supply an arbitrary callback, and an
+ * artifact cannot dictate which producer's scheme is applied.
+ *
+ * Note: a successful result proves content-consistency under the expected
+ * producer's identity scheme, NOT cryptographic authenticity. Producer
+ * authenticity requires a separate attestation/signature verification.
  */
 export function verifyBrickIntegrity(
   brick: BrickArtifact,
   registry: ProducerRegistry,
+  expectedBuilderId: string,
 ): IntegrityResult {
-  const builderId = brick.provenance.builder.id;
-  const recompute = registry[builderId];
+  const claimedBuilderId = brick.provenance.builder.id;
+  if (claimedBuilderId !== expectedBuilderId) {
+    return {
+      kind: "producer_mismatch",
+      ok: false,
+      brickId: brick.id,
+      expectedBuilderId,
+      claimedBuilderId,
+    };
+  }
+  const recompute = registry[expectedBuilderId];
   if (recompute === undefined) {
-    return { kind: "producer_unknown", ok: false, brickId: brick.id, builderId };
+    return { kind: "producer_unknown", ok: false, brickId: brick.id, expectedBuilderId };
   }
 
   let recomputedId: BrickId;
@@ -81,13 +112,13 @@ export function verifyBrickIntegrity(
       kind: "recompute_failed",
       ok: false,
       brickId: brick.id,
-      builderId,
+      builderId: expectedBuilderId,
       reason: err instanceof Error ? err.message : String(err),
     };
   }
 
   if (recomputedId === brick.id) {
-    return { kind: "ok", ok: true, brickId: brick.id, builderId };
+    return { kind: "ok", ok: true, brickId: brick.id, builderId: expectedBuilderId };
   }
   return {
     kind: "content_mismatch",
@@ -95,6 +126,6 @@ export function verifyBrickIntegrity(
     brickId: brick.id,
     expectedId: brick.id,
     actualId: recomputedId,
-    builderId,
+    builderId: expectedBuilderId,
   };
 }
