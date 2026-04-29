@@ -78,32 +78,37 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     expect(calls).toBe(1);
   });
 
-  test("concurrent callers share a single factory invocation", async () => {
+  test("concurrent callers each drive their own factory (no in-flight sharing)", async () => {
+    // In-flight sharing was deliberately removed: it would let a second
+    // concurrent caller receive a placeholder cacheable:false admission as
+    // a deduplicated success before any child completed (round-2 review).
+    // After the first call settles AND is cacheable, subsequent sequential
+    // calls hit the settled LRU.
     const cache = createSpawnResultCache(8);
     let calls = 0;
-    let releaseFactory: () => void = () => {};
-    const factory = (): Promise<{ ok: true; output: string }> => {
+    const factory = async (): Promise<{ ok: true; output: string }> => {
       calls += 1;
-      return new Promise((resolve) => {
-        releaseFactory = () => resolve({ ok: true, output: "shared" });
-      });
+      await Promise.resolve();
+      return { ok: true, output: `n=${calls}` };
     };
 
-    const aPromise = cache.runDeduped("k", noAbort(), factory);
-    const bPromise = cache.runDeduped("k", noAbort(), factory);
-    // Allow both to register before settling.
-    await Promise.resolve();
-    releaseFactory();
-    const [a, b] = await Promise.all([aPromise, bPromise]);
+    const [a, b] = await Promise.all([
+      cache.runDeduped("k", noAbort(), factory),
+      cache.runDeduped("k", noAbort(), factory),
+    ]);
 
-    expect(calls).toBe(1);
-    // Exactly one is the driver (deduplicated:false), the other is a shared waiter.
-    const driverCount = [a, b].filter((r) => r.ok && r.deduplicated === false).length;
-    const waiterCount = [a, b].filter((r) => r.ok && r.deduplicated === true).length;
-    expect(driverCount).toBe(1);
-    expect(waiterCount).toBe(1);
-    expect(a).toMatchObject({ ok: true, output: "shared" });
-    expect(b).toMatchObject({ ok: true, output: "shared" });
+    expect(calls).toBe(2);
+    // Both calls settled; both report deduplicated:false (each was its own
+    // driver). The settled cache holds whichever finished last.
+    expect(a).toMatchObject({ ok: true });
+    expect(b).toMatchObject({ ok: true });
+    expect((a as { deduplicated: boolean }).deduplicated).toBe(false);
+    expect((b as { deduplicated: boolean }).deduplicated).toBe(false);
+
+    // After both settle, a third sequential call dedups against the LRU.
+    const c = await cache.runDeduped("k", noAbort(), factory);
+    expect(c).toMatchObject({ ok: true, deduplicated: true });
+    expect(calls).toBe(2);
   });
 
   test("failed factory is not cached and inflight clears so retries can succeed", async () => {
@@ -179,56 +184,36 @@ describe("runDeduped (concurrent + retry dedup)", () => {
     expect(calls).toBe(0);
   });
 
-  test("aborting a waiter on an in-flight call surfaces an abort error to that waiter only", async () => {
+  test("aborting one of two concurrent callers cancels only that caller; the other proceeds", async () => {
     const cache = createSpawnResultCache(8);
-    let releaseDriver: () => void = () => {};
-    const factory = (): Promise<{ ok: true; output: string }> =>
-      new Promise((resolve) => {
-        releaseDriver = () => resolve({ ok: true, output: "shared" });
+    let releaseFirst: () => void = () => {};
+    let releaseSecond: () => void = () => {};
+    let calls = 0;
+    const factory = (): Promise<{ ok: true; output: string }> => {
+      calls += 1;
+      const id = calls;
+      return new Promise((resolve) => {
+        const release = (): void => resolve({ ok: true, output: `n=${id}` });
+        if (id === 1) releaseFirst = release;
+        else releaseSecond = release;
       });
+    };
 
-    const driverCtrl = new AbortController();
-    const waiterCtrl = new AbortController();
-
-    const driverPromise = cache.runDeduped("k", driverCtrl.signal, factory);
-    const waiterPromise = cache.runDeduped("k", waiterCtrl.signal, factory);
+    const ctrlA = new AbortController();
+    const ctrlB = new AbortController();
+    const a = cache.runDeduped("k", ctrlA.signal, factory);
+    const b = cache.runDeduped("k", ctrlB.signal, factory);
     await Promise.resolve();
 
-    waiterCtrl.abort(new Error("waiter cancelled"));
-    const waiterResult = await waiterPromise;
-    expect(waiterResult.ok).toBe(false);
-    expect((waiterResult as { error: string }).error).toContain("waiter cancelled");
+    ctrlA.abort(new Error("A cancelled"));
+    const aResult = await a;
+    expect(aResult.ok).toBe(false);
+    expect((aResult as { error: string }).error).toContain("A cancelled");
 
-    // Driver still completes normally.
-    releaseDriver();
-    const driverResult = await driverPromise;
-    expect(driverResult).toMatchObject({ ok: true, output: "shared", deduplicated: false });
-    expect(cache.get("k")).toBe("shared");
-  });
-
-  test("aborting the driver still lets the background spawn populate the cache for future retries", async () => {
-    const cache = createSpawnResultCache(8);
-    let releaseDriver: () => void = () => {};
-    const factory = (): Promise<{ ok: true; output: string }> =>
-      new Promise((resolve) => {
-        releaseDriver = () => resolve({ ok: true, output: "background-completed" });
-      });
-
-    const ctrl = new AbortController();
-    const driverPromise = cache.runDeduped("k", ctrl.signal, factory);
-    await Promise.resolve();
-    ctrl.abort(new Error("parent abort"));
-
-    const result = await driverPromise;
-    expect(result.ok).toBe(false);
-    expect((result as { error: string }).error).toContain("parent abort");
-
-    // The factory promise is still in flight — let it settle.
-    releaseDriver();
-    // Wait a microtask so the .then handler that writes the cache runs.
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(cache.get("k")).toBe("background-completed");
+    releaseFirst();
+    releaseSecond();
+    const bResult = await b;
+    expect(bResult).toMatchObject({ ok: true });
   });
 
   test("non-abort errors from awaited factory still propagate (no false abort wrapping)", async () => {

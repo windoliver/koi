@@ -1,5 +1,5 @@
 /**
- * SpawnResultCache — bounded LRU + in-flight dedup for idempotent agent_spawn.
+ * SpawnResultCache — bounded LRU for idempotent agent_spawn retries.
  *
  * Key shape: `${parentAgentId}::${agentName}::${taskId}::${digest}` where
  * `digest` is a hash of (agentName, description, context). Including the
@@ -8,15 +8,19 @@
  * work. Without `context.task_id` (or context entirely) the key is
  * `undefined` and dedup is skipped.
  *
- * `runDeduped` coordinates two layers:
- *   1. settled-result LRU — caches successful outputs across retries
- *   2. in-flight Promise map — concurrent callers with the same key share a
- *      single `spawnFn` invocation. The first caller drives the spawn; later
- *      arrivals await its Promise instead of starting their own.
+ * `runDeduped` checks the settled-result LRU before invoking the factory.
+ * On a hit, the cached output is returned immediately (after a fresh abort
+ * check). On a miss, the factory runs to settlement; success is cached if
+ * the result is cacheable. Failures are NOT cached.
  *
- * Failures are NOT cached (retryable infra errors should retry). Inflight
- * entries are cleared in `finally` so a rejection or error result frees
- * the slot for the next attempt.
+ * Concurrent in-flight sharing is intentionally NOT performed. Sharing an
+ * unsettled Promise would let a second caller receive a placeholder
+ * `{ok:true}` admission for non-streaming spawns (deferred / on-demand)
+ * before any child has actually completed, which is incorrect for
+ * partial-failure recovery. The cost of this conservative choice is that
+ * two concurrent calls within the same overlap window each invoke the
+ * factory; the cost is bounded by how rare same-key in-flight overlap is
+ * in practice. See `docs/L2/spawn-tools.md` "Known limitations" §3.
  *
  * LRU is Map insertion-order: `get` promotes (delete + re-insert), `set`
  * evicts the oldest at capacity. Sync — no async overhead on the hot path.
@@ -52,13 +56,11 @@ export interface SpawnResultCache {
   readonly set: (key: string, output: string) => void;
   readonly size: () => number;
   /**
-   * Coordinated dedup. Checks the caller's `signal` before returning a cached
-   * entry or awaiting an in-flight Promise — a cancelled caller never receives
-   * a deduplicated success, because emitting a child output into an aborted
-   * parent turn would violate turn-boundary semantics. The driver caller (the
-   * one that actually invokes `factory`) is also raced against the signal so
-   * that a parent abort during background work surfaces an `AbortError`-shaped
-   * error instead of waiting for `spawnFn` to settle.
+   * Settled-cache dedup. Checks the caller's `signal` before returning a
+   * cached entry — a cancelled caller never receives a deduplicated success,
+   * because emitting a child output into an aborted parent turn would
+   * violate turn-boundary semantics. On miss, invokes `factory`, races its
+   * Promise against the signal, and stores the result if cacheable.
    */
   readonly runDeduped: (
     key: string,
@@ -75,7 +77,6 @@ export function createSpawnResultCache(
   }
 
   const cache = new Map<string, string>();
-  const inflight = new Map<string, Promise<SpawnFactoryResult>>();
 
   function get(key: string): string | undefined {
     const entry = cache.get(key);
@@ -139,48 +140,19 @@ export function createSpawnResultCache(
       return { ok: true, output: settled, deduplicated: true };
     }
 
-    const pending = inflight.get(key);
-    if (pending !== undefined) {
-      try {
-        const shared = await awaitWithAbort(pending, signal);
-        if (!shared.ok) return { ok: false, error: shared.error };
-        return { ok: true, output: shared.output, deduplicated: true };
-      } catch (err) {
-        // Only convert to abortedResult when the signal actually fired —
-        // otherwise the underlying Promise rejected for a different reason
-        // and the caller should see that error.
-        if (signal.aborted) return abortedResult(signal);
-        throw err;
-      }
-    }
-
-    const promise = factory();
-    inflight.set(key, promise);
-    // Inflight lifecycle is tied to the FACTORY promise settling, not to the
-    // driver's await. If the driver is aborted, the factory keeps running in
-    // the background and late waiters must still find the inflight slot.
-    // Cache writing happens here once for all callers, regardless of which
-    // await path observes the result.
-    promise.then(
-      (settled) => {
-        if (settled.ok && settled.cacheable !== false) set(key, settled.output);
-        inflight.delete(key);
-      },
-      () => {
-        inflight.delete(key);
-      },
-    );
-
+    let result: SpawnFactoryResult;
     try {
-      const result = await awaitWithAbort(promise, signal);
-      if (result.ok) {
-        return { ok: true, output: result.output, deduplicated: false };
-      }
-      return { ok: false, error: result.error };
+      result = await awaitWithAbort(factory(), signal);
     } catch (err) {
       if (signal.aborted) return abortedResult(signal);
       throw err;
     }
+
+    if (result.ok) {
+      if (result.cacheable !== false) set(key, result.output);
+      return { ok: true, output: result.output, deduplicated: false };
+    }
+    return { ok: false, error: result.error };
   }
 
   return {

@@ -161,11 +161,13 @@ with cached results. `agent_spawn` does not try to detect that itself.
   Map insertion-order, sync `get`/`set` — no async overhead on the hot path.
 - **Result shape on hit**: `{ ok: true, output, deduplicated: true }` so
   callers (and tests) can distinguish cached from fresh.
-- **Concurrency**: dedup covers both sequential retries (settled cache) and
-  concurrent races (in-flight Promise map). The first caller drives the spawn;
-  later callers with the same key await the same Promise. Inflight entries
-  clear in `finally`, so a rejection or failure result frees the slot for
-  the next attempt.
+- **Concurrency**: dedup covers sequential retries via the settled-result
+  LRU. Concurrent in-flight callers each drive their own factory — sharing
+  an unsettled Promise would let a second concurrent caller receive a
+  `cacheable: false` placeholder admission as a deduplicated success
+  before any child completed (incorrect for non-streaming delivery
+  recovery). After both settle, subsequent sequential retries hit the
+  settled cache as expected.
 
 The runtime (or autonomous spawn bridge from #1553) creates the cache once
 and reuses it across `createSpawnTools` invocations within a session so

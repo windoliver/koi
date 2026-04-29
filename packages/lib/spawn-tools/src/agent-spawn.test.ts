@@ -147,14 +147,15 @@ describe("agent_spawn", () => {
       expect(calls).toHaveLength(2);
     });
 
-    test("concurrent calls with same task_id share a single spawn invocation", async () => {
+    test("concurrent calls with same task_id each drive their own spawn (no in-flight sharing)", async () => {
+      // In-flight sharing was removed: it would let a concurrent retry
+      // receive a deduplicated cacheable:false placeholder for non-streaming
+      // spawns before any child completed. After both settle, sequential
+      // retries dedup against the settled LRU as expected.
       const calls: SpawnRequest[] = [];
-      let release: () => void = () => {};
       const fn: SpawnFn = async (request) => {
         calls.push(request);
-        return new Promise((resolve) => {
-          release = () => resolve({ ok: true, output: "shared-output" });
-        });
+        return { ok: true, output: `n=${calls.length}` };
       };
 
       const tool = createAgentSpawnTool({
@@ -170,22 +171,16 @@ describe("agent_spawn", () => {
         description: "X",
         context: { task_id: "T-7" },
       };
-      const aPromise = tool.execute(args);
-      const bPromise = tool.execute(args);
-      // Allow both to register on the inflight map before resolving.
-      await Promise.resolve();
-      release();
-      const [a, b] = await Promise.all([aPromise, bPromise]);
+      const [a, b] = await Promise.all([tool.execute(args), tool.execute(args)]);
 
-      expect(calls).toHaveLength(1);
-      expect(a).toMatchObject({ ok: true, output: "shared-output" });
-      expect(b).toMatchObject({ ok: true, output: "shared-output" });
-      // Exactly one of the two carries deduplicated:true (the late waiter).
-      const dedupCount = [a, b].filter(
-        (r): r is { ok: true; output: string; deduplicated: true } =>
-          (r as { deduplicated?: boolean }).deduplicated === true,
-      ).length;
-      expect(dedupCount).toBe(1);
+      expect(calls).toHaveLength(2);
+      expect(a).toMatchObject({ ok: true });
+      expect(b).toMatchObject({ ok: true });
+
+      // Sequential retry now hits the settled cache.
+      const c = await tool.execute(args);
+      expect(c).toMatchObject({ ok: true, deduplicated: true });
+      expect(calls).toHaveLength(2);
     });
 
     test("retry with changed description bypasses cache (no stale replay)", async () => {
