@@ -7,8 +7,56 @@ import type {
   DockerExecResult,
 } from "./types.js";
 
+/** Default maximum output bytes for docker exec (1 MiB). */
+const DEFAULT_EXEC_MAX_OUTPUT_BYTES = 1 * 1024 * 1024;
+
 function quoteShellArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Read from a ReadableStream<Uint8Array> up to maxBytes, then cancel the rest.
+ * Returns the decoded text and a truncated flag.
+ *
+ * Prevents an adversarial container from OOMing the host by producing
+ * unbounded output — we stop consuming (and cancel the stream) once the cap
+ * is hit.
+ */
+async function readBoundedText(
+  stream: ReadableStream<Uint8Array>,
+  maxBytes: number,
+): Promise<{ readonly text: string; readonly truncated: boolean }> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  // `let` justified: buf/total/truncated are accumulated across iterations
+  let total = 0;
+  let truncated = false;
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value === undefined) continue;
+    const remaining = maxBytes - total;
+    if (remaining <= 0) {
+      truncated = true;
+      reader.cancel().catch((_: unknown) => {
+        // cancel errors are safe to ignore — we've already stopped reading
+      });
+      break;
+    }
+    const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+    buf += decoder.decode(chunk, { stream: true });
+    total += chunk.byteLength;
+    if (chunk.byteLength < value.byteLength) {
+      truncated = true;
+      reader.cancel().catch((_: unknown) => {
+        // cancel errors are safe to ignore — we've already stopped reading
+      });
+      break;
+    }
+  }
+  buf += decoder.decode();
+  return { text: buf, truncated };
 }
 
 /**
@@ -16,6 +64,9 @@ function quoteShellArg(arg: string): string {
  * Drains stdout and stderr concurrently via Promise.all to prevent pipe-buffer deadlock.
  * When timeoutMs is set, kills the process after the deadline and returns exitCode 124
  * (the same sentinel that classify.ts maps to TIMEOUT).
+ *
+ * Note: non-exec operations (create/start/stop/rm) use this with no maxOutputBytes,
+ * which is fine — their output is bounded by Docker itself (container IDs, status lines).
  */
 async function runDockerWithTimeout(
   args: readonly string[],
@@ -53,6 +104,53 @@ async function runDockerWithTimeout(
   return { exitCode: timedOut ? 124 : (exitCode ?? -1), stdout, stderr };
 }
 
+/**
+ * Run a docker exec command with bounded output capture and optional cwd/timeout.
+ * Applies readBoundedText to both stdout and stderr to prevent host OOM.
+ */
+async function runDockerExecBounded(
+  args: readonly string[],
+  execOpts: DockerExecOpts,
+): Promise<DockerExecResult> {
+  const maxBytes = execOpts.maxOutputBytes ?? DEFAULT_EXEC_MAX_OUTPUT_BYTES;
+  const timeoutMs = execOpts.timeoutMs;
+
+  const proc = Bun.spawn(["docker", ...args], {
+    stdin:
+      execOpts.stdin !== undefined ? new TextEncoder().encode(execOpts.stdin) : ("ignore" as const),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  // `let` justified: timedOut and timer are mutated inside the callback.
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (timeoutMs !== undefined && timeoutMs > 0) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill(9);
+    }, timeoutMs);
+    if ("unref" in timer && typeof timer.unref === "function") timer.unref();
+  }
+
+  // Drain both streams with byte-cap to prevent host OOM from adversarial containers.
+  const [stdoutResult, stderrResult, exitCode] = await Promise.all([
+    readBoundedText(proc.stdout, maxBytes),
+    readBoundedText(proc.stderr, maxBytes),
+    proc.exited,
+  ]);
+
+  if (timer !== undefined) clearTimeout(timer);
+
+  const truncated = stdoutResult.truncated || stderrResult.truncated;
+  return {
+    exitCode: timedOut ? 124 : (exitCode ?? -1),
+    stdout: stdoutResult.text,
+    stderr: stderrResult.text,
+    truncated,
+  };
+}
+
 /** Convenience wrapper for calls that do not need a timeout. */
 async function runDocker(args: readonly string[], stdin?: string): Promise<DockerExecResult> {
   return runDockerWithTimeout(args, stdin, undefined);
@@ -70,14 +168,24 @@ function buildCreateArgs(opts: DockerCreateOpts): readonly string[] {
   return args;
 }
 
+function buildExecArgs(id: string, cmd: string, execOpts: DockerExecOpts): readonly string[] {
+  // `let` justified: args are built incrementally with optional flags
+  const args: string[] = ["exec"];
+  for (const [k, v] of Object.entries(execOpts.env ?? {})) args.push("--env", `${k}=${v}`);
+  if (execOpts.cwd !== undefined) {
+    // Pass cwd as a separate argv element after --workdir — no shell interpolation.
+    args.push("--workdir", execOpts.cwd);
+  }
+  args.push(id, "sh", "-c", cmd);
+  return args;
+}
+
 function makeContainer(id: string): DockerContainer {
   return {
     id,
     exec: async (cmd: string, execOpts: DockerExecOpts = {}): Promise<DockerExecResult> => {
-      const args: string[] = ["exec"];
-      for (const [k, v] of Object.entries(execOpts.env ?? {})) args.push("--env", `${k}=${v}`);
-      args.push(id, "sh", "-c", cmd);
-      return runDockerWithTimeout(args, execOpts.stdin, execOpts.timeoutMs);
+      const args = buildExecArgs(id, cmd, execOpts);
+      return runDockerExecBounded(args, execOpts);
     },
     readFile: async (path: string): Promise<Uint8Array> => {
       const r = await runDocker(["exec", id, "base64", path]);

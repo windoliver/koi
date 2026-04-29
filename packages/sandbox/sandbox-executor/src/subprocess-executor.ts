@@ -17,6 +17,14 @@
  * Resource limits note:
  *   KOI_MAX_MEMORY_MB and KOI_MAX_PIDS are informational env vars. Real OS-level
  *   enforcement requires composition with @koi/sandbox-os.
+ *
+ * Process-group kill note:
+ *   When `setsid` is available (Linux/macOS), the child is spawned as a new
+ *   session leader so that killing -proc.pid (negative) sends SIGKILL to the
+ *   entire process group, including grandchildren. On environments where setsid
+ *   is not on PATH (Windows, minimal containers), descendant cleanup is
+ *   best-effort: only the direct Bun child is killed.
+ *   TODO: explore Bun.spawn's posix_spawn flags as an alternative when available.
  */
 
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -152,6 +160,99 @@ function buildChildEnv(context?: ExecutionContext): Readonly<Record<string, stri
   return env;
 }
 
+/**
+ * Read from a ReadableStream<Uint8Array> up to maxBytes, then cancel the rest.
+ * Returns the decoded text and a truncated flag.
+ *
+ * This prevents an adversarial child from OOMing the host by producing unbounded
+ * output — we stop consuming (and cancel the stream) once the cap is hit.
+ */
+async function readBoundedText(
+  stream: ReadableStream<Uint8Array>,
+  maxBytes: number,
+): Promise<{ readonly text: string; readonly truncated: boolean }> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  // `let` justified: buf/total/truncated are accumulated across iterations
+  let total = 0;
+  let truncated = false;
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value === undefined) continue;
+    const remaining = maxBytes - total;
+    if (remaining <= 0) {
+      truncated = true;
+      reader.cancel().catch((_: unknown) => {
+        // cancel errors are safe to ignore — we've already stopped reading
+      });
+      break;
+    }
+    const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+    buf += decoder.decode(chunk, { stream: true });
+    total += chunk.byteLength;
+    if (chunk.byteLength < value.byteLength) {
+      truncated = true;
+      reader.cancel().catch((_: unknown) => {
+        // cancel errors are safe to ignore — we've already stopped reading
+      });
+      break;
+    }
+  }
+  buf += decoder.decode();
+  return { text: buf, truncated };
+}
+
+// ---------------------------------------------------------------------------
+// Process-group kill (Fix 2)
+//
+// setsid availability is probed once lazily at first spawn.
+// `let` justified: lazily populated on first use.
+// ---------------------------------------------------------------------------
+
+/** Cached result of setsid availability probe. undefined = not yet checked. */
+let _setsidPath: string | null | undefined;
+
+/** Lazily resolve the path to `setsid`, or null if unavailable. */
+function resolveSetsid(): string | null {
+  if (_setsidPath !== undefined) return _setsidPath;
+  try {
+    const r = Bun.spawnSync(["which", "setsid"], { stdout: "pipe", stderr: "ignore" });
+    if (r.exitCode === 0 && r.stdout !== null) {
+      // Convert Buffer to Uint8Array for TextDecoder compatibility under strict TS6.
+      const bytes = new Uint8Array(r.stdout.buffer, r.stdout.byteOffset, r.stdout.byteLength);
+      const path = new TextDecoder().decode(bytes).trim();
+      _setsidPath = path.length > 0 ? path : null;
+    } else {
+      _setsidPath = null;
+    }
+  } catch (_: unknown) {
+    _setsidPath = null;
+  }
+  return _setsidPath;
+}
+
+/**
+ * Kill the child process and, when setsid was used, the entire process group.
+ * Falls back to direct proc.kill(9) if group-kill fails or setsid was absent.
+ */
+function killChild(
+  proc: { readonly pid?: number; readonly kill: (signal?: number) => void },
+  usedSetsid: boolean,
+): void {
+  if (usedSetsid && proc.pid !== undefined) {
+    try {
+      // Negative PID = send signal to the whole process group.
+      process.kill(-proc.pid, "SIGKILL");
+      return;
+    } catch (_: unknown) {
+      // Group kill failed — fall through to direct kill.
+    }
+  }
+  proc.kill(9);
+}
+
 type ExecuteResult =
   | { readonly ok: true; readonly value: SandboxResult }
   | { readonly ok: false; readonly error: SandboxError };
@@ -186,6 +287,14 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
         // Always build a sanitized child env — never inherit parent's full process.env.
         const childEnv = buildChildEnv(context);
 
+        // Wrap child in setsid when available so we can kill the entire process
+        // group (including grandchildren) via process.kill(-pid, "SIGKILL").
+        const setsidPath = resolveSetsid();
+        const usedSetsid = setsidPath !== null;
+        const cmd = usedSetsid
+          ? [setsidPath, bunPath, "run", runnerPath, codePath, JSON.stringify(input ?? null)]
+          : [bunPath, "run", runnerPath, codePath, JSON.stringify(input ?? null)];
+
         const spawnOpts = {
           stdout: "pipe" as const,
           stderr: "pipe" as const,
@@ -195,35 +304,35 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
           env: childEnv,
         };
 
-        const proc = Bun.spawn(
-          [bunPath, "run", runnerPath, codePath, JSON.stringify(input ?? null)],
-          spawnOpts,
-        );
+        const proc = Bun.spawn(cmd, spawnOpts);
 
-        // Kill the process after timeout.
+        // Kill the process (group) after timeout.
         // `let` justified: `killed` is a mutable flag set inside the timer callback.
         let killed = false;
         const timer = setTimeout(() => {
           killed = true;
-          proc.kill(9);
+          killChild(proc, usedSetsid);
         }, timeoutMs);
 
         // Bun's Timer type does not expose `unref` in its declared types but the
         // underlying object supports it at runtime — check defensively.
         if ("unref" in timer && typeof timer.unref === "function") timer.unref();
 
-        // Fix 2: Drain stdout AND stderr concurrently before awaiting proc.exited.
+        // Drain stdout AND stderr concurrently using bounded readers (Fix 1).
         // A chatty child that fills the stdout pipe buffer will deadlock if we only
         // await proc.exited while leaving stdout unread. Start both drains first.
-        const [rawStdout, rawStderr, exitCode] = await Promise.all([
-          new Response(proc.stdout).text(),
-          new Response(proc.stderr).text(),
+        // Both streams are capped at maxOutputBytes to prevent host OOM.
+        const [stdoutResult, stderrResult, exitCode] = await Promise.all([
+          readBoundedText(proc.stdout, maxOutputBytes),
+          readBoundedText(proc.stderr, maxOutputBytes),
           proc.exited,
         ]);
         clearTimeout(timer);
 
-        // Suppress unused stdout (we only drain to prevent deadlock).
-        void rawStdout.slice(0, maxOutputBytes);
+        // If stdout was truncated, kill the child so it stops producing output.
+        if (stdoutResult.truncated || stderrResult.truncated) {
+          killChild(proc, usedSetsid);
+        }
 
         const durationMs = Date.now() - start;
 
@@ -241,13 +350,26 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
           return { ok: false, error };
         }
 
+        // When stderr was truncated, the framing marker may have been cut off.
+        // Treat a truncated stderr the same as a missing marker → CRASH.
+        if (stderrResult.truncated) {
+          const snippet = `${stderrResult.text.slice(-2000)} [truncated]`;
+          const error: SandboxError = {
+            code: "CRASH",
+            message: "Sandbox stderr exceeded output limit; result marker may be missing",
+            durationMs,
+            stack: snippet,
+          };
+          return { ok: false, error };
+        }
+
         // Search marker in full text; only apply maxOutputBytes to the snippet
         // used in CRASH error messages (truncating before the search would miss
         // markers that land past the cap and misclassify results as CRASH).
-        const framed = parseFramedResult(rawStderr);
+        const framed = parseFramedResult(stderrResult.text);
 
         if (framed === undefined) {
-          const snippet = rawStderr.slice(-2000).slice(0, maxOutputBytes);
+          const snippet = stderrResult.text.slice(-2000).slice(0, maxOutputBytes);
           const error: SandboxError = {
             code: "CRASH",
             message: "Sandbox exited without result marker",

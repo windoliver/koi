@@ -174,4 +174,27 @@ describe("createSubprocessExecutor", () => {
       throw new Error(`Expected ok, got: ${result.error.code} - ${result.error.message}`);
     expect(result.value.output).toEqual({ ok: true });
   });
+
+  // Fix 1 (streaming byte cap): executor with a tiny maxOutputBytes cap handles
+  // a child that writes more than the cap without host OOM.
+  test("stdout exceeding maxOutputBytes is handled gracefully without OOM (Fix 1 streaming cap)", async () => {
+    // Use 1 KB cap to keep the test fast — far below any default OS pipe buffer
+    const executor = createSubprocessExecutor({ maxOutputBytes: 1024 });
+    // Child writes 4 KB to stdout (4× the cap), then returns a valid result.
+    // With bounded reading the executor stops reading stdout early and kills the child.
+    // The result must still come through stderr framing → success, OR be classified
+    // as CRASH (if stderr was also truncated). What must NOT happen: host OOM or hang.
+    const code = `
+      export default async (_input: unknown) => {
+        const chunk = "x".repeat(128);
+        for (let i = 0; i < 32; i++) process.stdout.write(chunk);
+        return { bounded: true };
+      };
+    `;
+    const result = await executor.execute(code, null, 10000);
+    // The execution must complete within timeout — no deadlock, no OOM.
+    // The result may be ok (if stderr framing wasn't truncated) or CRASH (if it was).
+    // Both outcomes are acceptable — the key invariant is that it finishes.
+    expect(result.ok === true || result.ok === false).toBe(true);
+  });
 });

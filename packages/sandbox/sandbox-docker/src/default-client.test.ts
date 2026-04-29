@@ -370,4 +370,58 @@ describe("createDefaultDockerClient", () => {
       spawnSpy.mockRestore();
     }
   });
+
+  // Fix 3: bounded exec — container.exec passes --workdir when cwd is set
+  test("container.exec: passes --workdir when cwd option is set", async () => {
+    let callCount = 0;
+    const execArgs: string[][] = [];
+    // @ts-expect-error — test stub: returning a partial SubProcess for coverage
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
+      callCount += 1;
+      if (callCount <= 2) {
+        return fakeProc({ stdout: "cwdid\n", stderr: "", exitCode: 0 });
+      }
+      execArgs.push(args);
+      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      const container = await client.createContainer({
+        image: "ubuntu:22.04",
+        networkMode: "none",
+      });
+      await container.exec("pwd", { cwd: "/workspace/project" });
+      const first = execArgs[0] ?? [];
+      expect(first).toContain("--workdir");
+      expect(first).toContain("/workspace/project");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Fix 3: bounded exec returns truncated=true when output hits the byte cap
+  test("container.exec: returns truncated=true when output exceeds maxOutputBytes", async () => {
+    let callCount = 0;
+    // Generate a string slightly larger than our test cap (64 bytes)
+    const bigOutput = "x".repeat(128);
+    // @ts-expect-error — test stub: returning a partial SubProcess for coverage
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) => {
+      callCount += 1;
+      if (callCount <= 2) return fakeProc({ stdout: "trid\n", stderr: "", exitCode: 0 });
+      return fakeProc({ stdout: bigOutput, stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      const container = await client.createContainer({
+        image: "ubuntu:22.04",
+        networkMode: "none",
+      });
+      // Set a small cap so the 128-byte output triggers truncation
+      const r = await container.exec("cat /big", { maxOutputBytes: 64 });
+      expect(r.truncated).toBe(true);
+      expect(r.stdout.length).toBeLessThanOrEqual(64);
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
 });

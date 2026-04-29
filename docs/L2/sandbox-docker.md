@@ -58,6 +58,19 @@ export function createDockerAdapter(
 - `SANDBOX_TIMEOUT` — exec exceeded `timeoutMs`
 - `SANDBOX_CRASH` — non-zero exit code, OOM, or signal
 
+## SandboxExecOptions support
+
+| Option          | Status            | Notes                                                              |
+|-----------------|-------------------|--------------------------------------------------------------------|
+| `cwd`           | Supported         | Passed as `--workdir` to `docker exec`                            |
+| `env`           | Supported         | Passed as `--env K=V` to `docker exec`                            |
+| `stdin`         | Supported         | Piped to the spawned docker process                               |
+| `timeoutMs`     | Supported         | Arms a kill timer; exitCode 124 sentinel maps to TIMEOUT          |
+| `maxOutputBytes`| Supported         | Both stdout and stderr capped; `truncated` flag set on result     |
+| `signal`        | Supported         | Pre-abort → immediate exitCode 130; mid-flight → race + return 130|
+| `onStdout`      | Rejected (throws) | Docker backend buffers; use `result.stdout` instead               |
+| `onStderr`      | Rejected (throws) | Docker backend buffers; use `result.stderr` instead               |
+
 ## v1 references
 
 `archive/v1/packages/virt/sandbox-docker` — ported `types.ts`, `profile-to-opts.ts`,

@@ -6,12 +6,18 @@ export interface DockerExecResult {
   readonly exitCode: number;
   readonly stdout: string;
   readonly stderr: string;
+  /** True when stdout or stderr was truncated due to maxOutputBytes. */
+  readonly truncated?: boolean;
 }
 
 export interface DockerExecOpts {
   readonly env?: Readonly<Record<string, string>>;
   readonly stdin?: string;
   readonly timeoutMs?: number;
+  /** Working directory inside the container. */
+  readonly cwd?: string;
+  /** Maximum bytes to buffer for stdout + stderr combined. */
+  readonly maxOutputBytes?: number;
 }
 
 export interface DockerContainer {

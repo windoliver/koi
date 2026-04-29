@@ -43,6 +43,23 @@ export function createSubprocessExecutor(
 4. SIGKILLs on timeout; classifies non-zero exits as `CRASH`/`OOM`/`PERMISSION`.
 5. Returns `Result<SandboxResult, SandboxError>`.
 
+## Output capping
+
+Both stdout and stderr are read with a streaming byte-cap (`readBoundedText`) that
+stops consuming and cancels the reader once `maxOutputBytes` is reached. When the cap
+is hit, the child is killed via `killChild` so it doesn't keep producing output.
+This prevents an adversarial child from OOMing the host.
+
+## Process-group kill
+
+On Linux/macOS with `setsid` on PATH, the child is wrapped in a new session
+(`setsid bun run ...`). Kill sends `SIGKILL` to `-proc.pid` (negative PID = whole
+process group), cleaning up grandchild processes automatically.
+
+On environments without `setsid` (Windows, minimal containers), only the direct
+child is killed. Descendant cleanup is best-effort in those cases.
+**TODO**: explore Bun.spawn posix\_spawn flags as a portable alternative.
+
 ## v1 references
 
 `archive/v1/packages/virt/sandbox-executor` — ported `subprocess-runner.ts`,
