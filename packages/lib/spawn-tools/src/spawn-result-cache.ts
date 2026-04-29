@@ -29,7 +29,18 @@ import { computeContentHash } from "@koi/hash";
 export const DEFAULT_SPAWN_CACHE_CAP = 256;
 
 export type SpawnFactoryResult =
-  | { readonly ok: true; readonly output: string }
+  | {
+      readonly ok: true;
+      readonly output: string;
+      /**
+       * Whether this result represents a completed child execution and may be
+       * cached for future retries. Defaults to `true` when omitted. Set to
+       * `false` for deferred / on-demand delivery modes where `spawnFn` returns
+       * before the child finishes — caching a partial/empty output would mask
+       * a later child failure on retry.
+       */
+      readonly cacheable?: boolean;
+    }
   | { readonly ok: false; readonly error: string };
 
 export type SpawnRunResult =
@@ -97,7 +108,7 @@ export function createSpawnResultCache(
     try {
       const result = await promise;
       if (result.ok) {
-        set(key, result.output);
+        if (result.cacheable !== false) set(key, result.output);
         return { ok: true, output: result.output, deduplicated: false };
       }
       return { ok: false, error: result.error };

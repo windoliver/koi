@@ -99,7 +99,7 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
       const childDescription = descriptionWithContext(description, context);
 
       const invokeSpawn = async (): Promise<
-        | { readonly ok: true; readonly output: string }
+        | { readonly ok: true; readonly output: string; readonly cacheable?: boolean }
         | { readonly ok: false; readonly error: string }
       > => {
         const result = await config.spawnFn({
@@ -110,7 +110,12 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
           agentId: config.agentId,
         });
         if (!result.ok) return { ok: false, error: result.error.message };
-        return { ok: true, output: result.output };
+        // Empty output indicates deferred/on-demand delivery — `spawnFn` returned
+        // before the child finished. Caching that placeholder would mask a later
+        // child failure on retry, so we report success to the caller but keep
+        // the cache entry from being created.
+        const cacheable = result.output.length > 0;
+        return { ok: true, output: result.output, cacheable };
       };
 
       const cacheKey =
