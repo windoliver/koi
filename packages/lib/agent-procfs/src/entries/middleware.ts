@@ -1,16 +1,16 @@
-import type { ProcEntry } from "@koi/core";
+import type { Agent, ProcEntry } from "@koi/core";
 
-export function middlewareEntry(_agent: unknown): ProcEntry {
+export function middlewareEntry(agent: Agent): ProcEntry {
+  // Middleware components are keyed by `middleware:<name>` SubsystemTokens.
+  // Enumerate via agent.query<unknown>("middleware:") and report names + token.
   return {
     read: () => {
-      // No public enumeration API for middleware; fall back to empty array
-      // The middleware tokens exist but are queried with agent.query<T>(prefix),
-      // which requires knowing the type T at compile time. Without a public
-      // middleware registry, we return [] with a comment.
-      return [];
+      const mw = agent.query<unknown>("middleware:");
+      return Array.from(mw.keys()).map((token) => ({
+        token,
+        name: token.replace(/^middleware:/, ""),
+      }));
     },
-    list: () => {
-      return [];
-    },
+    list: () => Array.from(agent.query<unknown>("middleware:").keys()),
   };
 }

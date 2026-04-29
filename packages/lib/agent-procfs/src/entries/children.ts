@@ -13,7 +13,7 @@ export function childrenEntry(agent: Agent, registry: AgentRegistry): ProcEntry 
     },
     list: async () => {
       const children = await registry.list({ parentId: agent.pid.id });
-      return children.map((entry) => entry.agentId as string);
+      return children.map((entry) => entry.agentId);
     },
   };
 }
