@@ -502,6 +502,78 @@ describe("createRlmMiddleware", () => {
     expect(usageChunk.outputTokens).toBeGreaterThan(0);
   });
 
+  test("wrapModelStream synthesizes content from done.response.richContent text blocks when content/deltas are empty", async () => {
+    // Some adapters return final text only as richContent text blocks
+    // (no top-level content, no streamed deltas). Without this backfill
+    // RLM would reassemble oversized streamed turns into empty answers
+    // even though the model produced text.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    let segmentCount = 0;
+    const upstream: ModelStreamHandler = async function* () {
+      segmentCount += 1;
+      const seg = segmentCount;
+      yield {
+        kind: "done",
+        response: {
+          content: "",
+          model: "rich-model",
+          stopReason: "stop" as const,
+          richContent: [{ kind: "text", text: `rich-seg${seg}` }],
+        },
+      };
+    };
+    const big = "y".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    const chunks: ModelChunk[] = [];
+    for await (const c of iter) chunks.push(c);
+    const done = chunks.find((c) => c.kind === "done");
+    if (done === undefined || done.kind !== "done") throw new Error("expected done");
+    expect(done.response.content).toContain("rich-seg1");
+    expect(segmentCount).toBeGreaterThan(1);
+  });
+
+  test("wrapModelStream aborts when upstream emits streamed tool_call_* chunks even without done", async () => {
+    // Adapters that surface tool calls only as streaming chunks (and do
+    // not echo them in done.response richContent / stopReason) would
+    // otherwise bypass RLM's tool-fan-out safety invariant. consumeStream
+    // must synthesize a terminal response with stopReason='tool_use' so
+    // dispatch's stopReason guard aborts segment reassembly.
+    const mw = createRlmMiddleware({
+      maxInputTokens: 30,
+      maxChunkChars: 100,
+      acknowledgeSegmentLocalContract: true,
+    });
+    const upstream: ModelStreamHandler = async function* () {
+      yield {
+        kind: "tool_call_start",
+        toolName: "search",
+        callId: toolCallId("c1"),
+      };
+      yield {
+        kind: "tool_call_end",
+        callId: toolCallId("c1"),
+      };
+    };
+    const big = "z".repeat(400);
+    const iter = mw.wrapModelStream?.(turnCtx(), { messages: [userMessage(big)] }, upstream);
+    if (iter === undefined) throw new Error("expected wrapModelStream");
+    let threw = false;
+    try {
+      for await (const _c of iter) {
+        // expected: stopReason='tool_use' triggers segment-level abort
+      }
+    } catch (err: unknown) {
+      threw = true;
+      expect(String(err)).toMatch(/RLM streaming segment/i);
+    }
+    expect(threw).toBe(true);
+  });
+
   test("wrapModelStream folds upstream 'error' chunks into stopReason='error' (not bare throw)", async () => {
     // ModelChunk.error is a first-class stream outcome carrying message
     // + optional usage. The query-engine stream consumer folds it into

@@ -14,6 +14,7 @@ import type {
   CapabilityFragment,
   KoiMiddleware,
   ModelChunk,
+  ModelContentBlock,
   ModelHandler,
   ModelRequest,
   ModelResponse,
@@ -354,7 +355,20 @@ async function consumeStream(
       const response = chunk.response;
       model = response.model;
       if (response.responseId !== undefined) responseId = response.responseId;
-      const content = response.content.length > 0 ? response.content : streamedText;
+      // Three-step backfill order: prefer the explicit content field;
+      // fall back to accumulated text_delta chunks; finally synthesize
+      // from richContent text blocks. Adapters that emit final text
+      // only in richContent (no top-level content, no streamed deltas)
+      // would otherwise reassemble to an empty answer.
+      let content = response.content;
+      if (content.length === 0) content = streamedText;
+      if (content.length === 0 && response.richContent !== undefined) {
+        let richText = "";
+        for (const block of response.richContent) {
+          if (block.kind === "text") richText += block.text;
+        }
+        content = richText;
+      }
       const usage =
         response.usage ??
         (sawUsage ? { inputTokens: streamedInput, outputTokens: streamedOutput } : undefined);
@@ -362,6 +376,37 @@ async function consumeStream(
         ...response,
         content,
         ...(usage !== undefined ? { usage } : {}),
+      };
+    }
+    if (
+      chunk.kind === "tool_call_start" ||
+      chunk.kind === "tool_call_delta" ||
+      chunk.kind === "tool_call_end"
+    ) {
+      // Streamed tool calls are a structured fail-closed signal even if
+      // the terminal `done.response` does not echo them in richContent
+      // / stopReason. Synthesize a terminal response carrying
+      // stopReason='tool_use' + a richContent tool_call placeholder so
+      // dispatchSegmented's stopReason guard + hasToolCallBlock check
+      // both abort reassembly. Without this, an adapter that surfaces
+      // tool use only via streaming chunks would silently bypass RLM's
+      // tool-fan-out safety invariant.
+      const toolCallBlock: ModelContentBlock = {
+        kind: "tool_call",
+        id: chunk.kind === "tool_call_start" ? chunk.callId : chunk.callId,
+        name: chunk.kind === "tool_call_start" ? chunk.toolName : "unknown",
+        arguments: {},
+      };
+      const usage = sawUsage
+        ? { inputTokens: streamedInput, outputTokens: streamedOutput }
+        : undefined;
+      return {
+        content: streamedText,
+        model,
+        ...(usage !== undefined ? { usage } : {}),
+        stopReason: "tool_use",
+        ...(responseId !== undefined ? { responseId } : {}),
+        richContent: [toolCallBlock],
       };
     }
     if (chunk.kind === "error") {
