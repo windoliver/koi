@@ -145,7 +145,8 @@ describe("classifyErrorForChannel discriminated output", () => {
       const out = classifyErrorForChannel(err);
       if (out.kind !== "auth-required") throw new Error("expected auth-required");
       expect(out.auth).toEqual({
-        unverifiedAuthorizationUrl: "https://issuer.example",
+        // URL is canonicalized via the URL constructor.
+        unverifiedAuthorizationUrl: "https://issuer.example/",
         scope: "read",
       });
     });
@@ -168,6 +169,66 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(serialized).not.toContain("secret stack trace");
       // No raw `error` field on the discriminant — only `auth` is exposed.
       expect(out).not.toHaveProperty("error");
+    });
+
+    it("normalizes the authorization URL and rejects unsafe schemes", () => {
+      // javascript: scheme is dropped — never expose an XSS-risky link.
+      const xss = baseError("AUTH_REQUIRED", "x", {
+        context: { authorizationUrl: "javascript:alert(1)" },
+      });
+      const xssOut = classifyErrorForChannel(xss);
+      if (xssOut.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(xssOut.auth.unverifiedAuthorizationUrl).toBeUndefined();
+
+      // data: scheme is dropped.
+      const dataUrl = baseError("AUTH_REQUIRED", "x", {
+        context: { authorizationUrl: "data:text/html,<script>alert(1)</script>" },
+      });
+      const dataOut = classifyErrorForChannel(dataUrl);
+      if (dataOut.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(dataOut.auth.unverifiedAuthorizationUrl).toBeUndefined();
+
+      // ftp scheme is dropped.
+      const ftp = baseError("AUTH_REQUIRED", "x", {
+        context: { authorizationUrl: "ftp://issuer.example/auth" },
+      });
+      const ftpOut = classifyErrorForChannel(ftp);
+      if (ftpOut.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(ftpOut.auth.unverifiedAuthorizationUrl).toBeUndefined();
+    });
+
+    it("strips control/bidi chars from the authorization URL before parsing", () => {
+      // Inject a bidi (RLO U+202E) and a null byte into the URL string.
+      const hostile = `https://issuer.example/oauth‮ `;
+      const err = baseError("AUTH_REQUIRED", "x", {
+        context: { authorizationUrl: hostile },
+      });
+      const out = classifyErrorForChannel(err);
+      if (out.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(out.auth.unverifiedAuthorizationUrl).toBeDefined();
+      // No bidi/control chars remain on the way out.
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: testing strip behavior
+      expect(out.auth.unverifiedAuthorizationUrl).not.toMatch(/\u202E/);
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: testing strip behavior
+      expect(out.auth.unverifiedAuthorizationUrl).not.toMatch(/\x00/);
+    });
+
+    it("rejects malformed authorization URLs", () => {
+      const malformed = baseError("AUTH_REQUIRED", "x", {
+        context: { authorizationUrl: "not a url" },
+      });
+      const out = classifyErrorForChannel(malformed);
+      if (out.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(out.auth.unverifiedAuthorizationUrl).toBeUndefined();
+    });
+
+    it("rejects oversized authorization URLs", () => {
+      const oversized = baseError("AUTH_REQUIRED", "x", {
+        context: { authorizationUrl: `https://issuer.example/${"a".repeat(3000)}` },
+      });
+      const out = classifyErrorForChannel(oversized);
+      if (out.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(out.auth.unverifiedAuthorizationUrl).toBeUndefined();
     });
 
     it("sanitizes and length-caps the auth scope (untrusted upstream input)", () => {

@@ -569,8 +569,17 @@ describe("createRateLimiter", () => {
     // signal fires. Models a well-behaved transport that honors cancellation.
     const cancelOnAbort: SendFn = (signal) =>
       new Promise<void>((_resolve, reject) => {
-        if (signal.aborted) return reject(new Error("aborted"));
-        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        // Compliant adapter: when honoring abort, rejects with a TIMEOUT
+        // KoiError so the late-outcome path surfaces TIMEOUT semantics
+        // upstream (instead of an opaque "aborted" Error).
+        const timeoutErr: KoiError = {
+          code: "TIMEOUT",
+          message: "aborted",
+          retryable: false,
+          context: { phase: "deadline-exceeded" },
+        };
+        if (signal.aborted) return reject(timeoutErr);
+        signal.addEventListener("abort", () => reject(timeoutErr), { once: true });
       });
 
     it("rejects the in-flight entry with TIMEOUT KoiError after the deadline", async () => {

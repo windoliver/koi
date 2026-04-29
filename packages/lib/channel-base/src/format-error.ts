@@ -96,6 +96,37 @@ function sanitizeValidationMessage(raw: string): string {
 // (space-separated lists of resource identifiers), short enough that a
 // hostile producer cannot dump arbitrary attacker text into adapter UX.
 const SCOPE_MAX_LEN = 200;
+// Cap on auth URL length. Real OAuth issuer authorize URLs are well under
+// 2KB; anything longer is almost certainly an attacker payload smuggled
+// through the auth handoff (overflowing logs, breaking renderers, etc.).
+const AUTH_URL_MAX_LEN = 2_048;
+
+/**
+ * Normalizes an authorization URL into a render-safe candidate. Returns
+ * `undefined` when the input is malformed, oversized, or uses a scheme
+ * that does not belong in a clickable auth prompt (only http/https are
+ * accepted — ftp/file/javascript:/data: are not). The result still
+ * carries the `unverified` prefix because channel-base cannot validate
+ * the host against tenant trust policy; adapters MUST run their own
+ * allowlist check before rendering.
+ */
+function normalizeAuthUrl(raw: string): string | undefined {
+  // Strip control/bidi chars and bound the size before parsing — keeps
+  // bidi tricks and oversized payloads out of the URL constructor and
+  // out of any logs that might capture this value.
+  const cleaned = raw.replace(CONTROL_CHARS, "").replace(UNICODE_CONTROL_CHARS, "").trim();
+  if (cleaned.length === 0 || cleaned.length > AUTH_URL_MAX_LEN) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(cleaned);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return undefined;
+  // URL.toString() canonicalizes (lowercases host, normalizes percent-
+  // encoding) — that's what we want adapters to see and validate.
+  return parsed.toString();
+}
 
 function extractAuthHandoff(error: KoiError): {
   readonly unverifiedAuthorizationUrl?: string;
@@ -105,7 +136,10 @@ function extractAuthHandoff(error: KoiError): {
   if (ctx === undefined || ctx === null || typeof ctx !== "object") return {};
   const out: { unverifiedAuthorizationUrl?: string; scope?: string } = {};
   const url = (ctx as Record<string, unknown>).authorizationUrl;
-  if (typeof url === "string") out.unverifiedAuthorizationUrl = url;
+  if (typeof url === "string") {
+    const normalized = normalizeAuthUrl(url);
+    if (normalized !== undefined) out.unverifiedAuthorizationUrl = normalized;
+  }
   const scope = (ctx as Record<string, unknown>).scope;
   if (typeof scope === "string") {
     // Sanitize: strip ASCII/Unicode control chars and chat-formatting

@@ -458,14 +458,17 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
                 lastError = undefined;
                 break;
               }
-              if (late.kind === "failure" && isKoiError(late.error)) {
-                // Real structured terminal error arrived after the
-                // deadline. Use it for retry classification and the
-                // caller-facing rejection. We require KoiError because
-                // an abort-honoring transport typically rejects with a
-                // generic abort error that is indistinguishable from a
-                // transport hiccup; only structured KoiError responses
-                // represent a real terminal classification.
+              if (late.kind === "failure") {
+                // Real terminal error arrived after the deadline. Use it
+                // for both retry classification and the caller-facing
+                // rejection. Custom isRetryable / extractRetryAfterMs
+                // hooks need to see the actual provider error (e.g. SDK
+                // 429s, plain Errors from non-Koi transports) — discarding
+                // them here would silently swallow retryable failures and
+                // mis-classify terminal ones. Adapters that honor abort
+                // and reject with a generic abort error get that error
+                // surfaced too; if they want TIMEOUT semantics, they
+                // should reject with a TIMEOUT KoiError on abort.
                 classifyError = late.error;
                 lastError = late.error;
               }
