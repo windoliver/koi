@@ -60,7 +60,21 @@ function collectRegressions(
   const currentIds = new Set(current.byTask.map((t) => t.taskId));
   for (const cur of current.byTask) {
     const base = baselineByTask.get(cur.taskId);
-    if (base === undefined) continue;
+    if (base === undefined) {
+      // New task added to the suite. Treat anything below a perfect pass
+      // as a regression so freshly added failing evals cannot slip through
+      // by hiding behind the overall-pass-rate threshold.
+      if (cur.passRate < 1) {
+        out.push({
+          taskId: cur.taskId,
+          metric: "passRate",
+          baseline: 1,
+          current: cur.passRate,
+          delta: cur.passRate - 1,
+        });
+      }
+      continue;
+    }
     pushIfRegressed(out, cur.taskId, "passRate", base.passRate, cur.passRate, passRateDelta);
     pushIfRegressed(out, cur.taskId, "meanScore", base.meanScore, cur.meanScore, scoreDelta);
   }

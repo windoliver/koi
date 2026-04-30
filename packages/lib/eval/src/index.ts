@@ -24,10 +24,11 @@ export type { ToolCallOptions } from "./graders/tool-call.js";
 export { toolCall } from "./graders/tool-call.js";
 export { compareRuns } from "./regression.js";
 export { runEval } from "./runner.js";
-export { runSelfTest } from "./self-test.js";
+export { runSelfTest, SELF_TEST_ABORT_REASON } from "./self-test.js";
 export { createFsStore } from "./store.js";
 export type {
   AgentHandle,
+  CancellationStatus,
   CheckResult,
   EvalDefaults,
   EvalExpectation,

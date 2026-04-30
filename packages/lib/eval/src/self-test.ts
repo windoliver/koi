@@ -39,6 +39,17 @@ export async function runSelfTest(
   return { pass: results.every((r) => r.pass), checks: results };
 }
 
+/**
+ * Sentinel string callers MUST include in their CheckResult message, or in
+ * a thrown Error message, to acknowledge that they observed the abort
+ * signal and stopped work. Any other result — including pass/fail with no
+ * marker, or simple late settlement — is treated as `unconfirmed` so
+ * callers cannot silently retry side-effects after a timeout.
+ */
+export const SELF_TEST_ABORT_REASON = "self-test:aborted";
+
+const ABORT_ACK_REASON = SELF_TEST_ABORT_REASON;
+
 async function runOne(check: SelfTestCheck, timeoutMs: number): Promise<OneResult> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -48,7 +59,7 @@ async function runOne(check: SelfTestCheck, timeoutMs: number): Promise<OneResul
     .catch((e: unknown) => ({ kind: "err" as const, error: e }));
   const timeoutPromise = new Promise<{ kind: "timeout" }>((resolve) => {
     timer = setTimeout(() => {
-      controller.abort(new Error("timeout"));
+      controller.abort(new Error(ABORT_ACK_REASON));
       resolve({ kind: "timeout" });
     }, timeoutMs);
   });
@@ -56,10 +67,13 @@ async function runOne(check: SelfTestCheck, timeoutMs: number): Promise<OneResul
   if (timer !== undefined) clearTimeout(timer);
 
   if (winner.kind === "timeout") {
-    // Briefly wait for the check to acknowledge the abort. If it does, we
-    // can confidently report cancellation as confirmed; otherwise the
-    // underlying work may still be running.
-    const ack = await raceCheckAck(checkPromise);
+    // Wait briefly for the check to settle. To report `confirmed`, the
+    // settlement MUST be a positive abort acknowledgement: either a
+    // rejection whose reason matches our abort, or a CheckResult whose
+    // message references our abort sentinel. Plain late-settled results
+    // (e.g. ignoring the signal but finishing under the ack window) are
+    // reported as `unconfirmed` — caller cannot assume work has stopped.
+    const ack = await waitForAbortAck(checkPromise);
     return {
       pass: false,
       message: `timeout after ${timeoutMs}ms${ack ? "" : " (cancellation unconfirmed — work may still be running)"}`,
@@ -80,15 +94,29 @@ async function runOne(check: SelfTestCheck, timeoutMs: number): Promise<OneResul
   };
 }
 
-async function raceCheckAck(
-  checkPromise: Promise<{ kind: "ok" | "err" } | unknown>,
+async function waitForAbortAck(
+  checkPromise: Promise<
+    | { kind: "ok"; value: { readonly message?: string | undefined } }
+    | { kind: "err"; error: unknown }
+  >,
 ): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const ackTimeout = new Promise<boolean>((resolve) => {
-    timer = setTimeout(() => resolve(false), RETURN_ACK_TIMEOUT_MS);
+  const ackTimeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), RETURN_ACK_TIMEOUT_MS);
   });
   try {
-    return await Promise.race([checkPromise.then(() => true).catch(() => true), ackTimeout]);
+    const settled = await Promise.race([checkPromise, ackTimeout]);
+    if (settled === "timeout") return false;
+    if (settled.kind === "err") {
+      const e = settled.error;
+      if (e instanceof Error && e.message.includes(ABORT_ACK_REASON)) return true;
+      const cause = e instanceof Error ? (e.cause as unknown) : undefined;
+      if (cause instanceof Error && cause.message.includes(ABORT_ACK_REASON)) return true;
+      return false;
+    }
+    // Late-settled CheckResult: only count as ack when the implementation
+    // explicitly references our abort sentinel in its message.
+    return settled.value.message?.includes(ABORT_ACK_REASON) === true;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

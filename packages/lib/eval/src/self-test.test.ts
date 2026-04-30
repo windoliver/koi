@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { runSelfTest } from "./self-test.js";
+import { runSelfTest, SELF_TEST_ABORT_REASON } from "./self-test.js";
 import type { SelfTestCheck } from "./types.js";
 
 describe("runSelfTest", () => {
@@ -51,6 +51,19 @@ describe("runSelfTest", () => {
     expect(result.checks[0]?.cancellation).toBe("unconfirmed");
   });
 
+  test("late settlement without sentinel still reports cancellation: 'unconfirmed'", async () => {
+    const checks: readonly SelfTestCheck[] = [
+      {
+        name: "ignores-signal",
+        run: () =>
+          new Promise<{ pass: true }>((resolve) => setTimeout(() => resolve({ pass: true }), 50)),
+        timeoutMs: 10,
+      },
+    ];
+    const result = await runSelfTest(checks);
+    expect(result.checks[0]?.cancellation).toBe("unconfirmed");
+  });
+
   test("cooperative check that aborts on signal reports cancellation: 'confirmed'", async () => {
     const checks: readonly SelfTestCheck[] = [
       {
@@ -60,7 +73,7 @@ describe("runSelfTest", () => {
             const t = setTimeout(() => resolve({ pass: true, message: "" } as never), 5_000);
             signal.addEventListener("abort", () => {
               clearTimeout(t);
-              resolve({ pass: false, message: "aborted" });
+              resolve({ pass: false, message: SELF_TEST_ABORT_REASON });
             });
           }),
         timeoutMs: 10,

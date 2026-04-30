@@ -106,13 +106,15 @@ async function runTrial(
       : "unconfirmed"
     : "n/a";
 
+  const durationMs = now() - start;
+  const metrics = mergeMetrics(extractMetrics(transcript), durationMs);
   if (trialError !== undefined) {
     return {
       taskId: task.id,
       trialIndex,
       transcript,
       scores: [],
-      metrics: { ...EMPTY_METRICS, durationMs: now() - start },
+      metrics,
       status: "error",
       error:
         cancellation === "unconfirmed"
@@ -122,10 +124,40 @@ async function runTrial(
     };
   }
 
-  const metrics: EngineMetrics = { ...EMPTY_METRICS, durationMs: now() - start };
   const scores = await gradeAll(task, transcript, metrics);
   const status = scores.every((s) => s.pass && s.score >= passThreshold) ? "pass" : "fail";
   return { taskId: task.id, trialIndex, transcript, scores, metrics, status, cancellation };
+}
+
+/**
+ * Pull EngineMetrics from the terminal `done` event so graders and
+ * persisted runs can detect token, turn, and cost regressions. Returns
+ * undefined if the agent never emitted a `done` event (e.g. timeout).
+ */
+function extractMetrics(transcript: readonly EngineEvent[]): EngineMetrics | undefined {
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const ev = transcript[i];
+    if (ev?.kind === "done") return ev.output.metrics;
+  }
+  return undefined;
+}
+
+function mergeMetrics(
+  fromAgent: EngineMetrics | undefined,
+  measuredDurationMs: number,
+): EngineMetrics {
+  if (fromAgent === undefined) return { ...EMPTY_METRICS, durationMs: measuredDurationMs };
+  // Trust the agent's metrics; fall back to wall-clock duration when the
+  // adapter didn't report one. Preserve costUsd's optional shape under
+  // exactOptionalPropertyTypes.
+  return {
+    totalTokens: fromAgent.totalTokens,
+    inputTokens: fromAgent.inputTokens,
+    outputTokens: fromAgent.outputTokens,
+    turns: fromAgent.turns,
+    durationMs: fromAgent.durationMs > 0 ? fromAgent.durationMs : measuredDurationMs,
+    ...(fromAgent.costUsd !== undefined ? { costUsd: fromAgent.costUsd } : {}),
+  };
 }
 
 /** Brief acknowledgement window for iterator.return() after a timeout. */

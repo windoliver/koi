@@ -90,6 +90,37 @@ describe("runEval", () => {
     expect(run.trials[0]?.error).toContain("cancellation unconfirmed");
   });
 
+  test("extracts EngineMetrics from terminal done event", async () => {
+    const events: readonly EngineEvent[] = [
+      { kind: "text_delta", delta: "ok" },
+      {
+        kind: "done",
+        output: {
+          content: [{ kind: "text", text: "ok" }],
+          stopReason: "completed",
+          metrics: {
+            totalTokens: 100,
+            inputTokens: 60,
+            outputTokens: 40,
+            turns: 2,
+            durationMs: 1234,
+            costUsd: 0.005,
+          },
+        },
+      },
+    ];
+    const run = await runEval({
+      name: "metrics",
+      tasks: [task("t1", "ok", [exactMatch()])],
+      agentFactory: () => fakeAgent(events),
+      idGen: () => "run-m",
+    });
+    const m = run.trials[0]?.metrics;
+    expect(m?.totalTokens).toBe(100);
+    expect(m?.turns).toBe(2);
+    expect(m?.costUsd).toBe(0.005);
+  });
+
   test("cooperative agent reports cancellation: 'n/a' on success", async () => {
     const run = await runEval({
       name: "ok",
