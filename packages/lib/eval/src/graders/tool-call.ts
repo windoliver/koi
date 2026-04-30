@@ -41,12 +41,25 @@ interface ObservedCall {
   readonly args: JsonObject | undefined;
 }
 
+/**
+ * Collect tool calls that actually completed. A `tool_call_start` alone
+ * indicates intent — the tool may have been denied, aborted, or failed
+ * before yielding output. Requiring a matching `tool_result` (correlated
+ * by callId) prevents the grader from passing on intent alone.
+ */
 function collectToolCalls(transcript: readonly EngineEvent[]): readonly ObservedCall[] {
-  const out: ObservedCall[] = [];
+  const startsByCallId = new Map<string, ObservedCall>();
+  const completed = new Set<string>();
   for (const ev of transcript) {
     if (ev.kind === "tool_call_start") {
-      out.push({ toolName: ev.toolName, args: ev.args });
+      startsByCallId.set(ev.callId, { toolName: ev.toolName, args: ev.args });
+    } else if (ev.kind === "tool_result" || ev.kind === "tool_call_end") {
+      completed.add(ev.callId);
     }
+  }
+  const out: ObservedCall[] = [];
+  for (const [callId, call] of startsByCallId) {
+    if (completed.has(callId)) out.push(call);
   }
   return out;
 }

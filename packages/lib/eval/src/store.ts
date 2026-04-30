@@ -1,4 +1,4 @@
-import { mkdir, readdir, rename, unlink } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { EvalRun, EvalRunMeta, EvalStore } from "./types.js";
 
@@ -12,7 +12,7 @@ export function createFsStore(rootDir: string): EvalStore {
       // steps leaves either the previous run or no file at the final path
       // — never a torn JSON document that would silently shadow newer
       // baselines.
-      await Bun.write(tempPath, JSON.stringify(run, null, 2));
+      await writeFile(tempPath, JSON.stringify(run, null, 2), "utf8");
       try {
         await rename(tempPath, filePath);
       } catch (e: unknown) {
@@ -54,15 +54,14 @@ function encode(s: string): string {
 }
 
 async function readRun(path: string, expectedId?: string): Promise<EvalRun | undefined> {
-  const file = Bun.file(path);
-  if (!(await file.exists())) return undefined;
   let run: EvalRun;
   try {
-    const text = await file.text();
+    const text = await readFile(path, "utf8");
     const parsed = JSON.parse(text) as unknown;
     if (!isEvalRunShape(parsed)) return undefined;
     run = parsed;
-  } catch {
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     // Malformed JSON or unreadable file — skip silently so a single corrupt
     // artifact cannot blind enumeration of the rest of the suite history.
     return undefined;
@@ -92,9 +91,18 @@ async function findAllRunFiles(rootDir: string, runId: string): Promise<readonly
   const found: string[] = [];
   for (const evalName of dirs) {
     const path = join(rootDir, evalName, encoded);
-    if (await Bun.file(path).exists()) found.push(path);
+    if (await fileExists(path)) found.push(path);
   }
   return found;
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function listMetas(rootDir: string, evalName: string): Promise<readonly EvalRunMeta[]> {

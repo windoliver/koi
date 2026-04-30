@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFsStore } from "./store.js";
@@ -87,7 +87,7 @@ describe("createFsStore", () => {
     await store.save(makeRun("good", "smoke", "2026-02-01T00:00:00Z"));
     // Inject a corrupt sibling file
     const dir = join(root, encodeURIComponent("smoke"));
-    await Bun.write(join(dir, "bad.json"), "{ this is not json");
+    await writeFile(join(dir, "bad.json"), "{ this is not json", "utf8");
     const metas = await store.list("smoke");
     expect(metas).toHaveLength(1);
     expect(metas[0]?.id).toBe("good");

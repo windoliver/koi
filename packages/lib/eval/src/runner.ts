@@ -200,8 +200,12 @@ async function collectTranscriptWithTimeout(
         transcript.push(next.value);
       }
     } catch (e: unknown) {
-      if (controller.signal.aborted && iterator.return !== undefined) {
-        const returnAwaited = await raceReturn(iterator);
+      if (controller.signal.aborted) {
+        // Even if the iterator does not implement return(), classify this
+        // as a timeout so cancellation reports as "unconfirmed" instead
+        // of "n/a". A non-cancellable iterator is by definition unable to
+        // confirm teardown.
+        const returnAwaited = iterator.return !== undefined ? await raceReturn(iterator) : false;
         throw createTimeoutMarker(e, returnAwaited);
       }
       throw e;

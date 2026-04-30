@@ -17,10 +17,21 @@ const callStart = (toolName: string, args?: Readonly<Record<string, unknown>>): 
   ...(args !== undefined ? { args } : {}),
 });
 
+const callResult = (toolName: string): EngineEvent => ({
+  kind: "tool_result",
+  callId: `${toolName}-id` as ToolCallId,
+  output: "ok",
+});
+
+const completed = (toolName: string, args?: Readonly<Record<string, unknown>>): EngineEvent[] => [
+  callStart(toolName, args),
+  callResult(toolName),
+];
+
 describe("toolCall", () => {
   test("passes when expected calls present (any-order)", async () => {
     const grader = toolCall();
-    const events: readonly EngineEvent[] = [callStart("read"), callStart("write")];
+    const events: readonly EngineEvent[] = [...completed("read"), ...completed("write")];
     const score = await grader.grade(
       events,
       { kind: "tool_calls", calls: [{ toolName: "write" }, { toolName: "read" }] },
@@ -32,7 +43,7 @@ describe("toolCall", () => {
 
   test("fails when expected call missing", async () => {
     const grader = toolCall();
-    const events: readonly EngineEvent[] = [callStart("read")];
+    const events: readonly EngineEvent[] = [...completed("read")];
     const score = await grader.grade(
       events,
       { kind: "tool_calls", calls: [{ toolName: "read" }, { toolName: "write" }] },
@@ -45,7 +56,7 @@ describe("toolCall", () => {
 
   test("matches args when specified", async () => {
     const grader = toolCall();
-    const events: readonly EngineEvent[] = [callStart("read", { path: "/a" })];
+    const events: readonly EngineEvent[] = [...completed("read", { path: "/a" })];
     const matchScore = await grader.grade(
       events,
       { kind: "tool_calls", calls: [{ toolName: "read", args: { path: "/a" } }] },
@@ -63,7 +74,7 @@ describe("toolCall", () => {
   test("matches nested args structurally, not by reference", async () => {
     const grader = toolCall();
     const events: readonly EngineEvent[] = [
-      callStart("search", { filter: { q: "x", tags: ["a", "b"] } }),
+      ...completed("search", { filter: { q: "x", tags: ["a", "b"] } }),
     ];
     const score = await grader.grade(
       events,
@@ -78,10 +89,21 @@ describe("toolCall", () => {
 
   test("strict order requires sequential match", async () => {
     const grader = toolCall({ order: "strict" });
-    const eventsBad: readonly EngineEvent[] = [callStart("write"), callStart("read")];
+    const eventsBad: readonly EngineEvent[] = [...completed("write"), ...completed("read")];
     const score = await grader.grade(
       eventsBad,
       { kind: "tool_calls", calls: [{ toolName: "read" }, { toolName: "write" }] },
+      METRICS,
+    );
+    expect(score.pass).toBe(false);
+  });
+
+  test("does not pass on intent alone (tool_call_start without tool_result)", async () => {
+    const grader = toolCall();
+    const events: readonly EngineEvent[] = [callStart("read")];
+    const score = await grader.grade(
+      events,
+      { kind: "tool_calls", calls: [{ toolName: "read" }] },
       METRICS,
     );
     expect(score.pass).toBe(false);

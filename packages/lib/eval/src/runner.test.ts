@@ -68,6 +68,25 @@ describe("runEval", () => {
     expect(run.summary.errorCount).toBe(1);
   });
 
+  test("timeout on iterable without return() reports cancellation: 'unconfirmed'", async () => {
+    const run = await runEval({
+      name: "no-return",
+      tasks: [{ ...task("t1", "x", [exactMatch()]), timeoutMs: 20 }],
+      agentFactory: () => ({
+        stream: (): AsyncIterable<EngineEvent> => ({
+          [Symbol.asyncIterator]: () => ({
+            // Note: no `return()` method
+            next: () => new Promise(() => {}),
+          }),
+        }),
+      }),
+      disposeTimeoutMs: 20,
+      idGen: () => "run-nr",
+    });
+    expect(run.trials[0]?.status).toBe("error");
+    expect(run.trials[0]?.cancellation).toBe("unconfirmed");
+  });
+
   test("synchronous stream() failure does not orphan timeout rejection", async () => {
     const run = await runEval({
       name: "sync-fail",
