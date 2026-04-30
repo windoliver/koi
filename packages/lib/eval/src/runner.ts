@@ -407,6 +407,12 @@ export function computeTaskFingerprint(task: EvalTask): string {
     input: task.input,
     expected: task.expected,
     graders: task.graders.map((g) => ({ id: g.id, config: g.configFingerprint ?? "" })),
+    // Execution-semantic fields: changing trial count or per-task timeout
+    // changes what the suite actually measures (flakiness exposure, slow
+    // failure modes), so reused taskIds with different values must not
+    // compare as equivalent.
+    trialCount: task.trialCount,
+    timeoutMs: task.timeoutMs,
   });
   return createHash("sha256").update(canonical).digest("hex");
 }

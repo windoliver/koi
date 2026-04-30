@@ -167,6 +167,24 @@ describe("compareRuns", () => {
     }
   });
 
+  test("fails closed when run-level passThreshold drifted", () => {
+    const baseline = run("b", summary(1, 1));
+    const current: EvalRun = {
+      ...run("c", summary(1, 1)),
+      config: { name: "r", timeoutMs: 60_000, passThreshold: 0.1, taskCount: 1 },
+    };
+    expect(compareRuns(baseline, current).kind).toBe("fail");
+  });
+
+  test("fails closed when run-level default timeoutMs drifted", () => {
+    const baseline = run("b", summary(1, 1));
+    const current: EvalRun = {
+      ...run("c", summary(1, 1)),
+      config: { name: "r", timeoutMs: 1_000, passThreshold: 0.5, taskCount: 1 },
+    };
+    expect(compareRuns(baseline, current).kind).toBe("fail");
+  });
+
   test("respects custom thresholds", () => {
     const baseline = run("b", summary(1, 1));
     const current = run("c", summary(0.5, 1));

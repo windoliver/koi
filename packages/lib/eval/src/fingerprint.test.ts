@@ -120,6 +120,42 @@ describe("computeTaskFingerprint", () => {
     expect(computeTaskFingerprint(a)).not.toBe(computeTaskFingerprint(b));
   });
 
+  test("changes when task trialCount changes", () => {
+    const a: EvalTask = {
+      id: "t",
+      name: "t",
+      input: baseInput,
+      graders: [exactMatch()],
+      trialCount: 1,
+    };
+    const b: EvalTask = {
+      id: "t",
+      name: "t",
+      input: baseInput,
+      graders: [exactMatch()],
+      trialCount: 10,
+    };
+    expect(computeTaskFingerprint(a)).not.toBe(computeTaskFingerprint(b));
+  });
+
+  test("changes when per-task timeoutMs changes", () => {
+    const a: EvalTask = {
+      id: "t",
+      name: "t",
+      input: baseInput,
+      graders: [exactMatch()],
+      timeoutMs: 1_000,
+    };
+    const b: EvalTask = {
+      id: "t",
+      name: "t",
+      input: baseInput,
+      graders: [exactMatch()],
+      timeoutMs: 60_000,
+    };
+    expect(computeTaskFingerprint(a)).not.toBe(computeTaskFingerprint(b));
+  });
+
   test("stable for equivalent task definitions", () => {
     const make = (): EvalTask => ({
       id: "t",

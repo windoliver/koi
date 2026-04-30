@@ -15,6 +15,11 @@ export function compareRuns(
   if (baseline === undefined) return { kind: "no_baseline" };
   const passRateDelta = thresholds.passRateDelta ?? EVAL_DEFAULTS.PASS_RATE_DELTA;
   const scoreDelta = thresholds.scoreDelta ?? EVAL_DEFAULTS.SCORE_DELTA;
+  // Run-level comparability: if the baseline and current runs were graded
+  // under different rules (passThreshold, default timeoutMs), the per-trial
+  // pass/fail labels are not directly comparable. Fail closed and force
+  // rebaselining rather than reporting a misleading "pass".
+  const runLevelDrift = collectRunLevelDrift(baseline, current);
   const regressions = collectRegressions(
     baseline.summary,
     current.summary,
@@ -46,15 +51,39 @@ export function compareRuns(
       break;
     }
   }
-  if (regressions.length === 0) {
+  const all = [...runLevelDrift, ...regressions];
+  if (all.length === 0) {
     return { kind: "pass", baseline: baseline.summary, current: current.summary };
   }
   return {
     kind: "fail",
-    regressions: dedupeRegressions(regressions),
+    regressions: dedupeRegressions(all),
     baseline: baseline.summary,
     current: current.summary,
   };
+}
+
+function collectRunLevelDrift(baseline: EvalRun, current: EvalRun): RegressionDetail[] {
+  const out: RegressionDetail[] = [];
+  if (baseline.config.passThreshold !== current.config.passThreshold) {
+    out.push({
+      taskId: "__run__",
+      metric: "passRate",
+      baseline: baseline.config.passThreshold,
+      current: current.config.passThreshold,
+      delta: current.config.passThreshold - baseline.config.passThreshold,
+    });
+  }
+  if (baseline.config.timeoutMs !== current.config.timeoutMs) {
+    out.push({
+      taskId: "__run_timeout__",
+      metric: "passRate",
+      baseline: baseline.config.timeoutMs,
+      current: current.config.timeoutMs,
+      delta: current.config.timeoutMs - baseline.config.timeoutMs,
+    });
+  }
+  return out;
 }
 
 function dedupeRegressions(regressions: readonly RegressionDetail[]): readonly RegressionDetail[] {
