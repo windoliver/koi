@@ -121,18 +121,24 @@ async function runTrial(
   try {
     agent = await config.agentFactory();
     await collectTranscriptWithTimeout(agent, task, transcript, timeoutMs);
-    // Require a terminal `done` event with a "completed" stop reason. An
-    // adapter that exits early (iterator exhausted without emitting done)
-    // produces a partial transcript that graders' text_delta fallback
-    // could mis-grade as a pass. Surface as an error instead.
-    const terminal = findTerminalDone(transcript);
-    if (terminal === undefined) {
+    // Require exactly one terminal `done` event as the final transcript
+    // entry, with stopReason "completed". A buggy adapter that emits done
+    // and then keeps yielding tool_result/text_delta would otherwise have
+    // its post-completion work graded as part of the trial — breaking
+    // isolation guarantees.
+    const doneCount = transcript.filter((e) => e.kind === "done").length;
+    if (doneCount === 0) {
       throw new Error("agent stream ended without a terminal 'done' event");
     }
-    if (terminal.output.stopReason !== "completed") {
-      throw new Error(
-        `agent stream stopped with non-completed reason: ${terminal.output.stopReason}`,
-      );
+    if (doneCount > 1) {
+      throw new Error(`agent stream emitted ${doneCount} 'done' events; expected exactly 1`);
+    }
+    const last = transcript[transcript.length - 1];
+    if (last?.kind !== "done") {
+      throw new Error("agent stream emitted events after 'done'");
+    }
+    if (last.output.stopReason !== "completed") {
+      throw new Error(`agent stream stopped with non-completed reason: ${last.output.stopReason}`);
     }
   } catch (e: unknown) {
     const marker = readTimeoutMarker(e);
@@ -387,14 +393,20 @@ function taskSummary(task: EvalTask, trials: readonly EvalTrial[]): TaskSummary 
   const taskTrials = trials.filter((t) => t.taskId === task.id);
   const passed = taskTrials.filter((t) => t.status === "pass").length;
   const meanScore = taskTrials.length === 0 ? 0 : sumScores(taskTrials) / taskTrials.length;
+  const spec = canonicalTaskSpec(task);
   return {
     taskId: task.id,
     taskName: task.name,
     passRate: taskTrials.length === 0 ? 0 : passed / taskTrials.length,
     meanScore,
     trials: taskTrials.length,
-    taskFingerprint: computeTaskFingerprint(task),
+    taskFingerprint: hashSpec(spec),
+    taskSpec: spec,
   };
+}
+
+function hashSpec(spec: string): string {
+  return createHash("sha256").update(spec).digest("hex");
 }
 
 /**
@@ -408,6 +420,15 @@ function taskSummary(task: EvalTask, trials: readonly EvalTrial[]): TaskSummary 
  * introspectable here without breaking the L0/L2 boundary.
  */
 export function computeTaskFingerprint(task: EvalTask): string {
+  return createHash("sha256").update(canonicalTaskSpec(task)).digest("hex");
+}
+
+/**
+ * Pre-hash canonical encoding of a task's identity. Persisted alongside
+ * `taskFingerprint` so the store can verify on load that the hash
+ * corresponds to the spec — mutating only the hash field is detected.
+ */
+export function canonicalTaskSpec(task: EvalTask): string {
   // Reject silently-equivalent fingerprints: EngineInput may carry
   // function values (callHandlers etc) whose identity matters for behavior
   // but whose serialization collapses to "fn:<name>". Refuse to fingerprint
@@ -419,7 +440,7 @@ export function computeTaskFingerprint(task: EvalTask): string {
       `EvalTask "${task.id}": input contains non-serializable values (functions, etc.); set fingerprintSalt to capture runtime semantics`,
     );
   }
-  const canonical = canonicalize({
+  return canonicalize({
     input: task.input,
     expected: task.expected,
     graders: task.graders.map((g) => ({ id: g.id, config: g.configFingerprint ?? "" })),
@@ -431,7 +452,6 @@ export function computeTaskFingerprint(task: EvalTask): string {
     timeoutMs: task.timeoutMs,
     salt: task.fingerprintSalt,
   });
-  return createHash("sha256").update(canonical).digest("hex");
 }
 
 function containsNonSerializable(v: unknown, depth = 0): boolean {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { link, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { EvalRun, EvalRunMeta, EvalStore } from "./types.js";
@@ -178,7 +179,41 @@ async function readRunResult(
       cause: "summary does not match trials",
     };
   }
+  // Cancellation/abort consistency: compareRuns relies on these fields
+  // to fail closed on leaked teardown. A run rewritten to strip an
+  // `aborted` flag or set every trial to `n/a` when one was actually
+  // unconfirmed must be rejected — otherwise the regression gate
+  // accepts an incompletely-isolated run as a clean baseline.
+  const cancellationDrift = checkCancellationConsistency(run);
+  if (cancellationDrift !== undefined) {
+    return { kind: "corrupted", path, cause: cancellationDrift };
+  }
+  // Per-task fingerprint integrity: stored taskFingerprint must equal
+  // SHA-256 of stored taskSpec. A run rewritten to swap fingerprints
+  // without touching the spec (so compareRuns sees a "matching"
+  // baseline for a drifted task) is rejected here.
+  for (const t of run.summary.byTask) {
+    const expected = createHash("sha256").update(t.taskSpec).digest("hex");
+    if (expected !== t.taskFingerprint) {
+      return {
+        kind: "corrupted",
+        path,
+        cause: `taskFingerprint mismatch for taskId "${t.taskId}"`,
+      };
+    }
+  }
   return { kind: "ok", run };
+}
+
+function checkCancellationConsistency(run: EvalRun): string | undefined {
+  const hasUnconfirmed = run.trials.some((t) => t.cancellation === "unconfirmed");
+  if (hasUnconfirmed && run.aborted !== true) {
+    return "trial reports cancellation 'unconfirmed' but run is not marked aborted";
+  }
+  if (run.aborted === true && run.abortReason === "cancellation_unconfirmed" && !hasUnconfirmed) {
+    return "run claims cancellation_unconfirmed abort but no trial has 'unconfirmed' cancellation";
+  }
+  return undefined;
 }
 
 interface PerTask {
@@ -306,6 +341,18 @@ function assertSavable(run: EvalRun): void {
       "EvalStore.save: summary does not match trials — refusing to persist inconsistent run",
     );
   }
+  for (const t of run.summary.byTask) {
+    const expected = createHash("sha256").update(t.taskSpec).digest("hex");
+    if (expected !== t.taskFingerprint) {
+      throw new Error(
+        `EvalStore.save: taskFingerprint does not match taskSpec for taskId "${t.taskId}"`,
+      );
+    }
+  }
+  const drift = checkCancellationConsistency(run);
+  if (drift !== undefined) {
+    throw new Error(`EvalStore.save: ${drift}`);
+  }
 }
 
 function isCanonicalIsoTimestamp(s: string): boolean {
@@ -395,6 +442,7 @@ function isSummary(v: unknown): boolean {
     if (typeof ts.meanScore !== "number") return false;
     if (typeof ts.trials !== "number") return false;
     if (typeof ts.taskFingerprint !== "string") return false;
+    if (typeof ts.taskSpec !== "string") return false;
   }
   return true;
 }

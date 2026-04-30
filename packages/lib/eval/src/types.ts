@@ -134,6 +134,14 @@ export interface TaskSummary {
    * runs whose task definitions drifted under a reused taskId.
    */
   readonly taskFingerprint: string;
+  /**
+   * Pre-hash canonical encoding used to compute `taskFingerprint`.
+   * Persisted so the store can verify on load that the stored fingerprint
+   * actually corresponds to the task spec — without this, an attacker
+   * could mutate `taskFingerprint` alone to make a drifted task appear
+   * comparable to a baseline.
+   */
+  readonly taskSpec: string;
 }
 
 // ---------------------------------------------------------------------------

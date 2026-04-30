@@ -451,6 +451,30 @@ describe("runEval", () => {
     expect(run.trials[0]?.error).toContain("done");
   });
 
+  test("trial errors when events appear after the terminal done", async () => {
+    const run = await runEval({
+      name: "post-done",
+      tasks: [task("t1", "x", [exactMatch()])],
+      agentFactory: () => ({
+        stream: async function* (): AsyncIterable<EngineEvent> {
+          yield {
+            kind: "done",
+            output: {
+              content: [{ kind: "text", text: "x" }],
+              stopReason: "completed",
+              metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+            },
+          };
+          // Buggy adapter keeps yielding after done.
+          yield { kind: "text_delta", delta: "leak" };
+        },
+      }),
+      idGen: () => "run-pd",
+    });
+    expect(run.trials[0]?.status).toBe("error");
+    expect(run.trials[0]?.error).toContain("after");
+  });
+
   test("trial errors when terminal done has non-completed stop reason", async () => {
     const run = await runEval({
       name: "stopped",

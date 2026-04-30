@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFsStore } from "./store.js";
 import type { EvalRun } from "./types.js";
+
+const fp = (spec: string): string => createHash("sha256").update(spec).digest("hex");
 
 const makeRun = (id: string, name: string, timestamp: string): EvalRun => ({
   id,
@@ -70,7 +73,8 @@ describe("createFsStore", () => {
             passRate: 0,
             meanScore: 0,
             trials: 0,
-            taskFingerprint: "fp1",
+            taskFingerprint: fp("spec-fp1"),
+            taskSpec: "spec-fp1",
           },
         ],
       },
@@ -88,7 +92,8 @@ describe("createFsStore", () => {
             passRate: 1,
             meanScore: 1,
             trials: 5,
-            taskFingerprint: "x",
+            taskFingerprint: fp("spec-x"),
+            taskSpec: "spec-x",
           },
         ],
       },
@@ -133,6 +138,69 @@ describe("createFsStore", () => {
     expect(metas.some((m) => m.id === "run.tmp-2026")).toBe(true);
     const latest = await store.latest("smoke");
     expect(latest?.id).toBe("run.tmp-2026");
+  });
+
+  test("load rejects run with stripped aborted/cancellation metadata", async () => {
+    const store = createFsStore(root);
+    const seeded = makeRun("anc", "smoke", "2026-01-01T00:00:00.000Z");
+    await store.save(seeded);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("anc")}.json`);
+    // Forge a run where a trial was unconfirmed but aborted=true was stripped.
+    const tampered = {
+      ...seeded,
+      summary: { ...seeded.summary, taskCount: 1, trialCount: 1 },
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "pass",
+          cancellation: "unconfirmed",
+        },
+      ],
+    };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("anc", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("load rejects byTask with mutated taskFingerprint not matching taskSpec", async () => {
+    const store = createFsStore(root);
+    const seeded = {
+      ...makeRun("fpc", "smoke", "2026-01-01T00:00:00.000Z"),
+      summary: {
+        taskCount: 1,
+        trialCount: 0,
+        passRate: 0,
+        meanScore: 0,
+        errorCount: 0,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 0,
+            taskFingerprint: fp("spec-original"),
+            taskSpec: "spec-original",
+          },
+        ],
+      },
+    };
+    await store.save(seeded);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("fpc")}.json`);
+    // Mutate only taskFingerprint, leave taskSpec — must be rejected.
+    const tampered = JSON.parse(JSON.stringify(seeded));
+    tampered.summary.byTask[0].taskFingerprint = fp("spec-different");
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("fpc", "smoke")).rejects.toThrow(/corrupt/);
   });
 
   test("save fails on collision unless overwrite: true", async () => {
@@ -191,7 +259,8 @@ describe("createFsStore", () => {
             passRate: 0,
             meanScore: 0,
             trials: 1,
-            taskFingerprint: "x",
+            taskFingerprint: fp("spec-x"),
+            taskSpec: "spec-x",
           },
         ],
       },
