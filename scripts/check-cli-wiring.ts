@@ -40,6 +40,10 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/skills-runtime",
   // Agent runtime — requires agent resolver dirs config
   "@koi/agent-runtime",
+  // External-agent discovery/introspection/monitoring are optional sidecar surfaces, not default TUI wiring.
+  "@koi/agent-discovery",
+  "@koi/agent-monitor",
+  "@koi/agent-procfs",
   // Hook prompt — requires PromptModelCaller injection
   "@koi/hook-prompt",
   // Memory recall scanner — used internally by memory-tools, not a standalone provider
@@ -73,8 +77,10 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/debug",
   // Demand-forge package — opt-in (koi.optional: true), not default TUI middleware.
   "@koi/forge-demand",
-  // Gateway stack — server/webhook transports, not interactive local TUI wiring.
+  // Gateway stack — service/gateway transports, not interactive local TUI wiring.
+  // @koi/gateway-http is used by `koi serve`, but is still not part of default TUI assembly.
   "@koi/gateway",
+  "@koi/gateway-http",
   "@koi/gateway-webhook",
   // Delegation/security helpers — require explicit delegation or Nexus configuration.
   "@koi/governance-delegation",
@@ -88,7 +94,14 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/middleware-call-dedup",
   "@koi/middleware-collective-memory",
   "@koi/middleware-degenerate",
+  "@koi/middleware-ace",
+  "@koi/middleware-intent-capsule",
   "@koi/middleware-output-verifier",
+  // RLM requires per-request segment-local trust flags and is intentionally hidden from manifest discovery.
+  "@koi/middleware-rlm",
+  // Sandbox providers require explicit backend/runtime selection; the TUI default uses @koi/sandbox-os.
+  "@koi/sandbox-docker",
+  "@koi/sandbox-executor",
   // Scratchpad/workspace/toolset components are opt-in runtime providers.
   "@koi/scratchpad-local",
   "@koi/toolsets",

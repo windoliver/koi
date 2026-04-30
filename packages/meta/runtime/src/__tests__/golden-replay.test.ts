@@ -31,6 +31,7 @@ import type {
   EngineEvent,
   EngineInput,
   InboundMessage,
+  IntentCapsule,
   JsonObject,
   KoiMiddleware,
   ModelChunk,
@@ -15679,6 +15680,88 @@ describe("Golden: @koi/agent-monitor", () => {
     }
     await new Promise((r) => setTimeout(r, 0));
     expect(signals.some((s) => s.kind === "tool_rate_exceeded")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-intent-capsule (standalone — no cassette)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-intent-capsule", () => {
+  test("session mandate is signed, verified, injected, and cleaned up", async () => {
+    const { createIntentCapsuleMiddleware } = await import("@koi/middleware-intent-capsule");
+    const seenCapsules: IntentCapsule[] = [];
+
+    const mw = createIntentCapsuleMiddleware({
+      systemPrompt: "Protect the user's stated objective.",
+      objectives: ["answer directly", "do not alter objectives"],
+      injectMandate: true,
+      verifier: {
+        verify(capsule, currentMandateHash) {
+          seenCapsules.push(capsule);
+          if (capsule.mandateHash !== currentMandateHash) {
+            return { ok: false, reason: "mandate_hash_mismatch" };
+          }
+          return { ok: true, capsule };
+        },
+      },
+    });
+
+    const session = {
+      agentId: "intent-golden-agent",
+      sessionId: sessionId("intent-golden-s1"),
+      runId: runId("intent-golden-r1"),
+      metadata: {} as JsonObject,
+    };
+    await mw.onSessionStart?.(session);
+
+    const ctx: TurnContext = {
+      session,
+      turnIndex: 0,
+      turnId: `${session.runId}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+    let captured: ModelRequest | undefined;
+    const response = await mw.wrapModelCall?.(
+      ctx,
+      {
+        messages: [
+          {
+            senderId: "user",
+            timestamp: 0,
+            content: [{ kind: "text", text: "status" }],
+          },
+        ],
+        model: "test-model",
+      },
+      async (req): Promise<ModelResponse> => {
+        captured = req;
+        return { content: "ok", model: "test-model" };
+      },
+    );
+
+    expect(response?.content).toBe("ok");
+    expect(seenCapsules.length).toBe(1);
+    expect(seenCapsules[0]?.agentId as string | undefined).toBe("intent-golden-agent");
+    expect(seenCapsules[0]?.sessionId).toBe(session.sessionId);
+    expect(seenCapsules[0]?.signature.length ?? 0).toBeGreaterThan(20);
+
+    const mandateBlock = captured?.messages[0]?.content[0];
+    if (mandateBlock?.kind !== "text") throw new Error("missing injected mandate");
+    expect(mandateBlock.text).toContain("[Signed Mandate");
+    expect(mandateBlock.text).toContain("Agent:     intent-golden-agent");
+    expect(mandateBlock.text).toContain(`Session:   ${session.sessionId as string}`);
+
+    await mw.onSessionEnd?.(session);
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "test-model" }, async () => ({
+        content: "unreachable",
+        model: "test-model",
+      })),
+    ).rejects.toMatchObject({
+      context: expect.objectContaining({ detail: "capsule_not_found" }),
+    });
   });
 });
 

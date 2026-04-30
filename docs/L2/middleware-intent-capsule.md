@@ -11,6 +11,12 @@ SHA-256 hash comparison verifies the mandate has not been tampered with. Any mis
 throws a `PERMISSION` error with `reason: "capsule_violation"`, halting the turn before
 the model is invoked.
 
+Review fix sync (#parity-review): `createIntentCapsuleMiddleware()` now converts the
+runtime `SessionContext.agentId` string into the branded L0 `AgentId` stored on
+`IntentCapsule`, keeping the DTS build aligned with the core intent-capsule contract.
+The runtime golden suite includes a standalone assertion that the mandate is signed,
+verified, optionally injected into the model request, and removed on `onSessionEnd`.
+
 ---
 
 ## Why it exists
@@ -55,14 +61,15 @@ support.
 L0  @koi/core              ─ KoiMiddleware, TurnContext, SessionContext,
                                IntentCapsule, CapsuleVerifier,
                                ModelRequest, ModelResponse (types only)
-L0u @koi/crypto-utils      ─ generateEd25519KeyPair, signEd25519, sha256Hex
+L0u @koi/hash              ─ computeStringHash (SHA-256 mandate hash)
+Node crypto                ─ generateKeyPairSync("ed25519"), sign()
 L0u @koi/errors            ─ KoiRuntimeError
 L2  @koi/middleware-intent-capsule ─ this package (no L1 dependency)
 ```
 
-`@koi/middleware-intent-capsule` imports only from `@koi/core`, `@koi/crypto-utils`,
-and `@koi/errors`. It never touches `@koi/engine` (L1), making it fully swappable and
-independently testable.
+`@koi/middleware-intent-capsule` imports only from `@koi/core`, `@koi/hash`,
+Node built-ins, and `@koi/errors`. It never touches `@koi/engine` (L1), making it
+fully swappable and independently testable.
 
 ### Internal module map
 

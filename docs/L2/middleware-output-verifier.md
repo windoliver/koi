@@ -2,6 +2,10 @@
 
 Intercepts every model response before delivery and runs it through two sequential stages: fast deterministic checks (regex, length, policy), then an optional LLM-as-judge for semantic quality scoring. Supports three actions per check — block, warn, revise — with per-session stats and a mutable rubric for runtime control.
 
+Review fix sync: rubric overrides remain session-scoped and are now cleared by the
+middleware's own `onSessionEnd` hook, so long-lived shared verifier instances do
+not retain per-session policy data after a session has ended.
+
 ---
 
 ## Why It Exists
@@ -301,6 +305,7 @@ interface VerifierHandle {
   // Session-scoped rubric override. Default rubric (captured at construction)
   // is immutable; setRubric writes a per-session override that does NOT bleed
   // into other concurrent sessions sharing the same middleware instance.
+  // The override is deleted by clearRubric() or middleware.onSessionEnd().
   readonly setRubric: (sessionId: string, rubric: string) => void;
   readonly clearRubric: (sessionId: string) => void;
   readonly reset: () => void;                    // zero all stats counters
@@ -452,6 +457,7 @@ const { middleware, setRubric } = createOutputVerifierMiddleware({
 setRubric(sessionId, "Formal tone required. No bullet points. Cite sources.");
 // Takes effect on next wrapModelCall/wrapModelStream invocation in THAT
 // session only. Other concurrent sessions continue to use the default rubric.
+// The override is automatically removed when middleware.onSessionEnd runs.
 ```
 
 ### Per-Session Stats Reset

@@ -97,10 +97,16 @@ Reusable parse helpers that return `ParseResult<T>` (discriminated union) instea
 
 Input: `{ pattern, path? }`. Returns `{ paths, truncated, total }` sorted by mtime descending.
 
-### `createGrepTool(config: { cwd: string; policy?: ToolPolicy }): Tool`
+### `createGrepTool(config: { cwd: string; policy?: ToolPolicy; rgCommand?: readonly string[] }): Tool`
 
 Input: `{ pattern, path?, glob?, type?, output_mode?, multiline?, context?, head_limit?, offset?, -A?, -B?, -C?, -i?, -n? }`.
 Returns `{ result, mode, truncated, warnings }`. Mode is `"rg"` or `"literal"`.
+
+`rgCommand` is an injectable command vector used by tests and hosts that need a
+non-default ripgrep binary. When ripgrep is unavailable, regex-looking patterns
+fail closed instead of silently degrading to literal matching. The native fallback
+uses asynchronous stat/read calls while scanning so large no-rg workspaces do not
+monopolize the runtime event loop.
 
 ### `createToolSearchTool(config: { getTools: () => readonly ToolSummary[]; policy?: ToolPolicy }): Tool`
 

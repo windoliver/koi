@@ -1,4 +1,5 @@
 import { generateKeyPairSync, sign } from "node:crypto";
+import { agentId } from "@koi/core/ecs";
 import type { IntentCapsule } from "@koi/core/intent-capsule";
 import { capsuleId } from "@koi/core/intent-capsule";
 import type {
@@ -62,10 +63,11 @@ export function createIntentCapsuleMiddleware(config: IntentCapsuleConfig): KoiM
         "base64",
       );
       const now = Date.now();
+      const capsuleAgentId = agentId(ctx.agentId);
 
       const capsule: IntentCapsule = {
         id: capsuleId(`${ctx.agentId}:${ctx.sessionId as string}:${now}`),
-        agentId: ctx.agentId,
+        agentId: capsuleAgentId,
         sessionId: ctx.sessionId,
         mandateHash,
         signature,

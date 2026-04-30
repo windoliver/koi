@@ -957,6 +957,7 @@
         "@koi/bash-ast": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/checkpoint": "workspace:*",
+        "@koi/config": "workspace:*",
         "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/cost-aggregator": "workspace:*",
@@ -970,6 +971,7 @@
         "@koi/forge-tools": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
+        "@koi/gateway-http": "workspace:*",
         "@koi/governance-approval-tiers": "workspace:*",
         "@koi/governance-core": "workspace:*",
         "@koi/governance-defaults": "workspace:*",
@@ -1047,7 +1049,6 @@
       },
       "devDependencies": {
         "@koi/channel-cli": "workspace:*",
-        "@koi/config": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/harness": "workspace:*",

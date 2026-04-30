@@ -6,6 +6,21 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **Review fix sync**: `scripts/check-cli-wiring.ts` now records explicit
+  exemptions for runtime packages that are intentionally not default TUI imports:
+  external-agent discovery/monitor/procfs sidecars, HTTP gateway ingress,
+  optional ACE/intent-capsule middleware, programmatic-only RLM, and non-default
+  sandbox providers. `@koi/tools-builtin`'s Grep tool keeps the same CLI/TUI
+  surface, but its no-ripgrep fallback is now test-forced via `rgCommand` and
+  performs async file stat/read work to avoid blocking the event loop.
+- Service lifecycle parity is no longer stub-only: `koi serve` starts the
+  gateway HTTP health process on the configured service port (`/healthz`),
+  while `koi deploy`, `koi stop`, `koi logs`, and `koi status` now operate on
+  launchd/systemd service files generated around that `koi serve` entrypoint.
+  The service parser reads optional `deploy:` manifest settings (`port`,
+  `restart`, `restartDelaySec`, `envFile`, `logDir`, `system`) with CLI flags
+  taking precedence for `--port` and `--system`.
+
 - **`@koi/governance-scope` wired (#1882 gov-15)**: CLI manifest gains `network:`
   and `credentials:` blocks. The TUI command translates these into compiled scope
   objects (`compileScopedFs`, `createScopedFetcher`, `createScopedCredentials`)

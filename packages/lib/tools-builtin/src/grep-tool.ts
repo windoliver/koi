@@ -1,4 +1,5 @@
-import { readFileSync, statSync } from "node:fs";
+import type { Stats } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import type { JsonObject, Tool, ToolExecuteOptions, ToolPolicy } from "@koi/core";
 import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
@@ -13,10 +14,12 @@ import {
 export interface GrepToolConfig {
   readonly cwd: string;
   readonly policy?: ToolPolicy;
+  readonly rgCommand?: readonly string[];
 }
 
 export function createGrepTool(config: GrepToolConfig): Tool {
   const { cwd, policy = DEFAULT_UNSANDBOXED_POLICY } = config;
+  const rgCommand = config.rgCommand?.length ? config.rgCommand : ["rg"];
 
   return {
     descriptor: {
@@ -75,7 +78,7 @@ export function createGrepTool(config: GrepToolConfig): Tool {
         if (globError) return { error: globError };
       }
 
-      const rgResult = await tryRg(args, cwd, signal);
+      const rgResult = await tryRg(args, cwd, rgCommand, signal);
       if (rgResult.available) {
         if (!rgResult.ok) return { error: rgResult.error };
         const paginated = applyPagination(rgResult.stdout, args);
@@ -143,12 +146,17 @@ type RgResult =
   | { readonly available: true; readonly ok: false; readonly error: string }
   | { readonly available: false };
 
-async function tryRg(args: JsonObject, cwd: string, signal?: AbortSignal): Promise<RgResult> {
+async function tryRg(
+  args: JsonObject,
+  cwd: string,
+  rgCommand: readonly string[],
+  signal?: AbortSignal,
+): Promise<RgResult> {
   try {
     signal?.throwIfAborted();
 
     const rgArgs = buildRgArgs(args, cwd);
-    const proc = Bun.spawn(["rg", ...rgArgs], {
+    const proc = Bun.spawn([...rgCommand, ...rgArgs], {
       cwd,
       stdout: "pipe",
       stderr: "pipe",
@@ -307,7 +315,7 @@ async function nativeGrep(
         : "**/*";
 
   const glob = new Bun.Glob(fileGlob);
-  const isFile = statSync(resolvedPath, { throwIfNoEntry: false })?.isFile() ?? false;
+  const isFile = (await statIfExists(resolvedPath))?.isFile() ?? false;
 
   signal?.throwIfAborted();
 
@@ -355,7 +363,7 @@ async function nativeGrep(
       continue;
     }
 
-    const fileStat = statSync(fullPath, { throwIfNoEntry: false });
+    const fileStat = await statIfExists(fullPath);
     if (!fileStat || fileStat.size > MAX_NATIVE_GREP_FILE_SIZE) {
       skippedFiles.push(relPath);
       continue;
@@ -363,7 +371,7 @@ async function nativeGrep(
 
     let content: string;
     try {
-      content = readFileSync(fullPath, "utf-8");
+      content = await readFile(fullPath, "utf-8");
     } catch {
       skippedFiles.push(relPath);
       continue;
@@ -449,6 +457,14 @@ async function nativeGrep(
   }
 
   return { output: outputLines.join("\n"), skippedFiles, truncated };
+}
+
+async function statIfExists(path: string): Promise<Stats | undefined> {
+  try {
+    return await stat(path);
+  } catch {
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------

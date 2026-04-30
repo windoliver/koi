@@ -68,13 +68,17 @@ describe("bin.ts", () => {
   });
 
   describe("known commands — dispatch", () => {
-    // Stub commands (Phase 2i-3) exit 2 (FAILURE) to fail closed — automation
-    // must not treat a no-op stub as a successful operation.
-    test("stub commands exit 2 (FAILURE)", async () => {
-      for (const cmd of ["init", "serve", "logs", "status", "stop", "deploy"]) {
+    test("init remains a fail-closed scaffold stub", async () => {
+      const r = await runBin(["init"]);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain("Phase 2i-3");
+    });
+
+    test("service commands require a manifest instead of succeeding as stubs", async () => {
+      for (const cmd of ["serve", "logs", "status", "stop", "deploy"]) {
         const r = await runBin([cmd]);
         expect(r.exitCode).toBe(2);
-        expect(r.stderr).toContain("Phase 2i-3");
+        expect(r.stderr).toContain("no koi.yaml found");
       }
     });
 
