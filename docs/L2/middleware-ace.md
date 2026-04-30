@@ -146,14 +146,27 @@ ace:
 On successful activation the host writes:
 
 ```
-koi tui: ace: enabled (in-memory; lost on process exit; survives /clear and /new)
+koi tui: ace: enabled (in-memory). Learned playbooks persist across
+/clear and /new within this process; they are lost on process exit.
+Restart the TUI for a privacy boundary.
 ```
 
 ### Known limitations
 
-- **In-memory only.** State is lost on process exit. `/clear` and `/new`
-  reset the conversation but do not reset the `PlaybookStore` (no
-  `clear()` API yet on the store interface).
+- **State leaks across `/clear` and `/new`.** ACE intentionally accumulates
+  learned playbooks across sessions in a single process — that is how the
+  injection-on-`onSessionStart` loop works. Today the runtime cycles the
+  session lifecycle on `/clear` and `/new` instead of recreating the whole
+  runtime, so the `PlaybookStore` survives. Operators who want a privacy
+  boundary must restart the TUI process. A future `clear()` API on
+  `PlaybookStore` (and hooks into reset) is tracked alongside the sqlite
+  follow-up.
+- **In-memory trajectory store deliberately omitted.** ACE's
+  `trajectoryStore` is left undefined on the TUI activation path. Without
+  a pruning hook, an in-memory trajectory store would grow for the life of
+  the process. Trajectory consolidation still happens at `onSessionEnd`
+  using the in-process working buffer; persistent trajectory storage lands
+  with `@koi/playbook-store-sqlite`.
 - **No cross-process persistence.** Requires `@koi/playbook-store-sqlite`
   (issue [#2087](https://github.com/windoliver/koi/issues/2087)).
 - **No spawn support.** ACE and the spawn preset stack are mutually

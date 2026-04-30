@@ -19,7 +19,7 @@
  */
 
 import type { AceConfig } from "@koi/middleware-ace";
-import { createInMemoryPlaybookStore, createInMemoryTrajectoryStore } from "@koi/middleware-ace";
+import { createInMemoryPlaybookStore } from "@koi/middleware-ace";
 
 import type { ManifestAceConfig } from "./manifest.js";
 
@@ -28,15 +28,13 @@ export type AceActivationResult =
   | { readonly kind: "spawn-blocked"; readonly message: string }
   | { readonly kind: "activate"; readonly config: AceConfig; readonly message: string };
 
-/** Override the in-memory store factories. Tests pass deterministic stubs. */
+/** Override the in-memory store factory. Tests pass a deterministic stub. */
 export interface AceStoreFactories {
   readonly playbookStore: () => AceConfig["playbookStore"];
-  readonly trajectoryStore: () => NonNullable<AceConfig["trajectoryStore"]>;
 }
 
 const DEFAULT_FACTORIES: AceStoreFactories = {
   playbookStore: createInMemoryPlaybookStore,
-  trajectoryStore: createInMemoryTrajectoryStore,
 };
 
 const SPAWN_BLOCKED_MESSAGE =
@@ -46,7 +44,9 @@ const SPAWN_BLOCKED_MESSAGE =
   "Continuing without ACE.\n";
 
 const ACTIVATED_MESSAGE =
-  "koi tui: ace: enabled (in-memory; lost on process exit; survives /clear and /new)\n";
+  "koi tui: ace: enabled (in-memory). Learned playbooks persist across " +
+  "/clear and /new within this process; they are lost on process exit. " +
+  "Restart the TUI for a privacy boundary.\n";
 
 export function resolveAceActivation(
   manifestAce: ManifestAceConfig | undefined,
@@ -56,11 +56,15 @@ export function resolveAceActivation(
   if (manifestAce?.enabled !== true) return { kind: "skip" };
   const spawnActive = manifestStacks === undefined || manifestStacks.includes("spawn");
   if (spawnActive) return { kind: "spawn-blocked", message: SPAWN_BLOCKED_MESSAGE };
+  // Intentionally omit `trajectoryStore`: the in-memory store grows
+  // unboundedly across sessions with no pruning hook today, and ACE
+  // consolidates trajectories at `onSessionEnd` even without a persistent
+  // store (per AceConfig docs). Persistent trajectory storage lands with
+  // @koi/playbook-store-sqlite (#2087).
   return {
     kind: "activate",
     config: {
       playbookStore: factories.playbookStore(),
-      trajectoryStore: factories.trajectoryStore(),
       ...(manifestAce.maxInjectedTokens !== undefined
         ? { maxInjectedTokens: manifestAce.maxInjectedTokens }
         : {}),

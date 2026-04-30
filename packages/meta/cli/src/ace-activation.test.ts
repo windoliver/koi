@@ -11,12 +11,6 @@ const STUB_FACTORIES = {
       save: async () => {},
       remove: async () => false,
     }) as const,
-  trajectoryStore: () =>
-    ({
-      append: async () => {},
-      getSession: async () => [],
-      listSessions: async () => [],
-    }) as const,
 };
 
 const ENABLED_BARE: ManifestAceConfig = {
@@ -70,8 +64,11 @@ describe("resolveAceActivation — issue #2088", () => {
     if (result.kind === "activate") {
       expect(result.message).toContain("ace: enabled");
       expect(result.message).toContain("in-memory");
+      expect(result.message).toContain("persist across /clear and /new");
+      expect(result.message).toContain("Restart the TUI for a privacy boundary");
       expect(result.config.playbookStore).toBeDefined();
-      expect(result.config.trajectoryStore).toBeDefined();
+      // No trajectoryStore wired by default — see ace-activation.ts comment.
+      expect(result.config.trajectoryStore).toBeUndefined();
       // Optional fields omitted when manifest didn't provide them.
       expect(result.config.maxInjectedTokens).toBeUndefined();
       expect(result.config.minScore).toBeUndefined();
