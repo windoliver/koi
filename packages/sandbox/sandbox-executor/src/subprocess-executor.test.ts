@@ -343,11 +343,13 @@ describe("createSubprocessExecutor", () => {
     // drain takes additional time but the timer was already cleared at exit.
     const code = `
       export default async (_input: unknown) => {
-        // Write 500 KB to stderr — drain happens after child exits.
-        // Keeping the volume modest avoids flake from concurrent test stream pressure
-        // while still exercising the post-exit-drain timing path.
+        // Write 1 MB to stderr — drain happens after child exits.
+        // Exercises the post-exit-drain timing path: child exits at ~50ms but
+        // parent must keep reading until pipe EOF. Runner uses writeSync(2,...)
+        // for the framing marker so it's flushed before process.exit().
+        // Volume kept modest to avoid flake under concurrent test-runner load.
         const chunk = "e".repeat(1024);
-        for (let i = 0; i < 500; i++) process.stderr.write(chunk);
+        for (let i = 0; i < 1000; i++) process.stderr.write(chunk);
         return { fast: true };
       };
     `;

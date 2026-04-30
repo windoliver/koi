@@ -16,6 +16,8 @@
  *   1 — unrecoverable startup error (bad argv, parse failure)
  */
 
+import { writeSync } from "node:fs";
+
 export {};
 
 /** Framing marker separating protocol output from any other stderr content. */
@@ -26,7 +28,12 @@ type RunnerResult =
   | { readonly ok: false; readonly error: string };
 
 function writeResult(data: RunnerResult): void {
-  process.stderr.write(`${RESULT_MARKER}${JSON.stringify(data)}\n`);
+  // Use writeSync(fd=2) — a synchronous, unbuffered system call that returns
+  // only after the bytes are accepted by the kernel. process.stderr.write does
+  // NOT guarantee flush before process.exit(); under heavy stderr backpressure
+  // (large prior writes filling the pipe), the framing marker can be lost,
+  // causing the parent to mis-classify a successful child as CRASH or TIMEOUT.
+  writeSync(2, `${RESULT_MARKER}${JSON.stringify(data)}\n`);
 }
 
 /**
