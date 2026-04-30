@@ -348,6 +348,68 @@ describe("initProfiling", () => {
     expect(secondSetIntervalCalls).toBe(0);
   });
 
+  test("shutdown write failure + later activity: exit retry writes the original snapshot, not the mix", () => {
+    // Hardest case: shutdown's write fails, an unprofiled second run
+    // happens before process exit and bumps probes, then the exit
+    // handler retries. The retry MUST write the original snapshot —
+    // not the mixed state — because the live state was reset at
+    // shutdown and the snapshot was frozen at write-failure time.
+    process.env.KOI_TUI_PROFILE = "1";
+    const missingDir = join(workDir, "missing-mix");
+    const outPath = join(missingDir, "report.json");
+    process.env.KOI_TUI_PROFILE_OUT = outPath;
+    resetProfiler();
+
+    let exitHandler: (() => void) | null = null;
+    const onSpy = mock((event: string, handler: () => void) => {
+      if (event === "exit") exitHandler = handler;
+      return process;
+    });
+
+    const stderrWrites: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      // Run 1: profiled. bump counters. shutdown — write fails (no parent dir).
+      initProfiling({
+        processOn: onSpy as unknown as typeof process.on,
+        cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+      });
+      bumpCounter("messagerow.mount", 7);
+      shutdownProfiling();
+      expect(existsSync(outPath)).toBe(false);
+
+      // Run 2: unprofiled (env still set, but new initProfiling sees
+      // runActive=false and a fresh start). Actually for this test we
+      // simulate the mixed-state scenario: bumpCounter directly. After
+      // shutdown reset, state.enabled is false, so this is a no-op —
+      // but we explicitly enable to verify the snapshot is independent.
+      resetProfiler({ enabled: true });
+      bumpCounter("messagerow.mount", 9999);
+      bumpCounter("contamination", 4242);
+
+      // Now repair the path and fire the exit handler.
+      mkdirSync(missingDir, { recursive: true });
+      expect(exitHandler).not.toBeNull();
+      if (!exitHandler) return;
+      (exitHandler as () => void)();
+
+      const written = JSON.parse(readFileSync(outPath, "utf8")) as {
+        counters: Record<string, number>;
+      };
+      // Snapshot reflects ONLY run 1 — no contamination from the post-
+      // shutdown bumps.
+      expect(written.counters["messagerow.mount"]).toBe(7);
+      expect(written.counters.contamination).toBeUndefined();
+    } finally {
+      process.stderr.write = origWrite;
+    }
+  });
+
   test("write failure during shutdown is recoverable via exit-handler retry", () => {
     process.env.KOI_TUI_PROFILE = "1";
     // Path under a non-existent parent dir so writeFileSync throws ENOENT

@@ -56,6 +56,15 @@ let exitHandlerRegistered = false;
 // different file (or overwrite an unrelated run's output) at flush time.
 // `let` justified: assigned per-run by initProfiling, cleared by shutdown.
 let activeOutPath: string | null = null;
+// Frozen report snapshot for exit-handler retry. When shutdown's write
+// fails, the live profiler state is still reset so probes are no-ops
+// afterwards (preventing post-shutdown activity from contaminating the
+// retained report). The snapshot retains the data + destination path
+// independently of live state, so the registered exit handler retries
+// against an immutable copy of the *original* run.
+// `let` justified: assigned on write failure, cleared on success.
+let pendingReportSnapshot: string | null = null;
+let pendingReportPath: string | null = null;
 
 /**
  * Sentinel error class so callers can identify conflict rejections without
@@ -143,22 +152,11 @@ export function initProfiling(options?: InitProfilingOptions): boolean {
 export function shutdownProfiling(): void {
   if (!runActive) return;
   stopCpuSampler();
+  // writeReportIfNeeded captures a snapshot for retry on failure, so
+  // the live profiler state can always be reset here — post-shutdown
+  // probe activity from any later unprofiled TUI cannot contaminate
+  // the retained report.
   writeReportIfNeeded();
-  if (!writtenForRun) {
-    // Write failed (transient permission, missing dir, ENOSPC, …).
-    // Keep runActive / activeOutPath / state intact so the registered
-    // exit-handler fallback can retry writeReportIfNeeded() against
-    // the same captured data and path. Clearing here would leave
-    // writeReportIfNeeded a no-op (activeOutPath=null) and silently
-    // drop the only profiling artifact for this run.
-    //
-    // The CPU sampler is already stopped, so probes contribute
-    // nothing further to the retained state in the meantime.
-    return;
-  }
-  // Disable probes so any stray batcher / sampler call between now and the
-  // next initProfiling() is a no-op rather than silently writing into the
-  // already-flushed state.
   resetProfiler({ enabled: false });
   runActive = false;
   activeOutPath = null;
@@ -166,22 +164,29 @@ export function shutdownProfiling(): void {
 
 function writeReportIfNeeded(): void {
   if (writtenForRun) return;
-  // Use the path captured at init — never re-read env at flush time.
-  // If init never ran (e.g. exit-handler fallback fires after a never-
-  // profiled process), there is nothing to write.
-  const path = activeOutPath;
+  // Two cases:
+  //   (1) First attempt — serialize live state into a one-shot snapshot.
+  //   (2) Retry — pendingReportSnapshot/Path are set from a prior failure.
+  //       Live state may already have been reset; rely solely on the
+  //       snapshot so post-shutdown activity cannot leak in.
+  let serialized: string | null = pendingReportSnapshot;
+  let path: string | null = pendingReportPath;
+  if (serialized === null) {
+    if (activeOutPath === null) return;
+    serialized = JSON.stringify(dumpProfile(), null, 2);
+    path = activeOutPath;
+  }
   if (path === null) return;
-  const report = dumpProfile();
   try {
-    writeFileSync(path, JSON.stringify(report, null, 2));
-    // Only mark the run as written AFTER a successful write. If the
-    // first attempt fails (transient permission, missing dir, ENOSPC),
-    // a later writeReportIfNeeded() — e.g. from the exit-handler
-    // fallback — gets a chance to retry rather than silently dropping
-    // the only artifact for this run.
+    writeFileSync(path, serialized);
     writtenForRun = true;
+    pendingReportSnapshot = null;
+    pendingReportPath = null;
     process.stderr.write(`[koi-tui-profile] report written to ${path}\n`);
   } catch (err) {
+    // Freeze the snapshot for a later retry (e.g. exit-handler).
+    pendingReportSnapshot = serialized;
+    pendingReportPath = path;
     process.stderr.write(`[koi-tui-profile] failed to write ${path}: ${String(err)}\n`);
   }
 }
@@ -192,4 +197,6 @@ export function __resetProfilingForTests(): void {
   writtenForRun = false;
   exitHandlerRegistered = false;
   activeOutPath = null;
+  pendingReportSnapshot = null;
+  pendingReportPath = null;
 }
