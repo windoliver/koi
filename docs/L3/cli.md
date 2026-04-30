@@ -6,6 +6,15 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/governance-scope` wired (#1882 gov-15)**: CLI manifest gains `network:`
+  and `credentials:` blocks. The TUI command translates these into compiled scope
+  objects (`compileScopedFs`, `createScopedFetcher`, `createScopedCredentials`)
+  before passing them into the tool/provider factories. `authed_fetch` is
+  registered in the CLI preset stack as an agent-facing tool that consumes scoped
+  credentials without echoing values. `createProgressiveSkillProvider` replaces
+  the bare provider call so session-snapshot stability is preserved at attach time.
+  `@koi/governance-scope` and `@koi/url-safety` added as direct CLI dependencies.
+
 - **Review lifecycle doc sync (#2081)**: no CLI dependency or TUI wiring changes.
   CLI consumes the refreshed L2 behavior from `@koi/task-tools`,
   `@koi/tools-web`, and `@koi/middleware-memory-recall`: task-tools'
@@ -559,6 +568,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/context-manager` | L0u | Token-aware transcript compaction — `enforceBudget()` micro/full cascade, `resolveConfig()` + `budgetConfigFromResolved()` for per-model window from `@koi/model-registry`. Wired into `createTranscriptAdapter()` in `engine-adapter.ts`; both `koi start` and `koi tui` use it. `KOI_COMPACTION_WINDOW` env var overrides the window for testing (#1623) |
 | `@koi/audit-sink-sqlite` | L2 | WAL-mode SQLite audit sink — opt-in via `KOI_AUDIT_SQLITE` env var, parallel to NDJSON sink. Collision guard prevents dual-writer corruption (#1849) |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
+| `@koi/middleware-event-rules` | L2 | Declarative YAML event→action rules (#1422). Manifest factory restricts host-loaded rulesets to `log` actions only (rejects `skip_tool`/`notify`/`emit`/`escalate`) so untrusted manifests cannot perform side effects; trusted programmatic wiring through `createEventRulesMiddleware()` retains the full action surface. Priority 50, intercept phase. See `docs/L2/middleware-event-rules.md` |
 | `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to file-backed memory backend. **Fix (#1964):** `heuristic`/`pattern` → `feedback`. **Fix (#1966):** `MemoryType` threaded via `MemoryStoreOptions.type`; JSON output filtered through allowlist; command-result envelopes skipped. |
 | `@koi/middleware-collective-memory` | L2 | Cross-run learning persistence — extracts reusable learnings from spawn-family tool outputs, persists as `CollectiveMemory` on brick artifacts, and injects relevant entries as a system message at session start (one-shot, token-budgeted). Post-session LLM extraction batch-processes up to 20 spawn outputs. Compaction via cold-age eviction. Priority 305. See `docs/L2/middleware-collective-memory.md` |
 | `@koi/middleware-dream` | L2 | Background dream-consolidation gate — `onSessionEnd` hook bumps `<memoryDir>/.dream-gate.json` via atomic `mutateGateState` (in-process mutex chain + cross-process O_EXCL on `.dream-gate.lock`). When the gate fires, fire-and-forget `runDreamConsolidation` runs under `.dream.lock` (PID-bearing). Wired via the `dreamStack` preset; no-op when `ctx.modelAdapter` is undefined. Companion CLI: `koi dream` |

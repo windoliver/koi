@@ -20,6 +20,8 @@ import {
   createTuiApp,
   readStdinParserReset,
 } from "./create-app.js";
+import { __resetProfilingForTests } from "./profiling/integration.js";
+import { resetProfiler } from "./profiling/profiler.js";
 import { createInitialState } from "./state/initial.js";
 import { createStore } from "./state/store.js";
 
@@ -111,6 +113,48 @@ describe("createTuiApp — no-TTY", () => {
     const destroySpy = spyOn(renderer, "destroy");
     createTuiApp(await makeConfig({ renderer }));
     expect(destroySpy).not.toHaveBeenCalled();
+  });
+
+  test("does not start the profiling sampler on no-TTY (#1586)", async () => {
+    // Regression: initProfiling() once ran before the TTY guard. If
+    // KOI_TUI_PROFILE=1 was set, the sampler interval would keep a
+    // non-TTY process alive indefinitely.
+    Object.defineProperty(process.stdout, "isTTY", {
+      configurable: true,
+      get: () => false,
+    });
+    const prevEnv = process.env.KOI_TUI_PROFILE;
+    process.env.KOI_TUI_PROFILE = "1";
+    try {
+      const setIntervalSpy = spyOn(globalThis, "setInterval");
+      const callsBefore = setIntervalSpy.mock.calls.length;
+      createTuiApp(await makeConfig());
+      expect(setIntervalSpy.mock.calls.length).toBe(callsBefore);
+      setIntervalSpy.mockRestore();
+    } finally {
+      if (prevEnv === undefined) delete process.env.KOI_TUI_PROFILE;
+      else process.env.KOI_TUI_PROFILE = prevEnv;
+    }
+  });
+
+  test("createTuiApp() without start() does not arm profiling (#1586)", async () => {
+    // Regression: initProfiling() previously ran during factory construction,
+    // so a handle that was never start()ed left a live sampler interval.
+    // Profiling is now bound to start() ownership.
+    const prevEnv = process.env.KOI_TUI_PROFILE;
+    process.env.KOI_TUI_PROFILE = "1";
+    try {
+      const setIntervalSpy = spyOn(globalThis, "setInterval");
+      const callsBefore = setIntervalSpy.mock.calls.length;
+      const result = createTuiApp(await makeConfig());
+      expect(result.ok).toBe(true);
+      // No start() — sampler must not be armed.
+      expect(setIntervalSpy.mock.calls.length).toBe(callsBefore);
+      setIntervalSpy.mockRestore();
+    } finally {
+      if (prevEnv === undefined) delete process.env.KOI_TUI_PROFILE;
+      else process.env.KOI_TUI_PROFILE = prevEnv;
+    }
   });
 });
 
@@ -390,6 +434,55 @@ describe("createTuiApp — renderer.destroy() disposes Solid root", () => {
       // A second stop() must be a no-op (not throw) — confirms the root was
       // disposed and the guard prevents double-disposal
       await expect(result.value.stop()).resolves.toBeUndefined();
+    }
+  });
+
+  test("external renderer destroy releases profiling ownership so a restart is accepted (#1586)", async () => {
+    const prevEnv = process.env.KOI_TUI_PROFILE;
+    const prevOut = process.env.KOI_TUI_PROFILE_OUT;
+    process.env.KOI_TUI_PROFILE = "1";
+    process.env.KOI_TUI_PROFILE_OUT = "/tmp/koi-1586-restart.json";
+    __resetProfilingForTests();
+    resetProfiler();
+
+    const stderrWrites: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      // Run 1: start, then crash via external renderer destroy (no stop()).
+      const renderer1 = await makeTestRenderer();
+      const result1 = createTuiApp(await makeConfig({ renderer: renderer1 }));
+      expect(result1.ok).toBe(true);
+      if (!result1.ok) return;
+      await result1.value.start();
+      // Synchronous "destroy" emit — fires the externalDestroyHandler that
+      // must release profiling ownership.
+      renderer1.destroy();
+
+      // Run 2: should take fresh ownership without the "already being
+      // profiled" warning. If externalDestroyHandler did not release
+      // profiling, this would fail.
+      const renderer2 = await makeTestRenderer();
+      const result2 = createTuiApp(await makeConfig({ renderer: renderer2 }));
+      expect(result2.ok).toBe(true);
+      if (!result2.ok) return;
+      await result2.value.start();
+      await result2.value.stop();
+
+      const conflicts = stderrWrites.filter((w) => w.includes("already being profiled"));
+      expect(conflicts.length).toBe(0);
+    } finally {
+      process.stderr.write = origWrite;
+      __resetProfilingForTests();
+      resetProfiler({ enabled: false });
+      if (prevEnv === undefined) delete process.env.KOI_TUI_PROFILE;
+      else process.env.KOI_TUI_PROFILE = prevEnv;
+      if (prevOut === undefined) delete process.env.KOI_TUI_PROFILE_OUT;
+      else process.env.KOI_TUI_PROFILE_OUT = prevOut;
     }
   });
 });

@@ -83,6 +83,26 @@ When two tiers define a skill with the same name, the higher-priority tier wins.
 
 This is **fail-closed**: a skill with `eval()` in a code block, or destructive prose such as `rm -rf /` and `$OPENROUTER_API_KEY` exfiltration in plain text, does not reach the model's capability list unless you explicitly lower the threshold.
 
+## Recent updates
+
+gov-15 credential-scoped skill gating: three new exports added.
+
+- `createProgressiveSkillProvider(base, config)` — replaces the bare
+  `createSkillProvider` call in most hosts. Bundles a session-snapshot
+  `PinnedRuntime` so every attach call within a turn sees a stable skill
+  listing rather than a live re-discover. Returns `{ provider, pinnedRuntime }`.
+- `createProgressivePinnedRuntime(base): PinnedRuntime` — wraps a
+  `SkillsRuntime` to pin the discovered metadata snapshot per session,
+  flushing on `onSessionEnd`. Exposed for hosts that construct the provider
+  manually.
+- `createScopedSkillsRuntime(base, credentials): SkillsRuntime` — wraps a
+  runtime so skills whose `requires.credentials.ref` is out of scope are
+  invisible across **all** read paths (`discover`, `load`, `loadAll`,
+  `query`, `loadReference`). Closes the Skill-tool bypass: without a
+  runtime-level gate an agent could call `Skill("cred-blocked")` directly,
+  bypassing the provider's `AttachResult.skipped` filter.
+- `PinnedRuntime` type (re-export) — `SkillsRuntime & { flush(): void }`.
+
 ## Public API
 
 ```typescript

@@ -650,7 +650,7 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     // to detect a real ".." path segment. Only `../<rest>` is a traversal.
     const dotDotDir = join(dir, "..logs");
     mkdirSync(dotDotDir);
-    const p = writeManifest(
+    const _p = writeManifest(
       [
         "model:",
         "  name: google/gemini-2.0-flash-001",
@@ -920,5 +920,525 @@ describe("revalidateAuditPathContainment", () => {
     const result = revalidateAuditPathContainment(hardLink, manifestPath());
     expect(typeof result).toBe("string");
     expect(result).toContain("hard link");
+  });
+});
+
+// Issue #2088: ACE manifest schema. Activation is gated in the host
+// (runtime-factory + commands/start) — this block exercises the parser only.
+describe("loadManifestConfig: ace block (#2088)", () => {
+  let dir: string;
+  const writeManifest = (yaml: string): string => {
+    const p = join(dir, "koi.manifest.yaml");
+    writeFileSync(p, yaml);
+    return p;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-manifest-ace-2088-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("omits ace when block absent", async () => {
+    const p = writeManifest(["model:", "  name: google/gemini-2.0-flash-001"].join("\n"));
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.ace).toBeUndefined();
+  });
+
+  test("parses enabled: false as a valid no-op", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "ace:", "  enabled: false"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.ace).toEqual({
+      enabled: false,
+      maxInjectedTokens: undefined,
+      minScore: undefined,
+      lambda: undefined,
+    });
+  });
+
+  test("parses full block with all overrides", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        "  max_injected_tokens: 800",
+        "  min_score: 0.05",
+        "  lambda: 0.07",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.ace).toEqual({
+      enabled: true,
+      maxInjectedTokens: 800,
+      minScore: 0.05,
+      lambda: 0.07,
+    });
+  });
+
+  test("parses partial block (only enabled + min_score)", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        "  min_score: 0.1",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.ace).toEqual({
+      enabled: true,
+      maxInjectedTokens: undefined,
+      minScore: 0.1,
+      lambda: undefined,
+    });
+  });
+
+  test("rejects unknown key with helpful message", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        "  bogus_key: 1",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.ace: unknown key");
+    expect(result.error).toContain("bogus_key");
+  });
+
+  test("rejects playbook_path with pointer to follow-up issue", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        "  playbook_path: ~/.koi/ace.sqlite",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.ace.playbook_path");
+    expect(result.error).toContain("@koi/playbook-store-sqlite");
+  });
+
+  test("rejects non-boolean enabled", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "ace:", '  enabled: "yes"'].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.ace.enabled must be a boolean");
+  });
+
+  test("accepts max_injected_tokens: 0 (no-injection mode in runtime)", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        "  max_injected_tokens: 0",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.ace?.maxInjectedTokens).toBe(0);
+  });
+
+  test("rejects negative max_injected_tokens", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        "  max_injected_tokens: -1",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.ace.max_injected_tokens must be >= 0");
+  });
+
+  test("rejects min_score outside [0, 1]", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        "  min_score: 1.5",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.ace.min_score must be in [0, 1]");
+  });
+
+  test("accepts lambda: 0 (disables recency decay in runtime)", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        "  lambda: 0",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.ace?.lambda).toBe(0);
+  });
+
+  test("rejects negative lambda", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        "  lambda: -0.01",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.ace.lambda must be >= 0");
+  });
+
+  test("rejects non-object ace block", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "ace: true"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.ace must be an object");
+  });
+
+  test("defaults enabled to false when key omitted", async () => {
+    // `ace: {}` is equivalent to no enable signal.
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "ace: {}"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.ace).toEqual({
+      enabled: false,
+      maxInjectedTokens: undefined,
+      minScore: undefined,
+      lambda: undefined,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// network block (gov-15) — outbound URL scope
+// ---------------------------------------------------------------------------
+
+describe("loadManifestConfig: network block (gov-15)", () => {
+  let dir: string;
+  const writeManifest = (yaml: string): string => {
+    const p = join(dir, "koi.manifest.yaml");
+    writeFileSync(p, yaml);
+    return p;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-manifest-gov15-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("omits network when block absent", async () => {
+    const p = writeManifest(["model:", "  name: google/gemini-2.0-flash-001"].join("\n"));
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.network).toBeUndefined();
+  });
+
+  test("parses network.allow with one entry", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "network:",
+        "  allow:",
+        '    - "https://api.example.com/*"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.network).toEqual({ allow: ["https://api.example.com/*"] });
+  });
+
+  test("parses network.allow with multiple entries", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "network:",
+        "  allow:",
+        '    - "https://api.example.com/*"',
+        '    - "https://*.public.example/*"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.network?.allow.length).toBe(2);
+  });
+
+  test("preserves empty allow array as deny-all (not undefined)", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "network:", "  allow: []"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // gov-15: explicit empty allow is preserved so downstream wiring
+    // builds a deny-all URLPattern allowlist (createScopedFetcher with
+    // allow: [] throws on every URL). Collapsing to undefined would
+    // silently revert to legacy unscoped behavior, which is the wrong
+    // default for an explicit empty manifest declaration.
+    expect(result.value.network).toEqual({ allow: [] });
+  });
+
+  test("rejects non-string allow entries", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "network:", "  allow:", "    - 123"].join(
+        "\n",
+      ),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("non-empty strings");
+  });
+
+  test("rejects malformed URLPattern entries", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "network:",
+        "  allow:",
+        '    - "://broken"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("not a valid URLPattern");
+  });
+
+  test("rejects network as a non-object", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "network: yes"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.network");
+  });
+
+  test("rejects network block missing allow (typo guard)", async () => {
+    // gov-15: same fail-closed parser strictness as credentials — a typo
+    // like `allowed:` must not silently load as "no scope".
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "network:",
+        "  allowed:",
+        '    - "https://example.com/*"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("not a recognized key");
+  });
+
+  test("rejects network block with no allow field", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "network: {}"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("must declare an `allow`");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// credentials block (gov-15) — credential key glob scope
+// ---------------------------------------------------------------------------
+
+describe("loadManifestConfig: credentials block (gov-15)", () => {
+  let dir: string;
+  const writeManifest = (yaml: string): string => {
+    const p = join(dir, "koi.manifest.yaml");
+    writeFileSync(p, yaml);
+    return p;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-manifest-gov15-creds-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("omits credentials when block absent", async () => {
+    const p = writeManifest(["model:", "  name: google/gemini-2.0-flash-001"].join("\n"));
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.credentials).toBeUndefined();
+  });
+
+  test("parses credentials.allow with one entry", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "credentials:",
+        "  allow:",
+        '    - "openai_*"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.credentials).toEqual({ allow: ["openai_*"] });
+  });
+
+  test("parses credentials.allow with multiple entries", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "credentials:",
+        "  allow:",
+        '    - "openai_*"',
+        '    - "anthropic_*"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.credentials?.allow.length).toBe(2);
+  });
+
+  test("preserves empty allow array as deny-all (not undefined)", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "credentials:", "  allow: []"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // gov-15: explicit `credentials: { allow: [] }` means deny all, not
+    // legacy "no scope". The downstream wiring must build a deny-all
+    // CredentialComponent so out-of-scope skills are gated and
+    // authed_fetch rejects every key.
+    expect(result.value.credentials).toEqual({ allow: [] });
+  });
+
+  test("rejects non-string allow entries", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "credentials:",
+        "  allow:",
+        "    - 42",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("non-empty strings");
+  });
+
+  test("rejects credentials as a non-object", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "credentials: yes"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.credentials");
+  });
+
+  test("rejects credentials block missing allow (typo guard)", async () => {
+    // gov-15: a present `credentials:` block must declare `allow`. Loading
+    // it as `undefined → unscoped` would turn an operator typo
+    // (`allowed:` instead of `allow:`) into legacy open-mode credential
+    // access — the exact bypass this feature is closing.
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "credentials:",
+        "  allowed:",
+        '    - "openai_*"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("not a recognized key");
+  });
+
+  test("rejects credentials block with no fields at all", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "credentials: {}"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("must declare an `allow`");
+  });
+
+  test("rejects allow as non-array", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "credentials:", '  allow: "openai_*"'].join(
+        "\n",
+      ),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("must be an array");
   });
 });

@@ -87,14 +87,87 @@ constraint, see #1715 design notes).
 
 ---
 
+## Manifest Schema (declarative; activation lands in a follow-up PR)
+
+Issue [#2088](https://github.com/windoliver/koi/issues/2088) introduces an opt-in
+`ace:` block in `koi.yaml`. The schema is shipped now (parser + validation +
+`koi start` rejection) so users can stage their config; the TUI host wiring
+that actually instantiates the middleware is tracked as the activation PR.
+
+```yaml
+ace:
+  enabled: true            # boolean — required to opt in
+  max_injected_tokens: 800 # >0; maps to AceConfig.maxInjectedTokens
+  min_score: 0.05          # in [0, 1]; maps to AceConfig.minScore
+  lambda: 0.05             # >0; maps to AceConfig.lambda
+```
+
+### Validation
+
+- Unknown keys are rejected at manifest load (typo guard).
+- `playbook_path` is rejected with a pointer to the future
+  `@koi/playbook-store-sqlite` issue. Schema additions for persistence land
+  atomically with their consumer.
+- Numeric ranges are checked at parse time so misconfiguration fails at
+  startup, not at the first model call.
+- `enabled: false` (and `ace: {}`) is a valid declarative no-op.
+
+### Host scope
+
+Both `koi start` and `koi tui` currently reject `manifest.ace.enabled: true`
+at fresh manifest load (matches the existing `backgroundSubprocesses` and
+`audit` rejection precedent in `commands/start.ts`). The schema is shipped
+but neither host activates the middleware in this build.
+
+**Resume-path note (intentional limitation):** the rejection runs only on
+fresh manifest load, not on `--resume` paths. A session created before
+this PR landed (with `ace.enabled: true` in its original manifest) will
+resume successfully because (a) the manifest field was silently ignored
+in older builds, so the session has no ACE state to honor, and (b) the
+broader resume-provenance pattern (`readSessionMeta()` returning `{}` for
+missing/malformed sidecars; manifest-parse-failure short-circuiting)
+applies to every manifest-governed feature, not just ACE. Hardening the
+resume path is the activation PR's responsibility — by the time real ACE
+wiring lands, the fresh-load rejection will have been replaced and resume
+becomes a real concern.
+
+### Activation PR (follow-up)
+
+The activation PR will add `manifestAce` to `KoiRuntimeConfig`, build an
+`AceConfig` from the manifest fields, and wire it into `createRuntime({ ace })`
+under the following gates:
+
+1. **`spawn` preset stack must NOT be active** (no per-agent partitioning yet —
+   would contaminate child agents). Operators who want to dogfood ACE set
+   `manifest.stacks` to a list that excludes `spawn`.
+2. **Manifest provenance must be present on resume** (mirrors the existing
+   `audit` resume-handling pattern: when `readSessionMeta()` returns no
+   `manifestPath`, ACE is treated as off for the resumed session).
+
+Known limitations of the activation design (documented for the activation PR):
+
+- In-memory store survives `/clear` and `/new` within one TUI process —
+  use process restart to reset. Tracked for the follow-up sqlite-store work
+  alongside per-session `clear()` semantics.
+- Cross-process persistence requires `@koi/playbook-store-sqlite` (not yet
+  shipped).
+
+The full design analysis lives in
+`docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md` (10 review rounds
+of refinement).
+
+---
+
 ## Future Work
 
 | Phase | Adds |
 |-------|------|
+| TUI activation (issue #2088) | `manifestAce` in `KoiRuntimeConfig` + spawn-gate + resume-provenance gate; in-memory dogfood loop |
 | Middleware integration | `KoiMiddleware` with `wrapModelCall` (inject) + `wrapToolCall` (record) + `onSessionEnd` (consolidate) |
 | LLM pipeline | `reflector` + `curator` + `StructuredPlaybook` operations (`add` / `merge` / `prune`) with bullet credit assignment |
 | Promotion gate | Proposal → evaluation → commit/rollback flow; `PlaybookProposalStore` lineage |
 | `ace_reflect` tool | Agent-initiated mid-session reflection |
+| `@koi/playbook-store-sqlite` | Cross-process persistence; per-session/per-root-agent partitioning; `clear()` API |
 | Golden query | `@koi/runtime` cassette + replay assertion |
 
 ---

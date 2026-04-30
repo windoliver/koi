@@ -14,8 +14,6 @@
  *
  * TODO(Phase 2i-3): replace directory scanning with @koi/session once that
  * package lands in v2.
- * TODO(Phase 2i-3): add MAX_SUMMARY_BYTES cap to loadSessionSummary to
- * address stall on very large session files (currently reads to EOF).
  */
 
 import { readdir, stat } from "node:fs/promises";
@@ -23,6 +21,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import type { CliFlags } from "../args.js";
 import { isSessionsFlags } from "../args.js";
 import { ExitCode } from "../types.js";
+
+export const MAX_SUMMARY_BYTES = 1_048_576;
 
 // ---------------------------------------------------------------------------
 // Security helpers
@@ -85,21 +85,44 @@ export interface SessionSummary {
  * Handles \r\n line endings (strips trailing \r). Exported for unit testing
  * with injected chunked streams — production callers pass Bun.file().stream().
  */
-export async function* readJsonlLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+export async function* readJsonlLines(
+  stream: ReadableStream<Uint8Array>,
+  options: { readonly maxBytes?: number } = {},
+): AsyncGenerator<string> {
   const decoder = new TextDecoder();
   let remainder = "";
+  let bytesRead = 0;
+  let capped = false;
+
   for await (const chunk of stream) {
+    let readable = chunk;
+    if (options.maxBytes !== undefined) {
+      const remaining = options.maxBytes - bytesRead;
+      if (remaining <= 0) {
+        capped = true;
+        break;
+      }
+      if (chunk.byteLength > remaining) {
+        readable = chunk.slice(0, remaining);
+        capped = true;
+      }
+      bytesRead += readable.byteLength;
+    }
+
     // TextDecoder handles byte-level multi-byte boundaries ({ stream: true }
     // preserves decoder state across chunks). `remainder` handles string-level
     // newline boundaries. These compose correctly: bytes → string first, then split.
-    const text = remainder + decoder.decode(chunk, { stream: true });
+    const text = remainder + decoder.decode(readable, { stream: true });
     const parts = text.split("\n");
     remainder = parts.pop() ?? "";
     for (const part of parts) {
       const line = part.endsWith("\r") ? part.slice(0, -1) : part;
       if (line.length > 0) yield line;
     }
+    if (capped) break;
   }
+  if (capped) return;
+
   // Flush remaining decoder state and any final line without a trailing \n
   const tail = remainder + decoder.decode();
   const flushed = tail.endsWith("\r") ? tail.slice(0, -1) : tail;
@@ -154,7 +177,9 @@ export async function loadSessionSummary(
   let isFirstLine = true;
 
   try {
-    for await (const line of readJsonlLines(Bun.file(filePath).stream())) {
+    for await (const line of readJsonlLines(Bun.file(filePath).stream(), {
+      maxBytes: MAX_SUMMARY_BYTES,
+    })) {
       const isFirst = isFirstLine;
       isFirstLine = false;
 

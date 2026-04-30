@@ -313,11 +313,85 @@ export interface ManifestConfig {
    *     backend: nexus
    */
   readonly delegation: ManifestDelegationConfig | undefined;
+  /**
+   * Optional outbound-network scope (gov-15). When set, the CLI wraps the
+   * web tools' `fetch` with `@koi/governance-scope`'s `createScopedFetcher`
+   * so any URL not matching one of the supplied URLPattern strings fails
+   * closed before the request hits the network.
+   *
+   *   network:
+   *     allow:
+   *       - "https://api.example.com/*"
+   *       - "https://*.public.example/*"
+   *
+   * Each entry is parsed via `new URLPattern(string)`. A malformed pattern
+   * fails the manifest load with an actionable error.
+   */
+  readonly network: ManifestNetworkConfig | undefined;
+  /**
+   * Optional credentials scope (gov-15). When set, the CLI registers an
+   * env-var-backed `CredentialComponent` wrapped with
+   * `@koi/governance-scope`'s `createScopedCredentials` so brick activation
+   * can only resolve keys matching one of the supplied glob patterns. Keys
+   * outside the allowlist resolve to `undefined` (least-information
+   * principle — bricks cannot enumerate other secrets).
+   *
+   *   credentials:
+   *     allow:
+   *       - "openai_*"
+   *       - "anthropic.*"
+   *
+   * Each entry is a glob pattern (`*` within a segment, `**` across
+   * segments) compiled by the same engine used for filesystem scope.
+   */
+  readonly credentials: ManifestCredentialsConfig | undefined;
+  /**
+   * Optional ACE (Adaptive Continuous Enhancement) opt-in. The schema is
+   * shipped now (parser + validation + host rejection); host activation
+   * lands in a follow-up PR per the design analysis at
+   * docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md.
+   *
+   * Both `koi start` and `koi tui` currently reject `enabled: true` at
+   * fresh manifest load (matches the `backgroundSubprocesses` precedent).
+   * `enabled: false` is a valid declarative no-op.
+   *
+   *   ace:
+   *     enabled: true
+   *     max_injected_tokens: 800
+   *     min_score: 0.05
+   *     lambda: 0.05
+   *
+   * Numeric overrides map 1:1 to `AceConfig` fields in
+   * `@koi/middleware-ace`: `max_injected_tokens` → `maxInjectedTokens`,
+   * `min_score` → `minScore`, `lambda` → `lambda`.
+   */
+  readonly ace: ManifestAceConfig | undefined;
+}
+
+/** Manifest-declared outbound-network scope (gov-15). */
+export interface ManifestNetworkConfig {
+  readonly allow: readonly string[];
+}
+
+/** Manifest-declared credentials scope (gov-15). */
+export interface ManifestCredentialsConfig {
+  readonly allow: readonly string[];
 }
 
 /** Manifest-declared delegation backend selector. */
 export interface ManifestDelegationConfig {
   readonly backend: "memory" | "nexus";
+}
+
+/**
+ * Manifest-declared ACE configuration. See `ManifestConfig.ace` for
+ * activation semantics and host-level gates.
+ */
+export interface ManifestAceConfig {
+  readonly enabled: boolean;
+  readonly maxInjectedTokens: number | undefined;
+  readonly minScore: number | undefined;
+  readonly lambda: number | undefined;
 }
 
 /**
@@ -533,6 +607,11 @@ export async function loadManifestConfig(
     return delegationResult;
   }
 
+  const aceResult = parseManifestAce(raw.ace);
+  if (!aceResult.ok) {
+    return aceResult;
+  }
+
   // `trustedHost` is not an accepted manifest field. Earlier
   // designs exposed a per-layer security opt-out surface here, but
   // the runtime factory never actually omitted the corresponding
@@ -622,6 +701,16 @@ export async function loadManifestConfig(
     }
   }
 
+  const networkResult = parseManifestNetwork(raw.network);
+  if (!networkResult.ok) {
+    return { ok: false, error: networkResult.error };
+  }
+
+  const credentialsResult = parseManifestCredentials(raw.credentials);
+  if (!credentialsResult.ok) {
+    return { ok: false, error: credentialsResult.error };
+  }
+
   return {
     ok: true,
     value: {
@@ -636,6 +725,122 @@ export async function loadManifestConfig(
       supervision: supervisionResult.value,
       audit: auditResult.value,
       delegation: delegationResult.value,
+      network: networkResult.value,
+      credentials: credentialsResult.value,
+      ace: aceResult.value,
+    },
+  };
+}
+
+const ACE_KNOWN_KEYS: ReadonlySet<string> = new Set([
+  "enabled",
+  "max_injected_tokens",
+  "min_score",
+  "lambda",
+]);
+
+function parseManifestAce(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: ManifestAceConfig | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error: "manifest.ace must be an object, e.g. ace: { enabled: true }",
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+
+  for (const key of Object.keys(obj)) {
+    if (key === "playbook_path") {
+      return {
+        ok: false,
+        error:
+          "manifest.ace.playbook_path is not yet supported; @koi/playbook-store-sqlite has not landed (tracked as #2088 follow-up). " +
+          "Remove the key to use the in-memory store.",
+      };
+    }
+    if (!ACE_KNOWN_KEYS.has(key)) {
+      return {
+        ok: false,
+        error:
+          `manifest.ace: unknown key "${key}". Recognized keys: ${[...ACE_KNOWN_KEYS].join(", ")}. ` +
+          "Check for typos — unknown keys are rejected to prevent silent ACE misconfiguration.",
+      };
+    }
+  }
+
+  const enabled = obj.enabled;
+  if (enabled !== undefined && typeof enabled !== "boolean") {
+    return {
+      ok: false,
+      error: `manifest.ace.enabled must be a boolean (got: ${JSON.stringify(enabled)})`,
+    };
+  }
+
+  const maxInjectedTokens = obj.max_injected_tokens;
+  if (maxInjectedTokens !== undefined) {
+    if (typeof maxInjectedTokens !== "number" || !Number.isFinite(maxInjectedTokens)) {
+      return {
+        ok: false,
+        error: `manifest.ace.max_injected_tokens must be a finite number (got: ${JSON.stringify(maxInjectedTokens)})`,
+      };
+    }
+    // 0 is valid: the runtime injector treats it as "no injection" mode
+    // (see packages/lib/middleware-ace/src/injector.ts).
+    if (maxInjectedTokens < 0) {
+      return {
+        ok: false,
+        error: `manifest.ace.max_injected_tokens must be >= 0 (got: ${maxInjectedTokens})`,
+      };
+    }
+  }
+
+  const minScore = obj.min_score;
+  if (minScore !== undefined) {
+    if (typeof minScore !== "number" || !Number.isFinite(minScore)) {
+      return {
+        ok: false,
+        error: `manifest.ace.min_score must be a finite number (got: ${JSON.stringify(minScore)})`,
+      };
+    }
+    if (minScore < 0 || minScore > 1) {
+      return {
+        ok: false,
+        error: `manifest.ace.min_score must be in [0, 1] (got: ${minScore})`,
+      };
+    }
+  }
+
+  const lambda = obj.lambda;
+  if (lambda !== undefined) {
+    if (typeof lambda !== "number" || !Number.isFinite(lambda)) {
+      return {
+        ok: false,
+        error: `manifest.ace.lambda must be a finite number (got: ${JSON.stringify(lambda)})`,
+      };
+    }
+    // 0 is valid: disables recency decay (recency factor stays at 1).
+    // Existing runtime tests in stats-aggregator.test.ts use lambda: 0.
+    if (lambda < 0) {
+      return {
+        ok: false,
+        error: `manifest.ace.lambda must be >= 0 (got: ${lambda})`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      enabled: enabled ?? false,
+      maxInjectedTokens: maxInjectedTokens as number | undefined,
+      minScore: minScore as number | undefined,
+      lambda: lambda as number | undefined,
     },
   };
 }
@@ -651,6 +856,129 @@ export async function loadManifestConfig(
  * Returns `{ ok: true, value: undefined }` when the section is absent so
  * manifests without supervision stay opt-out.
  */
+function parseManifestNetwork(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: ManifestNetworkConfig | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error:
+        'manifest.network must be an object, e.g. network: { allow: ["https://api.example.com/*"] }',
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+  // gov-15: this is a security-critical parser. A present `network:`
+  // block missing `allow` (or carrying typos like `allowed`) must NOT
+  // silently load as "no scope" — that would turn an operator typo
+  // into legacy open-mode network access. Require the exact `allow`
+  // key; reject every other key so "network: { allowed: [...] }"
+  // surfaces as an error at startup.
+  const knownKeys = new Set(["allow"]);
+  for (const key of Object.keys(obj)) {
+    if (!knownKeys.has(key)) {
+      return {
+        ok: false,
+        error: `manifest.network.${key} is not a recognized key (did you mean "allow"?). Allowed keys: ${[...knownKeys].join(", ")}`,
+      };
+    }
+  }
+  const allow = obj.allow;
+  if (allow === undefined) {
+    return {
+      ok: false,
+      error:
+        "manifest.network must declare an `allow` array (use `allow: []` for deny-all, or remove the network block for legacy unscoped behavior).",
+    };
+  }
+  if (!Array.isArray(allow)) {
+    return { ok: false, error: "manifest.network.allow must be an array of URLPattern strings" };
+  }
+  if (!allow.every((p): p is string => typeof p === "string" && p.length > 0)) {
+    return {
+      ok: false,
+      error: "manifest.network.allow entries must be non-empty strings",
+    };
+  }
+  // Validate each pattern parses cleanly so a typo fails fast at load time
+  // rather than throwing inside the request path.
+  for (const pattern of allow) {
+    try {
+      new URLPattern(pattern);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        ok: false,
+        error: `manifest.network.allow entry ${JSON.stringify(pattern)} is not a valid URLPattern: ${msg}`,
+      };
+    }
+  }
+  // gov-15: explicit `network: { allow: [] }` is a deny-all declaration,
+  // not "no scope". Preserve it as a present-but-empty config so
+  // downstream wiring builds a deny-everything URLPattern allowlist; only
+  // an absent `network:` block means legacy unscoped behavior.
+  return { ok: true, value: { allow } };
+}
+
+function parseManifestCredentials(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: ManifestCredentialsConfig | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error: 'manifest.credentials must be an object, e.g. credentials: { allow: ["openai_*"] }',
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+  // gov-15: same strictness as parseManifestNetwork — a present
+  // `credentials:` block missing `allow` (or carrying typos like
+  // `allowed`) must fail closed rather than silently revert to
+  // legacy unscoped credential access.
+  const knownKeys = new Set(["allow"]);
+  for (const key of Object.keys(obj)) {
+    if (!knownKeys.has(key)) {
+      return {
+        ok: false,
+        error: `manifest.credentials.${key} is not a recognized key (did you mean "allow"?). Allowed keys: ${[...knownKeys].join(", ")}`,
+      };
+    }
+  }
+  const allow = obj.allow;
+  if (allow === undefined) {
+    return {
+      ok: false,
+      error:
+        "manifest.credentials must declare an `allow` array (use `allow: []` for deny-all, or remove the credentials block for legacy unscoped behavior).",
+    };
+  }
+  if (!Array.isArray(allow)) {
+    return {
+      ok: false,
+      error: "manifest.credentials.allow must be an array of glob strings",
+    };
+  }
+  if (!allow.every((p): p is string => typeof p === "string" && p.length > 0)) {
+    return {
+      ok: false,
+      error: "manifest.credentials.allow entries must be non-empty strings",
+    };
+  }
+  // Explicit empty allowlist (`credentials: { allow: [] }`) means deny all
+  // — preserve it as a present-but-empty config so downstream wiring builds
+  // a deny-everything CredentialComponent. Only an absent `credentials:`
+  // block means "no scoping configured".
+  return { ok: true, value: { allow } };
+}
+
 function parseManifestDelegation(
   raw: unknown,
 ):

@@ -415,7 +415,7 @@ Every PR follows **Doc → Tests → Code**. No exceptions.
 | 1. Doc | Write/update `docs/L2/<package>.md` before code | CI: doc-gate check |
 | 2. Tests | Write failing tests that define behavior | CI: coverage ≥ 80%, no test deletion |
 | 3. Code | Implement minimal code to pass tests | CI: typecheck + lint + check:layers |
-| 4. Refactor | Clean up (< 400 lines/file, < 50 lines/fn) | CI: complexity check |
+| 4. Refactor | Clean up (< 400 lines/file, < 50 lines/fn) | CI: complexity ratchet check |
 
 ### Code Quality Rules
 

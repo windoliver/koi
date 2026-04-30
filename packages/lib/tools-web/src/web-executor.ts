@@ -162,6 +162,20 @@ export interface WebExecutorConfig {
    * - `false`: Reject all HTTPS URLs. Only HTTP (with IP pinning) is allowed.
    */
   readonly allowHttps: boolean;
+  /**
+   * Optional pre-DNS allowlist callback threaded into the executor's
+   * `createSafeFetcher` call. Runs before isSafeUrl resolves DNS and
+   * before HTTP IP pinning, on every redirect hop. Hosts use this to
+   * enforce a `manifest.network.allow` URLPattern allowlist as a
+   * pre-network boundary. Setting this here (rather than wrapping
+   * `fetchFn` externally with another `createSafeFetcher`) avoids
+   * double-wrapping that would defeat the pre-DNS guarantee — the
+   * executor's outer safe-fetcher would do its DNS lookup before the
+   * caller's inner allowlist hook fires.
+   */
+  readonly preDnsAllowCheck?:
+    | ((url: string) => { readonly ok: true } | { readonly ok: false; readonly reason: string })
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +253,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
   const allowedProtocols: readonly string[] = allowHttps ? ["http:", "https:"] : ["http:"];
   const safeFetchOptions = {
     ...(dnsResolver !== undefined ? { dnsResolver } : {}),
+    ...(config.preDnsAllowCheck !== undefined ? { preDnsAllowCheck: config.preDnsAllowCheck } : {}),
     allowedProtocols,
     maxRedirects: MAX_REDIRECTS,
   } as const;

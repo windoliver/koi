@@ -483,6 +483,47 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       );
     }
 
+    // gov-15 round-6: koi start does not wire manifest.network or
+    // manifest.credentials into createKoiRuntime (the headless host has
+    // no skill provider to gate, no authed_fetch tool, and the simpler
+    // bash/web stack used here doesn't compose the URL allowlist).
+    // Accepting the syntax then silently running unscoped is worse
+    // than rejecting — operators get a false sense the declared trust
+    // boundary is active. Fail closed and tell them to either remove
+    // the block or use `koi tui` which honors gov-15 scope wiring.
+    if (manifestResult.value.network !== undefined) {
+      return bail(
+        "manifest.network is not supported on this host. " +
+          "koi start does not wire the URL allowlist into web_fetch — the declared " +
+          "scope would not actually gate outbound network calls. Remove the network: " +
+          "block from the manifest to run under koi start, or use `koi tui` which " +
+          "honors manifest.network.allow.",
+      );
+    }
+    if (manifestResult.value.credentials !== undefined) {
+      return bail(
+        "manifest.credentials is not supported on this host. " +
+          "koi start does not wire the credential scope (no skill provider gating, no " +
+          "authed_fetch tool) — the declared scope would not actually gate credential " +
+          "access. Remove the credentials: block from the manifest to run under koi " +
+          "start, or use `koi tui` which honors manifest.credentials.allow.",
+      );
+    }
+
+    // Issue #2088: ACE schema is shipped but host activation has not landed
+    // yet. Reject ace.enabled: true at fresh manifest load on every host
+    // (matches backgroundSubprocesses + audit + network/credentials precedent
+    // above). The activation PR will replace this with real wiring.
+    if (manifestResult.value.ace?.enabled === true) {
+      return bail(
+        "manifest.ace.enabled: true is not yet wired in this build " +
+          "(tracked as issue 2088). The schema is shipped but neither koi start " +
+          "nor koi tui activates the middleware yet — set ace.enabled: false or " +
+          "remove the ace: block. The activation PR is the natural place for the " +
+          "host wiring.",
+      );
+    }
+
     // #1777 two-gate trust boundary for nexus backends:
     //   Gate 1 — manifest must declare scope (root + mode in options)
     //   Gate 2 — operator must pass --allow-remote-fs to explicitly
@@ -706,6 +747,16 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             "or remove the audit: block from the manifest.",
         );
       }
+      // Issue #2088 — note: a resume-time ACE rejection was deliberately
+      // NOT added here. The fresh-load rejection above suffices for new
+      // sessions, and adding a resume-specific guard would inherit the
+      // broader resume-provenance gap (readSessionMeta() returning {} for
+      // missing/malformed sidecars; manifest-parse failure short-circuiting
+      // before the check). Since this build does not actually wire ACE,
+      // a resumed session with ace.enabled: true behaves identically to
+      // any other session — the field is dead weight. The activation PR
+      // is the natural place to add comprehensive resume-time rejection
+      // alongside hardened sidecar validation.
     }
   }
 

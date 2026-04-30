@@ -32,7 +32,7 @@ export type {
   WebSearchResult,
 } from "./web-executor.js";
 export { createWebExecutor } from "./web-executor.js";
-export { createWebFetchTool } from "./web-fetch-tool.js";
+export { createWebFetchTool, preflightBlockReason } from "./web-fetch-tool.js";
 export type { WebProviderConfig } from "./web-provider.js";
 export { createWebProvider } from "./web-provider.js";
 export { createWebSearchTool } from "./web-search-tool.js";

@@ -2526,3 +2526,127 @@ describe("Golden: @koi/eval", () => {
     expect(checks.checks).toHaveLength(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-event-rules
+// ---------------------------------------------------------------------------
+
+import { sessionId as makeSessionId } from "@koi/core";
+import { createScopedCredentials, createScopedFetcher } from "@koi/governance-scope";
+import { createEventRulesMiddleware, validateEventRulesConfig } from "@koi/middleware-event-rules";
+
+describe("Golden: @koi/middleware-event-rules", () => {
+  test("skip_tool action circuit-breaks tool after windowed failure threshold", async () => {
+    const compiled = validateEventRulesConfig({
+      rules: [
+        {
+          name: "trip-on-failures",
+          on: "tool_call",
+          match: { ok: false, toolId: "shell_exec" },
+          condition: { count: 2, window: "1m" },
+          actions: [{ type: "skip_tool", toolId: "shell_exec" }],
+        },
+      ],
+    });
+    if (!compiled.ok) throw new Error(compiled.error.message);
+
+    const mw = createEventRulesMiddleware({ ruleset: compiled.value });
+    const ctx = {
+      session: { sessionId: makeSessionId("er-golden"), agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core").TurnContext;
+
+    const failing: import("@koi/core").ToolHandler = async () => ({
+      output: "boom",
+      metadata: { error: true },
+    });
+    const ok: import("@koi/core").ToolHandler = async () => ({ output: "ok" });
+
+    await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: {} }, failing);
+    await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: {} }, failing);
+    const blocked = await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: {} }, ok);
+    expect(blocked?.metadata?.blocked).toBe(true);
+  });
+
+  test("log action fires through injected logger on matching tool failure", async () => {
+    const compiled = validateEventRulesConfig({
+      rules: [
+        {
+          name: "log-failures",
+          on: "tool_call",
+          match: { ok: false },
+          actions: [{ type: "log", level: "warn", message: "tool {{toolId}} failed" }],
+        },
+      ],
+    });
+    if (!compiled.ok) throw new Error(compiled.error.message);
+
+    const warnings: string[] = [];
+    const mw = createEventRulesMiddleware({
+      ruleset: compiled.value,
+      actionContext: {
+        logger: {
+          info: () => {},
+          warn: (m: string) => warnings.push(m),
+          error: () => {},
+          debug: () => {},
+        },
+      },
+    });
+    const ctx = {
+      session: { sessionId: makeSessionId("er-golden-2"), agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core").TurnContext;
+    const failing: import("@koi/core").ToolHandler = async () => ({
+      output: "x",
+      metadata: { error: true },
+    });
+
+    await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: {} }, failing);
+    expect(warnings).toEqual(["tool shell_exec failed"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/governance-scope (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/governance-scope", () => {
+  test("createScopedCredentials fails closed — out-of-scope key returns undefined, in-scope key resolves", async () => {
+    const store: Record<string, string> = { OPENAI_KEY: "sk-secret", DB_PASS: "hunter2" };
+    const component = { get: async (k: string) => store[k] };
+    const scoped = createScopedCredentials(component, { allow: ["OPENAI_*"] });
+
+    // In-scope: resolved via underlying component
+    expect(await scoped.get("OPENAI_KEY")).toBe("sk-secret");
+
+    // Out-of-scope: fails closed, returns undefined — does NOT hit underlying component
+    expect(await scoped.get("DB_PASS")).toBeUndefined();
+    expect(await scoped.get("UNKNOWN_KEY")).toBeUndefined();
+  });
+
+  test("createScopedFetcher fails closed — URL outside allowlist throws before inner fetch is called", async () => {
+    let innerCalled = false;
+    const inner = async (_input: Parameters<typeof fetch>[0]): Promise<Response> => {
+      innerCalled = true;
+      return new Response("ok");
+    };
+
+    const scoped = createScopedFetcher(inner as typeof fetch, {
+      allow: [new URLPattern({ hostname: "api.example.com" })],
+    });
+
+    // Allowed URL — inner fetch is called
+    await scoped("https://api.example.com/v1/data");
+    expect(innerCalled).toBe(true);
+
+    // Blocked URL — throws before inner fetch
+    innerCalled = false;
+    await expect(scoped("https://evil.com/exfil")).rejects.toThrow(
+      "outside the allowed fetch scope",
+    );
+    expect(innerCalled).toBe(false);
+  });
+});
