@@ -72,6 +72,7 @@
     { "path": "../../lib/middleware-planning" },
     { "path": "../../lib/middleware-prompt-cache" },
     { "path": "../../lib/middleware-reflex" },
+    { "path": "../../lib/middleware-rlm" },
     { "path": "../../lib/middleware-report" },
     { "path": "../../lib/middleware-task-anchor" },
     { "path": "../../lib/middleware-turn-ack" },

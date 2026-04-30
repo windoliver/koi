@@ -392,9 +392,19 @@ export async function scanMiddlewareForSessionLeaks(
 
         const srcDir = `${dir.path}/src`;
         const glob = new Bun.Glob("**/*.ts");
-        for await (const filePath of glob.scan({ cwd: srcDir, absolute: true })) {
-          if (isTestFile(filePath)) continue;
-          const source = await Bun.file(filePath).text();
+        const sourceFiles = await Promise.all(
+          (await Array.fromAsync(glob.scan({ cwd: srcDir, absolute: true })))
+            .filter((filePath) => !isTestFile(filePath))
+            .map(async (filePath) => ({
+              filePath,
+              source: await Bun.file(filePath).text(),
+            })),
+        );
+
+        const packageHasSessionEnd = sourceFiles.some(({ source }) => SESSION_END_RE.test(source));
+        if (packageHasSessionEnd) return;
+
+        for (const { filePath, source } of sourceFiles) {
           if (hasSessionMapWithoutCleanup(source)) {
             const relPath = filePath.startsWith(srcDir)
               ? `src${filePath.slice(srcDir.length)}`

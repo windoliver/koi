@@ -1,5 +1,29 @@
+import type { KoiError } from "@koi/core";
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
 import { isKoiError, isRetryable, KoiRuntimeError, toKoiError } from "@koi/errors";
+
+/**
+ * Transport-safe codes whose default classification we inherit when a
+ * partial `Error.cause` omits `retryable`. Deliberately narrower than core
+ * RETRYABLE_DEFAULTS:
+ *   - AUTH_REQUIRED / RESOURCE_EXHAUSTED — "retryable" only after external
+ *     intervention; auto-replaying hides the recovery path.
+ *   - EXTERNAL — depends on the specific remote failure; core defaults
+ *     it to non-retryable for that reason. Producer must opt in.
+ *   - CONFLICT — non-idempotent in many domains; require explicit opt-in.
+ *   - TIMEOUT — delivery state is unknown after a watchdog deadline. The
+ *     first attempt may have been accepted server-side and only the
+ *     response path failed; a blind replay can duplicate non-idempotent
+ *     model requests, tool calls, billable operations, or writes.
+ *     Producer MUST set `retryable: true` (or wrap in a full KoiError
+ *     with phase metadata proving idempotency) to opt in.
+ *
+ * That leaves only RATE_LIMIT (server-acknowledged throttling — by
+ * definition the request was rejected before any side-effect) as the
+ * safe-to-replay-by-default transport class.
+ */
+const TRANSPORT_RETRYABLE_DEFAULTS: ReadonlySet<KoiError["code"]> = new Set(["RATE_LIMIT"]);
+
 import { runGates } from "./gate.js";
 import type { Gate, RepairStrategy, ValidationError, Validator } from "./types.js";
 import { runValidators } from "./validators.js";
@@ -8,7 +32,10 @@ import { runValidators } from "./validators.js";
  * Extracts retryability from an error, handling three shapes:
  * 1. Full KoiError thrown directly → use isRetryable()
  * 2. Error with partial KoiError-shaped cause ({ code, retryable }) but missing message →
- *    adapters often throw Error('msg', { cause: { code, retryable } }) without a full KoiError
+ *    adapters often throw Error('msg', { cause: { code, retryable } }) without a full KoiError.
+ *    Normalize the partial cause through `isRetryable()` so the hard non-retryable code floor
+ *    (VALIDATION, NOT_FOUND, PERMISSION, INTERNAL) applies — a producer that mislabels
+ *    a permanent failure as `retryable: true` cannot escalate it into automatic replay.
  * 3. Anything else → toKoiError() fallback (returns retryable: false)
  */
 export function resolveRetryable(err: unknown): boolean {
@@ -16,15 +43,29 @@ export function resolveRetryable(err: unknown): boolean {
   if (err instanceof Error) {
     const cause = err.cause;
     if (isKoiError(cause)) return isRetryable(cause);
-    // Partial cause: has code + retryable but no message (not a full KoiError)
-    if (
-      cause !== null &&
-      cause !== undefined &&
-      typeof cause === "object" &&
-      "retryable" in cause &&
-      typeof (cause as { retryable: unknown }).retryable === "boolean"
-    ) {
-      return (cause as { retryable: boolean }).retryable;
+    // Partial cause: route through isRetryable so the hard non-retryable
+    // floor applies. Synthesize a minimal KoiError shape from whatever
+    // fields are present; missing fields fall back to safe defaults.
+    if (cause !== null && cause !== undefined && typeof cause === "object") {
+      const c = cause as { code?: unknown; retryable?: unknown };
+      const hasCode = typeof c.code === "string";
+      const hasRetryable = typeof c.retryable === "boolean";
+      if (hasCode || hasRetryable) {
+        const code = (hasCode ? (c.code as string) : "EXTERNAL") as KoiError["code"];
+        // Preserve "missing retryable" semantics: when the partial cause
+        // omits `retryable`, fall back to the code's default classification
+        // (RETRYABLE_DEFAULTS) so transient codes like RATE_LIMIT / TIMEOUT
+        // still retry. When the producer DID set `retryable`, route through
+        // isRetryable so the hard non-retryable floor still applies.
+        const synthesized: KoiError = {
+          code,
+          message: err.message,
+          retryable: hasRetryable
+            ? (c.retryable as boolean)
+            : TRANSPORT_RETRYABLE_DEFAULTS.has(code),
+        };
+        return isRetryable(synthesized);
+      }
     }
   }
   return isRetryable(toKoiError(err));

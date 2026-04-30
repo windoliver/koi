@@ -2001,6 +2001,60 @@ describe("Golden: @koi/middleware-permissions", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-rlm (2 queries)
+//
+// Standalone — no cassette replay. RLM activates only when a request
+// exceeds the configured token threshold, which the recorder's golden
+// prompts never approach. Pure functions (segmentRequest /
+// reassembleResponses) are the contract surface; cassette coverage would
+// add no signal that the unit tests in @koi/middleware-rlm don't already
+// give. See docs/L2/middleware-rlm.md for the segment-local contract.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-rlm", () => {
+  test("factory yields a middleware with name 'rlm' and both wrap hooks", async () => {
+    const { createRlmMiddleware } = await import("@koi/middleware-rlm");
+    const mw = createRlmMiddleware({
+      maxInputTokens: 32_000,
+      maxChunkChars: 8_000,
+      acknowledgeSegmentLocalContract: true,
+    });
+    expect(mw.name).toBe("koi:rlm");
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapModelStream).toBe("function");
+  });
+
+  test("segmentRequest splits oversized user text; reassembleResponses concatenates byte-faithfully", async () => {
+    const { segmentRequest, reassembleResponses } = await import("@koi/middleware-rlm");
+    const big = "x".repeat(300);
+    const segments = segmentRequest(
+      {
+        messages: [
+          {
+            senderId: "user",
+            timestamp: 0,
+            content: [{ kind: "text", text: big }],
+          },
+        ],
+      },
+      100,
+    );
+    expect(segments.length).toBe(3);
+    const merged = reassembleResponses(
+      segments.map(() => ({
+        content: "x".repeat(100),
+        model: "test-model",
+        stopReason: "stop" as const,
+        responseId: "r-shared",
+      })),
+    );
+    expect(merged.content).toBe(big);
+    expect(merged.model).toBe("test-model");
+    expect(merged.responseId).toBe("r-shared");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/decision-ledger (2 queries)
 //
 // Standalone — no cassette replay. Exercises the factory with fake sinks

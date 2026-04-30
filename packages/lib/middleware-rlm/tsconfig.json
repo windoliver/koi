@@ -5,12 +5,5 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [
-    {
-      "path": "../../kernel/core"
-    },
-    {
-      "path": "../errors"
-    }
-  ]
+  "references": [{ "path": "../../kernel/core" }, { "path": "../../mm/token-estimator" }]
 }

@@ -100,17 +100,19 @@ Agent sends a rich message with mixed content:
 │  @koi/channel-base  (L0u)                           │
 │                                                     │
 │  channel-adapter-factory.ts ← createChannelAdapter  │
-│  content-block-builders.ts  ← text, image, file...  │
-│  render-blocks.ts           ← capability downgrade   │
-│  format-error.ts            ← user-facing errors     │
-│  index.ts                   ← public API surface     │
+│  channel-registry.ts        ← createChannelRegistry │
+│  render-blocks.ts           ← capability downgrade  │
+│  format-error.ts            ← user-facing errors    │
+│  rate-limit.ts              ← createRateLimiter     │
+│  index.ts                   ← public API surface    │
 │                                                     │
 ├─────────────────────────────────────────────────────┤
 │  Dependencies                                       │
 │                                                     │
 │  @koi/core    (L0)   ChannelAdapter, ContentBlock,  │
 │                       InboundMessage, OutboundMessage│
-│  @koi/errors  (L0u)  swallowError()                │
+│  @koi/errors  (L0u)  computeBackoff, sleep,         │
+│                       DEFAULT_RETRY_CONFIG          │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -283,23 +285,44 @@ All builders handle `exactOptionalPropertyTypes` compliance — optional fields 
 
 ## Error Formatting
 
-`formatErrorForChannel(error, options?)` converts `KoiError` to safe, user-friendly strings:
+`formatErrorForChannel(error)` returns a discriminated union so adapters handle the three trust classes explicitly. `formatErrorTextForChannel(error)` is a convenience helper that collapses the union back to a single string for adapters that don't have specialized auth or validation UX.
 
 ```
-KoiErrorCode     Default Message                              Verbose
-────────────     ───────────                                  ───────
-VALIDATION       "Invalid input: {message}"                   same
-NOT_FOUND        "The requested resource was not found."      + "(message)"
-PERMISSION       "You don't have permission..."               + "(message)"
-CONFLICT         "A conflict occurred..."                     + "(message)"
-RATE_LIMIT       "Too many requests..."                       + "(retry after Xms)"
-TIMEOUT          "The operation timed out..."                 + "(message)"
-EXTERNAL         "An external service is unavailable..."      + "(message)"
-INTERNAL         "Something went wrong..."                    + "(message)"
-STALE_REF        "The referenced element is no longer valid." + "(message)"
+ChannelErrorOutput =
+  | { kind: "text"; text: string }
+  | { kind: "validation"; safeText: string }
+  | { kind: "auth-required"; safeText: string; error: KoiError }
 ```
 
-Never leaks `error.cause`, `error.context`, or stack traces. Verbose mode is for developer-facing channels (CLI).
+| Discriminant | When | Adapter contract |
+|---|---|---|
+| `text` | All canned codes (NOT_FOUND, RATE_LIMIT, …) | Render `text` directly. Channel-base guarantees no leakage. Unknown / forward-version codes fall back to a generic safe message. |
+| `validation` | `KoiErrorCode === "VALIDATION"` | Render `safeText` — plain text only, with control chars stripped, scheme/`www.` URLs redacted, markdown/mention/formatting/escape characters (`@`, `` ` ``, `*`, `_`, `~`, `#`, `\|`, `!`, `&`, `\`, `[`, `]`, `(`, `)`, `<`, `>`, `{`, `}`) stripped, and length-capped. Adapters that render to marked-up transports (HTML, etc.) MUST still apply their own transport-specific escaping on top. The raw `error.message` is intentionally NOT exposed; adapters needing structured field errors consume `KoiError.context`. |
+| `auth-required` | `KoiErrorCode === "AUTH_REQUIRED"` | Inspect `error.context` and validate any auth handoff URL against the adapter's own trust configuration before rendering a clickable link. Fall back to `safeText` if no auth UX path is available — leaves the user without a recovery action but never phishes them. |
+
+The canned messages are:
+
+```
+KoiErrorCode        Message
+────────────        ───────
+VALIDATION          "Invalid input: {message}"
+NOT_FOUND           "The requested resource was not found."
+PERMISSION          "You don't have permission to perform this action."
+CONFLICT            "A conflict occurred. Please try again."
+RATE_LIMIT          "Too many requests. Please wait a moment."
+TIMEOUT             "The operation timed out. Please try again."
+EXTERNAL            "An external service is temporarily unavailable."
+INTERNAL            "Something went wrong. Please try again later."
+STALE_REF           "The referenced element is no longer valid. Please try again."
+AUTH_REQUIRED       "Authorization is required to continue."
+RESOURCE_EXHAUSTED  "Capacity limit reached. Please try again shortly."
+UNAVAILABLE         "The service is currently unavailable."
+HEARTBEAT_TIMEOUT   "The worker stopped responding."
+```
+
+The `text` and `safeText` outputs never leak `error.cause`, stack traces, or — outside of the `validation` discriminant's `rawMessage` field — `error.message`. The `auth-required` discriminant exposes the original `error` so adapters can read `error.context` themselves; that is the explicit handoff point at which trust validation moves to the adapter layer.
+
+There is intentionally no verbose / developer mode; CLI tooling that needs raw diagnostics formats `error.code` / `error.message` through its own sanitizer.
 
 ---
 
@@ -326,7 +349,15 @@ Never leaks `error.cause`, `error.context`, or stack traces. Verbose mode is for
 | Function | Returns | Purpose |
 |----------|---------|---------|
 | `renderBlocks(blocks, capabilities)` | `readonly ContentBlock[]` | Downgrade unsupported blocks to text |
-| `formatErrorForChannel(error, options?)` | `string` | Safe user-facing error message |
+| `classifyErrorForChannel(error)` | `ChannelErrorOutput` | Discriminated union so adapters handle text / validation / auth-required explicitly |
+| `formatErrorForChannel(error)` | `string` | Convenience collapse to a single string for adapters with no auth/validation UX |
+
+### Resilience & Discovery
+
+| Function | Returns | Purpose |
+|----------|---------|---------|
+| `createRateLimiter(config?)` | `RateLimiter` | FIFO send queue with retry-after honoring, exponential backoff, and a per-send watchdog. Send callbacks receive an `AbortSignal` (`SendFn = (signal) => Promise<void>`); when `sendTimeoutMs` (default 30s) elapses the signal aborts, the caller sees a `TIMEOUT` rejection, and the queue waits for the underlying promise to settle before advancing — preserving FIFO. Pass `sendTimeoutMs: 0` to opt out for transports that already enforce their own timeout. **Final-attempt strict-mode timeout contract:** if the transport never honors abort within an additional grace window, the caller is rejected with `code: "TIMEOUT"`, `retryable: false`, `context.phase: "delivery-unknown"` — distinct from a normal deadline TIMEOUT (`phase: "deadline-exceeded"`, retryable). Callers must NOT blindly retry a `delivery-unknown` send: the original may still complete. Use `onLateSuccess` / `onLateFailure` to observe the eventual real outcome. |
+| `createChannelRegistry(entries)` | `ChannelRegistry` | Snapshot-based name → factory map for adapter discovery |
 
 ### Types
 
@@ -335,7 +366,12 @@ Never leaks `error.cause`, `error.context`, or stack traces. Verbose mode is for
 | `ChannelAdapterConfig<E>` | Configuration for `createChannelAdapter()` |
 | `MessageNormalizer<E>` | `(event: E) => InboundMessage \| null \| Promise<InboundMessage \| null>` |
 | `ContentBlock` | Re-exported union from `@koi/core` |
-| `FormatErrorOptions` | `{ verbose?: boolean }` |
+| `ChannelErrorOutput` | Discriminated union returned by `classifyErrorForChannel` |
+| `RateLimiter` | `{ enqueue, size }` — sequential queued sends with retry |
+| `SendFn` | `(signal: AbortSignal) => Promise<void>` — send-callback signature for `enqueue` |
+| `RateLimiterConfig` | `{ retry?, extractRetryAfterMs? }` |
+| `ChannelFactory` | `(config: unknown) => ChannelAdapter` |
+| `ChannelRegistry` | `{ get, names }` — snapshot of registered factories |
 
 ---
 
