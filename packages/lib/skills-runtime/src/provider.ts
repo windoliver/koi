@@ -14,12 +14,14 @@ import type {
   AttachResult,
   BrickRequires,
   ComponentProvider,
+  CredentialComponent,
   KoiError,
   Result,
   SkillComponent,
   SubsystemToken,
 } from "@koi/core";
 import { COMPONENT_PRIORITY, skillToken } from "@koi/core";
+import { validateCredentialRequires } from "@koi/validation";
 import type { SkillDefinition, SkillMetadata, SkillQuery, SkillsRuntime } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +38,19 @@ import type { SkillDefinition, SkillMetadata, SkillQuery, SkillsRuntime } from "
  */
 export interface SkillProviderConfig {
   readonly progressive?: never;
+  /**
+   * Optional CredentialComponent used to enforce skill `requires.credentials`
+   * at activation time (gov-15). When provided, every loaded skill is checked
+   * via `validateCredentialRequires`; skills whose required credentials are
+   * not resolvable through this component are surfaced in `skipped` instead
+   * of registered. When omitted, credential requirements are not enforced —
+   * preserving backwards-compat for hosts that have no scope wiring.
+   *
+   * Hosts that wire `CREDENTIALS` from `manifest.credentials.allow` should
+   * pass the SAME scoped instance here so what bricks see at runtime exactly
+   * matches what skill activation enforces.
+   */
+  readonly credentials?: CredentialComponent | undefined;
 }
 
 /**
@@ -57,12 +72,13 @@ export interface SkillProviderConfig {
  */
 export function createSkillProvider(
   runtime: SkillsRuntime,
-  _config?: SkillProviderConfig,
+  config?: SkillProviderConfig,
 ): ComponentProvider {
+  const credentials = config?.credentials;
   return {
     name: "skills-runtime",
     priority: COMPONENT_PRIORITY.BUNDLED,
-    attach: async (_agent: Agent): Promise<AttachResult> => attachEager(runtime),
+    attach: async (_agent: Agent): Promise<AttachResult> => attachEager(runtime, credentials),
   };
 }
 
@@ -80,7 +96,10 @@ export function createSkillProvider(
  * Blocked/VALIDATION skills are still reported in AttachResult.skipped for
  * operator visibility regardless of mode.
  */
-export function createProgressiveSkillProvider(base: SkillsRuntime): {
+export function createProgressiveSkillProvider(
+  base: SkillsRuntime,
+  config?: SkillProviderConfig,
+): {
   readonly provider: ComponentProvider;
   readonly pinnedRuntime: PinnedRuntime;
   /**
@@ -101,10 +120,12 @@ export function createProgressiveSkillProvider(base: SkillsRuntime): {
   readonly reload: () => Promise<ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent>>;
 } {
   const pinnedRuntime = createProgressivePinnedRuntime(base);
+  const credentials = config?.credentials;
   const provider: ComponentProvider = {
     name: "skills-runtime",
     priority: COMPONENT_PRIORITY.BUNDLED,
-    attach: async (_agent: Agent): Promise<AttachResult> => attachProgressive(pinnedRuntime),
+    attach: async (_agent: Agent): Promise<AttachResult> =>
+      attachProgressive(pinnedRuntime, credentials),
   };
 
   const reload = async (): Promise<ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent>> => {
@@ -112,7 +133,7 @@ export function createProgressiveSkillProvider(base: SkillsRuntime): {
     const snapshot = pinnedRuntime.snapshotPins();
     pinnedRuntime.clearPinnedBodies();
     try {
-      const result = await attachProgressive(pinnedRuntime);
+      const result = await attachProgressive(pinnedRuntime, credentials);
       // Discovery failure surfaces as a skipped "__discover__" entry with empty components.
       // Throw so callers preserve their previous liveSkillComponents instead of replacing
       // it with an empty catalog while the pinned runtime is in a cleared state.
@@ -139,7 +160,10 @@ export function createProgressiveSkillProvider(base: SkillsRuntime): {
 // Attach strategies
 // ---------------------------------------------------------------------------
 
-async function attachEager(runtime: SkillsRuntime): Promise<AttachResult> {
+async function attachEager(
+  runtime: SkillsRuntime,
+  credentials: CredentialComponent | undefined,
+): Promise<AttachResult> {
   const allResult = await runtime.loadAll();
   const components = new Map<string, unknown>();
   const skipped: Array<{ readonly name: string; readonly reason: string }> = [];
@@ -154,13 +178,21 @@ async function attachEager(runtime: SkillsRuntime): Promise<AttachResult> {
       skipped.push({ name, reason: result.error.message });
       continue;
     }
+    const credCheck = await checkSkillCredentials(result.value, credentials);
+    if (!credCheck.ok) {
+      skipped.push({ name, reason: credCheck.reason });
+      continue;
+    }
     components.set(skillToken(name), skillDefinitionToComponent(result.value));
   }
 
   return { components: components as ReadonlyMap<string, unknown>, skipped };
 }
 
-async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> {
+async function attachProgressive(
+  runtime: SkillsRuntime,
+  credentials: CredentialComponent | undefined,
+): Promise<AttachResult> {
   // loadAll() gives full blocked/VALIDATION visibility for the skipped list —
   // the same parity as eager mode.
   //
@@ -192,6 +224,11 @@ async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> 
       skipped.push({ name, reason: result.error.message });
       continue;
     }
+    const credCheck = await checkSkillCredentials(result.value, credentials);
+    if (!credCheck.ok) {
+      skipped.push({ name, reason: credCheck.reason });
+      continue;
+    }
     // MCP (source: "mcp") skills have no SKILL.md body — body is their empty
     // description. Marking them runtimeBacked would advertise them in the
     // <available_skills> XML block even though Skill() would return an empty
@@ -210,6 +247,34 @@ async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Validate a single skill's `requires.credentials` against the supplied
+ * `CredentialComponent`. Returns `{ ok: true }` when there are no credential
+ * requirements, when no component is wired (backwards-compat), or when every
+ * required credential resolves through the component.
+ *
+ * When the component is wired and one or more required credentials cannot be
+ * resolved, returns `{ ok: false, reason }` with a stable message that the
+ * provider surfaces in the `skipped` array — visible to operators in the TUI
+ * status view without leaking the credential ref values themselves.
+ */
+async function checkSkillCredentials(
+  skill: SkillDefinition,
+  credentials: CredentialComponent | undefined,
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }> {
+  if (skill.requires === undefined) return { ok: true };
+  if (credentials === undefined) return { ok: true };
+  const result = await validateCredentialRequires(skill.requires as BrickRequires, credentials);
+  if (result.ok) return { ok: true };
+  // gov-15: surface a CONSTANT denial reason. validateCredentialRequires's
+  // error.message includes the required credential ref names; echoing
+  // them into AttachResult.skipped (which is reachable by operators and
+  // can leak into telemetry) would let an attacker enumerate which keys
+  // a skill needs. Keep the detailed validation output for redacted
+  // internal logs only — never on this path.
+  return { ok: false, reason: "credentials not in scope" };
+}
 
 /**
  * Converts a SkillDefinition to a SkillComponent (for consumers that already

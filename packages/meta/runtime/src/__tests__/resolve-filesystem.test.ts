@@ -297,3 +297,106 @@ describe("resolveFileSystemAsync — scoped wrapping", () => {
     expect(result.backend.name).toBe("scoped(nexus)");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Glob-allowlist scope (gov-15) — multi-glob via @koi/governance-scope
+// ---------------------------------------------------------------------------
+
+describe("resolveFileSystem — glob scope (gov-15)", () => {
+  test("wraps with glob scope when options.allow is provided", () => {
+    const backend = resolveFileSystem(
+      { backend: "local", options: { allow: [`${tmpBase}/**`], mode: "ro" } },
+      tmpBase,
+    );
+    expect(backend.name).toBe("scoped(local)");
+  });
+
+  test("glob scope blocks reads outside allow list", async () => {
+    const inside = mkdtempSync(join(tmpBase, "inside-"));
+    const outside = mkdtempSync(join(tmpBase, "outside-"));
+    writeFileSync(join(inside, "ok.txt"), "ok");
+    writeFileSync(join(outside, "secret.txt"), "secret");
+    const backend = resolveFileSystem(
+      { backend: "local", options: { allow: [`${inside}/**`], mode: "ro" } },
+      tmpBase,
+    );
+    const okRead = await backend.read(join(inside, "ok.txt"));
+    expect(okRead.ok).toBe(true);
+    const blocked = await backend.read(join(outside, "secret.txt"));
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.error.code).toBe("PERMISSION");
+  });
+
+  test("glob scope supports multiple allow patterns", async () => {
+    const a = mkdtempSync(join(tmpBase, "a-"));
+    const b = mkdtempSync(join(tmpBase, "b-"));
+    writeFileSync(join(a, "a.txt"), "a");
+    writeFileSync(join(b, "b.txt"), "b");
+    const backend = resolveFileSystem(
+      { backend: "local", options: { allow: [`${a}/**`, `${b}/**`], mode: "ro" } },
+      tmpBase,
+    );
+    expect((await backend.read(join(a, "a.txt"))).ok).toBe(true);
+    expect((await backend.read(join(b, "b.txt"))).ok).toBe(true);
+  });
+
+  test("glob scope takes precedence over single-root scope when both present (ro)", () => {
+    // gov-15: rw glob scope on local is fail-closed disabled (TOCTOU race
+    // requires backend O_NOFOLLOW). Use ro for the precedence test.
+    const backend = resolveFileSystem(
+      {
+        backend: "local",
+        options: { root: tmpBase, mode: "ro", allow: [`${tmpBase}/**`] },
+      },
+      tmpBase,
+    );
+    expect(backend.name).toBe("scoped(local)");
+  });
+
+  test("rw glob scope on local backend throws (TOCTOU race fail-closed)", () => {
+    // gov-15: rw glob scope is structurally unsafe on the current local
+    // backend (no O_NOFOLLOW write support). Operators are pointed at
+    // single-root rw scope or ro glob scope. Throw at config-resolve
+    // time so the failure surfaces at startup, not in the request path.
+    expect(() =>
+      resolveFileSystem(
+        { backend: "local", options: { allow: [`${tmpBase}/**`], mode: "rw" } },
+        tmpBase,
+      ),
+    ).toThrow(/rw.*not supported on the local backend/);
+  });
+
+  test("empty allow array is preserved as deny-all glob scope (ro)", () => {
+    // gov-15: explicit `options.allow: []` means deny all, not "no scope".
+    // The wrapper denies every path. Wired with mode: "ro" since rw glob
+    // is disabled on local.
+    const backend = resolveFileSystem(
+      { backend: "local", options: { allow: [], mode: "ro" } },
+      tmpBase,
+    );
+    expect(backend.name).toBe("scoped(local)");
+  });
+
+  test("malformed allow entries throw at config-resolve time", () => {
+    expect(() =>
+      resolveFileSystem(
+        { backend: "local", options: { allow: ["good", 42] as unknown as string[] } },
+        tmpBase,
+      ),
+    ).toThrow(/non-empty strings/);
+    expect(() =>
+      resolveFileSystem(
+        { backend: "local", options: { allow: "not-an-array" as unknown as string[] } },
+        tmpBase,
+      ),
+    ).toThrow(/array of glob strings/);
+  });
+
+  test("async path also wires glob scope", async () => {
+    const result = await resolveFileSystemAsync(
+      { backend: "local", options: { allow: [`${tmpBase}/**`], mode: "ro" } },
+      tmpBase,
+    );
+    expect(result.backend.name).toBe("scoped(local)");
+  });
+});

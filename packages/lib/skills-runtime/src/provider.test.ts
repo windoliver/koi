@@ -21,6 +21,15 @@ async function writeSkill(root: string, name: string, body = "Body."): Promise<v
   await Bun.write(join(root, name, "SKILL.md"), content, { createPath: true });
 }
 
+async function writeSkillWithCredential(
+  root: string,
+  name: string,
+  credKey: string,
+): Promise<void> {
+  const content = `---\nname: ${name}\ndescription: Test ${name}.\nrequires:\n  credentials:\n    primary:\n      kind: api_key\n      ref: ${credKey}\n---\n\nBody.`;
+  await Bun.write(join(root, name, "SKILL.md"), content, { createPath: true });
+}
+
 // Stub Agent — provider.attach() receives it but doesn't read it
 const STUB_AGENT = {} as Agent;
 
@@ -100,6 +109,51 @@ describe("createSkillProvider", () => {
     if (!isAttachResult(result)) return;
     expect(result.components.size).toBe(0);
     expect(result.skipped).toHaveLength(0);
+  });
+
+  test("attaches a skill whose credential ref is in scope (gov-15)", async () => {
+    await writeSkillWithCredential(userRoot, "ok-skill", "openai_api_key");
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const credentials = {
+      get: async (key: string): Promise<string | undefined> =>
+        key === "openai_api_key" ? "sk-test" : undefined,
+    };
+    const provider = createSkillProvider(runtime, { credentials });
+    const result = await provider.attach(STUB_AGENT);
+    if (!isAttachResult(result)) throw new Error("expected AttachResult");
+    expect(result.components.has(skillToken("ok-skill"))).toBe(true);
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  test("skips a skill whose credential ref is out of scope (gov-15)", async () => {
+    await writeSkillWithCredential(userRoot, "blocked-skill", "stripe_secret");
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const credentials = {
+      // Only openai_* is reachable; stripe_secret returns undefined → skip
+      get: async (key: string): Promise<string | undefined> =>
+        key.startsWith("openai_") ? "sk-test" : undefined,
+    };
+    const provider = createSkillProvider(runtime, { credentials });
+    const result = await provider.attach(STUB_AGENT);
+    if (!isAttachResult(result)) throw new Error("expected AttachResult");
+    expect(result.components.has(skillToken("blocked-skill"))).toBe(false);
+    const skip = result.skipped.find((s) => s.name === "blocked-skill");
+    expect(skip).toBeDefined();
+    // gov-15: reason must be the CONSTANT denial string. The skipped
+    // reason is reachable by operators/telemetry, so it must not echo the
+    // skill's required credential ref name (which would let an attacker
+    // enumerate keys via skill discovery).
+    expect(skip?.reason).toBe("credentials not in scope");
+    expect(skip?.reason).not.toContain("stripe");
+  });
+
+  test("when no CredentialComponent is wired, skill credential requirements are not enforced (backwards-compat)", async () => {
+    await writeSkillWithCredential(userRoot, "legacy-skill", "any_key");
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const provider = createSkillProvider(runtime);
+    const result = await provider.attach(STUB_AGENT);
+    if (!isAttachResult(result)) throw new Error("expected AttachResult");
+    expect(result.components.has(skillToken("legacy-skill"))).toBe(true);
   });
 });
 
