@@ -1,0 +1,248 @@
+import { describe, expect, test } from "bun:test";
+import type {
+  ModelHandler,
+  ModelRequest,
+  ModelResponse,
+  ToolDescriptor,
+  TurnContext,
+} from "@koi/core";
+import { createMockTurnContext } from "@koi/test";
+import {
+  createPromoteToolDescriptor,
+  createToolDisclosureMiddleware,
+  DEFAULT_DISCLOSURE_THRESHOLD,
+  PROMOTE_TOOL_NAME,
+  type ToolDisclosureMiddleware,
+} from "./tool-disclosure-middleware.js";
+
+const ctx: TurnContext = createMockTurnContext();
+
+function descriptor(name: string): ToolDescriptor {
+  return {
+    name,
+    description: `Tool: ${name}`,
+    inputSchema: { type: "object", properties: { input: { type: "string" } } },
+  };
+}
+
+function descriptors(count: number, prefix = "tool"): readonly ToolDescriptor[] {
+  return Array.from({ length: count }, (_, i) => descriptor(`${prefix}-${i}`));
+}
+
+function isSummary(d: ToolDescriptor): boolean {
+  return Object.keys(d.inputSchema).length === 0;
+}
+
+const noopResponse: ModelResponse = {
+  content: "ok",
+  model: "test",
+};
+
+function captureNext(): {
+  readonly handler: ModelHandler;
+  readonly seen: { request: ModelRequest | undefined };
+} {
+  const seen: { request: ModelRequest | undefined } = { request: undefined };
+  const handler: ModelHandler = async (request) => {
+    seen.request = request;
+    return noopResponse;
+  };
+  return { handler, seen };
+}
+
+async function callWrap(
+  mw: ToolDisclosureMiddleware,
+  request: ModelRequest,
+  next: ModelHandler,
+): Promise<ModelResponse> {
+  if (mw.wrapModelCall === undefined) throw new Error("wrapModelCall missing");
+  return mw.wrapModelCall(ctx, request, next);
+}
+
+describe("createToolDisclosureMiddleware", () => {
+  test("has correct name, priority, phase", () => {
+    const mw = createToolDisclosureMiddleware();
+    expect(mw.name).toBe("tool-disclosure");
+    expect(mw.priority).toBe(50);
+    expect(mw.phase).toBe("intercept");
+  });
+
+  test("default threshold is 50", () => {
+    expect(DEFAULT_DISCLOSURE_THRESHOLD).toBe(50);
+  });
+
+  describe("threshold bypass", () => {
+    test("below threshold: tools pass through unchanged (zero overhead)", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 10 });
+      const tools = descriptors(5);
+      const next = captureNext();
+
+      await callWrap(mw, { messages: [], tools }, next.handler);
+
+      expect(next.seen.request?.tools).toBe(tools); // same reference
+    });
+
+    test("at threshold: tools pass through unchanged", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 10 });
+      const tools = descriptors(10);
+      const next = captureNext();
+
+      await callWrap(mw, { messages: [], tools }, next.handler);
+
+      expect(next.seen.request?.tools).toBe(tools);
+    });
+
+    test("undefined tools: pass through unchanged", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 10 });
+      const next = captureNext();
+
+      await callWrap(mw, { messages: [] }, next.handler);
+
+      expect(next.seen.request?.tools).toBeUndefined();
+    });
+  });
+
+  describe("disclosure above threshold", () => {
+    test("all non-promoted tools become summaries", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const tools = descriptors(10);
+      const next = captureNext();
+
+      await callWrap(mw, { messages: [], tools }, next.handler);
+
+      const out = next.seen.request?.tools ?? [];
+      expect(out).toHaveLength(10);
+      for (const t of out) expect(isSummary(t)).toBe(true);
+    });
+
+    test("name and description are preserved on summaries", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const tools = descriptors(10);
+      const next = captureNext();
+
+      await callWrap(mw, { messages: [], tools }, next.handler);
+
+      const out = next.seen.request?.tools ?? [];
+      expect(out[0]?.name).toBe("tool-0");
+      expect(out[0]?.description).toBe("Tool: tool-0");
+    });
+
+    test("tags are preserved when present", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const tagged: ToolDescriptor = { ...descriptor("tagged"), tags: ["a", "b"] };
+      const tools: readonly ToolDescriptor[] = [...descriptors(9), tagged];
+      const next = captureNext();
+
+      await callWrap(mw, { messages: [], tools }, next.handler);
+
+      const out = next.seen.request?.tools ?? [];
+      const found = out.find((t) => t.name === "tagged");
+      expect(found?.tags).toEqual(["a", "b"]);
+    });
+
+    test("promote_tools is always full descriptor even when no tools promoted", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const tools: readonly ToolDescriptor[] = [...descriptors(9), createPromoteToolDescriptor()];
+      const next = captureNext();
+
+      await callWrap(mw, { messages: [], tools }, next.handler);
+
+      const out = next.seen.request?.tools ?? [];
+      const promote = out.find((t) => t.name === PROMOTE_TOOL_NAME);
+      expect(promote).toBeDefined();
+      if (promote) expect(isSummary(promote)).toBe(false);
+    });
+  });
+
+  describe("promotion", () => {
+    test("promoted tools keep full descriptor on next call", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const tools = descriptors(10);
+      const first = captureNext();
+      await callWrap(mw, { messages: [], tools }, first.handler);
+
+      const promotedNames = mw.promoteByName(["tool-3", "tool-7"]);
+      expect(promotedNames).toEqual(["tool-3", "tool-7"]);
+
+      const second = captureNext();
+      await callWrap(mw, { messages: [], tools }, second.handler);
+
+      const out = second.seen.request?.tools ?? [];
+      const t3 = out.find((t) => t.name === "tool-3");
+      const t5 = out.find((t) => t.name === "tool-5");
+      expect(t3 && isSummary(t3)).toBe(false);
+      expect(t5 && isSummary(t5)).toBe(true);
+    });
+
+    test("unknown names are filtered out of the promotion result", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const tools = descriptors(10);
+      const next = captureNext();
+      await callWrap(mw, { messages: [], tools }, next.handler);
+
+      const promoted = mw.promoteByName(["tool-1", "does-not-exist"]);
+      expect(promoted).toEqual(["tool-1"]);
+    });
+
+    test("promotion before any model call yields empty result (no known names)", () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const promoted = mw.promoteByName(["tool-0"]);
+      expect(promoted).toEqual([]);
+    });
+
+    test("clearCache resets the promoted set", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const tools = descriptors(10);
+      const first = captureNext();
+      await callWrap(mw, { messages: [], tools }, first.handler);
+      mw.promoteByName(["tool-2"]);
+
+      mw.clearCache();
+
+      const second = captureNext();
+      await callWrap(mw, { messages: [], tools }, second.handler);
+      const t2 = (second.seen.request?.tools ?? []).find((t) => t.name === "tool-2");
+      expect(t2 && isSummary(t2)).toBe(true);
+    });
+  });
+
+  describe("describeCapabilities", () => {
+    test("standalone middleware returns undefined (no companion tool)", () => {
+      const mw = createToolDisclosureMiddleware();
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result).toBeUndefined();
+    });
+
+    test("after notifyCompanionRegistered: returns fragment", () => {
+      const mw = createToolDisclosureMiddleware();
+      mw.notifyCompanionRegistered();
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("tool-disclosure");
+      expect(result?.description).toContain(PROMOTE_TOOL_NAME);
+      expect(result?.description).toContain("0 tools promoted");
+    });
+
+    test("fragment reflects current promoted count", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      mw.notifyCompanionRegistered();
+      const tools = descriptors(10);
+      const next = captureNext();
+      await callWrap(mw, { messages: [], tools }, next.handler);
+
+      mw.promoteByName(["tool-1", "tool-2"]);
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.description).toContain("2 tools promoted");
+    });
+  });
+
+  describe("createPromoteToolDescriptor", () => {
+    test("has correct name, schema shape", () => {
+      const d = createPromoteToolDescriptor();
+      expect(d.name).toBe(PROMOTE_TOOL_NAME);
+      expect(d.description).toContain("full tool schemas");
+      const props = d.inputSchema.properties as Record<string, unknown>;
+      expect(props.names).toBeDefined();
+      expect((d.inputSchema.required as string[]).includes("names")).toBe(true);
+    });
+  });
+});

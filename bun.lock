@@ -638,6 +638,27 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/middleware-tool-disclosure": {
+      "name": "@koi/middleware-tool-disclosure",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-tool-error-formatter": {
+      "name": "@koi/middleware-tool-error-formatter",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
+      },
+    },
     "packages/lib/middleware-tool-recovery": {
       "name": "@koi/middleware-tool-recovery",
       "version": "0.0.0",
@@ -2161,6 +2182,10 @@
     "@koi/middleware-task-anchor": ["@koi/middleware-task-anchor@workspace:packages/lib/middleware-task-anchor"],
 
     "@koi/middleware-tool-audit": ["@koi/middleware-tool-audit@workspace:packages/lib/middleware-tool-audit"],
+
+    "@koi/middleware-tool-disclosure": ["@koi/middleware-tool-disclosure@workspace:packages/lib/middleware-tool-disclosure"],
+
+    "@koi/middleware-tool-error-formatter": ["@koi/middleware-tool-error-formatter@workspace:packages/lib/middleware-tool-error-formatter"],
 
     "@koi/middleware-tool-recovery": ["@koi/middleware-tool-recovery@workspace:packages/lib/middleware-tool-recovery"],
 
