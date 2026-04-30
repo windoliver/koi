@@ -53,7 +53,9 @@ function collectToolCalls(transcript: readonly EngineEvent[]): readonly Observed
   for (const ev of transcript) {
     if (ev.kind === "tool_call_start") {
       startsByCallId.set(ev.callId, { toolName: ev.toolName, args: ev.args });
-    } else if (ev.kind === "tool_result" || ev.kind === "tool_call_end") {
+    } else if (ev.kind === "tool_result") {
+      // Only `tool_result` proves the tool actually executed.
+      // `tool_call_end` is only the end of streaming accumulation.
       completed.add(ev.callId);
     }
   }

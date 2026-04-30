@@ -81,6 +81,13 @@ export interface EvalRun {
   readonly config: EvalRunConfigSnapshot;
   readonly trials: readonly EvalTrial[];
   readonly summary: EvalSummary;
+  /**
+   * True when the run was aborted before completing all configured trials.
+   * Set when an "unconfirmed" cancellation was observed; remaining tasks
+   * are not executed because the leaked agent could overlap with them.
+   */
+  readonly aborted?: true;
+  readonly abortReason?: "cancellation_unconfirmed";
 }
 
 export interface EvalRunConfigSnapshot {

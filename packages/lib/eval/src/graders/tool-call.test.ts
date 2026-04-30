@@ -98,6 +98,20 @@ describe("toolCall", () => {
     expect(score.pass).toBe(false);
   });
 
+  test("tool_call_end without tool_result does not count as execution", async () => {
+    const grader = toolCall();
+    const events: readonly EngineEvent[] = [
+      callStart("read"),
+      { kind: "tool_call_end", callId: "read-id" as ToolCallId, result: { ok: true } },
+    ];
+    const score = await grader.grade(
+      events,
+      { kind: "tool_calls", calls: [{ toolName: "read" }] },
+      METRICS,
+    );
+    expect(score.pass).toBe(false);
+  });
+
   test("does not pass on intent alone (tool_call_start without tool_result)", async () => {
     const grader = toolCall();
     const events: readonly EngineEvent[] = [callStart("read")];

@@ -30,7 +30,8 @@ export async function runEval(config: EvalRunConfig): Promise<EvalRun> {
 
   const disposeTimeoutMs = config.disposeTimeoutMs ?? DEFAULT_DISPOSE_TIMEOUT_MS;
   const trials: EvalTrial[] = [];
-  for (const task of config.tasks) {
+  let aborted = false;
+  outer: for (const task of config.tasks) {
     const trialCount = task.trialCount ?? EVAL_DEFAULTS.TRIAL_COUNT;
     const taskTimeout = task.timeoutMs ?? timeoutMs;
     for (let i = 0; i < trialCount; i++) {
@@ -45,6 +46,14 @@ export async function runEval(config: EvalRunConfig): Promise<EvalRun> {
       );
       trials.push(trial);
       config.onTrialComplete?.(trial);
+      // Hard isolation guarantee: once teardown of a timed-out agent
+      // could not be confirmed, we cannot trust that subsequent trials
+      // will run independently — the leaked agent may still be issuing
+      // tool calls or mutating shared state. Abort the rest of the run.
+      if (trial.cancellation === "unconfirmed") {
+        aborted = true;
+        break outer;
+      }
     }
   }
 
@@ -62,6 +71,7 @@ export async function runEval(config: EvalRunConfig): Promise<EvalRun> {
     config: snapshot,
     trials,
     summary,
+    ...(aborted ? { aborted: true as const, abortReason: "cancellation_unconfirmed" } : {}),
   };
 }
 

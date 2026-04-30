@@ -68,6 +68,33 @@ describe("runEval", () => {
     expect(run.summary.errorCount).toBe(1);
   });
 
+  test("unconfirmed cancellation aborts the run before later trials/tasks run", async () => {
+    const calls: string[] = [];
+    const run = await runEval({
+      name: "abort-on-unconfirmed",
+      tasks: [
+        { ...task("t1", "x", [exactMatch()]), timeoutMs: 20 },
+        task("t2", "ok", [exactMatch()]),
+      ],
+      agentFactory: () => ({
+        stream: (): AsyncIterable<EngineEvent> => {
+          calls.push("stream");
+          return {
+            [Symbol.asyncIterator]: () => ({
+              next: () => new Promise(() => {}),
+            }),
+          };
+        },
+      }),
+      disposeTimeoutMs: 20,
+      idGen: () => "run-abort",
+    });
+    expect(run.trials).toHaveLength(1);
+    expect(run.aborted).toBe(true);
+    expect(run.abortReason).toBe("cancellation_unconfirmed");
+    expect(calls).toHaveLength(1);
+  });
+
   test("timeout on iterable without return() reports cancellation: 'unconfirmed'", async () => {
     const run = await runEval({
       name: "no-return",
