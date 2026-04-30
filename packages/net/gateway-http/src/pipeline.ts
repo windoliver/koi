@@ -25,6 +25,12 @@ const HEADER_NONCE = "X-Webhook-Nonce";
 
 const UNAUTH_BODY = "unauthorized";
 
+export interface DispatchInput {
+  readonly sessionId: string;
+  readonly outcome: AuthOutcome;
+  readonly payload: unknown;
+}
+
 export interface PipelineDeps {
   readonly config: GatewayHttpConfig;
   readonly channels: ChannelRegistry;
@@ -32,7 +38,10 @@ export interface PipelineDeps {
   readonly nonces: NonceStore;
   readonly idempotency: IdempotencyStore;
   readonly clock: () => number;
-  readonly dispatch: (sessionId: string, agentId: string, payload: unknown) => Promise<string>;
+  /** Dispatch the verified frame downstream. The full AuthOutcome is passed
+   *  so server-boundary auth context (routing, tenantId, metadata) survives
+   *  to gateway.ingest() — without this, downstream loses tenant routing. */
+  readonly dispatch: (input: DispatchInput) => Promise<string>;
   readonly audit: (entry: ReturnType<typeof buildGatewayRequestEntry>) => void;
   readonly sourceAddr: string;
   readonly inFlight: { count: number };
@@ -308,7 +317,7 @@ async function runDispatchWithCleanup(
   route: WebhookRoute,
 ): Promise<DispatchResult> {
   try {
-    const frameId = await deps.dispatch(sessionId, outcome.agentId, payload);
+    const frameId = await deps.dispatch({ sessionId, outcome, payload });
     return { ok: true, frameId };
   } catch (err: unknown) {
     if (deliveryId !== undefined) {

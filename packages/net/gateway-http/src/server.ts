@@ -237,20 +237,23 @@ function buildRuntimeState(
   };
 }
 
-function makeDispatch(
-  deps: GatewayHttpDeps,
-  clock: () => number,
-): (sessionId: string, agentId: string, payload: unknown) => Promise<string> {
-  return async (sessionId, agentId, payload) => {
+function makeDispatch(deps: GatewayHttpDeps, clock: () => number): PipelineDeps["dispatch"] {
+  return async ({ sessionId, outcome, payload }) => {
     const now = clock();
+    // Preserve verified server-boundary auth context: routing (peer/tenant
+    // targeting) and metadata flow through to gateway.ingest() so downstream
+    // tenant-isolation and per-peer routing decisions see the same context
+    // the channel authenticator validated. Dropping these would force the
+    // gateway to re-derive tenant identity from less-trusted sources.
     const session: Session = {
       id: sessionId,
-      agentId,
+      agentId: outcome.agentId,
       connectedAt: now,
       lastHeartbeat: now,
       seq: 0,
       remoteSeq: 0,
-      metadata: {},
+      metadata: outcome.metadata ?? {},
+      ...(outcome.routing !== undefined ? { routing: outcome.routing } : {}),
     };
     const frame: GatewayFrame = {
       kind: "event",
