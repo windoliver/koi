@@ -1,0 +1,28 @@
+{
+  "name": "@koi/middleware-intent-capsule",
+  "description": "Cryptographic mandate binding middleware — Ed25519 session signing for OWASP ASI01 goal-hijack defense",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
+  },
+  "koi": {
+    "optional": true
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*",
+    "@koi/hash": "workspace:*"
+  }
+}
