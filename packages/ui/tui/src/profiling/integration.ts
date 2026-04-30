@@ -23,6 +23,7 @@
  */
 
 import { writeFileSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { type CpuSamplerOptions, startCpuSampler, stopCpuSampler } from "./cpu-sampler.js";
 import { dumpProfile, resetProfiler } from "./profiler.js";
 
@@ -115,10 +116,11 @@ export function initProfiling(options?: InitProfilingOptions): boolean {
   resetProfiler({ enabled: true });
   runActive = true;
   writtenForRun = false;
-  // Snapshot the destination NOW. Any later mutation of
-  // KOI_TUI_PROFILE_OUT (including by other code in the same process)
-  // is ignored for this run.
-  activeOutPath = process.env.KOI_TUI_PROFILE_OUT ?? DEFAULT_OUT_PATH;
+  // Snapshot the destination NOW, resolved to an absolute path against the
+  // *current* cwd. A later mutation of KOI_TUI_PROFILE_OUT or a
+  // process.chdir() during the run cannot redirect this run's report.
+  const rawPath = process.env.KOI_TUI_PROFILE_OUT ?? DEFAULT_OUT_PATH;
+  activeOutPath = resolvePath(rawPath);
 
   startCpuSampler(options?.cpuSamplerOptions);
 

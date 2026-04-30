@@ -108,6 +108,40 @@ describe("initProfiling", () => {
     expect(exitCalls.length).toBe(1);
   });
 
+  test("output path is resolved absolute — process.chdir during run is ignored", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    // Set a RELATIVE path; resolution happens at init relative to current cwd.
+    const stableAbs = join(workDir, "stable.json");
+    process.env.KOI_TUI_PROFILE_OUT = "stable.json";
+    const origCwd = process.cwd();
+    process.chdir(workDir);
+    resetProfiler();
+
+    initProfiling({
+      processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    bumpCounter("messagerow.mount", 6);
+
+    // chdir mid-run — would relocate the write target if the path were
+    // resolved at flush time.
+    const decoyDir = mkdtempSync(join(tmpdir(), "koi-prof-decoy-"));
+    try {
+      process.chdir(decoyDir);
+      shutdownProfiling();
+
+      const written = JSON.parse(readFileSync(stableAbs, "utf8")) as {
+        counters: Record<string, number>;
+      };
+      expect(written.counters["messagerow.mount"]).toBe(6);
+      // Decoy dir must be empty for stable.json
+      expect(() => readFileSync(join(decoyDir, "stable.json"), "utf8")).toThrow();
+    } finally {
+      process.chdir(origCwd);
+      rmSync(decoyDir, { recursive: true, force: true });
+    }
+  });
+
   test("output path is captured at init — mid-run env mutation is ignored", () => {
     process.env.KOI_TUI_PROFILE = "1";
     const stablePath = join(workDir, "stable.json");
