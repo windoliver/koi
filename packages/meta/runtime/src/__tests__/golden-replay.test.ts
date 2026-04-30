@@ -15812,4 +15812,48 @@ describe("Golden: @koi/middleware-ace", () => {
     expect(captured?.systemPrompt).toContain("base");
     await mw.onSessionEnd?.(ctxSession2);
   });
+
+  test("trajectory fixture contains ACE middleware spans + tool execution outcome", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/ace-tool-use.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+          readonly phase?: string;
+          readonly priority?: number;
+          readonly nextCalled?: boolean;
+        };
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+        readonly outcome?: string;
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("ace-tool-use");
+    expect(doc.steps.length).toBeGreaterThan(0);
+
+    // ACE middleware spans must appear — proves config.ace wiring fires
+    // through createKoi when the runtime composes the chain.
+    const aceSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "ace",
+    );
+    expect(aceSpans.length).toBeGreaterThanOrEqual(1);
+    for (const span of aceSpans) {
+      expect(span.extra?.phase).toBe("observe");
+      expect(span.extra?.priority).toBe(800);
+      expect(span.extra?.nextCalled).toBe(true);
+    }
+
+    // The wrapped tool call still runs end-to-end — proves ACE doesn't break
+    // the chain when consuming the success outcome.
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+    const addCall = toolSteps[0]?.tool_calls?.[0];
+    expect(addCall?.function_name).toBe("add_numbers");
+    expect(toolSteps[0]?.outcome).toBe("success");
+  });
 });

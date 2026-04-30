@@ -88,6 +88,7 @@ import { createMcpServer } from "@koi/mcp-server";
 import { recallMemories } from "@koi/memory";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
+import { createAceMiddleware, createInMemoryPlaybookStore } from "@koi/middleware-ace";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createFeedbackLoopMiddleware } from "@koi/middleware-feedback-loop";
@@ -2172,6 +2173,37 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     extraMiddleware: [createStrictAgenticMiddleware({}).middleware],
+  },
+
+  // ace: exercises @koi/middleware-ace stat pipeline + injection.
+  // Single-turn tool-use prompt; ACE records a tool_call TrajectoryEntry,
+  // session-end consolidates it into a versioned playbook, and the
+  // [Active Playbooks] block is empty on this first-session run (store
+  // is empty until consolidation). The trajectory captures ACE's
+  // middleware spans + the tool execution outcome — proves the pipeline
+  // is wired through createKoi when config.ace is provided. (#1715)
+  {
+    name: "ace-tool-use",
+    prompt:
+      "Use the add_numbers tool to compute 7 + 5. After getting the result, " +
+      "respond with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+    ],
+    extraMiddleware: [
+      createAceMiddleware({
+        playbookStore: createInMemoryPlaybookStore(),
+        minScore: 0,
+      }),
+    ],
   },
 
   // prompt-cache: exercises @koi/middleware-prompt-cache. The middleware reorders
