@@ -166,7 +166,16 @@ export function initProfiling(options?: InitProfilingOptions): boolean {
   if (!exitHandlerRegistered) {
     exitHandlerRegistered = true;
     const onProcess = options?.processOn ?? process.on.bind(process);
-    onProcess("exit", () => writeReportIfNeeded());
+    onProcess("exit", () => {
+      // Stop the sampler FIRST so its final synchronous tick captures
+      // the trailing partial interval since the last scheduled tick.
+      // Without this, exit-fallback writes (the path most likely
+      // triggered by a crash or short run) would drop the most
+      // recently-active CPU work — exactly the data the user needs.
+      // No-op when the sampler is already stopped.
+      stopCpuSampler();
+      writeReportIfNeeded();
+    });
   }
   return true;
 }

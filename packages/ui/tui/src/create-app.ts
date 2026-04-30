@@ -644,20 +644,39 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
       if (!started) {
         // Startup was cancelled, failed, or timed out — reset closing so the
         // handle can be started again after a transient failure.
-        // #1586: profiling was armed at start() entry, before the
-        // timeout-sensitive renderer init. If we got here via the 5s
-        // timeout the original start IIFE may still be running its
-        // native FFI init and would otherwise leave the CPU sampler
-        // ticking forever and the runActive latch held — locking out
-        // every later profiled run in this process. Release ownership
-        // here. Skip the report write because the run never reached a
-        // mounted state — flushing partial pre-mount data would clobber
-        // a previous successful report at the same path.
-        if (profilingOwned) {
+        closing = false;
+        // #1586: profiling release is delicate at this point. The 5s
+        // timeout fires when the in-flight start() is still pending its
+        // native FFI init. start() sets started=true ONLY after render()
+        // resolves, so a late-completing init can mount the TUI after
+        // we return from stop(). Releasing profiling here unconditionally
+        // would discard a profile that the late-mounted TUI's eventual
+        // stop() would have written.
+        //
+        // Instead: attach a settle hook to the captured startPromise.
+        // - If start() eventually fails → its catch arm releases
+        //   (profilingOwned -> false) and our hook is a no-op.
+        // - If start() eventually succeeds → started becomes true and
+        //   the hook leaves profiling armed for the mounted run.
+        // - If the run truly aborts without mounting → the hook
+        //   releases profiling without writing, freeing the latch for
+        //   a future profiled run.
+        if (profilingOwned && startPromise !== null) {
+          const pending = startPromise;
+          pending
+            .catch(() => {})
+            .finally(() => {
+              if (profilingOwned && !started) {
+                shutdownProfiling({ write: false });
+                profilingOwned = false;
+              }
+            });
+        } else if (profilingOwned) {
+          // No pending startPromise (e.g. timeout race resolved with
+          // startPromise already nulled) — release synchronously.
           shutdownProfiling({ write: false });
           profilingOwned = false;
         }
-        closing = false;
         return;
       }
       started = false;

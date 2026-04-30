@@ -349,6 +349,49 @@ describe("initProfiling", () => {
     expect(secondSetIntervalCalls).toBe(0);
   });
 
+  test("exit handler stops sampler before writing so the trailing partial interval is captured", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    const outPath = join(workDir, "exit-sampler.json");
+    process.env.KOI_TUI_PROFILE_OUT = outPath;
+    resetProfiler();
+
+    let exitHandler: (() => void) | null = null;
+    const onSpy = mock((event: string, handler: () => void) => {
+      if (event === "exit") exitHandler = handler;
+      return process;
+    });
+
+    // Capture the sampler's tick fn so we can drive it deterministically.
+    const captured: { fn: (() => void) | null } = { fn: null };
+    const fakeSetInterval = ((fn: () => void, _ms: number) => {
+      captured.fn = fn;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as unknown as typeof setInterval;
+    const fakeClearInterval = ((_: ReturnType<typeof setInterval>) =>
+      undefined) as unknown as typeof clearInterval;
+
+    initProfiling({
+      processOn: onSpy as unknown as typeof process.on,
+      cpuSamplerOptions: {
+        intervalMs: 10_000,
+        setIntervalFn: fakeSetInterval,
+        clearIntervalFn: fakeClearInterval,
+      },
+    });
+    // No scheduled tick has fired yet (fake interval). Process dies.
+    // Without the exit-handler stopCpuSampler() call, no CPU samples
+    // would be captured at all — only stopCpuSampler emits the final
+    // synchronous tick.
+    expect(exitHandler).not.toBeNull();
+    if (!exitHandler) return;
+    (exitHandler as () => void)();
+
+    const written = JSON.parse(readFileSync(outPath, "utf8")) as {
+      samples: Record<string, ReadonlyArray<readonly [number, number]>>;
+    };
+    expect(written.samples["cpu.userUs"]?.length ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
   test("shutdownProfiling({ write: false }) does NOT clobber a previous successful report", () => {
     process.env.KOI_TUI_PROFILE = "1";
     const outPath = join(workDir, "preserve.json");
