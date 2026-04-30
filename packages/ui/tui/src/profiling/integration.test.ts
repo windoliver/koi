@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { __resetProfilingForTests, initProfiling, shutdownProfiling } from "./integration.js";
+import {
+  __resetProfilingForTests,
+  initProfiling,
+  ProfilingConflictError,
+  shutdownProfiling,
+} from "./integration.js";
 import { bumpCounter, resetProfiler } from "./profiler.js";
 
 const noopSetInterval = ((_fn: () => void, _ms: number) =>
@@ -82,7 +87,7 @@ describe("initProfiling", () => {
     expect(written.counters["messagerow.mount"]).toBe(5);
   });
 
-  test("ignores duplicate calls", () => {
+  test("duplicate call without shutdown throws ProfilingConflictError", () => {
     process.env.KOI_TUI_PROFILE = "1";
     process.env.KOI_TUI_PROFILE_OUT = join(workDir, "report.json");
     resetProfiler();
@@ -92,10 +97,12 @@ describe("initProfiling", () => {
       processOn: onSpy as unknown as typeof process.on,
       cpuSamplerOptions: { setIntervalFn: noopSetInterval },
     });
-    initProfiling({
-      processOn: onSpy as unknown as typeof process.on,
-      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
-    });
+    expect(() =>
+      initProfiling({
+        processOn: onSpy as unknown as typeof process.on,
+        cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+      }),
+    ).toThrow(ProfilingConflictError);
     // exit handler registered exactly once
     const exitCalls = onSpy.mock.calls.filter((c) => c[0] === "exit");
     expect(exitCalls.length).toBe(1);
@@ -175,7 +182,7 @@ describe("initProfiling", () => {
     expect(exitCalls.length).toBe(1);
   });
 
-  test("rejects concurrent profiled runs with a stderr warning", () => {
+  test("rejects concurrent profiled runs by throwing ProfilingConflictError", () => {
     process.env.KOI_TUI_PROFILE = "1";
     process.env.KOI_TUI_PROFILE_OUT = join(workDir, "report.json");
     resetProfiler();
@@ -188,34 +195,25 @@ describe("initProfiling", () => {
       return 2 as unknown as ReturnType<typeof setInterval>;
     }) as unknown as typeof setInterval;
 
-    const stderrWrites: string[] = [];
-    const origWrite = process.stderr.write.bind(process.stderr);
-    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
-      stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
-      return true;
-    }) as typeof process.stderr.write;
+    // First run starts cleanly — owns profiling
+    const ownedA = initProfiling({
+      processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: setIntervalA },
+    });
+    expect(ownedA).toBe(true);
 
-    let ownedA = false;
-    let ownedB = false;
-    try {
-      // First run starts cleanly — owns profiling
-      ownedA = initProfiling({
-        processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
-        cpuSamplerOptions: { setIntervalFn: setIntervalA },
-      });
-      // Second run while first is still active — must be refused (not owner)
-      ownedB = initProfiling({
+    // Second run while first is still active — MUST throw, not silently
+    // skip. A silent rejection would still let the second TUI mount its
+    // probes, which write into the global state and contaminate run A.
+    expect(() =>
+      initProfiling({
         processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
         cpuSamplerOptions: { setIntervalFn: setIntervalB },
-      });
-    } finally {
-      process.stderr.write = origWrite;
-    }
+      }),
+    ).toThrow(ProfilingConflictError);
 
-    expect(ownedA).toBe(true);
-    expect(ownedB).toBe(false);
+    // Second sampler must not have been started.
     expect(secondSetIntervalCalls).toBe(0);
-    expect(stderrWrites.some((w) => w.includes("already being profiled"))).toBe(true);
   });
 
   test("exit handler is idempotent after shutdownProfiling already wrote", () => {

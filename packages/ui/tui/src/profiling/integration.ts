@@ -41,34 +41,41 @@ let writtenForRun = false;
 let exitHandlerRegistered = false;
 
 /**
+ * Sentinel error class so callers can identify conflict rejections without
+ * string-matching the message.
+ */
+export class ProfilingConflictError extends Error {
+  constructor() {
+    super(
+      "[koi-tui-profile] another TUI run is already being profiled. " +
+        "Profiling state is process-global; run profiled TUIs sequentially " +
+        "or in separate processes.",
+    );
+    this.name = "ProfilingConflictError";
+  }
+}
+
+/**
  * Try to start profiling for the calling TUI run.
  *
  * Returns `true` when this call took ownership of the global profiler
  * state — the caller must invoke `shutdownProfiling()` exactly once when
  * the run ends (whether via normal stop or aborted start).
  *
- * Returns `false` when:
- *   - profiling is disabled (KOI_TUI_PROFILE!=1)
- *   - another run already owns profiling (concurrent profiled createTuiApp);
- *     a stderr warning is emitted in this case.
+ * Returns `false` when profiling is disabled (KOI_TUI_PROFILE!=1).
  *
- * A non-owning caller MUST NOT call shutdownProfiling() — doing so would
- * tear down the active run's measurement.
+ * Throws `ProfilingConflictError` when another run already owns profiling.
+ * Throwing rather than warning prevents the second TUI from ever mounting,
+ * so its probes (`MessageRow`, batcher, sampler) cannot contaminate the
+ * active run's report — the global `state.enabled` flag would otherwise
+ * accept writes from anyone.
+ *
+ * A non-owning caller (return false) MUST NOT call shutdownProfiling() —
+ * doing so would tear down the active run's measurement.
  */
 export function initProfiling(options?: InitProfilingOptions): boolean {
   if (runActive) {
-    // Concurrent profiled createTuiApp() — profiling state is process-global
-    // so a second app would silently mix metrics into the active run's
-    // report and the first stop() would truncate the second app's data.
-    // Surface the conflict instead of corrupting either run.
-    if (isProfilingEnabled()) {
-      process.stderr.write(
-        "[koi-tui-profile] another TUI run is already being profiled; " +
-          "this run's metrics will not be recorded. Run profiled TUIs sequentially " +
-          "or in separate processes.\n",
-      );
-    }
-    return false;
+    throw new ProfilingConflictError();
   }
   if (!isProfilingEnabled()) return false;
 

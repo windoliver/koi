@@ -640,6 +640,18 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
       if (!started) {
         // Startup was cancelled, failed, or timed out — reset closing so the
         // handle can be started again after a transient failure.
+        // #1586: profiling was armed at start() entry, before the
+        // timeout-sensitive renderer init. If we got here via the 5s
+        // timeout the original start IIFE may still be running its
+        // native FFI init and would otherwise leave the CPU sampler
+        // ticking forever and the runActive latch held — locking out
+        // every later profiled run in this process. Release ownership
+        // here. The IIFE's own aborted-mount cleanup is gated on
+        // profilingOwned and will skip its shutdownProfiling call.
+        if (profilingOwned) {
+          shutdownProfiling();
+          profilingOwned = false;
+        }
         closing = false;
         return;
       }
