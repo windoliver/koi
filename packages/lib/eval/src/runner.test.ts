@@ -4,22 +4,25 @@ import { exactMatch } from "./graders/exact-match.js";
 import { runEval } from "./runner.js";
 import type { AgentHandle, EvalGrader, EvalTask } from "./types.js";
 
-// Empty content array → grader falls back to streamed text_delta. Tests
-// that exercise non-text final content set their own done event.
-const DONE_EVENT: EngineEvent = {
-  kind: "done",
-  output: {
-    content: [],
-    stopReason: "completed",
-    metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
-  },
-};
-
 function fakeAgent(events: readonly EngineEvent[]): AgentHandle {
   // Append a terminal done if the caller didn't include one — runner now
-  // requires a "completed" done event to grade as success.
+  // requires a "completed" done event to grade as success. The done event
+  // carries a text block summarizing the streamed deltas so exactMatch
+  // (which treats done as authoritative) sees the same content.
   const hasDone = events.some((e) => e.kind === "done");
-  const stream = hasDone ? events : [...events, DONE_EVENT];
+  const deltaText = events
+    .filter((e): e is Extract<EngineEvent, { kind: "text_delta" }> => e.kind === "text_delta")
+    .map((e) => e.delta)
+    .join("");
+  const done: EngineEvent = {
+    kind: "done",
+    output: {
+      content: deltaText.length > 0 ? [{ kind: "text", text: deltaText }] : [],
+      stopReason: "completed",
+      metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+    },
+  };
+  const stream = hasDone ? events : [...events, done];
   return {
     stream: async function* (_input: EngineInput): AsyncIterable<EngineEvent> {
       for (const ev of stream) yield ev;

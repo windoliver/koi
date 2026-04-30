@@ -363,9 +363,12 @@ function aggregatesMatch(recomputed: Aggregates, stored: EvalRun["summary"]): bo
   for (const s of stored.byTask) {
     const recomputedTask = recomputed.byTaskId.get(s.taskId);
     if (recomputedTask === undefined) {
-      // Stored entry with no trials is allowed; non-zero trials require
-      // matching trials in the run file.
+      // Stored entry without trials must be the canonical zero-row —
+      // a tampered file claiming perfect scores for an unrun task
+      // would otherwise feed fake numbers into compareRuns.
       if (s.trials !== 0) return false;
+      if (Math.abs(s.passRate) > FLOAT_SLACK) return false;
+      if (Math.abs(s.meanScore) > FLOAT_SLACK) return false;
     }
   }
   return true;
