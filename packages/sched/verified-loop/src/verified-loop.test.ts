@@ -227,6 +227,62 @@ describe("VerifiedLoop.run", () => {
     await expect(loop.run()).rejects.toThrow(/cannot read PRD/);
   });
 
+  test("throws when PRD becomes unreadable mid-loop or before final snapshot", async () => {
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+
+    const loop = createVerifiedLoop(
+      makeConfig({
+        verify: async () => {
+          // Corrupt the PRD during the gate. Whichever read hits the
+          // corruption first (markDone, mid-loop, or final) must throw —
+          // never collapse to a silent zero-work result.
+          await Bun.write(prdPath, "{ broken after iteration");
+          return { passed: true };
+        },
+      }),
+    );
+    await expect(loop.run()).rejects.toThrow(/PRD/);
+  });
+
+  test("consecutive failure count persists across separate runs", async () => {
+    // Regression: previously the failure budget was an in-memory Map, so a
+    // process restart reset it and a permanently failing item could never
+    // reach maxConsecutiveFailures. Now the count is persisted in the PRD.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+
+    // Run 1: maxConsecutiveFailures = 3, only one iteration before maxIterations.
+    const loop1 = createVerifiedLoop(
+      makeConfig({
+        maxIterations: 1,
+        maxConsecutiveFailures: 3,
+        verify: failGate(),
+      }),
+    );
+    await loop1.run();
+
+    // Inspect disk: count should be 1, item still active.
+    const afterRun1 = JSON.parse(await Bun.file(prdPath).text()) as PRDFile;
+    expect(afterRun1.items[0]?.consecutiveFailureCount).toBe(1);
+    expect(afterRun1.items[0]?.skipped).toBeUndefined();
+
+    // Run 2: simulates "process restart". Same threshold, two more iterations.
+    // After 2 more failures (total 3), item must be skipped — proving the
+    // budget carried across runs.
+    const loop2 = createVerifiedLoop(
+      makeConfig({
+        maxIterations: 5,
+        maxConsecutiveFailures: 3,
+        verify: failGate(),
+      }),
+    );
+    const result2 = await loop2.run();
+
+    expect(result2.skipped).toContain("a");
+    const afterRun2 = JSON.parse(await Bun.file(prdPath).text()) as PRDFile;
+    expect(afterRun2.items[0]?.consecutiveFailureCount).toBeGreaterThanOrEqual(3);
+    expect(afterRun2.items[0]?.skipped).toBe(true);
+  });
+
   test("per-iteration records have timing data", async () => {
     await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
 

@@ -8,7 +8,14 @@
 
 export { createCompositeGate, createFileGate, createTestGate } from "./gates.js";
 export { appendLearning, readLearnings } from "./learnings.js";
-export { markDone, markSkipped, nextItem, readPRD } from "./prd-store.js";
+export {
+  bumpFailureCount,
+  markDone,
+  markSkipped,
+  nextItem,
+  readPRD,
+  resetFailureCount,
+} from "./prd-store.js";
 export type {
   EngineEvent,
   EngineInput,

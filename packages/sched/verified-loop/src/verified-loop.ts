@@ -8,7 +8,7 @@
 import { dirname, join } from "node:path";
 import { extractMessage } from "@koi/errors";
 import { appendLearning, readLearnings } from "./learnings.js";
-import { markDone, markSkipped, nextItem, readPRD } from "./prd-store.js";
+import { bumpFailureCount, markDone, nextItem, readPRD } from "./prd-store.js";
 import type {
   EngineInput,
   IterationRecord,
@@ -90,7 +90,6 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
     run: async (): Promise<VerifiedLoopResult> => {
       const startTime = performance.now();
       const iterationRecords: IterationRecord[] = [];
-      const consecutiveFailures = new Map<string, number>();
 
       const prdResult = await readPRD(config.prdPath);
       if (!prdResult.ok) {
@@ -190,9 +189,8 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
         if (gateResult.passed) {
           // A passing gate always marks the current item done. itemsCompleted
           // adds *additional* ids (e.g., a single iteration that completes
-          // multiple work items). This prevents a typo or empty itemsCompleted
-          // from silently stalling progress on the selected item while still
-          // recording "Item X completed" in learnings.
+          // multiple work items). Prevents a typo or empty itemsCompleted
+          // from silently stalling progress on the selected item.
           const toComplete = new Set<string>([current.id, ...(gateResult.itemsCompleted ?? [])]);
           for (const itemId of toComplete) {
             const doneResult = await markDone(config.prdPath, itemId);
@@ -201,22 +199,19 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
                 `[verified-loop] Failed to mark item "${itemId}" as done: ${doneResult.error.message}`,
               );
             }
-            consecutiveFailures.delete(itemId);
           }
-        }
-
-        if (!gateResult.passed) {
-          const prevCount = consecutiveFailures.get(current.id) ?? 0;
-          const newCount = prevCount + 1;
-          consecutiveFailures.set(current.id, newCount);
-
-          if (newCount >= maxConsecutiveFailures) {
-            const skipResult = await markSkipped(config.prdPath, current.id);
-            if (!skipResult.ok) {
-              console.warn(
-                `[verified-loop] Failed to mark item "${current.id}" as skipped: ${skipResult.error.message}`,
-              );
-            }
+        } else {
+          // Persist the consecutive-failure count to disk in the same atomic
+          // write that may also flip skipped:true. Survives crash/restart.
+          const bumpResult = await bumpFailureCount(
+            config.prdPath,
+            current.id,
+            maxConsecutiveFailures,
+          );
+          if (!bumpResult.ok) {
+            console.warn(
+              `[verified-loop] Failed to bump failure count for "${current.id}": ${bumpResult.error.message}`,
+            );
           }
         }
 
@@ -252,7 +247,14 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
       }
 
       const finalPrd = await readPRD(config.prdPath);
-      const finalItems = finalPrd.ok ? finalPrd.value.items : [];
+      if (!finalPrd.ok) {
+        // Same contract as the initial and mid-loop reads — never collapse a
+        // storage failure into "0 items, all done". Force the caller to handle.
+        throw new Error(
+          `VerifiedLoop: cannot read final PRD at ${config.prdPath} (${finalPrd.error.code}): ${finalPrd.error.message}`,
+        );
+      }
+      const finalItems = finalPrd.value.items;
 
       return {
         iterations: iterationRecords.length,

@@ -54,6 +54,7 @@ export async function readPRD(path: string): Promise<Result<PRDFile, KoiError>> 
   }
 
   const rawItems = (parsed as { readonly items: readonly unknown[] }).items;
+  const seenIds = new Set<string>();
   for (let idx = 0; idx < rawItems.length; idx++) {
     const issue = validatePRDItem(rawItems[idx]);
     if (issue !== undefined) {
@@ -62,6 +63,17 @@ export async function readPRD(path: string): Promise<Result<PRDFile, KoiError>> 
         error: validation(`PRD file has invalid item at index ${idx}: ${issue} (${path})`),
       };
     }
+    const id = (rawItems[idx] as { readonly id: string }).id;
+    if (seenIds.has(id)) {
+      // Duplicate ids are toxic: updateItem() mutates the first match only,
+      // so the second copy could stay undone forever while markDone keeps
+      // rewriting the wrong row.
+      return {
+        ok: false,
+        error: validation(`PRD file has duplicate item id "${id}" at index ${idx} (${path})`),
+      };
+    }
+    seenIds.add(id);
   }
 
   return { ok: true, value: parsed as PRDFile };
@@ -99,7 +111,64 @@ function validatePRDItem(item: unknown): string | undefined {
   if (obj.verifiedAt !== undefined && typeof obj.verifiedAt !== "string") {
     return `'verifiedAt' must be a string if present`;
   }
+  if (
+    obj.consecutiveFailureCount !== undefined &&
+    typeof obj.consecutiveFailureCount !== "number"
+  ) {
+    return `'consecutiveFailureCount' must be a number if present`;
+  }
   return undefined;
+}
+
+/**
+ * Atomically increment the per-item consecutive-failure count and, if it
+ * reaches `maxConsecutiveFailures`, mark the item as skipped in the same
+ * write. Persisted to disk so crash/restart preserves the failure budget.
+ *
+ * Returns the new count (or 0 with `skipped: true` if the threshold was met).
+ */
+export async function bumpFailureCount(
+  path: string,
+  itemId: string,
+  maxConsecutiveFailures: number,
+): Promise<Result<{ readonly count: number; readonly skipped: boolean }, KoiError>> {
+  const readResult = await readPRD(path);
+  if (!readResult.ok) return readResult;
+
+  const { items } = readResult.value;
+  const index = items.findIndex((item) => item.id === itemId);
+  const target = index === -1 ? undefined : items[index];
+  if (target === undefined) {
+    return { ok: false, error: notFound(itemId, `PRD item not found: ${itemId}`) };
+  }
+
+  const newCount = (target.consecutiveFailureCount ?? 0) + 1;
+  const shouldSkip = newCount >= maxConsecutiveFailures;
+  const updated: PRDItem = {
+    ...target,
+    consecutiveFailureCount: newCount,
+    ...(shouldSkip ? { skipped: true } : {}),
+  };
+  const newItems = items.map((item, i) => (i === index ? updated : item));
+  const newPrd: PRDFile = { items: newItems };
+
+  const tmpPath = `${path}.tmp`;
+  await Bun.write(tmpPath, JSON.stringify(newPrd, null, 2));
+  await rename(tmpPath, path);
+
+  return { ok: true, value: { count: newCount, skipped: shouldSkip } };
+}
+
+/** Reset the consecutive-failure count for an item (e.g. on success). */
+export async function resetFailureCount(
+  path: string,
+  itemId: string,
+): Promise<Result<void, KoiError>> {
+  return updateItem(path, itemId, (target) =>
+    target.consecutiveFailureCount === undefined
+      ? target
+      : { ...target, consecutiveFailureCount: 0 },
+  );
 }
 
 /** Return the highest-priority undone/unskipped PRD item, or undefined if none remain. */

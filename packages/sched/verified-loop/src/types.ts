@@ -69,6 +69,13 @@ export interface PRDItem {
   readonly priority?: number | undefined;
   /** True when the item was skipped due to repeated failures. */
   readonly skipped?: boolean | undefined;
+  /**
+   * Consecutive gate failures persisted across runs. Reset to 0 when the
+   * gate passes. When this reaches `maxConsecutiveFailures` the item is
+   * marked `skipped: true` in the same atomic write. Persisting in the PRD
+   * (rather than in-memory) preserves the failure budget across crashes.
+   */
+  readonly consecutiveFailureCount?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------

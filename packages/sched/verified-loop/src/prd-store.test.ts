@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { markDone, markSkipped, nextItem, readPRD } from "./prd-store.js";
+import {
+  bumpFailureCount,
+  markDone,
+  markSkipped,
+  nextItem,
+  readPRD,
+  resetFailureCount,
+} from "./prd-store.js";
 import type { PRDFile, PRDItem } from "./types.js";
 
 const SAMPLE_PRD: PRDFile = {
@@ -105,6 +112,24 @@ describe("readPRD", () => {
     const result = await readPRD(prdPath);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.message).toContain("'priority'");
+  });
+
+  test("returns VALIDATION for duplicate item ids", async () => {
+    await Bun.write(
+      prdPath,
+      JSON.stringify({
+        items: [
+          { id: "a", description: "first", done: false },
+          { id: "a", description: "second", done: false },
+        ],
+      }),
+    );
+    const result = await readPRD(prdPath);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("duplicate item id");
+    }
   });
 
   test("accepts valid optional fields", async () => {
@@ -296,6 +321,97 @@ describe("markDone", () => {
 
       const itemC = updated.value.items.find((i) => i.id === "c");
       expect(itemC?.done).toBe(false);
+    }
+  });
+});
+
+describe("bumpFailureCount", () => {
+  test("increments count and persists across reads", async () => {
+    await Bun.write(
+      prdPath,
+      JSON.stringify({ items: [{ id: "a", description: "x", done: false }] }),
+    );
+
+    const r1 = await bumpFailureCount(prdPath, "a", 5);
+    expect(r1.ok).toBe(true);
+    if (r1.ok) {
+      expect(r1.value.count).toBe(1);
+      expect(r1.value.skipped).toBe(false);
+    }
+
+    const r2 = await bumpFailureCount(prdPath, "a", 5);
+    expect(r2.ok).toBe(true);
+    if (r2.ok) {
+      expect(r2.value.count).toBe(2);
+    }
+
+    const read = await readPRD(prdPath);
+    expect(read.ok).toBe(true);
+    if (read.ok) {
+      expect(read.value.items[0]?.consecutiveFailureCount).toBe(2);
+    }
+  });
+
+  test("flips skipped when count reaches threshold", async () => {
+    await Bun.write(
+      prdPath,
+      JSON.stringify({ items: [{ id: "a", description: "x", done: false }] }),
+    );
+
+    await bumpFailureCount(prdPath, "a", 2);
+    const result = await bumpFailureCount(prdPath, "a", 2);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.count).toBe(2);
+      expect(result.value.skipped).toBe(true);
+    }
+
+    const read = await readPRD(prdPath);
+    if (read.ok) {
+      expect(read.value.items[0]?.skipped).toBe(true);
+      expect(read.value.items[0]?.consecutiveFailureCount).toBe(2);
+    }
+  });
+
+  test("returns NOT_FOUND for unknown item", async () => {
+    await Bun.write(
+      prdPath,
+      JSON.stringify({ items: [{ id: "a", description: "x", done: false }] }),
+    );
+    const result = await bumpFailureCount(prdPath, "ghost", 5);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
+  });
+});
+
+describe("resetFailureCount", () => {
+  test("clears count to 0", async () => {
+    await Bun.write(
+      prdPath,
+      JSON.stringify({
+        items: [{ id: "a", description: "x", done: false, consecutiveFailureCount: 3 }],
+      }),
+    );
+
+    const result = await resetFailureCount(prdPath, "a");
+    expect(result.ok).toBe(true);
+
+    const read = await readPRD(prdPath);
+    if (read.ok) {
+      expect(read.value.items[0]?.consecutiveFailureCount).toBe(0);
+    }
+  });
+
+  test("is a no-op when count is undefined", async () => {
+    await Bun.write(
+      prdPath,
+      JSON.stringify({ items: [{ id: "a", description: "x", done: false }] }),
+    );
+    const result = await resetFailureCount(prdPath, "a");
+    expect(result.ok).toBe(true);
+    const read = await readPRD(prdPath);
+    if (read.ok) {
+      expect(read.value.items[0]?.consecutiveFailureCount).toBeUndefined();
     }
   });
 });
