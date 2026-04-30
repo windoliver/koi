@@ -353,7 +353,10 @@ async function readBoundedBody(req: Request, maxBytes: number): Promise<string |
     const n = Number(cl);
     if (Number.isFinite(n) && n > maxBytes) return null;
   }
-  const text = await req.text();
-  if (text.length > maxBytes) return null;
-  return text;
+  // Enforce the cap on raw byte length (not decoded string length): multibyte
+  // UTF-8 characters can exceed `maxBytes` in bytes while their string length
+  // stays under the limit, defeating the DoS boundary.
+  const buf = await req.arrayBuffer();
+  if (buf.byteLength > maxBytes) return null;
+  return new TextDecoder("utf-8", { fatal: false }).decode(buf);
 }

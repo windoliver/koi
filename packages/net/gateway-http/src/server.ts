@@ -19,7 +19,7 @@ import type { GatewayFrame, Session } from "@koi/gateway-types";
 import type { Server } from "bun";
 import { buildGatewayRequestEntry } from "./audit.js";
 import { type ChannelRegistry, createChannelRegistry } from "./channel.js";
-import { applyCors, isOriginAllowed } from "./cors.js";
+import { applyCors } from "./cors.js";
 import { DEFAULT_GATEWAY_HTTP_CONFIG } from "./defaults.js";
 import { createIdempotencyStore } from "./idempotency.js";
 import { acquireLock, type LockHandle, releaseLock } from "./lock.js";
@@ -118,10 +118,20 @@ async function start(
   if (!lock.ok) return { ok: false, error: lock.error };
   handle.lockHandle = lock.value;
 
-  const state = buildRuntimeState(cfg, deps, channelRegistry, clock, drainingFlag, inFlight);
-  const server = startListener(parsed, cfg, state);
-  handle.server = server;
-  handle.resolvedPort = server.port ?? 0;
+  // Listener creation can throw (port in use, kernel error, Bun init failure).
+  // The lock is already on disk — we MUST release it before propagating the
+  // error or a transient startup failure would strand the singleton lock and
+  // turn every subsequent restart on this host into ALREADY_RUNNING.
+  try {
+    const state = buildRuntimeState(cfg, deps, channelRegistry, clock, drainingFlag, inFlight);
+    const server = startListener(parsed, cfg, state);
+    handle.server = server;
+    handle.resolvedPort = server.port ?? 0;
+  } catch (err: unknown) {
+    releaseLock(cfg.lockFilePath, lock.value);
+    handle.lockHandle = null;
+    throw err;
+  }
 
   emitStartupAudit(deps, clock, cfg.bind);
   return { ok: true, value: undefined };
@@ -298,7 +308,14 @@ async function handleFetch(
   }
 
   if (route.kind === "ws-upgrade") {
-    return handleWsUpgrade(req, srv, state, sourceAddr);
+    // WS frame forwarding into @koi/gateway is intentionally not yet
+    // implemented. Until that integration lands we refuse upgrades outright
+    // instead of accepting an inert socket that would consume connection
+    // budget while frames are silently dropped.
+    return new Response("websocket upgrade not implemented", {
+      status: 501,
+      headers: { "Content-Type": "text/plain" },
+    });
   }
 
   if (route.kind === "webhook") {
@@ -306,29 +323,6 @@ async function handleFetch(
   }
 
   return new Response("not found", { status: 404 });
-}
-
-function handleWsUpgrade(
-  req: Request,
-  srv: BunServerLike,
-  state: RuntimeState,
-  sourceAddr: string,
-): Response | undefined {
-  const origin = req.headers.get("Origin");
-  if (origin !== null && !isOriginAllowed(origin, state.cfg.cors)) {
-    return new Response(null, { status: 403 });
-  }
-
-  const admit = state.wsGate.tryAdmit(sourceAddr);
-  if (!admit.ok) return admit.response;
-
-  const data: WsData = { token: admit.token };
-  const upgraded = srv.upgrade(req, { data });
-  if (!upgraded) {
-    state.wsGate.onUpgradeComplete(admit.token, false);
-    return new Response("upgrade failed", { status: 400 });
-  }
-  return undefined;
 }
 
 function emitStartupAudit(deps: GatewayHttpDeps, clock: () => number, bind: string): void {
@@ -376,7 +370,37 @@ function validateConfig(cfg: GatewayHttpConfig): KoiError | null {
       context: { bind: cfg.bind },
     };
   }
+  // resolveSourceId only parses IPv4 / IPv4 CIDRs. Reject IPv6 trusted-proxy
+  // entries explicitly so deployments fail closed at startup instead of
+  // silently degrading to proxy-IP rate limiting behind an IPv6 reverse proxy.
+  if (cfg.proxyTrust.mode === "trusted") {
+    for (const cidr of cfg.proxyTrust.trustedProxies) {
+      if (!isIPv4Literal(cidr)) {
+        return {
+          code: "INVALID_CONFIG",
+          message: `proxyTrust.trustedProxies entry "${cidr}" is not an IPv4 literal or IPv4 CIDR; IPv6 is not yet supported`,
+          retryable: false,
+          context: { entry: cidr },
+        };
+      }
+    }
+  }
   return null;
+}
+
+function isIPv4Literal(cidr: string): boolean {
+  // Accepts "a.b.c.d" or "a.b.c.d/N" with 0 <= a..d <= 255 and 0 <= N <= 32.
+  const [base, prefix] = cidr.split("/");
+  if (base === undefined) return false;
+  const parts = base.split(".");
+  if (parts.length !== 4) return false;
+  for (const p of parts) {
+    const x = Number(p);
+    if (!Number.isInteger(x) || x < 0 || x > 255) return false;
+  }
+  if (prefix === undefined) return true;
+  const n = Number(prefix);
+  return Number.isInteger(n) && n >= 0 && n <= 32;
 }
 
 function invalidBindError(bind: string): KoiError {
