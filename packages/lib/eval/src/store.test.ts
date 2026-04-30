@@ -62,6 +62,7 @@ describe("createFsStore", () => {
       ...run,
       summary: {
         ...run.summary,
+        taskCount: 1,
         byTask: [
           {
             taskId: "t1",
@@ -107,6 +108,31 @@ describe("createFsStore", () => {
     const tampered = { ...run, timestamp: "9999-13-99T99:99:99Z" };
     await writeFile(path, JSON.stringify(tampered), "utf8");
     await expect(store.load("ts", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("save rejects inconsistent summary instead of persisting it", async () => {
+    const store = createFsStore(root);
+    const bad = {
+      ...makeRun("bad", "smoke", "2026-01-01T00:00:00.000Z"),
+      summary: {
+        taskCount: 0,
+        trialCount: 5,
+        passRate: 1,
+        meanScore: 1,
+        errorCount: 0,
+        byTask: [],
+      },
+    };
+    await expect(store.save(bad)).rejects.toThrow(/summary does not match trials/);
+  });
+
+  test("ids containing '.tmp-' are still listed and findable as latest", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("run.tmp-2026", "smoke", "2026-03-01T00:00:00.000Z"));
+    const metas = await store.list("smoke");
+    expect(metas.some((m) => m.id === "run.tmp-2026")).toBe(true);
+    const latest = await store.latest("smoke");
+    expect(latest?.id).toBe("run.tmp-2026");
   });
 
   test("save fails on collision unless overwrite: true", async () => {

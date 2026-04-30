@@ -5,6 +5,10 @@ import type { EvalRun, EvalRunMeta, EvalStore } from "./types.js";
 export function createFsStore(rootDir: string): EvalStore {
   return {
     save: async (run, options): Promise<void> => {
+      // Validate at write time so a buggy caller cannot poison a suite —
+      // findLatestStrict() fails closed on any corrupt artifact, so an
+      // unvalidated save would brick baseline lookup until manual cleanup.
+      assertSavable(run);
       const filePath = pathFor(rootDir, run.name, run.id);
       const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       await mkdir(dirname(filePath), { recursive: true });
@@ -292,6 +296,18 @@ async function readRunStrict(
   );
 }
 
+function assertSavable(run: EvalRun): void {
+  if (!isEvalRunShape(run)) {
+    throw new Error("EvalStore.save: run does not match EvalRun schema");
+  }
+  const recomputed = recomputeSummaryAggregates(run);
+  if (!aggregatesMatch(recomputed, run.summary)) {
+    throw new Error(
+      "EvalStore.save: summary does not match trials — refusing to persist inconsistent run",
+    );
+  }
+}
+
 function isCanonicalIsoTimestamp(s: string): boolean {
   // Only accept the exact format produced by Date.prototype.toISOString:
   // YYYY-MM-DDTHH:MM:SS.sssZ. Round-tripping rejects "garbage", far-future
@@ -385,7 +401,11 @@ function isSummary(v: unknown): boolean {
 
 async function findLatestStrict(rootDir: string, evalName: string): Promise<EvalRun | undefined> {
   const dir = join(rootDir, encode(evalName));
-  const files = (await safeReaddir(dir)).filter((f) => f.endsWith(".json") && !f.includes(".tmp-"));
+  // Final files end in `.json`. Temp files we write end in `.json.tmp-...`,
+  // which already fails endsWith(".json") — no extra substring filter needed.
+  // (Filtering by .includes(".tmp-") would mistakenly hide real run IDs that
+  // happen to contain ".tmp-".)
+  const files = (await safeReaddir(dir)).filter((f) => f.endsWith(".json"));
   if (files.length === 0) return undefined;
 
   // Fail closed on ANY corrupt artifact in the suite. We cannot trust mtime
@@ -434,7 +454,11 @@ async function fileExists(path: string): Promise<boolean> {
 
 async function listMetas(rootDir: string, evalName: string): Promise<readonly EvalRunMeta[]> {
   const dir = join(rootDir, encode(evalName));
-  const files = (await safeReaddir(dir)).filter((f) => f.endsWith(".json") && !f.includes(".tmp-"));
+  // Final files end in `.json`. Temp files we write end in `.json.tmp-...`,
+  // which already fails endsWith(".json") — no extra substring filter needed.
+  // (Filtering by .includes(".tmp-") would mistakenly hide real run IDs that
+  // happen to contain ".tmp-".)
+  const files = (await safeReaddir(dir)).filter((f) => f.endsWith(".json"));
   const metas: EvalRunMeta[] = [];
   for (const f of files) {
     const run = await readRun(join(dir, f));

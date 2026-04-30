@@ -397,6 +397,32 @@ describe("runEval", () => {
     expect(run.trials[0]?.cancellation).toBe("unconfirmed");
   });
 
+  test("fails fast when a task has non-fingerprintable input and no salt", async () => {
+    let factoryCalled = 0;
+    await expect(
+      runEval({
+        name: "ff",
+        tasks: [
+          {
+            id: "t1",
+            name: "t1",
+            input: {
+              ...{ kind: "text" as const, text: "go" },
+              callHandlers: { x: () => undefined },
+            } as never,
+            graders: [exactMatch()],
+          },
+        ],
+        agentFactory: () => {
+          factoryCalled += 1;
+          return fakeAgent([]);
+        },
+        idGen: () => "ff",
+      }),
+    ).rejects.toThrow(/fingerprintSalt/);
+    expect(factoryCalled).toBe(0);
+  });
+
   test("rejects empty config", async () => {
     await expect(
       runEval({

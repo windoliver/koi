@@ -95,6 +95,11 @@ function validateRunConfig(config: EvalRunConfig): void {
     }
     seenIds.add(task.id);
     if (task.graders.length === 0) throw new Error(`EvalTask "${task.id}" has no graders`);
+    // Fail fast on non-fingerprintable tasks before any trial executes.
+    // computeTaskFingerprint throws if input contains functions/symbols
+    // and no fingerprintSalt is set; surfacing that here prevents wasted
+    // agent execution and partial side effects.
+    computeTaskFingerprint(task);
   }
 }
 
