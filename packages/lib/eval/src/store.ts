@@ -9,9 +9,17 @@ export function createFsStore(rootDir: string): EvalStore {
       await mkdir(dirname(filePath), { recursive: true });
       await Bun.write(filePath, JSON.stringify(run, null, 2));
     },
-    load: async (runId: string): Promise<EvalRun | undefined> => {
-      const found = await findRunFile(rootDir, runId);
-      return found === undefined ? undefined : await readRun(found, runId);
+    load: async (runId: string, evalName?: string): Promise<EvalRun | undefined> => {
+      if (evalName !== undefined) {
+        return await readRun(pathFor(rootDir, evalName, runId), runId);
+      }
+      const matches = await findAllRunFiles(rootDir, runId);
+      // Reject ambiguous lookups — caller must scope by evalName when ids
+      // may collide across suites. Returning the first match would be
+      // dependent on directory enumeration order.
+      if (matches.length !== 1) return undefined;
+      const path = matches[0];
+      return path === undefined ? undefined : await readRun(path, runId);
     },
     latest: async (evalName: string): Promise<EvalRun | undefined> => {
       const metas = await listMetas(rootDir, evalName);
@@ -44,14 +52,15 @@ async function readRun(path: string, expectedId?: string): Promise<EvalRun | und
   return run;
 }
 
-async function findRunFile(rootDir: string, runId: string): Promise<string | undefined> {
+async function findAllRunFiles(rootDir: string, runId: string): Promise<readonly string[]> {
   const encoded = `${encode(runId)}.json`;
   const dirs = await safeReaddir(rootDir);
+  const found: string[] = [];
   for (const evalName of dirs) {
     const path = join(rootDir, evalName, encoded);
-    if (await Bun.file(path).exists()) return path;
+    if (await Bun.file(path).exists()) found.push(path);
   }
-  return undefined;
+  return found;
 }
 
 async function listMetas(rootDir: string, evalName: string): Promise<readonly EvalRunMeta[]> {

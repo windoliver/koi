@@ -127,6 +127,25 @@ describe("runEval", () => {
     expect(run.summary.byTask[0]?.trials).toBe(3);
   });
 
+  test("hanging dispose does not wedge the run", async () => {
+    const events: readonly EngineEvent[] = [{ kind: "text_delta", delta: "ok" }];
+    const start = Date.now();
+    const run = await runEval({
+      name: "hang-dispose",
+      tasks: [task("t1", "ok", [exactMatch()])],
+      agentFactory: () => ({
+        stream: async function* (): AsyncIterable<EngineEvent> {
+          for (const ev of events) yield ev;
+        },
+        dispose: () => new Promise<void>(() => {}),
+      }),
+      disposeTimeoutMs: 30,
+      idGen: () => "run-hd",
+    });
+    expect(run.trials).toHaveLength(1);
+    expect(Date.now() - start).toBeLessThan(2_000);
+  });
+
   test("dispose called even after error", async () => {
     let disposed = 0;
     await runEval({

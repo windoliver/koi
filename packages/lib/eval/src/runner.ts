@@ -27,12 +27,21 @@ export async function runEval(config: EvalRunConfig): Promise<EvalRun> {
   const timeoutMs = config.timeoutMs ?? EVAL_DEFAULTS.TIMEOUT_MS;
   const passThreshold = config.passThreshold ?? EVAL_DEFAULTS.PASS_THRESHOLD;
 
+  const disposeTimeoutMs = config.disposeTimeoutMs ?? DEFAULT_DISPOSE_TIMEOUT_MS;
   const trials: EvalTrial[] = [];
   for (const task of config.tasks) {
     const trialCount = task.trialCount ?? EVAL_DEFAULTS.TRIAL_COUNT;
     const taskTimeout = task.timeoutMs ?? timeoutMs;
     for (let i = 0; i < trialCount; i++) {
-      const trial = await runTrial(task, i, config, taskTimeout, passThreshold, now);
+      const trial = await runTrial(
+        task,
+        i,
+        config,
+        taskTimeout,
+        disposeTimeoutMs,
+        passThreshold,
+        now,
+      );
       trials.push(trial);
       config.onTrialComplete?.(trial);
     }
@@ -68,6 +77,7 @@ async function runTrial(
   trialIndex: number,
   config: EvalRunConfig,
   timeoutMs: number,
+  disposeTimeoutMs: number,
   passThreshold: number,
   now: () => number,
 ): Promise<EvalTrial> {
@@ -88,7 +98,7 @@ async function runTrial(
       error: errorMessage(e),
     };
   } finally {
-    await disposeSafely(agent);
+    await disposeSafely(agent, disposeTimeoutMs);
   }
   const metrics: EngineMetrics = { ...EMPTY_METRICS, durationMs: now() - start };
   const scores = await gradeAll(task, transcript, metrics);
@@ -153,12 +163,26 @@ async function safeGrade(
   }
 }
 
-async function disposeSafely(agent: AgentHandle | undefined): Promise<void> {
+/** Maximum time to wait for an agent's dispose() before abandoning it. */
+const DEFAULT_DISPOSE_TIMEOUT_MS = 5_000;
+
+async function disposeSafely(agent: AgentHandle | undefined, timeoutMs: number): Promise<void> {
   if (agent?.dispose === undefined) return;
+  // Bound disposal so a non-cooperative agent that hangs in dispose() cannot
+  // wedge the entire eval run after its trial has already timed out.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, timeoutMs);
+  });
   try {
-    await agent.dispose();
-  } catch {
-    // dispose failures are non-fatal — eval results still valid
+    await Promise.race([
+      Promise.resolve(agent.dispose()).catch(() => {
+        // dispose failures are non-fatal — eval results still valid
+      }),
+      timeout,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

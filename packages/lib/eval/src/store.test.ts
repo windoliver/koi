@@ -61,6 +61,17 @@ describe("createFsStore", () => {
     expect(metas[0]?.id).toBe("b");
   });
 
+  test("load with same runId across suites returns undefined unless evalName given", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("shared", "suite-a", "2026-01-01T00:00:00Z"));
+    await store.save(makeRun("shared", "suite-b", "2026-02-01T00:00:00Z"));
+    expect(await store.load("shared")).toBeUndefined();
+    const a = await store.load("shared", "suite-a");
+    const b = await store.load("shared", "suite-b");
+    expect(a?.name).toBe("suite-a");
+    expect(b?.name).toBe("suite-b");
+  });
+
   test("ids that differ only by reserved chars do not collide", async () => {
     const store = createFsStore(root);
     await store.save(makeRun("a/b", "smoke", "2026-01-01T00:00:00Z"));

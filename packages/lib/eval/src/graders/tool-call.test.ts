@@ -60,6 +60,22 @@ describe("toolCall", () => {
     expect(failScore.pass).toBe(false);
   });
 
+  test("matches nested args structurally, not by reference", async () => {
+    const grader = toolCall();
+    const events: readonly EngineEvent[] = [
+      callStart("search", { filter: { q: "x", tags: ["a", "b"] } }),
+    ];
+    const score = await grader.grade(
+      events,
+      {
+        kind: "tool_calls",
+        calls: [{ toolName: "search", args: { filter: { q: "x", tags: ["a", "b"] } } }],
+      },
+      METRICS,
+    );
+    expect(score.pass).toBe(true);
+  });
+
   test("strict order requires sequential match", async () => {
     const grader = toolCall({ order: "strict" });
     const eventsBad: readonly EngineEvent[] = [callStart("write"), callStart("read")];

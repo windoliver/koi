@@ -67,7 +67,29 @@ function callMatches(observed: ObservedCall, expected: ExpectedToolCall): boolea
 
 function shallowSubset(want: Readonly<Record<string, unknown>>, have: JsonObject): boolean {
   for (const key of Object.keys(want)) {
-    if (!Object.is(want[key], have[key])) return false;
+    if (!deepEquals(want[key], have[key])) return false;
+  }
+  return true;
+}
+
+function deepEquals(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (a === null || b === null) return false;
+  if (typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEquals(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const aObj = a as Readonly<Record<string, unknown>>;
+  const bObj = b as Readonly<Record<string, unknown>>;
+  const aKeys = Object.keys(aObj);
+  if (aKeys.length !== Object.keys(bObj).length) return false;
+  for (const k of aKeys) {
+    if (!deepEquals(aObj[k], bObj[k])) return false;
   }
   return true;
 }

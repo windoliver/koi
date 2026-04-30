@@ -105,6 +105,8 @@ export interface EvalRunConfig {
   readonly tasks: readonly EvalTask[];
   readonly agentFactory: () => Promise<AgentHandle> | AgentHandle;
   readonly timeoutMs?: number | undefined;
+  /** Max time to wait for an agent's dispose() before abandoning. Default: 5000. */
+  readonly disposeTimeoutMs?: number | undefined;
   /** Score >= this = pass. Default: 0.5. */
   readonly passThreshold?: number | undefined;
   readonly onTrialComplete?: ((trial: EvalTrial) => void) | undefined;
@@ -125,7 +127,12 @@ export interface AgentHandle {
 
 export interface EvalStore {
   readonly save: (run: EvalRun) => Promise<void>;
-  readonly load: (runId: string) => Promise<EvalRun | undefined>;
+  /**
+   * Load a run by id. Pass `evalName` to disambiguate when run ids may
+   * collide across suites; without it, returns undefined if more than one
+   * suite holds a run with the given id.
+   */
+  readonly load: (runId: string, evalName?: string) => Promise<EvalRun | undefined>;
   readonly latest: (evalName: string) => Promise<EvalRun | undefined>;
   readonly list: (evalName: string) => Promise<readonly EvalRunMeta[]>;
 }
