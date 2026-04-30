@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -346,6 +346,56 @@ describe("initProfiling", () => {
 
     // Second sampler must not have been started.
     expect(secondSetIntervalCalls).toBe(0);
+  });
+
+  test("write failure during shutdown is recoverable via exit-handler retry", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    // Path under a non-existent parent dir so writeFileSync throws ENOENT
+    // on the first attempt.
+    const missingDir = join(workDir, "missing-subdir");
+    const outPath = join(missingDir, "report.json");
+    process.env.KOI_TUI_PROFILE_OUT = outPath;
+    resetProfiler();
+
+    let exitHandler: (() => void) | null = null;
+    const onSpy = mock((event: string, handler: () => void) => {
+      if (event === "exit") exitHandler = handler;
+      return process;
+    });
+
+    const stderrWrites: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      initProfiling({
+        processOn: onSpy as unknown as typeof process.on,
+        cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+      });
+      bumpCounter("messagerow.mount", 11);
+      shutdownProfiling();
+
+      // First attempt failed: file does not exist, error logged.
+      expect(existsSync(outPath)).toBe(false);
+      expect(stderrWrites.some((w) => w.includes("failed to write"))).toBe(true);
+
+      // Now create the parent dir and trigger the registered exit handler.
+      // The retry MUST succeed and write the original captured report.
+      mkdirSync(missingDir, { recursive: true });
+      expect(exitHandler).not.toBeNull();
+      if (!exitHandler) return;
+      (exitHandler as () => void)();
+
+      const written = JSON.parse(readFileSync(outPath, "utf8")) as {
+        counters: Record<string, number>;
+      };
+      expect(written.counters["messagerow.mount"]).toBe(11);
+    } finally {
+      process.stderr.write = origWrite;
+    }
   });
 
   test("exit handler is idempotent after shutdownProfiling already wrote", () => {

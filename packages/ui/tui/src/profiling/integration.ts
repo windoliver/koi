@@ -144,6 +144,18 @@ export function shutdownProfiling(): void {
   if (!runActive) return;
   stopCpuSampler();
   writeReportIfNeeded();
+  if (!writtenForRun) {
+    // Write failed (transient permission, missing dir, ENOSPC, …).
+    // Keep runActive / activeOutPath / state intact so the registered
+    // exit-handler fallback can retry writeReportIfNeeded() against
+    // the same captured data and path. Clearing here would leave
+    // writeReportIfNeeded a no-op (activeOutPath=null) and silently
+    // drop the only profiling artifact for this run.
+    //
+    // The CPU sampler is already stopped, so probes contribute
+    // nothing further to the retained state in the meantime.
+    return;
+  }
   // Disable probes so any stray batcher / sampler call between now and the
   // next initProfiling() is a no-op rather than silently writing into the
   // already-flushed state.
