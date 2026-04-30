@@ -339,11 +339,13 @@ async function collectTranscriptWithTimeout(
       }
     } catch (e: unknown) {
       if (controller.signal.aborted) {
-        // Even if the iterator does not implement return(), classify this
-        // as a timeout so cancellation reports as "unconfirmed" instead
-        // of "n/a". A non-cancellable iterator is by definition unable to
-        // confirm teardown.
-        const returnAwaited = iterator.return !== undefined ? await raceReturn(iterator) : false;
+        // Confirm teardown one of two ways: prefer iterator.return() if the
+        // stream implements it; otherwise give a cooperative AsyncIterable
+        // (one that honors input.signal but exposes only next()) a chance
+        // to settle next() with `done:true` within the same ack window.
+        // Without the fallback, every spec-compliant signal-only stream
+        // would be flagged as a leaked agent and abort the rest of the suite.
+        const returnAwaited = await acknowledgeCancellation(iterator);
         throw createTimeoutMarker(e, returnAwaited);
       }
       throw e;
@@ -373,6 +375,29 @@ function readTimeoutMarker(e: unknown): { timedOut: true; returnAwaited: boolean
   const marker = e as { __evalTimeout?: boolean; returnAwaited?: boolean };
   if (marker.__evalTimeout !== true) return undefined;
   return { timedOut: true, returnAwaited: marker.returnAwaited === true };
+}
+
+async function acknowledgeCancellation(iterator: AsyncIterator<EngineEvent>): Promise<boolean> {
+  if (iterator.return !== undefined) return raceReturn(iterator);
+  // Signal-only cooperative streams: ask for one more value. A
+  // spec-compliant agent that honors `input.signal` will settle this
+  // promise (with `done:true` or by rejecting) promptly; a non-cooperative
+  // one will hang past the ack window and be flagged as unconfirmed.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutFalse = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), RETURN_ACK_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([
+      iterator
+        .next()
+        .then(() => true)
+        .catch(() => true),
+      timeoutFalse,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 async function raceReturn(iterator: AsyncIterator<EngineEvent>): Promise<boolean> {

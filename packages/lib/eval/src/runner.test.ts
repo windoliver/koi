@@ -132,6 +132,42 @@ describe("runEval", () => {
     expect(run.trials[0]?.cancellation).toBe("unconfirmed");
   });
 
+  test("signal-only cooperative iterable (no return()) reports confirmed cancellation", async () => {
+    // Spec contract is `AsyncIterable` + `EngineInput.signal`. A stream
+    // that honors signal but exposes only next() must NOT be flagged as
+    // a leaked agent — that would treat every conformant cooperative
+    // agent as an isolation failure and abort the rest of a suite.
+    const run = await runEval({
+      name: "signal-only",
+      tasks: [{ ...task("t1", "x", [exactMatch()]), timeoutMs: 20 }],
+      agentFactory: () => ({
+        stream: (input): AsyncIterable<EngineEvent> => ({
+          [Symbol.asyncIterator]: () => ({
+            next: (): Promise<IteratorResult<EngineEvent>> =>
+              new Promise<IteratorResult<EngineEvent>>((resolve) => {
+                if (input.signal === undefined) return; // hang
+                if (input.signal.aborted) {
+                  resolve({ value: undefined as unknown as EngineEvent, done: true });
+                  return;
+                }
+                input.signal.addEventListener(
+                  "abort",
+                  () => resolve({ value: undefined as unknown as EngineEvent, done: true }),
+                  { once: true },
+                );
+              }),
+          }),
+        }),
+      }),
+      disposeTimeoutMs: 20,
+      idGen: () => "run-so",
+    });
+    expect(run.trials[0]?.status).toBe("error");
+    // returnAwaited === true (next() settled) → cancellation = "confirmed".
+    expect(run.trials[0]?.cancellation).toBe("confirmed");
+    expect(run.aborted).toBeUndefined();
+  });
+
   test("synchronous stream() failure does not orphan timeout rejection", async () => {
     const run = await runEval({
       name: "sync-fail",

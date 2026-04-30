@@ -443,7 +443,7 @@ describe("createFsStore", () => {
     expect(loaded?.id).toBe("sanitize");
     expect(loaded?.trials[0]?.transcript[0]).toMatchObject({
       kind: "tool_result",
-      output: { big: { __unserializable: "bigint", repr: "1" } },
+      output: { big: { __koiEvalUnserializable: "bigint", repr: "1" } },
     });
   });
 
@@ -589,6 +589,110 @@ describe("createFsStore", () => {
     expect(metas).toHaveLength(1);
     expect(metas[0]?.id).toBe("good");
     await expect(store.latest("smoke")).rejects.toThrow(/corrupted/);
+  });
+
+  test("round-trips DAG-aliased payloads without flagging them as circular", async () => {
+    // Aliased-but-acyclic objects (`{a: shared, b: shared}`) used to be
+    // marked as a circular reference because the visited-set was never
+    // unwound. Verify that both refs round-trip with their data preserved.
+    const store = createFsStore(root);
+    const baseRun = makeRun("dag", "smoke", "2026-01-01T00:00:00.000Z");
+    const shared = { hello: "world", count: 7 };
+    const run = {
+      ...baseRun,
+      config: { ...baseRun.config, taskCount: 1 },
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [{ kind: "tool_result", callId: "c1", output: { a: shared, b: shared } }],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "fail" as const,
+          cancellation: "n/a" as const,
+        },
+      ],
+      summary: {
+        ...baseRun.summary,
+        trialCount: 1,
+        passRate: 0,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 1,
+            taskFingerprint: fp("spec-dag"),
+            taskSpec: "spec-dag",
+          },
+        ],
+      },
+    } as unknown as Parameters<typeof store.save>[0];
+    await store.save(run);
+    const loaded = await store.load("dag", "smoke");
+    const out = loaded?.trials[0]?.transcript[0] as { output: { a: unknown; b: unknown } };
+    expect(out.output.a).toEqual({ hello: "world", count: 7 });
+    expect(out.output.b).toEqual({ hello: "world", count: 7 });
+  });
+
+  test("round-trips user objects whose keys collide with reserved markers", async () => {
+    // A user-supplied tool result that already contains `__koiEvalWrapped:
+    // "url"` must NOT come back as a URL instance. The store escapes the
+    // envelope at serialize time and unwraps it on revive.
+    const store = createFsStore(root);
+    const baseRun = makeRun("collide", "smoke", "2026-01-01T00:00:00.000Z");
+    const collide = { __koiEvalWrapped: "url", href: "https://not-a-url-instance.example" };
+    const run = {
+      ...baseRun,
+      config: { ...baseRun.config, taskCount: 1 },
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [{ kind: "tool_result", callId: "c1", output: collide }],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "fail" as const,
+          cancellation: "n/a" as const,
+        },
+      ],
+      summary: {
+        ...baseRun.summary,
+        trialCount: 1,
+        passRate: 0,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 1,
+            taskFingerprint: fp("spec-coll"),
+            taskSpec: "spec-coll",
+          },
+        ],
+      },
+    } as unknown as Parameters<typeof store.save>[0];
+    await store.save(run);
+    const loaded = await store.load("collide", "smoke");
+    const out = loaded?.trials[0]?.transcript[0] as { output: unknown };
+    expect(out.output).toEqual(collide);
+    expect(out.output instanceof URL).toBe(false);
   });
 
   test("list returns empty for unknown eval", async () => {

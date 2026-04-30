@@ -72,49 +72,69 @@ export function createFsStore(rootDir: string): EvalStore {
  * could otherwise blow up `JSON.stringify` after a full eval run — losing
  * the baseline. We sanitize unsupported leaves into a structured marker.
  */
+const WRAPPED = "__koiEvalWrapped";
+const UNSERIALIZABLE = "__koiEvalUnserializable";
+const ESCAPED = "__koiEvalEscaped";
+
 function serializeRun(run: EvalRun): string {
-  const seen = new WeakSet<object>();
+  // Active recursion stack. WeakSet kept entries forever and so flagged
+  // legitimate DAG aliasing — `{a: shared, b: shared}` — as a circular
+  // reference, silently corrupting tool-output payloads on save. We
+  // remove the entry on unwind so only true back-references trigger.
+  const stack = new Set<object>();
   const sanitize = (value: unknown): unknown => {
     if (value === null || value === undefined) return value;
     const t = typeof value;
-    if (t === "bigint") return { __unserializable: "bigint", repr: value.toString() };
-    if (t === "function" || t === "symbol") return { __unserializable: t };
+    if (t === "bigint") return { [UNSERIALIZABLE]: "bigint", repr: value.toString() };
+    if (t === "function" || t === "symbol") return { [UNSERIALIZABLE]: t };
     if (t !== "object") return value;
     const obj = value as object;
     // Reversibly encode common host objects — silently degrading them to
     // {} would lose debugging information that the persisted transcript
     // is supposed to preserve.
-    if (value instanceof Date) return { __wrapped: "date", iso: value.toISOString() };
-    if (value instanceof URL) return { __wrapped: "url", href: value.href };
+    if (value instanceof Date) return { [WRAPPED]: "date", iso: value.toISOString() };
+    if (value instanceof URL) return { [WRAPPED]: "url", href: value.href };
     if (value instanceof RegExp) {
-      return { __wrapped: "regexp", source: value.source, flags: value.flags };
+      return { [WRAPPED]: "regexp", source: value.source, flags: value.flags };
     }
     if (value instanceof Map) {
       return {
-        __wrapped: "map",
+        [WRAPPED]: "map",
         entries: [...value.entries()].map(([k, v]) => [sanitize(k), sanitize(v)]),
       };
     }
     if (value instanceof Set) {
-      return { __wrapped: "set", values: [...value.values()].map(sanitize) };
+      return { [WRAPPED]: "set", values: [...value.values()].map(sanitize) };
     }
-    if (seen.has(obj)) return { __unserializable: "circular" };
-    seen.add(obj);
-    if (Array.isArray(value)) return value.map(sanitize);
-    // Plain object or unknown class instance: enumerable keys only. Mark
-    // unknown class instances so they're not silently flattened to {}.
-    const proto = Object.getPrototypeOf(obj);
-    if (proto !== Object.prototype && proto !== null) {
-      return {
-        __unserializable: "non-plain-object",
-        constructor: (obj as { constructor?: { name?: string } }).constructor?.name ?? "unknown",
-      };
+    if (stack.has(obj)) return { [UNSERIALIZABLE]: "circular" };
+    stack.add(obj);
+    try {
+      if (Array.isArray(value)) return value.map(sanitize);
+      // Plain object or unknown class instance: enumerable keys only. Mark
+      // unknown class instances so they're not silently flattened to {}.
+      const proto = Object.getPrototypeOf(obj);
+      if (proto !== Object.prototype && proto !== null) {
+        return {
+          [UNSERIALIZABLE]: "non-plain-object",
+          constructor: (obj as { constructor?: { name?: string } }).constructor?.name ?? "unknown",
+        };
+      }
+      // Escape user objects that happen to contain our reserved markers,
+      // so revive() does not reinterpret them as store-owned wrappers and
+      // mutate the round-tripped payload (e.g. user data with a literal
+      // `__koiEvalWrapped: "url"` key would otherwise come back as a URL).
+      const userObj = value as Record<string, unknown>;
+      if (WRAPPED in userObj || UNSERIALIZABLE in userObj || ESCAPED in userObj) {
+        const inner: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(userObj)) inner[k] = sanitize(v);
+        return { [ESCAPED]: true, value: inner };
+      }
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(userObj)) out[k] = sanitize(v);
+      return out;
+    } finally {
+      stack.delete(obj);
     }
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = sanitize(v);
-    }
-    return out;
   };
   return JSON.stringify(sanitize(run), null, 2);
 }
@@ -131,8 +151,22 @@ function revive(value: unknown): unknown {
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map(revive);
   const obj = value as Record<string, unknown>;
-  if (typeof obj.__wrapped === "string") {
-    switch (obj.__wrapped) {
+  // Escape envelope first: user data that originally contained a reserved
+  // marker key was wrapped at serialize time. Unwrap before any wrapper
+  // dispatch so the original keys are preserved.
+  if (obj[ESCAPED] === true && obj.value !== null && typeof obj.value === "object") {
+    // Escape envelope: the inner object is the user's original payload
+    // verbatim (already containing reserved marker keys). Revive its
+    // child values normally, but do NOT re-dispatch the top-level keys
+    // through the wrapper switch — those marker keys are user data.
+    const inner = obj.value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(inner)) out[k] = revive(v);
+    return out;
+  }
+  const wrapped = obj[WRAPPED];
+  if (typeof wrapped === "string") {
+    switch (wrapped) {
       case "date":
         return typeof obj.iso === "string" ? new Date(obj.iso) : obj;
       case "url":
