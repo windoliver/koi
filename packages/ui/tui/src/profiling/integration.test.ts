@@ -349,6 +349,49 @@ describe("initProfiling", () => {
     expect(secondSetIntervalCalls).toBe(0);
   });
 
+  test("stderr.write throwing after a successful file write does not mark the run failed", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    const outPath = join(workDir, "stderr-throw.json");
+    process.env.KOI_TUI_PROFILE_OUT = outPath;
+    resetProfiler();
+
+    const origWrite = process.stderr.write.bind(process.stderr);
+    // stderr is unwritable on the success path. The file write itself is
+    // unaffected; logging is best-effort.
+    process.stderr.write = (() => {
+      throw new Error("stderr closed");
+    }) as unknown as typeof process.stderr.write;
+
+    try {
+      initProfiling({
+        processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+        cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+      });
+      bumpCounter("messagerow.mount", 13);
+      shutdownProfiling();
+    } finally {
+      process.stderr.write = origWrite;
+    }
+
+    // File was written despite stderr throwing.
+    const written = JSON.parse(readFileSync(outPath, "utf8")) as {
+      counters: Record<string, number>;
+    };
+    expect(written.counters["messagerow.mount"]).toBe(13);
+
+    // Critical: a subsequent profiled run must NOT throw
+    // ProfilingPendingWriteError, because the previous write actually
+    // succeeded.
+    process.env.KOI_TUI_PROFILE_OUT = join(workDir, "stderr-throw-2.json");
+    expect(() =>
+      initProfiling({
+        processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+        cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+      }),
+    ).not.toThrow();
+    shutdownProfiling();
+  });
+
   test("pending failed write blocks later profiled run; resolving the issue clears it", () => {
     process.env.KOI_TUI_PROFILE = "1";
     const missingDir = join(workDir, "missing-block");

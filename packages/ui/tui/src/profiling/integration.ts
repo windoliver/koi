@@ -192,6 +192,19 @@ export function shutdownProfiling(): void {
   activeOutPath = null;
 }
 
+/** Best-effort stderr — never throws. Used inside writeReportIfNeeded so a
+ *  closed/unwritable stderr during teardown cannot misclassify a successful
+ *  file write as failed. */
+function logToStderr(msg: string): void {
+  try {
+    process.stderr.write(msg);
+  } catch {
+    // stderr unwritable (closed, redirected to a closed fd, etc.) — proceed
+    // without logging. The persistence outcome is determined by the file
+    // write alone.
+  }
+}
+
 function writeReportIfNeeded(): void {
   if (writtenForRun) return;
   // Two cases:
@@ -207,18 +220,25 @@ function writeReportIfNeeded(): void {
     path = activeOutPath;
   }
   if (path === null) return;
+
+  // Persistence: this try/catch ONLY brackets writeFileSync. Logging is
+  // out of band so a stderr failure cannot misclassify a successful
+  // write as failed (which would set the pending snapshot and block
+  // future profiled runs even though the report is on disk).
   try {
     writeFileSync(path, serialized);
-    writtenForRun = true;
-    pendingReportSnapshot = null;
-    pendingReportPath = null;
-    process.stderr.write(`[koi-tui-profile] report written to ${path}\n`);
   } catch (err) {
-    // Freeze the snapshot for a later retry (e.g. exit-handler).
     pendingReportSnapshot = serialized;
     pendingReportPath = path;
-    process.stderr.write(`[koi-tui-profile] failed to write ${path}: ${String(err)}\n`);
+    logToStderr(`[koi-tui-profile] failed to write ${path}: ${String(err)}\n`);
+    return;
   }
+
+  // Write succeeded — commit the success state, then log best-effort.
+  writtenForRun = true;
+  pendingReportSnapshot = null;
+  pendingReportPath = null;
+  logToStderr(`[koi-tui-profile] report written to ${path}\n`);
 }
 
 /** Test-only: clear all latches. Not exported from the package. */
