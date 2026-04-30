@@ -162,22 +162,25 @@ export function initProfiling(options?: InitProfilingOptions): boolean {
   activeOutPath = resolvePath(rawPath);
 
   startCpuSampler(options?.cpuSamplerOptions);
-
-  if (!exitHandlerRegistered) {
-    exitHandlerRegistered = true;
-    const onProcess = options?.processOn ?? process.on.bind(process);
-    onProcess("exit", () => {
-      // Stop the sampler FIRST so its final synchronous tick captures
-      // the trailing partial interval since the last scheduled tick.
-      // Without this, exit-fallback writes (the path most likely
-      // triggered by a crash or short run) would drop the most
-      // recently-active CPU work — exactly the data the user needs.
-      // No-op when the sampler is already stopped.
-      stopCpuSampler();
-      writeReportIfNeeded();
-    });
-  }
+  registerExitHandlerOnce(options?.processOn);
   return true;
+}
+
+/**
+ * Idempotent: registers the process-exit fallback writer exactly once per
+ * process. Stops the sampler before flushing so the trailing partial
+ * interval since the last scheduled tick is captured — exit-fallback
+ * writes are the path most likely triggered by a crash or short run, so
+ * the trailing CPU work is exactly the data the user needs.
+ */
+function registerExitHandlerOnce(processOn: typeof process.on | undefined): void {
+  if (exitHandlerRegistered) return;
+  exitHandlerRegistered = true;
+  const onProcess = processOn ?? process.on.bind(process);
+  onProcess("exit", () => {
+    stopCpuSampler();
+    writeReportIfNeeded();
+  });
 }
 
 /**
