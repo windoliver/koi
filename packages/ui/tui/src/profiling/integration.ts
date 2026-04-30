@@ -22,7 +22,7 @@
  * Disabled path: zero work — `isProfilingEnabled()` is checked first.
  */
 
-import { writeFileSync } from "node:fs";
+import { renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { type CpuSamplerOptions, startCpuSampler, stopCpuSampler } from "./cpu-sampler.js";
 import { dumpProfile, resetProfiler } from "./profiler.js";
@@ -179,14 +179,29 @@ export function initProfiling(options?: InitProfilingOptions): boolean {
  * Idempotent — safe to call from `TuiAppHandle.stop()` even when
  * profiling was not enabled.
  */
-export function shutdownProfiling(): void {
+export interface ShutdownProfilingOptions {
+  /**
+   * Whether to flush the report to disk. Default true.
+   *
+   * Set false on aborted/failed start paths (renderer init threw,
+   * mount IIFE aborted, stop() timed out before commit) so a
+   * partial pre-mount run does not overwrite a previous successful
+   * report at the same path. The sampler is still stopped and the
+   * profiler state is still reset; only the file write is skipped.
+   */
+  readonly write?: boolean;
+}
+
+export function shutdownProfiling(options?: ShutdownProfilingOptions): void {
   if (!runActive) return;
   stopCpuSampler();
-  // writeReportIfNeeded captures a snapshot for retry on failure, so
-  // the live profiler state can always be reset here — post-shutdown
-  // probe activity from any later unprofiled TUI cannot contaminate
-  // the retained report.
-  writeReportIfNeeded();
+  if (options?.write !== false) {
+    // writeReportIfNeeded captures a snapshot for retry on failure, so
+    // the live profiler state can always be reset here — post-shutdown
+    // probe activity from any later unprofiled TUI cannot contaminate
+    // the retained report.
+    writeReportIfNeeded();
+  }
   resetProfiler({ enabled: false });
   runActive = false;
   activeOutPath = null;
@@ -221,13 +236,23 @@ function writeReportIfNeeded(): void {
   }
   if (path === null) return;
 
-  // Persistence: this try/catch ONLY brackets writeFileSync. Logging is
-  // out of band so a stderr failure cannot misclassify a successful
-  // write as failed (which would set the pending snapshot and block
-  // future profiled runs even though the report is on disk).
+  // Persistence: write atomically via a sibling temp + rename so a
+  // failed write (ENOSPC, signal, partial truncation) cannot corrupt
+  // an existing report at `path`. The previous on-disk report stays
+  // intact until rename succeeds. This try/catch ONLY brackets the
+  // file ops; logging is out of band (see logToStderr) so a stderr
+  // failure cannot misclassify a successful write as failed.
+  const tmpPath = `${path}.tmp-${process.pid}`;
   try {
-    writeFileSync(path, serialized);
+    writeFileSync(tmpPath, serialized);
+    renameSync(tmpPath, path);
   } catch (err) {
+    // Best-effort cleanup of the temp — ignore if it doesn't exist.
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      /* nothing to clean up */
+    }
     pendingReportSnapshot = serialized;
     pendingReportPath = path;
     logToStderr(`[koi-tui-profile] failed to write ${path}: ${String(err)}\n`);

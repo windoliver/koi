@@ -583,8 +583,11 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           fatalShutdownActive = false;
           // #1586: aborted mount — release profiling ownership so a later
           // createTuiApp() can profile cleanly. stop() will not be called.
+          // Skip the report write: a never-mounted run has no measurement
+          // worth flushing, and the empty/partial JSON would clobber a
+          // previous successful report at the same path.
           if (profilingOwned) {
-            shutdownProfiling();
+            shutdownProfiling({ write: false });
             profilingOwned = false;
           }
         }
@@ -596,9 +599,10 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         restoreFatalHandler = undefined;
         fatalShutdownActive = false;
         // #1586: failed start — same logic. stop() will not run for a
-        // never-mounted handle, so release profiling here.
+        // never-mounted handle, so release profiling here. Skip write
+        // for the same reason as the aborted-mount branch.
         if (profilingOwned) {
-          shutdownProfiling();
+          shutdownProfiling({ write: false });
           profilingOwned = false;
         }
         throw e;
@@ -646,10 +650,11 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         // native FFI init and would otherwise leave the CPU sampler
         // ticking forever and the runActive latch held — locking out
         // every later profiled run in this process. Release ownership
-        // here. The IIFE's own aborted-mount cleanup is gated on
-        // profilingOwned and will skip its shutdownProfiling call.
+        // here. Skip the report write because the run never reached a
+        // mounted state — flushing partial pre-mount data would clobber
+        // a previous successful report at the same path.
         if (profilingOwned) {
-          shutdownProfiling();
+          shutdownProfiling({ write: false });
           profilingOwned = false;
         }
         closing = false;
