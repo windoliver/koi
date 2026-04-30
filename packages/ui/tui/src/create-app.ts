@@ -540,6 +540,15 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           // a fresh one on the next invocation rather than reusing a
           // destroyed object.
           activeRenderer = undefined;
+          // #1586 — release profiling ownership so a later restart in this
+          // same process is accepted by initProfiling. Without this, the
+          // process-global runActive latch stays set forever after an
+          // external destroy and every subsequent profiled createTuiApp
+          // is rejected as "already being profiled".
+          if (profilingOwned) {
+            shutdownProfiling();
+            profilingOwned = false;
+          }
           currentDoneResolve?.();
           currentDoneResolve = null;
           currentDone = Promise.resolve();
