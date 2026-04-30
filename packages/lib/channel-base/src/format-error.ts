@@ -373,21 +373,23 @@ function extractAuthHandoff(error: KoiError): {
       const colonIdx = t.indexOf(":");
       if (colonIdx === -1) {
         if (PLAIN_IDENTIFIER.test(t)) return true;
-        // Dotted PascalCase scopes (Microsoft Graph: `User.Read`,
-        // `Files.Read.All`). Leading namespace must be allowlisted.
-        if (DOTTED_SCOPE_NAME.test(t)) {
-          const prefix = t.slice(0, t.indexOf(".")).toLowerCase();
-          return KNOWN_SCOPE_NAMESPACES.has(prefix);
-        }
-        return false;
+        // Dotted-PascalCase scope (Microsoft Graph and similar:
+        // `User.Read`, `Files.Read.All`, `Sites.Read.All`,
+        // `Notes.Read`, `MailboxSettings.Read`). Accept any token
+        // matching this shape — dots-only-no-colons cannot be a URI
+        // or app-launch scheme (those require `:`), so there's no
+        // prefix-allowlist needed to distinguish from clickable
+        // schemes.
+        return DOTTED_SCOPE_NAME.test(t);
       }
       const scheme = t.slice(0, colonIdx).toLowerCase();
       // URI shape: scheme://host/...
       if (t.startsWith(`${scheme}://`)) return URI_TOKEN_ALLOWED_SCHEMES.has(scheme);
       // urn:... opaque identifier form
       if (scheme === "urn") return true;
-      // Otherwise must be a strict scope-name shape AND its leading
-      // namespace must be on the explicit allowlist.
+      // Colon-separated scope names overlap with URI/app-launch shapes
+      // (`chat:write` vs `zoommtg:join`). Require the strict scope-name
+      // shape AND a known OAuth scope namespace prefix to distinguish.
       if (!SAFE_SCOPE_NAME.test(t)) return false;
       return KNOWN_SCOPE_NAMESPACES.has(scheme);
     };

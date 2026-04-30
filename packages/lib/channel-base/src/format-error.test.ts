@@ -391,22 +391,24 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(out.auth.scope).toBeUndefined();
     });
 
-    it("preserves dotted PascalCase OAuth scope names (Microsoft Graph)", () => {
-      // Regression: loop-6 round 5 finding 2. Microsoft Graph uses
-      // dotted PascalCase scope names (`User.Read`, `Mail.Send`,
-      // `Files.Read.All`, `Calendars.ReadWrite`). The previous
-      // PLAIN_IDENTIFIER regex rejected dots and the all-or-nothing
-      // gate dropped the entire `auth.scope` field — a user-visible
-      // consent regression.
+    it("preserves dotted PascalCase OAuth scope names (Microsoft Graph + extended)", () => {
+      // Regression: loop-6 round 5 finding 2 + round 8 finding.
+      // Microsoft Graph uses dotted PascalCase scope names. The
+      // dotted-shape branch accepts these unconditionally (no namespace
+      // allowlist) — dots-only tokens cannot be a URI or app-launch
+      // scheme, so there's no clickable-link risk to gate against.
       const err = baseError("AUTH_REQUIRED", "x", {
         context: {
           authorizationUrl: "https://login.microsoftonline.com/oauth",
-          scope: "User.Read Mail.Send Files.Read.All Calendars.ReadWrite",
+          scope:
+            "User.Read Mail.Send Files.Read.All Calendars.ReadWrite Sites.Read.All Notes.Read MailboxSettings.Read Group.ReadWrite.All Application.Read.All",
         },
       });
       const out = classifyErrorForChannel(err);
       if (out.kind !== "auth-required") throw new Error("expected auth-required");
-      expect(out.auth.scope).toBe("User.Read Mail.Send Files.Read.All Calendars.ReadWrite");
+      expect(out.auth.scope).toBe(
+        "User.Read Mail.Send Files.Read.All Calendars.ReadWrite Sites.Read.All Notes.Read MailboxSettings.Read Group.ReadWrite.All Application.Read.All",
+      );
     });
 
     it("preserves common colon-delimited OAuth scope names (chat:write, read:user)", () => {
