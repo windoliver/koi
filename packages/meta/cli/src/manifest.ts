@@ -313,11 +313,49 @@ export interface ManifestConfig {
    *     backend: nexus
    */
   readonly delegation: ManifestDelegationConfig | undefined;
+  /**
+   * Optional ACE (Adaptive Continuous Enhancement) opt-in. When
+   * `enabled: true`, the TUI host wires `@koi/middleware-ace` so the
+   * agent records per-session trajectories, consolidates them into
+   * playbooks, and injects the top playbooks into future model calls.
+   *
+   * Activation is gated in the host (see `runtime-factory.ts`):
+   * - `koi start` rejects `enabled: true` (TUI-only feature).
+   * - TUI refuses to activate when the `spawn` preset stack is active
+   *   (no per-agent partitioning yet — would contaminate child agents).
+   * - TUI refuses to activate on resume without manifest provenance
+   *   (mirrors the existing `audit` resume-handling pattern).
+   *
+   * Numeric overrides map 1:1 to `AceConfig` fields in
+   * `@koi/middleware-ace`: `max_injected_tokens` → `maxInjectedTokens`,
+   * `min_score` → `minScore`, `lambda` → `lambda`.
+   *
+   *   ace:
+   *     enabled: true
+   *     max_injected_tokens: 800
+   *     min_score: 0.05
+   *     lambda: 0.05
+   *
+   * `undefined` means the block is absent. `enabled: false` is a valid
+   * declarative no-op.
+   */
+  readonly ace: ManifestAceConfig | undefined;
 }
 
 /** Manifest-declared delegation backend selector. */
 export interface ManifestDelegationConfig {
   readonly backend: "memory" | "nexus";
+}
+
+/**
+ * Manifest-declared ACE configuration. See `ManifestConfig.ace` for
+ * activation semantics and host-level gates.
+ */
+export interface ManifestAceConfig {
+  readonly enabled: boolean;
+  readonly maxInjectedTokens: number | undefined;
+  readonly minScore: number | undefined;
+  readonly lambda: number | undefined;
 }
 
 /**
@@ -533,6 +571,11 @@ export async function loadManifestConfig(
     return delegationResult;
   }
 
+  const aceResult = parseManifestAce(raw.ace);
+  if (!aceResult.ok) {
+    return aceResult;
+  }
+
   // `trustedHost` is not an accepted manifest field. Earlier
   // designs exposed a per-layer security opt-out surface here, but
   // the runtime factory never actually omitted the corresponding
@@ -636,6 +679,116 @@ export async function loadManifestConfig(
       supervision: supervisionResult.value,
       audit: auditResult.value,
       delegation: delegationResult.value,
+      ace: aceResult.value,
+    },
+  };
+}
+
+const ACE_KNOWN_KEYS: ReadonlySet<string> = new Set([
+  "enabled",
+  "max_injected_tokens",
+  "min_score",
+  "lambda",
+]);
+
+function parseManifestAce(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: ManifestAceConfig | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error: "manifest.ace must be an object, e.g. ace: { enabled: true }",
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+
+  for (const key of Object.keys(obj)) {
+    if (key === "playbook_path") {
+      return {
+        ok: false,
+        error:
+          "manifest.ace.playbook_path is not yet supported; @koi/playbook-store-sqlite has not landed (tracked as #2088 follow-up). " +
+          "Remove the key to use the in-memory store.",
+      };
+    }
+    if (!ACE_KNOWN_KEYS.has(key)) {
+      return {
+        ok: false,
+        error:
+          `manifest.ace: unknown key "${key}". Recognized keys: ${[...ACE_KNOWN_KEYS].join(", ")}. ` +
+          "Check for typos — unknown keys are rejected to prevent silent ACE misconfiguration.",
+      };
+    }
+  }
+
+  const enabled = obj.enabled;
+  if (enabled !== undefined && typeof enabled !== "boolean") {
+    return {
+      ok: false,
+      error: `manifest.ace.enabled must be a boolean (got: ${JSON.stringify(enabled)})`,
+    };
+  }
+
+  const maxInjectedTokens = obj.max_injected_tokens;
+  if (maxInjectedTokens !== undefined) {
+    if (typeof maxInjectedTokens !== "number" || !Number.isFinite(maxInjectedTokens)) {
+      return {
+        ok: false,
+        error: `manifest.ace.max_injected_tokens must be a finite number (got: ${JSON.stringify(maxInjectedTokens)})`,
+      };
+    }
+    if (maxInjectedTokens <= 0) {
+      return {
+        ok: false,
+        error: `manifest.ace.max_injected_tokens must be > 0 (got: ${maxInjectedTokens})`,
+      };
+    }
+  }
+
+  const minScore = obj.min_score;
+  if (minScore !== undefined) {
+    if (typeof minScore !== "number" || !Number.isFinite(minScore)) {
+      return {
+        ok: false,
+        error: `manifest.ace.min_score must be a finite number (got: ${JSON.stringify(minScore)})`,
+      };
+    }
+    if (minScore < 0 || minScore > 1) {
+      return {
+        ok: false,
+        error: `manifest.ace.min_score must be in [0, 1] (got: ${minScore})`,
+      };
+    }
+  }
+
+  const lambda = obj.lambda;
+  if (lambda !== undefined) {
+    if (typeof lambda !== "number" || !Number.isFinite(lambda)) {
+      return {
+        ok: false,
+        error: `manifest.ace.lambda must be a finite number (got: ${JSON.stringify(lambda)})`,
+      };
+    }
+    if (lambda <= 0) {
+      return {
+        ok: false,
+        error: `manifest.ace.lambda must be > 0 (got: ${lambda})`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      enabled: enabled ?? false,
+      maxInjectedTokens: maxInjectedTokens as number | undefined,
+      minScore: minScore as number | undefined,
+      lambda: lambda as number | undefined,
     },
   };
 }
