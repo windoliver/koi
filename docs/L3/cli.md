@@ -8,6 +8,15 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 - **TUI Wave 5 profiling harness (#1586)**: no CLI dependency or wiring changes. `@koi/tui` adds opt-in instrumentation gated on `KOI_TUI_PROFILE=1` (default off, zero behavior change). When set, `bun run packages/meta/cli/src/bin.ts tui` (or any other CLI entrypoint that mounts the TUI) writes a JSON report to `KOI_TUI_PROFILE_OUT` (default `./koi-tui-profile.json`) on `stop()` or process exit. Atomic temp+rename write, snapshot-based retry on failure, single-profiled-TUI-per-process limit (concurrent profiled mounts throw `ProfilingConflictError`). Measurement protocol and verdict thresholds in `docs/perf/tui-wave5-measurement.md`; failure-mode E2E harness at `scripts/perf/profiling-e2e.sh`.
 
+- **`@koi/governance-scope` wired (#1882 gov-15)**: CLI manifest gains `network:`
+  and `credentials:` blocks. The TUI command translates these into compiled scope
+  objects (`compileScopedFs`, `createScopedFetcher`, `createScopedCredentials`)
+  before passing them into the tool/provider factories. `authed_fetch` is
+  registered in the CLI preset stack as an agent-facing tool that consumes scoped
+  credentials without echoing values. `createProgressiveSkillProvider` replaces
+  the bare provider call so session-snapshot stability is preserved at attach time.
+  `@koi/governance-scope` and `@koi/url-safety` added as direct CLI dependencies.
+
 - **Review lifecycle doc sync (#2081)**: no CLI dependency or TUI wiring changes.
   CLI consumes the refreshed L2 behavior from `@koi/task-tools`,
   `@koi/tools-web`, and `@koi/middleware-memory-recall`: task-tools'

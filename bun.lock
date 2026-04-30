@@ -973,6 +973,7 @@
         "@koi/governance-approval-tiers": "workspace:*",
         "@koi/governance-core": "workspace:*",
         "@koi/governance-defaults": "workspace:*",
+        "@koi/governance-scope": "workspace:*",
         "@koi/governance-security": "workspace:*",
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
@@ -1108,6 +1109,7 @@
         "@koi/governance-core": "workspace:*",
         "@koi/governance-defaults": "workspace:*",
         "@koi/governance-delegation": "workspace:*",
+        "@koi/governance-scope": "workspace:*",
         "@koi/governance-security": "workspace:*",
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
@@ -1457,6 +1459,14 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/security/governance-scope": {
+      "name": "@koi/governance-scope",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/url-safety": "workspace:*",
       },
     },
     "packages/security/governance-security": {
@@ -2046,6 +2056,8 @@
     "@koi/governance-defaults": ["@koi/governance-defaults@workspace:packages/security/governance-defaults"],
 
     "@koi/governance-delegation": ["@koi/governance-delegation@workspace:packages/security/governance-delegation"],
+
+    "@koi/governance-scope": ["@koi/governance-scope@workspace:packages/security/governance-scope"],
 
     "@koi/governance-security": ["@koi/governance-security@workspace:packages/security/governance-security"],
 

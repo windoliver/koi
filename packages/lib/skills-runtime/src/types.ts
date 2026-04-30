@@ -27,6 +27,14 @@ export interface ValidatedSkillRequires {
   readonly tools?: readonly string[];
   readonly network?: boolean;
   readonly platform?: readonly string[];
+  /**
+   * Credential requirements (gov-15). Each entry maps a logical name to a
+   * credential spec that brick / skill activation resolves through the
+   * `CREDENTIALS` subsystem token. When a host wires
+   * `manifest.credentials.allow`, the activation path validates that every
+   * required `ref` is in scope and rejects the skill otherwise.
+   */
+  readonly credentials?: Readonly<Record<string, { readonly kind: string; readonly ref: string }>>;
 }
 
 // ---------------------------------------------------------------------------
