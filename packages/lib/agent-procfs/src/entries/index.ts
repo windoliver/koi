@@ -19,9 +19,15 @@ export const ENTRY_NAMES = [
 
 export type EntryName = (typeof ENTRY_NAMES)[number];
 
+export interface BuildAgentEntriesOptions {
+  /** Explicit allowlist of env-var names whose values are exposed. */
+  readonly allowedEnvKeys?: readonly string[];
+}
+
 export function buildAgentEntries(
   agent: Agent,
   registry: AgentRegistry,
+  options: BuildAgentEntriesOptions = {},
 ): Readonly<Record<EntryName, ProcEntry | WritableProcEntry>> {
   return {
     status: statusEntry(agent, registry),
@@ -29,7 +35,7 @@ export function buildAgentEntries(
     middleware: middlewareEntry(agent),
     children: childrenEntry(agent, registry),
     config: configEntry(agent),
-    env: envEntry(agent),
+    env: envEntry(agent, options.allowedEnvKeys),
     metrics: metricsEntry(agent, registry),
   };
 }

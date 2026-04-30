@@ -31,6 +31,7 @@ function freshMetrics(): SessionMetrics {
     latency: emptyStats(),
     outputTokens: emptyStats(),
     pendingDrift: new Set(),
+    closed: false,
   };
 }
 

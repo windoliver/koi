@@ -7,6 +7,13 @@ export interface AgentMounterConfig {
   readonly registry: AgentRegistry;
   readonly procFs: ProcFs;
   readonly agentProvider: AgentProvider;
+  /**
+   * Explicit allowlist of environment variable names whose values are exposed
+   * via /agents/<id>/env. By default (undefined or empty), the env entry
+   * returns no values — only an empty object — to prevent procfs from
+   * becoming a credential exfiltration channel.
+   */
+  readonly allowedEnvKeys?: readonly string[];
 }
 
 export interface AgentMounter {
@@ -18,7 +25,7 @@ function pathFor(id: AgentId, name: string): string {
 }
 
 export function createAgentMounter(config: AgentMounterConfig): AgentMounter {
-  const { registry, procFs, agentProvider } = config;
+  const { registry, procFs, agentProvider, allowedEnvKeys } = config;
   const mounted = new Set<AgentId>();
   // IDs that have been deregistered (or were never live) — guard against late
   // hydration remounting them after a `deregistered` event.
@@ -31,7 +38,11 @@ export function createAgentMounter(config: AgentMounterConfig): AgentMounter {
     if (mounted.has(id)) return;
     const agent = agentProvider(id);
     if (agent === undefined) return;
-    const entries = buildAgentEntries(agent, registry);
+    const entries = buildAgentEntries(
+      agent,
+      registry,
+      allowedEnvKeys !== undefined ? { allowedEnvKeys } : {},
+    );
     for (const name of ENTRY_NAMES) {
       procFs.mount(pathFor(id, name), entries[name]);
     }

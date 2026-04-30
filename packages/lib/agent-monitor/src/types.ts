@@ -51,4 +51,6 @@ export interface SessionMetrics {
   outputTokens: LatencyStats;
   /** In-flight async drift evaluations awaited during onSessionEnd. */
   pendingDrift: Set<Promise<void>>;
+  /** True once onSessionEnd has finalized the summary — drops late signals. */
+  closed: boolean;
 }

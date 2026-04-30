@@ -21,13 +21,15 @@ export function createPathSource(config: PathSourceConfig = {}): DiscoverySource
         for (const bin of agent.binaries) {
           const resolved = await sc.which(bin);
           if (resolved !== null) {
+            // PATH resolution alone does not prove the binary actually runs.
+            // Leave `healthy` undefined — callers run checkAgentHealth() to
+            // probe before trusting the descriptor.
             results.push({
               name: agent.name,
               displayName: agent.displayName,
               transport: agent.transport,
               command: bin,
               capabilities: agent.capabilities,
-              healthy: true,
               source: "path",
             });
             break;

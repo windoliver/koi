@@ -22,7 +22,7 @@ describe("createPathSource", () => {
     expect(r[0]?.command).toBe("claude");
     expect(r[0]?.transport).toBe("cli");
     expect(r[0]?.source).toBe("path");
-    expect(r[0]?.healthy).toBe(true);
+    expect(r[0]?.healthy).toBeUndefined();
   });
 
   test("skips agents whose binary does not resolve", async () => {

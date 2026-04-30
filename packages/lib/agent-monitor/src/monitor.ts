@@ -54,6 +54,7 @@ function freshMetrics(sessionId: SessionId, agentId: AgentId): SessionMetrics {
     latency: emptyStats(),
     outputTokens: emptyStats(),
     pendingDrift: new Set(),
+    closed: false,
   };
 }
 
@@ -138,7 +139,7 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
     // Drop late signals from async scorers that resolve after onSessionEnd —
     // otherwise we'd mutate counts on a discarded session and emit signals
     // for a session whose summary has already been exported.
-    if (sessions.get(m.sessionId) !== m) return;
+    if (m.closed || sessions.get(m.sessionId) !== m) return;
     const signal: AnomalySignal = {
       sessionId: m.sessionId,
       agentId: m.agentId,
@@ -298,6 +299,10 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
           }
         }
       }
+      // Close the session before exporting metrics so any drift scorer that
+      // resolves after the timeout cannot mutate finalized state or emit
+      // signals that contradict the summary already shipped.
+      m.closed = true;
       try {
         config.onMetrics?.(ctx.sessionId, snapshot(m));
       } catch {

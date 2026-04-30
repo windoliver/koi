@@ -15,6 +15,14 @@ function isWritable(e: ProcEntry | WritableProcEntry): e is WritableProcEntry {
   return "write" in e && typeof e.write === "function";
 }
 
+function cloneValue(v: unknown): unknown {
+  // Primitives, null, and undefined are immutable already.
+  if (v === null || (typeof v !== "object" && typeof v !== "function")) return v;
+  // structuredClone handles Maps, Sets, Dates, typed arrays, and plain
+  // objects/arrays. It throws on functions; entries should not return those.
+  return structuredClone(v);
+}
+
 export function createProcFs(config: ProcFsConfig = {}): ProcFs {
   const ttl = config.cacheTtlMs ?? DEFAULT_TTL_MS;
   const entryMap = new Map<string, ProcEntry | WritableProcEntry>();
@@ -41,12 +49,16 @@ export function createProcFs(config: ProcFsConfig = {}): ProcFs {
       if (ttl > 0) {
         const cached = cache.get(path);
         if (cached !== undefined && cached.expiresAt > Date.now()) {
-          return cached.value;
+          // Clone on read so callers cannot mutate the cached object and
+          // poison subsequent reads for the rest of the TTL.
+          return cloneValue(cached.value);
         }
       }
       const value = await entry.read();
       if (ttl > 0) {
-        cache.set(path, { value, expiresAt: Date.now() + ttl });
+        // Clone on insert so later mutations to the original don't bleed
+        // into the cache.
+        cache.set(path, { value: cloneValue(value), expiresAt: Date.now() + ttl });
       }
       return value;
     },
