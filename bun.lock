@@ -266,6 +266,16 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/crystallize": {
+      "name": "@koi/crystallize",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
+      },
+    },
     "packages/lib/debug": {
       "name": "@koi/debug",
       "version": "0.0.0",
@@ -2015,6 +2025,8 @@
     "@koi/core": ["@koi/core@workspace:packages/kernel/core"],
 
     "@koi/cost-aggregator": ["@koi/cost-aggregator@workspace:packages/lib/cost-aggregator"],
+
+    "@koi/crystallize": ["@koi/crystallize@workspace:packages/lib/crystallize"],
 
     "@koi/daemon": ["@koi/daemon@workspace:packages/net/daemon"],
 
