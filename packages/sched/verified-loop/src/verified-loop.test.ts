@@ -542,4 +542,66 @@ describe("VerifiedLoop.run", () => {
     const result = await loop.run();
     expect(result.durationMs).toBeLessThan(3_000);
   }, 10_000);
+
+  test("picks up PRD item added between iterations", async () => {
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+
+    // Use let — justified: gate counter triggers PRD mutation on iteration 1
+    let iter = 0;
+    const loop = createVerifiedLoop(
+      makeConfig({
+        verify: async () => {
+          iter++;
+          if (iter === 1) {
+            const raw = await Bun.file(prdPath).text();
+            const prd = JSON.parse(raw) as PRDFile;
+            const next: PRDFile = {
+              items: [...prd.items, { id: "b", description: "Task B added live", done: false }],
+            };
+            await Bun.write(prdPath, JSON.stringify(next, null, 2));
+          }
+          return { passed: true };
+        },
+      }),
+    );
+    const result = await loop.run();
+
+    expect([...result.completed].sort()).toEqual(["a", "b"]);
+    expect(result.iterations).toBe(2);
+  });
+
+  test("onIteration callback that throws does not kill the loop", async () => {
+    await writePrd({
+      items: [
+        { id: "a", description: "Task A", done: false },
+        { id: "b", description: "Task B", done: false },
+      ],
+    });
+
+    const loop = createVerifiedLoop(
+      makeConfig({
+        onIteration: () => {
+          throw new Error("observer bug");
+        },
+      }),
+    );
+
+    const result = await loop.run();
+    expect(result.iterations).toBe(2);
+    expect([...result.completed].sort()).toEqual(["a", "b"]);
+  });
+
+  test("itemsCompleted referencing an unknown id logs warning and completes the known ones", async () => {
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+
+    const loop = createVerifiedLoop(
+      makeConfig({
+        verify: async () => ({ passed: true, itemsCompleted: ["a", "ghost"] }),
+      }),
+    );
+
+    const result = await loop.run();
+    expect(result.completed).toEqual(["a"]);
+    expect(result.iterations).toBe(1);
+  });
 });

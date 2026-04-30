@@ -233,7 +233,13 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           error: iterError,
         };
         iterationRecords.push(record);
-        config.onIteration?.(record);
+        if (config.onIteration) {
+          try {
+            config.onIteration(record);
+          } catch (e: unknown) {
+            console.warn(`[verified-loop] onIteration callback threw: ${extractMessage(e)}`);
+          }
+        }
       }
 
       const finalPrd = await readPRD(config.prdPath);
