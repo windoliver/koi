@@ -38,6 +38,12 @@ export interface PipelineDeps {
   readonly inFlight: { count: number };
 }
 
+interface PipelineCtx extends PipelineDeps {
+  /** Wall-clock ms when the pipeline entered runPipeline; emit() computes
+   *  elapsed latency against this for every audit entry. */
+  readonly requestStartedAt: number;
+}
+
 type WebhookRoute = Extract<RouteMatch, { kind: "webhook" }>;
 
 type VerifiedAuth = {
@@ -55,6 +61,9 @@ type DispatchResult =
   | { readonly ok: false; readonly response: Response };
 
 export async function runPipeline(req: Request, deps: PipelineDeps): Promise<Response> {
+  // Capture the request start time once so every audit entry carries real
+  // elapsed latency, including reject paths.
+  const ctx: PipelineCtx = { ...deps, requestStartedAt: deps.clock() };
   const url = new URL(req.url);
   const route = matchRoute(req.method, url.pathname);
 
@@ -65,8 +74,8 @@ export async function runPipeline(req: Request, deps: PipelineDeps): Promise<Res
   }
 
   // Step 2: backpressure cap (pre-increment).
-  if (deps.inFlight.count >= deps.config.maxInFlight) {
-    emit(deps, route, 429, "rejected:overflow");
+  if (ctx.inFlight.count >= ctx.config.maxInFlight) {
+    emit(ctx, route, 429, "rejected:overflow");
     return new Response("rate limited", {
       status: 429,
       headers: { "Retry-After": "1" },
@@ -75,20 +84,16 @@ export async function runPipeline(req: Request, deps: PipelineDeps): Promise<Res
   // Single event-loop scope: read/increment/decrement is safe without atomics
   // because there's no preemption between await points in the request scope.
   // Do NOT share inFlight across worker threads or processes.
-  deps.inFlight.count += 1;
+  ctx.inFlight.count += 1;
   try {
-    return await runWebhook(req, deps, route);
+    return await runWebhook(req, ctx, route);
   } finally {
     // Step 16: decrement in finally so throws don't leak the counter.
-    deps.inFlight.count -= 1;
+    ctx.inFlight.count -= 1;
   }
 }
 
-async function runWebhook(
-  req: Request,
-  deps: PipelineDeps,
-  route: WebhookRoute,
-): Promise<Response> {
+async function runWebhook(req: Request, deps: PipelineCtx, route: WebhookRoute): Promise<Response> {
   // Step 3: CORS check on cross-origin requests (only when Origin present).
   const origin = req.headers.get("Origin");
   if (origin !== null && !isOriginAllowed(origin, deps.config.cors)) {
@@ -122,7 +127,7 @@ async function runWebhook(
   return await dispatchAndCache(req, deps, route, reg, outcome, payload);
 }
 
-function checkSourceLimit(deps: PipelineDeps, route: WebhookRoute): Response | null {
+function checkSourceLimit(deps: PipelineCtx, route: WebhookRoute): Response | null {
   if (deps.config.sourceLimit === "disabled-acknowledged") return null;
   const r = deps.rateLimits.consumeSource(deps.sourceAddr, deps.config.sourceLimit);
   if (r.allowed) return null;
@@ -138,7 +143,7 @@ async function verifyAndAuth(
   route: WebhookRoute,
   rawBytes: Uint8Array,
   channel: ChannelRegistration | undefined,
-  deps: PipelineDeps,
+  deps: PipelineCtx,
 ): Promise<AuthResult> {
   const ts = req.headers.get(HEADER_TS) ?? "";
   const sig = req.headers.get(HEADER_SIG) ?? "";
@@ -181,7 +186,7 @@ async function verifyAndAuth(
 }
 
 function rejectAuth(
-  deps: PipelineDeps,
+  deps: PipelineCtx,
   route: WebhookRoute,
   reason: AuthAuditResult,
 ): { readonly ok: false; readonly response: Response } {
@@ -193,7 +198,7 @@ function applyTenantGates(
   reg: ChannelRegistration,
   outcome: AuthOutcome,
   req: Request,
-  deps: PipelineDeps,
+  deps: PipelineCtx,
   route: WebhookRoute,
 ): Response | null {
   // Step 10: per-tenant nonce check.
@@ -221,7 +226,7 @@ function applyTenantGates(
 
 async function dispatchAndCache(
   req: Request,
-  deps: PipelineDeps,
+  deps: PipelineCtx,
   route: WebhookRoute,
   reg: ChannelRegistration,
   outcome: AuthOutcome,
@@ -267,7 +272,7 @@ async function dispatchAndCache(
 }
 
 function reserveDelivery(
-  deps: PipelineDeps,
+  deps: PipelineCtx,
   route: WebhookRoute,
   reg: ChannelRegistration,
   outcome: AuthOutcome,
@@ -299,7 +304,7 @@ async function runDispatchWithCleanup(
   sessionId: string,
   deliveryId: string | undefined,
   payload: unknown,
-  deps: PipelineDeps,
+  deps: PipelineCtx,
   route: WebhookRoute,
 ): Promise<DispatchResult> {
   try {
@@ -319,23 +324,24 @@ async function runDispatchWithCleanup(
 }
 
 function emit(
-  deps: PipelineDeps,
+  deps: PipelineCtx,
   route: WebhookRoute,
   status: number,
   authResult: AuthAuditResult,
   sessionId?: string,
 ): void {
   const path = `/webhooks/${route.channel}${route.account === undefined ? "" : `/${route.account}`}`;
+  const now = deps.clock();
   const record: GatewayRequestRecord = {
-    timestamp: deps.clock(),
+    timestamp: now,
     kind: "gateway.request",
     channel: route.channel,
     path,
     method: "POST",
     status,
-    // TODO: D3 (server.ts) will thread requestStartedAt into deps so we can
-    // compute real latency. For now this records 0 for all entries.
-    latencyMs: 0,
+    // Real elapsed latency from pipeline entry to this audit emission.
+    // Negative deltas (clock skew, mock-clock tests) clamp to 0.
+    latencyMs: Math.max(0, now - deps.requestStartedAt),
     authResult,
     ...(sessionId === undefined ? {} : { sessionId }),
     remoteAddr: deps.sourceAddr,

@@ -24,7 +24,8 @@ export interface AuditEntry {
     | "compliance_event"
     | "config_change"
     | "gateway.request"
-    | "gateway.ws_upgrade";
+    | "gateway.ws_upgrade"
+    | "gateway.startup";
   /** Populated for tool_call entries — the tool's identifier. */
   readonly toolName?: string;
   readonly request?: unknown;

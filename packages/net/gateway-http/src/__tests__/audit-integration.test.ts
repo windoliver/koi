@@ -144,9 +144,10 @@ function postWebhook(url: string, body: string, opts: ReqOpts = {}): Promise<Res
   });
 }
 
-// startup audit is path "/(start)" — drop it so tests assert only on traffic.
+// startup audit is now its own kind=gateway.startup — drop it so tests
+// assert only on traffic-driven gateway.request entries.
 function requestEntries(entries: readonly AuditEntry[]): AuditEntry[] {
-  return entries.filter((e) => e.metadata?.path !== "/(start)");
+  return entries.filter((e) => e.kind === "gateway.request");
 }
 
 interface GatewayMeta {

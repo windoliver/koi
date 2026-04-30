@@ -17,7 +17,6 @@
 import type { AuditEntry, KoiError, Result } from "@koi/core";
 import type { GatewayFrame, Session } from "@koi/gateway-types";
 import type { Server } from "bun";
-import { buildGatewayRequestEntry } from "./audit.js";
 import { type ChannelRegistry, createChannelRegistry } from "./channel.js";
 import { applyCors } from "./cors.js";
 import { DEFAULT_GATEWAY_HTTP_CONFIG } from "./defaults.js";
@@ -76,7 +75,7 @@ export function createGatewayServer(
   // on the post-merge value, an internet-facing operator could omit
   // sourceLimit entirely and silently inherit "disabled". Forcing an explicit
   // choice for non-loopback binds is what makes this fail-closed.
-  const sourceLimitProvided = Object.prototype.hasOwnProperty.call(config, "sourceLimit");
+  const sourceLimitProvided = Object.hasOwn(config, "sourceLimit");
   const cfg: GatewayHttpConfig = { ...DEFAULT_GATEWAY_HTTP_CONFIG, ...config };
   const clock = deps.clock ?? Date.now;
   const channelRegistry = createChannelRegistry();
@@ -330,16 +329,29 @@ async function handleFetch(
 
 function emitStartupAudit(deps: GatewayHttpDeps, clock: () => number, bind: string): void {
   if (deps.auditSink === undefined) return;
-  const entry = buildGatewayRequestEntry({
+  // Dedicated singleton-advertisement event. Same-host duplicates are caught
+  // by the PID lock; this audit carries enough identity (hostname, pid,
+  // instanceId, bind) for an external aggregator to detect cross-host /
+  // multi-replica deployments where two processes accept the same channel
+  // traffic. Operators wiring this in MUST treat duplicate (hostname,bind)
+  // pairs in their audit pipeline as a configuration error.
+  const hostname = process.env.HOSTNAME ?? process.env.COMPUTERNAME ?? "unknown";
+  const entry = {
+    schema_version: 1,
     timestamp: clock(),
-    kind: "gateway.request",
-    path: "/(start)",
-    method: "INTERNAL",
-    status: 200,
-    latencyMs: 0,
-    authResult: "skipped",
-    remoteAddr: bind,
-  });
+    sessionId: "(gateway)",
+    agentId: "(gateway)",
+    turnIndex: 0,
+    kind: "gateway.startup" as const,
+    durationMs: 0,
+    metadata: {
+      bind,
+      hostname,
+      pid: process.pid,
+      instanceId: crypto.randomUUID(),
+      startedAt: clock(),
+    },
+  };
   void deps.auditSink.log(entry).catch(() => {
     // Startup-audit failure is non-fatal; sink wiring owns retry semantics.
   });
