@@ -478,6 +478,29 @@ describe("run() — manifest loading", () => {
     expect(result).toBe(ExitCode.FAILURE);
   });
 
+  test("rejects ace.enabled: true via cwd auto-discovery (no --manifest flag)", async () => {
+    // Regression: rejection must fire whether the manifest comes from
+    // --manifest or from cwd auto-discovery. The mock in this file resolves
+    // missing flagValue to "auto-discovered/koi.yaml", so omitting the flag
+    // exercises the auto-discovery path end-to-end.
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: {
+        modelName: "manifest/model",
+        instructions: undefined,
+        ace: {
+          enabled: true,
+          maxInjectedTokens: undefined,
+          minScore: undefined,
+          lambda: undefined,
+        },
+      },
+    }));
+    const { run } = await import("./start.js");
+    const result = await run(makeFlags({}));
+    expect(result).toBe(ExitCode.FAILURE);
+  });
+
   test("accepts manifest.ace.enabled: false as a no-op", async () => {
     mockLoadManifest.mockImplementation(async () => ({
       ok: true as const,
