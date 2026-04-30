@@ -1,3 +1,5 @@
+import { createDiscoveryProvider } from "@koi/agent-discovery";
+import { createAgentMonitorMiddleware } from "@koi/agent-monitor";
 import { createAgentResolver } from "@koi/agent-runtime";
 import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit-sink-ndjson";
 import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
@@ -448,8 +450,24 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     ) {
       resilienceAdds.push(createCallDedupMiddleware(config.callDedup));
     }
-    const middleware: readonly KoiMiddleware[] =
+    const middlewareBeforeMonitor: readonly KoiMiddleware[] =
       resilienceAdds.length > 0 ? [...afterModelRouter, ...resilienceAdds] : afterModelRouter;
+
+    // Agent monitor (#1378) — pure observer, runs in observe phase.
+    // Skip when already provided in config.middleware by name.
+    const hasAgentMonitor = new Set(middlewareBeforeMonitor.map((mw) => mw.name)).has(
+      "agent-monitor",
+    );
+    const agentMonitorMiddleware =
+      config.agentMonitor !== undefined && !hasAgentMonitor
+        ? createAgentMonitorMiddleware(
+            config.agentMonitor === true ? {} : config.agentMonitor,
+          )
+        : undefined;
+    const middleware: readonly KoiMiddleware[] =
+      agentMonitorMiddleware !== undefined
+        ? [...middlewareBeforeMonitor, agentMonitorMiddleware]
+        : middlewareBeforeMonitor;
 
     const activityTimeoutConfig = resolveActivityTimeoutConfig(
       config.activityTimeout,
@@ -502,6 +520,16 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
               }
             },
           }
+        : undefined;
+
+    // External agent discovery (#1378). When configured, build the
+    // ComponentProvider here so it appears on RuntimeHandle.discoveryProvider
+    // and the caller forwards it into createKoi({ providers }).
+    const discoveryProvider: ComponentProvider | undefined =
+      config.agentDiscovery !== undefined
+        ? createDiscoveryProvider(
+            config.agentDiscovery === true ? {} : config.agentDiscovery,
+          )
         : undefined;
 
     // Fail closed: if a real (non-stub) "permissions" middleware is installed
@@ -1079,6 +1107,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       artifacts: artifactsHandle,
       filesystemBackend,
       filesystemProvider,
+      discoveryProvider,
       browserProvider,
       lspProvider,
       memoryStore,
