@@ -872,6 +872,25 @@ describe("setRubric (session-scoped)", () => {
     expect(seenPrompts[1]?.prompt).toContain("RUBRIC-DEFAULT");
     expect(seenPrompts[1]?.prompt).not.toContain("RUBRIC-A");
   });
+
+  test("onSessionEnd clears matching session override", async () => {
+    const seenPrompts: string[] = [];
+    const h = createOutputVerifierMiddleware({
+      judge: {
+        rubric: "RUBRIC-DEFAULT",
+        modelCall: async (p) => {
+          seenPrompts.push(p);
+          return '{"score": 0.99}';
+        },
+      },
+    });
+    h.setRubric("sess-1", "RUBRIC-OVERRIDE");
+    expect(h.middleware.onSessionEnd).toBeFunction();
+    await h.middleware.onSessionEnd?.(mockSession());
+    await callMiddleware(h.middleware, handlerReturning("x"));
+    expect(seenPrompts[0]).toContain("RUBRIC-DEFAULT");
+    expect(seenPrompts[0]).not.toContain("RUBRIC-OVERRIDE");
+  });
 });
 
 // ---------------------------------------------------------------------------
