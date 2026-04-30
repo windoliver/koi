@@ -2457,6 +2457,7 @@ describe("Golden: @koi/eval", () => {
   test("runEval scores a fake-agent transcript with exactMatch + toolCall graders", async () => {
     const events: readonly EngineEvent[] = [
       { kind: "tool_call_start", toolName: "search", callId: "c1" as never, args: { q: "x" } },
+      { kind: "tool_result", callId: "c1" as never, output: { hits: 42 } },
       { kind: "text_delta", delta: "found 42 results" },
     ];
     const run = await runEval({

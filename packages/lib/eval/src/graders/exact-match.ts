@@ -4,6 +4,12 @@ import type { EvalExpectation, EvalGrader, EvalScore } from "../types.js";
 export interface ExactMatchOptions {
   readonly id?: string | undefined;
   readonly pattern?: string | RegExp | undefined;
+  /**
+   * When true, fall back to stringified `tool_result` outputs when no
+   * assistant text was produced. Default false: a tool-only agent that
+   * never surfaced its result as text would otherwise score as a pass.
+   */
+  readonly includeToolResults?: boolean | undefined;
 }
 
 const DEFAULT_ID = "exact-match";
@@ -11,6 +17,7 @@ const DEFAULT_ID = "exact-match";
 export function exactMatch(options: ExactMatchOptions = {}): EvalGrader {
   const id = options.id ?? DEFAULT_ID;
   const fallback = options.pattern;
+  const includeToolResults = options.includeToolResults ?? false;
   return {
     id,
     grade: (transcript, expected): EvalScore => {
@@ -18,7 +25,7 @@ export function exactMatch(options: ExactMatchOptions = {}): EvalGrader {
       if (pattern === undefined) {
         return { graderId: id, score: 0, pass: false, reasoning: "no text expectation provided" };
       }
-      const text = collectAssistantText(transcript);
+      const text = collectAssistantText(transcript, includeToolResults);
       const matches =
         typeof pattern === "string"
           ? text.includes(pattern)
@@ -44,13 +51,15 @@ function resolvePattern(
 }
 
 /**
- * Collect candidate assistant text from a transcript using the same
- * fall-back order the runtime's output collector uses: streaming
- * text_delta events first; otherwise concatenate text content from the
- * terminal `done` event; otherwise fall back to stringified tool_result
- * outputs (a tool-only agent's "answer").
+ * Collect candidate assistant text. Streaming `text_delta` events first,
+ * then text content from the terminal `done` event. Tool-result fallback
+ * is opt-in: by default a tool-only agent that never surfaced its result
+ * as text scores as a fail, since the user never saw the answer.
  */
-function collectAssistantText(transcript: readonly EngineEvent[]): string {
+function collectAssistantText(
+  transcript: readonly EngineEvent[],
+  includeToolResults: boolean,
+): string {
   const deltas: string[] = [];
   for (const ev of transcript) {
     if (ev.kind === "text_delta") deltas.push(ev.delta);
@@ -60,7 +69,7 @@ function collectAssistantText(transcript: readonly EngineEvent[]): string {
   const doneText = collectFromDone(transcript);
   if (doneText.length > 0) return doneText;
 
-  return collectFromToolResults(transcript);
+  return includeToolResults ? collectFromToolResults(transcript) : "";
 }
 
 function collectFromDone(transcript: readonly EngineEvent[]): string {

@@ -84,8 +84,17 @@ describe("exactMatch", () => {
     expect(score.pass).toBe(true);
   });
 
-  test("falls back to tool_result output for tool-only agents", async () => {
+  test("does not fall back to tool_result by default", async () => {
     const grader = exactMatch();
+    const events: readonly EngineEvent[] = [
+      { kind: "tool_result", callId: "c1" as never, output: { rows: 42 } },
+    ];
+    const score = await grader.grade(events, { kind: "text", pattern: "42" }, METRICS);
+    expect(score.pass).toBe(false);
+  });
+
+  test("falls back to tool_result output when includeToolResults: true", async () => {
+    const grader = exactMatch({ includeToolResults: true });
     const events: readonly EngineEvent[] = [
       { kind: "tool_result", callId: "c1" as never, output: { rows: 42 } },
     ];

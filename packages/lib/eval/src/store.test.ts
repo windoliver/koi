@@ -82,6 +82,14 @@ describe("createFsStore", () => {
     expect(a2?.id).toBe("a_b");
   });
 
+  test("load throws on corrupted run file (fail-closed for regression gate)", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("bad", "smoke", "2026-01-01T00:00:00Z"));
+    const dir = join(root, encodeURIComponent("smoke"));
+    await writeFile(join(dir, `${encodeURIComponent("bad")}.json`), "{ corrupt", "utf8");
+    await expect(store.load("bad", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
   test("malformed run file does not break list/latest", async () => {
     const store = createFsStore(root);
     await store.save(makeRun("good", "smoke", "2026-02-01T00:00:00Z"));

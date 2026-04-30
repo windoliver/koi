@@ -24,7 +24,7 @@ export function createFsStore(rootDir: string): EvalStore {
     },
     load: async (runId: string, evalName?: string): Promise<EvalRun | undefined> => {
       if (evalName !== undefined) {
-        return await readRun(pathFor(rootDir, evalName, runId), runId);
+        return await readRunStrict(pathFor(rootDir, evalName, runId), runId);
       }
       const matches = await findAllRunFiles(rootDir, runId);
       // Reject ambiguous lookups — caller must scope by evalName when ids
@@ -32,7 +32,7 @@ export function createFsStore(rootDir: string): EvalStore {
       // dependent on directory enumeration order.
       if (matches.length !== 1) return undefined;
       const path = matches[0];
-      return path === undefined ? undefined : await readRun(path, runId);
+      return path === undefined ? undefined : await readRunStrict(path, runId);
     },
     latest: async (evalName: string): Promise<EvalRun | undefined> => {
       const metas = await listMetas(rootDir, evalName);
@@ -53,24 +53,55 @@ function encode(s: string): string {
   return encodeURIComponent(s);
 }
 
-async function readRun(path: string, expectedId?: string): Promise<EvalRun | undefined> {
+type ReadResult =
+  | { readonly kind: "ok"; readonly run: EvalRun }
+  | { readonly kind: "missing" }
+  | { readonly kind: "corrupted"; readonly path: string; readonly cause: unknown };
+
+async function readRunResult(path: string, expectedId?: string): Promise<ReadResult> {
   let run: EvalRun;
   try {
     const text = await readFile(path, "utf8");
     const parsed = JSON.parse(text) as unknown;
-    if (!isEvalRunShape(parsed)) return undefined;
+    if (!isEvalRunShape(parsed)) return { kind: "corrupted", path, cause: "shape mismatch" };
     run = parsed;
   } catch (e: unknown) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    // Malformed JSON or unreadable file — skip silently so a single corrupt
-    // artifact cannot blind enumeration of the rest of the suite history.
-    return undefined;
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
+    return { kind: "corrupted", path, cause: e };
   }
-  // Defense-in-depth: reject any run whose stored id disagrees with the
-  // requested id. Encoding is collision-free, so this should never trigger
-  // for well-formed stores — but it guards against hand-edited files.
-  if (expectedId !== undefined && run.id !== expectedId) return undefined;
-  return run;
+  if (expectedId !== undefined && run.id !== expectedId) {
+    return {
+      kind: "corrupted",
+      path,
+      cause: `id mismatch (file: ${run.id}, expected: ${expectedId})`,
+    };
+  }
+  return { kind: "ok", run };
+}
+
+/**
+ * Wrapper for callers that want only `EvalRun | undefined` and accept
+ * silent corruption (used by listMetas/latest, where one bad file cannot
+ * be allowed to blind the whole history).
+ */
+async function readRun(path: string, expectedId?: string): Promise<EvalRun | undefined> {
+  const r = await readRunResult(path, expectedId);
+  return r.kind === "ok" ? r.run : undefined;
+}
+
+/**
+ * Strict variant for explicit load() calls: returns undefined for true
+ * not-found, but throws for corruption so the regression gate fails
+ * closed instead of silently degrading to "no_baseline".
+ */
+async function readRunStrict(path: string, expectedId?: string): Promise<EvalRun | undefined> {
+  const r = await readRunResult(path, expectedId);
+  if (r.kind === "ok") return r.run;
+  if (r.kind === "missing") return undefined;
+  throw new Error(
+    `EvalStore: corrupted run file at ${r.path} — ${r.cause instanceof Error ? r.cause.message : String(r.cause)}`,
+    { cause: r.cause instanceof Error ? r.cause : undefined },
+  );
 }
 
 function isEvalRunShape(v: unknown): v is EvalRun {
