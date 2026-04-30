@@ -62,6 +62,9 @@ export {
 // Artifact tool provider (@koi/artifacts wiring)
 export type { ArtifactToolProviderConfig } from "./artifact-tool-provider.js";
 export { createArtifactToolProvider } from "./artifact-tool-provider.js";
+// authed_fetch tool (gov-15) — agent-facing tool that consumes CREDENTIALS
+export type { AuthedFetchToolOptions } from "./authed-fetch-tool.js";
+export { createAuthedFetchTool } from "./authed-fetch-tool.js";
 // Browser backend factory (@koi/browser-playwright + @koi/browser-ext wiring)
 export type { BrowserBackendConfig } from "./create-browser-backend.js";
 export { createBrowserBackend } from "./create-browser-backend.js";
@@ -76,6 +79,9 @@ export {
 export type { InteractionProviderConfig } from "./create-interaction-provider.js";
 export { createInteractionProvider } from "./create-interaction-provider.js";
 export { createRuntime } from "./create-runtime.js";
+// Credentials producer (env-var-backed CredentialComponent)
+export type { EnvCredentialsOptions } from "./credentials.js";
+export { createCredentialsProvider, createEnvCredentials } from "./credentials.js";
 // Debug
 export { collectDebugInfo, formatDebugInfo } from "./debug/collect-debug-info.js";
 export type { HookObserverConfig } from "./middleware/hook-dispatch.js";

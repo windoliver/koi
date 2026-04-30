@@ -15,12 +15,18 @@ import type { ValidatedFrontmatter, ValidatedSkillRequires } from "./types.js";
 // Requires sub-schema
 // ---------------------------------------------------------------------------
 
+const credentialRequirementSchema = z.object({
+  kind: z.string().min(1, "credential.kind must not be empty"),
+  ref: z.string().min(1, "credential.ref must not be empty"),
+});
+
 const requiresSchema = z.object({
   bins: z.array(z.string()).optional(),
   env: z.array(z.string()).optional(),
   tools: z.array(z.string()).optional(),
   network: z.boolean().optional(),
   platform: z.array(z.string()).optional(),
+  credentials: z.record(z.string(), credentialRequirementSchema).optional(),
 });
 
 // ---------------------------------------------------------------------------

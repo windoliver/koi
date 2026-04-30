@@ -72,6 +72,7 @@ import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import {
   createProgressiveSkillProvider,
+  createScopedSkillsRuntime,
   createSkillInjectorMiddleware,
   createSkillsRuntime,
 } from "@koi/skills-runtime";
@@ -114,7 +115,12 @@ import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
 import { createSecurityBridge, type SecurityBridge } from "./security-bridge.js";
-import { readSessionMeta, resumeSessionFromJsonl, writeSessionMeta } from "./shared-wiring.js";
+import {
+  buildScopedCredentials,
+  readSessionMeta,
+  resumeSessionFromJsonl,
+  writeSessionMeta,
+} from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
 import {
@@ -1079,6 +1085,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestSupervision: import("@koi/core").SupervisionConfig | undefined;
   let manifestAudit: import("./manifest.js").ManifestAuditConfig | undefined;
   let manifestDelegation: import("./manifest.js").ManifestDelegationConfig | undefined;
+  let manifestNetwork: import("./manifest.js").ManifestNetworkConfig | undefined;
+  let manifestCredentials: import("./manifest.js").ManifestCredentialsConfig | undefined;
   let manifestLoadPath: string | undefined; // tracks which path was loaded, for TOCTOU revalidation
   // Mirror start.ts: when resuming without an explicit --manifest, bypass
   // auto-discovery so the cwd manifest cannot silently override the model,
@@ -1135,6 +1143,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestSupervision = manifestResult.value.supervision;
     manifestAudit = manifestResult.value.audit;
     manifestDelegation = manifestResult.value.delegation;
+    manifestNetwork = manifestResult.value.network;
+    manifestCredentials = manifestResult.value.credentials;
     manifestLoadPath = resolvedManifestPath;
 
     // Issue #2088 — manifest.ace.enabled: true is parsed by the schema but
@@ -1471,47 +1481,72 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           );
           process.exit(1);
         }
-      } else if (resumeAuditResult.value.audit !== undefined) {
-        const resumeAudit = resumeAuditResult.value.audit;
-        if (resumeAudit.malformed === true) {
-          const allCoveredByEnv =
-            process.env.KOI_AUDIT_NDJSON !== undefined &&
-            process.env.KOI_AUDIT_SQLITE !== undefined &&
-            (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
-          if (!allCoveredByEnv) {
-            const missingVars = [
-              process.env.KOI_AUDIT_NDJSON === undefined ? "KOI_AUDIT_NDJSON" : "",
-              process.env.KOI_AUDIT_SQLITE === undefined ? "KOI_AUDIT_SQLITE" : "",
-              flags.governance.enabled && process.env.KOI_AUDIT_VIOLATIONS === undefined
-                ? "KOI_AUDIT_VIOLATIONS"
-                : "",
-            ]
-              .filter(Boolean)
-              .join(" + ");
-            process.stderr.write(
-              "koi tui: original session manifest.audit has an unrecognized format — " +
-                "refusing to resume because audit intent cannot be determined. " +
-                `Fix the manifest, or set ${missingVars} to cover all active audit sinks.\n`,
-            );
-            process.exit(1);
-          }
-        } else {
-          const ndjsonExposed =
-            resumeAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
-          const sqliteExposed =
-            resumeAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
-          const violationsExposed =
-            flags.governance.enabled &&
-            resumeAudit.violations !== undefined &&
-            process.env.KOI_AUDIT_VIOLATIONS === undefined;
-          if (ndjsonExposed || sqliteExposed || violationsExposed) {
-            process.stderr.write(
-              "koi tui: original session manifest.audit declares audit sinks but the matching " +
-                "KOI_AUDIT_* env vars are absent — refusing to resume to prevent silently " +
-                "dropping declared audit logging. Set each matching KOI_AUDIT_* env var " +
-                "(empty string disables that sink), or pass --manifest and re-specify the manifest.\n",
-            );
-            process.exit(1);
+        // gov-15: manifest unparseable and user did not pass --manifest:
+        // we cannot recover the original network/credential scope, so
+        // we must fail-closed rather than resume with open boundaries.
+        // This is a new requirement beyond audit coverage — scope can't
+        // be substituted with env vars the way audit sinks can.
+        if (flags.manifest === undefined) {
+          process.stderr.write(
+            "koi tui: original session manifest cannot be parsed — " +
+              "refusing to resume because network and credential scope cannot be verified. " +
+              "Pass --manifest <path> to re-specify the manifest explicitly.\n",
+          );
+          process.exit(1);
+        }
+      } else {
+        // Happy path: stored manifest parsed OK. Apply network and credential
+        // scope from the original session so the resumed session uses the same
+        // trust boundaries as when it was created. manifestNetwork /
+        // manifestCredentials are only populated from a new --manifest load
+        // (which happens before this block), so guard against overwriting an
+        // explicit override with the stored default.
+        if (manifestNetwork === undefined) manifestNetwork = resumeAuditResult.value.network;
+        if (manifestCredentials === undefined)
+          manifestCredentials = resumeAuditResult.value.credentials;
+
+        if (resumeAuditResult.value.audit !== undefined) {
+          const resumeAudit = resumeAuditResult.value.audit;
+          if (resumeAudit.malformed === true) {
+            const allCoveredByEnv =
+              process.env.KOI_AUDIT_NDJSON !== undefined &&
+              process.env.KOI_AUDIT_SQLITE !== undefined &&
+              (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
+            if (!allCoveredByEnv) {
+              const missingVars = [
+                process.env.KOI_AUDIT_NDJSON === undefined ? "KOI_AUDIT_NDJSON" : "",
+                process.env.KOI_AUDIT_SQLITE === undefined ? "KOI_AUDIT_SQLITE" : "",
+                flags.governance.enabled && process.env.KOI_AUDIT_VIOLATIONS === undefined
+                  ? "KOI_AUDIT_VIOLATIONS"
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" + ");
+              process.stderr.write(
+                "koi tui: original session manifest.audit has an unrecognized format — " +
+                  "refusing to resume because audit intent cannot be determined. " +
+                  `Fix the manifest, or set ${missingVars} to cover all active audit sinks.\n`,
+              );
+              process.exit(1);
+            }
+          } else {
+            const ndjsonExposed =
+              resumeAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
+            const sqliteExposed =
+              resumeAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
+            const violationsExposed =
+              flags.governance.enabled &&
+              resumeAudit.violations !== undefined &&
+              process.env.KOI_AUDIT_VIOLATIONS === undefined;
+            if (ndjsonExposed || sqliteExposed || violationsExposed) {
+              process.stderr.write(
+                "koi tui: original session manifest.audit declares audit sinks but the matching " +
+                  "KOI_AUDIT_* env vars are absent — refusing to resume to prevent silently " +
+                  "dropping declared audit logging. Set each matching KOI_AUDIT_* env var " +
+                  "(empty string disables that sink), or pass --manifest and re-specify the manifest.\n",
+              );
+              process.exit(1);
+            }
           }
         }
       }
@@ -1547,15 +1582,36 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The Skill tool loads full bodies on-demand from the same runtime.
   // Startup I/O matches the old eager path (loadAll() still runs for
   // blocked-skill visibility); benefit is per-call token reduction.
-  // createProgressiveSkillProvider bundles session-snapshot pinning: bodies
-  // loaded at attach time are stored in a session-local Map that is not subject
-  // to LRU eviction, ensuring the Skill tool always returns the body that was
-  // valid at session start.
+  // gov-15: build the scoped credentials component once and share the SAME
+  // instance with both the CREDENTIALS provider (consumed by brick activation
+  // via validateCredentialRequires) and the skills runtime (validates skill
+  // requires.credentials at attach time). Two independently-built components
+  // could drift; one shared instance guarantees both surfaces enforce the
+  // same scope.
+  const scopedCredentials = buildScopedCredentials(manifestCredentials);
+
+  // gov-15: wrap the SkillsRuntime so EVERY read path (discover, load,
+  // loadAll, query, loadReference) filters out skills whose
+  // `requires.credentials.ref` is not in scope. The wrapper goes
+  // OUTSIDE the progressive pin cache (round-5 finding): if scope sat
+  // INSIDE the pinned runtime, a pinned body loaded earlier would be
+  // served from cache without re-checking credentials, so a credential
+  // rotation/removal mid-session wouldn't gate the Skill tool. Wrapping
+  // the pinned runtime means every ad-hoc Skill tool call re-checks the
+  // current CredentialComponent before returning the body, regardless
+  // of pin state.
+  const baseSkillsRuntime = createSkillsRuntime();
   const {
     provider: skillProvider,
-    pinnedRuntime: skillRuntime,
+    pinnedRuntime: pinnedSkillsRuntime,
     reload: reloadSkillComponents,
-  } = createProgressiveSkillProvider(createSkillsRuntime());
+  } = createProgressiveSkillProvider(baseSkillsRuntime, {
+    ...(scopedCredentials !== undefined ? { credentials: scopedCredentials } : {}),
+  });
+  const skillRuntime =
+    scopedCredentials !== undefined
+      ? createScopedSkillsRuntime(pinnedSkillsRuntime, scopedCredentials)
+      : pinnedSkillsRuntime;
   // Lazy agent ref — middleware created before createKoiRuntime assembles agent.
   const skillAgentRef: { current: Agent | undefined } = { current: undefined };
   // Mutable live skill component map — refreshed on session reset via reloadSkillComponents().
@@ -2115,6 +2171,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
     ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
+    // gov-15: outbound-network scope from manifest.network → web-tools fetch wrap.
+    ...(manifestNetwork !== undefined ? { networkScope: { allow: manifestNetwork.allow } } : {}),
+    // gov-15: shared scoped CredentialComponent — same instance is registered
+    // on the CREDENTIALS subsystem token AND used by the progressive skill
+    // provider to gate skill `requires.credentials` at attach time.
+    ...(scopedCredentials !== undefined ? { credentials: scopedCredentials } : {}),
     // Nexus backend (when resolved above) is passed through so the checkpoint
     // stack stamps the correct backend name and the restore protocol dispatches
     // compensating ops through the right backend. Omitted when undefined —

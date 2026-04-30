@@ -6,6 +6,14 @@ Wraps HTTP fetching and web search as 2 Koi Tool components: `web_fetch` and `we
 
 ## Recent updates
 
+gov-15 scope integration: `preflightBlockReason(url: string): string | undefined`
+is now exported as a public API. It performs the DNS-free SSRF preflight check
+inline — returns a human-readable reason string if the URL is definitively blocked
+by hostname/suffix/IP-literal rules before any DNS lookup, or `undefined` if the
+URL passes the static check (the executor's full `isSafeUrl` with DNS resolution
+is still the final gate). Exported so `@koi/governance-scope`'s `authed_fetch`
+tool can apply the same preflight logic without duplicating the blocked-host list.
+
 Review lifecycle hardening (#2081): `createWebExecutor().fetch()` and
 `createWebExecutor().search()` now unregister caller-provided abort listeners
 when the operation settles. This preserves the existing timeout clamps and abort

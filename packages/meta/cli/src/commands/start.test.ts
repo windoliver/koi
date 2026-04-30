@@ -418,7 +418,47 @@ describe("run() — manifest loading", () => {
     expect(result).toBe(ExitCode.FAILURE);
   });
 
-  // Issue #2088: koi start rejects manifest.ace.enabled: true (TUI-only feature).
+  test("fails closed when manifest declares network: koi start does not wire it", async () => {
+    // gov-15 round-6: koi start does not wire manifest.network into the
+    // web executor. Accepting it silently would let operators believe
+    // their declared scope is active when it isn't. Reject at startup
+    // and point at `koi tui`.
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: {
+        modelName: "manifest/model",
+        instructions: undefined,
+        network: { allow: ["https://api.example.com/*"] },
+      },
+    }));
+    const { run } = await import("./start.js");
+    const result = await run(
+      makeFlags({ manifest: "koi.yaml", mode: { kind: "prompt", text: "hi" } }),
+    );
+    expect(result).toBe(ExitCode.FAILURE);
+  });
+
+  test("fails closed when manifest declares credentials: koi start does not wire it", async () => {
+    // gov-15 round-6: same as network — koi start has no skill provider
+    // gating and no authed_fetch tool, so the credential allowlist
+    // wouldn't gate anything. Reject at startup.
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: {
+        modelName: "manifest/model",
+        instructions: undefined,
+        credentials: { allow: ["openai_*"] },
+      },
+    }));
+    const { run } = await import("./start.js");
+    const result = await run(
+      makeFlags({ manifest: "koi.yaml", mode: { kind: "prompt", text: "hi" } }),
+    );
+    expect(result).toBe(ExitCode.FAILURE);
+  });
+
+  // Issue #2088: koi start rejects manifest.ace.enabled: true (schema shipped,
+  // host activation deferred to follow-up PR).
   test("rejects manifest.ace.enabled: true with FAILURE exit", async () => {
     mockLoadManifest.mockImplementation(async () => ({
       ok: true as const,
