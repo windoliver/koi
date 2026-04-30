@@ -244,6 +244,25 @@ describe("VerifiedLoop.run", () => {
     await expect(loop.run()).rejects.toThrow(/PRD/);
   });
 
+  test("throws fatally when bumpFailureCount cannot persist (PRD storage error)", async () => {
+    // Regression: previously a failed bumpFailureCount() was logged-and-
+    // continued, losing the durable skip budget — a permanently failing item
+    // could be retried indefinitely. Now PRD storage failures are fatal.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+
+    const loop = createVerifiedLoop(
+      makeConfig({
+        verify: async () => {
+          // After the gate runs but before bumpFailureCount, corrupt the PRD
+          // so the read inside bumpFailureCount throws.
+          await Bun.write(prdPath, "{ broken before bump");
+          return { passed: false, details: "still failing" };
+        },
+      }),
+    );
+    await expect(loop.run()).rejects.toThrow(/failed to persist|PRD/);
+  });
+
   test("learnings write failure does not abort the run after PRD has been mutated", async () => {
     // Regression: appendLearning throwing left run() rejecting AFTER markDone
     // already committed PRD state, producing an inconsistent caller view.

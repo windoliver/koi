@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   bumpFailureCount,
   markDone,
+  markDoneMany,
   markSkipped,
   nextItem,
   readPRD,
@@ -322,6 +323,44 @@ describe("markDone", () => {
       const itemC = updated.value.items.find((i) => i.id === "c");
       expect(itemC?.done).toBe(false);
     }
+  });
+});
+
+describe("markDoneMany (atomic batch completion)", () => {
+  test("marks all listed items done in one atomic write", async () => {
+    await Bun.write(prdPath, JSON.stringify(SAMPLE_PRD, null, 2));
+    const result = await markDoneMany(prdPath, ["a", "c"]);
+    expect(result.ok).toBe(true);
+    const updated = await readPRD(prdPath);
+    if (updated.ok) {
+      const byId = Object.fromEntries(updated.value.items.map((i) => [i.id, i]));
+      expect(byId.a?.done).toBe(true);
+      expect(byId.c?.done).toBe(true);
+      expect(byId.a?.verifiedAt).toBeDefined();
+      expect(byId.c?.verifiedAt).toBeDefined();
+      // Both committed with the same timestamp (single write).
+      expect(byId.a?.verifiedAt).toBe(byId.c?.verifiedAt);
+    }
+  });
+
+  test("returns NOT_FOUND on any unknown id and writes nothing", async () => {
+    await Bun.write(prdPath, JSON.stringify(SAMPLE_PRD, null, 2));
+    const result = await markDoneMany(prdPath, ["a", "ghost"]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
+
+    // Pre-flight failed → no item changed.
+    const after = await readPRD(prdPath);
+    if (after.ok) {
+      const a = after.value.items.find((i) => i.id === "a");
+      expect(a?.done).toBe(false);
+    }
+  });
+
+  test("empty list is a no-op success", async () => {
+    await Bun.write(prdPath, JSON.stringify(SAMPLE_PRD, null, 2));
+    const result = await markDoneMany(prdPath, []);
+    expect(result.ok).toBe(true);
   });
 });
 

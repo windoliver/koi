@@ -11,6 +11,7 @@ export { appendLearning, readLearnings } from "./learnings.js";
 export {
   bumpFailureCount,
   markDone,
+  markDoneMany,
   markSkipped,
   nextItem,
   readPRD,

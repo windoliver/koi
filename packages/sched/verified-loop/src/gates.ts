@@ -108,7 +108,17 @@ export function createFileGate(path: string, match: string | RegExp): Verificati
 
     try {
       const content = await file.text();
-      const matched = typeof match === "string" ? content.includes(match) : match.test(content);
+      // Reset lastIndex before .test() — `g`/`y` flagged regexes are stateful;
+      // calling test() on the same instance twice can alternate pass/fail on
+      // identical content, which would consume the failure budget despite no
+      // change to the workspace.
+      const matched =
+        typeof match === "string"
+          ? content.includes(match)
+          : (() => {
+              match.lastIndex = 0;
+              return match.test(content);
+            })();
 
       return {
         passed: matched,

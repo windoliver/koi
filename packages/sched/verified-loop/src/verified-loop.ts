@@ -8,7 +8,7 @@
 import { dirname, join } from "node:path";
 import { extractMessage } from "@koi/errors";
 import { appendLearning, readLearnings } from "./learnings.js";
-import { bumpFailureCount, markDone, nextItem, readPRD } from "./prd-store.js";
+import { bumpFailureCount, markDoneMany, nextItem, readPRD } from "./prd-store.js";
 import type {
   EngineInput,
   IterationRecord,
@@ -197,14 +197,29 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
         if (gateResult.passed) {
           // A passing gate always marks the current item done. itemsCompleted
           // adds *additional* ids (e.g., a single iteration that completes
-          // multiple work items). Prevents a typo or empty itemsCompleted
-          // from silently stalling progress on the selected item.
-          const toComplete = new Set<string>([current.id, ...(gateResult.itemsCompleted ?? [])]);
-          for (const itemId of toComplete) {
-            const doneResult = await markDone(config.prdPath, itemId);
+          // multiple work items). Persisted as ONE atomic write so a crash
+          // cannot commit only a prefix of the verified set.
+          const requested = [
+            ...new Set<string>([current.id, ...(gateResult.itemsCompleted ?? [])]),
+          ];
+          // Filter out ghost ids (gate-API misuse, not a storage error). The
+          // current PRD snapshot is currentPrd.value — anything not present
+          // there is logged and dropped before the atomic write.
+          const validIds = new Set(currentPrd.value.items.map((it) => it.id));
+          const toComplete = requested.filter((id) => {
+            if (validIds.has(id)) return true;
+            console.warn(
+              `[verified-loop] Failed to mark item "${id}" as done: PRD item not found: ${id}`,
+            );
+            return false;
+          });
+          if (toComplete.length > 0) {
+            const doneResult = await markDoneMany(config.prdPath, toComplete);
             if (!doneResult.ok) {
-              console.warn(
-                `[verified-loop] Failed to mark item "${itemId}" as done: ${doneResult.error.message}`,
+              // PRD persistence is the source of truth — refuse to keep
+              // iterating on an unknown state. Surface storage failure.
+              throw new Error(
+                `VerifiedLoop: failed to persist completion for [${toComplete.join(", ")}] (${doneResult.error.code}): ${doneResult.error.message}`,
               );
             }
           }
@@ -217,8 +232,11 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
             maxConsecutiveFailures,
           );
           if (!bumpResult.ok) {
-            console.warn(
-              `[verified-loop] Failed to bump failure count for "${current.id}": ${bumpResult.error.message}`,
+            // Same rationale as the markDone failure above. Without a working
+            // skip budget on disk, a permanently failing item could be retried
+            // indefinitely across runs.
+            throw new Error(
+              `VerifiedLoop: failed to persist failure count for "${current.id}" (${bumpResult.error.code}): ${bumpResult.error.message}`,
             );
           }
         }

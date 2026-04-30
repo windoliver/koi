@@ -95,6 +95,23 @@ describe("createFileGate", () => {
     expect(result.passed).toBe(false);
     expect(result.details).toContain("not found");
   });
+
+  test("global regex returns the same result on identical content (lastIndex reset)", async () => {
+    // Regression: a /g or /y regex shared across multiple gate calls mutates
+    // its own lastIndex. Without an explicit reset, `match.test(content)` can
+    // return true on call 1 and false on call 2 with no change to the file.
+    const filePath = join(tmpDir, "file.txt");
+    await Bun.write(filePath, "needle and another needle here");
+    const sharedRegex = /needle/g;
+    const gate = createFileGate(filePath, sharedRegex);
+
+    const r1 = await gate(makeCtx());
+    const r2 = await gate(makeCtx());
+    const r3 = await gate(makeCtx());
+    expect(r1.passed).toBe(true);
+    expect(r2.passed).toBe(true);
+    expect(r3.passed).toBe(true);
+  });
 });
 
 describe("createTestGate pipe handling", () => {

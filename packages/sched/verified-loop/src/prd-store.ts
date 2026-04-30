@@ -192,14 +192,58 @@ export async function markSkipped(path: string, itemId: string): Promise<Result<
  * resets `consecutiveFailureCount` (success cancels prior streak).
  */
 export async function markDone(path: string, itemId: string): Promise<Result<void, KoiError>> {
-  return updateItem(path, itemId, (target) => ({
-    ...target,
-    done: true,
-    verifiedAt: new Date().toISOString(),
-    iterationCount: (target.iterationCount ?? 0) + 1,
-    skipped: false,
-    consecutiveFailureCount: 0,
-  }));
+  return markDoneMany(path, [itemId]);
+}
+
+/**
+ * Mark several PRD items as done in a single atomic write. Used when one
+ * verification iteration completes multiple items: a per-id loop of markDone
+ * calls would persist them as separate atomic operations, leaving room for
+ * a crash to commit only a prefix of the set. One temp-rename = whole-set
+ * atomicity.
+ *
+ * Returns NOT_FOUND if any id is missing, with no write performed.
+ */
+export async function markDoneMany(
+  path: string,
+  itemIds: readonly string[],
+): Promise<Result<void, KoiError>> {
+  if (itemIds.length === 0) {
+    return { ok: true, value: undefined };
+  }
+
+  const readResult = await readPRD(path);
+  if (!readResult.ok) return readResult;
+
+  const { items } = readResult.value;
+  const idSet = new Set(itemIds);
+  // Pre-flight: every requested id must exist before we touch the file.
+  for (const id of idSet) {
+    if (!items.some((item) => item.id === id)) {
+      return { ok: false, error: notFound(id, `PRD item not found: ${id}`) };
+    }
+  }
+
+  const now = new Date().toISOString();
+  const newItems = items.map((item) =>
+    idSet.has(item.id)
+      ? {
+          ...item,
+          done: true,
+          verifiedAt: now,
+          iterationCount: (item.iterationCount ?? 0) + 1,
+          skipped: false,
+          consecutiveFailureCount: 0,
+        }
+      : item,
+  );
+  const newPrd: PRDFile = { items: newItems };
+
+  const tmpPath = `${path}.tmp`;
+  await Bun.write(tmpPath, JSON.stringify(newPrd, null, 2));
+  await rename(tmpPath, path);
+
+  return { ok: true, value: undefined };
 }
 
 async function updateItem(
