@@ -313,6 +313,48 @@ export interface ManifestConfig {
    *     backend: nexus
    */
   readonly delegation: ManifestDelegationConfig | undefined;
+  /**
+   * Optional outbound-network scope (gov-15). When set, the CLI wraps the
+   * web tools' `fetch` with `@koi/governance-scope`'s `createScopedFetcher`
+   * so any URL not matching one of the supplied URLPattern strings fails
+   * closed before the request hits the network.
+   *
+   *   network:
+   *     allow:
+   *       - "https://api.example.com/*"
+   *       - "https://*.public.example/*"
+   *
+   * Each entry is parsed via `new URLPattern(string)`. A malformed pattern
+   * fails the manifest load with an actionable error.
+   */
+  readonly network: ManifestNetworkConfig | undefined;
+  /**
+   * Optional credentials scope (gov-15). When set, the CLI registers an
+   * env-var-backed `CredentialComponent` wrapped with
+   * `@koi/governance-scope`'s `createScopedCredentials` so brick activation
+   * can only resolve keys matching one of the supplied glob patterns. Keys
+   * outside the allowlist resolve to `undefined` (least-information
+   * principle — bricks cannot enumerate other secrets).
+   *
+   *   credentials:
+   *     allow:
+   *       - "openai_*"
+   *       - "anthropic.*"
+   *
+   * Each entry is a glob pattern (`*` within a segment, `**` across
+   * segments) compiled by the same engine used for filesystem scope.
+   */
+  readonly credentials: ManifestCredentialsConfig | undefined;
+}
+
+/** Manifest-declared outbound-network scope (gov-15). */
+export interface ManifestNetworkConfig {
+  readonly allow: readonly string[];
+}
+
+/** Manifest-declared credentials scope (gov-15). */
+export interface ManifestCredentialsConfig {
+  readonly allow: readonly string[];
 }
 
 /** Manifest-declared delegation backend selector. */
@@ -622,6 +664,16 @@ export async function loadManifestConfig(
     }
   }
 
+  const networkResult = parseManifestNetwork(raw.network);
+  if (!networkResult.ok) {
+    return { ok: false, error: networkResult.error };
+  }
+
+  const credentialsResult = parseManifestCredentials(raw.credentials);
+  if (!credentialsResult.ok) {
+    return { ok: false, error: credentialsResult.error };
+  }
+
   return {
     ok: true,
     value: {
@@ -636,6 +688,8 @@ export async function loadManifestConfig(
       supervision: supervisionResult.value,
       audit: auditResult.value,
       delegation: delegationResult.value,
+      network: networkResult.value,
+      credentials: credentialsResult.value,
     },
   };
 }
@@ -651,6 +705,129 @@ export async function loadManifestConfig(
  * Returns `{ ok: true, value: undefined }` when the section is absent so
  * manifests without supervision stay opt-out.
  */
+function parseManifestNetwork(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: ManifestNetworkConfig | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error:
+        'manifest.network must be an object, e.g. network: { allow: ["https://api.example.com/*"] }',
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+  // gov-15: this is a security-critical parser. A present `network:`
+  // block missing `allow` (or carrying typos like `allowed`) must NOT
+  // silently load as "no scope" — that would turn an operator typo
+  // into legacy open-mode network access. Require the exact `allow`
+  // key; reject every other key so "network: { allowed: [...] }"
+  // surfaces as an error at startup.
+  const knownKeys = new Set(["allow"]);
+  for (const key of Object.keys(obj)) {
+    if (!knownKeys.has(key)) {
+      return {
+        ok: false,
+        error: `manifest.network.${key} is not a recognized key (did you mean "allow"?). Allowed keys: ${[...knownKeys].join(", ")}`,
+      };
+    }
+  }
+  const allow = obj.allow;
+  if (allow === undefined) {
+    return {
+      ok: false,
+      error:
+        "manifest.network must declare an `allow` array (use `allow: []` for deny-all, or remove the network block for legacy unscoped behavior).",
+    };
+  }
+  if (!Array.isArray(allow)) {
+    return { ok: false, error: "manifest.network.allow must be an array of URLPattern strings" };
+  }
+  if (!allow.every((p): p is string => typeof p === "string" && p.length > 0)) {
+    return {
+      ok: false,
+      error: "manifest.network.allow entries must be non-empty strings",
+    };
+  }
+  // Validate each pattern parses cleanly so a typo fails fast at load time
+  // rather than throwing inside the request path.
+  for (const pattern of allow) {
+    try {
+      new URLPattern(pattern);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        ok: false,
+        error: `manifest.network.allow entry ${JSON.stringify(pattern)} is not a valid URLPattern: ${msg}`,
+      };
+    }
+  }
+  // gov-15: explicit `network: { allow: [] }` is a deny-all declaration,
+  // not "no scope". Preserve it as a present-but-empty config so
+  // downstream wiring builds a deny-everything URLPattern allowlist; only
+  // an absent `network:` block means legacy unscoped behavior.
+  return { ok: true, value: { allow } };
+}
+
+function parseManifestCredentials(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: ManifestCredentialsConfig | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error: 'manifest.credentials must be an object, e.g. credentials: { allow: ["openai_*"] }',
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+  // gov-15: same strictness as parseManifestNetwork — a present
+  // `credentials:` block missing `allow` (or carrying typos like
+  // `allowed`) must fail closed rather than silently revert to
+  // legacy unscoped credential access.
+  const knownKeys = new Set(["allow"]);
+  for (const key of Object.keys(obj)) {
+    if (!knownKeys.has(key)) {
+      return {
+        ok: false,
+        error: `manifest.credentials.${key} is not a recognized key (did you mean "allow"?). Allowed keys: ${[...knownKeys].join(", ")}`,
+      };
+    }
+  }
+  const allow = obj.allow;
+  if (allow === undefined) {
+    return {
+      ok: false,
+      error:
+        "manifest.credentials must declare an `allow` array (use `allow: []` for deny-all, or remove the credentials block for legacy unscoped behavior).",
+    };
+  }
+  if (!Array.isArray(allow)) {
+    return {
+      ok: false,
+      error: "manifest.credentials.allow must be an array of glob strings",
+    };
+  }
+  if (!allow.every((p): p is string => typeof p === "string" && p.length > 0)) {
+    return {
+      ok: false,
+      error: "manifest.credentials.allow entries must be non-empty strings",
+    };
+  }
+  // Explicit empty allowlist (`credentials: { allow: [] }`) means deny all
+  // — preserve it as a present-but-empty config so downstream wiring builds
+  // a deny-everything CredentialComponent. Only an absent `credentials:`
+  // block means "no scoping configured".
+  return { ok: true, value: { allow } };
+}
+
 function parseManifestDelegation(
   raw: unknown,
 ):

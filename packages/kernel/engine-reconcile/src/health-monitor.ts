@@ -80,6 +80,9 @@ export function createHealthMonitor(
   const flushTimer = setInterval(() => {
     if (!disposed) flush();
   }, config.flushIntervalMs);
+  if (typeof flushTimer === "object" && flushTimer !== null && "unref" in flushTimer) {
+    (flushTimer as { unref: () => void }).unref();
+  }
 
   // ---------------------------------------------------------------------------
   // Public interface

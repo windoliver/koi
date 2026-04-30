@@ -77,3 +77,8 @@ Phase: `intercept`. Priority: 175.
 - Failover to alternate models (model-router responsibility)
 - Distributed circuit state (per-process only; future Nexus-backed adapter)
 - Per-tool circuit breaking (see `@koi/middleware-call-limits`)
+
+
+## Changelog
+
+- 2026-04-29: Adversarial review hardening (#1378) — bounded shutdown waits, pre-await accounting, identity-based dedup (transport+name), allowlist-based env exposure, reused in-flight scans, and lint cleanup.

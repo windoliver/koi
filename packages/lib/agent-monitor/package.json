@@ -1,0 +1,25 @@
+{
+  "name": "@koi/agent-monitor",
+  "description": "Adversarial agent behavior detection — 12 OWASP-ASI10 anomaly signals (pure observer middleware)",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "koi": {
+    "optional": true
+  }
+}

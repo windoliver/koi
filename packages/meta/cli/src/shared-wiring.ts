@@ -26,6 +26,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type {
   ComponentProvider,
+  CredentialComponent,
   HookConfig,
   InboundMessage,
   KoiMiddleware,
@@ -42,6 +43,7 @@ import {
 } from "@koi/core";
 import { createSystemPromptMiddleware } from "@koi/engine";
 import { createLocalFileSystem } from "@koi/fs-local";
+import { createScopedCredentials } from "@koi/governance-scope";
 import type { CreateHookMiddlewareOptions, RegisteredHook } from "@koi/hooks";
 import {
   createHookMiddleware,
@@ -51,7 +53,12 @@ import {
 import type { McpResolver, McpServerConfig, OAuthAuthProvider } from "@koi/mcp";
 import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
 import type { SkillsMcpBridge } from "@koi/runtime";
-import { createSkillsMcpBridge } from "@koi/runtime";
+import {
+  createAuthedFetchTool,
+  createCredentialsProvider,
+  createEnvCredentials,
+  createSkillsMcpBridge,
+} from "@koi/runtime";
 import { createSessionTranscriptMiddleware, resumeForSession } from "@koi/session";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import {
@@ -61,6 +68,7 @@ import {
   createFsWriteTool,
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
+import { createSafeFetcher } from "@koi/url-safety";
 import type { AuthServerEntry } from "./mcp-auth-tools.js";
 import { createCliAuthToolFactory } from "./mcp-auth-tools.js";
 import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
@@ -949,6 +957,34 @@ export function buildCoreMiddleware(config: CoreMiddlewareConfig): CoreMiddlewar
 // `AskUserQuestion`) are handled via the `additional` config field.
 // ---------------------------------------------------------------------------
 
+/**
+ * Builds the env-var-backed scoped `CredentialComponent` from a
+ * manifest-declared scope (or `undefined` when the manifest has no
+ * `credentials:` block). Returns `undefined` for empty / missing scope so
+ * callers can pass the result through without conditional construction:
+ *
+ *   const credentials = buildScopedCredentials(manifestCredentials);
+ *   buildCoreProviders({ ..., credentials });
+ *   createProgressiveSkillProvider(rt, { credentials });
+ *
+ * Sharing the same instance between the `CREDENTIALS` provider (consumed
+ * by brick activation) and the skills runtime (validates skill
+ * `requires.credentials` at attach time) ensures both enforce identical
+ * scope — a key policy guarantee that two independently-built components
+ * cannot offer.
+ */
+export function buildScopedCredentials(
+  scope: { readonly allow: readonly string[] } | undefined,
+): CredentialComponent | undefined {
+  // Absent `credentials:` block → no scoping configured (legacy open mode).
+  // Explicit `credentials: { allow: [] }` → present-but-empty deny-all
+  // wrapper: createScopedCredentials with an empty allowlist returns
+  // `undefined` for every key, which is the correct fail-closed behavior
+  // for an explicit empty manifest declaration.
+  if (scope === undefined) return undefined;
+  return createScopedCredentials(createEnvCredentials(), { allow: scope.allow });
+}
+
 /** Wraps a single `Tool` as a named `ComponentProvider` for createKoi. */
 export function wrapToolAsProvider(tool: Tool): ComponentProvider {
   const name = tool.descriptor.name;
@@ -1002,6 +1038,46 @@ export interface CoreProvidersConfig {
    * run in airgapped environments can pass `false` to strip network access.
    */
   readonly includeWebFetch?: boolean;
+  /**
+   * Outbound-network scope (gov-15). When provided, the web tools'
+   * inner `fetch` is wrapped with `createScopedFetcher` so any URL not
+   * matching one of the supplied URLPattern strings fails closed before
+   * the request hits the network. Each entry is parsed via
+   * `new URLPattern(string)` at config-build time.
+   *
+   * Composes with `@koi/url-safety`'s SSRF defenses: web-executor still
+   * runs `resolveAndValidateUrl` first; the scope wrapper sits inside
+   * the executor's `fetchFn`, so per-redirect scope checks are inherited
+   * by any caller that wraps with `createSafeFetcher`.
+   */
+  readonly networkScope?: { readonly allow: readonly string[] } | undefined;
+  /**
+   * Credentials scope (gov-15). When provided, the CLI registers an
+   * env-var-backed `CredentialComponent` (resolving keys from
+   * `process.env.KOI_CRED_<UPPER>`) wrapped with
+   * `@koi/governance-scope`'s `createScopedCredentials` so brick
+   * activation can only resolve keys matching one of the supplied glob
+   * patterns. Keys outside the allowlist resolve to `undefined`
+   * (least-information principle — bricks cannot enumerate other
+   * secrets).
+   *
+   * When omitted, no `CREDENTIALS` provider is wired and brick activation
+   * trivially passes credential checks (backwards compatible — see
+   * `validateCredentialRequires`).
+   */
+  /** @deprecated Pass a pre-built `credentials` component instead. */
+  readonly credentialsScope?: { readonly allow: readonly string[] } | undefined;
+  /**
+   * Pre-built `CredentialComponent` to register on the `CREDENTIALS`
+   * subsystem token. When set, takes precedence over `credentialsScope` so
+   * a single scoped instance can be shared with other consumers (e.g. the
+   * skills runtime, which validates `requires.credentials` at activation
+   * time using the SAME component the brick path will see at runtime).
+   *
+   * Build it via `buildScopedCredentials(manifest.credentials)` so call
+   * sites stay short.
+   */
+  readonly credentials?: CredentialComponent | undefined;
   /**
    * Host-specific extra providers appended after the core set (e.g. TUI's
    * bash_background, task tools, memory, notebook, spawn). Added here
@@ -1119,6 +1195,50 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     }
   }
 
+  // gov-15: when manifest declares `network.allow`, wrap the inner fetch
+  // with a URLPattern allowlist. Lifted out of the `includeWeb` block so
+  // the same scope-wrapped instance is shared with `authed_fetch` below.
+  // The executor's own pre-flight (resolveAndValidateUrl) still runs first —
+  // scope is an additional fail-closed gate, not a replacement.
+  //
+  // Empty `network.allow: []` is a deny-all declaration, not "no scope":
+  // createScopedFetcher with an empty allowlist throws on every URL, so
+  // every outbound fetch (web_fetch and authed_fetch) is rejected. Only
+  // an absent `network:` block (`networkScope === undefined`) means
+  // legacy unscoped behavior.
+  // gov-15: build the URLPattern allowlist as a `preDnsAllowCheck`
+  // callback. The callback is consumed by `createSafeFetcher` at the
+  // TOP of every hop, BEFORE isSafeUrl resolves DNS and before HTTP IP
+  // pinning. Threaded into createWebExecutor (web_fetch path) and
+  // wrapped once for authed_fetch — avoid double-wrap that would let
+  // the outer safe-fetcher do its DNS lookup before the inner allowlist
+  // hook fires (round-6 finding).
+  const networkAllow = config.networkScope?.allow;
+  const preDnsAllowCheck =
+    networkAllow !== undefined
+      ? (() => {
+          const compiled = networkAllow.map((p) => new URLPattern(p));
+          return (
+            url: string,
+          ): { readonly ok: true } | { readonly ok: false; readonly reason: string } => {
+            for (const pattern of compiled) {
+              if (pattern.test(url)) return { ok: true };
+            }
+            return {
+              ok: false,
+              reason: `URL '${url}' is outside the allowed fetch scope`,
+            };
+          };
+        })()
+      : undefined;
+  // For authed_fetch: a single-wrapped safe-fetcher with the same hook.
+  // The createWebExecutor path threads preDnsAllowCheck directly into
+  // ITS createSafeFetcher call below (not re-wrapped here).
+  const fetchFn =
+    preDnsAllowCheck !== undefined
+      ? createSafeFetcher(globalThis.fetch, { preDnsAllowCheck })
+      : undefined;
+
   if (includeWeb) {
     const webExecutor = createWebExecutor({
       allowHttps: true,
@@ -1128,6 +1248,14 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
       // operator semantics (incidents, fast-moving topics) and shouldn't
       // be silently enabled just because fetch caching is.
       searchCacheTtlMs: 0,
+      // gov-15 round-6: thread the URLPattern preDnsAllowCheck into the
+      // executor's OWN createSafeFetcher call. Do NOT pre-wrap fetchFn
+      // with createSafeFetcher here — the executor would re-wrap it
+      // again and the outer safe-fetcher would do its DNS lookup
+      // BEFORE the inner allowlist hook ran, defeating the pre-DNS
+      // guarantee. Passing the hook directly keeps the executor's
+      // single safe-fetcher as the only one in the chain.
+      ...(preDnsAllowCheck !== undefined ? { preDnsAllowCheck } : {}),
     });
     providers.push(
       createWebProvider({
@@ -1140,6 +1268,55 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
 
   if (bashTool !== undefined) {
     providers.push(wrapToolAsProvider(bashTool));
+  }
+
+  // gov-15: register the supplied scoped credentials component, falling back
+  // to the legacy in-builder construction path for callers that still pass
+  // `credentialsScope`. Brick activation (`validateCredentialRequires` in
+  // @koi/validation) is the legitimate consumer — agent-facing tools
+  // intentionally do NOT receive raw credentials. The `credentials` form
+  // lets the host share the SAME instance with the skills runtime so what
+  // the brick path sees and what skill activation enforces are guaranteed
+  // to be in sync.
+  let activeCredentials: CredentialComponent | undefined;
+  const directComponent = config.credentials;
+  if (directComponent !== undefined) {
+    activeCredentials = directComponent;
+    providers.push(createCredentialsProvider(directComponent));
+  } else {
+    const credentialsAllow = config.credentialsScope?.allow;
+    // Treat an explicit empty allowlist as deny-all: createScopedCredentials
+    // with `allow: []` returns `undefined` for every key, so every brick or
+    // tool reaching for a credential is denied. Only an absent
+    // `credentialsScope` (undefined) means "no scoping configured".
+    if (credentialsAllow !== undefined) {
+      const baseCreds = createEnvCredentials();
+      const scopedCreds = createScopedCredentials(baseCreds, { allow: credentialsAllow });
+      activeCredentials = scopedCreds;
+      providers.push(createCredentialsProvider(scopedCreds));
+    }
+  }
+
+  // gov-15: register `authed_fetch` ONLY when (a) web is enabled AND
+  // (b) the manifest declares an explicit `network.allow` URLPattern
+  // allowlist (`fetchFn !== undefined`). Without a destination
+  // allowlist, an agent could choose any public URL and exfiltrate the
+  // credential to attacker.example — response redaction is moot once
+  // the secret left the network. Requiring explicit destination scope
+  // forces operators to declare which hosts may receive credentialed
+  // requests.
+  //
+  // The wired `fetchFn` already layers DNS-backed SSRF safety
+  // (createSafeFetcher) under the URLPattern allowlist
+  // (createScopedFetcher), so a hostname that resolves to RFC1918 /
+  // loopback / metadata IPs is rejected even if it pattern-matches
+  // network.allow.
+  if (activeCredentials !== undefined && includeWeb && fetchFn !== undefined) {
+    const authedFetchTool = createAuthedFetchTool({
+      credentials: activeCredentials,
+      fetchFn,
+    });
+    providers.push(wrapToolAsProvider(authedFetchTool));
   }
 
   if (config.additional !== undefined) {

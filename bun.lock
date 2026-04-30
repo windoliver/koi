@@ -112,6 +112,34 @@
         "@koi/event-delivery": "workspace:*",
       },
     },
+    "packages/lib/ace-types": {
+      "name": "@koi/ace-types",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/agent-discovery": {
+      "name": "@koi/agent-discovery",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/agent-monitor": {
+      "name": "@koi/agent-monitor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/agent-procfs": {
+      "name": "@koi/agent-procfs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/agent-runtime": {
       "name": "@koi/agent-runtime",
       "version": "0.0.0",
@@ -189,6 +217,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/lib/channel-cli": {
@@ -440,6 +469,15 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/middleware-ace": {
+      "name": "@koi/middleware-ace",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/ace-types": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
     "packages/lib/middleware-call-dedup": {
       "name": "@koi/middleware-call-dedup",
       "version": "0.0.0",
@@ -544,6 +582,14 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-rlm": {
+      "name": "@koi/middleware-rlm",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
     },
     "packages/lib/middleware-semantic-retry": {
@@ -927,6 +973,7 @@
         "@koi/governance-approval-tiers": "workspace:*",
         "@koi/governance-core": "workspace:*",
         "@koi/governance-defaults": "workspace:*",
+        "@koi/governance-scope": "workspace:*",
         "@koi/governance-security": "workspace:*",
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
@@ -1020,6 +1067,10 @@
       "name": "@koi/runtime",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/ace-types": "workspace:*",
+        "@koi/agent-discovery": "workspace:*",
+        "@koi/agent-monitor": "workspace:*",
+        "@koi/agent-procfs": "workspace:*",
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
         "@koi/artifacts": "workspace:*",
@@ -1051,11 +1102,14 @@
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
         "@koi/gateway": "workspace:*",
+        "@koi/gateway-http": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
         "@koi/gateway-webhook": "workspace:*",
         "@koi/governance-approval-tiers": "workspace:*",
         "@koi/governance-core": "workspace:*",
         "@koi/governance-defaults": "workspace:*",
         "@koi/governance-delegation": "workspace:*",
+        "@koi/governance-scope": "workspace:*",
         "@koi/governance-security": "workspace:*",
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
@@ -1070,6 +1124,7 @@
         "@koi/memory-fs": "workspace:*",
         "@koi/memory-team-sync": "workspace:*",
         "@koi/memory-tools": "workspace:*",
+        "@koi/middleware-ace": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
         "@koi/middleware-call-dedup": "workspace:*",
         "@koi/middleware-call-limits": "workspace:*",
@@ -1089,6 +1144,7 @@
         "@koi/middleware-prompt-cache": "workspace:*",
         "@koi/middleware-reflex": "workspace:*",
         "@koi/middleware-report": "workspace:*",
+        "@koi/middleware-rlm": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-strict-agentic": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
@@ -1105,6 +1161,8 @@
         "@koi/query-engine": "workspace:*",
         "@koi/replay": "workspace:*",
         "@koi/rules-loader": "workspace:*",
+        "@koi/sandbox-docker": "workspace:*",
+        "@koi/sandbox-executor": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
         "@koi/scheduler": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",
@@ -1262,6 +1320,16 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
+      },
+    },
+    "packages/net/gateway-http": {
+      "name": "@koi/gateway-http",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
       },
     },
     "packages/net/gateway-webhook": {
@@ -1292,6 +1360,20 @@
         "@koi/core": "workspace:*",
         "@koi/tools-core": "workspace:*",
         "@modelcontextprotocol/sdk": "1.12.1",
+      },
+    },
+    "packages/sandbox/sandbox-docker": {
+      "name": "@koi/sandbox-docker",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/sandbox/sandbox-executor": {
+      "name": "@koi/sandbox-executor",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/sandbox/sandbox-os": {
@@ -1377,6 +1459,14 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/security/governance-scope": {
+      "name": "@koi/governance-scope",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/url-safety": "workspace:*",
       },
     },
     "packages/security/governance-security": {
@@ -1857,6 +1947,14 @@
 
     "@koi-agent/cli": ["@koi-agent/cli@workspace:packages/meta/cli"],
 
+    "@koi/ace-types": ["@koi/ace-types@workspace:packages/lib/ace-types"],
+
+    "@koi/agent-discovery": ["@koi/agent-discovery@workspace:packages/lib/agent-discovery"],
+
+    "@koi/agent-monitor": ["@koi/agent-monitor@workspace:packages/lib/agent-monitor"],
+
+    "@koi/agent-procfs": ["@koi/agent-procfs@workspace:packages/lib/agent-procfs"],
+
     "@koi/agent-runtime": ["@koi/agent-runtime@workspace:packages/lib/agent-runtime"],
 
     "@koi/agent-summary": ["@koi/agent-summary@workspace:packages/lib/agent-summary"],
@@ -1943,6 +2041,8 @@
 
     "@koi/gateway": ["@koi/gateway@workspace:packages/net/gateway"],
 
+    "@koi/gateway-http": ["@koi/gateway-http@workspace:packages/net/gateway-http"],
+
     "@koi/gateway-types": ["@koi/gateway-types@workspace:packages/lib/gateway-types"],
 
     "@koi/gateway-webhook": ["@koi/gateway-webhook@workspace:packages/net/gateway-webhook"],
@@ -1956,6 +2056,8 @@
     "@koi/governance-defaults": ["@koi/governance-defaults@workspace:packages/security/governance-defaults"],
 
     "@koi/governance-delegation": ["@koi/governance-delegation@workspace:packages/security/governance-delegation"],
+
+    "@koi/governance-scope": ["@koi/governance-scope@workspace:packages/security/governance-scope"],
 
     "@koi/governance-security": ["@koi/governance-security@workspace:packages/security/governance-security"],
 
@@ -1986,6 +2088,8 @@
     "@koi/memory-team-sync": ["@koi/memory-team-sync@workspace:packages/mm/memory-team-sync"],
 
     "@koi/memory-tools": ["@koi/memory-tools@workspace:packages/mm/memory-tools"],
+
+    "@koi/middleware-ace": ["@koi/middleware-ace@workspace:packages/lib/middleware-ace"],
 
     "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/security/middleware-audit"],
 
@@ -2024,6 +2128,8 @@
     "@koi/middleware-reflex": ["@koi/middleware-reflex@workspace:packages/lib/middleware-reflex"],
 
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
+
+    "@koi/middleware-rlm": ["@koi/middleware-rlm@workspace:packages/lib/middleware-rlm"],
 
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/lib/middleware-semantic-retry"],
 
@@ -2070,6 +2176,10 @@
     "@koi/rules-loader": ["@koi/rules-loader@workspace:packages/lib/rules-loader"],
 
     "@koi/runtime": ["@koi/runtime@workspace:packages/meta/runtime"],
+
+    "@koi/sandbox-docker": ["@koi/sandbox-docker@workspace:packages/sandbox/sandbox-docker"],
+
+    "@koi/sandbox-executor": ["@koi/sandbox-executor@workspace:packages/sandbox/sandbox-executor"],
 
     "@koi/sandbox-os": ["@koi/sandbox-os@workspace:packages/sandbox/sandbox-os"],
 

@@ -73,9 +73,9 @@ describe("RETRYABLE_DEFAULTS backward compatibility", () => {
     }
   });
 
-  test("has exactly 13 codes (no unexpected additions)", () => {
-    // 13 after HEARTBEAT_TIMEOUT was added for the heartbeat-monitor (#1900)
-    expect(Object.keys(RETRYABLE_DEFAULTS)).toHaveLength(13);
+  test("has exactly 16 codes (no unexpected additions)", () => {
+    // 16 after INVALID_BODY/INVALID_CONFIG/ALREADY_RUNNING were added for gateway-http (#1639)
+    expect(Object.keys(RETRYABLE_DEFAULTS)).toHaveLength(16);
   });
 });
 

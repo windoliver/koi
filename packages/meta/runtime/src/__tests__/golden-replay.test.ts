@@ -2001,6 +2001,60 @@ describe("Golden: @koi/middleware-permissions", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-rlm (2 queries)
+//
+// Standalone — no cassette replay. RLM activates only when a request
+// exceeds the configured token threshold, which the recorder's golden
+// prompts never approach. Pure functions (segmentRequest /
+// reassembleResponses) are the contract surface; cassette coverage would
+// add no signal that the unit tests in @koi/middleware-rlm don't already
+// give. See docs/L2/middleware-rlm.md for the segment-local contract.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-rlm", () => {
+  test("factory yields a middleware with name 'rlm' and both wrap hooks", async () => {
+    const { createRlmMiddleware } = await import("@koi/middleware-rlm");
+    const mw = createRlmMiddleware({
+      maxInputTokens: 32_000,
+      maxChunkChars: 8_000,
+      acknowledgeSegmentLocalContract: true,
+    });
+    expect(mw.name).toBe("koi:rlm");
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapModelStream).toBe("function");
+  });
+
+  test("segmentRequest splits oversized user text; reassembleResponses concatenates byte-faithfully", async () => {
+    const { segmentRequest, reassembleResponses } = await import("@koi/middleware-rlm");
+    const big = "x".repeat(300);
+    const segments = segmentRequest(
+      {
+        messages: [
+          {
+            senderId: "user",
+            timestamp: 0,
+            content: [{ kind: "text", text: big }],
+          },
+        ],
+      },
+      100,
+    );
+    expect(segments.length).toBe(3);
+    const merged = reassembleResponses(
+      segments.map(() => ({
+        content: "x".repeat(100),
+        model: "test-model",
+        stopReason: "stop" as const,
+        responseId: "r-shared",
+      })),
+    );
+    expect(merged.content).toBe(big);
+    expect(merged.model).toBe("test-model");
+    expect(merged.responseId).toBe("r-shared");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/decision-ledger (2 queries)
 //
 // Standalone — no cassette replay. Exercises the factory with fake sinks
@@ -15395,5 +15449,411 @@ describe("Golden: @koi/middleware-prompt-cache", () => {
     // — proves prompt-cache reordering did not break correctness.
     const toolSteps = doc.steps.filter((s) => s.source === "tool");
     expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/sandbox-docker (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/sandbox-docker", () => {
+  test("createDockerAdapter returns UNAVAILABLE error when client is missing", async () => {
+    const { createDockerAdapter } = await import("@koi/sandbox-docker");
+
+    // Use a probe that returns nonzero so Docker is reported unavailable (no real daemon needed)
+    const unavailableProbe = async (): Promise<number> => 1;
+    const result = await createDockerAdapter({ image: "ubuntu:22.04", probe: unavailableProbe });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("UNAVAILABLE");
+    }
+  });
+
+  test("createDockerAdapter returns a named SandboxAdapter when a client is provided", async () => {
+    const { createDockerAdapter } = await import("@koi/sandbox-docker");
+
+    // Minimal stub DockerClient — never actually called in this test
+    const stubClient = {
+      createContainer: async () => {
+        throw new Error("not used in this test");
+      },
+    };
+
+    const result = await createDockerAdapter({ image: "ubuntu:22.04", client: stubClient });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.name).toBe("docker");
+      expect(typeof result.value.create).toBe("function");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/sandbox-executor (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/sandbox-executor", () => {
+  test("createSubprocessExecutor returns a SandboxExecutor with an execute function", async () => {
+    const { createSubprocessExecutor } = await import("@koi/sandbox-executor");
+
+    const executor = createSubprocessExecutor({ bunPath: "bun" });
+    expect(typeof executor.execute).toBe("function");
+  });
+
+  test("timeout returns SandboxError TIMEOUT", async () => {
+    const { createSubprocessExecutor } = await import("@koi/sandbox-executor");
+
+    // externalIsolation: true bypasses the default-deny guard (no context needed here,
+    // but guard only triggers when context is provided — no context → no guard trigger)
+    const exec = createSubprocessExecutor({ externalIsolation: true });
+    const code = `export default async () => { while (true) { /* spin */ } };`;
+    const r = await exec.execute(code, null, 250);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("TIMEOUT");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/agent-procfs (2 queries)
+//
+// Standalone — no cassette replay. Validates createProcFs TTL caching and
+// createAgentMounter wiring against the @koi/core ProcFs / AgentRegistry
+// contracts. Per docs/L2/agent-procfs.md.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/agent-procfs", () => {
+  test("createProcFs TTL cache + write invalidation", async () => {
+    const { createProcFs } = await import("@koi/agent-procfs");
+    let calls = 0;
+    const procFs = createProcFs({ cacheTtlMs: 1_000 });
+    procFs.mount("/x", {
+      read: () => ++calls,
+      write: () => {},
+    });
+    await procFs.read("/x");
+    await procFs.read("/x");
+    expect(calls).toBe(1);
+    await procFs.write("/x", null);
+    await procFs.read("/x");
+    expect(calls).toBe(2);
+  });
+
+  test("ENTRY_NAMES is the canonical 7-entry list", async () => {
+    const { ENTRY_NAMES } = await import("@koi/agent-procfs");
+    const names = [...ENTRY_NAMES].sort();
+    expect(names.length).toBe(7);
+    expect(names).toContain("status");
+    expect(names).toContain("tools");
+    expect(names).toContain("middleware");
+    expect(names).toContain("children");
+    expect(names).toContain("config");
+    expect(names).toContain("env");
+    expect(names).toContain("metrics");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/agent-discovery (2 queries)
+//
+// Standalone — no cassette replay. Validates createDiscoveryProvider attaches
+// the discover_agents tool + EXTERNAL_AGENTS singleton, and dedup priority
+// (MCP > filesystem > PATH) per docs/L2/agent-discovery.md.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/agent-discovery", () => {
+  test("provider attaches discover_agents tool + EXTERNAL_AGENTS", async () => {
+    const { createDiscoveryProvider } = await import("@koi/agent-discovery");
+    const { EXTERNAL_AGENTS, isAttachResult, toolToken, agentId } = await import("@koi/core");
+
+    const fakeAgent = {
+      pid: { id: agentId("golden-disc"), name: "golden", type: "worker", depth: 0 },
+      manifest: { name: "golden", description: "test" },
+      state: "running",
+      component: () => undefined,
+      has: () => false,
+      hasAll: () => false,
+      query: () => new Map(),
+      components: () => new Map(),
+    };
+
+    const provider = createDiscoveryProvider({
+      systemCalls: {
+        which: async (b: string) => (b === "claude" ? "/bin/claude" : null),
+        readDir: async () => [],
+        readFile: async () => "",
+        spawn: async () => ({ stdout: "", exitCode: 0 }),
+      },
+    });
+    const result = await provider.attach(fakeAgent as never);
+    const map = isAttachResult(result) ? result.components : result;
+    expect(map.has(toolToken("discover_agents"))).toBe(true);
+    expect(map.has(EXTERNAL_AGENTS)).toBe(true);
+  });
+
+  test("dedup-by-identity: MCP and PATH descriptors with same name coexist", async () => {
+    const { createDiscovery, createPathSource, createMcpSource } = await import(
+      "@koi/agent-discovery"
+    );
+
+    const path = createPathSource({
+      knownAgents: [
+        {
+          name: "shared",
+          binaries: ["shared"],
+          capabilities: [],
+          transport: "cli",
+        },
+      ],
+      systemCalls: {
+        which: async (b: string) => (b === "shared" ? "/bin/shared" : null),
+        readDir: async () => [],
+        readFile: async () => "",
+        spawn: async () => ({ stdout: "", exitCode: 0 }),
+      },
+    });
+    const mcp = createMcpSource([
+      {
+        name: "shared",
+        isAgent: true,
+        listTools: async () => ({
+          ok: true as const,
+          value: [{ name: "code_assist" }],
+        }),
+      },
+    ]);
+    const discovery = createDiscovery([path, mcp], 1000);
+    const agents = await discovery.discover();
+    const shared = agents.filter((a) => a.name === "shared");
+    expect(shared.length).toBe(2);
+    expect(shared.map((a) => a.transport).sort()).toEqual(["cli", "mcp"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/agent-monitor (2 queries)
+//
+// Standalone — no cassette replay. Validates middleware identity and
+// tool_rate_exceeded firing per docs/L2/agent-monitor.md.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/agent-monitor", () => {
+  test("middleware identity (name + priority + describeCapabilities)", async () => {
+    const { createAgentMonitorMiddleware, AGENT_MONITOR_PRIORITY } = await import(
+      "@koi/agent-monitor"
+    );
+    const mw = createAgentMonitorMiddleware({});
+    expect(mw.name).toBe("agent-monitor");
+    expect(mw.priority).toBe(AGENT_MONITOR_PRIORITY);
+    expect(mw.priority).toBe(350);
+    expect(typeof mw.describeCapabilities).toBe("function");
+  });
+
+  test("tool_rate_exceeded fires after >maxToolCallsPerTurn calls", async () => {
+    const { createAgentMonitorMiddleware } = await import("@koi/agent-monitor");
+    const core = await import("@koi/core");
+    const signals: Array<{ kind: string }> = [];
+    const mw = createAgentMonitorMiddleware({
+      thresholds: { maxToolCallsPerTurn: 1 },
+      onAnomaly: (s) => {
+        signals.push(s);
+      },
+    });
+    const session = {
+      agentId: "a",
+      sessionId: core.sessionId("s") as never,
+      runId: core.runId("r"),
+      metadata: {},
+    };
+    await mw.onSessionStart?.(session as never);
+    const ctx = {
+      session,
+      turnIndex: 0,
+      turnId: core.turnId(session.runId, 0) as never,
+      messages: [],
+      metadata: {},
+    };
+    await mw.onBeforeTurn?.(ctx as never);
+    const next = async (): Promise<{ output: string }> => ({ output: "ok" });
+    for (let i = 0; i < 2; i++) {
+      await mw.wrapToolCall?.(ctx as never, { toolId: `t${i}`, input: {} } as never, next as never);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    expect(signals.some((s) => s.kind === "tool_rate_exceeded")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-ace (standalone — no cassette)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-ace", () => {
+  test("stat pipeline: aggregate -> curate -> consolidate produces a versioned playbook", async () => {
+    const { aggregateTrajectoryStats, consolidateAlias: _alias } = await (async () => {
+      const mod = await import("@koi/middleware-ace");
+      return { aggregateTrajectoryStats: mod.aggregateTrajectoryStats, consolidateAlias: null };
+    })();
+    const { createDefaultConsolidator, curateTrajectorySummary } = await import(
+      "@koi/middleware-ace"
+    );
+    const stats = aggregateTrajectoryStats([
+      {
+        turnIndex: 0,
+        timestamp: 0,
+        kind: "tool_call",
+        identifier: "fs.read",
+        outcome: "success",
+        durationMs: 10,
+      },
+      {
+        turnIndex: 0,
+        timestamp: 1,
+        kind: "tool_call",
+        identifier: "fs.read",
+        outcome: "success",
+        durationMs: 12,
+      },
+      {
+        turnIndex: 0,
+        timestamp: 2,
+        kind: "tool_call",
+        identifier: "fs.read",
+        outcome: "failure",
+        durationMs: 8,
+      },
+    ]);
+    const candidates = curateTrajectorySummary(stats, 1, {
+      minScore: 0,
+      nowMs: 0,
+      lambda: 0,
+    });
+    const consolidate = createDefaultConsolidator({ clock: () => 1000 });
+    const playbooks = consolidate(candidates, []);
+    expect(playbooks.length).toBe(1);
+    const pb = playbooks[0];
+    expect(pb?.id).toBe("ace:tool_call:fs.read");
+    expect(pb?.version).toBe(1);
+    // 2/3 successful invocations → 67% in the strategy text.
+    expect(pb?.strategy).toContain("67%");
+    expect(pb?.confidence).toBeGreaterThan(0);
+  });
+
+  test("end-to-end middleware: trajectory recorded + consolidated + injected on next session", async () => {
+    const { createAceMiddleware, createInMemoryPlaybookStore } = await import(
+      "@koi/middleware-ace"
+    );
+    const playbookStore = createInMemoryPlaybookStore();
+
+    let now = 1_000;
+    const clock = (): number => now;
+
+    const mw = createAceMiddleware({
+      playbookStore,
+      clock,
+      minScore: 0,
+    });
+    expect(mw.name).toBe("ace");
+    expect(mw.phase).toBe("observe");
+
+    const ctxSession = {
+      agentId: "ace-golden",
+      sessionId: sessionId("ace-golden-s1"),
+      runId: runId("r1"),
+      metadata: {} as JsonObject,
+    };
+    const makeCtx = (turnIndex: number): TurnContext => ({
+      session: ctxSession,
+      turnIndex,
+      turnId: `${runId("r1")}-${String(turnIndex)}` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    });
+
+    // Session 1 — accumulate trajectory, consolidate to a playbook.
+    await mw.onSessionStart?.(ctxSession);
+    const okHandler = async (): Promise<{ readonly output: unknown }> => {
+      now += 5;
+      return { output: "ok" };
+    };
+    for (let i = 0; i < 3; i += 1) {
+      await mw.wrapToolCall?.(makeCtx(0), { toolId: "fs.read", input: {} }, okHandler);
+    }
+    await mw.onSessionEnd?.(ctxSession);
+    const stored = await playbookStore.list();
+    expect(stored.length).toBe(1);
+    expect(stored[0]?.version).toBe(1);
+    expect(stored[0]?.id).toBe("ace:tool_call:fs.read");
+
+    // Session 2 — injector should prepend [Active Playbooks] now that the
+    // store is non-empty.
+    const ctxSession2 = {
+      ...ctxSession,
+      sessionId: sessionId("ace-golden-s2"),
+    };
+    await mw.onSessionStart?.(ctxSession2);
+    const ctx2: TurnContext = {
+      session: ctxSession2,
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+    let captured: ModelRequest | undefined;
+    const modelHandler = async (req: ModelRequest): Promise<ModelResponse> => {
+      captured = req;
+      return { content: "ok", model: "test-model" };
+    };
+    await mw.wrapModelCall?.(
+      ctx2,
+      { messages: [], model: "test-model", systemPrompt: "base" },
+      modelHandler,
+    );
+    expect(captured?.systemPrompt).toContain("[Active Playbooks]");
+    expect(captured?.systemPrompt).toContain("fs.read");
+    expect(captured?.systemPrompt).toContain("base");
+    await mw.onSessionEnd?.(ctxSession2);
+  });
+
+  test("trajectory fixture contains ACE middleware spans + tool execution outcome", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/ace-tool-use.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+          readonly phase?: string;
+          readonly priority?: number;
+          readonly nextCalled?: boolean;
+        };
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+        readonly outcome?: string;
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("ace-tool-use");
+    expect(doc.steps.length).toBeGreaterThan(0);
+
+    // ACE middleware spans must appear — proves config.ace wiring fires
+    // through createKoi when the runtime composes the chain.
+    const aceSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "ace",
+    );
+    expect(aceSpans.length).toBeGreaterThanOrEqual(1);
+    for (const span of aceSpans) {
+      expect(span.extra?.phase).toBe("observe");
+      expect(span.extra?.priority).toBe(800);
+      expect(span.extra?.nextCalled).toBe(true);
+    }
+
+    // The wrapped tool call still runs end-to-end — proves ACE doesn't break
+    // the chain when consuming the success outcome.
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+    const addCall = toolSteps[0]?.tool_calls?.[0];
+    expect(addCall?.function_name).toBe("add_numbers");
+    expect(toolSteps[0]?.outcome).toBe("success");
   });
 });

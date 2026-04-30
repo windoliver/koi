@@ -7,6 +7,7 @@
  */
 
 export type {
+  Gateway,
   GatewayFrame,
   GatewayFrameKind,
   RoutingContext,

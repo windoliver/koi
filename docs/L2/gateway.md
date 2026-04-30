@@ -4,6 +4,8 @@ Minimal WebSocket gateway for Koi v2. Manages client connections via a single tr
 
 **v2 scope** (Issue #1365): single-node, no Nexus/HA, no node registry, no tool routing. Those are future issues.
 
+**Gateway contract (Issue #1639)**: implements the L0u `Gateway` interface from `@koi/gateway-types` so peer L2 packages (notably `@koi/gateway-http`) can drive ingress without depending on this package directly. The contract surface is `ingest(session, frame)` + `pauseIngress()` + `forceClose()` + `activeConnections()`. `pauseIngress()` blocks new ingress AND sends a graceful WS close (1001 SERVER_SHUTTING_DOWN) on every live connection so callers' shutdown drain can actually complete.
+
 > **v1 reference**: The v1 implementation lived in `archive/v1/packages/net/gateway`. The v2 package is intentionally minimal — ~600 LOC vs ~4K LOC in v1. Features not yet ported are listed at the bottom of this doc.
 
 ---

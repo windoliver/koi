@@ -13,6 +13,36 @@ const mockDnsResolver: DnsResolverFn = async (): Promise<readonly string[]> => [
 /** Base config for tests — mock DNS + HTTPS opt-in (default is false). */
 const HTTPS_DEFAULTS = { dnsResolver: mockDnsResolver, allowHttps: true } as const;
 
+function countAbortListenerLifecycle(signal: AbortSignal): {
+  readonly counts: () => { readonly added: number; readonly removed: number };
+  readonly restore: () => void;
+} {
+  const originalAdd = signal.addEventListener.bind(signal);
+  const originalRemove = signal.removeEventListener.bind(signal);
+  let added = 0;
+  let removed = 0;
+
+  signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => {
+    const [type] = args;
+    if (type === "abort") added++;
+    return originalAdd(...args);
+  }) as typeof signal.addEventListener;
+
+  signal.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => {
+    const [type] = args;
+    if (type === "abort") removed++;
+    return originalRemove(...args);
+  }) as typeof signal.removeEventListener;
+
+  return {
+    counts: () => ({ added, removed }),
+    restore: () => {
+      signal.addEventListener = originalAdd as typeof signal.addEventListener;
+      signal.removeEventListener = originalRemove as typeof signal.removeEventListener;
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // fetch — basic
 // ---------------------------------------------------------------------------
@@ -95,6 +125,22 @@ describe("createWebExecutor.fetch", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("TIMEOUT");
+    }
+  });
+
+  test("removes caller abort listener after fetch settles", async () => {
+    const fetchFn = mock(async () => new Response("ok")) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({ fetchFn, ...HTTPS_DEFAULTS });
+    const controller = new AbortController();
+    const tracker = countAbortListenerLifecycle(controller.signal);
+
+    try {
+      const result = await executor.fetch("https://example.com", { signal: controller.signal });
+
+      expect(result.ok).toBe(true);
+      expect(tracker.counts()).toEqual({ added: 1, removed: 1 });
+    } finally {
+      tracker.restore();
     }
   });
 
@@ -1921,6 +1967,25 @@ describe("createWebExecutor.search", () => {
     }
   });
 
+  test("removes caller abort listener after search settles", async () => {
+    const searchProvider: SearchProvider = {
+      name: "mock",
+      search: async () => ({ ok: true, value: [] }),
+    };
+    const executor = createWebExecutor({ searchProvider, allowHttps: false });
+    const controller = new AbortController();
+    const tracker = countAbortListenerLifecycle(controller.signal);
+
+    try {
+      const result = await executor.search("test", { signal: controller.signal });
+
+      expect(result.ok).toBe(true);
+      expect(tracker.counts()).toEqual({ added: 1, removed: 1 });
+    } finally {
+      tracker.restore();
+    }
+  });
+
   test("wraps searchProvider exceptions as error", async () => {
     const searchProvider: SearchProvider = {
       name: "failing",
@@ -2147,6 +2212,60 @@ describe("createWebExecutor.fetch HTTPS", () => {
 
     const result = await executor.fetch("http://example.com");
 
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// preDnsAllowCheck — gov-15 round-6
+// ---------------------------------------------------------------------------
+
+describe("createWebExecutor.fetch — preDnsAllowCheck (gov-15 round-6)", () => {
+  test("rejects off-allowlist URL BEFORE DNS resolution and BEFORE fetchFn", async () => {
+    // Round-6 finding: a previous wiring layered createSafeFetcher around
+    // fetchFn externally, and the executor's own createSafeFetcher then
+    // wrapped that — the OUTER did DNS first, defeating the pre-DNS
+    // guarantee. Threading preDnsAllowCheck directly into the executor
+    // makes the executor's single safe-fetcher run the URL allowlist
+    // before isSafeUrl. Assert: an off-allowlist URL is rejected with
+    // ZERO DNS resolver calls and ZERO fetch calls.
+    let dnsCalls = 0;
+    const trackingDns: DnsResolverFn = async () => {
+      dnsCalls += 1;
+      return [PUBLIC_IP];
+    };
+    const fetchFn = mock(
+      async () => new Response("would have leaked", { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: trackingDns,
+      allowHttps: true,
+      preDnsAllowCheck: (url) =>
+        url.startsWith("https://api.example.com/")
+          ? { ok: true }
+          : { ok: false, reason: `URL '${url}' is outside the allowed fetch scope` },
+    });
+    const result = await executor.fetch("https://attacker.example.com/leak");
+    expect(result.ok).toBe(false);
+    expect(dnsCalls).toBe(0);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  test("allows in-allowlist URL through to DNS + fetch", async () => {
+    const fetchFn = mock(
+      async () => new Response("hi", { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: mockDnsResolver,
+      allowHttps: true,
+      preDnsAllowCheck: (url) =>
+        url.startsWith("https://api.example.com/")
+          ? { ok: true }
+          : { ok: false, reason: `URL '${url}' is outside the allowed fetch scope` },
+    });
+    const result = await executor.fetch("https://api.example.com/data");
     expect(result.ok).toBe(true);
   });
 });

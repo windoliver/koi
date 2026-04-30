@@ -116,6 +116,7 @@
     "@koi/tool-browser": "workspace:*",
     "@koi/tool-exec": "workspace:*",
     "@koi/tool-notebook": "workspace:*",
+    "@koi/governance-scope": "workspace:*",
     "@koi/url-safety": "workspace:*",
     "@koi/tools-bash": "workspace:*",
     "@koi/tools-builtin": "workspace:*",

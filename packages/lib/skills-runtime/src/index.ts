@@ -49,6 +49,8 @@ export {
   createSkillProvider,
   skillDefinitionToComponent,
 } from "./provider.js";
+// Credentials-scoped runtime wrapper (gov-15)
+export { createScopedSkillsRuntime } from "./scoped-runtime.js";
 export type {
   SkillEvictedEvent,
   SkillLoadedEvent,

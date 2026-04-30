@@ -76,6 +76,21 @@ wrapToolCall    →  health check (quarantine?)  →  validate input
 
 Transport-only retry config (`retry.transport.maxAttempts >= 1`) routes both `wrapModelCall` and `wrapModelStream` through `runWithRetry` even when no validators or gates are configured.
 
+#### Partial-cause retry classification (transport-default set)
+
+When an adapter throws a plain `Error` whose `cause` is a partial KoiError shape (commonly: `throw new Error("504", { cause: { code: "TIMEOUT" } })`), `resolveRetryable()` synthesizes a minimal KoiError and routes it through `isRetryable()` so the hard non-retryable code floor (`VALIDATION` / `NOT_FOUND` / `PERMISSION` / `INTERNAL`) is enforced regardless of any `retryable: true` flag on the partial cause.
+
+When the partial cause omits `retryable` entirely, the synthesized error inherits its default classification from a deliberately narrow transport set:
+
+| Code | Default `retryable` from partial cause | Why |
+|------|----------------------------------------|-----|
+| `RATE_LIMIT` | `true` | Server-acknowledged throttling — by definition the request was rejected before any side effect, so a replay is safe. |
+| `TIMEOUT` | `false` | Delivery state is unknown after a watchdog deadline; the first attempt may have landed server-side and only the response path failed. Blindly replaying could duplicate non-idempotent model requests, tool calls, billable operations, or writes. Producers MUST set `retryable: true` (or wrap in a full KoiError with phase metadata proving idempotency) to opt in. |
+| `AUTH_REQUIRED` / `RESOURCE_EXHAUSTED` | `false` | Need external intervention; auto-replaying hides the recovery path. |
+| `EXTERNAL` / `CONFLICT` | `false` | Failure semantics depend on the specific remote / domain; producer must opt in explicitly. |
+
+This is narrower than core `RETRYABLE_DEFAULTS` (which marks several codes retryable for full-KoiError use) — the asymmetry exists because partial-cause throws come from less trustworthy producers and need a stricter floor.
+
 ### Model Call Flow
 
 ```
