@@ -18,6 +18,7 @@
 "layer:L0u":
   - changed-files:
     - any-glob-to-any-file:
+      - "packages/**/ace-types/**"
       - "packages/**/bash-ast/**"
       - "packages/**/bash-classifier/**"
       - "packages/**/bash-security/**"
@@ -73,6 +74,7 @@
   - changed-files:
     - any-glob-to-any-file:
       - "packages/**"
+      - "!packages/**/ace-types/**"
       - "!packages/**/agent/cli/**"
       - "!packages/**/bash-ast/**"
       - "!packages/**/bash-classifier/**"

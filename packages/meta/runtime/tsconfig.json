@@ -67,6 +67,8 @@
     { "path": "../../net/gateway-webhook" },
     { "path": "../../net/mcp" },
     { "path": "../../net/mcp-server" },
+    { "path": "../../lib/ace-types" },
+    { "path": "../../lib/middleware-ace" },
     { "path": "../../lib/middleware-call-dedup" },
     { "path": "../../lib/middleware-call-limits" },
     { "path": "../../lib/middleware-circuit-breaker" },

@@ -112,6 +112,13 @@
         "@koi/event-delivery": "workspace:*",
       },
     },
+    "packages/lib/ace-types": {
+      "name": "@koi/ace-types",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/agent-discovery": {
       "name": "@koi/agent-discovery",
       "version": "0.0.0",
@@ -460,6 +467,15 @@
         "@koi/errors": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
+      },
+    },
+    "packages/lib/middleware-ace": {
+      "name": "@koi/middleware-ace",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/ace-types": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
     },
     "packages/lib/middleware-call-dedup": {
@@ -1050,6 +1066,7 @@
       "name": "@koi/runtime",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/ace-types": "workspace:*",
         "@koi/agent-discovery": "workspace:*",
         "@koi/agent-monitor": "workspace:*",
         "@koi/agent-procfs": "workspace:*",
@@ -1105,6 +1122,7 @@
         "@koi/memory-fs": "workspace:*",
         "@koi/memory-team-sync": "workspace:*",
         "@koi/memory-tools": "workspace:*",
+        "@koi/middleware-ace": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
         "@koi/middleware-call-dedup": "workspace:*",
         "@koi/middleware-call-limits": "workspace:*",
@@ -1919,6 +1937,8 @@
 
     "@koi-agent/cli": ["@koi-agent/cli@workspace:packages/meta/cli"],
 
+    "@koi/ace-types": ["@koi/ace-types@workspace:packages/lib/ace-types"],
+
     "@koi/agent-discovery": ["@koi/agent-discovery@workspace:packages/lib/agent-discovery"],
 
     "@koi/agent-monitor": ["@koi/agent-monitor@workspace:packages/lib/agent-monitor"],
@@ -2056,6 +2076,8 @@
     "@koi/memory-team-sync": ["@koi/memory-team-sync@workspace:packages/mm/memory-team-sync"],
 
     "@koi/memory-tools": ["@koi/memory-tools@workspace:packages/mm/memory-tools"],
+
+    "@koi/middleware-ace": ["@koi/middleware-ace@workspace:packages/lib/middleware-ace"],
 
     "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/security/middleware-audit"],
 

@@ -1,0 +1,27 @@
+{
+  "name": "@koi/middleware-ace",
+  "description": "Adaptive Continuous Enhancement — trajectory-to-playbook self-improvement loop (stat pipeline + injection)",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "koi": {
+    "optional": true
+  },
+  "dependencies": {
+    "@koi/ace-types": "workspace:*",
+    "@koi/core": "workspace:*",
+    "@koi/token-estimator": "workspace:*"
+  }
+}

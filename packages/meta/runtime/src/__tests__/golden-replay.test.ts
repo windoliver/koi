@@ -15681,3 +15681,179 @@ describe("Golden: @koi/agent-monitor", () => {
     expect(signals.some((s) => s.kind === "tool_rate_exceeded")).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-ace (standalone — no cassette)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-ace", () => {
+  test("stat pipeline: aggregate -> curate -> consolidate produces a versioned playbook", async () => {
+    const { aggregateTrajectoryStats, consolidateAlias: _alias } = await (async () => {
+      const mod = await import("@koi/middleware-ace");
+      return { aggregateTrajectoryStats: mod.aggregateTrajectoryStats, consolidateAlias: null };
+    })();
+    const { createDefaultConsolidator, curateTrajectorySummary } = await import(
+      "@koi/middleware-ace"
+    );
+    const stats = aggregateTrajectoryStats([
+      {
+        turnIndex: 0,
+        timestamp: 0,
+        kind: "tool_call",
+        identifier: "fs.read",
+        outcome: "success",
+        durationMs: 10,
+      },
+      {
+        turnIndex: 0,
+        timestamp: 1,
+        kind: "tool_call",
+        identifier: "fs.read",
+        outcome: "success",
+        durationMs: 12,
+      },
+      {
+        turnIndex: 0,
+        timestamp: 2,
+        kind: "tool_call",
+        identifier: "fs.read",
+        outcome: "failure",
+        durationMs: 8,
+      },
+    ]);
+    const candidates = curateTrajectorySummary(stats, 1, {
+      minScore: 0,
+      nowMs: 0,
+      lambda: 0,
+    });
+    const consolidate = createDefaultConsolidator({ clock: () => 1000 });
+    const playbooks = consolidate(candidates, []);
+    expect(playbooks.length).toBe(1);
+    const pb = playbooks[0];
+    expect(pb?.id).toBe("ace:tool_call:fs.read");
+    expect(pb?.version).toBe(1);
+    // 2/3 successful invocations → 67% in the strategy text.
+    expect(pb?.strategy).toContain("67%");
+    expect(pb?.confidence).toBeGreaterThan(0);
+  });
+
+  test("end-to-end middleware: trajectory recorded + consolidated + injected on next session", async () => {
+    const { createAceMiddleware, createInMemoryPlaybookStore } = await import(
+      "@koi/middleware-ace"
+    );
+    const playbookStore = createInMemoryPlaybookStore();
+
+    let now = 1_000;
+    const clock = (): number => now;
+
+    const mw = createAceMiddleware({
+      playbookStore,
+      clock,
+      minScore: 0,
+    });
+    expect(mw.name).toBe("ace");
+    expect(mw.phase).toBe("observe");
+
+    const ctxSession = {
+      agentId: "ace-golden",
+      sessionId: sessionId("ace-golden-s1"),
+      runId: runId("r1"),
+      metadata: {} as JsonObject,
+    };
+    const makeCtx = (turnIndex: number): TurnContext => ({
+      session: ctxSession,
+      turnIndex,
+      turnId: `${runId("r1")}-${String(turnIndex)}` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    });
+
+    // Session 1 — accumulate trajectory, consolidate to a playbook.
+    await mw.onSessionStart?.(ctxSession);
+    const okHandler = async (): Promise<{ readonly output: unknown }> => {
+      now += 5;
+      return { output: "ok" };
+    };
+    for (let i = 0; i < 3; i += 1) {
+      await mw.wrapToolCall?.(makeCtx(0), { toolId: "fs.read", input: {} }, okHandler);
+    }
+    await mw.onSessionEnd?.(ctxSession);
+    const stored = await playbookStore.list();
+    expect(stored.length).toBe(1);
+    expect(stored[0]?.version).toBe(1);
+    expect(stored[0]?.id).toBe("ace:tool_call:fs.read");
+
+    // Session 2 — injector should prepend [Active Playbooks] now that the
+    // store is non-empty.
+    const ctxSession2 = {
+      ...ctxSession,
+      sessionId: sessionId("ace-golden-s2"),
+    };
+    await mw.onSessionStart?.(ctxSession2);
+    const ctx2: TurnContext = {
+      session: ctxSession2,
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+    let captured: ModelRequest | undefined;
+    const modelHandler = async (req: ModelRequest): Promise<ModelResponse> => {
+      captured = req;
+      return { content: "ok", model: "test-model" };
+    };
+    await mw.wrapModelCall?.(
+      ctx2,
+      { messages: [], model: "test-model", systemPrompt: "base" },
+      modelHandler,
+    );
+    expect(captured?.systemPrompt).toContain("[Active Playbooks]");
+    expect(captured?.systemPrompt).toContain("fs.read");
+    expect(captured?.systemPrompt).toContain("base");
+    await mw.onSessionEnd?.(ctxSession2);
+  });
+
+  test("trajectory fixture contains ACE middleware spans + tool execution outcome", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/ace-tool-use.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+          readonly phase?: string;
+          readonly priority?: number;
+          readonly nextCalled?: boolean;
+        };
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+        readonly outcome?: string;
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("ace-tool-use");
+    expect(doc.steps.length).toBeGreaterThan(0);
+
+    // ACE middleware spans must appear — proves config.ace wiring fires
+    // through createKoi when the runtime composes the chain.
+    const aceSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "ace",
+    );
+    expect(aceSpans.length).toBeGreaterThanOrEqual(1);
+    for (const span of aceSpans) {
+      expect(span.extra?.phase).toBe("observe");
+      expect(span.extra?.priority).toBe(800);
+      expect(span.extra?.nextCalled).toBe(true);
+    }
+
+    // The wrapped tool call still runs end-to-end — proves ACE doesn't break
+    // the chain when consuming the success outcome.
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+    const addCall = toolSteps[0]?.tool_calls?.[0];
+    expect(addCall?.function_name).toBe("add_numbers");
+    expect(toolSteps[0]?.outcome).toBe("success");
+  });
+});
