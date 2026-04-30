@@ -319,7 +319,6 @@ describe("classifyErrorForChannel discriminated output", () => {
       if (out.kind !== "auth-required") throw new Error("expected auth-required");
       expect(out.auth.unverifiedAuthorizationUrl).toBeDefined();
       // No bidi/control chars remain on the way out.
-      // biome-ignore lint/suspicious/noControlCharactersInRegex: testing strip behavior
       expect(out.auth.unverifiedAuthorizationUrl).not.toMatch(/\u202E/);
       // biome-ignore lint/suspicious/noControlCharactersInRegex: testing strip behavior
       expect(out.auth.unverifiedAuthorizationUrl).not.toMatch(/\x00/);
