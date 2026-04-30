@@ -83,6 +83,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/long-running",
   "@koi/loop",
   "@koi/mcp",
+  "@koi/middleware-ace",
   "@koi/middleware-audit",
   "@koi/middleware-degenerate",
   "@koi/middleware-feedback-loop",
