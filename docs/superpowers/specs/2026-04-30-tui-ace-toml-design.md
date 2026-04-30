@@ -24,11 +24,15 @@ Issue #2088 says "koi.toml". The repo's manifest is **`koi.yaml`** — confirmed
 |---|---|---|
 | `packages/meta/cli/src/manifest.ts` | ~60 | New `ManifestAceConfig` type + parser block, mounted on `ManifestConfig.ace` |
 | `packages/meta/cli/src/manifest.test.ts` | ~80 | Parse valid/invalid blocks, default off, reject unknown keys, range validation |
-| `packages/meta/cli/src/runtime-factory.ts` | ~30 | When `manifest.ace?.enabled === true` → build `AceConfig` (in-memory stores + default consolidator) → pass via `RuntimeConfig.ace` to `createRuntime` |
+| `packages/meta/cli/src/commands/start.ts` | ~10 | **Reject** `manifest.ace` if present (same posture as existing `backgroundSubprocesses` rejection at `start.ts:467`) — `ace:` is TUI-only |
+| `packages/meta/cli/src/commands/start.test.ts` | ~30 | Verify `koi start` exits non-zero with clear message when manifest sets `ace.enabled: true` |
+| `packages/meta/cli/src/runtime-factory.ts` | ~40 | Add `manifestAce?: ManifestAceConfig` to `KoiRuntimeConfig`; when `enabled === true` build `AceConfig` (in-memory stores + default consolidator) → pass via `RuntimeConfig.ace` to `createRuntime` |
 | `packages/meta/cli/src/runtime-factory.test.ts` | ~80 | Middleware chain snapshot (off vs on); in-process two-turn behavior test |
-| `docs/L2/middleware-ace.md` | ~30 | New "Enabling in TUI" section |
+| `packages/meta/cli/src/tui-command.ts` | ~10 | Forward `manifest.ace` into `createKoiRuntime({ manifestAce })` (the only host that should — start.ts already rejected the field) |
+| `packages/meta/cli/src/tui-command.test.ts` | ~40 | TUI startup with `[ace] enabled = true` plumbs `manifestAce` into `createKoiRuntime`; `/clear` and `/new` reset playbook store (see Reset semantics below) |
+| `docs/L2/middleware-ace.md` | ~30 | New "Enabling in TUI" section, including reset semantics + host scope |
 
-Total: ~280 LOC.
+Total: ~380 LOC.
 
 ## Surface
 
@@ -62,11 +66,16 @@ export interface ManifestAceConfig {
 koi.yaml [ace] block
   → manifest.ts parser (validates, rejects unknowns, sets defaults)
     → ManifestConfig.ace (typed)
-      → runtime-factory.ts: if enabled, builds AceConfig
-        → createRuntime({ ace })
-          → create-runtime.ts (already done in PR #2086):
-            installs createAceMiddleware(config.ace) at end of chain
+      → host fork:
+          - koi start: REJECT (start.ts fails fast, same as backgroundSubprocesses)
+          - koi tui:  forward manifest.ace into createKoiRuntime({ manifestAce })
+              → runtime-factory.ts builds AceConfig (in-memory stores)
+                → createRuntime({ ace })
+                  → create-runtime.ts (already done in PR #2086):
+                    installs createAceMiddleware(config.ace) at end of chain
 ```
+
+The plumbing crosses three boundaries because `createKoiRuntime` does not receive the manifest object directly — `tui-command.ts` parses the manifest and forwards individual fields into `KoiRuntimeConfig` (see existing `manifestMiddleware`, `manifestNdjsonSourcePath`, etc.). `manifestAce` follows the same pattern.
 
 `runtime-factory.ts` builds the `AceConfig` like:
 
@@ -92,8 +101,34 @@ const aceConfig: AceConfig | undefined =
 
 Single startup log line on enable:
 ```
-ace: enabled (in-memory store; playbooks will not survive process exit)
+ace: enabled (in-memory store; playbooks reset on /clear, /new, and process exit)
 ```
+
+## Host scope
+
+`ace:` is **TUI-only** in this PR (matches issue #2088 title and the `backgroundSubprocesses` precedent at `packages/meta/cli/src/commands/start.ts:467`):
+
+- `koi tui` honors `ace:`.
+- `koi start` REJECTS any manifest where `ace.enabled === true` with a clear message:
+  `manifest.ace: not supported on koi start (TUI-only). Remove the [ace] block or move it to a TUI-specific manifest.`
+- `koi start` IGNORES `ace.enabled === false` (no-op block is harmless).
+
+This prevents shared manifests from silently enabling ACE in headless `koi start`, which has a different safety posture (no `/clear`, `/new` reset hooks; longer-lived processes).
+
+## Reset semantics
+
+The in-memory playbook store lives for the lifetime of the TUI process, so without explicit reset hooks, `/clear` and `/new` would carry forward learned guidance from a prior conversation — surprising the user and potentially leaking stale context.
+
+This PR wires reset behavior:
+
+- **`/clear`** (truncate transcript, keep session) → clear in-memory `PlaybookStore` and `TrajectoryStore`.
+- **`/new`** (start a new session) → clear both stores.
+- **Resume** (`--resume`) → no clear (resuming the same logical conversation).
+- **Process exit** → store is GC'd, all playbooks lost (documented; sqlite store will fix this in the follow-up issue).
+
+Implementation: `runtime-factory.ts` retains a reference to the constructed stores and exposes a `resetAceStores()` callback on the runtime handle. `tui-command.ts` invokes this callback from the existing `/clear` and `/new` reset paths (next to `rewindBoundaryActive` flagging at `tui-command.ts:2944`).
+
+If a future PR adds session/workspace partitioning to the ACE store, this hook can become a no-op or a per-session selector — the boundary is preserved.
 
 ## Defaults & error handling
 
@@ -118,9 +153,21 @@ ace: enabled (in-memory store; playbooks will not survive process exit)
 5. Unknown key → throws `KOI_MANIFEST: unknown key`
 6. Type error / range error → throws specific error
 
+### Host rejection (`koi start`) (~2 tests)
+1. `manifest.ace.enabled === true` → `koi start` exits non-zero with the documented message
+2. `manifest.ace.enabled === false` → `koi start` proceeds normally (no-op block)
+
+### TUI plumbing (`tui-command.ts`) (~2 tests)
+1. Manifest has `ace: { enabled: true, ... }` → `createKoiRuntime` is called with matching `manifestAce` payload
+2. Manifest has no `ace:` → `createKoiRuntime` receives `manifestAce: undefined`
+
+### Reset hooks (~2 tests)
+1. After `/clear`, the in-memory `PlaybookStore` and `TrajectoryStore` are empty
+2. After `/new`, both stores are empty; resume path does NOT clear
+
 ### Runtime-factory plumbing (~2 tests)
-1. `manifest.ace` undefined → middleware chain snapshot has NO `ace` middleware
-2. `manifest.ace.enabled === true` → middleware chain snapshot has `ace` at the expected position
+1. `manifestAce` undefined → middleware chain snapshot has NO `ace` middleware
+2. `manifestAce.enabled === true` → middleware chain snapshot has `ace` at the expected position
 
 ### In-process behavior (~1 test)
 - Build runtime with `enabled: true` + in-memory stores
