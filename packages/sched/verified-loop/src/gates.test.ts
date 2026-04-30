@@ -25,6 +25,7 @@ function makeCtx(overrides?: Partial<GateContext>): GateContext {
     learnings: [],
     remainingItems: [],
     completedItems: [],
+    signal: new AbortController().signal,
     ...overrides,
   };
 }
@@ -96,6 +97,31 @@ describe("createFileGate", () => {
   });
 });
 
+describe("createTestGate signal handling", () => {
+  test("returns immediately when ctx.signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort("pre-aborted");
+    const gate = createTestGate(["sleep", "10"]);
+    const start = performance.now();
+    const result = await gate(makeCtx({ signal: controller.signal }));
+    const elapsed = performance.now() - start;
+    expect(result.passed).toBe(false);
+    expect(result.details).toContain("aborted before start");
+    expect(elapsed).toBeLessThan(100);
+  });
+
+  test("kills the spawned process when ctx.signal aborts mid-run", async () => {
+    const controller = new AbortController();
+    const gate = createTestGate(["sleep", "10"]);
+    setTimeout(() => controller.abort("test abort"), 50);
+    const start = performance.now();
+    const result = await gate(makeCtx({ signal: controller.signal }));
+    const elapsed = performance.now() - start;
+    expect(result.passed).toBe(false);
+    expect(elapsed).toBeLessThan(2_000); // not 10s
+  }, 5_000);
+});
+
 describe("createCompositeGate", () => {
   test("passes when all sub-gates pass", async () => {
     const filePath = join(tmpDir, "marker.txt");
@@ -142,5 +168,27 @@ describe("createCompositeGate", () => {
     const result = await gate(makeCtx());
     expect(result.passed).toBe(true);
     expect(result.itemsCompleted).toBeUndefined();
+  });
+
+  test("stops running remaining sub-gates after ctx.signal aborts", async () => {
+    const controller = new AbortController();
+    const ranAfterAbort: string[] = [];
+    const gate1: VerificationFn = async (ctx) => {
+      controller.abort("test abort");
+      // Signal aborts during this sub-gate; subsequent gates must not run.
+      void ctx;
+      return { passed: true };
+    };
+    const gate2: VerificationFn = async () => {
+      ranAfterAbort.push("gate2");
+      return { passed: true };
+    };
+
+    const composite = createCompositeGate([gate1, gate2]);
+    const result = await composite(makeCtx({ signal: controller.signal }));
+
+    expect(ranAfterAbort).toEqual([]);
+    expect(result.passed).toBe(false);
+    expect(result.details).toContain("aborted");
   });
 });

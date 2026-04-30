@@ -94,7 +94,12 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
 
       const prdResult = await readPRD(config.prdPath);
       if (!prdResult.ok) {
-        return emptyResult(startTime);
+        // Cannot read or parse the PRD — refuse to silently succeed.
+        // A scheduler that gets `iterations: 0` from a missing/corrupt PRD
+        // would falsely mark the run as a clean no-op. Surface the error.
+        throw new Error(
+          `VerifiedLoop: cannot read PRD at ${config.prdPath} (${prdResult.error.code}): ${prdResult.error.message}`,
+        );
       }
 
       if (prdResult.value.items.every((i) => i.done || i.skipped)) {
@@ -118,7 +123,13 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
         const iterStart = performance.now();
 
         const currentPrd = await readPRD(config.prdPath);
-        if (!currentPrd.ok) break;
+        if (!currentPrd.ok) {
+          // PRD became unreadable mid-loop (concurrent overwrite, disk error,
+          // or someone deleted it). Same as initial-read failure — surface it.
+          throw new Error(
+            `VerifiedLoop: PRD became unreadable mid-loop at ${config.prdPath} (${currentPrd.error.code}): ${currentPrd.error.message}`,
+          );
+        }
 
         const current = nextItem(currentPrd.value.items);
         if (!current) break;
@@ -151,11 +162,11 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
 
         // Use let — justified: mutable gate result across try/catch
         let gateResult: VerificationResult;
+        const gateSignal = AbortSignal.any([
+          abortController.signal,
+          AbortSignal.timeout(gateTimeoutMs),
+        ]);
         try {
-          const gateSignal = AbortSignal.any([
-            abortController.signal,
-            AbortSignal.timeout(gateTimeoutMs),
-          ]);
           const gatePromise = config.verify({
             iteration: i,
             currentItem: current,
@@ -164,6 +175,7 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
             learnings,
             remainingItems,
             completedItems,
+            signal: gateSignal,
           });
           const timeoutPromise = new Promise<never>((_, reject) => {
             gateSignal.addEventListener("abort", () => reject(new Error("Gate timed out")), {
@@ -175,9 +187,14 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           gateResult = { passed: false, details: `Gate error: ${extractMessage(e)}` };
         }
 
-        if (gateResult.passed && gateResult.itemsCompleted) {
-          const uniqueCompleted = [...new Set(gateResult.itemsCompleted)];
-          for (const itemId of uniqueCompleted) {
+        if (gateResult.passed) {
+          // A passing gate always marks the current item done. itemsCompleted
+          // adds *additional* ids (e.g., a single iteration that completes
+          // multiple work items). This prevents a typo or empty itemsCompleted
+          // from silently stalling progress on the selected item while still
+          // recording "Item X completed" in learnings.
+          const toComplete = new Set<string>([current.id, ...(gateResult.itemsCompleted ?? [])]);
+          for (const itemId of toComplete) {
             const doneResult = await markDone(config.prdPath, itemId);
             if (!doneResult.ok) {
               console.warn(
@@ -186,14 +203,6 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
             }
             consecutiveFailures.delete(itemId);
           }
-        } else if (gateResult.passed) {
-          const doneResult = await markDone(config.prdPath, current.id);
-          if (!doneResult.ok) {
-            console.warn(
-              `[verified-loop] Failed to mark item "${current.id}" as done: ${doneResult.error.message}`,
-            );
-          }
-          consecutiveFailures.delete(current.id);
         }
 
         if (!gateResult.passed) {
@@ -259,17 +268,5 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
     stop: (): void => {
       abortController.abort("Verified loop stopped");
     },
-  };
-}
-
-function emptyResult(startTime: number): VerifiedLoopResult {
-  return {
-    iterations: 0,
-    completed: [],
-    remaining: [],
-    skipped: [],
-    learnings: [],
-    durationMs: performance.now() - startTime,
-    iterationRecords: [],
   };
 }

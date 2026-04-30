@@ -93,6 +93,16 @@ export interface GateContext {
   readonly remainingItems: readonly PRDItem[];
   /** Items already completed. */
   readonly completedItems: readonly PRDItem[];
+  /**
+   * Composed abort signal for the gate call. Aborts when:
+   * - the loop is stopped (`loop.stop()` or external `signal`), or
+   * - `gateTimeoutMs` elapses for this gate invocation.
+   *
+   * Custom gates that touch external systems (subprocesses, HTTP, etc.) MUST
+   * honor this signal and short-circuit on abort, otherwise timed-out gate
+   * work continues running in the background after the loop has moved on.
+   */
+  readonly signal: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------

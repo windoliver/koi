@@ -66,6 +66,14 @@ Verified-loop has zero opinions about which engine adapter runs the iteration. T
 
 Same principle. The package ships three gate factories as ergonomic defaults but the verification function is just `(GateContext) => Promise<VerificationResult>` — anything that can answer "did it work?" is a valid gate.
 
+### Gates receive an `AbortSignal`
+
+`GateContext.signal` is a composed `AbortSignal` that fires when either the loop is stopped (`loop.stop()` or external `signal`) or `gateTimeoutMs` elapses for the current gate call. Custom gates that touch external systems (subprocesses, HTTP, database queries) **must** honor this signal — otherwise timed-out work continues running in the background while the loop has already moved on, producing duplicate side effects. Built-in gates honor it: `createTestGate` kills the spawned process on abort; `createCompositeGate` stops invoking remaining sub-gates after abort.
+
+### PRD read failures throw, never silently succeed
+
+If the initial PRD read fails (missing file, unreadable, malformed JSON), `run()` throws rather than returning `iterations: 0`. A scheduler that gets a "no work to do" result from a corrupt PRD would falsely report success — the throw forces the caller to handle the failure mode explicitly. Same behavior if the PRD becomes unreadable mid-loop.
+
 ## Public API
 
 ```typescript

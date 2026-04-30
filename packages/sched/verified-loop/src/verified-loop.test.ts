@@ -216,13 +216,15 @@ describe("VerifiedLoop.run", () => {
     expect(result.remaining).toEqual([]);
   });
 
-  test("returns 0 iterations if PRD file missing", async () => {
+  test("throws when PRD file is missing", async () => {
     const loop = createVerifiedLoop(makeConfig({ prdPath: join(tmpDir, "missing.json") }));
-    const result = await loop.run();
+    await expect(loop.run()).rejects.toThrow(/cannot read PRD/);
+  });
 
-    expect(result.iterations).toBe(0);
-    expect(result.completed).toEqual([]);
-    expect(result.remaining).toEqual([]);
+  test("throws when PRD file is malformed JSON", async () => {
+    await Bun.write(prdPath, "{ not valid json");
+    const loop = createVerifiedLoop(makeConfig());
+    await expect(loop.run()).rejects.toThrow(/cannot read PRD/);
   });
 
   test("per-iteration records have timing data", async () => {
@@ -589,6 +591,76 @@ describe("VerifiedLoop.run", () => {
     const result = await loop.run();
     expect(result.iterations).toBe(2);
     expect([...result.completed].sort()).toEqual(["a", "b"]);
+  });
+
+  test("gate timeout aborts ctx.signal, allowing the gate to cancel external work", async () => {
+    await writePrd({
+      items: [
+        { id: "a", description: "Task A", done: false },
+        { id: "b", description: "Task B", done: false },
+      ],
+    });
+
+    // Use let — justified: cooperative gate observes its abort signal
+    let firstGateAbortObserved = false;
+    let gateCalls = 0;
+    const loop = createVerifiedLoop(
+      makeConfig({
+        gateTimeoutMs: 50,
+        maxIterations: 3,
+        maxConsecutiveFailures: 2,
+        verify: async (ctx) => {
+          gateCalls++;
+          if (gateCalls === 1) {
+            // Cooperative external worker: yields control while signal pending,
+            // resolves only when aborted (proves signal arrived).
+            await new Promise<void>((resolve) => {
+              ctx.signal.addEventListener("abort", () => {
+                firstGateAbortObserved = true;
+                resolve();
+              });
+            });
+            return { passed: false, details: "cooperatively aborted" };
+          }
+          return { passed: true };
+        },
+      }),
+    );
+    const result = await loop.run();
+
+    expect(firstGateAbortObserved).toBe(true);
+    expect(result.iterationRecords[0]?.gateResult.passed).toBe(false);
+    expect(result.completed.length).toBeGreaterThan(0);
+  }, 5_000);
+
+  test("passing gate with empty itemsCompleted still marks current item done", async () => {
+    // Regression: previously a gate returning `passed: true, itemsCompleted: []`
+    // (truthy array, empty contents) took the multi-mark branch and marked
+    // nothing — leaving the current item pending while learnings logged
+    // "Item X completed". Now current.id is always included.
+    await writePrd({
+      items: [
+        { id: "a", description: "Task A", done: false },
+        { id: "b", description: "Task B", done: false },
+      ],
+    });
+
+    const loop = createVerifiedLoop(
+      makeConfig({ verify: async () => ({ passed: true, itemsCompleted: [] }) }),
+    );
+    const result = await loop.run();
+    expect([...result.completed].sort()).toEqual(["a", "b"]);
+    expect(result.iterations).toBe(2);
+  });
+
+  test("passing gate with only unrelated itemsCompleted still marks current item done", async () => {
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+    const loop = createVerifiedLoop(
+      makeConfig({ verify: async () => ({ passed: true, itemsCompleted: ["unrelated-id"] }) }),
+    );
+    const result = await loop.run();
+    expect(result.completed).toEqual(["a"]);
+    expect(result.iterations).toBe(1);
   });
 
   test("itemsCompleted referencing an unknown id logs warning and completes the known ones", async () => {

@@ -22,6 +22,10 @@ export function createTestGate(
   return async (ctx: GateContext): Promise<VerificationResult> => {
     const cwd = options?.cwd ?? ctx.workingDir;
 
+    if (ctx.signal.aborted) {
+      return { passed: false, details: "Test gate skipped: aborted before start" };
+    }
+
     try {
       const proc = Bun.spawn(args as string[], {
         cwd,
@@ -29,12 +33,18 @@ export function createTestGate(
         stderr: "pipe",
       });
 
+      const onAbort = (): void => {
+        proc.kill();
+      };
+      ctx.signal.addEventListener("abort", onAbort, { once: true });
+
       const timer = setTimeout(() => {
         proc.kill();
       }, timeoutMs);
 
       const exitCode = await proc.exited;
       clearTimeout(timer);
+      ctx.signal.removeEventListener("abort", onAbort);
 
       const stderr = await new Response(proc.stderr).text();
 
@@ -87,6 +97,11 @@ export function createCompositeGate(gates: readonly VerificationFn[]): Verificat
     let allPassed = true;
 
     for (const gate of gates) {
+      if (ctx.signal.aborted) {
+        details.push("Composite gate aborted before remaining sub-gates ran");
+        allPassed = false;
+        break;
+      }
       const result = await gate(ctx);
       if (result.details) {
         details.push(result.details);
