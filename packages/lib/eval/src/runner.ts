@@ -177,30 +177,35 @@ async function collectTranscriptWithTimeout(
 ): Promise<CollectResult> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // Suppress the orphan-rejection path: the consumer of `timeoutPromise`
+  // is `Promise.race`; we still attach a no-op handler so a sync agent
+  // failure (which exits before we ever race) cannot surface as an
+  // unhandled rejection later.
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       controller.abort(new Error("timeout"));
       reject(new Error("timeout"));
     }, timeoutMs);
   });
-  const inputWithSignal = { ...task.input, signal: controller.signal };
-  const iterator = agent.stream(inputWithSignal)[Symbol.asyncIterator]();
+  timeoutPromise.catch(() => {
+    // intentionally swallowed — the only meaningful consumer is Promise.race below
+  });
   try {
-    while (true) {
-      const next = await Promise.race([iterator.next(), timeoutPromise]);
-      if (next.done) return { timedOut: false, returnAwaited: true };
-      transcript.push(next.value);
+    const inputWithSignal = { ...task.input, signal: controller.signal };
+    const iterator = agent.stream(inputWithSignal)[Symbol.asyncIterator]();
+    try {
+      while (true) {
+        const next = await Promise.race([iterator.next(), timeoutPromise]);
+        if (next.done) return { timedOut: false, returnAwaited: true };
+        transcript.push(next.value);
+      }
+    } catch (e: unknown) {
+      if (controller.signal.aborted && iterator.return !== undefined) {
+        const returnAwaited = await raceReturn(iterator);
+        throw createTimeoutMarker(e, returnAwaited);
+      }
+      throw e;
     }
-  } catch (e: unknown) {
-    if (timer !== undefined) clearTimeout(timer);
-    if (controller.signal.aborted && iterator.return !== undefined) {
-      // Wait briefly for cooperative teardown so we can report whether the
-      // agent acknowledged cancellation. If it doesn't ack in time, the
-      // trial's cancellation status will be "unconfirmed".
-      const returnAwaited = await raceReturn(iterator);
-      throw createTimeoutMarker(e, returnAwaited);
-    }
-    throw e;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

@@ -68,6 +68,24 @@ describe("runEval", () => {
     expect(run.summary.errorCount).toBe(1);
   });
 
+  test("synchronous stream() failure does not orphan timeout rejection", async () => {
+    const run = await runEval({
+      name: "sync-fail",
+      tasks: [task("t1", "x", [exactMatch()])],
+      agentFactory: () => ({
+        stream: (): AsyncIterable<EngineEvent> => {
+          throw new Error("sync-boom");
+        },
+      }),
+      idGen: () => "run-sb",
+    });
+    expect(run.trials[0]?.status).toBe("error");
+    expect(run.trials[0]?.error).toContain("sync-boom");
+    // Wait long enough for any orphaned timer to fire — if it does and is
+    // unhandled, Bun will surface a rejection on the next tick.
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  });
+
   test("hanging agent's trial is reported with cancellation: 'unconfirmed'", async () => {
     const run = await runEval({
       name: "hang-cancel",

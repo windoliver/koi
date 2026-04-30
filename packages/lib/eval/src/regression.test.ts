@@ -76,6 +76,24 @@ describe("compareRuns", () => {
     }
   });
 
+  test("flags new task with low mean score even if pass rate is 100%", () => {
+    const baselineByTask = [{ taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1 }];
+    const currentByTask = [
+      { taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1 },
+      { taskId: "t2-new", taskName: "t2-new", passRate: 1, meanScore: 0.6, trials: 1 },
+    ];
+    const result = compareRuns(
+      run("b", summary(1, 1, baselineByTask)),
+      run("c", summary(1, 0.8, currentByTask)),
+    );
+    expect(result.kind).toBe("fail");
+    if (result.kind === "fail") {
+      expect(
+        result.regressions.some((r) => r.taskId === "t2-new" && r.metric === "meanScore"),
+      ).toBe(true);
+    }
+  });
+
   test("respects custom thresholds", () => {
     const baseline = run("b", summary(1, 1));
     const current = run("c", summary(0.5, 1));
