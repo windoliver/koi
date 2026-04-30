@@ -1564,21 +1564,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // in the original process's PlaybookStore, so re-activating ACE on
       // resume would start with an empty store while the transcript
       // implies continuity — silent behavioral drift the operator can't
-      // diagnose. Fail closed instead, matching the audit/network resume
-      // pattern that refuses ambiguous host transitions. Only applies
-      // when the operator did not pass --manifest (an explicit override
-      // is treated as the operator accepting the empty-store outcome).
-      if (
-        resumeAuditResult.ok &&
-        flags.manifest === undefined &&
-        resumeAuditResult.value.ace?.enabled === true
-      ) {
+      // diagnose. Fail closed unconditionally: --manifest is not an
+      // escape hatch because the operator cannot recover the prior
+      // PlaybookStore even with a matching manifest path.
+      if (resumeAuditResult.ok && resumeAuditResult.value.ace?.enabled === true) {
         process.stderr.write(
           "koi tui: original session manifest.ace.enabled: true cannot be resumed — " +
             "in-memory playbooks from the prior session are unrecoverable, and re-activating " +
             "ACE with an empty store would silently drift from the original prompting and " +
             "learning behavior. Wait for sqlite-backed playbook persistence (#2087), or " +
-            "pass --manifest to acknowledge starting ACE with a fresh store.\n",
+            "start a new session with `koi tui` (no --resume).\n",
         );
         process.exit(1);
       }
