@@ -23,6 +23,7 @@ export function createFsStore(rootDir: string): EvalStore {
       }
     },
     load: async (runId: string, evalName?: string): Promise<EvalRun | undefined> => {
+      assertSafeComponent(runId, "runId");
       if (evalName !== undefined) {
         return await readRunStrict(pathFor(rootDir, evalName, runId), runId, evalName);
       }
@@ -35,13 +36,13 @@ export function createFsStore(rootDir: string): EvalStore {
       return path === undefined ? undefined : await readRunStrict(path, runId);
     },
     latest: async (evalName: string): Promise<EvalRun | undefined> => {
-      // Fail closed for the newest candidate so a corrupted top file
-      // cannot silently demote selection to a stale baseline. Older files
-      // are still skipped (history may legitimately have damaged
-      // artifacts), but the latest must be readable or we throw.
+      assertSafeComponent(evalName, "evalName");
       return findLatestStrict(rootDir, evalName);
     },
-    list: async (evalName: string): Promise<readonly EvalRunMeta[]> => listMetas(rootDir, evalName),
+    list: async (evalName: string): Promise<readonly EvalRunMeta[]> => {
+      assertSafeComponent(evalName, "evalName");
+      return listMetas(rootDir, evalName);
+    },
   };
 }
 
@@ -73,7 +74,28 @@ function serializeRun(run: EvalRun): string {
 }
 
 function pathFor(rootDir: string, evalName: string, runId: string): string {
+  assertSafeComponent(evalName, "evalName");
+  assertSafeComponent(runId, "runId");
   return join(rootDir, encode(evalName), `${encode(runId)}.json`);
+}
+
+/**
+ * Reject path-traversal components. encodeURIComponent does not escape
+ * "." or ".." so we must guard them explicitly to keep operations inside
+ * rootDir.
+ */
+function assertSafeComponent(value: string, what: string): void {
+  if (value.length === 0) throw new Error(`EvalStore: ${what} must be non-empty`);
+  // encodeURIComponent escapes "/", "\" etc. but does NOT escape "." or
+  // ".." — those remain literal and would resolve outside rootDir via
+  // path.join. Block them explicitly. NUL bytes are also blocked because
+  // POSIX path APIs treat them as terminators.
+  if (value === "." || value === "..") {
+    throw new Error(`EvalStore: ${what} "${value}" is not allowed`);
+  }
+  if (value.includes("\0")) {
+    throw new Error(`EvalStore: ${what} contains a NUL byte`);
+  }
 }
 
 // encodeURIComponent guarantees a one-to-one, collision-free mapping from

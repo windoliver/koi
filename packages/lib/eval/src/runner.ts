@@ -317,13 +317,17 @@ async function disposeSafely(agent: AgentHandle | undefined, timeoutMs: number):
     timer = setTimeout(() => resolve(timeoutMarker), timeoutMs);
   });
   try {
-    const winner = await Promise.race([
-      Promise.resolve(agent.dispose()).then(
+    // Wrap the dispose() invocation itself in a thunk so a synchronous
+    // throw from agent.dispose() (its type allows void or Promise<void>)
+    // is captured here and downgraded to "rejected" instead of escaping
+    // out of disposeSafely() and tearing down the whole eval run.
+    const disposePromise = Promise.resolve()
+      .then(() => agent.dispose?.())
+      .then(
         () => true as const,
-        () => "rejected" as const, // dispose() threw — teardown not confirmed
-      ),
-      timeout,
-    ]);
+        () => "rejected" as const,
+      );
+    const winner = await Promise.race([disposePromise, timeout]);
     if (winner === timeoutMarker || winner === "rejected") return false;
     return true;
   } finally {

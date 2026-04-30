@@ -308,6 +308,26 @@ describe("runEval", () => {
     ).rejects.toThrow(/duplicate task id/);
   });
 
+  test("synchronous dispose throw does not crash the run", async () => {
+    const events: readonly EngineEvent[] = [{ kind: "text_delta", delta: "ok" }];
+    const run = await runEval({
+      name: "sync-dispose",
+      tasks: [task("t1", "ok", [exactMatch()])],
+      agentFactory: () => ({
+        stream: async function* (): AsyncIterable<EngineEvent> {
+          for (const ev of events) yield ev;
+        },
+        dispose: () => {
+          throw new Error("sync-dispose-boom");
+        },
+      }),
+      idGen: () => "run-sd",
+    });
+    expect(run.trials).toHaveLength(1);
+    expect(run.trials[0]?.cancellation).toBe("unconfirmed");
+    expect(run.aborted).toBe(true);
+  });
+
   test("hung dispose on a successful trial still triggers run abort", async () => {
     const events: readonly EngineEvent[] = [{ kind: "text_delta", delta: "ok" }];
     const factories: number[] = [];

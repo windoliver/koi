@@ -30,6 +30,15 @@ afterEach(async () => {
 });
 
 describe("createFsStore", () => {
+  test("path-traversal evalName is rejected", async () => {
+    const store = createFsStore(root);
+    await expect(store.list("..")).rejects.toThrow(/not allowed/);
+    await expect(store.latest("..")).rejects.toThrow(/not allowed/);
+    await expect(store.save(makeRun("r", "..", "2026-01-01T00:00:00Z"))).rejects.toThrow(
+      /not allowed/,
+    );
+  });
+
   test("save sanitizes BigInt and circular tool-result payloads", async () => {
     const store = createFsStore(root);
     const baseRun = makeRun("sanitize", "smoke", "2026-01-01T00:00:00Z");
