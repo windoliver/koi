@@ -2,15 +2,23 @@ import { describe, expect, test } from "bun:test";
 import { computeCrystallizeScore, computeSuccessRate } from "./compute-score.js";
 import type { CrystallizationCandidate, OutcomeStats, ToolStep } from "./types.js";
 
+/**
+ * Build occurrence-level OutcomeStats from a representative step list. An
+ * occurrence is a success only when every signal-bearing step succeeded.
+ */
 function statsFromSteps(steps: readonly ToolStep[], occurrences: number): OutcomeStats {
-  let successes = 0;
-  let withOutcome = 0;
+  let sawSignal = false;
+  let occurrenceFailed = false;
   for (const step of steps) {
     if (step.outcome === undefined) continue;
-    withOutcome += 1;
-    if (step.outcome === "success") successes += 1;
+    sawSignal = true;
+    if (step.outcome === "failure") occurrenceFailed = true;
   }
-  return { successes: successes * occurrences, withOutcome: withOutcome * occurrences };
+  if (!sawSignal) return { successes: 0, withOutcome: 0 };
+  return {
+    successes: occurrenceFailed ? 0 : occurrences,
+    withOutcome: occurrences,
+  };
 }
 
 function makeCandidate(

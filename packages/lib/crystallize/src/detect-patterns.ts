@@ -115,15 +115,16 @@ function buildCandidates(
  */
 export function detectPatterns(
   traces: readonly TurnTrace[],
-  config: DetectPatternsConfig,
+  config: DetectPatternsConfig | undefined,
   clock: () => number,
 ): readonly CrystallizationCandidate[] {
-  const minSize = config.minNgramSize ?? DEFAULT_MIN_NGRAM_SIZE;
-  const maxSize = config.maxNgramSize ?? DEFAULT_MAX_NGRAM_SIZE;
-  const minOccurrences = config.minOccurrences ?? DEFAULT_MIN_OCCURRENCES;
-  const maxCandidates = config.maxCandidates ?? DEFAULT_MAX_CANDIDATES;
+  const cfg = config ?? {};
+  const minSize = cfg.minNgramSize ?? DEFAULT_MIN_NGRAM_SIZE;
+  const maxSize = cfg.maxNgramSize ?? DEFAULT_MAX_NGRAM_SIZE;
+  const minOccurrences = cfg.minOccurrences ?? DEFAULT_MIN_OCCURRENCES;
+  const maxCandidates = cfg.maxCandidates ?? DEFAULT_MAX_CANDIDATES;
 
   const sequences = extractToolSequences(traces);
   const ngramMap = extractNgrams(sequences, minSize, maxSize);
-  return buildCandidates(ngramMap, minOccurrences, maxCandidates, clock(), config.firstSeenTimes);
+  return buildCandidates(ngramMap, minOccurrences, maxCandidates, clock(), cfg.firstSeenTimes);
 }

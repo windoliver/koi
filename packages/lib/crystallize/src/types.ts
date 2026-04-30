@@ -21,15 +21,17 @@ export interface ToolNgram {
 }
 
 /**
- * Aggregated outcome statistics across every occurrence of an n-gram. Counts
- * step-level outcomes (one increment per step that carried `outcome` data),
- * not per-occurrence verdicts — this preserves resolution when occurrences
- * have mixed step outcomes.
+ * Aggregated outcome statistics at the **occurrence** level. An occurrence
+ * counts as successful only when every signal-bearing step in that
+ * occurrence succeeded — partial-step success is not enough, because
+ * crystallization callers care whether the *whole* repeated workflow is
+ * safe to automate (a 5-step pattern that fails on the final side-effecting
+ * step is not a healthy forge candidate even when 4/5 step calls succeeded).
  */
 export interface OutcomeStats {
-  /** Steps with `outcome === "success"` summed across all occurrences. */
+  /** Occurrences where every signal-bearing step succeeded. */
   readonly successes: number;
-  /** Steps that carried any `outcome` value summed across all occurrences. */
+  /** Occurrences with at least one signal-bearing step. */
   readonly withOutcome: number;
 }
 

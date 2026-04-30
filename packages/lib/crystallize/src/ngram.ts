@@ -68,16 +68,28 @@ export function computeNgramKey(steps: readonly ToolStep[]): string {
 interface MutableEntry {
   readonly ngram: ToolNgram;
   readonly turnIndices: number[];
+  /** Count of occurrences where every signal-bearing step succeeded. */
   successes: number;
+  /** Count of occurrences with at least one signal-bearing step. */
   withOutcome: number;
 }
 
-function accumulateStepOutcomes(entry: MutableEntry, steps: readonly ToolStep[]): void {
+/** Classify one occurrence's whole-pattern outcome from its step-level signals. */
+function occurrenceOutcome(steps: readonly ToolStep[]): "success" | "failure" | undefined {
+  let sawSignal = false;
   for (const step of steps) {
     if (step.outcome === undefined) continue;
-    entry.withOutcome += 1;
-    if (step.outcome === "success") entry.successes += 1;
+    sawSignal = true;
+    if (step.outcome === "failure") return "failure";
   }
+  return sawSignal ? "success" : undefined;
+}
+
+function recordOccurrence(entry: MutableEntry, steps: readonly ToolStep[]): void {
+  const verdict = occurrenceOutcome(steps);
+  if (verdict === undefined) return;
+  entry.withOutcome += 1;
+  if (verdict === "success") entry.successes += 1;
 }
 
 function freezeEntry(entry: MutableEntry): NgramEntry {
@@ -112,15 +124,18 @@ export function extractNgrams(
             successes: 0,
             withOutcome: 0,
           };
-          accumulateStepOutcomes(entry, steps);
+          recordOccurrence(entry, steps);
           accum.set(key, entry);
           continue;
         }
-        // Per-turn dedup of the turn-indices list, but always aggregate
-        // outcomes — every occurrence contributes its step-level signal.
+        // Per-turn dedup: only the first window match in a given turn
+        // counts as a new occurrence. Frequency and outcome aggregation use
+        // the same unit (turns containing the pattern), so a retry storm
+        // inside one turn cannot inflate or distort the score.
         const indices = existing.turnIndices;
-        if (indices[indices.length - 1] !== turnIndex) indices.push(turnIndex);
-        accumulateStepOutcomes(existing, steps);
+        if (indices[indices.length - 1] === turnIndex) continue;
+        indices.push(turnIndex);
+        recordOccurrence(existing, steps);
       }
     }
   }

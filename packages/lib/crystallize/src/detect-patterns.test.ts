@@ -230,10 +230,10 @@ describe("detectPatterns", () => {
     expect(candidates[1]?.ngram.key).toBe("bad1|bad2");
   });
 
-  test("aggregates outcome stats across every occurrence (not just one representative)", () => {
+  test("aggregates occurrence-level outcome stats across every occurrence", () => {
     // Same pattern across 4 turns: 3 succeed, 1 fails (kind:error envelope).
-    // Aggregate outcome stats must reflect the full set, not the single n-gram
-    // representative captured at first sighting.
+    // Outcome stats are occurrence-level: 3 successful occurrences, 4 with
+    // any signal-bearing step.
     const fail = { kind: "error" as const, message: "boom" };
     const traces = [
       createTrace(0, ["a", "b"], [{}, {}]),
@@ -243,9 +243,53 @@ describe("detectPatterns", () => {
     ];
     const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
     expect(candidates).toHaveLength(1);
-    const stats = candidates[0]?.outcomeStats;
-    // 3 turns × 2 successes + 1 turn × 2 failures = 6 successes, 8 with outcome
-    expect(stats).toEqual({ successes: 6, withOutcome: 8 });
+    expect(candidates[0]?.outcomeStats).toEqual({ successes: 3, withOutcome: 4 });
+  });
+
+  test("treats whole occurrence as failure when any signal-bearing step failed (not partial)", () => {
+    // 3 occurrences each have 4 successful steps and 1 failed final step.
+    // Step-level scoring would yield 12/15 = 0.8 successRate; occurrence-level
+    // scoring must yield 0/3 = 0 because the workflow never fully succeeded.
+    const fail = { kind: "error" as const, message: "boom" };
+    const traces = [
+      createTrace(0, ["a", "b", "c", "d", "e"], [{}, {}, {}, {}, fail]),
+      createTrace(1, ["a", "b", "c", "d", "e"], [{}, {}, {}, {}, fail]),
+      createTrace(2, ["a", "b", "c", "d", "e"], [{}, {}, {}, {}, fail]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 5, maxNgramSize: 5 }, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.outcomeStats).toEqual({ successes: 0, withOutcome: 3 });
+  });
+
+  test("retry storm inside a single turn does not distort outcome stats", () => {
+    // One turn with 20 repeated [a,b] occurrences (all successes), plus 2
+    // more turns each with one [a,b] failure occurrence. Frequency unit is
+    // turns (3 occurrences); outcome stats are also turn-aligned: 1
+    // successful occurrence, 3 with outcome.
+    const fail = { kind: "error" as const, message: "boom" };
+    const burst = Array.from({ length: 20 }, () => ["a", "b"]).flat();
+    const burstOutputs = Array.from({ length: 20 }, () => [{}, {}]).flat();
+    const traces = [
+      createTrace(0, burst, burstOutputs),
+      createTrace(1, ["a", "b"], [fail, fail]),
+      createTrace(2, ["a", "b"], [fail, fail]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.occurrences).toBe(3);
+    expect(candidates[0]?.outcomeStats).toEqual({ successes: 1, withOutcome: 3 });
+  });
+
+  test("accepts undefined config (uses internal defaults)", () => {
+    // Public-API hardening: omitting `config` from JS callers must not crash.
+    const traces = [
+      createTrace(0, ["a", "b"]),
+      createTrace(1, ["a", "b"]),
+      createTrace(2, ["a", "b"]),
+    ];
+    const candidates = detectPatterns(traces, undefined, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.ngram.key).toBe("a|b");
   });
 
   test("uses firstSeenTimes for detectedAt when key was previously observed", () => {
