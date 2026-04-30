@@ -112,6 +112,13 @@
         "@koi/event-delivery": "workspace:*",
       },
     },
+    "packages/lib/ace-types": {
+      "name": "@koi/ace-types",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/agent-discovery": {
       "name": "@koi/agent-discovery",
       "version": "0.0.0",
@@ -1918,6 +1925,8 @@
     "@jsonjoy.com/util": ["@jsonjoy.com/util@1.9.0", "", { "dependencies": { "@jsonjoy.com/buffers": "^1.0.0", "@jsonjoy.com/codegen": "^1.0.0" }, "peerDependencies": { "tslib": "2" } }, "sha512-pLuQo+VPRnN8hfPqUTLTHk126wuYdXVxE6aDmjSeV4NCAgyxWbiOIeNJVtID3h1Vzpoi9m4jXezf73I6LgabgQ=="],
 
     "@koi-agent/cli": ["@koi-agent/cli@workspace:packages/meta/cli"],
+
+    "@koi/ace-types": ["@koi/ace-types@workspace:packages/lib/ace-types"],
 
     "@koi/agent-discovery": ["@koi/agent-discovery@workspace:packages/lib/agent-discovery"],
 
