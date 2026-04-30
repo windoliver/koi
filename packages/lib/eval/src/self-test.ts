@@ -114,14 +114,19 @@ async function waitForAbortAck(
     const settled = await Promise.race([checkPromise, ackTimeout]);
     if (settled === "timeout") return false;
     if (settled.kind === "err") {
-      const e = settled.error;
-      if (e instanceof Error && e.message.includes(ABORT_ACK_REASON)) return true;
-      const cause = e instanceof Error ? (e.cause as unknown) : undefined;
-      if (cause instanceof Error && cause.message.includes(ABORT_ACK_REASON)) return true;
-      return false;
+      // Any rejection that arrives within the ack window demonstrates
+      // the check stopped in response to the abort — including standard
+      // `AbortError` from `fetch`/streams or library-specific abort
+      // errors. Requiring a private sentinel would mark every
+      // spec-compliant cooperative check as `unconfirmed` and stall
+      // the rest of the suite.
+      return true;
     }
-    // Late-settled CheckResult: only count as ack when the implementation
-    // explicitly references our abort sentinel in its message.
+    // Late-settled CheckResult: a successful resolution within the ack
+    // window is genuinely ambiguous (the check may have observed signal
+    // and returned, or may simply have happened to finish). Require an
+    // explicit ack sentinel to count as confirmed; otherwise treat as
+    // unconfirmed so the caller cannot assume work has stopped.
     return settled.value.message?.includes(ABORT_ACK_REASON) === true;
   } finally {
     if (timer !== undefined) clearTimeout(timer);

@@ -695,6 +695,57 @@ describe("createFsStore", () => {
     expect(out.output instanceof URL).toBe(false);
   });
 
+  test("invalid Date in transcript payload does not crash save()", async () => {
+    // `new Date("nope")` is still a Date; toISOString() throws RangeError.
+    // The serializer must encode it as a marker instead of dropping the
+    // run on the floor — transcript payloads are untrusted by definition.
+    const store = createFsStore(root);
+    const baseRun = makeRun("baddate", "smoke", "2026-01-01T00:00:00.000Z");
+    const run = {
+      ...baseRun,
+      config: { ...baseRun.config, taskCount: 1 },
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [{ kind: "tool_result", callId: "c1", output: { when: new Date("nope") } }],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "fail" as const,
+          cancellation: "n/a" as const,
+        },
+      ],
+      summary: {
+        ...baseRun.summary,
+        trialCount: 1,
+        passRate: 0,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 1,
+            taskFingerprint: fp("spec-bd"),
+            taskSpec: "spec-bd",
+          },
+        ],
+      },
+    } as unknown as Parameters<typeof store.save>[0];
+    await store.save(run);
+    const loaded = await store.load("baddate", "smoke");
+    const out = loaded?.trials[0]?.transcript[0] as { output: { when: unknown } };
+    expect(out.output.when instanceof Date).toBe(true);
+    expect(Number.isNaN((out.output.when as Date).getTime())).toBe(true);
+  });
+
   test("list returns empty for unknown eval", async () => {
     const store = createFsStore(root);
     expect(await store.list("missing")).toHaveLength(0);

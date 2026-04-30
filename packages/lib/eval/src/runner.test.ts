@@ -462,6 +462,36 @@ describe("runEval", () => {
     expect(factoryCalled).toBe(0);
   });
 
+  test("default trialCount is resolved into the fingerprint", async () => {
+    // A task that omits `trialCount` resolves to EVAL_DEFAULTS.TRIAL_COUNT.
+    // Persist the resolved value so two tasks differing only in implicit
+    // vs explicit default still produce the same fingerprint, AND a
+    // suite that changes the default sample count cannot reuse the
+    // baseline silently.
+    const t1 = computeTaskFingerprint({
+      id: "t",
+      name: "t",
+      input: { kind: "text", text: "go" } as never,
+      graders: [exactMatch()],
+    });
+    const t2 = computeTaskFingerprint({
+      id: "t",
+      name: "t",
+      input: { kind: "text", text: "go" } as never,
+      graders: [exactMatch()],
+      trialCount: 1,
+    });
+    expect(t1).toBe(t2);
+    const t3 = computeTaskFingerprint({
+      id: "t",
+      name: "t",
+      input: { kind: "text", text: "go" } as never,
+      graders: [exactMatch()],
+      trialCount: 5,
+    });
+    expect(t3).not.toBe(t1);
+  });
+
   test("AbortSignal in input does not require fingerprintSalt", async () => {
     // EngineInput.signal is the documented cancellation channel, not part
     // of task identity. Routine cancellation plumbing must not turn into

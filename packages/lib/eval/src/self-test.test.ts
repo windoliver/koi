@@ -105,6 +105,34 @@ describe("runSelfTest", () => {
     expect(result.checks[0]?.cancellation).toBe("confirmed");
   });
 
+  test("rejection with standard AbortError counts as confirmed cancellation", async () => {
+    // Cooperative check that rejects with a third-party AbortError-like
+    // error (fetch / streams / DB clients all do this). The previous
+    // behavior required our private sentinel, which would mark every
+    // spec-compliant cooperative check as `unconfirmed` and stop the
+    // remaining checks.
+    const checks: readonly SelfTestCheck[] = [
+      {
+        name: "abort-error",
+        run: (signal) =>
+          new Promise<{ pass: true }>((_, reject) => {
+            signal.addEventListener("abort", () => {
+              const e = new Error("The operation was aborted");
+              e.name = "AbortError";
+              reject(e);
+            });
+          }),
+        timeoutMs: 10,
+      },
+      { name: "should-run", run: () => ({ pass: true }) },
+    ];
+    const result = await runSelfTest(checks);
+    expect(result.checks[0]?.cancellation).toBe("confirmed");
+    // Subsequent checks must still run because cancellation was confirmed.
+    expect(result.checks).toHaveLength(2);
+    expect(result.checks[1]?.name).toBe("should-run");
+  });
+
   test("bail stops at first failure", async () => {
     let secondRan = false;
     const checks: readonly SelfTestCheck[] = [

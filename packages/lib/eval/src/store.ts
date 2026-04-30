@@ -92,7 +92,16 @@ function serializeRun(run: EvalRun): string {
     // Reversibly encode common host objects — silently degrading them to
     // {} would lose debugging information that the persisted transcript
     // is supposed to preserve.
-    if (value instanceof Date) return { [WRAPPED]: "date", iso: value.toISOString() };
+    if (value instanceof Date) {
+      // `new Date("nope")` is still a Date — `.toISOString()` would throw
+      // RangeError and abort the entire save() after the eval already ran.
+      // Encode invalid dates as a marker so a stray bad date in tool
+      // output cannot drop a whole run on the floor.
+      const time = value.getTime();
+      return Number.isNaN(time)
+        ? { [WRAPPED]: "date", iso: null }
+        : { [WRAPPED]: "date", iso: value.toISOString() };
+    }
     if (value instanceof URL) return { [WRAPPED]: "url", href: value.href };
     if (value instanceof RegExp) {
       return { [WRAPPED]: "regexp", source: value.source, flags: value.flags };
@@ -168,6 +177,10 @@ function revive(value: unknown): unknown {
   if (typeof wrapped === "string") {
     switch (wrapped) {
       case "date":
+        // Invalid-date marker (`iso: null`) round-trips back to an
+        // Invalid Date instance so consumers see the original NaN-time
+        // value rather than a synthetic plain object.
+        if (obj.iso === null) return new Date(Number.NaN);
         return typeof obj.iso === "string" ? new Date(obj.iso) : obj;
       case "url":
         return typeof obj.href === "string" ? new URL(obj.href) : obj;

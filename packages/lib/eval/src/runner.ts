@@ -554,8 +554,10 @@ export function canonicalTaskSpec(task: EvalTask): string {
     // Execution-semantic fields: changing trial count or per-task timeout
     // changes what the suite actually measures (flakiness exposure, slow
     // failure modes), so reused taskIds with different values must not
-    // compare as equivalent.
-    trialCount: task.trialCount,
+    // compare as equivalent. Resolve `trialCount` to the value that will
+    // actually run (default included) so a config change to the default
+    // doesn't masquerade as the same task.
+    trialCount: task.trialCount ?? EVAL_DEFAULTS.TRIAL_COUNT,
     timeoutMs: task.timeoutMs,
     salt: task.fingerprintSalt,
   });
