@@ -6,6 +6,8 @@
  * promotion-gate wiring land in subsequent steps.
  */
 
+export type { AceConfig } from "./ace-middleware.js";
+export { createAceMiddleware } from "./ace-middleware.js";
 export type { ConsolidateFn, DefaultConsolidatorOptions } from "./consolidator.js";
 export { createDefaultConsolidator } from "./consolidator.js";
 export type { SelectOptions } from "./injector.js";
