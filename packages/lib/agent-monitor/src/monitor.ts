@@ -255,6 +255,12 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
   return {
     name: "agent-monitor",
     priority: AGENT_MONITOR_PRIORITY,
+    // Observer-only telemetry: runs after resolve/intercept so it sees the
+    // final post-mutation request stream the engine actually executes.
+    // `concurrent: true` lets observer hooks run alongside next() without
+    // blocking; observer errors never propagate to the caller.
+    phase: "observe",
+    concurrent: true,
     describeCapabilities: () => undefined,
 
     onSessionStart: async (ctx: SessionContext) => {

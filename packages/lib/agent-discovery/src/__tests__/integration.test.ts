@@ -51,7 +51,10 @@ describe("agent-discovery integration", () => {
     // All three sources produce a descriptor for "claude-code"; identity is
     // (source, transport, name) so an MCP server cannot shadow local CLI
     // entries by reusing the name.
-    expect(claudes.map((a) => a.source).sort()).toEqual(["filesystem", "mcp", "path"]);
+    // PATH and filesystem share transport "cli" so source priority breaks
+    // the tie (filesystem < path), leaving fs+mcp. MCP keeps a separate
+    // descriptor because its transport differs.
+    expect(claudes.map((a) => a.source).sort()).toEqual(["filesystem", "mcp"]);
   });
 
   test("partial failure: MCP source rejects, PATH+FS still produce", async () => {
