@@ -350,15 +350,44 @@ function emit(
 }
 
 async function readBoundedBody(req: Request, maxBytes: number): Promise<Uint8Array | null> {
+  // Reject obvious overflows from declared Content-Length without ever
+  // touching the body stream. Truthful clients pay zero allocation cost.
   const cl = req.headers.get("Content-Length");
   if (cl !== null) {
     const n = Number(cl);
     if (Number.isFinite(n) && n > maxBytes) return null;
   }
-  // Carry raw bytes through verification: HMAC must cover the exact producer
-  // bytes, not a re-encoded UTF-8 string. Decoding happens AFTER signature
-  // verification so non-UTF-8 payloads do not collapse into U+FFFD before HMAC.
-  const buf = await req.arrayBuffer();
-  if (buf.byteLength > maxBytes) return null;
-  return new Uint8Array(buf);
+  const body = req.body;
+  if (body === null) return new Uint8Array(0);
+
+  // Stream and abort once the cap is exceeded so chunked / lying-Content-Length
+  // requests cannot force full materialization of an oversized payload.
+  // Decoding to UTF-8 happens AFTER signature verification on the raw bytes.
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        // Stop receiving early: drop the reader's lock so the stream can be GC'd.
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.byteLength;
+  }
+  return out;
 }

@@ -1,3 +1,4 @@
+import { createLru, type Lru } from "./lru.js";
 import { createTokenBucket, type TokenBucket } from "./token-bucket.js";
 import type { RateLimitConfig } from "./types.js";
 
@@ -14,19 +15,44 @@ export interface RateLimitStore {
   ) => ConsumeResult;
 }
 
-export function createRateLimitStore(clock: () => number = Date.now): RateLimitStore {
-  const sourceBuckets = new Map<string, TokenBucket>();
-  const tenantBuckets = new Map<string, TokenBucket>();
+export interface RateLimitStoreOptions {
+  readonly clock?: () => number;
+  /** Max distinct source IDs tracked. LRU-evicts oldest beyond this. */
+  readonly sourceCapacity?: number;
+  /** Max distinct (channel, tenant) pairs tracked. LRU-evicts oldest beyond this. */
+  readonly tenantCapacity?: number;
+}
+
+const DEFAULT_SOURCE_CAPACITY = 50_000;
+const DEFAULT_TENANT_CAPACITY = 50_000;
+
+export function createRateLimitStore(
+  optionsOrClock: RateLimitStoreOptions | (() => number) = {},
+): RateLimitStore {
+  const opts: RateLimitStoreOptions =
+    typeof optionsOrClock === "function" ? { clock: optionsOrClock } : optionsOrClock;
+  const clock = opts.clock ?? Date.now;
+  // Bounded LRU prevents memory exhaustion when an attacker varies source IDs
+  // (spray) or tenant IDs (auth-validated but high-cardinality). Eviction of an
+  // idle bucket is safe — the next request from that key just refills a fresh
+  // bucket at full capacity, which is the same behavior an attacker could
+  // already obtain by waiting one refill cycle.
+  const sourceBuckets: Lru<string, TokenBucket> = createLru(
+    opts.sourceCapacity ?? DEFAULT_SOURCE_CAPACITY,
+  );
+  const tenantBuckets: Lru<string, TokenBucket> = createLru(
+    opts.tenantCapacity ?? DEFAULT_TENANT_CAPACITY,
+  );
 
   function getOrCreate(
-    map: Map<string, TokenBucket>,
+    store: Lru<string, TokenBucket>,
     key: string,
     cfg: RateLimitConfig,
   ): TokenBucket {
-    let b = map.get(key);
+    let b = store.get(key);
     if (b === undefined) {
       b = createTokenBucket(cfg, clock);
-      map.set(key, b);
+      store.set(key, b);
     }
     return b;
   }
