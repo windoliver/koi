@@ -35,7 +35,12 @@ export function computeCrystallizeScore(
   now: number,
   config?: ScoreConfig,
 ): number {
-  const halfLife = config?.recencyHalfLifeMs ?? DEFAULT_RECENCY_HALF_LIFE_MS;
+  // Clamp half-life to a positive value: a non-positive half-life would
+  // produce NaN at age 0 (0/0) or infinite decay otherwise. Treat such input
+  // as "no decay declared" and fall back to the default rather than emitting
+  // NaN scores that propagate into ranking.
+  const rawHalfLife = config?.recencyHalfLifeMs ?? DEFAULT_RECENCY_HALF_LIFE_MS;
+  const halfLife = rawHalfLife > 0 ? rawHalfLife : DEFAULT_RECENCY_HALF_LIFE_MS;
   const stepsReduction = Math.max(1, candidate.ngram.steps.length - 1);
   const ageMs = Math.max(0, now - candidate.detectedAt);
   const recencyBoost = 0.5 ** (ageMs / halfLife);

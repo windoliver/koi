@@ -60,9 +60,19 @@ export function extractToolSequences(traces: readonly TurnTrace[]): readonly Tur
   return traces.map((trace) => ({ turnIndex: trace.turnIndex, steps: projectTurn(trace) }));
 }
 
-/** Stable deduplication key for an n-gram — pipe-joined tool IDs. */
+/**
+ * Escape `\` and `|` in a tool id so that pipe-joined keys remain unambiguous
+ * even when tool ids contain the separator. Without escaping, the IDs
+ * `["a|b", "c"]` and `["a", "b|c"]` would both produce the key `"a|b|c"` and
+ * collide in the n-gram map.
+ */
+function escapeToolId(id: string): string {
+  return id.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+}
+
+/** Stable deduplication key for an n-gram — pipe-joined, pipe-escaped tool IDs. */
 export function computeNgramKey(steps: readonly ToolStep[]): string {
-  return steps.map((s) => s.toolId).join("|");
+  return steps.map((s) => escapeToolId(s.toolId)).join("|");
 }
 
 interface MutableEntry {
