@@ -17,6 +17,7 @@
 import type { CredentialComponent, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { preflightBlockReason } from "@koi/tools-web";
+import { createSafeFetcher } from "@koi/url-safety";
 
 const MAX_BODY_BYTES = 50_000;
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -27,7 +28,10 @@ export interface AuthedFetchToolOptions {
   readonly credentials: CredentialComponent;
   /**
    * Optional `fetch` override (e.g. a scope-wrapped fetch from
-   * `createScopedFetcher`). Defaults to the global `fetch`.
+   * `createScopedFetcher`). Defaults to a `createSafeFetcher`-wrapped
+   * global `fetch` so the unsafe path (raw `globalThis.fetch` with no
+   * SSRF/DNS protection) is never used: a caller that omits `fetchFn`
+   * still gets DNS-backed isSafeUrl checks and redirect re-validation.
    */
   readonly fetchFn?: typeof fetch;
   /** Optional custom tool policy. Defaults to `DEFAULT_UNSANDBOXED_POLICY`. */
@@ -36,7 +40,13 @@ export interface AuthedFetchToolOptions {
 
 export function createAuthedFetchTool(opts: AuthedFetchToolOptions): Tool {
   const { credentials } = opts;
-  const fetchFn = opts.fetchFn ?? globalThis.fetch;
+  // Default to createSafeFetcher (DNS-backed SSRF guard) rather than
+  // the bare globalThis.fetch — even if the host forgets to inject a
+  // scope-wrapped fetch, the credential is never sent to a private/
+  // metadata target. The TUI wiring still injects its own scope-wrapped
+  // fetch (with preDnsAllowCheck), which takes precedence over this
+  // default.
+  const fetchFn = opts.fetchFn ?? createSafeFetcher();
   const policy = opts.policy ?? DEFAULT_UNSANDBOXED_POLICY;
   return {
     descriptor: {
@@ -143,37 +153,87 @@ export function createAuthedFetchTool(opts: AuthedFetchToolOptions): Tool {
       }
 
       const authHeader = scheme === "" ? credValue : `${scheme} ${credValue}`;
-      // Redact the credential everywhere it appears in returned strings.
-      // Two layers:
-      //   (1) Exact-match: replace every full-length occurrence of
-      //       authHeader and credValue with [REDACTED].
-      //   (2) Overlap-aware: walk every contiguous credValue substring
-      //       of length REDACT_MIN_FRAGMENT (sliding window). A
-      //       reflecting upstream that echoes any prefix/suffix/middle
-      //       slice longer than the window will hit at least one of
-      //       these fragments. Replacing it with [REDACTED] removes a
-      //       chain of leaked bytes — repeated passes erode the
-      //       reflection until no fragment survives.
-      // 16 bytes is the smallest fragment that's still identifying for
-      // typical high-entropy API keys (sk-live-XXXX, ghp_XXXX, etc.)
-      // while being unlikely to false-positive on body content.
-      const REDACT_MIN_FRAGMENT = 16;
-      const fragments: readonly string[] =
-        credValue.length >= REDACT_MIN_FRAGMENT
-          ? Array.from({ length: credValue.length - REDACT_MIN_FRAGMENT + 1 }, (_, i) =>
-              credValue.slice(i, i + REDACT_MIN_FRAGMENT),
-            )
-          : [];
+      // Round-7 finding: independent fragment passes leave residuals.
+      // A reflected echo containing one fragment match would have only
+      // that 16-byte window replaced — bytes immediately adjacent to
+      // the match (up to 15 of them) survive because the overlapping
+      // fragments no longer find their substrings after the first
+      // split. Switch to an overlap-aware longest-match scan: index
+      // every REDACT_MIN_FRAGMENT-byte n-gram of credValue once, then
+      // walk the response body and at each position extend the match
+      // as far as it stays a contiguous substring of credValue,
+      // collapsing the entire run to a single [REDACTED]. This makes
+      // the redaction width follow the leaked run instead of being
+      // capped at the fragment size.
+      //
+      // 8-byte fragments balance recall vs false-positive risk: a
+      // typical API key has >40 bits of entropy in any 8-byte window,
+      // so collisions with prose are vanishingly rare; the previous
+      // 16-byte threshold was too coarse to catch reflected slices.
+      const REDACT_MIN_FRAGMENT = 8;
+      const credNgrams = new Map<string, number[]>();
+      if (credValue.length >= REDACT_MIN_FRAGMENT) {
+        for (let j = 0; j + REDACT_MIN_FRAGMENT <= credValue.length; j++) {
+          const ng = credValue.slice(j, j + REDACT_MIN_FRAGMENT);
+          let arr = credNgrams.get(ng);
+          if (arr === undefined) {
+            arr = [];
+            credNgrams.set(ng, arr);
+          }
+          arr.push(j);
+        }
+      }
+      const redactCredEchoes = (text: string): string => {
+        if (text.length === 0) return text;
+        // Cred shorter than fragment threshold: only exact-match
+        // redaction is reliable. (preflight already caps creds at
+        // MAX_CRED_BYTES; tiny creds are atypical but supported.)
+        if (credValue.length < REDACT_MIN_FRAGMENT) {
+          return credValue.length > 0 ? text.split(credValue).join("[REDACTED]") : text;
+        }
+        let out = "";
+        let i = 0;
+        while (i < text.length) {
+          if (i + REDACT_MIN_FRAGMENT <= text.length) {
+            const window = text.slice(i, i + REDACT_MIN_FRAGMENT);
+            const positions = credNgrams.get(window);
+            if (positions !== undefined) {
+              // Find the longest contiguous run starting at text[i]
+              // that matches credValue from any anchor position. This
+              // expands a match into adjacent bytes, so an echoed
+              // 24-byte slice collapses to one [REDACTED] instead of
+              // leaving 16 bytes scrubbed and 8 bytes leaked.
+              let bestLen = REDACT_MIN_FRAGMENT;
+              for (const j of positions) {
+                let r = REDACT_MIN_FRAGMENT;
+                while (
+                  i + r < text.length &&
+                  j + r < credValue.length &&
+                  text.charCodeAt(i + r) === credValue.charCodeAt(j + r)
+                ) {
+                  r++;
+                }
+                if (r > bestLen) bestLen = r;
+              }
+              out += "[REDACTED]";
+              i += bestLen;
+              continue;
+            }
+          }
+          out += text[i];
+          i++;
+        }
+        return out;
+      };
       const redact = (s: string): string => {
         if (s.length === 0) return s;
+        // authHeader exact-match first removes the scheme prefix
+        // (e.g. "Bearer ") cleanly; credValue echoes are then handled
+        // by the overlap-aware scan, which subsumes the previous
+        // exact-match credValue split.
         let out = s;
         if (authHeader.length > 0) out = out.split(authHeader).join("[REDACTED]");
-        if (credValue.length > 0) out = out.split(credValue).join("[REDACTED]");
-        for (const fragment of fragments) {
-          if (out.includes(fragment)) {
-            out = out.split(fragment).join("[REDACTED]");
-          }
-        }
+        out = redactCredEchoes(out);
         return out;
       };
       const controller = new AbortController();
