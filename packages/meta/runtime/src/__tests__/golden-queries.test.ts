@@ -2446,3 +2446,47 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     expect(foundCount).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/governance-scope (2 queries)
+// ---------------------------------------------------------------------------
+
+import { createScopedCredentials, createScopedFetcher } from "@koi/governance-scope";
+
+describe("Golden: @koi/governance-scope", () => {
+  test("createScopedCredentials fails closed — out-of-scope key returns undefined, in-scope key resolves", async () => {
+    const store: Record<string, string> = { OPENAI_KEY: "sk-secret", DB_PASS: "hunter2" };
+    const component = { get: async (k: string) => store[k] };
+    const scoped = createScopedCredentials(component, { allow: ["OPENAI_*"] });
+
+    // In-scope: resolved via underlying component
+    expect(await scoped.get("OPENAI_KEY")).toBe("sk-secret");
+
+    // Out-of-scope: fails closed, returns undefined — does NOT hit underlying component
+    expect(await scoped.get("DB_PASS")).toBeUndefined();
+    expect(await scoped.get("UNKNOWN_KEY")).toBeUndefined();
+  });
+
+  test("createScopedFetcher fails closed — URL outside allowlist throws before inner fetch is called", async () => {
+    let innerCalled = false;
+    const inner = async (_input: RequestInfo | URL): Promise<Response> => {
+      innerCalled = true;
+      return new Response("ok");
+    };
+
+    const scoped = createScopedFetcher(inner as typeof fetch, {
+      allow: [new URLPattern({ hostname: "api.example.com" })],
+    });
+
+    // Allowed URL — inner fetch is called
+    await scoped("https://api.example.com/v1/data");
+    expect(innerCalled).toBe(true);
+
+    // Blocked URL — throws before inner fetch
+    innerCalled = false;
+    await expect(scoped("https://evil.com/exfil")).rejects.toThrow(
+      "outside the allowed fetch scope",
+    );
+    expect(innerCalled).toBe(false);
+  });
+});
