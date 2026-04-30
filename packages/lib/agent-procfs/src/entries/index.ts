@@ -24,7 +24,7 @@ export function buildAgentEntries(
   registry: AgentRegistry,
 ): Readonly<Record<EntryName, ProcEntry | WritableProcEntry>> {
   return {
-    status: statusEntry(agent),
+    status: statusEntry(agent, registry),
     tools: toolsEntry(agent),
     middleware: middlewareEntry(agent),
     children: childrenEntry(agent, registry),

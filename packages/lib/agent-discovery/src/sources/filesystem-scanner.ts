@@ -41,7 +41,15 @@ export function createFilesystemSource(config: FilesystemSourceConfig): Discover
       let files: readonly string[];
       try {
         files = await sc.readDir(dir);
-      } catch {
+      } catch (e: unknown) {
+        // Missing directory is a normal "no agents registered" state.
+        // Surface every other failure (perms, I/O) via onSkip so operators
+        // can detect broken discovery instead of getting a silent empty list.
+        const isMissingDir =
+          typeof e === "object" && e !== null && "code" in e && e.code === "ENOENT";
+        if (!isMissingDir) {
+          onSkip?.(dir, e instanceof Error ? e.message : String(e));
+        }
         return [];
       }
       const out: ExternalAgentDescriptor[] = [];

@@ -27,6 +27,7 @@ import { emptyStats, welfordUpdate } from "./latency.js";
 import type { SessionMetrics, SessionMetricsSummary } from "./types.js";
 
 export const AGENT_MONITOR_PRIORITY = 350;
+const SESSION_END_DRIFT_TIMEOUT_MS = 100;
 
 function freshMetrics(sessionId: SessionId, agentId: AgentId): SessionMetrics {
   return {
@@ -263,10 +264,16 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
       // Evaluate the final turn's drift before exporting metrics — otherwise
       // signals for the last turn would be lost (no subsequent onBeforeTurn).
       evaluatePreviousTurnDrift(m);
-      // Wait for any in-flight async scorers so their signals land before we
-      // export the summary and delete the session.
+      // Wait briefly for in-flight async scorers so their signals land before
+      // we export the summary, but never block teardown on hung user code.
+      // Late results after the timeout are dropped by the session-presence
+      // gate in fireWithTurn().
       if (m.pendingDrift.size > 0) {
-        await Promise.allSettled([...m.pendingDrift]);
+        const settle = Promise.allSettled([...m.pendingDrift]);
+        const timeout = new Promise<void>((resolve) => {
+          setTimeout(resolve, SESSION_END_DRIFT_TIMEOUT_MS);
+        });
+        await Promise.race([settle, timeout]);
       }
       try {
         config.onMetrics?.(ctx.sessionId, snapshot(m));
