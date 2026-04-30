@@ -15857,3 +15857,115 @@ describe("Golden: @koi/middleware-ace", () => {
     expect(toolSteps[0]?.outcome).toBe("success");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Golden: @koi/playbook-store-sqlite (no LLM, no cassette — pure store)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The persistent ACE backend has no model dependency. The promise of issue
+// #2087 is "playbooks survive process restart" — exercise it directly:
+// open store at temp path → save state → close → re-open same path → read
+// back identical state across all four substores.
+
+describe("Golden: @koi/playbook-store-sqlite", () => {
+  test("save → close → re-open → state intact", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join: joinPath } = await import("node:path");
+    const { createSqlitePlaybookStore } = await import("@koi/playbook-store-sqlite");
+
+    const tmp = mkdtempSync(joinPath(tmpdir(), "golden-playbook-"));
+    const dbPath = joinPath(tmp, "ace.sqlite");
+
+    try {
+      const writer = createSqlitePlaybookStore({ path: dbPath });
+      await writer.playbooks.save({
+        id: "pb-golden",
+        title: "always check existence",
+        strategy: "verify-then-edit",
+        tags: ["fs", "edit"],
+        confidence: 0.8,
+        source: "curated",
+        createdAt: 1,
+        updatedAt: 2,
+        sessionCount: 3,
+        version: 1,
+      });
+      await writer.structuredPlaybooks.save({
+        id: "spb-golden",
+        title: "v1",
+        sections: [
+          {
+            name: "Errors",
+            slug: "errors",
+            bullets: [
+              {
+                id: "b1",
+                content: "check exists",
+                helpful: 1,
+                harmful: 0,
+                createdAt: 0,
+                updatedAt: 0,
+              },
+            ],
+          },
+        ],
+        tags: [],
+        source: "curated",
+        createdAt: 1,
+        updatedAt: 2,
+        sessionCount: 1,
+        version: 1,
+      });
+      await writer.trajectories.append("sess-golden", [
+        {
+          turnIndex: 0,
+          timestamp: 100,
+          kind: "tool_call",
+          identifier: "edit",
+          outcome: "success",
+          durationMs: 7,
+        },
+      ]);
+      writer.close();
+
+      const reader = createSqlitePlaybookStore({ path: dbPath });
+      const pb = await reader.playbooks.get("pb-golden");
+      expect(pb?.title).toBe("always check existence");
+      expect(pb?.tags).toEqual(["fs", "edit"]);
+
+      const spb = await reader.structuredPlaybooks.get("spb-golden");
+      expect(spb?.version).toBe(1);
+
+      const lineage = await reader.structuredPlaybooks.getVersion("spb-golden", 1);
+      expect(lineage?.title).toBe("v1");
+
+      const traj = await reader.trajectories.getSession("sess-golden");
+      expect(traj.length).toBe(1);
+      expect(traj[0]?.identifier).toBe("edit");
+      reader.close();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects re-commit of same (id, version) with different content", async () => {
+    const { createSqlitePlaybookStore } = await import("@koi/playbook-store-sqlite");
+
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    const base = {
+      id: "spb-immut",
+      title: "v1",
+      sections: [],
+      tags: [],
+      source: "curated" as const,
+      createdAt: 0,
+      updatedAt: 0,
+      sessionCount: 1,
+      version: 1,
+    };
+    await store.structuredPlaybooks.save(base);
+    await expect(store.structuredPlaybooks.save({ ...base, title: "tampered" })).rejects.toThrow();
+    store.close();
+  });
+});

@@ -115,6 +115,7 @@
     { "path": "../../security/permissions-nexus" },
     { "path": "../../security/skill-scanner" },
     { "path": "../../lib/skill-tool" },
+    { "path": "../../lib/playbook-store-sqlite" },
     { "path": "../../lib/skills-runtime" },
     { "path": "../../lib/model-router" },
     { "path": "../../security/middleware-audit" },
