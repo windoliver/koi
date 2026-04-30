@@ -154,7 +154,6 @@ export function shutdownProfiling(): void {
 
 function writeReportIfNeeded(): void {
   if (writtenForRun) return;
-  writtenForRun = true;
   // Use the path captured at init — never re-read env at flush time.
   // If init never ran (e.g. exit-handler fallback fires after a never-
   // profiled process), there is nothing to write.
@@ -163,6 +162,12 @@ function writeReportIfNeeded(): void {
   const report = dumpProfile();
   try {
     writeFileSync(path, JSON.stringify(report, null, 2));
+    // Only mark the run as written AFTER a successful write. If the
+    // first attempt fails (transient permission, missing dir, ENOSPC),
+    // a later writeReportIfNeeded() — e.g. from the exit-handler
+    // fallback — gets a chance to retry rather than silently dropping
+    // the only artifact for this run.
+    writtenForRun = true;
     process.stderr.write(`[koi-tui-profile] report written to ${path}\n`);
   } catch (err) {
     process.stderr.write(`[koi-tui-profile] failed to write ${path}: ${String(err)}\n`);

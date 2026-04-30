@@ -1,4 +1,4 @@
-import { recordHistogram } from "../profiling/profiler.js";
+import { isProfilingEnabled, recordHistogram } from "../profiling/profiler.js";
 
 /**
  * EventBatcher — coalesces high-frequency events into render-cadence batches.
@@ -110,6 +110,13 @@ export function createEventBatcher<T>(
     if (disposed || buffer.length === 0) return;
     const batch = buffer;
     buffer = [];
+    // Disabled-path is hot: skip both performance.now() calls when
+    // profiling is off so the batcher executes its pre-instrumentation
+    // code with zero added work per flush.
+    if (!isProfilingEnabled()) {
+      onFlush(batch); // may throw — intentional: caller sees the error
+      return;
+    }
     const t0 = performance.now();
     try {
       onFlush(batch); // may throw — intentional: caller sees the error
@@ -141,6 +148,11 @@ export function createEventBatcher<T>(
       microtaskPending = false;
       const batch = buffer;
       buffer = [];
+      // Same disabled-path fast skip as flush() — see comment there.
+      if (!isProfilingEnabled()) {
+        onFlush(batch);
+        return;
+      }
       const t0 = performance.now();
       try {
         onFlush(batch);
