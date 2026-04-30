@@ -53,7 +53,53 @@ export async function readPRD(path: string): Promise<Result<PRDFile, KoiError>> 
     };
   }
 
+  const rawItems = (parsed as { readonly items: readonly unknown[] }).items;
+  for (let idx = 0; idx < rawItems.length; idx++) {
+    const issue = validatePRDItem(rawItems[idx]);
+    if (issue !== undefined) {
+      return {
+        ok: false,
+        error: validation(`PRD file has invalid item at index ${idx}: ${issue} (${path})`),
+      };
+    }
+  }
+
   return { ok: true, value: parsed as PRDFile };
+}
+
+/**
+ * Validate one PRD item structurally. Returns undefined if valid, or a
+ * human-readable issue description otherwise. Hand-edited PRDs frequently
+ * contain bugs like `done: "false"` (truthy string) which silently break
+ * `nextItem` — fail fast instead.
+ */
+function validatePRDItem(item: unknown): string | undefined {
+  if (typeof item !== "object" || item === null) {
+    return `not an object`;
+  }
+  const obj = item as Record<string, unknown>;
+  if (typeof obj.id !== "string" || obj.id.length === 0) {
+    return `'id' must be a non-empty string`;
+  }
+  if (typeof obj.description !== "string") {
+    return `'description' must be a string`;
+  }
+  if (typeof obj.done !== "boolean") {
+    return `'done' must be a boolean (got ${typeof obj.done})`;
+  }
+  if (obj.skipped !== undefined && typeof obj.skipped !== "boolean") {
+    return `'skipped' must be a boolean if present`;
+  }
+  if (obj.priority !== undefined && typeof obj.priority !== "number") {
+    return `'priority' must be a number if present`;
+  }
+  if (obj.iterationCount !== undefined && typeof obj.iterationCount !== "number") {
+    return `'iterationCount' must be a number if present`;
+  }
+  if (obj.verifiedAt !== undefined && typeof obj.verifiedAt !== "string") {
+    return `'verifiedAt' must be a string if present`;
+  }
+  return undefined;
 }
 
 /** Return the highest-priority undone/unskipped PRD item, or undefined if none remain. */

@@ -97,6 +97,23 @@ describe("createFileGate", () => {
   });
 });
 
+describe("createTestGate pipe handling", () => {
+  test("does not deadlock when child writes a large amount to stdout", async () => {
+    // Regression: previously stdout was piped but never drained, so a child
+    // emitting more than the OS pipe buffer (typically 64KB) would block on
+    // write before exiting, hanging the gate until timeoutMs killed it.
+    // 1MB to stdout + exit 0 must succeed quickly.
+    const gate = createTestGate(["bash", "-c", "yes hello | head -c 1048576; exit 0"], {
+      timeoutMs: 3_000,
+    });
+    const start = performance.now();
+    const result = await gate(makeCtx());
+    const elapsed = performance.now() - start;
+    expect(result.passed).toBe(true);
+    expect(elapsed).toBeLessThan(2_500);
+  }, 5_000);
+});
+
 describe("createTestGate signal handling", () => {
   test("returns immediately when ctx.signal is already aborted", async () => {
     const controller = new AbortController();

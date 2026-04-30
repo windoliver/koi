@@ -62,6 +62,71 @@ describe("readPRD", () => {
       expect(result.error.code).toBe("VALIDATION");
     }
   });
+
+  test("returns VALIDATION for done as a string (the truthy-string footgun)", async () => {
+    await Bun.write(
+      prdPath,
+      JSON.stringify({ items: [{ id: "a", description: "x", done: "false" }] }),
+    );
+    const result = await readPRD(prdPath);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("'done' must be a boolean");
+    }
+  });
+
+  test("returns VALIDATION for missing id", async () => {
+    await Bun.write(
+      prdPath,
+      JSON.stringify({ items: [{ description: "no id here", done: false }] }),
+    );
+    const result = await readPRD(prdPath);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("'id'");
+  });
+
+  test("returns VALIDATION for empty-string id", async () => {
+    await Bun.write(
+      prdPath,
+      JSON.stringify({ items: [{ id: "", description: "x", done: false }] }),
+    );
+    const result = await readPRD(prdPath);
+    expect(result.ok).toBe(false);
+  });
+
+  test("returns VALIDATION for non-numeric priority", async () => {
+    await Bun.write(
+      prdPath,
+      JSON.stringify({
+        items: [{ id: "a", description: "x", done: false, priority: "high" }],
+      }),
+    );
+    const result = await readPRD(prdPath);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("'priority'");
+  });
+
+  test("accepts valid optional fields", async () => {
+    await Bun.write(
+      prdPath,
+      JSON.stringify({
+        items: [
+          {
+            id: "a",
+            description: "x",
+            done: true,
+            skipped: false,
+            priority: 5,
+            iterationCount: 2,
+            verifiedAt: "2024-01-01T00:00:00.000Z",
+          },
+        ],
+      }),
+    );
+    const result = await readPRD(prdPath);
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe("nextItem", () => {

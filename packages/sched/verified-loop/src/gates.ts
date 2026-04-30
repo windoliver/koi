@@ -27,9 +27,13 @@ export function createTestGate(
     }
 
     try {
+      // stdout is "ignore" — gate output is not surfaced and an unread pipe
+      // can deadlock the child once the kernel buffer fills (fixed-size, OS
+      // dependent). stderr is piped because we surface it on failure, but we
+      // drain it concurrently with proc.exited for the same reason.
       const proc = Bun.spawn(args as string[], {
         cwd,
-        stdout: "pipe",
+        stdout: "ignore",
         stderr: "pipe",
       });
 
@@ -42,11 +46,10 @@ export function createTestGate(
         proc.kill();
       }, timeoutMs);
 
-      const exitCode = await proc.exited;
+      // Drain stderr concurrently — never await proc.exited with a pipe still buffering.
+      const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
       clearTimeout(timer);
       ctx.signal.removeEventListener("abort", onAbort);
-
-      const stderr = await new Response(proc.stderr).text();
 
       return {
         passed: exitCode === 0,
