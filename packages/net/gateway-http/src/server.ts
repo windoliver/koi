@@ -158,12 +158,18 @@ async function stop(
       server.stop(force);
     },
   });
-  await shutdown.start();
-
-  handle.server = null;
-  if (handle.lockHandle !== null) {
-    releaseLock(cfg.lockFilePath, handle.lockHandle);
-    handle.lockHandle = null;
+  // Drain may reject — gateway.pauseIngress / activeConnections are async.
+  // The PID lock and listener handle MUST be released regardless or the next
+  // start on this host would fail with ALREADY_RUNNING during the most
+  // failure-sensitive code path (recovery).
+  try {
+    await shutdown.start();
+  } finally {
+    handle.server = null;
+    if (handle.lockHandle !== null) {
+      releaseLock(cfg.lockFilePath, handle.lockHandle);
+      handle.lockHandle = null;
+    }
   }
 }
 
@@ -363,6 +369,15 @@ function validateConfig(cfg: GatewayHttpConfig): KoiError | null {
   // entries explicitly so deployments fail closed at startup instead of
   // silently degrading to proxy-IP rate limiting behind an IPv6 reverse proxy.
   if (cfg.proxyTrust.mode === "trusted") {
+    if (cfg.proxyTrust.trustedProxies.length === 0) {
+      return {
+        code: "INVALID_CONFIG",
+        message:
+          "proxyTrust.mode='trusted' requires a non-empty trustedProxies allowlist; otherwise XFF is never honored and every client collapses onto the proxy IP",
+        retryable: false,
+        context: { proxyTrustMode: cfg.proxyTrust.mode },
+      };
+    }
     for (const cidr of cfg.proxyTrust.trustedProxies) {
       if (!isIPv4Literal(cidr)) {
         return {

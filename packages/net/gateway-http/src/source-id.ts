@@ -9,7 +9,14 @@ export function resolveSourceId(req: Request, socketAddr: string, trust: ProxyTr
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  for (const ip of ips) {
+  // Walk right-to-left: skip the trusted-proxy suffix and return the
+  // nearest untrusted hop. Standard reverse proxies APPEND the immediate
+  // peer to XFF, so the rightmost entries are trustworthy. Picking the
+  // leftmost untrusted hop would let a client prepend an arbitrary IP
+  // (e.g. "1.2.3.4, attacker-spoof, real-proxy") and spoof the source.
+  for (let i = ips.length - 1; i >= 0; i -= 1) {
+    const ip = ips[i];
+    if (ip === undefined) continue;
     if (!isInCidrList(ip, trust.trustedProxies)) return ip;
   }
   return socketAddr;
