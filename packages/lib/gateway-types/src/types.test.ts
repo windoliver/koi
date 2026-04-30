@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GatewayFrame, GatewayFrameKind, RoutingContext, Session } from "./types.js";
+import type { Gateway, GatewayFrame, GatewayFrameKind, RoutingContext, Session } from "./types.js";
 
 describe("@koi/gateway-types — type shapes", () => {
   test("GatewayFrame satisfies shape at runtime", () => {
@@ -77,5 +77,27 @@ describe("@koi/gateway-types — type shapes", () => {
     for (const k of kinds) {
       expect(typeof k).toBe("string");
     }
+  });
+});
+
+describe("Gateway contract", () => {
+  test("can be implemented by a minimal stub", () => {
+    const stub: Gateway = {
+      ingest(_s: Session, _f: GatewayFrame) {},
+      pauseIngress() {},
+      forceClose() {},
+      activeConnections: () => 0,
+    };
+    expect(stub.activeConnections()).toBe(0);
+  });
+
+  test("activeConnections may be async", async () => {
+    const stub: Gateway = {
+      ingest() {},
+      pauseIngress() {},
+      forceClose() {},
+      activeConnections: async () => 5,
+    };
+    expect(await stub.activeConnections()).toBe(5);
   });
 });

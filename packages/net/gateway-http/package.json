@@ -1,6 +1,6 @@
 {
-  "name": "@koi/gateway",
-  "description": "WebSocket gateway core — routing, auth, sequencing, backpressure (v2 minimal, no node registry or tool routing)",
+  "name": "@koi/gateway-http",
+  "description": "Production HTTP/WS gateway: HMAC auth, replay/idempotency, rate limits, CORS, audit log, graceful shutdown",
   "version": "0.0.0",
   "private": true,
   "type": "module",
