@@ -63,6 +63,7 @@ describe("createFsStore", () => {
     const run = makeRun("bt", "smoke", "2026-01-01T00:00:00.000Z");
     const seeded = {
       ...run,
+      config: { ...run.config, taskCount: 1 },
       summary: {
         ...run.summary,
         taskCount: 1,
@@ -171,10 +172,114 @@ describe("createFsStore", () => {
     await expect(store.load("anc", "smoke")).rejects.toThrow(/corrupt/);
   });
 
+  test("load rejects byTask with duplicate taskId", async () => {
+    const store = createFsStore(root);
+    const base = makeRun("dup", "smoke", "2026-01-01T00:00:00.000Z");
+    const seeded = {
+      ...base,
+      config: { ...base.config, taskCount: 2 },
+      summary: {
+        ...base.summary,
+        taskCount: 2,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 0,
+            taskFingerprint: fp("spec-a"),
+            taskSpec: "spec-a",
+          },
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 0,
+            taskFingerprint: fp("spec-b"),
+            taskSpec: "spec-b",
+          },
+        ],
+      },
+    };
+    await expect(store.save(seeded)).rejects.toThrow(/duplicate taskId/);
+    // And that a hand-edited file with a duplicate taskId is rejected at load.
+    const honest = {
+      ...base,
+      config: { ...base.config, taskCount: 1 },
+      summary: {
+        ...base.summary,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 0,
+            taskFingerprint: fp("spec-a"),
+            taskSpec: "spec-a",
+          },
+        ],
+      },
+    };
+    await store.save(honest);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("dup")}.json`);
+    const tampered = {
+      ...honest,
+      summary: {
+        ...honest.summary,
+        taskCount: 2,
+        byTask: [...honest.summary.byTask, ...honest.summary.byTask],
+      },
+      config: { ...honest.config, taskCount: 2 },
+    };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("dup", "smoke")).rejects.toThrow(/duplicate taskId/);
+  });
+
+  test("load rejects config.taskCount mismatched with summary.taskCount", async () => {
+    const store = createFsStore(root);
+    const base = makeRun("miscount", "smoke", "2026-01-01T00:00:00.000Z");
+    const seeded = {
+      ...base,
+      config: { ...base.config, taskCount: 1 },
+      summary: {
+        ...base.summary,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 0,
+            taskFingerprint: fp("spec-a"),
+            taskSpec: "spec-a",
+          },
+        ],
+      },
+    };
+    await store.save(seeded);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("miscount")}.json`);
+    // Strip a configured task from summary while leaving config.taskCount=1.
+    // Without the cross-check, an attacker could omit a failing task to
+    // make a baseline look clean.
+    const tampered = {
+      ...seeded,
+      summary: { ...seeded.summary, taskCount: 0, byTask: [] },
+    };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("miscount", "smoke")).rejects.toThrow(/config\.taskCount/);
+  });
+
   test("load rejects byTask with mutated taskFingerprint not matching taskSpec", async () => {
     const store = createFsStore(root);
+    const base = makeRun("fpc", "smoke", "2026-01-01T00:00:00.000Z");
     const seeded = {
-      ...makeRun("fpc", "smoke", "2026-01-01T00:00:00.000Z"),
+      ...base,
+      config: { ...base.config, taskCount: 1 },
       summary: {
         taskCount: 1,
         trialCount: 0,
@@ -208,6 +313,7 @@ describe("createFsStore", () => {
     const baseRun = makeRun("rt", "smoke", "2026-01-01T00:00:00.000Z");
     const run = {
       ...baseRun,
+      config: { ...baseRun.config, taskCount: 1 },
       trials: [
         {
           taskId: "t1",
@@ -295,6 +401,7 @@ describe("createFsStore", () => {
     circular.self = circular;
     const run = {
       ...baseRun,
+      config: { ...baseRun.config, taskCount: 1 },
       trials: [
         {
           taskId: "t1",

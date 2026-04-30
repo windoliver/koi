@@ -248,6 +248,15 @@ async function readRunResult(
       cause: "summary does not match trials",
     };
   }
+  // Suite integrity: stored summary must reflect the configured task set
+  // exactly once. A tampered file with a duplicated `byTask.taskId`
+  // (one row hides another's failures) or a mismatched
+  // config.taskCount/summary.taskCount (whole tasks omitted from the
+  // run) would otherwise feed compareRuns a partial picture.
+  const suiteDrift = checkSuiteIntegrity(run);
+  if (suiteDrift !== undefined) {
+    return { kind: "corrupted", path, cause: suiteDrift };
+  }
   // Cancellation/abort consistency: compareRuns relies on these fields
   // to fail closed on leaked teardown. A run rewritten to strip an
   // `aborted` flag or set every trial to `n/a` when one was actually
@@ -272,6 +281,25 @@ async function readRunResult(
     }
   }
   return { kind: "ok", run };
+}
+
+function checkSuiteIntegrity(run: EvalRun): string | undefined {
+  const ids = run.summary.byTask.map((b) => b.taskId);
+  const unique = new Set(ids);
+  if (unique.size !== ids.length) {
+    return "summary.byTask has duplicate taskId entries";
+  }
+  if (run.config.taskCount !== run.summary.taskCount) {
+    return `config.taskCount (${run.config.taskCount}) does not match summary.taskCount (${run.summary.taskCount})`;
+  }
+  // Every trial must reference a task that the configured suite knows
+  // about — otherwise a smuggled trial could skew aggregates.
+  for (const t of run.trials) {
+    if (!unique.has(t.taskId)) {
+      return `trial taskId "${t.taskId}" is not present in summary.byTask`;
+    }
+  }
+  return undefined;
 }
 
 function checkCancellationConsistency(run: EvalRun): string | undefined {
@@ -420,6 +448,10 @@ function assertSavable(run: EvalRun): void {
         `EvalStore.save: taskFingerprint does not match taskSpec for taskId "${t.taskId}"`,
       );
     }
+  }
+  const suiteDrift = checkSuiteIntegrity(run);
+  if (suiteDrift !== undefined) {
+    throw new Error(`EvalStore.save: ${suiteDrift}`);
   }
   const drift = checkCancellationConsistency(run);
   if (drift !== undefined) {
