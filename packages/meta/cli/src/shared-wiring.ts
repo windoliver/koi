@@ -43,7 +43,7 @@ import {
 } from "@koi/core";
 import { createSystemPromptMiddleware } from "@koi/engine";
 import { createLocalFileSystem } from "@koi/fs-local";
-import { createScopedCredentials, createScopedFetcher } from "@koi/governance-scope";
+import { createScopedCredentials } from "@koi/governance-scope";
 import type { CreateHookMiddlewareOptions, RegisteredHook } from "@koi/hooks";
 import {
   createHookMiddleware,
@@ -1206,35 +1206,36 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   // every outbound fetch (web_fetch and authed_fetch) is rejected. Only
   // an absent `network:` block (`networkScope === undefined`) means
   // legacy unscoped behavior.
-  // Layer order (innermost → outermost):
-  //   globalThis.fetch         ← raw network
-  //   createScopedFetcher      ← manifest URLPattern allowlist (INNER:
-  //                              gets called for every redirect hop
-  //                              that createSafeFetcher follows
-  //                              internally — so an off-allowlist
-  //                              redirect target is rejected even when
-  //                              the initial URL was allowed)
-  //   createSafeFetcher        ← DNS-backed SSRF + redirect handling.
-  //                              Each hop calls back through inner
-  //                              scopedFetcher → URL allowlist runs
-  //                              on every URL the network sees.
-  //
-  // The previous layering (safe inner, scoped outer) only checked the
-  // initial URL against the allowlist; redirects followed by safeFetcher
-  // bypassed the URLPattern gate. Inverting puts scoped underneath so
-  // the allowlist runs on every redirect hop — round-4 finding.
-  //
-  // Both layers are required for credentialed fetches: URLPattern alone
-  // would accept attacker.example.com (a DNS-rebinding host that
-  // resolves to 127.0.0.1) if the operator allowlisted *.example.com.
+  // gov-15 fetch composition: createSafeFetcher with a `preDnsAllowCheck`
+  // hook for the URLPattern allowlist. The hook runs at the TOP of every
+  // hop (initial + each redirect target) BEFORE isSafeUrl resolves DNS
+  // and before HTTP IP pinning. This gives us:
+  //   • Pre-DNS URL allowlist: an off-allowlist URL is rejected without
+  //     ever touching the resolver — closes the DNS-exfil channel that
+  //     would let `https://<payload>.attacker.com` leak via DNS even if
+  //     SSRF/URLPattern ultimately deny.
+  //   • Per-hop check: every redirect target re-passes URLPattern
+  //     before DNS, so a 30x to an off-allowlist host is rejected.
+  //   • DNS-backed SSRF: isSafeUrl still resolves DNS for in-allowlist
+  //     URLs, rejecting hostnames that resolve to RFC1918 / loopback /
+  //     metadata IPs (defends DNS-rebinding tricks like localtest.me).
   const networkAllow = config.networkScope?.allow;
   const fetchFn =
     networkAllow !== undefined
-      ? createSafeFetcher(
-          createScopedFetcher(globalThis.fetch, {
-            allow: networkAllow.map((p) => new URLPattern(p)),
-          }),
-        )
+      ? createSafeFetcher(globalThis.fetch, {
+          preDnsAllowCheck: (() => {
+            const compiled = networkAllow.map((p) => new URLPattern(p));
+            return (url: string) => {
+              for (const pattern of compiled) {
+                if (pattern.test(url)) return { ok: true };
+              }
+              return {
+                ok: false,
+                reason: `URL '${url}' is outside the allowed fetch scope`,
+              };
+            };
+          })(),
+        })
       : undefined;
 
   if (includeWeb) {

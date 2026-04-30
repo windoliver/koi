@@ -140,4 +140,34 @@ describe("createScopedSkillsRuntime — runtime-level credential gating (gov-15)
     const loadResult = await gated.load("anyone-skill");
     expect(loadResult.ok).toBe(true);
   });
+
+  test("revalidates credentials on every load — pinned/cached base bypass closed (round-5)", async () => {
+    // Round-5 finding: when scope sat INSIDE the pinned runtime, a body
+    // pinned at attach time was served from cache without re-checking
+    // credentials, so a credential rotation/removal mid-session left
+    // the pinned body reachable through the Skill tool. With scope
+    // WRAPPING the runtime, every load() goes through the scope check
+    // first regardless of base caching. Toggle credentials between
+    // calls and assert the second call returns NOT_FOUND.
+    await writeSkillWithCredential(userRoot, "rotating-skill", "openai_api_key");
+    let allowOpenAi = true;
+    const switchableCreds: CredentialComponent = {
+      async get(key) {
+        if (allowOpenAi && key === "openai_api_key") return "sk-secret";
+        return undefined;
+      },
+    };
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const gated = createScopedSkillsRuntime(base, switchableCreds);
+
+    const first = await gated.load("rotating-skill");
+    expect(first.ok).toBe(true);
+
+    allowOpenAi = false;
+
+    const second = await gated.load("rotating-skill");
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("NOT_FOUND");
+  });
 });

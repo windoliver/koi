@@ -67,6 +67,24 @@ export interface SafeFetcherOptions extends UrlSafetyOptions {
    * effective authority is validated elsewhere.
    */
   readonly allowCustomHost?: boolean;
+  /**
+   * Optional pre-DNS allowlist callback. Runs at the TOP of every hop
+   * BEFORE `isSafeUrl` (DNS) and before HTTP IP pinning. Returning a
+   * `{ ok: false, reason }` (or throwing) rejects the request without
+   * resolving DNS — the request never touches the resolver, closing
+   * the DNS-exfil channel that would otherwise let an off-allowlist
+   * `https://<payload>.attacker.com` leak via DNS even if SSRF and
+   * URLPattern checks ultimately deny the fetch.
+   *
+   * Used by hosts wiring `manifest.network.allow` to enforce a
+   * URLPattern allowlist as a pre-network boundary. The callback sees
+   * the LOGICAL URL (hostname-bearing) on every redirect hop, so
+   * URLPattern matches against the redirected hostname, not the
+   * post-pinning IP literal.
+   */
+  readonly preDnsAllowCheck?: (
+    url: string,
+  ) => { readonly ok: true } | { readonly ok: false; readonly reason: string };
 }
 
 const DEFAULT_MAX_REDIRECTS = 5;
@@ -548,6 +566,8 @@ export function createSafeFetcher(
   const trustCustomTransport = options?.trustCustomTransport === true;
   const allowCustomHost = options?.allowCustomHost === true;
 
+  const preDnsAllowCheck = options?.preDnsAllowCheck;
+
   const safeFetchImpl = async (
     input: Parameters<typeof fetch>[0],
     init: Parameters<typeof fetch>[1],
@@ -555,6 +575,15 @@ export function createSafeFetcher(
     // Validate the URL BEFORE touching the body so blocked/malformed
     // destinations fail fast without consuming stream memory.
     const initialUrl = extractUrl(input);
+    // Pre-DNS allowlist check: runs BEFORE isSafeUrl (which resolves DNS).
+    // An off-allowlist URL is rejected without touching the resolver,
+    // closing the DNS-exfil channel.
+    if (preDnsAllowCheck !== undefined) {
+      const allow = preDnsAllowCheck(initialUrl);
+      if (!allow.ok) {
+        throw new Error(`url-safety: ${allow.reason}`);
+      }
+    }
     let check = await isSafeUrl(initialUrl, options);
     if (!check.ok) {
       throw new Error(`url-safety: ${check.reason}`);
@@ -635,6 +664,15 @@ export function createSafeFetcher(
       // HTTPS the wrapper can't rewrite the URL to the IP (TLS SNI), so
       // narrowing the window is the best we can do without a custom
       // dispatcher that separates SNI from the socket address.
+      // Pre-DNS allowlist check on every hop, before isSafeUrl resolves
+      // DNS for the redirected URL. An off-allowlist redirect target is
+      // rejected without touching the resolver.
+      if (preDnsAllowCheck !== undefined) {
+        const allow = preDnsAllowCheck(state.url);
+        if (!allow.ok) {
+          throw new Error(`url-safety: ${allow.reason}`);
+        }
+      }
       check = await isSafeUrl(state.url, options);
       if (!check.ok) {
         throw new Error(`url-safety: ${check.reason}`);

@@ -76,6 +76,61 @@ describe("createSafeFetcher", () => {
     await expect(safeFetch("http://127.0.0.1/")).rejects.toThrow(/Blocked/);
   });
 
+  test("preDnsAllowCheck rejects off-allowlist URL BEFORE DNS resolution", async () => {
+    // gov-15 round-5: pre-DNS allowlist hook closes a DNS-exfil channel.
+    // An off-allowlist URL must not even reach the resolver — otherwise
+    // an attacker could leak data via subdomain DNS lookups (`<payload>
+    // .attacker.com`) even when the URL is ultimately denied.
+    let resolverCalled = false;
+    const tracking: typeof publicResolver = async (host) => {
+      resolverCalled = true;
+      return publicResolver(host);
+    };
+    const safeFetch = createSafeFetcher(mockFetch({}), {
+      dnsResolver: tracking,
+      preDnsAllowCheck: (url) =>
+        url.startsWith("https://public.example.com/")
+          ? { ok: true }
+          : { ok: false, reason: `URL '${url}' is outside the allowed fetch scope` },
+    });
+    await expect(safeFetch("https://attacker.example.com/leak")).rejects.toThrow(
+      /outside the allowed fetch scope/,
+    );
+    expect(resolverCalled).toBe(false);
+  });
+
+  test("preDnsAllowCheck runs on every redirect hop", async () => {
+    // An allowed initial URL with a 30x to an off-allowlist host must
+    // be rejected by the pre-DNS hook on the redirect target before the
+    // resolver runs for the new host.
+    const resolverHostsSeen: string[] = [];
+    const tracking: typeof publicResolver = async (host) => {
+      resolverHostsSeen.push(host);
+      return publicResolver(host);
+    };
+    const safeFetch = createSafeFetcher(
+      mockFetch({
+        "https://public.example.com/r": new Response(null, {
+          status: 302,
+          headers: { Location: "https://attacker.example.com/steal" },
+        }),
+      }),
+      {
+        dnsResolver: tracking,
+        preDnsAllowCheck: (url) =>
+          url.startsWith("https://public.example.com/")
+            ? { ok: true }
+            : { ok: false, reason: `URL '${url}' is outside the allowed fetch scope` },
+      },
+    );
+    await expect(safeFetch("https://public.example.com/r")).rejects.toThrow(
+      /outside the allowed fetch scope/,
+    );
+    // Resolver was called for the in-allowlist initial URL but NOT for
+    // the redirect target — pre-DNS check rejected before DNS.
+    expect(resolverHostsSeen).not.toContain("attacker.example.com");
+  });
+
   test("revalidates on redirect — blocks public→private", async () => {
     const safeFetch = createSafeFetcher(
       mockFetch({

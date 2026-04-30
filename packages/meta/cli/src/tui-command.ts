@@ -1543,28 +1543,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
 
   // gov-15: wrap the SkillsRuntime so EVERY read path (discover, load,
   // loadAll, query, loadReference) filters out skills whose
-  // `requires.credentials.ref` is not in scope. This is the runtime-level
-  // gate that closes the Skill-tool bypass: the Skill tool calls
-  // runtime.load(name) directly, so provider-attach-only filtering would
-  // leave the body reachable. The wrapper makes out-of-scope skills look
-  // NOT_FOUND from every angle.
+  // `requires.credentials.ref` is not in scope. The wrapper goes
+  // OUTSIDE the progressive pin cache (round-5 finding): if scope sat
+  // INSIDE the pinned runtime, a pinned body loaded earlier would be
+  // served from cache without re-checking credentials, so a credential
+  // rotation/removal mid-session wouldn't gate the Skill tool. Wrapping
+  // the pinned runtime means every ad-hoc Skill tool call re-checks the
+  // current CredentialComponent before returning the body, regardless
+  // of pin state.
   const baseSkillsRuntime = createSkillsRuntime();
-  const gatedSkillsRuntime =
-    scopedCredentials !== undefined
-      ? createScopedSkillsRuntime(baseSkillsRuntime, scopedCredentials)
-      : baseSkillsRuntime;
-
-  // createProgressiveSkillProvider bundles session-snapshot pinning: bodies
-  // loaded at attach time are stored in a session-local Map that is not subject
-  // to LRU eviction, ensuring the Skill tool always returns the body that was
-  // valid at session start.
   const {
     provider: skillProvider,
-    pinnedRuntime: skillRuntime,
+    pinnedRuntime: pinnedSkillsRuntime,
     reload: reloadSkillComponents,
-  } = createProgressiveSkillProvider(gatedSkillsRuntime, {
+  } = createProgressiveSkillProvider(baseSkillsRuntime, {
     ...(scopedCredentials !== undefined ? { credentials: scopedCredentials } : {}),
   });
+  const skillRuntime =
+    scopedCredentials !== undefined
+      ? createScopedSkillsRuntime(pinnedSkillsRuntime, scopedCredentials)
+      : pinnedSkillsRuntime;
   // Lazy agent ref — middleware created before createKoiRuntime assembles agent.
   const skillAgentRef: { current: Agent | undefined } = { current: undefined };
   // Mutable live skill component map — refreshed on session reset via reloadSkillComponents().

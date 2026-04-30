@@ -159,6 +159,27 @@ interface SafeFetcherOptions extends UrlSafetyOptions {
      * effective authority is validated elsewhere.
      */
     readonly allowCustomHost?: boolean;
+    /**
+     * Optional pre-DNS allowlist callback. Runs at the TOP of every hop
+     * BEFORE \`isSafeUrl\` (DNS) and before HTTP IP pinning. Returning a
+     * \`{ ok: false, reason }\` (or throwing) rejects the request without
+     * resolving DNS — the request never touches the resolver, closing
+     * the DNS-exfil channel that would otherwise let an off-allowlist
+     * \`https://<payload>.attacker.com\` leak via DNS even if SSRF and
+     * URLPattern checks ultimately deny the fetch.
+     *
+     * Used by hosts wiring \`manifest.network.allow\` to enforce a
+     * URLPattern allowlist as a pre-network boundary. The callback sees
+     * the LOGICAL URL (hostname-bearing) on every redirect hop, so
+     * URLPattern matches against the redirected hostname, not the
+     * post-pinning IP literal.
+     */
+    readonly preDnsAllowCheck?: (url: string) => {
+        readonly ok: true;
+    } | {
+        readonly ok: false;
+        readonly reason: string;
+    };
 }
 declare function createSafeFetcher(base?: typeof fetch, options?: SafeFetcherOptions): typeof fetch;
 

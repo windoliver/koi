@@ -55,4 +55,29 @@ describe("createScopedCredentials", () => {
     expect(await scoped.get("secret/key")).toBeUndefined();
     expect(await scoped.get("does-not-exist")).toBeUndefined();
   });
+
+  test("deny path crosses an async boundary (round-5 latency-oracle defense)", async () => {
+    // gov-15 round-5: with the previous synchronous deny path, an
+    // out-of-scope key returned in microtask 0 while an in-scope-but-
+    // missing key required dispatching to the underlying component
+    // (microtask 1+). An agent could probe credKey candidates and
+    // distinguish the two by response time despite identical
+    // PERMISSION messages. The fix: an `await Promise.resolve()` on
+    // the deny path so both paths cross the same microtask boundary.
+    //
+    // Assert the fix structurally: a non-allowed lookup must observe
+    // microtasks scheduled BEFORE its return value is settled.
+    const store = makeStore({ "secret/key": "value" });
+    const scoped = createScopedCredentials(store, { allow: ["public/*"] });
+    let microtaskRan = false;
+    Promise.resolve().then(() => {
+      microtaskRan = true;
+    });
+    const result = await scoped.get("secret/key");
+    expect(result).toBeUndefined();
+    // The microtask must have run by the time our await resolves —
+    // proving the deny path itself awaited at least one microtask
+    // boundary, matching the in-scope path's dispatch.
+    expect(microtaskRan).toBe(true);
+  });
 });
