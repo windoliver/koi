@@ -747,16 +747,21 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             "or remove the audit: block from the manifest.",
         );
       }
-      // Issue #2088 — note: a resume-time ACE rejection was deliberately
-      // NOT added here. The fresh-load rejection above suffices for new
-      // sessions, and adding a resume-specific guard would inherit the
-      // broader resume-provenance gap (readSessionMeta() returning {} for
-      // missing/malformed sidecars; manifest-parse failure short-circuiting
-      // before the check). Since this build does not actually wire ACE,
-      // a resumed session with ace.enabled: true behaves identically to
-      // any other session — the field is dead weight. The activation PR
-      // is the natural place to add comprehensive resume-time rejection
-      // alongside hardened sidecar validation.
+      // Issue #2088 — mirror the fresh-load ACE rejection on resume.
+      // ACE is wired only in koi tui; allowing a session whose original
+      // manifest enabled ACE to resume on koi start would silently
+      // degrade (the field is honored on tui, ignored on start). The
+      // broader resume-provenance gap (readSessionMeta() returning {}
+      // for missing/malformed sidecars) means this guard only catches
+      // sessions whose sidecar successfully recorded the manifest path
+      // — that is consistent with the audit guard above.
+      if (resumeAuditResult.value.ace?.enabled === true) {
+        return bail(
+          "original session manifest.ace.enabled: true is not supported on this host. " +
+            "koi start does not wire ACE — use koi tui to resume this session, " +
+            "or set ace.enabled: false in the manifest.",
+        );
+      }
     }
   }
 
