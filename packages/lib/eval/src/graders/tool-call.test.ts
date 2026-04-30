@@ -198,6 +198,31 @@ describe("toolCall", () => {
     expect(score.pass).toBe(false);
   });
 
+  test("any-order fails when observed includes unexpected extra calls", async () => {
+    // Default mode must catch surprise side-effecting tool activity:
+    // expecting `read` should NOT pass if the agent also did `delete`.
+    const grader = toolCall();
+    const events: readonly EngineEvent[] = [...completed("read"), ...completed("delete")];
+    const score = await grader.grade(
+      events,
+      { kind: "tool_calls", calls: [{ toolName: "read" }] },
+      METRICS,
+    );
+    expect(score.pass).toBe(false);
+    expect(score.reasoning).toContain("unexpected extra");
+  });
+
+  test("any-order with allowExtra: true permits unexpected extra calls", async () => {
+    const grader = toolCall({ allowExtra: true });
+    const events: readonly EngineEvent[] = [...completed("read"), ...completed("delete")];
+    const score = await grader.grade(
+      events,
+      { kind: "tool_calls", calls: [{ toolName: "read" }] },
+      METRICS,
+    );
+    expect(score.pass).toBe(true);
+  });
+
   test("returns no-expectation reasoning when missing", async () => {
     const grader = toolCall();
     const score = await grader.grade([], undefined, METRICS);

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { EngineEvent, EngineInput } from "@koi/core";
 import { exactMatch } from "./graders/exact-match.js";
-import { runEval } from "./runner.js";
+import { computeTaskFingerprint, runEval } from "./runner.js";
 import type { AgentHandle, EvalGrader, EvalTask } from "./types.js";
 
 function fakeAgent(events: readonly EngineEvent[]): AgentHandle {
@@ -460,6 +460,43 @@ describe("runEval", () => {
       }),
     ).rejects.toThrow(/fingerprintSalt/);
     expect(factoryCalled).toBe(0);
+  });
+
+  test("AbortSignal in input does not require fingerprintSalt", async () => {
+    // EngineInput.signal is the documented cancellation channel, not part
+    // of task identity. Routine cancellation plumbing must not turn into
+    // a hard config error: the runner strips signal before fingerprinting.
+    const upstream = new AbortController();
+    const run = await runEval({
+      name: "signal-fp",
+      tasks: [
+        {
+          id: "t1",
+          name: "t1",
+          input: { ...{ kind: "text" as const, text: "go" }, signal: upstream.signal } as never,
+          expected: { kind: "text", pattern: "go" },
+          graders: [exactMatch()],
+        },
+      ],
+      agentFactory: () => fakeAgent([{ kind: "text_delta", delta: "go" }]),
+      idGen: () => "sfp",
+    });
+    expect(run.trials[0]?.status).toBe("pass");
+    // Two trials with different signal *instances* but the same task spec
+    // must produce identical fingerprints — signal identity is not semantic.
+    const fp1 = computeTaskFingerprint({
+      id: "t1",
+      name: "t1",
+      input: { kind: "text", text: "go", signal: new AbortController().signal } as never,
+      graders: [exactMatch()],
+    });
+    const fp2 = computeTaskFingerprint({
+      id: "t1",
+      name: "t1",
+      input: { kind: "text", text: "go", signal: new AbortController().signal } as never,
+      graders: [exactMatch()],
+    });
+    expect(fp1).toBe(fp2);
   });
 
   test("already-aborted upstream signal fails the trial without calling agent.stream", async () => {

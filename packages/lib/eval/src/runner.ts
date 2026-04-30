@@ -529,19 +529,26 @@ export function computeTaskFingerprint(task: EvalTask): string {
  * corresponds to the spec — mutating only the hash field is detected.
  */
 export function canonicalTaskSpec(task: EvalTask): string {
+  // Strip runtime-only handles (AbortSignal) from the fingerprint input.
+  // EngineInput.signal is the documented cancellation channel — every
+  // caller wires one in — so treating it as a non-serializable
+  // semantic field would make routine cancellation plumbing a hard
+  // config error and force a meaningless `fingerprintSalt`. The signal
+  // controls *runtime* lifetime, not task identity.
+  const fingerprintInput = stripRuntimeHandles(task.input);
   // Reject silently-equivalent fingerprints: EngineInput may carry
   // function values (callHandlers etc) whose identity matters for behavior
   // but whose serialization collapses to "fn:<name>". Refuse to fingerprint
   // such inputs unless the caller provides an explicit
   // `fingerprintSalt` to capture the runtime semantics. Without this the
   // gate could compare materially different agents as equivalent.
-  if (containsNonSerializable(task.input) && task.fingerprintSalt === undefined) {
+  if (containsNonSerializable(fingerprintInput) && task.fingerprintSalt === undefined) {
     throw new Error(
       `EvalTask "${task.id}": input contains non-serializable values (functions, etc.); set fingerprintSalt to capture runtime semantics`,
     );
   }
   return canonicalize({
-    input: task.input,
+    input: fingerprintInput,
     expected: task.expected,
     graders: task.graders.map((g) => ({ id: g.id, config: g.configFingerprint ?? "" })),
     // Execution-semantic fields: changing trial count or per-task timeout
@@ -552,6 +559,24 @@ export function canonicalTaskSpec(task: EvalTask): string {
     timeoutMs: task.timeoutMs,
     salt: task.fingerprintSalt,
   });
+}
+
+/**
+ * Drop `signal` from a top-level EngineInput-shaped object before
+ * fingerprinting. AbortSignal is a runtime handle that controls the
+ * trial's lifetime, not part of the task's logical identity, and
+ * including it would either force an unrelated `fingerprintSalt` or
+ * make every fingerprint depend on a per-call object identity.
+ */
+function stripRuntimeHandles(input: unknown): unknown {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return input;
+  const obj = input as Record<string, unknown>;
+  if (!("signal" in obj)) return input;
+  const rest: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (k !== "signal") rest[k] = v;
+  }
+  return rest;
 }
 
 function containsNonSerializable(v: unknown, stack: object[] = []): boolean {

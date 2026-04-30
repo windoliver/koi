@@ -14,6 +14,15 @@ export interface ToolCallOptions {
    * stream, before execution.
    */
   readonly acceptToolCallEnd?: boolean | undefined;
+  /**
+   * When true, allow the transcript to contain completed tool calls
+   * beyond the expected set. Default false: extra calls fail the grader
+   * because the whole point of `toolCall` is catching surprise
+   * side-effecting tool activity (e.g., expected `read` but observed
+   * `read + delete`). Permissive matching is opt-in for the rare case
+   * where the eval only cares that *at least* the expected calls fired.
+   */
+  readonly allowExtra?: boolean | undefined;
 }
 
 const DEFAULT_ID = "tool-call";
@@ -23,7 +32,8 @@ export function toolCall(options: ToolCallOptions = {}): EvalGrader {
   const fallbackCalls = options.calls;
   const order = options.order ?? "any";
   const acceptToolCallEnd = options.acceptToolCallEnd ?? false;
-  const configFingerprint = `order=${order};acceptToolCallEnd=${acceptToolCallEnd};calls=${stableStringify(fallbackCalls)}`;
+  const allowExtra = options.allowExtra ?? false;
+  const configFingerprint = `order=${order};acceptToolCallEnd=${acceptToolCallEnd};allowExtra=${allowExtra};calls=${stableStringify(fallbackCalls)}`;
   return {
     id,
     configFingerprint,
@@ -34,16 +44,22 @@ export function toolCall(options: ToolCallOptions = {}): EvalGrader {
       }
       const observed = collectToolCalls(transcript, acceptToolCallEnd);
       const matched = order === "strict" ? matchStrict(observed, calls) : matchAny(observed, calls);
+      const allMatched = matched.length === calls.length;
+      // Strict mode already enforces an exact-sequence match (no extras
+      // possible). For any-order, fail on observed > expected unless the
+      // caller opts in via `allowExtra`. Otherwise an expected `read`
+      // would still pass when the agent also performed a destructive
+      // `delete` — exactly the regression this grader exists to catch.
+      const extraCount = order === "strict" ? 0 : Math.max(0, observed.length - calls.length);
+      const hasUnexpectedExtra = !allowExtra && extraCount > 0;
+      const pass = allMatched && !hasUnexpectedExtra;
       const score = matched.length / calls.length;
-      const pass = matched.length === calls.length;
-      return {
-        graderId: id,
-        score,
-        pass,
-        reasoning: pass
-          ? `matched ${matched.length}/${calls.length}`
-          : `matched ${matched.length}/${calls.length} (missing: ${missing(calls, matched).join(", ")})`,
-      };
+      const reasoning = pass
+        ? `matched ${matched.length}/${calls.length}`
+        : !allMatched
+          ? `matched ${matched.length}/${calls.length} (missing: ${missing(calls, matched).join(", ")})`
+          : `matched ${matched.length}/${calls.length} but observed ${extraCount} unexpected extra tool call(s); set allowExtra: true to permit`;
+      return { graderId: id, score, pass, reasoning };
     },
   };
 }
