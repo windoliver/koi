@@ -114,9 +114,22 @@ ace:
 
 ### Host scope
 
-`ace:` is currently TUI-only. `koi start` rejects `enabled: true` with a
-clear message (matches the existing `backgroundSubprocesses` and
-`audit` rejection precedent in `commands/start.ts`).
+Both `koi start` and `koi tui` currently reject `manifest.ace.enabled: true`
+at fresh manifest load (matches the existing `backgroundSubprocesses` and
+`audit` rejection precedent in `commands/start.ts`). The schema is shipped
+but neither host activates the middleware in this build.
+
+**Resume-path note (intentional limitation):** the rejection runs only on
+fresh manifest load, not on `--resume` paths. A session created before
+this PR landed (with `ace.enabled: true` in its original manifest) will
+resume successfully because (a) the manifest field was silently ignored
+in older builds, so the session has no ACE state to honor, and (b) the
+broader resume-provenance pattern (`readSessionMeta()` returning `{}` for
+missing/malformed sidecars; manifest-parse-failure short-circuiting)
+applies to every manifest-governed feature, not just ACE. Hardening the
+resume path is the activation PR's responsibility — by the time real ACE
+wiring lands, the fresh-load rejection will have been replaced and resume
+becomes a real concern.
 
 ### Activation PR (follow-up)
 

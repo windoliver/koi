@@ -1515,20 +1515,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }
         }
       }
-      // Issue #2088 — mirrors the fresh-load ace rejection above and the
-      // analogous resume guard in commands/start.ts. Without this, a TUI
-      // session originally created from a manifest with ace.enabled: true
-      // could be resumed silently after this build added the rejection
-      // for new manifest loads.
-      if (resumeAuditResult.ok && resumeAuditResult.value.ace?.enabled === true) {
-        process.stderr.write(
-          "koi tui: original session manifest.ace.enabled: true is not yet wired in this " +
-            "build (tracked as issue 2088). Set ace.enabled: false or remove the ace: " +
-            "block to resume this session; the activation PR will replace this rejection " +
-            "with real wiring.\n",
-        );
-        process.exit(1);
-      }
+      // Issue #2088 — note: a resume-time ACE rejection was deliberately
+      // NOT added here. See the matching comment in commands/start.ts —
+      // this build does not actually wire ACE, so a resumed session with
+      // ace.enabled: true behaves identically to any other session. The
+      // activation PR is the natural place to add comprehensive resume-
+      // time rejection alongside hardened sidecar validation (the
+      // readSessionMeta() {}-on-malformed gap is broader than ACE).
     }
   }
 
