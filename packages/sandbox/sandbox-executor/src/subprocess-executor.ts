@@ -98,6 +98,25 @@ export interface SubprocessExecutorConfig {
    * cannot enforce them on its own — failing closed prevents silent trust-boundary leaks.
    */
   readonly externalIsolation?: boolean;
+  /**
+   * When true (default), the executor refuses to run if process-group isolation
+   * via `setsid` is unavailable on PATH. This prevents silent leakage of grandchild
+   * processes after timeout — without process-group kill, only the direct Bun child
+   * is SIGKILLed; grandchildren (e.g., spawned by user code) keep running.
+   *
+   * Set to false to opt out (e.g., trusted code where descendant cleanup is not a
+   * concern, or environments like Windows / minimal containers where setsid is absent
+   * by design).
+   *
+   * Default: true (fail-closed).
+   */
+  readonly requireProcessGroupIsolation?: boolean;
+  /**
+   * Dependency-injection override for setsid resolution.
+   * When provided, this function is called instead of the real `resolveSetsid()`.
+   * Useful in tests to simulate setsid absence without PATH manipulation.
+   */
+  readonly resolveSetsid?: () => string | null;
 }
 
 /** Resolve the runner script path relative to this file's location. */
@@ -332,6 +351,10 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
   const maxOutputBytes = config?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const cwdOverride = config?.cwd;
   const externalIsolation = config?.externalIsolation ?? false;
+  // Default true: fail closed when setsid is unavailable, preventing silent grandchild leaks.
+  const requirePGI = config?.requireProcessGroupIsolation !== false;
+  // Allow DI override for testing; fall back to the real probe.
+  const resolveSetsidFn = config?.resolveSetsid ?? resolveSetsid;
 
   const runnerPath = resolveRunnerPath();
 
@@ -389,7 +412,22 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
 
         // Wrap child in setsid when available so we can kill the entire process
         // group (including grandchildren) via process.kill(-pid, "SIGKILL").
-        const setsidPath = resolveSetsid();
+        const setsidPath = resolveSetsidFn();
+
+        // Fail-closed: when requireProcessGroupIsolation is true (default) and setsid
+        // is unavailable, refuse to execute. Without setsid, grandchild processes
+        // spawned by user code survive the SIGKILL timeout, leaking silently.
+        // Callers can opt out by passing requireProcessGroupIsolation: false.
+        if (requirePGI && setsidPath === null) {
+          const error: SandboxError = {
+            code: "PERMISSION",
+            message:
+              "subprocess-executor requires setsid for process-group isolation, but it is not available on PATH; pass requireProcessGroupIsolation:false to opt out (descendant processes may leak after timeout)",
+            durationMs: 0,
+          };
+          return { ok: false, error };
+        }
+
         const usedSetsid = setsidPath !== null;
         const cmd = usedSetsid
           ? [setsidPath, bunPath, "run", runnerPath, codePath, JSON.stringify(input ?? null)]

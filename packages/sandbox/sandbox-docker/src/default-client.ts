@@ -59,7 +59,8 @@ function quoteShellArg(arg: string): string {
  * Prevents an adversarial container from OOMing the host by capping accumulated
  * bytes, while continuing to drain the pipe so the docker CLI does not stall on
  * a full pipe buffer (which would produce a false TIMEOUT). The container is NOT
- * killed here — only timeout/abort triggers kill (via docker kill in Fix 1).
+ * killed here — only timeout/abort triggers host-side proc.kill(9). In-container
+ * processes are bounded by the `timeout` utility wrapper in buildExecArgs.
  */
 async function readBoundedText(
   stream: ReadableStream<Uint8Array>,
@@ -142,48 +143,48 @@ async function runDockerWithTimeout(
 }
 
 /**
- * Issue a best-effort `docker kill --signal=KILL <containerId>` to terminate
- * the in-container workload. The local docker CLI process is killed separately
- * by the caller. Errors are swallowed — the container may already be gone.
- * Clamped to a 2-second safety timeout so we never block the caller indefinitely.
+ * Wrap a shell command with the container's `timeout` utility for deterministic
+ * in-container termination. This prevents a per-exec timeout from killing the
+ * container's PID 1 (sleep infinity) via `docker kill`, which would destroy the
+ * entire sandbox and cause all subsequent exec/readFile/writeFile to silently fail.
+ *
+ * The container `timeout` binary (from coreutils, present in ubuntu:22.04) kills
+ * only the wrapped command. `--kill-after=2` sends SIGKILL 2 seconds after SIGTERM
+ * if the process is still alive.
+ *
+ * Exits with code 124 when the timeout fires — the same sentinel that classify.ts
+ * maps to TIMEOUT.
  */
-async function killContainerWorkload(
-  containerId: string,
-  env: Record<string, string>,
-): Promise<void> {
-  try {
-    const killProc = Bun.spawn(["docker", "kill", "--signal=KILL", containerId], {
-      env,
-      stdout: "ignore",
-      stderr: "ignore",
-      stdin: "ignore" as const,
-    });
-    // Race: either the kill resolves or we give up after 2 s.
-    await Promise.race([
-      killProc.exited,
-      new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, 2000);
-        if ("unref" in t && typeof t.unref === "function") t.unref();
-      }),
-    ]);
-  } catch (_: unknown) {
-    // best-effort — swallow all errors
-  }
+function wrapCmdWithTimeout(cmd: string, timeoutMs: number): string {
+  const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  return `timeout --kill-after=2 ${seconds} sh -c ${quoteShellArg(cmd)}`;
 }
 
 /**
  * Run a docker exec command with bounded output capture and optional cwd/timeout/signal.
  * Applies readBoundedText to both stdout and stderr to prevent host OOM.
  * When signal is pre-aborted, returns immediately without spawning.
- * When signal fires mid-flight or timeout fires:
- *   - sends SIGKILL to the local docker CLI process (proc.kill(9))
- *   - ALSO spawns `docker kill --signal=KILL <containerId>` so the in-container
- *     workload is terminated (the docker CLI kill alone only kills the client process).
+ *
+ * Timeout strategy (in-container `timeout` wrapping):
+ *   When timeoutMs is set, the command is wrapped with the container's `timeout`
+ *   utility: `timeout --kill-after=2 <s> sh -c <cmd>`. The container's `timeout`
+ *   kills only the wrapped process — NOT PID 1 (sleep infinity). The host-side
+ *   docker CLI process is also killed via proc.kill(9) to stop stream draining.
+ *   This keeps the container alive after per-exec timeouts, so subsequent
+ *   exec/readFile/writeFile calls still work.
+ *
+ * Abort strategy:
+ *   proc.kill(9) terminates the docker CLI client (host side). The docker daemon
+ *   notices the closed exec stream and tears down the exec instance. In-container
+ *   workload may continue briefly until the daemon propagates the teardown.
+ *   Use timeoutMs for hard guarantees; abort is best-effort cleanup only.
+ *   `docker kill` is NOT called on abort — it would kill PID 1.
+ *
  * When output cap is hit, excess bytes are drained silently (drain-not-kill); the
  * container is allowed to complete naturally and truncated:true is returned.
  */
 async function runDockerExecBounded(
-  containerId: string,
+  _containerId: string,
   args: readonly string[],
   execOpts: DockerExecOpts,
   env: Record<string, string>,
@@ -209,23 +210,24 @@ async function runDockerExecBounded(
   let timedOut = false;
   let aborted = false;
 
+  // The in-container timeout utility handles the hard deadline; we still arm a host-side
+  // timer to kill the docker CLI client process (stops stream draining) shortly after the
+  // in-container timeout fires. Add 1 s grace so the container's `timeout` exits first.
   let timer: ReturnType<typeof setTimeout> | undefined;
   if (timeoutMs !== undefined && timeoutMs > 0) {
     timer = setTimeout(() => {
       timedOut = true;
       proc.kill(9);
-      // Also kill the in-container workload — the local docker CLI kill alone
-      // only kills the client process; the container-side process keeps running.
-      void killContainerWorkload(containerId, env);
-    }, timeoutMs);
+    }, timeoutMs + 1000);
     if ("unref" in timer && typeof timer.unref === "function") timer.unref();
   }
 
   const onAbort = (): void => {
     aborted = true;
+    // Kill the host-side docker CLI client to close the exec stream.
+    // The in-container workload may continue briefly until the daemon notices
+    // the closed exec stream. Use timeoutMs for hard in-container guarantees.
     proc.kill(9);
-    // Same as timeout: also kill the in-container workload.
-    void killContainerWorkload(containerId, env);
   };
   signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -292,7 +294,13 @@ function buildExecArgs(id: string, cmd: string, execOpts: DockerExecOpts): reado
     // Pass cwd as a separate argv element after --workdir — no shell interpolation.
     args.push("--workdir", execOpts.cwd);
   }
-  args.push(id, "sh", "-c", cmd);
+  // Wrap with in-container `timeout` when timeoutMs is set, so only the exec'd
+  // process is killed — NOT PID 1 (sleep infinity) which would destroy the container.
+  const wrappedCmd =
+    execOpts.timeoutMs !== undefined && execOpts.timeoutMs > 0
+      ? wrapCmdWithTimeout(cmd, execOpts.timeoutMs)
+      : cmd;
+  args.push(id, "sh", "-c", wrappedCmd);
   return args;
 }
 

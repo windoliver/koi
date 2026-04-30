@@ -121,7 +121,7 @@ describe("createDefaultDockerClient", () => {
     }
   });
 
-  test("container.exec: honours timeoutMs by arming timer (timer fires → exitCode 124)", async () => {
+  test("container.exec: honours timeoutMs via in-container timeout wrapping — exitCode 124, docker kill NOT called", async () => {
     let callCount = 0;
     const spawnedArgs: string[][] = [];
     // @ts-expect-error — test stub: returning a partial SubProcess for coverage
@@ -129,28 +129,11 @@ describe("createDefaultDockerClient", () => {
       callCount += 1;
       spawnedArgs.push(args);
       if (callCount <= 2) return fakeProc({ stdout: "tid\n", stderr: "", exitCode: 0 });
-      // 3rd call = docker exec (the actual workload — never resolves until killed)
-      if (callCount === 3) {
-        // Simulate a slow process: exited resolves quickly after kill() is called.
-        // `let` justified: resolveExited is captured from Promise constructor and called by kill.
-        let resolveExited: (code: number) => void = () => undefined;
-        const exitedP = new Promise<number>((res) => {
-          resolveExited = res;
-        });
-        const kill = mock(() => {
-          // Simulate process being killed — resolve exited immediately.
-          resolveExited(-9);
-        });
-        return {
-          stdout: new Response(new TextEncoder().encode("")).body,
-          stderr: new Response(new TextEncoder().encode("")).body,
-          exited: exitedP,
-          exitCode: null,
-          kill,
-        };
-      }
-      // 4th+ call = docker kill --signal=KILL <id> (best-effort container kill)
-      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+      // 3rd call = docker exec (the actual workload).
+      // In-container `timeout` returns exit code 124 when it fires.
+      // The host-side grace timer (timeoutMs + 1s) also eventually fires proc.kill(9).
+      // Simulate the in-container timeout: process exits with code 124 quickly.
+      return fakeProc({ stdout: "", stderr: "", exitCode: 124 });
     });
     try {
       const client = createDefaultDockerClient();
@@ -158,14 +141,16 @@ describe("createDefaultDockerClient", () => {
         image: "ubuntu:22.04",
         networkMode: "none",
       });
-      // Set a very short timeout (5 ms) so the timer fires quickly.
       const r = await container.exec("sleep 100", { timeoutMs: 5 });
-      // Timer fires → timedOut=true → exitCode 124
+      // In-container timeout exits with 124 → result is exitCode 124.
       expect(r.exitCode).toBe(124);
-      // Verify docker kill --signal=KILL <containerId> was also spawned
+      // docker kill --signal=KILL must NOT be called — it would kill PID 1.
       const dockerKillCall = spawnedArgs.find((a) => a[1] === "kill" && a[2] === "--signal=KILL");
-      expect(dockerKillCall).toBeDefined();
-      expect(dockerKillCall?.[3]).toBe("tid");
+      expect(dockerKillCall).toBeUndefined();
+      // The exec command should contain "timeout" prefix for in-container wrapping.
+      const execCall = spawnedArgs.find((a) => a[1] === "exec");
+      const cmdArg = execCall?.[execCall.length - 1] ?? "";
+      expect(cmdArg).toContain("timeout");
     } finally {
       spawnSpy.mockRestore();
     }
@@ -204,7 +189,7 @@ describe("createDefaultDockerClient", () => {
     }
   });
 
-  test("container.exec: abort signal fires mid-flight → docker kill spawned with containerId", async () => {
+  test("container.exec: abort signal fires mid-flight → proc.kill(9) only, docker kill NOT called (preserves container)", async () => {
     let callCount = 0;
     const spawnedArgs: string[][] = [];
     const ac = new AbortController();
@@ -237,7 +222,7 @@ describe("createDefaultDockerClient", () => {
           kill,
         };
       }
-      // 4th+ call = docker kill --signal=KILL (best-effort container kill)
+      // Any additional spawn calls would indicate an unexpected docker kill — flag them.
       return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
     });
     try {
@@ -249,10 +234,47 @@ describe("createDefaultDockerClient", () => {
       const r = await container.exec("sleep 100", { signal: ac.signal });
       // Abort → exitCode 130.
       expect(r.exitCode).toBe(130);
-      // docker kill --signal=KILL <containerId> should have been spawned.
+      // docker kill --signal=KILL must NOT be called on abort — it kills PID 1.
       const dockerKillCall = spawnedArgs.find((a) => a[1] === "kill" && a[2] === "--signal=KILL");
-      expect(dockerKillCall).toBeDefined();
-      expect(dockerKillCall?.[3]).toBe("abid");
+      expect(dockerKillCall).toBeUndefined();
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Fix 1 regression: after a per-exec timeout, the container must still be usable.
+  // The in-container `timeout` kills only the wrapped process — NOT PID 1 (sleep infinity).
+  // A subsequent exec call on the same container object must succeed.
+  test("container.exec: container still usable after per-exec timeout (in-container timeout preserves PID 1)", async () => {
+    let callCount = 0;
+    const spawnedArgs: string[][] = [];
+    // @ts-expect-error — test stub: returning a partial SubProcess for coverage
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
+      callCount += 1;
+      spawnedArgs.push(args);
+      // Calls 1-2 = docker create + docker start
+      if (callCount <= 2) return fakeProc({ stdout: "alive-cid\n", stderr: "", exitCode: 0 });
+      // Call 3 = first exec — simulates in-container timeout exit code 124
+      if (callCount === 3) return fakeProc({ stdout: "", stderr: "", exitCode: 124 });
+      // Call 4 = second exec — container is still alive, succeeds normally
+      return fakeProc({ stdout: "still-alive", stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      const container = await client.createContainer({
+        image: "ubuntu:22.04",
+        networkMode: "none",
+      });
+      // First exec times out (in-container timeout exits with 124)
+      const r1 = await container.exec("sleep 100", { timeoutMs: 5 });
+      expect(r1.exitCode).toBe(124);
+      // docker kill must NOT have been called — container is still alive
+      const killCall = spawnedArgs.find((a) => a[1] === "kill");
+      expect(killCall).toBeUndefined();
+      // Second exec succeeds — container is still alive
+      const r2 = await container.exec("echo still-alive");
+      expect(r2.exitCode).toBe(0);
+      expect(r2.stdout).toBe("still-alive");
     } finally {
       spawnSpy.mockRestore();
     }

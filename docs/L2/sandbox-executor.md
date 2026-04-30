@@ -36,6 +36,22 @@ export interface SubprocessExecutorConfig {
    * prevents silent trust-boundary leaks.
    */
   readonly externalIsolation?: boolean;
+  /**
+   * When true (default), the executor refuses to run if process-group isolation
+   * via `setsid` is unavailable on PATH. This prevents silent leakage of grandchild
+   * processes after timeout — without process-group kill, only the direct Bun child
+   * is SIGKILLed; grandchildren spawned by user code keep running.
+   *
+   * Set to false to opt out (e.g., trusted code, Windows, minimal containers).
+   *
+   * Default: true (fail-closed).
+   */
+  readonly requireProcessGroupIsolation?: boolean;
+  /**
+   * Dependency-injection override for setsid resolution.
+   * Useful in tests to simulate setsid absence without PATH manipulation.
+   */
+  readonly resolveSetsid?: () => string | null;
 }
 
 export function createSubprocessExecutor(
@@ -84,15 +100,21 @@ is not killed; it runs to completion. If the stderr framing marker was past the 
 the run is classified as CRASH after natural exit. This is intentional — reserving
 marker space is more complex and reserved for a future improvement.
 
-## Process-group kill
+## Process-group kill (fail-closed)
 
 On Linux/macOS with `setsid` on PATH, the child is wrapped in a new session
 (`setsid bun run ...`). Kill sends `SIGKILL` to `-proc.pid` (negative PID = whole
 process group), cleaning up grandchild processes automatically.
 
-On environments without `setsid` (Windows, minimal containers), only the direct
-child is killed. Descendant cleanup is best-effort in those cases.
-**TODO**: explore Bun.spawn posix\_spawn flags as a portable alternative.
+By default (`requireProcessGroupIsolation: true`), the executor **refuses to run**
+if `setsid` is not available on PATH. This is a security fail-closed: without
+process-group isolation, grandchild processes spawned by user code survive the SIGKILL
+timeout, leaking into the host process tree indefinitely.
+
+To opt out — for example on Windows, in minimal containers, or for trusted code where
+descendant cleanup is not a concern — pass `requireProcessGroupIsolation: false`.
+
+**TODO**: explore Bun.spawn posix\_spawn flags as a portable alternative to setsid.
 
 ## v1 references
 

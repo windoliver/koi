@@ -31,6 +31,8 @@
  *     and the mount point must already exist before container creation.
  */
 
+import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import type { KoiError, Result, SandboxProfile } from "@koi/core";
 import { resolveDockerNetwork } from "./network.js";
 import type { DockerCreateOpts } from "./types.js";
@@ -38,6 +40,34 @@ import type { DockerCreateOpts } from "./types.js";
 export interface ProfileMapping {
   readonly opts: DockerCreateOpts;
   readonly networkMode: "none" | "bridge";
+}
+
+/**
+ * Validate a single bind mount source path:
+ *   (a) must be absolute — relative paths are ambiguous and fragile
+ *   (b) must exist on the host before docker create — Docker auto-creates missing
+ *       directories, which can silently mutate the host filesystem with wrong
+ *       ownership and permissions. We refuse to create the container if the source
+ *       does not exist, giving the caller an actionable error at validation time.
+ */
+function validateBindSource(source: string): KoiError | undefined {
+  if (!isAbsolute(source)) {
+    return {
+      code: "VALIDATION",
+      message: `bind source must be an absolute path: ${source}`,
+      retryable: false,
+      context: { source },
+    };
+  }
+  if (!existsSync(source)) {
+    return {
+      code: "VALIDATION",
+      message: `bind source does not exist on the host: ${source} (Docker would auto-create it, silently mutating the host filesystem; refusing)`,
+      retryable: false,
+      context: { source },
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -91,6 +121,21 @@ export function validateProfileForDocker(profile: SandboxProfile): KoiError | un
         };
       }
     }
+  }
+
+  // Validate bind mount sources before docker create.
+  // Docker auto-creates missing host paths (wrong ownership, silent mutation) — reject early.
+  for (const source of profile.filesystem.allowRead ?? []) {
+    const err = validateBindSource(source);
+    if (err !== undefined) return err;
+  }
+  for (const source of profile.filesystem.allowWrite ?? []) {
+    const err = validateBindSource(source);
+    if (err !== undefined) return err;
+  }
+  for (const mount of profile.nexusMounts ?? []) {
+    const err = validateBindSource(mount.mountPath);
+    if (err !== undefined) return err;
   }
 
   return undefined;
