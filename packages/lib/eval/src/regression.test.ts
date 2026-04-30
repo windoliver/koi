@@ -94,6 +94,39 @@ describe("compareRuns", () => {
     }
   });
 
+  test("aborted current run is treated as a regression", () => {
+    const baseline = run("b", summary(1, 1));
+    const current = { ...run("c", summary(1, 1)), aborted: true as const };
+    const result = compareRuns(baseline, current);
+    expect(result.kind).toBe("fail");
+  });
+
+  test("unconfirmed cancellation in any trial is a regression", () => {
+    const baseline = run("b", summary(1, 1));
+    const current = {
+      ...run("c", summary(1, 1)),
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "pass" as const,
+          cancellation: "unconfirmed" as const,
+        },
+      ],
+    };
+    const result = compareRuns(baseline, current);
+    expect(result.kind).toBe("fail");
+  });
+
   test("respects custom thresholds", () => {
     const baseline = run("b", summary(1, 1));
     const current = run("c", summary(0.5, 1));

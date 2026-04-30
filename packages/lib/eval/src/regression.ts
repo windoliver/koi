@@ -21,15 +21,52 @@ export function compareRuns(
     passRateDelta,
     scoreDelta,
   );
+  // Fail-closed regression gate: an aborted run, or any trial with
+  // unconfirmed cancellation, means isolation could not be guaranteed.
+  // Score-based "pass" is not trustworthy under those conditions, so
+  // surface them as regressions regardless of summary numbers.
+  if (current.aborted === true) {
+    regressions.push({
+      taskId: "__run__",
+      metric: "passRate",
+      baseline: 1,
+      current: 0,
+      delta: -1,
+    });
+  }
+  for (const trial of current.trials) {
+    if (trial.cancellation === "unconfirmed") {
+      regressions.push({
+        taskId: trial.taskId,
+        metric: "passRate",
+        baseline: 1,
+        current: 0,
+        delta: -1,
+      });
+      break;
+    }
+  }
   if (regressions.length === 0) {
     return { kind: "pass", baseline: baseline.summary, current: current.summary };
   }
   return {
     kind: "fail",
-    regressions,
+    regressions: dedupeRegressions(regressions),
     baseline: baseline.summary,
     current: current.summary,
   };
+}
+
+function dedupeRegressions(regressions: readonly RegressionDetail[]): readonly RegressionDetail[] {
+  const seen = new Set<string>();
+  const out: RegressionDetail[] = [];
+  for (const r of regressions) {
+    const key = `${r.taskId}:${r.metric}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
 }
 
 function collectRegressions(
@@ -37,7 +74,7 @@ function collectRegressions(
   current: EvalSummary,
   passRateDelta: number,
   scoreDelta: number,
-): readonly RegressionDetail[] {
+): RegressionDetail[] {
   const out: RegressionDetail[] = [];
   pushIfRegressed(
     out,

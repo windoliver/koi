@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { EvalRun, EvalRunMeta, EvalStore } from "./types.js";
 
@@ -6,28 +6,35 @@ export function createFsStore(rootDir: string): EvalStore {
   return {
     save: async (run, options): Promise<void> => {
       const filePath = pathFor(rootDir, run.name, run.id);
-      const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+      const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       await mkdir(dirname(filePath), { recursive: true });
-      // Refuse to clobber an existing run by default — deterministic ids
-      // (legitimate use case per docs) would otherwise destroy baselines
-      // silently. Caller must opt in to overwrite.
-      if (!(options?.overwrite === true) && (await fileExists(filePath))) {
-        throw new Error(
-          `EvalStore: run "${run.id}" already exists for suite "${run.name}" — pass { overwrite: true } to replace`,
-        );
-      }
-      // Atomic write: stage to temp, rename into place. A crash between
-      // steps leaves either the previous run or no file at the final path
-      // — never a torn JSON document that would silently shadow newer
-      // baselines.
       await writeFile(tempPath, serializeRun(run), "utf8");
       try {
-        await rename(tempPath, filePath);
-      } catch (e: unknown) {
-        await unlink(tempPath).catch(() => {
-          // best-effort cleanup — surface the original failure below
-        });
-        throw e;
+        if (options?.overwrite === true) {
+          // Overwrite path: rename is atomic and replaces destination.
+          await rename(tempPath, filePath);
+          return;
+        }
+        // Atomic create-or-fail: link() does NOT replace an existing
+        // destination, so concurrent writers cannot both succeed. Use
+        // EEXIST to surface collisions deterministically. This is safe
+        // under POSIX concurrency; Windows behaves equivalently for
+        // hardlinks on NTFS.
+        try {
+          await link(tempPath, filePath);
+        } catch (e: unknown) {
+          if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+            throw new Error(
+              `EvalStore: run "${run.id}" already exists for suite "${run.name}" — pass { overwrite: true } to replace`,
+            );
+          }
+          throw e;
+        }
+      } finally {
+        // Always unlink the staged temp file: in the link path it's a
+        // duplicate; in the rename path it's already moved (unlink is a
+        // no-op then). Best-effort.
+        await unlink(tempPath).catch(() => {});
       }
     },
     load: async (runId: string, evalName?: string): Promise<EvalRun | undefined> => {
