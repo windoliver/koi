@@ -148,16 +148,22 @@ async function runDockerWithTimeout(
  * container's PID 1 (sleep infinity) via `docker kill`, which would destroy the
  * entire sandbox and cause all subsequent exec/readFile/writeFile to silently fail.
  *
- * The container `timeout` binary (from coreutils, present in ubuntu:22.04) kills
- * only the wrapped command. `--kill-after=2` sends SIGKILL 2 seconds after SIGTERM
- * if the process is still alive.
+ * The container `timeout` binary kills only the wrapped command. The short-form
+ * `-k 2` flag (SIGKILL 2 seconds after SIGTERM if still alive) is portable across
+ * GNU coreutils (debian/ubuntu) and BusyBox (alpine). The long form `--kill-after`
+ * is GNU-only and breaks on alpine images.
  *
  * Exits with code 124 when the timeout fires — the same sentinel that classify.ts
  * maps to TIMEOUT.
  */
 function wrapCmdWithTimeout(cmd: string, timeoutMs: number): string {
   const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
-  return `timeout --kill-after=2 ${seconds} sh -c ${quoteShellArg(cmd)}`;
+  // BusyBox `timeout` exits 143 (128+SIGTERM) when it fires, while GNU coreutils
+  // exits 124. Remap 143 → 124 so callers see a single timeout sentinel regardless
+  // of the in-container `timeout` implementation. Leave 137 (SIGKILL) alone so it
+  // can still surface as OOM via classifyDockerExit.
+  const inner = `timeout -k 2 ${seconds} sh -c ${quoteShellArg(cmd)}`;
+  return `${inner}; rc=$?; if [ $rc -eq 143 ]; then exit 124; fi; exit $rc`;
 }
 
 /**
@@ -167,7 +173,7 @@ function wrapCmdWithTimeout(cmd: string, timeoutMs: number): string {
  *
  * Timeout strategy (in-container `timeout` wrapping):
  *   When timeoutMs is set, the command is wrapped with the container's `timeout`
- *   utility: `timeout --kill-after=2 <s> sh -c <cmd>`. The container's `timeout`
+ *   utility: `timeout -k 2 <s> sh -c <cmd>`. The container's `timeout`
  *   kills only the wrapped process — NOT PID 1 (sleep infinity). The host-side
  *   docker CLI process is also killed via proc.kill(9) to stop stream draining.
  *   This keeps the container alive after per-exec timeouts, so subsequent

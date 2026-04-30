@@ -151,6 +151,12 @@ describe("createDefaultDockerClient", () => {
       const execCall = spawnedArgs.find((a) => a[1] === "exec");
       const cmdArg = execCall?.[execCall.length - 1] ?? "";
       expect(cmdArg).toContain("timeout");
+      // BusyBox/GNU portability: must use short `-k 2` flag, not GNU-only `--kill-after`.
+      expect(cmdArg).toMatch(/timeout -k 2 \d+/);
+      expect(cmdArg).not.toContain("--kill-after");
+      // BusyBox returns 143 (128+SIGTERM) when timeout fires; remap to 124 so callers
+      // see a single TIMEOUT sentinel regardless of in-container `timeout` implementation.
+      expect(cmdArg).toContain("if [ $rc -eq 143 ]; then exit 124");
     } finally {
       spawnSpy.mockRestore();
     }
