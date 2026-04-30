@@ -102,8 +102,22 @@ describe("toolCall", () => {
     expect(score.pass).toBe(true);
   });
 
-  test("counts tool_call_end alone as a completion (engine streams without tool_result)", async () => {
+  test("tool_call_end alone does NOT count as completion by default", async () => {
     const grader = toolCall();
+    const events: readonly EngineEvent[] = [
+      { kind: "tool_call_start", toolName: "write", callId: "c1" as never, args: {} },
+      { kind: "tool_call_end", callId: "c1" as never, result: "ok" },
+    ];
+    const score = await grader.grade(
+      events,
+      { kind: "tool_calls", calls: [{ toolName: "write" }] },
+      METRICS,
+    );
+    expect(score.pass).toBe(false);
+  });
+
+  test("tool_call_end counts when acceptToolCallEnd: true (replay sources)", async () => {
+    const grader = toolCall({ acceptToolCallEnd: true });
     const events: readonly EngineEvent[] = [
       { kind: "tool_call_start", toolName: "write", callId: "c1" as never, args: {} },
       { kind: "tool_call_end", callId: "c1" as never, result: "ok" },

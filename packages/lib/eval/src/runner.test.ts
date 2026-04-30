@@ -453,7 +453,7 @@ describe("runEval", () => {
       },
       idGen: () => "ua",
     });
-    expect(factoryCalled).toBe(1);
+    expect(factoryCalled).toBe(0);
     expect(streamCalled).toBe(0);
     expect(run.trials[0]?.status).toBe("error");
     expect(run.trials[0]?.cancellation).toBe("unconfirmed");
@@ -551,6 +551,27 @@ describe("runEval", () => {
     expect(run.trials[0]?.error).toContain("after");
   });
 
+  test("max_turns terminal is a successful run (matches core mapping)", async () => {
+    const run = await runEval({
+      name: "max-turns",
+      tasks: [task("t1", "ok", [exactMatch()])],
+      agentFactory: () => ({
+        stream: async function* (): AsyncIterable<EngineEvent> {
+          yield {
+            kind: "done",
+            output: {
+              content: [{ kind: "text", text: "ok" }],
+              stopReason: "max_turns",
+              metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+            },
+          };
+        },
+      }),
+      idGen: () => "mt",
+    });
+    expect(run.trials[0]?.status).toBe("pass");
+  });
+
   test("trial errors when terminal done has non-completed stop reason", async () => {
     const run = await runEval({
       name: "stopped",
@@ -561,7 +582,7 @@ describe("runEval", () => {
             kind: "done",
             output: {
               content: [{ kind: "text", text: "x" }],
-              stopReason: "max_turns",
+              stopReason: "error",
               metrics: {
                 totalTokens: 0,
                 inputTokens: 0,
@@ -576,7 +597,7 @@ describe("runEval", () => {
       idGen: () => "run-st",
     });
     expect(run.trials[0]?.status).toBe("error");
-    expect(run.trials[0]?.error).toContain("max_turns");
+    expect(run.trials[0]?.error).toContain("error");
   });
 
   test("grader exception becomes failed score, not crash", async () => {

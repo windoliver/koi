@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { EngineEvent, EngineMetrics } from "@koi/core";
+import { type EngineEvent, type EngineMetrics, mapStopReasonToOutcome } from "@koi/core";
 import {
   type AgentHandle,
   type CancellationStatus,
@@ -119,6 +119,14 @@ async function runTrial(
   let returnAwaited = false;
   let trialError: unknown;
   try {
+    // Check upstream cancellation BEFORE creating the agent. Factory
+    // creation can spawn subprocesses, allocate sandboxes, or open remote
+    // sessions; performing that work after the caller has already
+    // cancelled is a side effect we promised not to do.
+    const upstream = (task.input as { signal?: AbortSignal }).signal;
+    if (upstream?.aborted === true) {
+      throw createTimeoutMarker(new Error("upstream aborted before agent creation"), false);
+    }
     agent = await config.agentFactory();
     await collectTranscriptWithTimeout(agent, task, transcript, timeoutMs);
     // Require exactly one terminal `done` event as the final transcript
@@ -137,8 +145,13 @@ async function runTrial(
     if (last?.kind !== "done") {
       throw new Error("agent stream emitted events after 'done'");
     }
-    if (last.output.stopReason !== "completed") {
-      throw new Error(`agent stream stopped with non-completed reason: ${last.output.stopReason}`);
+    // Defer to the core stop-reason mapping: "completed" and "max_turns"
+    // are both successful terminals (max_turns is a capacity constraint,
+    // not an error). Only treat outcomes mapped to error/interrupted as
+    // a trial failure.
+    const outcome = mapStopReasonToOutcome(last.output.stopReason);
+    if (outcome !== "success") {
+      throw new Error(`agent stream stopped with non-success reason: ${last.output.stopReason}`);
     }
   } catch (e: unknown) {
     const marker = readTimeoutMarker(e);

@@ -5,6 +5,15 @@ export interface ToolCallOptions {
   readonly id?: string | undefined;
   readonly calls?: readonly ExpectedToolCall[] | undefined;
   readonly order?: "strict" | "any" | undefined;
+  /**
+   * When true, count `tool_call_end` as a completion signal in addition
+   * to `tool_result`. Use this only for transcript sources that don't
+   * emit `tool_result` (some cassette/replay formats). Default false:
+   * `tool_result` is the engine's authoritative completion signal —
+   * `tool_call_end` only marks the model finishing the call argument
+   * stream, before execution.
+   */
+  readonly acceptToolCallEnd?: boolean | undefined;
 }
 
 const DEFAULT_ID = "tool-call";
@@ -13,7 +22,8 @@ export function toolCall(options: ToolCallOptions = {}): EvalGrader {
   const id = options.id ?? DEFAULT_ID;
   const fallbackCalls = options.calls;
   const order = options.order ?? "any";
-  const configFingerprint = `order=${order};calls=${stableStringify(fallbackCalls)}`;
+  const acceptToolCallEnd = options.acceptToolCallEnd ?? false;
+  const configFingerprint = `order=${order};acceptToolCallEnd=${acceptToolCallEnd};calls=${stableStringify(fallbackCalls)}`;
   return {
     id,
     configFingerprint,
@@ -22,7 +32,7 @@ export function toolCall(options: ToolCallOptions = {}): EvalGrader {
       if (calls === undefined || calls.length === 0) {
         return { graderId: id, score: 0, pass: false, reasoning: "no tool_calls expectation" };
       }
-      const observed = collectToolCalls(transcript);
+      const observed = collectToolCalls(transcript, acceptToolCallEnd);
       const matched = order === "strict" ? matchStrict(observed, calls) : matchAny(observed, calls);
       const score = matched.length / calls.length;
       const pass = matched.length === calls.length;
@@ -51,21 +61,28 @@ interface ObservedCall {
  * producers in this repo emit one or both, depending on the stream
  * source. Accept both so evals work against any valid transcript.
  */
-function collectToolCalls(transcript: readonly EngineEvent[]): readonly ObservedCall[] {
+function collectToolCalls(
+  transcript: readonly EngineEvent[],
+  acceptToolCallEnd: boolean,
+): readonly ObservedCall[] {
   // Order-aware: a completion only counts if it followed a matching start
   // for the same callId, and a callId can only complete once. This rejects
   // out-of-order completions (completion before start) and stale repeat
   // completions that would otherwise let the grader pass on garbage.
+  //
+  // Default: only `tool_result` proves the tool actually executed.
+  // `tool_call_end` is the model finishing the call-arg stream BEFORE
+  // execution; counting it would let denied/failed/aborted calls pass.
+  // Opt in via `acceptToolCallEnd` for replay sources that don't emit
+  // `tool_result`.
   const pending = new Map<string, ObservedCall>();
   const out: ObservedCall[] = [];
   for (const ev of transcript) {
     if (ev.kind === "tool_call_start") {
-      // Reused callId before completion overwrites the pending start —
-      // engine event semantics don't permit aliasing live callIds.
       pending.set(ev.callId, { toolName: ev.toolName, args: ev.args });
-    } else if (ev.kind === "tool_result" || ev.kind === "tool_call_end") {
+    } else if (ev.kind === "tool_result" || (acceptToolCallEnd && ev.kind === "tool_call_end")) {
       const start = pending.get(ev.callId);
-      if (start === undefined) continue; // completion without preceding start
+      if (start === undefined) continue;
       out.push(start);
       pending.delete(ev.callId);
     }
