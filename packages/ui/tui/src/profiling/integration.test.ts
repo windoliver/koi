@@ -6,6 +6,7 @@ import {
   __resetProfilingForTests,
   initProfiling,
   ProfilingConflictError,
+  ProfilingPendingWriteError,
   shutdownProfiling,
 } from "./integration.js";
 import { bumpCounter, dumpProfile, resetProfiler } from "./profiler.js";
@@ -346,6 +347,57 @@ describe("initProfiling", () => {
 
     // Second sampler must not have been started.
     expect(secondSetIntervalCalls).toBe(0);
+  });
+
+  test("pending failed write blocks later profiled run; resolving the issue clears it", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    const missingDir = join(workDir, "missing-block");
+    const outPathA = join(missingDir, "a.json");
+    process.env.KOI_TUI_PROFILE_OUT = outPathA;
+    resetProfiler();
+
+    // Run A: profiled, write fails → pending snapshot set.
+    initProfiling({
+      processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    bumpCounter("messagerow.mount", 5);
+    shutdownProfiling();
+    expect(existsSync(outPathA)).toBe(false);
+
+    // Try to start run B WITHOUT resolving the pending — must throw.
+    const outPathB = join(workDir, "b.json");
+    process.env.KOI_TUI_PROFILE_OUT = outPathB;
+    expect(() =>
+      initProfiling({
+        processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+        cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+      }),
+    ).toThrow(ProfilingPendingWriteError);
+
+    // Resolve the issue — create the directory. Run B's init now retries
+    // run A's pending write (succeeds → A.json written), then starts B.
+    mkdirSync(missingDir, { recursive: true });
+    const ownedB = initProfiling({
+      processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    expect(ownedB).toBe(true);
+
+    bumpCounter("messagerow.mount", 99);
+    shutdownProfiling();
+
+    // A's pending write resolved to A.json with run-A data.
+    const writtenA = JSON.parse(readFileSync(outPathA, "utf8")) as {
+      counters: Record<string, number>;
+    };
+    expect(writtenA.counters["messagerow.mount"]).toBe(5);
+
+    // B's own data went to B.json — NOT clobbered by A's stale snapshot.
+    const writtenB = JSON.parse(readFileSync(outPathB, "utf8")) as {
+      counters: Record<string, number>;
+    };
+    expect(writtenB.counters["messagerow.mount"]).toBe(99);
   });
 
   test("shutdown write failure + later activity: exit retry writes the original snapshot, not the mix", () => {

@@ -82,6 +82,23 @@ export class ProfilingConflictError extends Error {
 }
 
 /**
+ * A previous run's report failed to write and is still pending retry.
+ * Starting a new profiled run before resolving it would either
+ * overwrite the new run's data with the stale snapshot (if the retry
+ * succeeded mid-flight) or accumulate snapshots indefinitely.
+ */
+export class ProfilingPendingWriteError extends Error {
+  constructor(path: string) {
+    super(
+      `[koi-tui-profile] previous run's report could not be written to ${path}. ` +
+        "Resolve the underlying issue (missing directory, permissions, disk space) " +
+        "before starting another profiled run.",
+    );
+    this.name = "ProfilingPendingWriteError";
+  }
+}
+
+/**
  * Try to start profiling for the calling TUI run.
  *
  * Returns `true` when this call took ownership of the global profiler
@@ -118,6 +135,19 @@ export function initProfiling(options?: InitProfilingOptions): boolean {
   // Caller wants profiling. Conflict only when another profiled run owns it.
   if (runActive) {
     throw new ProfilingConflictError();
+  }
+
+  // A pending snapshot from a previous run's failed shutdown write must
+  // be resolved before starting a new run. Try one retry now; if still
+  // failing, refuse to start so we don't (a) accumulate snapshots, or
+  // (b) have the new run's eventual write overwrite itself with the
+  // stale snapshot when writeReportIfNeeded picks the pending one.
+  if (pendingReportSnapshot !== null) {
+    writeReportIfNeeded();
+    if (pendingReportSnapshot !== null) {
+      const stuckPath = pendingReportPath ?? "<unknown>";
+      throw new ProfilingPendingWriteError(stuckPath);
+    }
   }
 
   // Fresh state for this run — must come before sampler start so the
