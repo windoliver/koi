@@ -119,6 +119,49 @@ function serializeRun(run: EvalRun): string {
   return JSON.stringify(sanitize(run), null, 2);
 }
 
+/**
+ * Reverse of serializeRun's __wrapped encoding: turn `{__wrapped: "date", iso}`
+ * back into a Date, etc. Wrapper objects that don't match a known shape
+ * are passed through unchanged. `__unserializable` markers are left as-is
+ * — they represent values that genuinely could not be serialized
+ * (functions/symbols/cycles), and the consumer can inspect the marker
+ * for debugging.
+ */
+function revive(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(revive);
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.__wrapped === "string") {
+    switch (obj.__wrapped) {
+      case "date":
+        return typeof obj.iso === "string" ? new Date(obj.iso) : obj;
+      case "url":
+        return typeof obj.href === "string" ? new URL(obj.href) : obj;
+      case "regexp":
+        return typeof obj.source === "string" && typeof obj.flags === "string"
+          ? new RegExp(obj.source, obj.flags)
+          : obj;
+      case "map": {
+        if (!Array.isArray(obj.entries)) return obj;
+        const m = new Map<unknown, unknown>();
+        for (const e of obj.entries) {
+          if (Array.isArray(e) && e.length === 2) m.set(revive(e[0]), revive(e[1]));
+        }
+        return m;
+      }
+      case "set": {
+        if (!Array.isArray(obj.values)) return obj;
+        return new Set(obj.values.map(revive));
+      }
+      default:
+        return obj;
+    }
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) out[k] = revive(v);
+  return out;
+}
+
 function pathFor(rootDir: string, evalName: string, runId: string): string {
   assertSafeComponent(evalName, "evalName");
   assertSafeComponent(runId, "runId");
@@ -163,7 +206,7 @@ async function readRunResult(
   let run: EvalRun;
   try {
     const text = await readFile(path, "utf8");
-    const parsed = JSON.parse(text) as unknown;
+    const parsed = revive(JSON.parse(text) as unknown);
     if (!isEvalRunShape(parsed)) return { kind: "corrupted", path, cause: "shape mismatch" };
     run = parsed;
   } catch (e: unknown) {

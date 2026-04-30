@@ -116,6 +116,35 @@ describe("toolCall", () => {
     expect(score.pass).toBe(true);
   });
 
+  test("completion before start does not count as execution", async () => {
+    const grader = toolCall();
+    const events: readonly EngineEvent[] = [
+      { kind: "tool_result", callId: "ghost" as never, output: { fake: true } },
+      { kind: "tool_call_start", toolName: "read", callId: "ghost" as never, args: {} },
+    ];
+    const score = await grader.grade(
+      events,
+      { kind: "tool_calls", calls: [{ toolName: "read" }] },
+      METRICS,
+    );
+    expect(score.pass).toBe(false);
+  });
+
+  test("repeated completion for the same callId does not double-count", async () => {
+    const grader = toolCall();
+    const events: readonly EngineEvent[] = [
+      { kind: "tool_call_start", toolName: "read", callId: "c1" as never, args: {} },
+      { kind: "tool_result", callId: "c1" as never, output: 1 },
+      { kind: "tool_result", callId: "c1" as never, output: 2 },
+    ];
+    const score = await grader.grade(
+      events,
+      { kind: "tool_calls", calls: [{ toolName: "read" }, { toolName: "read" }] },
+      METRICS,
+    );
+    expect(score.pass).toBe(false);
+  });
+
   test("strict order requires sequential match", async () => {
     const grader = toolCall({ order: "strict" });
     const eventsBad: readonly EngineEvent[] = [...completed("write"), ...completed("read")];

@@ -203,6 +203,72 @@ describe("createFsStore", () => {
     await expect(store.load("fpc", "smoke")).rejects.toThrow(/corrupt/);
   });
 
+  test("round-trips Date/URL/RegExp/Map/Set in transcript payloads", async () => {
+    const store = createFsStore(root);
+    const baseRun = makeRun("rt", "smoke", "2026-01-01T00:00:00.000Z");
+    const run = {
+      ...baseRun,
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [
+            {
+              kind: "tool_result",
+              callId: "c1",
+              output: {
+                when: new Date("2026-05-01T00:00:00.000Z"),
+                where: new URL("https://example.test/path?q=1"),
+                pat: /hello/i,
+                tags: new Set(["a", "b"]),
+                meta: new Map<string, number>([["k", 7]]),
+              },
+            },
+          ],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "fail" as const,
+          cancellation: "n/a" as const,
+        },
+      ],
+      summary: {
+        ...baseRun.summary,
+        trialCount: 1,
+        passRate: 0,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 1,
+            taskFingerprint: fp("spec-rt"),
+            taskSpec: "spec-rt",
+          },
+        ],
+      },
+    } as unknown as Parameters<typeof store.save>[0];
+    await store.save(run);
+    const loaded = await store.load("rt", "smoke");
+    const out = (loaded?.trials[0]?.transcript[0] as { output: Record<string, unknown> }).output;
+    expect(out.when).toBeInstanceOf(Date);
+    expect((out.when as Date).toISOString()).toBe("2026-05-01T00:00:00.000Z");
+    expect(out.where).toBeInstanceOf(URL);
+    expect((out.where as URL).href).toBe("https://example.test/path?q=1");
+    expect(out.pat).toBeInstanceOf(RegExp);
+    expect(out.tags).toBeInstanceOf(Set);
+    expect((out.tags as Set<string>).has("a")).toBe(true);
+    expect(out.meta).toBeInstanceOf(Map);
+    expect((out.meta as Map<string, number>).get("k")).toBe(7);
+  });
+
   test("save fails on collision unless overwrite: true", async () => {
     const store = createFsStore(root);
     const r1 = makeRun("dup", "smoke", "2026-01-01T00:00:00.000Z");

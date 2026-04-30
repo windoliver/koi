@@ -265,8 +265,12 @@ async function collectTranscriptWithTimeout(
   // unhandled rejection later.
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      controller.abort(new Error("timeout"));
+      // Reject the timeout promise BEFORE aborting the controller. The
+      // abort dispatch is synchronous and would otherwise fire the
+      // upstream-composed abortPromise first, racing past the timeout
+      // message ("aborted" wins instead of "timeout").
       reject(new Error("timeout"));
+      controller.abort(new Error("timeout"));
     }, timeoutMs);
   });
   timeoutPromise.catch(() => {
@@ -300,9 +304,23 @@ async function collectTranscriptWithTimeout(
       upstream === undefined ? controller.signal : anySignal([upstream, controller.signal]);
     const inputWithSignal = { ...task.input, signal: composed };
     const iterator = agent.stream(inputWithSignal)[Symbol.asyncIterator]();
+    // Abort promise: settles immediately when the composed signal aborts.
+    // Without this, a non-cooperative agent that ignores input.signal
+    // would force us to wait the full timeoutMs before tearing down on
+    // upstream cancel.
+    const abortPromise = new Promise<never>((_, reject) => {
+      if (composed.aborted) {
+        reject(new Error("aborted"));
+        return;
+      }
+      composed.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+    abortPromise.catch(() => {
+      // intentionally swallowed — only consumer is Promise.race below
+    });
     try {
       while (true) {
-        const next = await Promise.race([iterator.next(), timeoutPromise]);
+        const next = await Promise.race([iterator.next(), timeoutPromise, abortPromise]);
         if (next.done) return { timedOut: false, returnAwaited: true };
         transcript.push(next.value);
       }

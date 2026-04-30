@@ -52,18 +52,23 @@ interface ObservedCall {
  * source. Accept both so evals work against any valid transcript.
  */
 function collectToolCalls(transcript: readonly EngineEvent[]): readonly ObservedCall[] {
-  const startsByCallId = new Map<string, ObservedCall>();
-  const completed = new Set<string>();
+  // Order-aware: a completion only counts if it followed a matching start
+  // for the same callId, and a callId can only complete once. This rejects
+  // out-of-order completions (completion before start) and stale repeat
+  // completions that would otherwise let the grader pass on garbage.
+  const pending = new Map<string, ObservedCall>();
+  const out: ObservedCall[] = [];
   for (const ev of transcript) {
     if (ev.kind === "tool_call_start") {
-      startsByCallId.set(ev.callId, { toolName: ev.toolName, args: ev.args });
+      // Reused callId before completion overwrites the pending start —
+      // engine event semantics don't permit aliasing live callIds.
+      pending.set(ev.callId, { toolName: ev.toolName, args: ev.args });
     } else if (ev.kind === "tool_result" || ev.kind === "tool_call_end") {
-      completed.add(ev.callId);
+      const start = pending.get(ev.callId);
+      if (start === undefined) continue; // completion without preceding start
+      out.push(start);
+      pending.delete(ev.callId);
     }
-  }
-  const out: ObservedCall[] = [];
-  for (const [callId, call] of startsByCallId) {
-    if (completed.has(callId)) out.push(call);
   }
   return out;
 }
