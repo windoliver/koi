@@ -96,11 +96,18 @@ ACE is a TUI-only feature (no headless dogfood loop today).
 
 ```yaml
 ace:
-  enabled: true            # boolean — required to opt in
-  max_injected_tokens: 800 # >0; maps to AceConfig.maxInjectedTokens
-  min_score: 0.05          # in [0, 1]; maps to AceConfig.minScore
-  lambda: 0.05             # >0; maps to AceConfig.lambda
+  enabled: true                          # boolean — required to opt in
+  acknowledge_cross_session_state: true  # required when enabled: true (see below)
+  max_injected_tokens: 800               # >0; maps to AceConfig.maxInjectedTokens
+  min_score: 0.05                        # in [0, 1]; maps to AceConfig.minScore
+  lambda: 0.05                           # >0; maps to AceConfig.lambda
 ```
+
+`enabled: true` requires `acknowledge_cross_session_state: true`. ACE-learned
+playbooks persist across `/clear` and `/new` within a TUI process — they
+survive conversation resets and are only discarded on process exit. The
+double opt-in makes this trade-off explicit at manifest-load time rather
+than buried in a startup banner.
 
 ### Validation
 

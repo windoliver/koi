@@ -15,6 +15,7 @@ const STUB_FACTORIES = {
 
 const ENABLED_BARE: ManifestAceConfig = {
   enabled: true,
+  acknowledgeCrossSessionState: true,
   maxInjectedTokens: undefined,
   minScore: undefined,
   lambda: undefined,
@@ -28,7 +29,13 @@ describe("resolveAceActivation — issue #2088", () => {
 
   test("skips when ace.enabled is false", () => {
     const result = resolveAceActivation(
-      { enabled: false, maxInjectedTokens: undefined, minScore: undefined, lambda: undefined },
+      {
+        enabled: false,
+        acknowledgeCrossSessionState: false,
+        maxInjectedTokens: undefined,
+        minScore: undefined,
+        lambda: undefined,
+      },
       ["observability"],
       STUB_FACTORIES,
     );
@@ -78,7 +85,13 @@ describe("resolveAceActivation — issue #2088", () => {
 
   test("forwards optional overrides into AceConfig when present", () => {
     const result = resolveAceActivation(
-      { enabled: true, maxInjectedTokens: 1200, minScore: 0.1, lambda: 0.07 },
+      {
+        enabled: true,
+        acknowledgeCrossSessionState: true,
+        maxInjectedTokens: 1200,
+        minScore: 0.1,
+        lambda: 0.07,
+      },
       ["observability"],
       STUB_FACTORIES,
     );
