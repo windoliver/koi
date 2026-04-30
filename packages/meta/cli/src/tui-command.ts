@@ -1464,47 +1464,72 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           );
           process.exit(1);
         }
-      } else if (resumeAuditResult.value.audit !== undefined) {
-        const resumeAudit = resumeAuditResult.value.audit;
-        if (resumeAudit.malformed === true) {
-          const allCoveredByEnv =
-            process.env.KOI_AUDIT_NDJSON !== undefined &&
-            process.env.KOI_AUDIT_SQLITE !== undefined &&
-            (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
-          if (!allCoveredByEnv) {
-            const missingVars = [
-              process.env.KOI_AUDIT_NDJSON === undefined ? "KOI_AUDIT_NDJSON" : "",
-              process.env.KOI_AUDIT_SQLITE === undefined ? "KOI_AUDIT_SQLITE" : "",
-              flags.governance.enabled && process.env.KOI_AUDIT_VIOLATIONS === undefined
-                ? "KOI_AUDIT_VIOLATIONS"
-                : "",
-            ]
-              .filter(Boolean)
-              .join(" + ");
-            process.stderr.write(
-              "koi tui: original session manifest.audit has an unrecognized format — " +
-                "refusing to resume because audit intent cannot be determined. " +
-                `Fix the manifest, or set ${missingVars} to cover all active audit sinks.\n`,
-            );
-            process.exit(1);
-          }
-        } else {
-          const ndjsonExposed =
-            resumeAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
-          const sqliteExposed =
-            resumeAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
-          const violationsExposed =
-            flags.governance.enabled &&
-            resumeAudit.violations !== undefined &&
-            process.env.KOI_AUDIT_VIOLATIONS === undefined;
-          if (ndjsonExposed || sqliteExposed || violationsExposed) {
-            process.stderr.write(
-              "koi tui: original session manifest.audit declares audit sinks but the matching " +
-                "KOI_AUDIT_* env vars are absent — refusing to resume to prevent silently " +
-                "dropping declared audit logging. Set each matching KOI_AUDIT_* env var " +
-                "(empty string disables that sink), or pass --manifest and re-specify the manifest.\n",
-            );
-            process.exit(1);
+        // gov-15: manifest unparseable and user did not pass --manifest:
+        // we cannot recover the original network/credential scope, so
+        // we must fail-closed rather than resume with open boundaries.
+        // This is a new requirement beyond audit coverage — scope can't
+        // be substituted with env vars the way audit sinks can.
+        if (flags.manifest === undefined) {
+          process.stderr.write(
+            "koi tui: original session manifest cannot be parsed — " +
+              "refusing to resume because network and credential scope cannot be verified. " +
+              "Pass --manifest <path> to re-specify the manifest explicitly.\n",
+          );
+          process.exit(1);
+        }
+      } else {
+        // Happy path: stored manifest parsed OK. Apply network and credential
+        // scope from the original session so the resumed session uses the same
+        // trust boundaries as when it was created. manifestNetwork /
+        // manifestCredentials are only populated from a new --manifest load
+        // (which happens before this block), so guard against overwriting an
+        // explicit override with the stored default.
+        if (manifestNetwork === undefined) manifestNetwork = resumeAuditResult.value.network;
+        if (manifestCredentials === undefined)
+          manifestCredentials = resumeAuditResult.value.credentials;
+
+        if (resumeAuditResult.value.audit !== undefined) {
+          const resumeAudit = resumeAuditResult.value.audit;
+          if (resumeAudit.malformed === true) {
+            const allCoveredByEnv =
+              process.env.KOI_AUDIT_NDJSON !== undefined &&
+              process.env.KOI_AUDIT_SQLITE !== undefined &&
+              (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
+            if (!allCoveredByEnv) {
+              const missingVars = [
+                process.env.KOI_AUDIT_NDJSON === undefined ? "KOI_AUDIT_NDJSON" : "",
+                process.env.KOI_AUDIT_SQLITE === undefined ? "KOI_AUDIT_SQLITE" : "",
+                flags.governance.enabled && process.env.KOI_AUDIT_VIOLATIONS === undefined
+                  ? "KOI_AUDIT_VIOLATIONS"
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" + ");
+              process.stderr.write(
+                "koi tui: original session manifest.audit has an unrecognized format — " +
+                  "refusing to resume because audit intent cannot be determined. " +
+                  `Fix the manifest, or set ${missingVars} to cover all active audit sinks.\n`,
+              );
+              process.exit(1);
+            }
+          } else {
+            const ndjsonExposed =
+              resumeAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
+            const sqliteExposed =
+              resumeAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
+            const violationsExposed =
+              flags.governance.enabled &&
+              resumeAudit.violations !== undefined &&
+              process.env.KOI_AUDIT_VIOLATIONS === undefined;
+            if (ndjsonExposed || sqliteExposed || violationsExposed) {
+              process.stderr.write(
+                "koi tui: original session manifest.audit declares audit sinks but the matching " +
+                  "KOI_AUDIT_* env vars are absent — refusing to resume to prevent silently " +
+                  "dropping declared audit logging. Set each matching KOI_AUDIT_* env var " +
+                  "(empty string disables that sink), or pass --manifest and re-specify the manifest.\n",
+              );
+              process.exit(1);
+            }
           }
         }
       }

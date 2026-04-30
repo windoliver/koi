@@ -1,6 +1,6 @@
 {
   "name": "@koi/governance-scope",
-  "description": "Capability-attenuation wrappers — scoped filesystem (glob allowlist), scoped fetcher (URLPattern allowlist), scoped credentials (key allowlist)",
+  "description": "Capability-attenuation wrappers: scoped filesystem, fetcher, and credentials (glob/URLPattern/key allowlists)",
   "version": "0.0.0",
   "private": true,
   "type": "module",
