@@ -1,21 +1,13 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
-
-afterEach(() => {
-  mock.restore();
-});
+import { describe, expect, test } from "bun:test";
+import { runDispatch } from "./dispatch.js";
 
 describe("runDispatch", () => {
   test("preserves non-Error command-loader diagnostic messages", async () => {
-    mock.module("./registry.js", () => ({
-      COMMAND_LOADERS: {
-        start: () => {
-          throw { message: "Cannot find module '@koi/example'" };
-        },
+    const result = await runDispatch(["start"], "", "0.0.0", {
+      start: () => {
+        throw { message: "Cannot find module '@koi/example'" };
       },
-    }));
-
-    const { runDispatch } = await import("./dispatch.js");
-    const result = await runDispatch(["start"], "", "0.0.0");
+    });
 
     expect(result.kind).toBe("exit");
     if (result.kind !== "exit") throw new Error("expected exit result");
