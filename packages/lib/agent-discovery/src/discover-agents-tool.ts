@@ -1,4 +1,4 @@
-import type { JsonObject, Tool, ToolDescriptor } from "@koi/core";
+import type { Tool, ToolDescriptor } from "@koi/core";
 import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { DiscoveryFilter, DiscoveryHandle } from "./types.js";
 
@@ -17,12 +17,24 @@ const DESCRIPTOR: ToolDescriptor = {
   origin: "primordial",
 };
 
-function pickFilter(input: JsonObject): DiscoveryFilter {
-  const { capability, transport, source } = input;
+function pickFilter(input: unknown): DiscoveryFilter {
+  // Fail closed on malformed payloads (null, arrays, primitives) — return an
+  // empty filter rather than throwing on destructure.
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return {};
+  }
   const f: { -readonly [K in keyof DiscoveryFilter]: DiscoveryFilter[K] } = {};
-  if (typeof capability === "string") f.capability = capability;
-  if (transport === "cli" || transport === "mcp" || transport === "a2a") f.transport = transport;
-  if (source === "path" || source === "mcp" || source === "filesystem") f.source = source;
+  if ("capability" in input && typeof input.capability === "string") {
+    f.capability = input.capability;
+  }
+  if ("transport" in input) {
+    const t = input.transport;
+    if (t === "cli" || t === "mcp" || t === "a2a") f.transport = t;
+  }
+  if ("source" in input) {
+    const s = input.source;
+    if (s === "path" || s === "mcp" || s === "filesystem") f.source = s;
+  }
   return f;
 }
 

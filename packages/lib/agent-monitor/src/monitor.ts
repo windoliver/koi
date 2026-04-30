@@ -266,14 +266,37 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
       evaluatePreviousTurnDrift(m);
       // Wait briefly for in-flight async scorers so their signals land before
       // we export the summary, but never block teardown on hung user code.
-      // Late results after the timeout are dropped by the session-presence
-      // gate in fireWithTurn().
+      // When the timeout wins, surface a synthetic onAnomalyError so operators
+      // know the final-turn drift evaluation was dropped — late results are
+      // then ignored by the session-presence gate in fireWithTurn().
       if (m.pendingDrift.size > 0) {
-        const settle = Promise.allSettled([...m.pendingDrift]);
-        const timeout = new Promise<void>((resolve) => {
-          setTimeout(resolve, SESSION_END_DRIFT_TIMEOUT_MS);
+        const budget = config.goalDrift?.shutdownTimeoutMs ?? SESSION_END_DRIFT_TIMEOUT_MS;
+        const dropped = m.pendingDrift.size;
+        const settle = Promise.allSettled([...m.pendingDrift]).then(() => "settled" as const);
+        const timeout = new Promise<"timeout">((resolve) => {
+          setTimeout(() => resolve("timeout"), budget);
         });
-        await Promise.race([settle, timeout]);
+        const result = await Promise.race([settle, timeout]);
+        if (result === "timeout") {
+          try {
+            const synthetic: AnomalySignal = {
+              sessionId: m.sessionId,
+              agentId: m.agentId,
+              timestamp: Date.now(),
+              turnIndex: m.turnIndex,
+              kind: "goal_drift",
+              driftScore: -1,
+              threshold: driftThreshold,
+              objectives: config.objectives ?? [],
+            };
+            config.onAnomalyError?.(
+              new Error(`agent-monitor: ${dropped} drift evaluation(s) dropped after ${budget}ms`),
+              synthetic,
+            );
+          } catch {
+            // never throw
+          }
+        }
       }
       try {
         config.onMetrics?.(ctx.sessionId, snapshot(m));
@@ -354,10 +377,11 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
         throw e;
       }
       if (m !== undefined) {
-        if (isDeniedOutput(response.output)) {
-          m.totalDeniedCalls++;
-          fire(detect.detectDeniedToolCalls(m, thresholds), m);
-        } else if (isErrorOutput(response.output)) {
+        // Permission denials are counted authoritatively in
+        // onPermissionDecision — never double-count them via response output.
+        // A tool that returns {kind:"denied"} on its own (without going
+        // through the permissions middleware) is still treated as an error.
+        if (isErrorOutput(response.output) || isDeniedOutput(response.output)) {
           m.totalErrorCalls++;
           fire(detect.detectErrorSpike(m, thresholds), m);
         }

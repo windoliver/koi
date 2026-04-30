@@ -40,6 +40,13 @@ export interface AgentMonitorConfig {
       toolIds: readonly string[],
       objectives: readonly string[],
     ) => number | Promise<number>;
+    /**
+     * Maximum time (ms) onSessionEnd will wait for in-flight async scorers
+     * before exporting metrics. Late results after this budget are dropped
+     * and reported via onAnomalyError as a synthetic "timed_out" signal so
+     * operators know coverage was lost. Default: 100ms.
+     */
+    readonly shutdownTimeoutMs?: number;
   };
   readonly destructiveToolIds?: readonly string[];
   readonly spawnToolIds?: readonly string[];
@@ -106,6 +113,16 @@ export function validateAgentMonitorConfig(raw: unknown): Result<AgentMonitorCon
         },
       };
     }
+  }
+  if (c.goalDrift?.shutdownTimeoutMs !== undefined && !isFiniteNonNeg(c.goalDrift.shutdownTimeoutMs)) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "goalDrift.shutdownTimeoutMs must be a non-negative finite number",
+        retryable: false,
+      },
+    };
   }
   if (
     c.objectives !== undefined &&
