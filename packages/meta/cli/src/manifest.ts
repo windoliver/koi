@@ -721,9 +721,28 @@ function parseManifestNetwork(
     };
   }
   const obj = raw as Record<string, unknown>;
+  // gov-15: this is a security-critical parser. A present `network:`
+  // block missing `allow` (or carrying typos like `allowed`) must NOT
+  // silently load as "no scope" — that would turn an operator typo
+  // into legacy open-mode network access. Require the exact `allow`
+  // key; reject every other key so "network: { allowed: [...] }"
+  // surfaces as an error at startup.
+  const knownKeys = new Set(["allow"]);
+  for (const key of Object.keys(obj)) {
+    if (!knownKeys.has(key)) {
+      return {
+        ok: false,
+        error: `manifest.network.${key} is not a recognized key (did you mean "allow"?). Allowed keys: ${[...knownKeys].join(", ")}`,
+      };
+    }
+  }
   const allow = obj.allow;
   if (allow === undefined) {
-    return { ok: true, value: undefined };
+    return {
+      ok: false,
+      error:
+        "manifest.network must declare an `allow` array (use `allow: []` for deny-all, or remove the network block for legacy unscoped behavior).",
+    };
   }
   if (!Array.isArray(allow)) {
     return { ok: false, error: "manifest.network.allow must be an array of URLPattern strings" };
@@ -769,9 +788,26 @@ function parseManifestCredentials(
     };
   }
   const obj = raw as Record<string, unknown>;
+  // gov-15: same strictness as parseManifestNetwork — a present
+  // `credentials:` block missing `allow` (or carrying typos like
+  // `allowed`) must fail closed rather than silently revert to
+  // legacy unscoped credential access.
+  const knownKeys = new Set(["allow"]);
+  for (const key of Object.keys(obj)) {
+    if (!knownKeys.has(key)) {
+      return {
+        ok: false,
+        error: `manifest.credentials.${key} is not a recognized key (did you mean "allow"?). Allowed keys: ${[...knownKeys].join(", ")}`,
+      };
+    }
+  }
   const allow = obj.allow;
   if (allow === undefined) {
-    return { ok: true, value: undefined };
+    return {
+      ok: false,
+      error:
+        "manifest.credentials must declare an `allow` array (use `allow: []` for deny-all, or remove the credentials block for legacy unscoped behavior).",
+    };
   }
   if (!Array.isArray(allow)) {
     return {

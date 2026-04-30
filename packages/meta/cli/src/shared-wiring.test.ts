@@ -356,7 +356,7 @@ describe("buildScopedCredentials", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildCoreProviders: authed_fetch tool", () => {
-  test("registers authed_fetch when credentials are wired AND web is enabled", () => {
+  test("registers authed_fetch when credentials + web + networkScope are all set", () => {
     const component = {
       get: async () => "stub-cred",
     };
@@ -364,15 +364,30 @@ describe("buildCoreProviders: authed_fetch tool", () => {
       cwd: mkTempCwd(),
       includeWebFetch: true,
       credentials: component,
+      // gov-15 round-3: an explicit networkScope is REQUIRED. Without it,
+      // an agent could exfiltrate the credential to any public URL.
+      networkScope: { allow: ["https://api.example.com/*"] },
     });
     expect(providers.map((p) => p.name)).toContain("authed_fetch");
   });
 
-  test("does NOT register authed_fetch when web is disabled (network gating)", () => {
-    // gov-15: authed_fetch is a network capability with credentials
-    // attached. Gating it solely on credentials would leave a
-    // credential-armed exfil tool reachable when the host explicitly
-    // disabled web. Requires `includeWebFetch: true` to register.
+  test("does NOT register authed_fetch without networkScope (destination-allowlist gating)", () => {
+    // gov-15: even with credentials wired, authed_fetch must not register
+    // unless the manifest declares an explicit `network.allow` — without
+    // it, the agent could send the credential to attacker.example.
+    const component = {
+      get: async () => "stub-cred",
+    };
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      includeWebFetch: true,
+      credentials: component,
+      // No networkScope: should NOT register authed_fetch.
+    });
+    expect(providers.map((p) => p.name)).not.toContain("authed_fetch");
+  });
+
+  test("does NOT register authed_fetch when web is disabled", () => {
     const component = {
       get: async () => "stub-cred",
     };
@@ -380,12 +395,17 @@ describe("buildCoreProviders: authed_fetch tool", () => {
       cwd: mkTempCwd(),
       includeWebFetch: false,
       credentials: component,
+      networkScope: { allow: ["https://api.example.com/*"] },
     });
     expect(providers.map((p) => p.name)).not.toContain("authed_fetch");
   });
 
   test("does not register authed_fetch when no credentials are wired", () => {
-    const providers = buildCoreProviders({ cwd: mkTempCwd(), includeWebFetch: true });
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      includeWebFetch: true,
+      networkScope: { allow: ["https://api.example.com/*"] },
+    });
     expect(providers.map((p) => p.name)).not.toContain("authed_fetch");
   });
 });

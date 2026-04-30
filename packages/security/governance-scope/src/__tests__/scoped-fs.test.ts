@@ -225,33 +225,36 @@ describe("createScopedFs — read-only mode", () => {
 // ---------------------------------------------------------------------------
 
 describe("createScopedFs — search", () => {
-  test("filters out matches outside the scope", () => {
-    const okPath = join(scope, "ok.ts");
-    const secretPath = join(outside, "secret.txt");
+  test("refuses search under glob scope (no scoped backend search support)", () => {
+    // gov-15: search delegates to the backend, which under glob scope
+    // is rooted broader than the boundary. Post-filtering would let
+    // out-of-scope content be read and counted toward maxResults +
+    // truncated — an oracle leak. Refuse search with PERMISSION;
+    // operators are pointed at single-root scope (where the backend
+    // root agrees with the boundary).
+    const backendSearchSpy = { called: false };
     const backend: FileSystemBackend = {
       name: "mock",
       read: (p) => ({ ok: true, value: { content: "", path: p, size: 0 } }),
       write: (p) => ({ ok: true, value: { path: p, bytesWritten: 0 } }),
       edit: (p) => ({ ok: true, value: { path: p, hunksApplied: 0 } }),
       list: () => ({ ok: true, value: { entries: [], truncated: false } }),
-      search: () => ({
-        ok: true,
-        value: {
-          matches: [
-            { path: okPath, line: 1, text: "x" },
-            { path: secretPath, line: 1, text: "x" },
-          ],
-          truncated: false,
-        },
-      }),
+      search: () => {
+        backendSearchSpy.called = true;
+        return { ok: true, value: { matches: [], truncated: false } };
+      },
     };
     const fs = createScopedFs(backend, { allow: [`${scope}/**`], mode: "ro" });
     const r = fs.search("x") as Result<FileSearchResult, KoiError>;
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.value.matches.length).toBe(1);
-      expect(r.value.matches[0]?.path).toBe(okPath);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("PERMISSION");
+      expect(r.error.message).toContain("Search is not supported under glob scope");
     }
+    // The backend.search MUST NOT have been called — otherwise the
+    // wrapper read content (or metadata) outside the allowlist before
+    // refusing.
+    expect(backendSearchSpy.called).toBe(false);
   });
 });
 

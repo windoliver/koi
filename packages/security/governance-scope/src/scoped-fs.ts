@@ -19,7 +19,7 @@
 
 import { realpathSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
-import type { FileSearchResult, FileSystemBackend, KoiError, Result } from "@koi/core";
+import type { FileSystemBackend, KoiError, Result } from "@koi/core";
 import { permission } from "@koi/core";
 import { compileGlobs, matchAny } from "./glob.js";
 
@@ -192,33 +192,6 @@ function revalidateAfterWrite(
 }
 
 // ---------------------------------------------------------------------------
-// Search filter
-// ---------------------------------------------------------------------------
-
-function filterSearchResults(
-  raw: Result<FileSearchResult, KoiError> | Promise<Result<FileSearchResult, KoiError>>,
-  compiled: CompiledScopedFs,
-): Result<FileSearchResult, KoiError> | Promise<Result<FileSearchResult, KoiError>> {
-  if (raw instanceof Promise) {
-    return raw.then((r) => applySearchFilter(r, compiled));
-  }
-  return applySearchFilter(raw, compiled);
-}
-
-function applySearchFilter(
-  result: Result<FileSearchResult, KoiError>,
-  compiled: CompiledScopedFs,
-): Result<FileSearchResult, KoiError> {
-  if (!result.ok) return result;
-  const filtered = result.value.matches.filter((m) => {
-    const real = resolveReal(m.path);
-    if (real === undefined) return false;
-    return matchAny(toPosix(real), compiled.allow);
-  });
-  return { ok: true, value: { matches: filtered, truncated: result.value.truncated } };
-}
-
-// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -321,10 +294,30 @@ export function createScopedFs(
     },
 
     search(pattern, options) {
-      // Search patterns are not paths — delegate to backend then filter
-      // results against the scope.
-      const raw = backend.search(pattern, options);
-      return filterSearchResults(raw, compiled);
+      // gov-15: search under glob scope is fail-closed disabled. The
+      // backend is rooted broader than the scope (under glob mode the
+      // local backend uses cwd + allowExternalPaths so the wrapper IS
+      // the boundary). Delegating to backend.search would scan, read,
+      // and apply maxResults/truncated over the full backend root —
+      // out-of-scope content is read and counted, then post-filtered.
+      // That violates the wrapper's no-read-outside-scope invariant
+      // and creates an oracle: out-of-scope hits starve allowed
+      // results, and `truncated: true` over zero in-scope matches
+      // signals "files exist outside your scope" without naming them.
+      //
+      // Operators wanting search should use single-root scope (which
+      // roots the backend AT the boundary so backend.search and the
+      // scope agree) or upgrade to a backend that accepts a scoped
+      // search root parameter.
+      void pattern;
+      void options;
+      return {
+        ok: false,
+        error: permission(
+          "Search is not supported under glob scope (filesystem.options.allow). " +
+            "Use single-root scope (filesystem.options.root) for search, or read/list specific paths.",
+        ),
+      } satisfies Result<never, KoiError>;
     },
 
     ...scopedDelete,

@@ -68,6 +68,7 @@ import {
   createFsWriteTool,
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
+import { createSafeFetcher } from "@koi/url-safety";
 import type { AuthServerEntry } from "./mcp-auth-tools.js";
 import { createCliAuthToolFactory } from "./mcp-auth-tools.js";
 import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
@@ -1205,10 +1206,22 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   // every outbound fetch (web_fetch and authed_fetch) is rejected. Only
   // an absent `network:` block (`networkScope === undefined`) means
   // legacy unscoped behavior.
+  // Layer order (innermost → outermost):
+  //   globalThis.fetch         ← raw network
+  //   createSafeFetcher        ← DNS-backed SSRF: resolves hostname,
+  //                              rejects loopback/RFC1918/link-local/
+  //                              metadata IPs, validates each redirect
+  //                              hop. Catches DNS-rebinding tricks like
+  //                              localtest.me that preflightBlockReason
+  //                              cannot see (it's DNS-free by design).
+  //   createScopedFetcher      ← manifest URLPattern allowlist
+  // Both are required for credentialed fetches: URLPattern alone would
+  // accept attacker.example.com (a DNS-rebinding host that resolves to
+  // 127.0.0.1) if the operator allowlisted *.example.com.
   const networkAllow = config.networkScope?.allow;
   const fetchFn =
     networkAllow !== undefined
-      ? createScopedFetcher(globalThis.fetch, {
+      ? createScopedFetcher(createSafeFetcher(globalThis.fetch), {
           allow: networkAllow.map((p) => new URLPattern(p)),
         })
       : undefined;
@@ -1264,18 +1277,24 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     }
   }
 
-  // gov-15: register `authed_fetch` ONLY when web access is enabled. The
-  // tool issues outbound HTTP with a credential attached, so it is a
-  // network capability — gating it solely on credentials would leave a
-  // network-capable exfil tool reachable when the host explicitly disabled
-  // web (`includeWebFetch: false`). The same scope-wrapped fetch
-  // (`fetchFn`) inherits the manifest's `network.allow` URLPattern
-  // allowlist; without that, `authed_fetch` falls through to the unscoped
-  // global fetch which is unsafe for credentialed requests.
-  if (activeCredentials !== undefined && includeWeb) {
+  // gov-15: register `authed_fetch` ONLY when (a) web is enabled AND
+  // (b) the manifest declares an explicit `network.allow` URLPattern
+  // allowlist (`fetchFn !== undefined`). Without a destination
+  // allowlist, an agent could choose any public URL and exfiltrate the
+  // credential to attacker.example — response redaction is moot once
+  // the secret left the network. Requiring explicit destination scope
+  // forces operators to declare which hosts may receive credentialed
+  // requests.
+  //
+  // The wired `fetchFn` already layers DNS-backed SSRF safety
+  // (createSafeFetcher) under the URLPattern allowlist
+  // (createScopedFetcher), so a hostname that resolves to RFC1918 /
+  // loopback / metadata IPs is rejected even if it pattern-matches
+  // network.allow.
+  if (activeCredentials !== undefined && includeWeb && fetchFn !== undefined) {
     const authedFetchTool = createAuthedFetchTool({
       credentials: activeCredentials,
-      ...(fetchFn !== undefined ? { fetchFn } : {}),
+      fetchFn,
     });
     providers.push(wrapToolAsProvider(authedFetchTool));
   }

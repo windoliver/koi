@@ -1035,6 +1035,34 @@ describe("loadManifestConfig: network block (gov-15)", () => {
     if (result.ok) return;
     expect(result.error).toContain("manifest.network");
   });
+
+  test("rejects network block missing allow (typo guard)", async () => {
+    // gov-15: same fail-closed parser strictness as credentials — a typo
+    // like `allowed:` must not silently load as "no scope".
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "network:",
+        "  allowed:",
+        '    - "https://example.com/*"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("not a recognized key");
+  });
+
+  test("rejects network block with no allow field", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "network: {}"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("must declare an `allow`");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1135,6 +1163,36 @@ describe("loadManifestConfig: credentials block (gov-15)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("manifest.credentials");
+  });
+
+  test("rejects credentials block missing allow (typo guard)", async () => {
+    // gov-15: a present `credentials:` block must declare `allow`. Loading
+    // it as `undefined → unscoped` would turn an operator typo
+    // (`allowed:` instead of `allow:`) into legacy open-mode credential
+    // access — the exact bypass this feature is closing.
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "credentials:",
+        "  allowed:",
+        '    - "openai_*"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("not a recognized key");
+  });
+
+  test("rejects credentials block with no fields at all", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "credentials: {}"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("must declare an `allow`");
   });
 
   test("rejects allow as non-array", async () => {
