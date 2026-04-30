@@ -361,6 +361,26 @@ describe("createMemoryRecallMiddleware", () => {
     expect(caps.description).toMatch(/\d+\/8000 tokens/);
   });
 
+  test("clears recalled session state on session end", async () => {
+    const files = [
+      {
+        path: "/mem/role.md",
+        content: makeMemoryFileContent("Role", "user", "Engineer memory"),
+        modifiedAt: now,
+      },
+    ];
+    const fs = createMockFs(files);
+    const mw = createMemoryRecallMiddleware(createConfig(fs));
+
+    const next = async (req: ModelRequest): Promise<ModelResponse> => mockNext(req);
+    await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), next);
+    expect(mw.describeCapabilities(createTurnCtx())).toBeDefined();
+
+    await mw.onSessionEnd?.(createSessionCtx());
+
+    expect(mw.describeCapabilities(createTurnCtx())).toBeUndefined();
+  });
+
   test("reports no capabilities when no memories", async () => {
     const fs = createMockFs([]);
     const mw = createMemoryRecallMiddleware(createConfig(fs));

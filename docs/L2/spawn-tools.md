@@ -27,6 +27,7 @@ interface SpawnToolsConfig {
   readonly board: ManagedTaskBoard;
   readonly agentId: AgentId;
   readonly signal: AbortSignal;
+  readonly resultCache?: SpawnResultCache;  // optional — see "Idempotent delivery"
 }
 ```
 
@@ -102,6 +103,82 @@ free of L1 engine dependencies.
 as task IDs, file scopes, or constraints. The tool forwards that object as
 `SpawnRequest.context` and mirrors it into the child description for spawn
 implementations that have not yet adopted the structured field.
+
+### Idempotent delivery (#1709)
+
+`agent_spawn` accepts an optional `resultCache: SpawnResultCache`. When
+provided, the tool deduplicates retried calls so a duplicate spawn does not
+re-invoke `spawnFn` or inject duplicate output back into the parent session.
+
+- **Cache key**: `${parentAgentId}::${agent_name}::${task_id}::${digest}` where
+  `digest` hashes (`agent_name`, `description`, full `context`). A retry with
+  the same `task_id` but updated instructions or context produces a fresh key
+  and a fresh spawn — the cache never replays stale output for changed work.
+- **Activation**: only when `context.task_id` is a non-empty string. Without
+  a `task_id` we cannot identify the same logical spawn across retries, so
+  dedup is skipped silently and the spawn proceeds.
+- **Scope**: caches successful outputs only — failed spawns stay retryable.
+  Empty-output successes are cached like any other success (the L0
+  `SpawnResult` contract treats `""` as a valid completed output). Engine
+  adapters using non-streaming delivery (deferred / on-demand) should set
+  `cacheable: false` on the `SpawnResult` they return so the placeholder
+  admission isn't replayed for retries — `agent_spawn` propagates that
+  flag to the cache layer. Default streaming spawns (the common case)
+  leave `cacheable` undefined and are cached normally.
+- **Cache ownership**: dedup is opt-in. Pass a session-scoped
+  `SpawnResultCache` via `config.resultCache`. The runtime / autonomous
+  bridge (#1553) owns the cache so it survives across turn boundaries and
+  tool re-instantiation; provisioning a default in `createSpawnTools` is
+  intentionally not done because a per-factory default would dedup only
+  against the current tool instance and silently disappear on re-entry.
+
+### Known limitations
+
+**1. In-progress deferred-delivery retries are not coalesced.** When an
+engine adapter uses non-streaming delivery (`deferred` / `on_demand`)
+and signals `cacheable: false`, retries that arrive while the
+background child is still executing will start a second child. The
+cache cannot coalesce those retries because there is no completion
+signal — the factory Promise resolves on the placeholder admission,
+and the in-flight guard clears at that point. Full in-progress dedup
+needs an engine-level completion handle on `SpawnResult` (a future
+core contract change). Until that lands, callers that mix
+`agent_spawn` with deferred delivery should serialize retries at a
+higher layer (e.g. the autonomous bridge's task-state machine, or by
+not sharing a `SpawnResultCache` with non-streaming spawns).
+
+**2. Cache lifecycle is the owner's responsibility.** The cache key
+covers `(parentAgentId, agent_name, task_id, digest(description, context))`
+— it does NOT include `spawnFn` identity, manifest contents, permission
+configuration, or other runtime-owned state. If the runtime reconfigures
+any of those between calls (different adapter, swapped permissions,
+hot-reloaded manifest), it MUST create a fresh `SpawnResultCache` —
+reusing a cache across reconfigs can replay stale results. This is
+deliberate: the cache is a session-scoped artifact, and the runtime
+that owns the session knows when its environment becomes incompatible
+with cached results. `agent_spawn` does not try to detect that itself.
+- **Eviction**: bounded LRU (default cap 256, see `DEFAULT_SPAWN_CACHE_CAP`).
+  Map insertion-order, sync `get`/`set` — no async overhead on the hot path.
+- **Result shape on hit**: `{ ok: true, output, deduplicated: true }` so
+  callers (and tests) can distinguish cached from fresh.
+- **Concurrency**: dedup covers sequential retries via the settled-result
+  LRU. Concurrent in-flight callers each drive their own factory — sharing
+  an unsettled Promise would let a second concurrent caller receive a
+  `cacheable: false` placeholder admission as a deduplicated success
+  before any child completed (incorrect for non-streaming delivery
+  recovery). After both settle, subsequent sequential retries hit the
+  settled cache as expected.
+
+The runtime (or autonomous spawn bridge from #1553) creates the cache once
+and reuses it across `createSpawnTools` invocations within a session so
+retries after re-entry hit the same store.
+
+```typescript
+import { createSpawnResultCache, createSpawnTools } from "@koi/spawn-tools";
+
+const resultCache = createSpawnResultCache();   // session-scoped
+const tools = createSpawnTools({ ...config, resultCache });
+```
 
 ### TaskCascade reuses @koi/task-board dag utilities
 

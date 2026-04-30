@@ -76,6 +76,25 @@ describe("createRuntime", () => {
     expect(runtime.debugInfo).toBeUndefined();
   });
 
+  test("exposes spawnResultCache by default for idempotent spawn retries (#1709)", () => {
+    const runtime = createRuntime();
+    expect(runtime.spawnResultCache).toBeDefined();
+    expect(typeof runtime.spawnResultCache.runDeduped).toBe("function");
+    expect(runtime.spawnResultCache.size()).toBe(0);
+  });
+
+  test("accepts an explicit spawnResultCache instance (override)", () => {
+    // Allows callers to share one cache across multiple runtimes in a process.
+    const sentinelCache = {
+      get: (_k: string): string | undefined => undefined,
+      set: (_k: string, _v: string): void => {},
+      size: (): number => 42,
+      runDeduped: async () => ({ ok: true as const, output: "x", deduplicated: false }),
+    };
+    const runtime = createRuntime({ spawnResultCache: sentinelCache });
+    expect(runtime.spawnResultCache.size()).toBe(42);
+  });
+
   test("accepts a real adapter instance", () => {
     const adapter = createFakeAdapter("my-engine");
     const runtime = createRuntime({ adapter });

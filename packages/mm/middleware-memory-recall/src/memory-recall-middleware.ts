@@ -743,6 +743,13 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       sessions.delete(ctx.sessionId);
     },
 
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      sessions.delete(ctx.sessionId);
+      if (activeSessionId === ctx.sessionId) {
+        activeSessionId = undefined;
+      }
+    },
+
     describeCapabilities(): CapabilityFragment | undefined {
       const state = activeSessionId !== undefined ? sessions.get(activeSessionId) : undefined;
       if (state === undefined || state.memoryCount === 0) {

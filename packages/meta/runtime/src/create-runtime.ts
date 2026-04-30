@@ -43,6 +43,7 @@ import {
   createToolCallLimitMiddleware,
 } from "@koi/middleware-call-limits";
 import { createCircuitBreakerMiddleware } from "@koi/middleware-circuit-breaker";
+import { createSpawnResultCache } from "@koi/spawn-tools";
 import { createBrowserProvider } from "@koi/tool-browser";
 import { createArtifactToolProvider } from "./artifact-tool-provider.js";
 
@@ -1071,6 +1072,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       trajectoryStore,
       outcomeStore,
       spawnProvider,
+      spawnResultCache: config.spawnResultCache ?? createSpawnResultCache(),
       agentWarnings,
       agentConflicts,
       checkpoint: checkpointHandle,

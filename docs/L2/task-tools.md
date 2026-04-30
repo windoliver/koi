@@ -2,6 +2,13 @@
 
 LLM-callable task management tools — `task_create`, `task_get`, `task_update`, `task_list`, `task_stop`, `task_output`, `task_delegate`.
 
+## Recent updates
+
+Doc sync for review lifecycle fixes (#2081): the factory source comment now
+matches the shipped seven-tool surface. No runtime behavior changed; this
+package already exposes `task_delegate` alongside create/get/update/list/stop
+and output.
+
 ## Layer
 
 L2 — depends on `@koi/core` (L0), `@koi/tools-core` (L0u). `@koi/tasks` is a `devDependency` (test-only).
