@@ -15,35 +15,49 @@ import type { TurnTrace } from "@koi/core";
 import type { NgramEntry, OutcomeStats, ToolNgram, ToolStep } from "./types.js";
 
 /**
- * Infer outcome from a tool call's output. `undefined` (no result captured) is
- * treated as failure; objects with a truthy `error` field are failures; all
- * other shapes — including `null` (valid void return) — are successes.
+ * Infer outcome from a tool call's output, matching the repo's existing
+ * tool-failure semantics (`agent-monitor.isErrorOutput` /
+ * `isDeniedOutput`): only the explicit `kind: "error"` and `kind: "denied"`
+ * envelopes mark a real execution failure. Any other payload — including
+ * `null`, primitives, plain objects with a non-failure `error` field (e.g.
+ * web-fetch's structured error result), or output where capture is missing —
+ * yields `undefined`, meaning "no outcome signal" rather than "failure". This
+ * prevents non-failure responses from systematically demoting healthy
+ * patterns through `successRate`.
  */
-function inferOutcome(output: unknown): "success" | "failure" {
-  if (output === undefined) return "failure";
-  if (typeof output === "object" && output !== null && "error" in output) {
-    const obj = output as Readonly<Record<string, unknown>>;
-    if (obj.error) return "failure";
-  }
+function inferOutcome(output: unknown): "success" | "failure" | undefined {
+  if (output === null || typeof output !== "object") return undefined;
+  if (!("kind" in output)) return "success";
+  const kind = (output as { readonly kind?: unknown }).kind;
+  if (kind === "error" || kind === "denied") return "failure";
   return "success";
 }
 
-/**
- * Project each `TurnTrace` to an ordered sequence of `ToolStep`s by filtering
- * to `tool_call` events and preserving per-turn order.
- */
-export function extractToolSequences(
-  traces: readonly TurnTrace[],
-): readonly (readonly ToolStep[])[] {
-  return traces.map((trace) => {
-    const steps: ToolStep[] = [];
-    for (const event of trace.events) {
-      if (event.event.kind === "tool_call") {
-        steps.push({ toolId: event.event.toolId, outcome: inferOutcome(event.event.output) });
-      }
+/** Project a single `TurnTrace` to an ordered sequence of `ToolStep`s. */
+function projectTurn(trace: TurnTrace): readonly ToolStep[] {
+  const steps: ToolStep[] = [];
+  for (const event of trace.events) {
+    if (event.event.kind === "tool_call") {
+      steps.push({ toolId: event.event.toolId, outcome: inferOutcome(event.event.output) });
     }
-    return steps;
-  });
+  }
+  return steps;
+}
+
+/** A turn's projected tool steps paired with the trace's real `turnIndex`. */
+export interface TurnSequence {
+  readonly turnIndex: number;
+  readonly steps: readonly ToolStep[];
+}
+
+/**
+ * Project each `TurnTrace` to an ordered sequence of `ToolStep`s alongside
+ * the original `TurnTrace.turnIndex`. Preserving the real turn id keeps
+ * downstream `turnIndices` stable when callers analyze sliced or
+ * non-contiguous trace subsets.
+ */
+export function extractToolSequences(traces: readonly TurnTrace[]): readonly TurnSequence[] {
+  return traces.map((trace) => ({ turnIndex: trace.turnIndex, steps: projectTurn(trace) }));
 }
 
 /** Stable deduplication key for an n-gram — pipe-joined tool IDs. */
@@ -79,16 +93,13 @@ function freezeEntry(entry: MutableEntry): NgramEntry {
  * aggregated `OutcomeStats` summed across every occurrence's step outcomes.
  */
 export function extractNgrams(
-  sequences: readonly (readonly ToolStep[])[],
+  sequences: readonly TurnSequence[],
   minSize: number,
   maxSize: number,
 ): ReadonlyMap<string, NgramEntry> {
   const accum = new Map<string, MutableEntry>();
 
-  for (let turnIndex = 0; turnIndex < sequences.length; turnIndex++) {
-    const seq = sequences[turnIndex];
-    if (seq === undefined) continue;
-
+  for (const { turnIndex, steps: seq } of sequences) {
     for (let size = minSize; size <= maxSize; size++) {
       for (let start = 0; start <= seq.length - size; start++) {
         const steps = seq.slice(start, start + size);

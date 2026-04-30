@@ -213,8 +213,9 @@ describe("detectPatterns", () => {
   test("ranks healthier pattern above failure-prone pattern (score-driven sort)", () => {
     // Two patterns with equal frequency but different aggregate success
     // rates. Score-driven ordering must put the healthy one first.
+    const errEnv = { kind: "error" as const, message: "boom" };
     const ok = [{}, {}] as const;
-    const bad = [undefined, undefined] as const;
+    const bad = [errEnv, errEnv] as const;
     const traces = [
       createTrace(0, ["good1", "good2"], ok),
       createTrace(1, ["good1", "good2"], ok),
@@ -230,13 +231,15 @@ describe("detectPatterns", () => {
   });
 
   test("aggregates outcome stats across every occurrence (not just one representative)", () => {
-    // Same pattern across 4 turns: 3 succeed, 1 fails. Aggregate outcome
-    // stats must reflect the full set, not the single n-gram representative.
+    // Same pattern across 4 turns: 3 succeed, 1 fails (kind:error envelope).
+    // Aggregate outcome stats must reflect the full set, not the single n-gram
+    // representative captured at first sighting.
+    const fail = { kind: "error" as const, message: "boom" };
     const traces = [
       createTrace(0, ["a", "b"], [{}, {}]),
       createTrace(1, ["a", "b"], [{}, {}]),
       createTrace(2, ["a", "b"], [{}, {}]),
-      createTrace(3, ["a", "b"], [undefined, undefined]),
+      createTrace(3, ["a", "b"], [fail, fail]),
     ];
     const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
     expect(candidates).toHaveLength(1);
