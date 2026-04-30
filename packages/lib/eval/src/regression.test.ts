@@ -251,6 +251,37 @@ describe("compareRuns", () => {
     expect(compareRuns(baseline, current).kind).toBe("fail");
   });
 
+  test("aborted baseline forces rebaseline (fail closed)", () => {
+    const baseline: EvalRun = { ...run("b", summary(1, 1)), aborted: true as const };
+    const current = run("c", summary(1, 1));
+    expect(compareRuns(baseline, current).kind).toBe("fail");
+  });
+
+  test("baseline with unconfirmed-cancellation trial forces rebaseline", () => {
+    const baseline: EvalRun = {
+      ...run("b", summary(1, 1)),
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "pass" as const,
+          cancellation: "unconfirmed" as const,
+        },
+      ],
+    };
+    const current = run("c", summary(1, 1));
+    expect(compareRuns(baseline, current).kind).toBe("fail");
+  });
+
   test("respects custom thresholds", () => {
     const baseline = run("b", summary(1, 1));
     const current = run("c", summary(0.5, 1));

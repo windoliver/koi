@@ -46,8 +46,10 @@ interface ObservedCall {
 /**
  * Collect tool calls that actually completed. A `tool_call_start` alone
  * indicates intent — the tool may have been denied, aborted, or failed
- * before yielding output. Requiring a matching `tool_result` (correlated
- * by callId) prevents the grader from passing on intent alone.
+ * before yielding output. Either `tool_result` or `tool_call_end`
+ * (correlated by callId) proves the tool finished executing; engine
+ * producers in this repo emit one or both, depending on the stream
+ * source. Accept both so evals work against any valid transcript.
  */
 function collectToolCalls(transcript: readonly EngineEvent[]): readonly ObservedCall[] {
   const startsByCallId = new Map<string, ObservedCall>();
@@ -55,9 +57,7 @@ function collectToolCalls(transcript: readonly EngineEvent[]): readonly Observed
   for (const ev of transcript) {
     if (ev.kind === "tool_call_start") {
       startsByCallId.set(ev.callId, { toolName: ev.toolName, args: ev.args });
-    } else if (ev.kind === "tool_result") {
-      // Only `tool_result` proves the tool actually executed.
-      // `tool_call_end` is only the end of streaming accumulation.
+    } else if (ev.kind === "tool_result" || ev.kind === "tool_call_end") {
       completed.add(ev.callId);
     }
   }

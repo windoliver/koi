@@ -102,26 +102,26 @@ describe("toolCall", () => {
     expect(score.pass).toBe(true);
   });
 
+  test("counts tool_call_end alone as a completion (engine streams without tool_result)", async () => {
+    const grader = toolCall();
+    const events: readonly EngineEvent[] = [
+      { kind: "tool_call_start", toolName: "write", callId: "c1" as never, args: {} },
+      { kind: "tool_call_end", callId: "c1" as never, result: "ok" },
+    ];
+    const score = await grader.grade(
+      events,
+      { kind: "tool_calls", calls: [{ toolName: "write" }] },
+      METRICS,
+    );
+    expect(score.pass).toBe(true);
+  });
+
   test("strict order requires sequential match", async () => {
     const grader = toolCall({ order: "strict" });
     const eventsBad: readonly EngineEvent[] = [...completed("write"), ...completed("read")];
     const score = await grader.grade(
       eventsBad,
       { kind: "tool_calls", calls: [{ toolName: "read" }, { toolName: "write" }] },
-      METRICS,
-    );
-    expect(score.pass).toBe(false);
-  });
-
-  test("tool_call_end without tool_result does not count as execution", async () => {
-    const grader = toolCall();
-    const events: readonly EngineEvent[] = [
-      callStart("read"),
-      { kind: "tool_call_end", callId: "read-id" as ToolCallId, result: { ok: true } },
-    ];
-    const score = await grader.grade(
-      events,
-      { kind: "tool_calls", calls: [{ toolName: "read" }] },
       METRICS,
     );
     expect(score.pass).toBe(false);

@@ -13,6 +13,44 @@ export function compareRuns(
   thresholds: RegressionThresholds = {},
 ): RegressionResult {
   if (baseline === undefined) return { kind: "no_baseline" };
+  // Untrustworthy baselines: a previous run that aborted or had any trial
+  // with unconfirmed cancellation may have leaked work or stopped before
+  // exercising the full suite. Comparing against it produces meaningless
+  // numbers — force the caller to rebaseline.
+  if (baseline.aborted === true) {
+    return {
+      kind: "fail",
+      regressions: [
+        {
+          taskId: "__baseline_aborted__",
+          metric: "passRate",
+          baseline: 0,
+          current: 0,
+          delta: 0,
+        },
+      ],
+      baseline: baseline.summary,
+      current: current.summary,
+    };
+  }
+  for (const trial of baseline.trials) {
+    if (trial.cancellation === "unconfirmed") {
+      return {
+        kind: "fail",
+        regressions: [
+          {
+            taskId: trial.taskId,
+            metric: "passRate",
+            baseline: 0,
+            current: 0,
+            delta: 0,
+          },
+        ],
+        baseline: baseline.summary,
+        current: current.summary,
+      };
+    }
+  }
   const passRateDelta = thresholds.passRateDelta ?? EVAL_DEFAULTS.PASS_RATE_DELTA;
   const scoreDelta = thresholds.scoreDelta ?? EVAL_DEFAULTS.SCORE_DELTA;
   // Run-level comparability: if the baseline and current runs were graded
