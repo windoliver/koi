@@ -2469,7 +2469,7 @@ describe("Golden: @koi/governance-scope", () => {
 
   test("createScopedFetcher fails closed — URL outside allowlist throws before inner fetch is called", async () => {
     let innerCalled = false;
-    const inner = async (_input: RequestInfo | URL): Promise<Response> => {
+    const inner = async (_input: Parameters<typeof fetch>[0]): Promise<Response> => {
       innerCalled = true;
       return new Response("ok");
     };
