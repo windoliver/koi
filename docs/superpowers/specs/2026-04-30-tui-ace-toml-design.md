@@ -18,6 +18,20 @@ Issue #2088 says "koi.toml". The repo's manifest is **`koi.yaml`** — confirmed
 - Default-on is premature: per-call token cost of `[Active Playbooks]`, persistence story unsettled, multi-tenant partitioning undefined.
 - Opt-in via manifest is the cheapest viable path to dogfood the loop and gather convergence + cost telemetry before deciding default-on.
 
+## Safety posture (drives scope below)
+
+ACE prepends `[Active Playbooks]` to model system prompts — i.e., it actively shapes model behavior based on stored state. Three safety properties this PR enforces, mirroring existing patterns in the codebase:
+
+1. **Operator gate** — like `manifest.audit` (which requires `KOI_AUDIT_*` env vars before sink paths take effect), `manifest.ace.enabled: true` is a *declared intent*, not an activation. ACE actually starts only when the operator also sets `KOI_ACE_DOGFOOD=1` in the launch environment. Repo-only `koi.yaml` cannot turn ACE on for an unsuspecting operator.
+2. **No cross-context contamination** — to avoid a learned playbook from agent A leaking into agent B (issue: shared in-memory store, no partitioning), ACE is **disabled when the `spawn` preset stack is active**. `koi tui` defaults to spawn-active, so most TUI launches will not actually enable ACE — that's the conservative default and it is intentional. Hosts/users who want ACE for testing must launch a TUI session without spawn (`koi tui --no-spawn` or a manifest that excludes spawn).
+3. **Process-lifetime scope only** — stores are in-memory and not partitioned by session within the process. Cross-`/clear`/`/new` sharing is real (see Lifecycle section); the env-gate + spawn-disable above contain the blast radius.
+
+Combined effect: a curious operator running `KOI_ACE_DOGFOOD=1 koi tui --no-spawn` against a manifest with `ace.enabled: true` gets the dogfood loop. Every other path is a no-op. This trades feature reach for safety until `@koi/playbook-store-sqlite` adds real partitioning.
+
+### Relationship to issue #2088 acceptance criteria
+
+Issue #2088 AC says: "Smoke test confirms `[Active Playbooks]` appears on the second TUI session after a tool-using first session." That AC **cannot pass without spawn enabled or cross-process persistence**. This PR meets the *plumbing* and *safety-controls* portion of the issue; the smoke test moves to the sqlite-store follow-up where it has a real persistence + partitioning story. Flag this gap in the PR description so the maintainer can decide whether to (a) ship this safety-first scope and update the issue, or (b) hold #2088 until the sqlite issue lands.
+
 ## Scope
 
 | File | LOC | Change |
@@ -26,13 +40,13 @@ Issue #2088 says "koi.toml". The repo's manifest is **`koi.yaml`** — confirmed
 | `packages/meta/cli/src/manifest.test.ts` | ~80 | Parse valid/invalid blocks, default off, reject unknown keys, range validation |
 | `packages/meta/cli/src/commands/start.ts` | ~10 | **Reject** `manifest.ace` if present (same posture as existing `backgroundSubprocesses` rejection at `start.ts:467`) — `ace:` is TUI-only |
 | `packages/meta/cli/src/commands/start.test.ts` | ~30 | Verify `koi start` exits non-zero with clear message when manifest sets `ace.enabled: true` |
-| `packages/meta/cli/src/runtime-factory.ts` | ~40 | Add `manifestAce?: ManifestAceConfig` to `KoiRuntimeConfig`; when `enabled === true` build `AceConfig` (in-memory stores + default consolidator) → pass via `RuntimeConfig.ace` to `createRuntime` |
-| `packages/meta/cli/src/runtime-factory.test.ts` | ~80 | Middleware chain snapshot (off vs on); in-process two-turn behavior test |
+| `packages/meta/cli/src/runtime-factory.ts` | ~70 | Add `manifestAce?: ManifestAceConfig` + `spawnStackActive: boolean` to `KoiRuntimeConfig`; ACE is wired only when ALL of: `manifestAce.enabled === true` AND `process.env.KOI_ACE_DOGFOOD === "1"` AND `spawnStackActive === false`. Each gate that fails emits a one-line stderr explanation; when all pass, build `AceConfig` (in-memory stores + default consolidator) → pass via `RuntimeConfig.ace` to `createRuntime` |
+| `packages/meta/cli/src/runtime-factory.test.ts` | ~120 | Gate matrix tests: each of {manifest off, env off, spawn active} prevents ACE installation; only the all-pass case installs the middleware. Plus middleware-chain snapshot off vs on. |
 | `packages/meta/cli/src/tui-command.ts` | ~10 | Forward `manifest.ace` into `createKoiRuntime({ manifestAce })` (the only host that should — start.ts already rejected the field) |
 | `packages/meta/cli/src/tui-command.test.ts` | ~25 | TUI startup with `[ace] enabled = true` plumbs `manifestAce` into `createKoiRuntime` |
 | `docs/L2/middleware-ace.md` | ~30 | New "Enabling in TUI" section, including lifecycle scope + host scope |
 
-Total: ~330 LOC.
+Total: ~380 LOC.
 
 ## Surface
 
@@ -68,40 +82,64 @@ koi.yaml [ace] block
     → ManifestConfig.ace (typed)
       → host fork:
           - koi start: REJECT (start.ts fails fast, same as backgroundSubprocesses)
-          - koi tui:  forward manifest.ace into createKoiRuntime({ manifestAce })
-              → runtime-factory.ts builds AceConfig (in-memory stores)
-                → createRuntime({ ace })
-                  → create-runtime.ts (already done in PR #2086):
-                    installs createAceMiddleware(config.ace) at end of chain
+          - koi tui:  forward manifest.ace into createKoiRuntime({ manifestAce, spawnStackActive })
+              → runtime-factory.ts: triple-gate
+                  gate 1: manifestAce?.enabled === true       (else: silent no-op)
+                  gate 2: process.env.KOI_ACE_DOGFOOD === "1" (else: warn-and-no-op)
+                  gate 3: spawnStackActive === false          (else: warn-and-no-op)
+                  all pass → build AceConfig (in-memory stores)
+                    → createRuntime({ ace })
+                      → create-runtime.ts (already done in PR #2086):
+                        installs createAceMiddleware(config.ace)
 ```
 
-The plumbing crosses three boundaries because `createKoiRuntime` does not receive the manifest object directly — `tui-command.ts` parses the manifest and forwards individual fields into `KoiRuntimeConfig` (see existing `manifestMiddleware`, `manifestNdjsonSourcePath`, etc.). `manifestAce` follows the same pattern.
+The plumbing crosses multiple boundaries because `createKoiRuntime` does not receive the manifest object directly — `tui-command.ts` parses the manifest and forwards individual fields into `KoiRuntimeConfig` (see existing `manifestMiddleware`, `manifestNdjsonSourcePath`, etc.). `manifestAce` follows the same pattern.
+
+### Gate matrix
+
+| `manifest.ace.enabled` | `KOI_ACE_DOGFOOD` env | spawn stack | Result |
+|---|---|---|---|
+| absent / false | (any) | (any) | silent no-op (no log line) |
+| true | unset | (any) | stderr: `ace: manifest requests enable but KOI_ACE_DOGFOOD env not set; ignoring` |
+| true | set | active | stderr: `ace: manifest requests enable and env is set, but spawn stack is active; refusing to share playbook store across child agents. Relaunch with --no-spawn or remove spawn from manifest stacks.` |
+| true | set | inactive | ACE installed; stderr: `ace: enabled (in-memory store, process-lifetime; no cross-process persistence yet)` |
+
+Each gate failure is loud-and-explainable so an operator who *thinks* they enabled ACE can see why it didn't activate.
 
 `runtime-factory.ts` builds the `AceConfig` like:
 
 ```typescript
-const aceConfig: AceConfig | undefined =
-  manifest.ace?.enabled === true
-    ? {
-        trajectoryStore: createInMemoryTrajectoryStore(),
-        playbookStore: createInMemoryPlaybookStore(),
-        consolidate: createDefaultConsolidator({}),
-        ...(manifest.ace.maxInjectedTokens !== undefined && {
-          maxInjectedTokens: manifest.ace.maxInjectedTokens,
-        }),
-        ...(manifest.ace.minScore !== undefined && {
-          minScore: manifest.ace.minScore,
-        }),
-        ...(manifest.ace.lambda !== undefined && {
-          lambda: manifest.ace.lambda,
-        }),
-      }
-    : undefined;
-```
+function shouldEnableAce(
+  manifestAce: ManifestAceConfig | undefined,
+  spawnStackActive: boolean,
+): boolean {
+  if (manifestAce?.enabled !== true) return false;
+  if (process.env["KOI_ACE_DOGFOOD"] !== "1") {
+    process.stderr.write("ace: manifest requests enable but KOI_ACE_DOGFOOD env not set; ignoring\n");
+    return false;
+  }
+  if (spawnStackActive) {
+    process.stderr.write(
+      "ace: manifest requests enable and env is set, but spawn stack is active; refusing to share playbook store across child agents. " +
+      "Relaunch with --no-spawn or remove spawn from manifest stacks.\n",
+    );
+    return false;
+  }
+  return true;
+}
 
-Single startup log line on enable:
-```
-ace: enabled (in-memory store; shared across all sessions and child agents in this process; playbooks lost on process exit)
+const aceConfig: AceConfig | undefined = shouldEnableAce(manifestAce, spawnStackActive)
+  ? {
+      trajectoryStore: createInMemoryTrajectoryStore(),
+      playbookStore: createInMemoryPlaybookStore(),
+      consolidate: createDefaultConsolidator({}),
+      ...(manifestAce.maxInjectedTokens !== undefined && {
+        maxInjectedTokens: manifestAce.maxInjectedTokens,
+      }),
+      ...(manifestAce.minScore !== undefined && { minScore: manifestAce.minScore }),
+      ...(manifestAce.lambda !== undefined && { lambda: manifestAce.lambda }),
+    }
+  : undefined;
 ```
 
 ## Host scope
@@ -115,27 +153,25 @@ ace: enabled (in-memory store; shared across all sessions and child agents in th
 
 This prevents shared manifests from silently enabling ACE in headless `koi start`, which has a different safety posture (no `/clear`, `/new` reset hooks; longer-lived processes).
 
-## Lifecycle and isolation (intentional limitations)
+## Lifecycle and isolation
 
-The in-memory `PlaybookStore` and `TrajectoryStore` are constructed once at runtime init and **persist for the lifetime of the TUI process**. This matches issue #2088 AC ("playbooks will not survive process exit") and the v2 ACE store API surface (`PlaybookStore` / in-memory `TrajectoryStore` expose no `clear()` operation; see `packages/lib/middleware-ace/src/in-memory-store.ts`).
+The in-memory `PlaybookStore` and `TrajectoryStore` are constructed once at runtime init and persist for the lifetime of the TUI process. This matches issue #2088 AC ("playbooks will not survive process exit") and the v2 ACE store API surface (no `clear()` op; see `packages/lib/middleware-ace/src/in-memory-store.ts`).
 
-Concretely, in this PR:
+Containment of the contamination risk is via the **gate matrix above**, not via store-level reset:
 
-- **Cross-session within process** — playbooks learned in session N are visible to session N+1 (this is the feature). Includes `/clear` and `/new` boundaries: ACE state is NOT reset by these. Documented loudly in the doc-update.
-- **Cross-agent within process** — child agents spawned via `spawn` / `task_delegate` SHARE the parent's playbook store. A child's tool failures CAN surface as `[Active Playbooks]` in the parent's next model call, and vice-versa.
-- **Cross-process** — none. Process exit drops everything.
+- **Cross-agent contamination** — eliminated by gate 3 (ACE refuses to enable when spawn stack is active). When ACE is on, there are no child agents to contaminate.
+- **Cross-process contamination** — eliminated by in-memory scope (process exit drops everything).
+- **Cross-`/clear`/`/new` within process** — playbooks DO persist across these reset boundaries. This is the *feature* (the loop needs more than one turn worth of trajectory to learn). The in-product recovery path is process restart; the doc-update warns:
 
-Why we accept these limits in this PR:
+  > **Warning.** When ACE is active, learned playbooks persist across `/clear` and `/new` in the same TUI process. To fully reset ACE state, restart the TUI. The follow-up `@koi/playbook-store-sqlite` issue will add explicit per-session reset.
 
-1. The opt-in flag is the user's signal that they accept dogfood-grade behavior. Issue #2088 explicitly frames this as a telemetry-gathering rollout, not a default-on feature.
-2. The v2 in-memory store API (already merged in PR #2086) doesn't expose a `clear()` op; designing reset semantics requires extending the L2 surface, which belongs in the sqlite-store follow-up issue alongside namespacing.
-3. Adding per-session reset hooks would require a new `resetSessionState`-pipeline lifecycle hook in `@koi/engine`, which is out of scope (issue #2088 is "wire what exists").
+Why containment-by-gate rather than partitioning:
 
-The follow-up `@koi/playbook-store-sqlite` issue is the natural home for: (a) per-root-agent partitioning, (b) explicit `clear()` on stores, (c) `/clear` and `/new` reset wiring.
+1. The v2 in-memory store API (merged in PR #2086) doesn't expose `clear()` — partitioning requires extending the L2 surface, which belongs in the sqlite-store follow-up alongside namespacing semantics.
+2. Adding a `resetSessionState` lifecycle hook in `@koi/engine` is out of scope (issue #2088 is "wire what exists").
+3. Disabling ACE under spawn is conservative: most TUI launches default to spawn-active, so the dogfood path is narrow-but-safe rather than wide-but-leaky.
 
-Until then, the doc-update warns:
-
-> **Warning.** When `[ace]` is enabled, learned playbooks persist across `/clear` and `/new`, and are shared between this conversation and any child agents spawned via `task_delegate`. To fully reset ACE state, restart the TUI process. This limitation will be removed when `@koi/playbook-store-sqlite` lands.
+The follow-up `@koi/playbook-store-sqlite` issue is the natural home for: (a) per-root-agent partitioning, (b) explicit `clear()` on stores, (c) `/clear` and `/new` reset wiring, (d) re-enabling ACE under spawn once partitioning is in place.
 
 ## Defaults & error handling
 
