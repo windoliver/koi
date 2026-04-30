@@ -9,11 +9,11 @@ const makeRun = (id: string, name: string, timestamp: string): EvalRun => ({
   id,
   name,
   timestamp,
-  config: { name, timeoutMs: 60_000, passThreshold: 0.5, taskCount: 1 },
+  config: { name, timeoutMs: 60_000, passThreshold: 0.5, taskCount: 0 },
   trials: [],
-  // Coherent empty summary: 0 trials → passRate 0, meanScore 0.
+  // Coherent empty summary: 0 trials, 0 tasks → byTask must equal taskCount.
   summary: {
-    taskCount: 1,
+    taskCount: 0,
     trialCount: 0,
     passRate: 0,
     meanScore: 0,
@@ -43,6 +43,39 @@ describe("createFsStore", () => {
     };
     await writeFile(path, JSON.stringify(tampered), "utf8");
     await expect(store.load("tampered", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("load rejects tampered meanScore", async () => {
+    const store = createFsStore(root);
+    const run = makeRun("ms", "smoke", "2026-01-01T00:00:00Z");
+    await store.save(run);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("ms")}.json`);
+    const tampered = { ...run, summary: { ...run.summary, meanScore: 0.99 } };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("ms", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("load rejects tampered byTask aggregates", async () => {
+    const store = createFsStore(root);
+    const run = makeRun("bt", "smoke", "2026-01-01T00:00:00Z");
+    const seeded = {
+      ...run,
+      summary: {
+        ...run.summary,
+        byTask: [{ taskId: "t1", taskName: "t1", passRate: 0, meanScore: 0, trials: 0 }],
+      },
+    };
+    await store.save(seeded);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("bt")}.json`);
+    const tampered = {
+      ...seeded,
+      summary: {
+        ...seeded.summary,
+        byTask: [{ taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 5 }],
+      },
+    };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("bt", "smoke")).rejects.toThrow(/corrupt/);
   });
 
   test("save fails on collision unless overwrite: true", async () => {
@@ -88,8 +121,14 @@ describe("createFsStore", () => {
           cancellation: "n/a" as const,
         },
       ],
-      // Match recomputed aggregates: 1 trial, 0 passes, 0 errors.
-      summary: { ...baseRun.summary, trialCount: 1, passRate: 0 },
+      // Match recomputed aggregates: 1 trial, 0 passes, 0 errors, 1 task.
+      summary: {
+        ...baseRun.summary,
+        trialCount: 1,
+        passRate: 0,
+        taskCount: 1,
+        byTask: [{ taskId: "t1", taskName: "t1", passRate: 0, meanScore: 0, trials: 1 }],
+      },
     } as unknown as Parameters<typeof store.save>[0];
     await store.save(run);
     const loaded = await store.load("sanitize", "smoke");

@@ -65,28 +65,39 @@ function collectAssistantText(
   transcript: readonly EngineEvent[],
   includeToolResults: boolean,
 ): string {
-  const hasDone = transcript.some((ev) => ev.kind === "done");
-  if (hasDone) {
-    const doneText = collectFromDone(transcript);
+  const done = findDone(transcript);
+  if (done !== undefined) {
+    const doneText = contentBlocksToText(done.output.content);
     if (doneText.length > 0) return doneText;
-    // done existed but had no text content — fall through to fallbacks.
+    // Done with non-text content blocks (image/file/button/custom) is a
+    // deliberate structured response — do NOT fall back to streamed
+    // text_delta, which middleware (e.g. exfiltration guards) may have
+    // sanitized out of the final content. Returning empty here makes
+    // text-pattern grading fail with clear reasoning, which is correct.
+    if (done.output.content.length > 0) {
+      return includeToolResults ? collectFromToolResults(transcript) : "";
+    }
+    // Done with truly empty content array — fall through to deltas, since
+    // there is nothing structured to prefer over them.
   }
 
   const deltas: string[] = [];
   for (const ev of transcript) {
     if (ev.kind === "text_delta") deltas.push(ev.delta);
   }
-  if (!hasDone && deltas.length > 0) return deltas.join("");
+  if (deltas.length > 0) return deltas.join("");
 
   return includeToolResults ? collectFromToolResults(transcript) : "";
 }
 
-function collectFromDone(transcript: readonly EngineEvent[]): string {
+function findDone(
+  transcript: readonly EngineEvent[],
+): Extract<EngineEvent, { kind: "done" }> | undefined {
   for (let i = transcript.length - 1; i >= 0; i--) {
     const ev = transcript[i];
-    if (ev?.kind === "done") return contentBlocksToText(ev.output.content);
+    if (ev?.kind === "done") return ev;
   }
-  return "";
+  return undefined;
 }
 
 function contentBlocksToText(content: readonly ContentBlock[]): string {

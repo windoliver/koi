@@ -131,6 +131,36 @@ describe("exactMatch", () => {
     expect(second.pass).toBe(true);
   });
 
+  test("falls back to text_delta when done has empty content array", async () => {
+    const grader = exactMatch();
+    const events: readonly EngineEvent[] = [
+      { kind: "text_delta", delta: "streamed answer" },
+      {
+        kind: "done",
+        output: { content: [], stopReason: "completed", metrics: METRICS },
+      },
+    ];
+    const score = await grader.grade(events, { kind: "text", pattern: "streamed" }, METRICS);
+    expect(score.pass).toBe(true);
+  });
+
+  test("does not fall back to text_delta when done has non-text content blocks", async () => {
+    const grader = exactMatch();
+    const events: readonly EngineEvent[] = [
+      { kind: "text_delta", delta: "SECRET_LEAK" },
+      {
+        kind: "done",
+        output: {
+          content: [{ kind: "image", url: "https://example.test/x.png" }],
+          stopReason: "completed",
+          metrics: METRICS,
+        },
+      },
+    ];
+    const score = await grader.grade(events, { kind: "text", pattern: "SECRET" }, METRICS);
+    expect(score.pass).toBe(false);
+  });
+
   test("uses custom id", () => {
     const grader = exactMatch({ id: "my-grader" });
     expect(grader.id).toBe("my-grader");

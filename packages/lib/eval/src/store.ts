@@ -177,32 +177,90 @@ async function readRunResult(
   return { kind: "ok", run };
 }
 
+interface PerTask {
+  readonly trials: number;
+  readonly passRate: number;
+  readonly meanScore: number;
+}
+
 interface Aggregates {
   readonly trialCount: number;
   readonly passRate: number;
   readonly errorCount: number;
+  readonly meanScore: number;
+  readonly byTaskId: ReadonlyMap<string, PerTask>;
 }
 
 function recomputeSummaryAggregates(run: EvalRun): Aggregates {
   const trialCount = run.trials.length;
   let passed = 0;
   let errors = 0;
+  let scoreSum = 0;
+  const groups = new Map<string, EvalRun["trials"][number][]>();
   for (const t of run.trials) {
     if (t.status === "pass") passed += 1;
     else if (t.status === "error") errors += 1;
+    scoreSum += trialScore(t);
+    const arr = groups.get(t.taskId) ?? [];
+    arr.push(t);
+    groups.set(t.taskId, arr);
+  }
+  const byTaskId = new Map<string, PerTask>();
+  for (const [id, ts] of groups) {
+    const tPassed = ts.filter((x) => x.status === "pass").length;
+    const tScoreSum = ts.reduce((acc, x) => acc + trialScore(x), 0);
+    byTaskId.set(id, {
+      trials: ts.length,
+      passRate: ts.length === 0 ? 0 : tPassed / ts.length,
+      meanScore: ts.length === 0 ? 0 : tScoreSum / ts.length,
+    });
   }
   return {
     trialCount,
     passRate: trialCount === 0 ? 0 : passed / trialCount,
     errorCount: errors,
+    meanScore: trialCount === 0 ? 0 : scoreSum / trialCount,
+    byTaskId,
   };
 }
+
+function trialScore(t: EvalRun["trials"][number]): number {
+  if (t.scores.length === 0) return 0;
+  let s = 0;
+  for (const sc of t.scores) s += sc.score;
+  return s / t.scores.length;
+}
+
+const FLOAT_SLACK = 1e-9;
 
 function aggregatesMatch(recomputed: Aggregates, stored: EvalRun["summary"]): boolean {
   if (recomputed.trialCount !== stored.trialCount) return false;
   if (recomputed.errorCount !== stored.errorCount) return false;
-  // Allow tiny float slack for passRate division.
-  return Math.abs(recomputed.passRate - stored.passRate) < 1e-9;
+  if (Math.abs(recomputed.passRate - stored.passRate) > FLOAT_SLACK) return false;
+  if (Math.abs(recomputed.meanScore - stored.meanScore) > FLOAT_SLACK) return false;
+  // taskCount must equal byTask length (the runner always emits one entry
+  // per configured task).
+  if (stored.taskCount !== stored.byTask.length) return false;
+  // Every distinct taskId in trials must appear in stored byTask, and the
+  // recomputed per-task aggregates must match the stored values. Extra
+  // byTask rows with zero trials are allowed (a task with no trials run).
+  const storedById = new Map(stored.byTask.map((b) => [b.taskId, b]));
+  for (const [id, recomputedTask] of recomputed.byTaskId) {
+    const s = storedById.get(id);
+    if (s === undefined) return false;
+    if (s.trials !== recomputedTask.trials) return false;
+    if (Math.abs(s.passRate - recomputedTask.passRate) > FLOAT_SLACK) return false;
+    if (Math.abs(s.meanScore - recomputedTask.meanScore) > FLOAT_SLACK) return false;
+  }
+  for (const s of stored.byTask) {
+    const recomputedTask = recomputed.byTaskId.get(s.taskId);
+    if (recomputedTask === undefined) {
+      // Stored entry with no trials is allowed; non-zero trials require
+      // matching trials in the run file.
+      if (s.trials !== 0) return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -302,8 +360,10 @@ function isSummary(v: unknown): boolean {
     if (t === null || typeof t !== "object") return false;
     const ts = t as Record<string, unknown>;
     if (typeof ts.taskId !== "string") return false;
+    if (typeof ts.taskName !== "string") return false;
     if (typeof ts.passRate !== "number") return false;
     if (typeof ts.meanScore !== "number") return false;
+    if (typeof ts.trials !== "number") return false;
   }
   return true;
 }
