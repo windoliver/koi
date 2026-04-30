@@ -650,11 +650,30 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
               if (lateBeforeRetry.kind === "failure") {
                 lastError = lateBeforeRetry.error;
                 // Reclassify against the real failure: if non-retryable,
-                // stop here instead of reissuing.
+                // stop here instead of reissuing. If retryable, also
+                // recompute the backoff delay from the real error's
+                // retry-after hint — the original `delay` was computed
+                // from the synthetic TIMEOUT and would ignore a
+                // server-supplied cooldown (e.g. RATE_LIMIT with
+                // `retryAfterMs: 1000`), turning the timeout path into
+                // provider hammering.
                 const lateRetryAfter = sanitizeRetryAfterMs(safeExtract(lateBeforeRetry.error));
                 const lateRetryable =
                   lateRetryAfter !== undefined || safeIsRetryable(lateBeforeRetry.error);
                 if (!lateRetryable) break;
+                try {
+                  delay = computeBackoff(
+                    attempt,
+                    retryConfig,
+                    lateRetryAfter,
+                    undefined,
+                    prevDelayMs,
+                  );
+                  prevDelayMs = delay;
+                } catch (backoffError) {
+                  reportInternal("backoff", backoffError);
+                  break;
+                }
               } else if (!advanceOnTimeout) {
                 // Strict mode + still abort-ignored after the bounded
                 // wait: cannot safely reissue without violating

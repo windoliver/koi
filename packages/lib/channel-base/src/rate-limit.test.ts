@@ -1245,6 +1245,60 @@ describe("createRateLimiter", () => {
       expect(completed).toEqual(["ok"]);
     });
 
+    it("late RATE_LIMIT with retryAfterMs reclassifies BOTH retryability and backoff delay", async () => {
+      // Regression: loop-6 round 6 finding 1. When a synthetic TIMEOUT
+      // is later replaced by a real failure carrying `retryAfterMs`,
+      // both retryability AND the delay must be recomputed from the
+      // real error. Previously the delay was frozen at the synthetic-
+      // TIMEOUT classification, so a late `RATE_LIMIT { retryAfterMs:
+      // 1000 }` would still reissue with the synthetic backoff —
+      // ignoring the server cooldown and hammering the provider.
+      const limiter = createRateLimiter({
+        retry: {
+          ...errors.DEFAULT_RETRY_CONFIG,
+          maxRetries: 1,
+          initialDelayMs: 5,
+          jitter: false,
+        },
+        sendTimeoutMs: 20,
+        advanceOnTimeout: true,
+        // Caller opts TIMEOUT into retry.
+        isRetryable: (e: unknown): boolean =>
+          typeof e === "object" && e !== null && (e as { code?: string }).code === "TIMEOUT",
+      });
+      let attempts = 0;
+      const fn: SendFn = (signal) =>
+        new Promise<void>((_resolve, reject) => {
+          attempts++;
+          // First attempt: never resolves until aborted, then rejects
+          // late with a real RATE_LIMIT carrying retryAfterMs:250.
+          // Second attempt (if reissued): succeed.
+          if (attempts === 1) {
+            const onAbort = (): void => {
+              setTimeout(() => {
+                const e: KoiError = {
+                  code: "RATE_LIMIT",
+                  message: "throttled",
+                  retryable: true,
+                  retryAfterMs: 250,
+                };
+                reject(e);
+              }, 5);
+            };
+            if (signal.aborted) onAbort();
+            else signal.addEventListener("abort", onAbort, { once: true });
+          } else {
+            _resolve();
+          }
+        });
+      await limiter.enqueue(fn);
+      // sleepSpy was called between attempts. The delay MUST equal the
+      // server cooldown (250ms), not the synthetic-TIMEOUT backoff (5ms).
+      expect(sleepSpy).toHaveBeenCalledWith(250);
+      expect(sleepSpy).not.toHaveBeenCalledWith(5);
+      expect(attempts).toBe(2);
+    });
+
     it("strict-mode TIMEOUT-retry path bounds the late-outcome wait against abort-ignoring transports", async () => {
       // Regression: loop-6 round 5 finding 1. When a caller opts TIMEOUT
       // into retry (because they have provider-side idempotency), the
