@@ -2,7 +2,8 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "lib": ["ES2025", "esnext.disposable", "DOM"]
   },
   "include": ["src/**/*"],
   "references": [
