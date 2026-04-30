@@ -21,25 +21,49 @@ import type { TurnTrace } from "@koi/core";
 import type { NgramEntry, OutcomeStats, ToolNgram, ToolStep, TurnLocation } from "./types.js";
 
 /**
- * Infer outcome from a tool call's output:
+ * True when `error` carries a nested `{ code: "VALIDATION" }` envelope — the
+ * LSP / repo-wide structured-validation-reject shape.
+ */
+function isNestedValidation(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  return (error as { readonly code?: unknown }).code === "VALIDATION";
+}
+
+/**
+ * Infer outcome from a tool call's output. Mirrors the failure/reject
+ * envelopes already used by the repo's telemetry and demand-detection
+ * surfaces so a pattern repeatedly hitting an invalid or quarantined tool
+ * cannot be misclassified as healthy:
+ *
  *  - `undefined` (no captured output) → `undefined` (no signal).
- *  - Object payload with `kind: "error"` / `kind: "denied"` → failure
- *    (matches `agent-monitor.isErrorOutput` / `isDeniedOutput`).
- *  - Object payload with `kind: "validation"` or `code: "VALIDATION"` →
- *    `undefined` (pre-execution reject; neutral, must not skew successRate).
- *  - Anything else captured — primitives (`string`, `number`, `boolean`),
- *    `null`, plain objects without a known failure/validation envelope —
- *    counts as success. A tool that legitimately returns a primitive
- *    contributes positive health signal; treating those as `undefined`
- *    would silently zero out successRate for entire pattern classes.
+ *  - `kind: "error"`, `kind: "denied"`, `kind: "forge_tool_quarantined"`
+ *    → failure (execution failed, blocked, or forcibly stopped).
+ *  - `kind: "validation"` / top-level `code: "VALIDATION"` / nested
+ *    `error.code: "VALIDATION"` → `undefined` (pre-execution reject;
+ *    neutral, must not skew successRate).
+ *  - `ok: false` (without a validation envelope) → failure (generic
+ *    structured failure envelope used by LSP / Result-style returns).
+ *  - Anything else captured — primitives, `null`, plain objects without a
+ *    failure or validation envelope — counts as success.
  */
 function inferOutcome(output: unknown): "success" | "failure" | undefined {
   if (output === undefined) return undefined;
-  if (output !== null && typeof output === "object") {
-    const obj = output as { readonly kind?: unknown; readonly code?: unknown };
-    if (obj.kind === "error" || obj.kind === "denied") return "failure";
-    if (obj.kind === "validation" || obj.code === "VALIDATION") return undefined;
+  if (output === null || typeof output !== "object") return "success";
+
+  const obj = output as {
+    readonly kind?: unknown;
+    readonly code?: unknown;
+    readonly ok?: unknown;
+    readonly error?: unknown;
+  };
+
+  if (obj.kind === "error" || obj.kind === "denied" || obj.kind === "forge_tool_quarantined") {
+    return "failure";
   }
+  if (obj.kind === "validation" || obj.code === "VALIDATION" || isNestedValidation(obj.error)) {
+    return undefined;
+  }
+  if (obj.ok === false) return "failure";
   return "success";
 }
 

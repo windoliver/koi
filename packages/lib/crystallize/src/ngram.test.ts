@@ -71,6 +71,37 @@ describe("extractToolSequences", () => {
     ]);
     expect(seqs[0]?.steps[0]?.outcome).toBeUndefined();
   });
+
+  test("LSP-style { ok: false, error: { code: 'VALIDATION' } } is neutral", () => {
+    const seqs = extractToolSequences([
+      createTrace(0, ["v"], [{ ok: false, error: { code: "VALIDATION", message: "bad arg" } }]),
+    ]);
+    expect(seqs[0]?.steps[0]?.outcome).toBeUndefined();
+  });
+
+  test("forge_tool_quarantined envelope is classified as failure", () => {
+    const seqs = extractToolSequences([
+      createTrace(0, ["q"], [{ kind: "forge_tool_quarantined", reason: "too many failures" }]),
+    ]);
+    expect(seqs[0]?.steps[0]?.outcome).toBe("failure");
+  });
+
+  test("generic { ok: false } envelope (no validation marker) is classified as failure", () => {
+    const seqs = extractToolSequences([
+      createTrace(0, ["x"], [{ ok: false, error: "generic boom" }]),
+    ]);
+    expect(seqs[0]?.steps[0]?.outcome).toBe("failure");
+  });
+
+  test("plain { ok: false } with no further detail is classified as failure", () => {
+    const seqs = extractToolSequences([createTrace(0, ["x"], [{ ok: false }])]);
+    expect(seqs[0]?.steps[0]?.outcome).toBe("failure");
+  });
+
+  test("{ ok: true } envelope still counts as success", () => {
+    const seqs = extractToolSequences([createTrace(0, ["x"], [{ ok: true, value: { count: 1 } }])]);
+    expect(seqs[0]?.steps[0]?.outcome).toBe("success");
+  });
 });
 
 describe("extractNgrams", () => {
