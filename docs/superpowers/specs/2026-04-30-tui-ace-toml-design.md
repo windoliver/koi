@@ -6,7 +6,9 @@
 
 ## TL;DR
 
-This PR is **plumbing only**: it adds the `ace:` block to `koi.yaml`, parses + validates it, rejects it in `koi start`, and threads it through `KoiRuntimeConfig` — but **does NOT install the middleware**. The actual feature activation is deferred to a follow-up PR after the prerequisite work lands (sqlite store, per-session partitioning, store-level reset API).
+This PR is **schema + host-rejection only**: it registers the `ace:` block in `koi.yaml`'s parser so the type is known to the manifest loader, **rejects `enabled: true` on every host** (TUI and start) until the activation PR lands, and accepts `enabled: false` as a valid declarative no-op. It does **not** thread the field into `KoiRuntimeConfig`, install middleware, or change the runtime in any way. The actual feature activation is deferred to a follow-up PR after the prerequisite work lands (sqlite store, per-session partitioning, store-level reset API).
+
+This is the strictest fail-closed posture: a repo with `ace.enabled: true` will not start `koi tui` or `koi start` at all, matching the existing precedent for `backgroundSubprocesses` (which rejects in `koi start`). There is no path where the manifest looks accepted but the runtime contract is unhonored.
 
 Why: four rounds of adversarial review surfaced safety boundaries that the v2 ACE store API + TUI session lifecycle cannot satisfy today:
 
@@ -25,37 +27,36 @@ Issue #2088 says "koi.toml". The repo's manifest is `koi.yaml` — confirmed in 
 
 | AC from #2088 | Status under this PR | Reason |
 |---|---|---|
-| `koi.yaml` `[ace] enabled = true` enables ACE for next TUI session | **Not met** | Schema parsed and threaded, but middleware not installed; `RuntimeConfig.ace` always undefined |
-| Default behavior unchanged when `[ace]` is absent or `enabled = false` | **Met** | Trivially — middleware never installs |
-| Defaults to in-memory store with startup log line | **Not met** | No middleware = no store = no log line |
-| `playbook_path` lazily resolves SQLite or warns + falls back | **Not met** | Schema rejects `playbook_path` outright (issue AC: "no silent ignore") |
+| `koi.yaml` `[ace] enabled = true` enables ACE for next TUI session | **Not met (hard-fails)** | `enabled: true` now rejected at manifest load on every host. Operators get a loud error pointing at the follow-up issue. |
+| Default behavior unchanged when `[ace]` is absent or `enabled = false` | **Met** | Block absent / `enabled: false` are accepted no-ops; middleware never installs |
+| Defaults to in-memory store with startup log line | **Not met** | No middleware install path |
+| `playbook_path` lazily resolves SQLite or warns + falls back | **Not met (hard-fails)** | Schema rejects `playbook_path` with pointer to follow-up |
 | Schema validation: invalid `[ace]` keys produce a clear error at TUI startup | **Met** | Parser rejects unknowns + range/type errors |
 | Smoke test: `[Active Playbooks]` appears on second TUI session | **Not met** | No middleware install path |
 
-**Recommendation to maintainer (in PR body):** retarget #2088 to track the activation PR after sqlite/partitioning land; treat this PR as `pre-#2088` plumbing. Alternatively close this PR and reopen with the prerequisites in scope.
+**Recommendation to maintainer (in PR body):** treat this PR as schema-only ground-laying. Retarget #2088 to the activation PR after the prerequisites land.
 
 **Required PR mechanics to avoid false closure of #2088:**
 
-- PR title MUST start with `pre-#2088:` (not `fix #2088:` / `closes #2088`).
-- PR body MUST contain the line: `Refs #2088 (does not close)` — this prevents GitHub from auto-closing the issue on merge.
-- PR body MUST link to this spec and reproduce the AC gap table verbatim, so reviewers see the deferred ACs at a glance.
-- A follow-up issue tracking the activation PR + prerequisites (see Prerequisites section below) MUST be opened *before* this PR merges, and linked in the PR body.
+- PR title and body MUST NOT contain GitHub close-keywords (`close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved`) followed by `#2088` — these auto-close the issue on merge.
+- The safe pattern is to write `issue 2088` (no `#`) or link via the spec only. GitHub does not auto-close on plain text or spec-mediated references.
+- The PR body should reproduce the AC gap table verbatim so reviewers see what is *not* delivered.
+- A follow-up issue tracking the activation PR + prerequisites (see Prerequisites section below) should be opened *before* this PR merges and linked in the PR body.
 
-## Scope (plumbing only)
+This is doc-only enforcement; no CI gate. The reviewer who flagged this is correct that it depends on maintainer discipline. Adding a CI check to scan PR metadata for close-keywords-vs-#2088 is out of scope here — propose it as a separate repo-infra PR if desired.
+
+## Scope (schema + rejection only)
 
 | File | LOC | Change |
 |---|---|---|
-| `packages/meta/cli/src/manifest.ts` | ~60 | New `ManifestAceConfig` type + parser block, mounted on `ManifestConfig.ace`. Validates `enabled` (bool), `max_injected_tokens` (>0), `min_score` (0..1), `lambda` (>0). Rejects unknown keys (incl. `playbook_path`) at load time. |
-| `packages/meta/cli/src/manifest.test.ts` | ~80 | Absent block; `enabled: false`; full-block; partial-block; unknown-key reject (incl. `playbook_path`); type/range error |
-| `packages/meta/cli/src/commands/start.ts` | ~10 | Reject `manifest.ace.enabled === true` (matches `backgroundSubprocesses` rejection at `start.ts:467`). `ace:` is a TUI-targeted block; rejecting in `koi start` prevents shared manifests from drifting silently across hosts. |
-| `packages/meta/cli/src/commands/start.test.ts` | ~30 | `koi start` exits non-zero with clear message when manifest sets `ace.enabled: true`; ignores `enabled: false` |
-| `packages/meta/cli/src/runtime-factory.ts` | ~30 | Add `manifestAce?: ManifestAceConfig` to `KoiRuntimeConfig`. **Does NOT build an `AceConfig`.** Always passes `ace: undefined` to `createRuntime`. A code comment + `TODO(#2088-followup)` marker documents that activation lands in a follow-up PR once the prerequisite work (sqlite store + session partitioning + `clear()` API) is available. |
-| `packages/meta/cli/src/runtime-factory.test.ts` | ~80 | (1) `createKoiRuntime` accepts `manifestAce` without throwing. (2) Middleware chain snapshot has NO `ace` middleware regardless of `manifestAce` value (proves the deferred-activation contract). (3) **Stderr-warning matrix** (blocking — guards against silent regression to no-op): `manifestAce.enabled === true` → emits the documented stderr line; `manifestAce.enabled === false` → no stderr; `manifestAce === undefined` → no stderr. Captured via stderr spy. |
-| `packages/meta/cli/src/tui-command.ts` | ~10 | Forward `manifest.ace` into `createKoiRuntime({ manifestAce })` so the field reaches the runtime layer. The TUI does not need to know that activation is deferred — the runtime factory swallows the field. |
-| `packages/meta/cli/src/tui-command.test.ts` | ~20 | Manifest `[ace]` block reaches `createKoiRuntime` as `manifestAce` payload (verified by spy / mock) |
-| `docs/L2/middleware-ace.md` | ~50 | New "Manifest schema (forward-compatible, not yet active)" section explaining the deferred-activation posture and listing the prerequisite work |
+| `packages/meta/cli/src/manifest.ts` | ~70 | New `ManifestAceConfig` type + parser block, mounted on `ManifestConfig.ace`. Validates `enabled` (bool), `max_injected_tokens` (>0), `min_score` (0..1), `lambda` (>0). Rejects unknown keys (incl. `playbook_path`) at load time. **Rejects `enabled: true` on every host** with the message: `KOI_MANIFEST: ace.enabled=true is not yet supported in this build; tracked as #2088 follow-up. Set enabled: false or remove the [ace] block.` Allows `enabled: false` as a valid declarative no-op so users can stage their config ahead of the activation PR. |
+| `packages/meta/cli/src/manifest.test.ts` | ~100 | Absent block → `manifest.ace === undefined`; `enabled: false` → parses with all overrides preserved; `enabled: true` → manifest load throws with the documented message; full-block with `enabled: false` and overrides → parses; unknown-key reject (incl. `playbook_path`); type/range error |
+| `packages/meta/cli/src/commands/start.ts` | ~0 | No change required — manifest load already rejects `enabled: true` for every host, so `koi start` inherits the rejection. |
+| `packages/meta/cli/src/runtime-factory.ts` | ~0 | No change required in this PR — since `enabled: true` cannot reach the runtime layer, no `KoiRuntimeConfig` field is needed yet. The activation PR will add `manifestAce` then. |
+| `packages/meta/cli/src/tui-command.ts` | ~0 | No change required — `enabled: false` is a no-op; `enabled: true` cannot pass manifest load. |
+| `docs/L2/middleware-ace.md` | ~50 | New "Manifest schema (declarative-only in this build)" section: explains why `enabled: true` is currently rejected, what prerequisites must land before activation, and how to stage `enabled: false` config in the meantime. |
 
-Total: ~370 LOC.
+Total: ~220 LOC, all in `manifest.ts`, its tests, and docs. No changes to `runtime-factory.ts`, `tui-command.ts`, or `commands/start.ts`.
 
 ## Surface
 
@@ -88,50 +89,57 @@ export interface ManifestAceConfig {
 
 ```
 koi.yaml [ace] block
-  → manifest.ts parser (validates, rejects unknowns/typos/out-of-range/playbook_path)
-    → ManifestConfig.ace (typed)
-      → host fork:
-          - koi start: REJECT (start.ts fails fast on enabled: true)
-          - koi tui:  forward manifest.ace into createKoiRuntime({ manifestAce })
-              → runtime-factory.ts:
-                  store on KoiRuntimeConfig.manifestAce
-                  emit a one-time stderr note if enabled=true:
-                    "ace: manifest.ace.enabled=true is parsed but not yet
-                     wired in this build; tracked as #2088 follow-up."
-                  ALWAYS call createRuntime({ ace: undefined })
-                  → middleware chain unchanged
+  → manifest.ts parser
+      validates: enabled (bool), max_injected_tokens (>0), min_score (0..1), lambda (>0)
+      rejects: unknown keys, playbook_path, type errors, range errors
+      rejects: enabled: true (on every host — TUI and start)
+      accepts: enabled: false (no-op)
+      accepts: block absent (no-op)
+    → If accepted, sets ManifestConfig.ace (typed)
+        → No downstream consumer in this PR. The field is dead weight
+          until the activation PR adds the consumer.
 ```
 
-The startup note when `enabled: true` is parsed under TUI is critical: a user who configured the block deserves to know it didn't activate. Without the note, this PR would silently break their expectations.
+There is no per-host fork because rejection happens at manifest load (a layer above host dispatch). The TUI never sees an `enabled: true` config; neither does `koi start`. This is strictly stronger than the previous round's parse-and-warn design: there is no path where the manifest looks accepted but ACE is silently inert.
 
 ## Defaults & error handling
 
-- Block absent or `enabled: false` → `manifest.ace` is `undefined` (or stores `enabled: false`); no startup note.
-- Block present + `enabled: true` under `koi tui` → parsed, stored, stderr note printed, middleware NOT installed.
-- Block present + `enabled: true` under `koi start` → REJECTED at startup (matches `backgroundSubprocesses` precedent).
+- Block absent → `manifest.ace === undefined`. No effect.
+- Block present, `enabled: false` → `manifest.ace.enabled === false`, overrides parsed and stored. No effect at runtime (no consumer yet); valid declarative no-op.
+- Block present, `enabled: true` (any host) → manifest load throws:
+  `KOI_MANIFEST: ace.enabled=true is not yet supported in this build; tracked as #2088 follow-up. Set enabled: false or remove the [ace] block.`
 - **Unknown keys** under `ace:` → reject at manifest load:
   `KOI_MANIFEST: unknown key 'X' under ace; expected one of [enabled, max_injected_tokens, min_score, lambda]`
 - **`playbook_path`** specifically → reject with a pointer to the future-work issue:
   `KOI_MANIFEST: 'playbook_path' under ace is not yet supported; @koi/playbook-store-sqlite has not landed (tracked as #2088 follow-up)`
 - **Wrong types** (e.g. `enabled: "yes"`) → reject with type error.
 - **Out-of-range numerics** → reject with range error.
-- All errors surface at TUI startup (manifest load), not first model call.
+- All errors surface at manifest load (TUI startup or `koi start` startup), not first model call.
+
+### Schema evolution policy (no version-skew claim)
+
+Earlier drafts called the schema "forward-compatible." It isn't, and shouldn't pretend to be: this is a per-repo config file, not a wire format. Future ACE keys (e.g. `playbook_path`, persistence backends, partitioning hints) land **atomically with their consumer** — the same PR adds the schema entry and the runtime code that honors it. Older binaries hard-failing on a new field is the intended behavior, matching how `governance:`, `audit:`, and `supervision:` work today. Operators who pin a manifest to a feature must pin to a binary that supports it.
 
 ## Why this is the right cut (round-by-round summary)
 
 | Round | Reviewer flag | Resolution in this revision |
 |---|---|---|
-| 1 | Plumbing path: `createKoiRuntime` doesn't take manifest objects | Plumbing path now spans manifest → tui-command → KoiRuntimeConfig — preserved |
-| 1 | Host scope: `koi start` undefined | `koi start` rejects (matches `backgroundSubprocesses`) — preserved |
-| 1 | Cross-session leak via shared store | Removed cross-session activation entirely (no middleware install) |
-| 2 | Reset hook can't be safely inserted around `cycleSession()` | Removed reset hooks (no middleware = no reset needed) |
-| 2 | In-memory store has no `clear()` API | Listed as a prerequisite for the follow-up PR |
-| 2 | Spawn/child contamination | Listed as a prerequisite (needs partitioning) |
-| 3 | Repo-only manifest enabling prompt-shaping is a trust regression | Removed activation entirely (matches the principle: don't activate from repo content alone) |
-| 3 | Documented "accept the risk" isn't enough without recovery path | No activation = no risk to recover from |
-| 4 | Spec defers the only AC for #2088 | Made explicit in TL;DR + AC gap table; recommend retargeting the issue |
+| 1 | Plumbing path: `createKoiRuntime` doesn't take manifest objects | N/A in current scope — no runtime threading |
+| 1 | Host scope: `koi start` undefined | Manifest-load rejection covers all hosts uniformly |
+| 1 | Cross-session leak via shared store | Removed activation entirely |
+| 2 | Reset hook can't be safely inserted around `cycleSession()` | N/A — no middleware install |
+| 2 | In-memory store has no `clear()` API | Prerequisite for activation PR |
+| 2 | Spawn/child contamination | Prerequisite (needs partitioning) |
+| 3 | Repo-only manifest enabling prompt-shaping is a trust regression | Removed activation entirely |
+| 3 | Documented "accept the risk" isn't enough without recovery path | No activation = no risk |
+| 4 | Spec defers the only AC for #2088 | Explicit in TL;DR + AC gap table |
 | 4 | Picker session-switch contamination missed | Eliminated by no-activation scope |
-| 4 | `--no-spawn` flag doesn't exist | No operator-gate guidance in this PR; deferred with the rest |
+| 4 | `--no-spawn` flag doesn't exist | N/A — no operator-gate guidance |
+| 5 | False closure of #2088 depends on PR mechanics | Acknowledged as doc-only; close-keyword guidance below |
+| 5 | Inert-config warning needs test | N/A — no inert config (rejected at parse) |
+| 6 | "Parse but ignore" weaker than fail-closed | Now fail-closed at manifest load for `enabled: true` on every host |
+| 6 | "Forward-compatible" claim conflicts with strict reject | Dropped the claim; documented atomic schema-with-consumer policy |
+| 6 | Doc-only enforcement of close-keyword discipline | Acknowledged limitation; no CI gate proposed in this PR |
 
 ## Prerequisites tracked for the follow-up activation PR
 
