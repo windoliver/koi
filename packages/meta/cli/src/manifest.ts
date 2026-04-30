@@ -345,6 +345,27 @@ export interface ManifestConfig {
    * segments) compiled by the same engine used for filesystem scope.
    */
   readonly credentials: ManifestCredentialsConfig | undefined;
+  /**
+   * Optional ACE (Adaptive Continuous Enhancement) opt-in. The schema is
+   * shipped now (parser + validation + host rejection); host activation
+   * lands in a follow-up PR per the design analysis at
+   * docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md.
+   *
+   * Both `koi start` and `koi tui` currently reject `enabled: true` at
+   * fresh manifest load (matches the `backgroundSubprocesses` precedent).
+   * `enabled: false` is a valid declarative no-op.
+   *
+   *   ace:
+   *     enabled: true
+   *     max_injected_tokens: 800
+   *     min_score: 0.05
+   *     lambda: 0.05
+   *
+   * Numeric overrides map 1:1 to `AceConfig` fields in
+   * `@koi/middleware-ace`: `max_injected_tokens` → `maxInjectedTokens`,
+   * `min_score` → `minScore`, `lambda` → `lambda`.
+   */
+  readonly ace: ManifestAceConfig | undefined;
 }
 
 /** Manifest-declared outbound-network scope (gov-15). */
@@ -360,6 +381,17 @@ export interface ManifestCredentialsConfig {
 /** Manifest-declared delegation backend selector. */
 export interface ManifestDelegationConfig {
   readonly backend: "memory" | "nexus";
+}
+
+/**
+ * Manifest-declared ACE configuration. See `ManifestConfig.ace` for
+ * activation semantics and host-level gates.
+ */
+export interface ManifestAceConfig {
+  readonly enabled: boolean;
+  readonly maxInjectedTokens: number | undefined;
+  readonly minScore: number | undefined;
+  readonly lambda: number | undefined;
 }
 
 /**
@@ -575,6 +607,11 @@ export async function loadManifestConfig(
     return delegationResult;
   }
 
+  const aceResult = parseManifestAce(raw.ace);
+  if (!aceResult.ok) {
+    return aceResult;
+  }
+
   // `trustedHost` is not an accepted manifest field. Earlier
   // designs exposed a per-layer security opt-out surface here, but
   // the runtime factory never actually omitted the corresponding
@@ -690,6 +727,120 @@ export async function loadManifestConfig(
       delegation: delegationResult.value,
       network: networkResult.value,
       credentials: credentialsResult.value,
+      ace: aceResult.value,
+    },
+  };
+}
+
+const ACE_KNOWN_KEYS: ReadonlySet<string> = new Set([
+  "enabled",
+  "max_injected_tokens",
+  "min_score",
+  "lambda",
+]);
+
+function parseManifestAce(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: ManifestAceConfig | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error: "manifest.ace must be an object, e.g. ace: { enabled: true }",
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+
+  for (const key of Object.keys(obj)) {
+    if (key === "playbook_path") {
+      return {
+        ok: false,
+        error:
+          "manifest.ace.playbook_path is not yet supported; @koi/playbook-store-sqlite has not landed (tracked as #2088 follow-up). " +
+          "Remove the key to use the in-memory store.",
+      };
+    }
+    if (!ACE_KNOWN_KEYS.has(key)) {
+      return {
+        ok: false,
+        error:
+          `manifest.ace: unknown key "${key}". Recognized keys: ${[...ACE_KNOWN_KEYS].join(", ")}. ` +
+          "Check for typos — unknown keys are rejected to prevent silent ACE misconfiguration.",
+      };
+    }
+  }
+
+  const enabled = obj.enabled;
+  if (enabled !== undefined && typeof enabled !== "boolean") {
+    return {
+      ok: false,
+      error: `manifest.ace.enabled must be a boolean (got: ${JSON.stringify(enabled)})`,
+    };
+  }
+
+  const maxInjectedTokens = obj.max_injected_tokens;
+  if (maxInjectedTokens !== undefined) {
+    if (typeof maxInjectedTokens !== "number" || !Number.isFinite(maxInjectedTokens)) {
+      return {
+        ok: false,
+        error: `manifest.ace.max_injected_tokens must be a finite number (got: ${JSON.stringify(maxInjectedTokens)})`,
+      };
+    }
+    // 0 is valid: the runtime injector treats it as "no injection" mode
+    // (see packages/lib/middleware-ace/src/injector.ts).
+    if (maxInjectedTokens < 0) {
+      return {
+        ok: false,
+        error: `manifest.ace.max_injected_tokens must be >= 0 (got: ${maxInjectedTokens})`,
+      };
+    }
+  }
+
+  const minScore = obj.min_score;
+  if (minScore !== undefined) {
+    if (typeof minScore !== "number" || !Number.isFinite(minScore)) {
+      return {
+        ok: false,
+        error: `manifest.ace.min_score must be a finite number (got: ${JSON.stringify(minScore)})`,
+      };
+    }
+    if (minScore < 0 || minScore > 1) {
+      return {
+        ok: false,
+        error: `manifest.ace.min_score must be in [0, 1] (got: ${minScore})`,
+      };
+    }
+  }
+
+  const lambda = obj.lambda;
+  if (lambda !== undefined) {
+    if (typeof lambda !== "number" || !Number.isFinite(lambda)) {
+      return {
+        ok: false,
+        error: `manifest.ace.lambda must be a finite number (got: ${JSON.stringify(lambda)})`,
+      };
+    }
+    // 0 is valid: disables recency decay (recency factor stays at 1).
+    // Existing runtime tests in stats-aggregator.test.ts use lambda: 0.
+    if (lambda < 0) {
+      return {
+        ok: false,
+        error: `manifest.ace.lambda must be >= 0 (got: ${lambda})`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      enabled: enabled ?? false,
+      maxInjectedTokens: maxInjectedTokens as number | undefined,
+      minScore: minScore as number | undefined,
+      lambda: lambda as number | undefined,
     },
   };
 }
