@@ -6,6 +6,15 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/governance-scope` wired (#1882 gov-15)**: CLI manifest gains `network:`
+  and `credentials:` blocks. The TUI command translates these into compiled scope
+  objects (`compileScopedFs`, `createScopedFetcher`, `createScopedCredentials`)
+  before passing them into the tool/provider factories. `authed_fetch` is
+  registered in the CLI preset stack as an agent-facing tool that consumes scoped
+  credentials without echoing values. `createProgressiveSkillProvider` replaces
+  the bare provider call so session-snapshot stability is preserved at attach time.
+  `@koi/governance-scope` and `@koi/url-safety` added as direct CLI dependencies.
+
 - **Review lifecycle doc sync (#2081)**: no CLI dependency or TUI wiring changes.
   CLI consumes the refreshed L2 behavior from `@koi/task-tools`,
   `@koi/tools-web`, and `@koi/middleware-memory-recall`: task-tools'
