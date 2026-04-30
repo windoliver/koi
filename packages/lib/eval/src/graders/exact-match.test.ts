@@ -84,6 +84,25 @@ describe("exactMatch", () => {
     expect(score.pass).toBe(true);
   });
 
+  test("done.output.content takes precedence over streamed text_delta (sanitization-aware)", async () => {
+    const grader = exactMatch();
+    const events: readonly EngineEvent[] = [
+      { kind: "text_delta", delta: "SECRET_DATA_LEAKED" },
+      {
+        kind: "done",
+        output: {
+          content: [{ kind: "text", text: "[redacted]" }],
+          stopReason: "completed",
+          metrics: METRICS,
+        },
+      },
+    ];
+    const leaked = await grader.grade(events, { kind: "text", pattern: "SECRET" }, METRICS);
+    expect(leaked.pass).toBe(false);
+    const sanitized = await grader.grade(events, { kind: "text", pattern: "redacted" }, METRICS);
+    expect(sanitized.pass).toBe(true);
+  });
+
   test("does not fall back to tool_result by default", async () => {
     const grader = exactMatch();
     const events: readonly EngineEvent[] = [

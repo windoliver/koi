@@ -146,10 +146,6 @@ async function readRunResult(
       cause: `id mismatch (file: ${run.id}, expected: ${expectedId})`,
     };
   }
-  // Bind stored JSON to its suite directory: if run.name disagrees with
-  // the directory it was loaded from, the artifact is misplaced — treat
-  // as corruption rather than silently accepting it as a baseline for
-  // the wrong suite.
   if (expectedName !== undefined && run.name !== expectedName) {
     return {
       kind: "corrupted",
@@ -157,7 +153,56 @@ async function readRunResult(
       cause: `name mismatch (file: ${run.name}, suite directory: ${expectedName})`,
     };
   }
+  // Range checks: tampered files could declare arbitrary numeric values.
+  if (
+    run.summary.passRate < 0 ||
+    run.summary.passRate > 1 ||
+    run.summary.meanScore < 0 ||
+    !Number.isFinite(run.summary.meanScore)
+  ) {
+    return { kind: "corrupted", path, cause: "summary out of range" };
+  }
+  // Cross-check stored summary against trials. A mismatch means either
+  // the file was hand-edited or trials/summary were written from
+  // different states — either way we cannot trust the persisted
+  // summary for regression decisions.
+  const recomputed = recomputeSummaryAggregates(run);
+  if (!aggregatesMatch(recomputed, run.summary)) {
+    return {
+      kind: "corrupted",
+      path,
+      cause: "summary does not match trials",
+    };
+  }
   return { kind: "ok", run };
+}
+
+interface Aggregates {
+  readonly trialCount: number;
+  readonly passRate: number;
+  readonly errorCount: number;
+}
+
+function recomputeSummaryAggregates(run: EvalRun): Aggregates {
+  const trialCount = run.trials.length;
+  let passed = 0;
+  let errors = 0;
+  for (const t of run.trials) {
+    if (t.status === "pass") passed += 1;
+    else if (t.status === "error") errors += 1;
+  }
+  return {
+    trialCount,
+    passRate: trialCount === 0 ? 0 : passed / trialCount,
+    errorCount: errors,
+  };
+}
+
+function aggregatesMatch(recomputed: Aggregates, stored: EvalRun["summary"]): boolean {
+  if (recomputed.trialCount !== stored.trialCount) return false;
+  if (recomputed.errorCount !== stored.errorCount) return false;
+  // Allow tiny float slack for passRate division.
+  return Math.abs(recomputed.passRate - stored.passRate) < 1e-9;
 }
 
 /**
@@ -192,41 +237,41 @@ async function readRunStrict(
 function isEvalRunShape(v: unknown): v is EvalRun {
   if (v === null || typeof v !== "object") return false;
   const r = v as Record<string, unknown>;
-  if (typeof r["id"] !== "string") return false;
-  if (typeof r["name"] !== "string") return false;
-  if (typeof r["timestamp"] !== "string") return false;
-  if (!Array.isArray(r["trials"])) return false;
-  for (const t of r["trials"] as readonly unknown[]) {
+  if (typeof r.id !== "string") return false;
+  if (typeof r.name !== "string") return false;
+  if (typeof r.timestamp !== "string") return false;
+  if (!Array.isArray(r.trials)) return false;
+  for (const t of r.trials as readonly unknown[]) {
     if (!isTrialShape(t)) return false;
   }
-  if (!isConfigSnapshot(r["config"])) return false;
-  if (!isSummary(r["summary"])) return false;
+  if (!isConfigSnapshot(r.config)) return false;
+  if (!isSummary(r.summary)) return false;
   return true;
 }
 
 function isTrialShape(v: unknown): boolean {
   if (v === null || typeof v !== "object") return false;
   const t = v as Record<string, unknown>;
-  if (typeof t["taskId"] !== "string") return false;
-  if (typeof t["trialIndex"] !== "number") return false;
-  if (!Array.isArray(t["transcript"])) return false;
-  if (!Array.isArray(t["scores"])) return false;
-  for (const s of t["scores"] as readonly unknown[]) {
+  if (typeof t.taskId !== "string") return false;
+  if (typeof t.trialIndex !== "number") return false;
+  if (!Array.isArray(t.transcript)) return false;
+  if (!Array.isArray(t.scores)) return false;
+  for (const s of t.scores as readonly unknown[]) {
     if (s === null || typeof s !== "object") return false;
     const sc = s as Record<string, unknown>;
-    if (typeof sc["graderId"] !== "string") return false;
-    if (typeof sc["score"] !== "number") return false;
-    if (typeof sc["pass"] !== "boolean") return false;
+    if (typeof sc.graderId !== "string") return false;
+    if (typeof sc.score !== "number") return false;
+    if (typeof sc.pass !== "boolean") return false;
   }
-  if (t["metrics"] === null || typeof t["metrics"] !== "object") return false;
-  const m = t["metrics"] as Record<string, unknown>;
-  if (typeof m["totalTokens"] !== "number") return false;
-  if (typeof m["durationMs"] !== "number") return false;
-  if (t["status"] !== "pass" && t["status"] !== "fail" && t["status"] !== "error") return false;
+  if (t.metrics === null || typeof t.metrics !== "object") return false;
+  const m = t.metrics as Record<string, unknown>;
+  if (typeof m.totalTokens !== "number") return false;
+  if (typeof m.durationMs !== "number") return false;
+  if (t.status !== "pass" && t.status !== "fail" && t.status !== "error") return false;
   if (
-    t["cancellation"] !== "n/a" &&
-    t["cancellation"] !== "confirmed" &&
-    t["cancellation"] !== "unconfirmed"
+    t.cancellation !== "n/a" &&
+    t.cancellation !== "confirmed" &&
+    t.cancellation !== "unconfirmed"
   ) {
     return false;
   }
@@ -237,28 +282,28 @@ function isConfigSnapshot(v: unknown): boolean {
   if (v === null || typeof v !== "object") return false;
   const c = v as Record<string, unknown>;
   return (
-    typeof c["name"] === "string" &&
-    typeof c["timeoutMs"] === "number" &&
-    typeof c["passThreshold"] === "number" &&
-    typeof c["taskCount"] === "number"
+    typeof c.name === "string" &&
+    typeof c.timeoutMs === "number" &&
+    typeof c.passThreshold === "number" &&
+    typeof c.taskCount === "number"
   );
 }
 
 function isSummary(v: unknown): boolean {
   if (v === null || typeof v !== "object") return false;
   const s = v as Record<string, unknown>;
-  if (typeof s["taskCount"] !== "number") return false;
-  if (typeof s["trialCount"] !== "number") return false;
-  if (typeof s["passRate"] !== "number") return false;
-  if (typeof s["meanScore"] !== "number") return false;
-  if (typeof s["errorCount"] !== "number") return false;
-  if (!Array.isArray(s["byTask"])) return false;
-  for (const t of s["byTask"] as readonly unknown[]) {
+  if (typeof s.taskCount !== "number") return false;
+  if (typeof s.trialCount !== "number") return false;
+  if (typeof s.passRate !== "number") return false;
+  if (typeof s.meanScore !== "number") return false;
+  if (typeof s.errorCount !== "number") return false;
+  if (!Array.isArray(s.byTask)) return false;
+  for (const t of s.byTask as readonly unknown[]) {
     if (t === null || typeof t !== "object") return false;
     const ts = t as Record<string, unknown>;
-    if (typeof ts["taskId"] !== "string") return false;
-    if (typeof ts["passRate"] !== "number") return false;
-    if (typeof ts["meanScore"] !== "number") return false;
+    if (typeof ts.taskId !== "string") return false;
+    if (typeof ts.passRate !== "number") return false;
+    if (typeof ts.meanScore !== "number") return false;
   }
   return true;
 }

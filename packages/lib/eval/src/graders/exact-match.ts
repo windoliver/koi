@@ -51,23 +51,32 @@ function resolvePattern(
 }
 
 /**
- * Collect candidate assistant text. Streaming `text_delta` events first,
- * then text content from the terminal `done` event. Tool-result fallback
- * is opt-in: by default a tool-only agent that never surfaced its result
- * as text scores as a fail, since the user never saw the answer.
+ * Collect candidate assistant text. The terminal `done` event is the
+ * authoritative final response — middleware (e.g. exfiltration guards)
+ * may sanitize content between the streamed deltas and `done`, so we
+ * grade against `done.output.content` whenever it is present. Streaming
+ * `text_delta` is only the fallback when no `done` event exists.
+ *
+ * Tool-result fallback is opt-in: a tool-only agent that never surfaced
+ * its result as text scores as a fail by default, since the user never
+ * saw the answer.
  */
 function collectAssistantText(
   transcript: readonly EngineEvent[],
   includeToolResults: boolean,
 ): string {
+  const hasDone = transcript.some((ev) => ev.kind === "done");
+  if (hasDone) {
+    const doneText = collectFromDone(transcript);
+    if (doneText.length > 0) return doneText;
+    // done existed but had no text content — fall through to fallbacks.
+  }
+
   const deltas: string[] = [];
   for (const ev of transcript) {
     if (ev.kind === "text_delta") deltas.push(ev.delta);
   }
-  if (deltas.length > 0) return deltas.join("");
-
-  const doneText = collectFromDone(transcript);
-  if (doneText.length > 0) return doneText;
+  if (!hasDone && deltas.length > 0) return deltas.join("");
 
   return includeToolResults ? collectFromToolResults(transcript) : "";
 }

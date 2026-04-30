@@ -11,11 +11,12 @@ const makeRun = (id: string, name: string, timestamp: string): EvalRun => ({
   timestamp,
   config: { name, timeoutMs: 60_000, passThreshold: 0.5, taskCount: 1 },
   trials: [],
+  // Coherent empty summary: 0 trials → passRate 0, meanScore 0.
   summary: {
     taskCount: 1,
     trialCount: 0,
-    passRate: 1,
-    meanScore: 1,
+    passRate: 0,
+    meanScore: 0,
     errorCount: 0,
     byTask: [],
   },
@@ -30,6 +31,20 @@ afterEach(async () => {
 });
 
 describe("createFsStore", () => {
+  test("load rejects tampered summary that disagrees with trials", async () => {
+    const store = createFsStore(root);
+    const run = makeRun("tampered", "smoke", "2026-01-01T00:00:00Z");
+    await store.save(run);
+    // Manually rewrite to add a fake passRate without matching trials
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("tampered")}.json`);
+    const tampered = {
+      ...run,
+      summary: { ...run.summary, passRate: 1, trialCount: 5 },
+    };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("tampered", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
   test("save fails on collision unless overwrite: true", async () => {
     const store = createFsStore(root);
     const r1 = makeRun("dup", "smoke", "2026-01-01T00:00:00Z");
@@ -73,6 +88,8 @@ describe("createFsStore", () => {
           cancellation: "n/a" as const,
         },
       ],
+      // Match recomputed aggregates: 1 trial, 0 passes, 0 errors.
+      summary: { ...baseRun.summary, trialCount: 1, passRate: 0 },
     } as unknown as Parameters<typeof store.save>[0];
     await store.save(run);
     const loaded = await store.load("sanitize", "smoke");
