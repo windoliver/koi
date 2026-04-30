@@ -41,7 +41,20 @@ let writtenForRun = false;
 let exitHandlerRegistered = false;
 
 export function initProfiling(options?: InitProfilingOptions): void {
-  if (runActive) return; // already running this TUI session
+  if (runActive) {
+    // Concurrent profiled createTuiApp() — profiling state is process-global
+    // so a second app would silently mix metrics into the active run's
+    // report and the first stop() would truncate the second app's data.
+    // Surface the conflict instead of corrupting either run.
+    if (isProfilingEnabled()) {
+      process.stderr.write(
+        "[koi-tui-profile] another TUI run is already being profiled; " +
+          "this run's metrics will not be recorded. Run profiled TUIs sequentially " +
+          "or in separate processes.\n",
+      );
+    }
+    return;
+  }
   if (!isProfilingEnabled()) return;
 
   // Fresh state for this run — must come before sampler start so the

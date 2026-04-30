@@ -163,6 +163,45 @@ describe("initProfiling", () => {
     expect(exitCalls.length).toBe(1);
   });
 
+  test("rejects concurrent profiled runs with a stderr warning", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    process.env.KOI_TUI_PROFILE_OUT = join(workDir, "report.json");
+    resetProfiler();
+
+    let secondSetIntervalCalls = 0;
+    const setIntervalA = ((_fn: () => void, _ms: number) =>
+      1 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval;
+    const setIntervalB = ((_fn: () => void, _ms: number) => {
+      secondSetIntervalCalls++;
+      return 2 as unknown as ReturnType<typeof setInterval>;
+    }) as unknown as typeof setInterval;
+
+    const stderrWrites: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      // First run starts cleanly
+      initProfiling({
+        processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+        cpuSamplerOptions: { setIntervalFn: setIntervalA },
+      });
+      // Second run while first is still active — must be refused, not silently merged
+      initProfiling({
+        processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+        cpuSamplerOptions: { setIntervalFn: setIntervalB },
+      });
+    } finally {
+      process.stderr.write = origWrite;
+    }
+
+    expect(secondSetIntervalCalls).toBe(0);
+    expect(stderrWrites.some((w) => w.includes("already being profiled"))).toBe(true);
+  });
+
   test("exit handler is idempotent after shutdownProfiling already wrote", () => {
     process.env.KOI_TUI_PROFILE = "1";
     const outPath = join(workDir, "report.json");

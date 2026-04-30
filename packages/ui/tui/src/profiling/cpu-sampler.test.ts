@@ -34,6 +34,14 @@ describe("cpu-sampler", () => {
     expect(setIntervalSpy.mock.calls[0]?.[1]).toBe(250);
   });
 
+  test("default interval is 250ms when none is supplied", () => {
+    const setIntervalSpy = mock(
+      (_fn: () => void, _ms: number) => 42 as unknown as ReturnType<typeof setInterval>,
+    );
+    startCpuSampler({ setIntervalFn: setIntervalSpy as unknown as typeof setInterval });
+    expect(setIntervalSpy.mock.calls[0]?.[1]).toBe(250);
+  });
+
   test("ignores duplicate start calls", () => {
     const setIntervalSpy = mock(
       (_fn: () => void, _ms: number) => 42 as unknown as ReturnType<typeof setInterval>,
@@ -67,6 +75,26 @@ describe("cpu-sampler", () => {
       clearIntervalFn: clearIntervalSpy as unknown as typeof clearInterval,
     });
     expect(setIntervalSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test("stop emits a final synchronous tick so partial intervals are preserved", () => {
+    const captured: { fn: (() => void) | null } = { fn: null };
+    const setIntervalSpy = mock((fn: () => void, _ms: number) => {
+      captured.fn = fn;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    });
+    const clearIntervalSpy = mock((_id: ReturnType<typeof setInterval>) => undefined);
+    startCpuSampler({
+      intervalMs: 250,
+      setIntervalFn: setIntervalSpy as unknown as typeof setInterval,
+      clearIntervalFn: clearIntervalSpy as unknown as typeof clearInterval,
+    });
+    // No scheduled tick has fired yet — sampler stops without ever
+    // triggering the interval. The final tick must still emit a sample.
+    stopCpuSampler();
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
+    const samples = dumpProfile().samples["cpu.userUs"];
+    expect(samples?.length).toBeGreaterThanOrEqual(1);
   });
 
   test("each tick records cpu.userUs, cpu.systemUs, cpu.wallMs, cpu.utilizationPct", () => {

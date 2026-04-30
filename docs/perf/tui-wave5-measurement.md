@@ -18,8 +18,21 @@ KOI_TUI_PROFILE_OUT=./profile.json \
 bun run packages/meta/cli/src/bin.ts up
 ```
 
-On normal exit, the harness writes `./profile.json` (or whatever you set
-`KOI_TUI_PROFILE_OUT` to). The path is announced on stderr.
+The report is written when the TUI's `stop()` runs (normal Ctrl+C quit).
+A `process.on("exit")` fallback also writes if the process dies before
+`stop()` completes. The path is announced on stderr.
+
+CPU sampling cadence is **250ms** so sub-second scenario windows are
+captured. A final synchronous tick is emitted at `stop()` so the trailing
+partial interval is included.
+
+**Limitations:**
+- Profiling state is process-global. Running two profiled `createTuiApp`
+  instances concurrently in the same process is rejected with a stderr
+  warning ("already being profiled") rather than silently mixing reports.
+  Profile sequentially or in separate processes.
+- Per-metric storage is capped at 50,000 values. Exceeded only on multi-hour
+  runs at saturated rates; further values are dropped silently.
 
 ## Probes
 

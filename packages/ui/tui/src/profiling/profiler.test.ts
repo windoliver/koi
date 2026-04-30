@@ -66,6 +66,19 @@ describe("profiler", () => {
       expect(report.counters.bytes).toBe(150);
     });
 
+    test("recordHistogram caps values per metric to bound observer overhead", () => {
+      // Cap is 50_000. Drive 50_010 values; only the first 50_000 should be stored.
+      for (let i = 0; i < 50_010; i++) recordHistogram("over", 1);
+      const h = dumpProfile().histograms.over;
+      expect(h?.count).toBe(50_000);
+    });
+
+    test("recordSample caps values per metric to bound observer overhead", () => {
+      for (let i = 0; i < 50_010; i++) recordSample("over", 1, i);
+      const samples = dumpProfile().samples.over;
+      expect(samples?.length).toBe(50_000);
+    });
+
     test("bumpCounter tracks multiple counters independently", () => {
       bumpCounter("a");
       bumpCounter("b", 5);

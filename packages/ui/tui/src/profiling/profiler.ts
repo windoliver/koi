@@ -44,11 +44,20 @@ export interface ResetOptions {
 }
 
 /**
- * Cap on the number of timestamped samples retained per metric name. Prevents
- * unbounded growth on long sessions: at 1Hz CPU sampling, this caps memory at
- * ~13.9 hours of data per CPU metric — well past any realistic scenario.
+ * Cap on stored values per metric (both samples and histograms). Bounds
+ * observer overhead — a streaming run can otherwise accumulate millions of
+ * batcher histogram values, and dumpProfile() sorts a copy of each array,
+ * which on a long run perturbs the very performance being measured.
+ *
+ * 50k entries × ~16 bytes ≈ 800KB per metric — comfortably small. At 250ms
+ * CPU sampling, 50k is ~3.5 hours of data per CPU metric. At one streaming
+ * burst's batcher rate (~60 flushes/s × 3 metrics), 50k is ~14 minutes of
+ * continuous streaming per metric — past any realistic scenario.
+ *
+ * On overflow, additional values are dropped silently. This is a diagnostic
+ * tool: a truncation warning would itself be the wrong intervention.
  */
-const SAMPLE_CAP_PER_METRIC = 50_000;
+const VALUE_CAP_PER_METRIC = 50_000;
 
 interface ProfilerState {
   enabled: boolean;
@@ -81,6 +90,7 @@ export function recordHistogram(name: string, value: number): void {
   if (!state.enabled) return;
   const existing = state.histograms.get(name);
   if (existing) {
+    if (existing.length >= VALUE_CAP_PER_METRIC) return;
     existing.push(value);
   } else {
     state.histograms.set(name, [value]);
@@ -102,7 +112,7 @@ export function recordSample(name: string, value: number, t?: number): void {
   const ts = t ?? performance.now();
   const existing = state.samples.get(name);
   if (existing) {
-    if (existing.length >= SAMPLE_CAP_PER_METRIC) return;
+    if (existing.length >= VALUE_CAP_PER_METRIC) return;
     existing.push([ts, value]);
   } else {
     state.samples.set(name, [[ts, value]]);
