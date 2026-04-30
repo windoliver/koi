@@ -182,6 +182,12 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
     }
   }
 
+  function isPermissionDenialError(e: unknown): boolean {
+    if (typeof e !== "object" || e === null) return false;
+    if (!("code" in e)) return false;
+    return e.code === "PERMISSION";
+  }
+
   function isErrorOutput(output: unknown): boolean {
     if (output === null || typeof output !== "object") return false;
     if ("kind" in output && (output as { kind?: unknown }).kind === "error") return true;
@@ -243,50 +249,26 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
       next: ToolHandler,
     ): Promise<ToolResponse> => {
       const m = getMetricsFor(ctx);
-      let response: ToolResponse;
-      let threw = false;
-      try {
-        response = await next(request);
-      } catch (e: unknown) {
-        threw = true;
-        if (m !== undefined) {
-          m.totalErrorCalls++;
-          fire(detect.detectErrorSpike(m, thresholds), m);
+      // Record the attempt BEFORE awaiting next() so thrown calls still
+      // count toward rate / repetition / destructive / ping-pong detectors.
+      if (m !== undefined) {
+        m.totalToolCalls++;
+        m.toolCallsThisTurn++;
+        m.distinctToolsThisTurn.add(request.toolId);
+        m.toolIdsThisTurn.push(request.toolId);
+        trackToolSequence(m, request.toolId);
+        if (destructiveSet.has(request.toolId)) {
+          m.totalDestructiveCalls++;
+          const c = (m.destructiveThisTurn.get(request.toolId) ?? 0) + 1;
+          m.destructiveThisTurn.set(request.toolId, c);
         }
-        throw e;
-      } finally {
-        if (m !== undefined && !threw) {
-          // counters
-          m.totalToolCalls++;
-          m.toolCallsThisTurn++;
-          m.distinctToolsThisTurn.add(request.toolId);
-          m.toolIdsThisTurn.push(request.toolId);
-          trackToolSequence(m, request.toolId);
-          if (destructiveSet.has(request.toolId)) {
-            m.totalDestructiveCalls++;
-            const c = (m.destructiveThisTurn.get(request.toolId) ?? 0) + 1;
-            m.destructiveThisTurn.set(request.toolId, c);
-          }
-          // goal-drift keyword match
-          if (keywordPatterns.length > 0) {
-            for (const p of keywordPatterns) {
-              if (p.test(request.toolId)) {
-                m.goalDriftMatchedThisTurn = true;
-                break;
-              }
+        if (keywordPatterns.length > 0) {
+          for (const p of keywordPatterns) {
+            if (p.test(request.toolId)) {
+              m.goalDriftMatchedThisTurn = true;
+              break;
             }
           }
-        }
-      }
-      // detection happens after counters are updated and not in finally,
-      // because we need access to `response` for output-based detection.
-      if (m !== undefined) {
-        if (isDeniedOutput(response.output)) {
-          m.totalDeniedCalls++;
-          fire(detect.detectDeniedToolCalls(m, thresholds), m);
-        } else if (isErrorOutput(response.output)) {
-          m.totalErrorCalls++;
-          fire(detect.detectErrorSpike(m, thresholds), m);
         }
         fire(detect.detectToolRateExceeded(m, thresholds), m);
         fire(detect.detectToolRepeated(m, thresholds), m);
@@ -297,6 +279,28 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
         }
         if (spawnSet.has(request.toolId)) {
           fire(detect.detectDelegationDepthExceeded(agentDepth, thresholds, request.toolId), m);
+        }
+      }
+      let response: ToolResponse;
+      try {
+        response = await next(request);
+      } catch (e: unknown) {
+        // Permission denials throw KoiRuntimeError({code:"PERMISSION"});
+        // they are already counted via onPermissionDecision, so don't
+        // double-count them as execution errors.
+        if (m !== undefined && !isPermissionDenialError(e)) {
+          m.totalErrorCalls++;
+          fire(detect.detectErrorSpike(m, thresholds), m);
+        }
+        throw e;
+      }
+      if (m !== undefined) {
+        if (isDeniedOutput(response.output)) {
+          m.totalDeniedCalls++;
+          fire(detect.detectDeniedToolCalls(m, thresholds), m);
+        } else if (isErrorOutput(response.output)) {
+          m.totalErrorCalls++;
+          fire(detect.detectErrorSpike(m, thresholds), m);
         }
       }
       return response;
@@ -323,11 +327,13 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
           } finally {
             if (m !== undefined) {
               const latencyMs = Date.now() - start;
-              m.latency = welfordUpdate(m.latency, latencyMs);
+              // Detect anomaly against pre-update stats so the outlier itself
+              // does not widen the baseline used for its own threshold check.
               fire(detect.detectModelLatencyAnomaly(latencyMs, m.latency, thresholds), m);
+              m.latency = welfordUpdate(m.latency, latencyMs);
               if (outputTokens > 0) {
-                m.outputTokens = welfordUpdate(m.outputTokens, outputTokens);
                 fire(detect.detectTokenSpike(outputTokens, m.outputTokens, thresholds), m);
+                m.outputTokens = welfordUpdate(m.outputTokens, outputTokens);
               }
               m.totalModelCalls++;
             }

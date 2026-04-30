@@ -15,7 +15,12 @@ export function createMcpSource(managers: readonly McpAgentSource[]): DiscoveryS
     discover: async (): Promise<readonly ExternalAgentDescriptor[]> => {
       const out: ExternalAgentDescriptor[] = [];
       for (const m of managers) {
-        const r = await m.listTools();
+        let r: Awaited<ReturnType<typeof m.listTools>>;
+        try {
+          r = await m.listTools();
+        } catch {
+          continue;
+        }
         if (!r.ok) continue;
         const matched = r.value.some((t) => qualifies(t.name) || qualifies(t.description));
         if (matched) {
