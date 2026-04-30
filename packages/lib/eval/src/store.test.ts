@@ -82,6 +82,21 @@ describe("createFsStore", () => {
     expect(a2?.id).toBe("a_b");
   });
 
+  test("load rejects parseable JSON that is missing required fields", async () => {
+    const store = createFsStore(root);
+    const dir = join(root, encodeURIComponent("smoke"));
+    await store.save(makeRun("seed", "smoke", "2026-01-01T00:00:00Z"));
+    // Valid JSON but missing config/trials/summary fields
+    const malformed = JSON.stringify({
+      id: "shallow",
+      name: "smoke",
+      timestamp: "2026-01-02T00:00:00Z",
+      summary: { passRate: 1 },
+    });
+    await writeFile(join(dir, `${encodeURIComponent("shallow")}.json`), malformed, "utf8");
+    await expect(store.load("shallow", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
   test("load throws on corrupted run file (fail-closed for regression gate)", async () => {
     const store = createFsStore(root);
     await store.save(makeRun("bad", "smoke", "2026-01-01T00:00:00Z"));
@@ -90,16 +105,15 @@ describe("createFsStore", () => {
     await expect(store.load("bad", "smoke")).rejects.toThrow(/corrupt/);
   });
 
-  test("malformed run file does not break list/latest", async () => {
+  test("malformed sibling file does not break list, but blocks latest (fail-closed)", async () => {
     const store = createFsStore(root);
     await store.save(makeRun("good", "smoke", "2026-02-01T00:00:00Z"));
-    // Inject a corrupt sibling file
     const dir = join(root, encodeURIComponent("smoke"));
     await writeFile(join(dir, "bad.json"), "{ this is not json", "utf8");
     const metas = await store.list("smoke");
     expect(metas).toHaveLength(1);
     expect(metas[0]?.id).toBe("good");
-    expect((await store.latest("smoke"))?.id).toBe("good");
+    await expect(store.latest("smoke")).rejects.toThrow(/corrupted/);
   });
 
   test("list returns empty for unknown eval", async () => {

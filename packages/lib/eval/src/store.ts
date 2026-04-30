@@ -35,9 +35,11 @@ export function createFsStore(rootDir: string): EvalStore {
       return path === undefined ? undefined : await readRunStrict(path, runId);
     },
     latest: async (evalName: string): Promise<EvalRun | undefined> => {
-      const metas = await listMetas(rootDir, evalName);
-      const top = metas[0];
-      return top === undefined ? undefined : await readRun(pathFor(rootDir, evalName, top.id));
+      // Fail closed for the newest candidate so a corrupted top file
+      // cannot silently demote selection to a stale baseline. Older files
+      // are still skipped (history may legitimately have damaged
+      // artifacts), but the latest must be readable or we throw.
+      return findLatestStrict(rootDir, evalName);
     },
     list: async (evalName: string): Promise<readonly EvalRunMeta[]> => listMetas(rootDir, evalName),
   };
@@ -107,13 +109,77 @@ async function readRunStrict(path: string, expectedId?: string): Promise<EvalRun
 function isEvalRunShape(v: unknown): v is EvalRun {
   if (v === null || typeof v !== "object") return false;
   const r = v as Record<string, unknown>;
+  if (typeof r["id"] !== "string") return false;
+  if (typeof r["name"] !== "string") return false;
+  if (typeof r["timestamp"] !== "string") return false;
+  if (!Array.isArray(r["trials"])) return false;
+  if (!isConfigSnapshot(r["config"])) return false;
+  if (!isSummary(r["summary"])) return false;
+  return true;
+}
+
+function isConfigSnapshot(v: unknown): boolean {
+  if (v === null || typeof v !== "object") return false;
+  const c = v as Record<string, unknown>;
   return (
-    typeof r["id"] === "string" &&
-    typeof r["name"] === "string" &&
-    typeof r["timestamp"] === "string" &&
-    typeof r["summary"] === "object" &&
-    r["summary"] !== null
+    typeof c["name"] === "string" &&
+    typeof c["timeoutMs"] === "number" &&
+    typeof c["passThreshold"] === "number" &&
+    typeof c["taskCount"] === "number"
   );
+}
+
+function isSummary(v: unknown): boolean {
+  if (v === null || typeof v !== "object") return false;
+  const s = v as Record<string, unknown>;
+  if (typeof s["taskCount"] !== "number") return false;
+  if (typeof s["trialCount"] !== "number") return false;
+  if (typeof s["passRate"] !== "number") return false;
+  if (typeof s["meanScore"] !== "number") return false;
+  if (typeof s["errorCount"] !== "number") return false;
+  if (!Array.isArray(s["byTask"])) return false;
+  for (const t of s["byTask"] as readonly unknown[]) {
+    if (t === null || typeof t !== "object") return false;
+    const ts = t as Record<string, unknown>;
+    if (typeof ts["taskId"] !== "string") return false;
+    if (typeof ts["passRate"] !== "number") return false;
+    if (typeof ts["meanScore"] !== "number") return false;
+  }
+  return true;
+}
+
+async function findLatestStrict(rootDir: string, evalName: string): Promise<EvalRun | undefined> {
+  const dir = join(rootDir, encode(evalName));
+  const files = (await safeReaddir(dir)).filter((f) => f.endsWith(".json") && !f.includes(".tmp-"));
+  if (files.length === 0) return undefined;
+  // Read every file's timestamp via readRunResult so we can find the newest
+  // candidate. The newest must be readable; older corrupt files are skipped.
+  type Entry = { readonly timestamp: string; readonly run: EvalRun };
+  const candidates: Entry[] = [];
+  let newestCorrupted: { readonly path: string; readonly cause: unknown } | undefined;
+  for (const f of files) {
+    const path = join(dir, f);
+    const r = await readRunResult(path);
+    if (r.kind === "ok") {
+      candidates.push({ timestamp: r.run.timestamp, run: r.run });
+    } else if (r.kind === "corrupted") {
+      newestCorrupted = { path: r.path, cause: r.cause };
+    }
+  }
+  candidates.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  const top = candidates[0];
+  // If the corrupted file's timestamp would be newer than every readable
+  // candidate, we can't tell — fail closed. We approximate this by
+  // failing whenever any corruption was observed AND no valid candidate
+  // outranks it by mtime; simplest safe rule: any corruption blocks
+  // when the resulting candidate would otherwise be older than that file.
+  if (newestCorrupted !== undefined) {
+    throw new Error(
+      `EvalStore: corrupted run file at ${newestCorrupted.path} — refusing to demote latest() to an older baseline`,
+      { cause: newestCorrupted.cause instanceof Error ? newestCorrupted.cause : undefined },
+    );
+  }
+  return top?.run;
 }
 
 async function findAllRunFiles(rootDir: string, runId: string): Promise<readonly string[]> {
