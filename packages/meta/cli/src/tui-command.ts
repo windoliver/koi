@@ -1525,32 +1525,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         },
       });
       if (!resumeAuditResult.ok) {
-        const allCoveredByEnv =
-          process.env.KOI_AUDIT_NDJSON !== undefined &&
-          process.env.KOI_AUDIT_SQLITE !== undefined &&
-          (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
-        if (!allCoveredByEnv) {
-          process.stderr.write(
-            "koi tui: original session manifest cannot be parsed — " +
-              "refusing to resume because audit intent cannot be verified. " +
-              "Set KOI_AUDIT_NDJSON + KOI_AUDIT_SQLITE + KOI_AUDIT_VIOLATIONS to cover all " +
-              "audit sinks, or pass --manifest to re-specify the manifest explicitly.\n",
-          );
-          process.exit(1);
-        }
-        // gov-15: manifest unparseable and user did not pass --manifest:
-        // we cannot recover the original network/credential scope, so
-        // we must fail-closed rather than resume with open boundaries.
-        // This is a new requirement beyond audit coverage — scope can't
-        // be substituted with env vars the way audit sinks can.
-        if (flags.manifest === undefined) {
-          process.stderr.write(
-            "koi tui: original session manifest cannot be parsed — " +
-              "refusing to resume because network and credential scope cannot be verified. " +
-              "Pass --manifest <path> to re-specify the manifest explicitly.\n",
-          );
-          process.exit(1);
-        }
+        // Issue #2088 — original-manifest parse failure is a hard stop
+        // for ACE continuity. We cannot tell from a broken manifest
+        // whether the original session opted into ACE, and --manifest
+        // cannot re-derive the prior PlaybookStore either way. Bail
+        // before the audit/scope env-coverage escapes below — those
+        // would silently bypass the ACE host-safety guarantee when
+        // the operator supplies any --manifest.
+        process.stderr.write(
+          "koi tui: original session manifest cannot be parsed — " +
+            "refusing to resume because the original session's ace.enabled state " +
+            "cannot be verified, and --manifest cannot recover a prior in-memory " +
+            "PlaybookStore. Restore a parseable manifest at the stored path, or " +
+            "start a new session without --resume.\n",
+        );
+        process.exit(1);
       } else {
         // Happy path: stored manifest parsed OK. Apply network and credential
         // scope from the original session so the resumed session uses the same
@@ -5470,6 +5459,43 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // `agent:<pid>:<uuid>` ids copied from `koi sessions list`
           // work alongside plain UUIDs minted by this branch.
           const targetSid = sessionId(selectedId);
+
+          // Issue #2088 — picker-loaded sessions must honor the same
+          // ACE provenance gate as startup --resume. Without this
+          // check, an operator could start ACE-clean and then load a
+          // transcript whose original manifest enabled ACE — the
+          // resumed transcript would then run against a fresh or
+          // contaminated PlaybookStore. Block such loads until
+          // sqlite-backed playbook persistence (#2087) lands.
+          const pickerMeta = await readSessionMetaResult(SESSIONS_DIR, selectedId);
+          if (pickerMeta.kind === "corrupt") {
+            if (myPickerGeneration === pickerGeneration) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SESSION_RESUME_ERROR",
+                message: `Could not load session: provenance sidecar is corrupt (${pickerMeta.error}).`,
+              });
+            }
+            return;
+          }
+          if (pickerMeta.kind === "ok") {
+            const pickerManifest = await loadManifestConfig(pickerMeta.manifestPath, {
+              skipAuditValidation: true,
+            });
+            if (!pickerManifest.ok || pickerManifest.value.ace?.enabled === true) {
+              if (myPickerGeneration === pickerGeneration) {
+                store.dispatch({
+                  kind: "add_error",
+                  code: "SESSION_RESUME_ERROR",
+                  message:
+                    "Could not load session: original manifest had ace.enabled: true. " +
+                    "ACE in-memory playbooks cannot be carried across processes; wait for #2087 or quit and restart with --resume <id>.",
+                });
+              }
+              return;
+            }
+          }
+
           const resumeResult = await resumeSessionFromJsonl(
             selectedId,
             jsonlTranscript,

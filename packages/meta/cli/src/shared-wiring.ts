@@ -792,7 +792,6 @@ export async function writeSessionMeta(
 export type SessionMetaReadResult =
   | { readonly kind: "missing" }
   | { readonly kind: "ok"; readonly manifestPath: string }
-  | { readonly kind: "ok-empty" }
   | { readonly kind: "corrupt"; readonly error: string };
 
 export async function readSessionMetaResult(
@@ -809,9 +808,14 @@ export async function readSessionMetaResult(
       return { kind: "corrupt", error: "sidecar root is not a JSON object" };
     }
     const meta = parsed as Record<string, unknown>;
-    if (meta.manifestPath === undefined) return { kind: "ok-empty" };
     if (typeof meta.manifestPath !== "string") {
-      return { kind: "corrupt", error: "manifestPath field is not a string" };
+      // A present sidecar without a valid manifestPath is treated as
+      // tampered/corrupt: writeSessionMeta() always emits the field
+      // when a manifest governed the session, so its absence cannot
+      // be distinguished from removal-attack on a manifest-governed
+      // session. Failing closed catches the attack; legacy sessions
+      // never wrote a sidecar at all (kind: "missing").
+      return { kind: "corrupt", error: "manifestPath field is missing or not a string" };
     }
     return { kind: "ok", manifestPath: meta.manifestPath };
   } catch (err) {
