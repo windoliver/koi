@@ -294,6 +294,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/eval": {
+      "name": "@koi/eval",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/event-delivery": {
       "name": "@koi/event-delivery",
       "version": "0.0.0",
@@ -1092,6 +1099,7 @@
         "@koi/dream": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/engine-compose": "workspace:*",
+        "@koi/eval": "workspace:*",
         "@koi/event-trace": "workspace:*",
         "@koi/execution-context": "workspace:*",
         "@koi/file-type": "workspace:*",
@@ -2004,6 +2012,8 @@
     "@koi/engine-reconcile": ["@koi/engine-reconcile@workspace:packages/kernel/engine-reconcile"],
 
     "@koi/errors": ["@koi/errors@workspace:packages/lib/errors"],
+
+    "@koi/eval": ["@koi/eval@workspace:packages/lib/eval"],
 
     "@koi/event-delivery": ["@koi/event-delivery@workspace:packages/lib/event-delivery"],
 

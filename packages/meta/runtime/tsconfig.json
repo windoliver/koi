@@ -28,6 +28,7 @@
     { "path": "../../lib/nexus-client" },
     { "path": "../../lib/fs-scoped" },
     { "path": "../../lib/ipc-local" },
+    { "path": "../../lib/eval" },
     { "path": "../../lib/event-trace" },
     { "path": "../../lib/execution-context" },
     { "path": "../../lib/hooks" },

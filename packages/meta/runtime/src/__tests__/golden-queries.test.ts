@@ -2446,3 +2446,68 @@ describe("Golden: @koi/middleware-call-dedup", () => {
     expect(foundCount).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/eval (2 queries)
+// ---------------------------------------------------------------------------
+
+import { compareRuns, exactMatch, runEval, runSelfTest, toolCall } from "@koi/eval";
+
+describe("Golden: @koi/eval", () => {
+  test("runEval scores a fake-agent transcript with exactMatch + toolCall graders", async () => {
+    const events: readonly EngineEvent[] = [
+      { kind: "tool_call_start", toolName: "search", callId: "c1" as never, args: { q: "x" } },
+      { kind: "text_delta", delta: "found 42 results" },
+    ];
+    const run = await runEval({
+      name: "eval-golden",
+      tasks: [
+        {
+          id: "t1",
+          name: "search-and-summarize",
+          input: { kind: "text", text: "search for x" },
+          expected: { kind: "text", pattern: /42/ },
+          graders: [exactMatch(), toolCall({ calls: [{ toolName: "search" }] })],
+        },
+      ],
+      agentFactory: () => ({
+        stream: async function* (): AsyncIterable<EngineEvent> {
+          for (const ev of events) yield ev;
+        },
+      }),
+      idGen: () => "run-golden",
+    });
+    expect(run.id).toBe("run-golden");
+    expect(run.summary.passRate).toBe(1);
+    expect(run.summary.byTask[0]?.taskId).toBe("t1");
+  });
+
+  test("compareRuns + runSelfTest report regressions and capability checks", async () => {
+    const baseSummary = {
+      taskCount: 1,
+      trialCount: 1,
+      passRate: 1,
+      meanScore: 1,
+      errorCount: 0,
+      byTask: [],
+    } as const;
+    const baseline = {
+      id: "b",
+      name: "x",
+      timestamp: "2026-01-01T00:00:00Z",
+      config: { name: "x", timeoutMs: 60_000, passThreshold: 0.5, taskCount: 1 },
+      trials: [],
+      summary: baseSummary,
+    };
+    const current = { ...baseline, id: "c", summary: { ...baseSummary, passRate: 0.5 } };
+    const result = compareRuns(baseline, current);
+    expect(result.kind).toBe("fail");
+
+    const checks = await runSelfTest([
+      { name: "always-ok", run: () => ({ pass: true }) },
+      { name: "boom", run: () => ({ pass: false, message: "intentional" }) },
+    ]);
+    expect(checks.pass).toBe(false);
+    expect(checks.checks).toHaveLength(2);
+  });
+});
