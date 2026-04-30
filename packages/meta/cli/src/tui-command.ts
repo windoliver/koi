@@ -1514,6 +1514,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       );
       process.exit(1);
     }
+    // Issue #2088 — missing sidecar for an ACE-wiring host is a bypass
+    // vector: an attacker (or accidental cleanup) can delete the
+    // sidecar to skip the ACE/audit guards. Operators with legitimate
+    // legacy sessions (created before sidecars existed) can pass
+    // --manifest to re-specify the manifest explicitly.
+    if (resumeMeta.kind === "missing" && flags.manifest === undefined) {
+      process.stderr.write(
+        "koi tui: session provenance sidecar is absent — refusing to resume " +
+          "because the original manifest cannot be verified. Pass --manifest <path> " +
+          "to re-specify (legacy session), or start a fresh session without --resume.\n",
+      );
+      process.exit(1);
+    }
     if (resumeMeta.kind === "ok") {
       const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
         allowOAuthSchemes: true,
@@ -5010,6 +5023,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             lastResetFailed = false;
             tuiSessionId = newSid;
             viewedSessionId = newSid;
+            // Issue #2088 — persist provenance for the rotated session
+            // so a future --resume / picker load can enforce the same
+            // ACE/audit host-safety checks against this transcript that
+            // they enforce against startup-created sessions. Without
+            // this write, post-/new sessions fall into the missing-
+            // sidecar bypass path on resume.
+            if (resolvedManifestPath !== undefined) {
+              const writeResult = await writeSessionMeta(SESSIONS_DIR, newSid as string, {
+                manifestPath: resolvedManifestPath,
+              });
+              if (!writeResult.ok && resolvedAceConfig !== undefined) {
+                lastResetFailed = true;
+                store.dispatch({
+                  kind: "add_error",
+                  code: "NEW_SESSION_FAILED",
+                  message:
+                    `New session failed: ace-enabled session requires a recoverable provenance sidecar but the write failed: ${writeResult.error}. Restart koi tui to recover.`,
+                });
+                return;
+              }
+            }
             costBridge.setSession(newSid as string, currentModelBox.current, provider);
             governanceBridge?.setSession(newSid as string);
             securityBridge.setSession(newSid as string);
@@ -5474,6 +5508,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 kind: "add_error",
                 code: "SESSION_RESUME_ERROR",
                 message: `Could not load session: provenance sidecar is corrupt (${pickerMeta.error}).`,
+              });
+            }
+            return;
+          }
+          if (pickerMeta.kind === "missing") {
+            if (myPickerGeneration === pickerGeneration) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SESSION_RESUME_ERROR",
+                message:
+                  "Could not load session: provenance sidecar is absent. " +
+                  "Legacy sessions without sidecars must be loaded via " +
+                  "`koi tui --resume <id> --manifest <path>` so the original manifest is re-specified.",
               });
             }
             return;
