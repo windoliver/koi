@@ -483,6 +483,15 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       );
     }
 
+    if (manifestResult.value.ace?.enabled === true) {
+      return bail(
+        "manifest.ace.enabled: true is not supported on this host. " +
+          "ACE (Adaptive Continuous Enhancement) is a TUI-only feature in this build " +
+          "(see issue 2088). Remove the ace: block (or set enabled: false) to run under " +
+          "koi start, or use koi tui.",
+      );
+    }
+
     // #1777 two-gate trust boundary for nexus backends:
     //   Gate 1 — manifest must declare scope (root + mode in options)
     //   Gate 2 — operator must pass --allow-remote-fs to explicitly

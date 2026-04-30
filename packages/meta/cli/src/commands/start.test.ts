@@ -417,6 +417,47 @@ describe("run() — manifest loading", () => {
     const result = await run(makeFlags({ manifest: "bad.yaml" }));
     expect(result).toBe(ExitCode.FAILURE);
   });
+
+  // Issue #2088: koi start rejects manifest.ace.enabled: true (TUI-only feature).
+  test("rejects manifest.ace.enabled: true with FAILURE exit", async () => {
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: {
+        modelName: "manifest/model",
+        instructions: undefined,
+        ace: {
+          enabled: true,
+          maxInjectedTokens: undefined,
+          minScore: undefined,
+          lambda: undefined,
+        },
+      },
+    }));
+    const { run } = await import("./start.js");
+    const result = await run(makeFlags({ manifest: "koi.yaml" }));
+    expect(result).toBe(ExitCode.FAILURE);
+  });
+
+  test("accepts manifest.ace.enabled: false as a no-op", async () => {
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: {
+        modelName: "manifest/model",
+        instructions: undefined,
+        ace: {
+          enabled: false,
+          maxInjectedTokens: undefined,
+          minScore: undefined,
+          lambda: undefined,
+        },
+      },
+    }));
+    const { run } = await import("./start.js");
+    const result = await run(
+      makeFlags({ manifest: "koi.yaml", mode: { kind: "prompt", text: "hi" } }),
+    );
+    expect(result).not.toBe(ExitCode.FAILURE);
+  });
 });
 
 describe("run() — session resume", () => {
