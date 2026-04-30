@@ -34,6 +34,13 @@ Issue #2088 says "koi.toml". The repo's manifest is `koi.yaml` — confirmed in 
 
 **Recommendation to maintainer (in PR body):** retarget #2088 to track the activation PR after sqlite/partitioning land; treat this PR as `pre-#2088` plumbing. Alternatively close this PR and reopen with the prerequisites in scope.
 
+**Required PR mechanics to avoid false closure of #2088:**
+
+- PR title MUST start with `pre-#2088:` (not `fix #2088:` / `closes #2088`).
+- PR body MUST contain the line: `Refs #2088 (does not close)` — this prevents GitHub from auto-closing the issue on merge.
+- PR body MUST link to this spec and reproduce the AC gap table verbatim, so reviewers see the deferred ACs at a glance.
+- A follow-up issue tracking the activation PR + prerequisites (see Prerequisites section below) MUST be opened *before* this PR merges, and linked in the PR body.
+
 ## Scope (plumbing only)
 
 | File | LOC | Change |
@@ -43,12 +50,12 @@ Issue #2088 says "koi.toml". The repo's manifest is `koi.yaml` — confirmed in 
 | `packages/meta/cli/src/commands/start.ts` | ~10 | Reject `manifest.ace.enabled === true` (matches `backgroundSubprocesses` rejection at `start.ts:467`). `ace:` is a TUI-targeted block; rejecting in `koi start` prevents shared manifests from drifting silently across hosts. |
 | `packages/meta/cli/src/commands/start.test.ts` | ~30 | `koi start` exits non-zero with clear message when manifest sets `ace.enabled: true`; ignores `enabled: false` |
 | `packages/meta/cli/src/runtime-factory.ts` | ~30 | Add `manifestAce?: ManifestAceConfig` to `KoiRuntimeConfig`. **Does NOT build an `AceConfig`.** Always passes `ace: undefined` to `createRuntime`. A code comment + `TODO(#2088-followup)` marker documents that activation lands in a follow-up PR once the prerequisite work (sqlite store + session partitioning + `clear()` API) is available. |
-| `packages/meta/cli/src/runtime-factory.test.ts` | ~40 | `createKoiRuntime` accepts `manifestAce` without throwing; middleware chain snapshot has NO `ace` middleware regardless of `manifestAce` value (proves the deferred-activation contract) |
+| `packages/meta/cli/src/runtime-factory.test.ts` | ~80 | (1) `createKoiRuntime` accepts `manifestAce` without throwing. (2) Middleware chain snapshot has NO `ace` middleware regardless of `manifestAce` value (proves the deferred-activation contract). (3) **Stderr-warning matrix** (blocking — guards against silent regression to no-op): `manifestAce.enabled === true` → emits the documented stderr line; `manifestAce.enabled === false` → no stderr; `manifestAce === undefined` → no stderr. Captured via stderr spy. |
 | `packages/meta/cli/src/tui-command.ts` | ~10 | Forward `manifest.ace` into `createKoiRuntime({ manifestAce })` so the field reaches the runtime layer. The TUI does not need to know that activation is deferred — the runtime factory swallows the field. |
 | `packages/meta/cli/src/tui-command.test.ts` | ~20 | Manifest `[ace]` block reaches `createKoiRuntime` as `manifestAce` payload (verified by spy / mock) |
 | `docs/L2/middleware-ace.md` | ~50 | New "Manifest schema (forward-compatible, not yet active)" section explaining the deferred-activation posture and listing the prerequisite work |
 
-Total: ~330 LOC.
+Total: ~370 LOC.
 
 ## Surface
 
