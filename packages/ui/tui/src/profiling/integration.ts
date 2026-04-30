@@ -67,17 +67,6 @@ export class ProfilingConflictError extends Error {
 }
 
 /**
- * Conflict detection runs even when the current env says profiling is off.
- * That covers the case where a long-lived process turns profiling off mid-
- * way: a still-running profiled TUI must not be silently mixed with a
- * newly-starting unprofiled TUI's activity. The non-profiled run is
- * rejected so the active run stays clean.
- *
- * For the common case (env off, no run active), this is a fast path that
- * never throws.
- */
-
-/**
  * Try to start profiling for the calling TUI run.
  *
  * Returns `true` when this call took ownership of the global profiler
@@ -96,18 +85,24 @@ export class ProfilingConflictError extends Error {
  * doing so would tear down the active run's measurement.
  */
 export function initProfiling(options?: InitProfilingOptions): boolean {
+  const wantsProfile = isProfilingRequestedByEnv();
+
+  if (!wantsProfile) {
+    // This caller did not ask for profiling. Two cases:
+    // - No active profiled run: defensive cleanup (state.enabled may have
+    //   leaked from a prior buggy path). Probes are no-ops afterwards.
+    // - An active profiled run exists: do NOT touch state — that would
+    //   wipe the active run's data. Return false and let this caller
+    //   start without owning profiling. The active run's probes are
+    //   process-global so its report may include this caller's activity
+    //   (documented limitation), but blocking unrelated startups is worse.
+    if (!runActive) resetProfiler({ enabled: false });
+    return false;
+  }
+
+  // Caller wants profiling. Conflict only when another profiled run owns it.
   if (runActive) {
     throw new ProfilingConflictError();
-  }
-  // Gate on the *current* env, not the profiler's runtime state. Otherwise
-  // profiling latches on after the first profiled run because state.enabled
-  // is set true by run 1's resetProfiler() and never cleared.
-  if (!isProfilingRequestedByEnv()) {
-    // Defensive: if state.enabled was somehow left true (e.g. a test
-    // forgot to clean up), wipe it so probes are no-ops in this
-    // non-profiled run.
-    resetProfiler({ enabled: false });
-    return false;
   }
 
   // Fresh state for this run — must come before sampler start so the

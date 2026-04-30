@@ -44,6 +44,26 @@ partial interval is included.
 | `batcher.flush.onFlushMs` | `batcher/event-batcher.ts` | How long does the store dispatch take per flush? |
 | `cpu.userUs` / `cpu.systemUs` / `cpu.utilizationPct` (timestamped samples) | `profiling/cpu-sampler.ts` | End-to-end CPU during scenarios — picks up costs we can't see from inside `@koi/ui-tui` (e.g. `<scrollbox>` redraws, `<markdown>` parses). **This is the only signal that observes scroll-induced render cost.** |
 
+### What CPU samples actually measure
+
+`process.cpuUsage()` is **whole-process**: it includes any model streaming,
+persistence I/O, MCP traffic, and other non-UI work running in the same
+process as the TUI. Treat the CPU series as a **coarse process-level
+signal**, not a renderer-isolated metric:
+
+- A clean **idle** CPU baseline (no streaming, no scrolling) is the
+  reliable control. Compare scrolling/streaming windows against this
+  same-process baseline, not against absolute thresholds in isolation.
+- A **delta** from baseline is more trustworthy than a windowed p95 by
+  itself. e.g. "scroll p95 utilizationPct is +25 percentage points over
+  idle" is meaningful evidence; "scroll p95 is 25%" alone is not.
+- The verdict thresholds below are **suggestive**, not authoritative.
+  They are only useful when paired with the baseline diff and a second
+  signal (mount/cleanup counts, batcher histograms). A single CPU number
+  should never drive a Wave 5 optimization decision on its own.
+- For sharper UI-isolated measurements, instrument the OpenTUI render
+  loop directly — out of scope for this PR.
+
 ### Histograms vs timestamped samples
 
 The report has two storage shapes:
@@ -91,10 +111,13 @@ content (e.g. a recorded session loaded with `koi resume`).
 - p95 of `samples["cpu.utilizationPct"]` **filtered to the scroll window** — if low, OpenTUI is already efficient; if high, the scrollbox is redrawing all rows. Filter samples to only those whose `t` falls between scroll-start and scroll-end (mark these timestamps before/after sending PageUp/PageDown).
 - Since neither Solid lifecycle counter observes virtualization, the windowed CPU figure is the **only** signal for this verdict.
 
-**Verdict thresholds** (windowed p95):
-- p95 CPU < 15% during pure scroll → **don't virtualize** (mutable store is enough).
-- p95 CPU > 40% → consider virtualization in `message-list.tsx`.
-- 15–40% → inconclusive; instrument OpenTUI scrollbox before deciding.
+**Verdict thresholds** (windowed p95, paired with same-process idle baseline):
+- Scroll p95 within ~5pp of idle baseline → **don't virtualize** (the cost is not in the renderer).
+- Scroll p95 > 25pp above baseline → likely renderer-bound; consider virtualization in `message-list.tsx`.
+- 5–25pp delta → inconclusive; instrument OpenTUI scrollbox before deciding.
+
+These deltas are guidance only — the CPU series is process-wide so any
+concurrent streaming / persistence / MCP work shifts the baseline.
 
 ### S2 — Streaming burst (M3 + CPU)
 
@@ -129,9 +152,12 @@ content (e.g. a recorded session loaded with `koi resume`).
 - `samples["cpu.utilizationPct"]` filtered to the scroll window
   (compare to a separate baseline-idle window — sit idle for 5+ seconds before scrolling starts and use that as the control window)
 
-**Verdict thresholds** (windowed):
-- p95 CPU during code-block scroll close to baseline idle → **no LRU needed**.
-- p95 CPU >> baseline (3×+) → likely re-parsing on scroll; **consider LRU cache**.
+**Verdict thresholds** (windowed, vs same-process idle baseline):
+- p95 CPU during code-block scroll within ~5pp of baseline idle → **no LRU needed**.
+- p95 CPU 3×+ baseline → likely re-parsing on scroll; **consider LRU cache**.
+
+Same caveat: the metric is whole-process, so confirm no concurrent
+streaming / persistence is running before drawing a conclusion.
 
 ## Reading `profile.json`
 

@@ -226,6 +226,33 @@ describe("initProfiling", () => {
     expect(exitCalls.length).toBe(1);
   });
 
+  test("permits an unprofiled second run alongside an active profiled run", () => {
+    // Regression: initProfiling used to throw on any concurrent run, even
+    // unprofiled ones, blocking unrelated TUI startups. The conflict gate
+    // must check if the new caller is asking for profiling first.
+    process.env.KOI_TUI_PROFILE = "1";
+    process.env.KOI_TUI_PROFILE_OUT = join(workDir, "report.json");
+    resetProfiler();
+
+    // Profiled run A
+    const ownedA = initProfiling({
+      processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    expect(ownedA).toBe(true);
+
+    // Unprofiled run B — env off for THIS caller. Must not throw.
+    delete process.env.KOI_TUI_PROFILE;
+    let ownedB = false;
+    expect(() => {
+      ownedB = initProfiling({
+        processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+        cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+      });
+    }).not.toThrow();
+    expect(ownedB).toBe(false);
+  });
+
   test("rejects concurrent profiled runs by throwing ProfilingConflictError", () => {
     process.env.KOI_TUI_PROFILE = "1";
     process.env.KOI_TUI_PROFILE_OUT = join(workDir, "report.json");
