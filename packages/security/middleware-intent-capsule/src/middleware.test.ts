@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { sessionId } from "@koi/core";
 import type { CapsuleVerifier, CapsuleVerifyResult, IntentCapsule } from "@koi/core/intent-capsule";
 import type {
+  ModelChunk,
   ModelRequest,
   ModelResponse,
   SessionContext,
@@ -156,5 +157,173 @@ describe("CAPSULE_VIOLATION via injectable verifier", () => {
         capsuleId: expect.stringContaining("agent-test-1"),
       }),
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session lifecycle
+// ---------------------------------------------------------------------------
+
+describe("session lifecycle — cleanup", () => {
+  it("removes capsule on onSessionEnd, subsequent call throws capsule_not_found", async () => {
+    const mw = createIntentCapsuleMiddleware({ systemPrompt: "Cleanup test." });
+    const ctx = makeSessionCtx();
+
+    await mw.onSessionStart?.(ctx);
+    await mw.onSessionEnd?.(ctx);
+
+    const turn = makeTurnCtx(ctx);
+    await expect(mw.wrapModelCall?.(turn, makeModelRequest(), nextFn)).rejects.toMatchObject({
+      context: expect.objectContaining({ detail: "capsule_not_found" }),
+    });
+  });
+});
+
+describe("session lifecycle — TTL eviction", () => {
+  it("evicts stale sessions when a new onSessionStart fires", async () => {
+    const mw = createIntentCapsuleMiddleware({
+      systemPrompt: "TTL test.",
+      maxTtlMs: 1_000,
+    });
+
+    const staleCtx = makeSessionCtx("session-stale");
+    await mw.onSessionStart?.(staleCtx);
+
+    const origNow = Date.now;
+    Date.now = () => origNow() + 2_000;
+
+    try {
+      const freshCtx = makeSessionCtx("session-fresh");
+      await mw.onSessionStart?.(freshCtx);
+
+      const staleTurn = makeTurnCtx(staleCtx);
+      await expect(mw.wrapModelCall?.(staleTurn, makeModelRequest(), nextFn)).rejects.toMatchObject(
+        {
+          context: expect.objectContaining({ detail: "capsule_not_found" }),
+        },
+      );
+    } finally {
+      Date.now = origNow;
+    }
+  });
+});
+
+describe("session lifecycle — concurrent sessions", () => {
+  it("isolates capsules: ending session-A does not affect session-B", async () => {
+    const mw = createIntentCapsuleMiddleware({ systemPrompt: "Concurrent test." });
+
+    const ctxA = makeSessionCtx("session-A");
+    const ctxB = makeSessionCtx("session-B");
+
+    await Promise.all([mw.onSessionStart?.(ctxA), mw.onSessionStart?.(ctxB)]);
+    await mw.onSessionEnd?.(ctxA);
+
+    const turnA = makeTurnCtx(ctxA);
+    await expect(mw.wrapModelCall?.(turnA, makeModelRequest(), nextFn)).rejects.toMatchObject({
+      context: expect.objectContaining({ detail: "capsule_not_found" }),
+    });
+
+    const turnB = makeTurnCtx(ctxB);
+    await expect(mw.wrapModelCall?.(turnB, makeModelRequest(), nextFn)).resolves.toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Streaming path
+// ---------------------------------------------------------------------------
+
+describe("wrapModelStream", () => {
+  it("yields chunks on valid capsule", async () => {
+    const mw = createIntentCapsuleMiddleware({ systemPrompt: "Stream agent." });
+    const ctx = makeSessionCtx();
+    await mw.onSessionStart?.(ctx);
+
+    const streamNext = mock(async function* (_req: ModelRequest): AsyncIterable<ModelChunk> {
+      yield { kind: "text_delta", delta: "Hello " };
+      yield { kind: "text_delta", delta: "world" };
+      yield { kind: "done", response: { content: "Hello world", model: "test" } };
+    });
+
+    const chunks: ModelChunk[] = [];
+    const turn = makeTurnCtx(ctx);
+    const stream = mw.wrapModelStream?.(turn, makeModelRequest(), streamNext);
+    if (stream) {
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+    }
+
+    expect(chunks).toHaveLength(3);
+    expect(chunks[0]).toMatchObject({ kind: "text_delta", delta: "Hello " });
+  });
+
+  it("throws PERMISSION on stream when verifier rejects", async () => {
+    const mockVerifier: CapsuleVerifier = {
+      verify(): CapsuleVerifyResult {
+        return { ok: false, reason: "mandate_hash_mismatch" };
+      },
+    };
+    const mw = createIntentCapsuleMiddleware({ systemPrompt: "Agent.", verifier: mockVerifier });
+    const ctx = makeSessionCtx();
+    await mw.onSessionStart?.(ctx);
+
+    const streamNext = mock(async function* (): AsyncIterable<ModelChunk> {
+      yield { kind: "text_delta", delta: "should not reach" };
+    });
+
+    const turn = makeTurnCtx(ctx);
+    await expect(async () => {
+      const stream = mw.wrapModelStream?.(turn, makeModelRequest(), streamNext);
+      if (stream) {
+        for await (const _chunk of stream) {
+          // consume
+        }
+      }
+    }).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// injectMandate
+// ---------------------------------------------------------------------------
+
+describe("injectMandate", () => {
+  beforeEach(() => nextFn.mockClear());
+
+  it("prepends signed mandate message when injectMandate=true", async () => {
+    let captured: ModelRequest | undefined;
+    const capturingNext = mock(async (req: ModelRequest): Promise<ModelResponse> => {
+      captured = req;
+      return mockResponse;
+    });
+
+    const mw = createIntentCapsuleMiddleware({
+      systemPrompt: "My mission.",
+      injectMandate: true,
+    });
+    const ctx = makeSessionCtx();
+    await mw.onSessionStart?.(ctx);
+    await mw.wrapModelCall?.(makeTurnCtx(ctx), makeModelRequest(), capturingNext);
+
+    expect(captured?.messages[0]?.senderId).toBe("system:intent-capsule");
+    expect(captured?.messages[0]?.content[0]).toMatchObject({
+      kind: "text",
+      text: expect.stringContaining("[Signed Mandate — v1]"),
+    });
+  });
+
+  it("does not inject when injectMandate=false (default)", async () => {
+    let captured: ModelRequest | undefined;
+    const capturingNext = mock(async (req: ModelRequest): Promise<ModelResponse> => {
+      captured = req;
+      return mockResponse;
+    });
+
+    const mw = createIntentCapsuleMiddleware({ systemPrompt: "Agent." });
+    const ctx = makeSessionCtx();
+    await mw.onSessionStart?.(ctx);
+    await mw.wrapModelCall?.(makeTurnCtx(ctx), makeModelRequest(), capturingNext);
+
+    expect(captured?.messages[0]?.senderId).not.toBe("system:intent-capsule");
   });
 });
