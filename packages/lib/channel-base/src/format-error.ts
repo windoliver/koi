@@ -300,6 +300,12 @@ function extractAuthHandoff(error: KoiError): {
     const URI_TOKEN_ALLOWED_SCHEMES: ReadonlySet<string> = new Set(["https", "api"]);
     const PLAIN_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]*$/;
     const SAFE_SCOPE_NAME = /^[A-Za-z][A-Za-z0-9_]*(?::[A-Za-z][A-Za-z0-9_]*)+$/;
+    // Microsoft Graph and similar issuers use dotted PascalCase scope
+    // names (`User.Read`, `Mail.Send`, `Files.Read.All`,
+    // `Calendars.ReadWrite`). Accept tokens that match an
+    // `Identifier(.Identifier)+` shape AND whose leading namespace is
+    // on the allowlist.
+    const DOTTED_SCOPE_NAME = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
     // Known OAuth scope-name prefixes. Lowercase — matched
     // case-insensitively against the leading namespace before the
     // first colon. Maintained as a small explicit set instead of a
@@ -365,7 +371,16 @@ function extractAuthHandoff(error: KoiError): {
     const isAllowedScopeToken = (t: string): boolean => {
       if (!allowedToken.test(t)) return false;
       const colonIdx = t.indexOf(":");
-      if (colonIdx === -1) return PLAIN_IDENTIFIER.test(t);
+      if (colonIdx === -1) {
+        if (PLAIN_IDENTIFIER.test(t)) return true;
+        // Dotted PascalCase scopes (Microsoft Graph: `User.Read`,
+        // `Files.Read.All`). Leading namespace must be allowlisted.
+        if (DOTTED_SCOPE_NAME.test(t)) {
+          const prefix = t.slice(0, t.indexOf(".")).toLowerCase();
+          return KNOWN_SCOPE_NAMESPACES.has(prefix);
+        }
+        return false;
+      }
       const scheme = t.slice(0, colonIdx).toLowerCase();
       // URI shape: scheme://host/...
       if (t.startsWith(`${scheme}://`)) return URI_TOKEN_ALLOWED_SCHEMES.has(scheme);

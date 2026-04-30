@@ -391,6 +391,24 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(out.auth.scope).toBeUndefined();
     });
 
+    it("preserves dotted PascalCase OAuth scope names (Microsoft Graph)", () => {
+      // Regression: loop-6 round 5 finding 2. Microsoft Graph uses
+      // dotted PascalCase scope names (`User.Read`, `Mail.Send`,
+      // `Files.Read.All`, `Calendars.ReadWrite`). The previous
+      // PLAIN_IDENTIFIER regex rejected dots and the all-or-nothing
+      // gate dropped the entire `auth.scope` field — a user-visible
+      // consent regression.
+      const err = baseError("AUTH_REQUIRED", "x", {
+        context: {
+          authorizationUrl: "https://login.microsoftonline.com/oauth",
+          scope: "User.Read Mail.Send Files.Read.All Calendars.ReadWrite",
+        },
+      });
+      const out = classifyErrorForChannel(err);
+      if (out.kind !== "auth-required") throw new Error("expected auth-required");
+      expect(out.auth.scope).toBe("User.Read Mail.Send Files.Read.All Calendars.ReadWrite");
+    });
+
     it("preserves common colon-delimited OAuth scope names (chat:write, read:user)", () => {
       // Regression: loop-5 round 10 finding 2. Real OAuth providers use
       // identifier:identifier scope names — Slack `chat:write`,

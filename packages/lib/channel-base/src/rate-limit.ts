@@ -555,11 +555,14 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
             //     for retry classification and caller-facing rejection;
             //   - retries gate on real settlement, never overlapping
             //     with a still-running attempt.
-            // In strict-FIFO mode this also doubles as the queue's
-            // single-flight gate. With an abort-ignoring transport this
-            // wait is unbounded — that's the documented price of strict
-            // mode; users who need liveness must opt into
-            // `advanceOnTimeout: true`.
+            // The late-outcome wait is ALWAYS bounded at sendTimeoutMs —
+            // an abort-ignoring transport could otherwise wedge the
+            // entire queue indefinitely (one bad provider call → channel
+            // outage). When the bounded wait elapses without a real
+            // outcome (`abort-ignored`), surface a terminal
+            // `delivery-unknown` error and stop retrying: the original
+            // send may still complete server-side, so blindly reissuing
+            // would risk duplicate non-idempotent operations.
             // let justified: mutable so we can re-classify on late outcome
             let classifyError: unknown = error;
             if (
@@ -567,20 +570,10 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
               error.code === "TIMEOUT" &&
               (error.context as { phase?: string } | undefined)?.phase === "deadline-exceeded"
             ) {
-              if (advanceOnTimeout) {
-                // Liveness: bound the late-outcome wait so an
-                // abort-ignoring transport cannot delay retries forever.
-                // After the grace, classify on the synthetic TIMEOUT.
-                await Promise.race([
-                  run.settled,
-                  new Promise<void>((res) => setTimeout(res, sendTimeoutMs)),
-                ]);
-              } else {
-                // Strict mode: wait for real settlement so retries within
-                // the same entry never overlap. Final-attempt path
-                // bounds this wait separately to keep callers responsive.
-                await run.settled;
-              }
+              await Promise.race([
+                run.settled,
+                new Promise<void>((res) => setTimeout(res, sendTimeoutMs)),
+              ]);
               const late = run.lateOutcome();
               if (late.kind === "success") {
                 lastError = undefined;
@@ -589,9 +582,23 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
               if (late.kind === "failure") {
                 classifyError = late.error;
                 lastError = late.error;
+              } else if (!advanceOnTimeout) {
+                // Strict mode + abort-ignored: cannot safely reissue
+                // without violating single-flight (original send may
+                // still complete). Surface delivery-unknown and stop.
+                const unknown: KoiError = {
+                  code: "TIMEOUT",
+                  message:
+                    "channel send delivery unknown — transport did not honor abort within the grace window; the original send may still complete; do not retry blindly",
+                  retryable: false,
+                  context: { phase: "delivery-unknown" },
+                };
+                lastError = unknown;
+                break;
               }
-              // late.kind === "abort-ignored": no real outcome yet.
-              // Keep the synthetic TIMEOUT for classification.
+              // Liveness mode + abort-ignored: keep the synthetic TIMEOUT
+              // for classification; the caller has explicitly opted into
+              // best-effort retries via `advanceOnTimeout: true`.
             }
 
             // A defined retry-after hint OR a positive isRetryable verdict
@@ -620,19 +627,16 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
             }
             prevDelayMs = delay;
             // Wait for the previous attempt's underlying send to settle
-            // before reissuing. In strict mode this is unbounded (price
-            // of single-flight); in liveness mode the late-outcome
-            // resolution above already bounded the wait at sendTimeoutMs,
-            // so settled is either resolved (real outcome) or unbounded
-            // again — cap it here for liveness too.
-            if (advanceOnTimeout) {
-              await Promise.race([
-                run.settled,
-                new Promise<void>((res) => setTimeout(res, sendTimeoutMs)),
-              ]);
-            } else {
-              await run.settled;
-            }
+            // before reissuing. ALWAYS bounded at sendTimeoutMs so an
+            // abort-ignoring transport cannot wedge the queue. If the
+            // wait elapses with no real outcome in strict mode, fall
+            // back to delivery-unknown rather than reissue — see the
+            // late-outcome handling above for the same logic on the
+            // first synthetic-TIMEOUT classification.
+            await Promise.race([
+              run.settled,
+              new Promise<void>((res) => setTimeout(res, sendTimeoutMs)),
+            ]);
             // Re-check the real outcome immediately before retrying. A late
             // success that landed during the second wait must NOT be
             // followed by a duplicate send; a late terminal failure
@@ -651,6 +655,19 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
                 const lateRetryable =
                   lateRetryAfter !== undefined || safeIsRetryable(lateBeforeRetry.error);
                 if (!lateRetryable) break;
+              } else if (!advanceOnTimeout) {
+                // Strict mode + still abort-ignored after the bounded
+                // wait: cannot safely reissue without violating
+                // single-flight. Surface delivery-unknown and stop.
+                const unknown: KoiError = {
+                  code: "TIMEOUT",
+                  message:
+                    "channel send delivery unknown — transport did not honor abort within the grace window; the original send may still complete; do not retry blindly",
+                  retryable: false,
+                  context: { phase: "delivery-unknown" },
+                };
+                lastError = unknown;
+                break;
               }
             }
             // Wrap sleep so a sleeper rejection (clock corruption, monkey-

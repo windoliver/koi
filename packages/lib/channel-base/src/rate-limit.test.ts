@@ -1035,8 +1035,16 @@ describe("createRateLimiter", () => {
 
     it("strict mode never overlaps retry attempts of the same fn", async () => {
       // Custom isRetryable opts TIMEOUT into retry. Each attempt rejects
-      // late (after the deadline) with a retryable code. Strict mode must
-      // serialize: attempt N+1 never starts while attempt N is in flight.
+      // late (after abort, within the bounded grace) with a retryable
+      // code. Strict mode must serialize: attempt N+1 never starts
+      // while attempt N is in flight.
+      //
+      // Loop-6 round 5 update: pre-retry wait is now bounded at
+      // sendTimeoutMs to defend against abort-ignoring transports
+      // (queue-wedge defense). Transports that honor abort but settle
+      // late within the grace still flow through the retry path
+      // unchanged — this test rejects at +10ms (well inside the 20ms
+      // grace) so the late outcome is observed as RATE_LIMIT.
       const limiter = createRateLimiter({
         retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 2, initialDelayMs: 0 },
         sendTimeoutMs: 20,
@@ -1058,17 +1066,14 @@ describe("createRateLimiter", () => {
                 retryable: true,
               };
               reject(e);
-            }, 50);
+            }, 10);
           };
           if (signal.aborted) onAbort();
           else signal.addEventListener("abort", onAbort, { once: true });
         });
-      // Final-attempt upgrade is bounded by sendTimeoutMs so an
-      // abort-ignoring transport cannot hang the caller. Late rejection
-      // here lands at +50ms (after the 20ms grace), so the caller sees
-      // the synthetic TIMEOUT and the late RATE_LIMIT flows to the late
-      // outcome callbacks (asserted in other tests).
-      expect(await captureRejection(limiter.enqueue(fn))).toMatchObject({ code: "TIMEOUT" });
+      // Final-attempt rejection is the late RATE_LIMIT (real outcome
+      // wins), surfaced to the caller as RATE_LIMIT not synthetic TIMEOUT.
+      expect(await captureRejection(limiter.enqueue(fn))).toMatchObject({ code: "RATE_LIMIT" });
       // Three attempts (initial + 2 retries), never overlapping.
       expect(attempts).toBe(3);
       expect(maxConcurrent).toBe(1);
@@ -1233,6 +1238,40 @@ describe("createRateLimiter", () => {
       expect(__rejErr9).toBeInstanceOf(Error);
       expect((__rejErr9 as Error).message).toContain("sync-boom");
       // Queue must keep draining: a subsequent normal send completes.
+      const completed: string[] = [];
+      await limiter.enqueue(async () => {
+        completed.push("ok");
+      });
+      expect(completed).toEqual(["ok"]);
+    });
+
+    it("strict-mode TIMEOUT-retry path bounds the late-outcome wait against abort-ignoring transports", async () => {
+      // Regression: loop-6 round 5 finding 1. When a caller opts TIMEOUT
+      // into retry (because they have provider-side idempotency), the
+      // strict-mode pre-retry wait used to be unbounded — an abort-ignoring
+      // transport would wedge the queue indefinitely before reaching the
+      // final-attempt safeguard. The non-final-attempt path must now bound
+      // the wait at sendTimeoutMs and surface delivery-unknown when the
+      // real outcome stays unknown.
+      const limiter = createRateLimiter({
+        retry: { ...errors.DEFAULT_RETRY_CONFIG, maxRetries: 3, initialDelayMs: 0 },
+        sendTimeoutMs: 20,
+        // Caller opts in: TIMEOUT counts as retryable.
+        isRetryable: (e: unknown): boolean =>
+          typeof e === "object" && e !== null && (e as { code?: string }).code === "TIMEOUT",
+      });
+      // Transport completely ignores abort and never settles.
+      const neverSettles: SendFn = () => new Promise<void>(() => {});
+      const start = Date.now();
+      const result = await captureRejection(limiter.enqueue(neverSettles));
+      // Must complete in roughly sendTimeoutMs + a small grace, not hang.
+      expect(Date.now() - start).toBeLessThan(200);
+      expect(result).toMatchObject({
+        code: "TIMEOUT",
+        retryable: false,
+        context: { phase: "delivery-unknown" },
+      });
+      // Subsequent sends must not be starved.
       const completed: string[] = [];
       await limiter.enqueue(async () => {
         completed.push("ok");
