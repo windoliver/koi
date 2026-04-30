@@ -307,17 +307,6 @@ async function handleFetch(
     return new Response("draining", { status: 503 });
   }
 
-  if (route.kind === "ws-upgrade") {
-    // WS frame forwarding into @koi/gateway is intentionally not yet
-    // implemented. Until that integration lands we refuse upgrades outright
-    // instead of accepting an inert socket that would consume connection
-    // budget while frames are silently dropped.
-    return new Response("websocket upgrade not implemented", {
-      status: 501,
-      headers: { "Content-Type": "text/plain" },
-    });
-  }
-
   if (route.kind === "webhook") {
     return runPipeline(req, { ...state.pipelineDeps, sourceAddr });
   }

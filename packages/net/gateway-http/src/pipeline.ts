@@ -103,15 +103,15 @@ async function runWebhook(
   const sourceLimitResp = checkSourceLimit(deps, route);
   if (sourceLimitResp !== null) return sourceLimitResp;
 
-  // Step 5: body read with size cap.
-  const rawBody = await readBoundedBody(req, deps.config.maxBodyBytes);
-  if (rawBody === null) {
+  // Step 5: body read with size cap (raw bytes; decode happens post-HMAC).
+  const rawBytes = await readBoundedBody(req, deps.config.maxBodyBytes);
+  if (rawBytes === null) {
     emit(deps, route, 413, "rejected:invalid-body");
     return new Response("payload too large", { status: 413 });
   }
 
   // Steps 6-9: HMAC verify, replay window, parse, channel.authenticate.
-  const auth = await verifyAndAuth(req, route, rawBody, channel, deps);
+  const auth = await verifyAndAuth(req, route, rawBytes, channel, deps);
   if (!auth.ok) return auth.response;
   const { reg, payload, outcome } = auth.value;
 
@@ -136,19 +136,19 @@ function checkSourceLimit(deps: PipelineDeps, route: WebhookRoute): Response | n
 async function verifyAndAuth(
   req: Request,
   route: WebhookRoute,
-  rawBody: string,
+  rawBytes: Uint8Array,
   channel: ChannelRegistration | undefined,
   deps: PipelineDeps,
 ): Promise<AuthResult> {
   const ts = req.headers.get(HEADER_TS) ?? "";
   const sig = req.headers.get(HEADER_SIG) ?? "";
 
-  // Step 6: HMAC verify (always; even with decoy for timing parity).
-  const sigOk = verifyHmac(channel?.secret ?? DUMMY_SECRET, ts, rawBody, sig);
+  // Step 6: HMAC verify on raw bytes (always; even with decoy for timing parity).
+  const sigOk = verifyHmac(channel?.secret ?? DUMMY_SECRET, ts, rawBytes, sig);
   if (!sigOk || channel === undefined) {
     // Dummy compute on unknown-channel path keeps timing close to the
     // registered-channel HMAC failure path even when verifyHmac short-circuits.
-    if (channel === undefined) computeSignature(DUMMY_SECRET, ts, rawBody);
+    if (channel === undefined) computeSignature(DUMMY_SECRET, ts, rawBytes);
     return rejectAuth(deps, route, "rejected:auth");
   }
   const reg = channel;
@@ -159,7 +159,9 @@ async function verifyAndAuth(
     return rejectAuth(deps, route, "rejected:replay");
   }
 
-  // Step 8: parse body (pre-auth, gateway-canonical).
+  // Step 8: parse body (post-HMAC). Decode UTF-8 only after signature verifies
+  // so corrupted bytes can't propagate past the trust boundary.
+  const rawBody = new TextDecoder("utf-8", { fatal: false }).decode(rawBytes);
   const parsed = parseBody(rawBody, req.headers.get("Content-Type"), reg.parseBody);
   if (!parsed.ok) {
     emit(deps, route, 400, "rejected:invalid-body");
@@ -172,7 +174,7 @@ async function verifyAndAuth(
     };
   }
 
-  // Step 9: authenticate (channel-specific; receives parsed payload).
+  // Step 9: authenticate (channel-specific; receives parsed payload + decoded body).
   const authResult = await reg.authenticate(req, rawBody, parsed.value, reg.secret);
   if (!authResult.ok) return rejectAuth(deps, route, "rejected:auth");
   return { ok: true, value: { reg, payload: parsed.value, outcome: authResult.value } };
@@ -347,16 +349,16 @@ function emit(
   }
 }
 
-async function readBoundedBody(req: Request, maxBytes: number): Promise<string | null> {
+async function readBoundedBody(req: Request, maxBytes: number): Promise<Uint8Array | null> {
   const cl = req.headers.get("Content-Length");
   if (cl !== null) {
     const n = Number(cl);
     if (Number.isFinite(n) && n > maxBytes) return null;
   }
-  // Enforce the cap on raw byte length (not decoded string length): multibyte
-  // UTF-8 characters can exceed `maxBytes` in bytes while their string length
-  // stays under the limit, defeating the DoS boundary.
+  // Carry raw bytes through verification: HMAC must cover the exact producer
+  // bytes, not a re-encoded UTF-8 string. Decoding happens AFTER signature
+  // verification so non-UTF-8 payloads do not collapse into U+FFFD before HMAC.
   const buf = await req.arrayBuffer();
   if (buf.byteLength > maxBytes) return null;
-  return new TextDecoder("utf-8", { fatal: false }).decode(buf);
+  return new Uint8Array(buf);
 }

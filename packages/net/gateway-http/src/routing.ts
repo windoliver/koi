@@ -1,6 +1,5 @@
 export type RouteMatch =
   | { readonly kind: "webhook"; readonly channel: string; readonly account: string | undefined }
-  | { readonly kind: "ws-upgrade" }
   | { readonly kind: "preflight" }
   | { readonly kind: "health" }
   | { readonly kind: "not-found" };
@@ -10,7 +9,9 @@ export function matchRoute(method: string, pathname: string): RouteMatch {
     return { kind: "preflight" };
   }
   if (method === "GET" && pathname === "/healthz") return { kind: "health" };
-  if (method === "GET" && pathname === "/ws") return { kind: "ws-upgrade" };
+  // /ws is intentionally not advertised: WS frame forwarding into @koi/gateway
+  // is not yet implemented (see threat model section 3.3). Until that integration
+  // lands, /ws falls through to 404 rather than admitting an inert socket.
   if (method === "POST" && pathname.startsWith("/webhooks/")) {
     const rest = pathname.slice("/webhooks/".length);
     const parts = rest.split("/").filter((s) => s.length > 0);

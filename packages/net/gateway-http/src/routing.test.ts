@@ -22,8 +22,8 @@ describe("matchRoute", () => {
     expect(matchRoute("GET", "/healthz")).toEqual({ kind: "health" });
   });
 
-  test("GET /ws", () => {
-    expect(matchRoute("GET", "/ws")).toEqual({ kind: "ws-upgrade" });
+  test("GET /ws is not advertised (deferred)", () => {
+    expect(matchRoute("GET", "/ws")).toEqual({ kind: "not-found" });
   });
 
   test("OPTIONS /webhooks/x -- CORS preflight", () => {
