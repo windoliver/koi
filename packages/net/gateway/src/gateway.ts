@@ -1321,6 +1321,15 @@ export function createGateway(
 
     pauseIngress(): void {
       paused = true;
+      // Initiate a graceful close on every connected transport so the
+      // shutdown controller's waitFor(activeConnections) can actually drain.
+      // Without this, paused only stops NEW ingress; live sockets remain in
+      // connMap until the grace budget expires and forceClose() fires.
+      // Using GOING_AWAY (1001) signals an orderly server-initiated shutdown
+      // so well-behaved clients reconnect to a healthy replacement.
+      for (const conn of connMap.values()) {
+        conn.close(CLOSE_CODES.SERVER_SHUTTING_DOWN, "ingress paused");
+      }
     },
 
     forceClose(): void {

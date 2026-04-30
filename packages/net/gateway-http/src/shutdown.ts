@@ -53,10 +53,18 @@ export function createShutdownController(deps: ShutdownDeps): ShutdownController
     }
   };
 
-  const finalize = (forced: boolean): void => {
+  const finalize = async (forced: boolean): Promise<void> => {
     currentState = forced ? "force-closed" : "closed";
     if (forced) {
-      void deps.gateway.forceClose();
+      // Await async forceClose so a replacement instance cannot start
+      // accepting traffic before the previous one has finished tearing down
+      // external connections. Swallow rejection — teardown failures must not
+      // strand the singleton lock; the listener stop runs unconditionally.
+      try {
+        await Promise.resolve(deps.gateway.forceClose());
+      } catch {
+        // intentional: forceClose failure does not block stopListener.
+      }
     }
     deps.stopListener(true);
   };
@@ -74,19 +82,19 @@ export function createShutdownController(deps: ShutdownDeps): ShutdownController
       .catch(() => true as const);
     const pauseResult = await raceWithDeadline(pauseSettled, startedAt);
     if (pauseResult === undefined) {
-      finalize(true);
+      await finalize(true);
       return;
     }
 
     const httpDrained = await waitFor(deps.getInFlight, startedAt);
     if (!httpDrained) {
-      finalize(true);
+      await finalize(true);
       return;
     }
 
     currentState = "draining-ws";
     const wsDrained = await waitFor(deps.gateway.activeConnections, startedAt);
-    finalize(!wsDrained);
+    await finalize(!wsDrained);
   };
 
   const raceWithDeadline = async <T>(p: Promise<T>, startedAt: number): Promise<T | undefined> => {
