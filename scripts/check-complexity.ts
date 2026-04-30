@@ -8,17 +8,57 @@
  *
  * Scans packages/subsystem/pkg/src/*.ts, excluding test files.
  *
- * Usage: bun scripts/check-complexity.ts
+ * Usage: bun scripts/check-complexity.ts [--strict] [--max-violations N]
  */
 
-const ROOT = new URL("../", import.meta.url).pathname;
+const DEFAULT_ROOT = new URL("../", import.meta.url).pathname;
+const ROOT = ensureTrailingSlash(process.env.KOI_COMPLEXITY_ROOT ?? DEFAULT_ROOT);
 const FILE_SOFT_LIMIT = 400;
 const FILE_HARD_LIMIT = 800;
 const FUNCTION_LIMIT = 50;
 
+interface Options {
+  readonly strict: boolean;
+  readonly maxViolations: number | undefined;
+}
+
 interface Violation {
   readonly file: string;
   readonly reason: string;
+}
+
+function ensureTrailingSlash(path: string): string {
+  return path.endsWith("/") ? path : `${path}/`;
+}
+
+function parseOptions(argv: readonly string[]): Options {
+  let strict = false;
+  let maxViolations: number | undefined;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--") continue;
+    if (arg === "--strict") {
+      strict = true;
+      continue;
+    }
+    if (arg === "--max-violations") {
+      const raw = argv[i + 1];
+      if (raw === undefined) {
+        console.error("error: --max-violations requires a non-negative integer");
+        process.exit(2);
+      }
+      const parsed = Number(raw);
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        console.error("error: --max-violations requires a non-negative integer");
+        process.exit(2);
+      }
+      maxViolations = parsed;
+      i++;
+    }
+  }
+
+  return { strict, maxViolations };
 }
 
 /**
@@ -93,6 +133,7 @@ function checkFunctionLengths(filePath: string, content: string): readonly Viola
 }
 
 async function main(): Promise<void> {
+  const options = parseOptions(process.argv.slice(2));
   const srcGlob = new Bun.Glob("packages/*/*/src/**/*.ts");
   const violations: Violation[] = [];
   let checked = 0;
@@ -128,12 +169,11 @@ async function main(): Promise<void> {
     }
   }
 
-  // Warn mode: report violations but do not fail CI (ratchet pattern).
-  // Pass --strict to fail on violations once pre-existing issues are resolved.
-  const strict = process.argv.includes("--strict");
-
   if (violations.length > 0) {
-    const icon = strict ? "❌" : "⚠️";
+    const overBudget =
+      options.maxViolations !== undefined && violations.length > options.maxViolations;
+    const shouldFail = options.strict || overBudget;
+    const icon = shouldFail ? "❌" : "⚠️";
     console.error(`${icon} ${violations.length} complexity violation(s):\n`);
     for (const v of violations) {
       console.error(`  ✗ ${v.file}: ${v.reason}`);
@@ -141,7 +181,13 @@ async function main(): Promise<void> {
     console.error(
       `\n  → Files must be < ${FILE_SOFT_LIMIT} lines (${FILE_HARD_LIMIT} hard max), functions < ${FUNCTION_LIMIT} lines.`,
     );
-    if (strict) {
+    if (options.maxViolations !== undefined) {
+      const relation = overBudget ? "exceeds" : "within";
+      console.error(
+        `  → ${violations.length} ${relation} ratchet budget of ${options.maxViolations}.`,
+      );
+    }
+    if (shouldFail) {
       process.exit(1);
     }
     return;

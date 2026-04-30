@@ -16,6 +16,7 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  SessionContext,
   TurnContext,
 } from "@koi/core/middleware";
 import { KoiRuntimeError } from "@koi/errors";
@@ -612,6 +613,10 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
     ): AsyncIterable<ModelChunk> {
       stats.totalChecks++;
       return streamGenerator(ctx, request, next);
+    },
+
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      sessionRubrics.delete(ctx.sessionId);
     },
   };
 
