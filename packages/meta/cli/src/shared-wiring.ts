@@ -757,9 +757,11 @@ const SESSION_META_VERSION = 1 as const;
 
 /**
  * Write session provenance metadata to a sidecar file alongside the JSONL
- * transcript. Non-fatal if the sessions directory does not exist yet — the
- * transcript's first append creates it; a missing sidecar means "no provenance
- * recorded" and the resume audit check silently skips.
+ * transcript. Creates the sessions directory if missing so the sidecar always
+ * lands on disk — host-safety checks (audit, ACE) on resume rely on the
+ * sidecar being present whenever a manifest governed the original session.
+ * Errors are still swallowed to keep startup non-fatal in adversarial
+ * filesystem conditions, but the common cold-start case now persists.
  */
 export async function writeSessionMeta(
   sessionsDir: string,
@@ -768,9 +770,11 @@ export async function writeSessionMeta(
 ): Promise<void> {
   try {
     const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(sessionsDir, { recursive: true });
     await Bun.write(path, JSON.stringify({ version: SESSION_META_VERSION, ...meta }));
   } catch {
-    // Non-fatal: directory may not exist yet on the very first run.
+    // Non-fatal: filesystem may reject (read-only mount, permission denied).
   }
 }
 

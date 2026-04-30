@@ -1550,13 +1550,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }
         }
       }
-      // Issue #2088 — note: a resume-time ACE rejection was deliberately
-      // NOT added here. See the matching comment in commands/start.ts —
-      // this build does not actually wire ACE, so a resumed session with
-      // ace.enabled: true behaves identically to any other session. The
-      // activation PR is the natural place to add comprehensive resume-
-      // time rejection alongside hardened sidecar validation (the
-      // readSessionMeta() {}-on-malformed gap is broader than ACE).
+      // Issue #2088 — restore ACE activation from the stored manifest so a
+      // resumed session continues with the same prompting and learning
+      // behavior as when it was created. Mirrors the network/credential
+      // re-derivation above. Only applied when the operator did not pass
+      // --manifest (an explicit override wins) and the stored manifest
+      // parsed cleanly. The resolveAceActivation call uses the same
+      // double-opt-in check as the fresh-load path.
+      if (
+        resumeAuditResult.ok &&
+        flags.manifest === undefined &&
+        resolvedAceConfig === undefined
+      ) {
+        const aceResume = resolveAceActivation(resumeAuditResult.value.ace);
+        if (aceResume.kind === "activate") {
+          resolvedAceConfig = aceResume.config;
+          process.stderr.write(
+            `koi tui: ace: restored from resumed session manifest (${resumeMeta.manifestPath}).\n`,
+          );
+          process.stderr.write(aceResume.message);
+        }
+      }
     }
   }
 
