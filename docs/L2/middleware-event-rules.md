@@ -59,11 +59,17 @@ index.ts                    ← public re-exports
 ### Middleware Priority
 
 ```
-500 ─ (default)
-750 ─ event-rules          ← this package (observe phase)
+intercept tier (outermost)
+  50  ─ event-rules        ← this package (outermost tool-call wrapper)
+ 100  ─ middleware-permissions
+ 175  ─ middleware-call-limits
+resolve tier
+ 400  ─ hooks
+observe tier
+ 500+ ─ telemetry / audit
 ```
 
-The middleware runs at priority 750 in the `observe` phase — read-only telemetry/audit tier. It observes events after business logic middleware has run.
+The middleware runs at `intercept` phase, priority 50 — outermost wrapper for tool calls. It is positioned outside `permissions`, `call-limits`, and `hooks` so blocked/denied responses from those layers still flow back through this middleware and reach the rule engine's failure-classification path. An `observe`-phase placement would silently miss those upstream denials.
 
 ---
 
@@ -75,7 +81,7 @@ Rules use a local event vocabulary decoupled from `EngineEvent`:
 
 | Event | Middleware Hook | Available Match Fields |
 |-------|----------------|----------------------|
-| `tool_call` | `wrapToolCall` (after `next()`) | `toolId`, `ok`, flat `input` fields |
+| `tool_call` | `wrapToolCall` (after `next()`) | `toolId`, `ok`, `blocked`, `blockedByHook`, `reason`, `agentId`, `sessionId`, `turnIndex`, flat `input` fields |
 | `turn_complete` | `onAfterTurn` | `turnIndex`, `agentId`, `sessionId` |
 | `session_start` | `onSessionStart` | `agentId`, `sessionId`, `userId`, `channelId` |
 | `session_end` | `onSessionEnd` | `agentId`, `sessionId`, `userId`, `channelId` |
@@ -93,6 +99,15 @@ Flat object with value-driven dispatch:
 
 All predicates in a rule's `match` block use AND logic.
 
+**Distinguishing failures**: `tool_call` events expose `blocked`,
+`blockedByHook`, and `reason` so circuit-breaker rules can exclude
+policy denials from execution failures. To trip only on real failures
+(not permission/hook denials):
+
+```yaml
+match: { ok: false, blocked: false, blockedByHook: false }
+```
+
 ### Windowed Counters
 
 Rules can require a minimum event count within a time window:
@@ -103,7 +118,9 @@ condition:
   window: "1m"   # ...within 1 minute
 ```
 
-Counter state is session-scoped, in-memory, bounded to 1000 entries per rule, and pruned on read (no background timers). Binary search over sorted timestamps makes lookups efficient.
+Counter state is session-scoped, in-memory, bounded to 1000 entries per partition, and pruned on read (no background timers). Binary search over sorted timestamps makes lookups efficient.
+
+For `tool_call` rules, counters are **partitioned per tool**: a rule covering a family of tools (e.g. `match: { toolId: { regex: "^shell_" } }`) maintains a separate window per matched `toolId`, so failures on one tool cannot trip the threshold for a sibling tool. Other event types (`turn_complete`, `session_*`) use the rule name as the partition key.
 
 ### Built-in Actions
 
@@ -151,8 +168,8 @@ const mw = createEventRulesMiddleware({
 
 Returns `KoiMiddleware` with:
 - `name`: `"koi:event-rules"`
-- `priority`: `750`
-- `phase`: `"observe"`
+- `priority`: `50`
+- `phase`: `"intercept"`
 - `onSessionStart`, `onSessionEnd`, `onAfterTurn`, `wrapToolCall`
 - `describeCapabilities`: returns `{ label: "event-rules", description: "..." }`
 
@@ -219,6 +236,20 @@ interface ActionContext {
 ## Examples
 
 ### Manifest-Driven (koi.yaml)
+
+> **Manifest factory:** registered in the built-in registry as
+> `@koi/middleware-event-rules`. The factory validates `options`
+> through `validateEventRulesConfig` (Zod schema) at resolution time;
+> misconfigured rulesets surface as `ManifestResolutionError`.
+>
+> **Manifest mode is log-only.** The factory **rejects** rulesets that
+> use `skip_tool` (would let user-controlled YAML short-circuit inner
+> permissions / call-limits / hooks) **or** `notify` / `emit` /
+> `escalate` (those need host-wired handlers — manifest mode would
+> silently degrade them to local logs, hiding alerting failures from
+> operators). Manifest deployments support `log` actions only. For
+> any other action type, use the **Programmatic Factory** path below
+> with explicit `actionContext` wiring.
 
 ```yaml
 middleware:
@@ -338,6 +369,46 @@ Combined with the manifest system, this enables platform operators to define gov
 | Background work | None — prune-on-read only | Zero timers |
 
 ---
+
+## Known Limitations
+
+### Outermost-intercept short-circuit hides denials from inner observers
+
+When a rule blocks a tool call, this middleware returns synthesized
+denial response without calling `next()`. Because the middleware is the
+**outermost** wrapper (intercept tier, priority 50), inner observe-tier
+middleware (event-trace, audit, report) never sees the block. To
+preserve baseline observability, every block emits a default `warn`-level
+log to `actionContext.logger` (or `console.warn` when no logger is
+configured) — audit/trace hosts that hook the logger pipeline will see
+all denials without any extra wiring. For structured handling
+(audit-event injection, paging, etc.), hosts may also wire
+`actionContext.onBlock`, which fires alongside the default log and
+receives `{ toolId, sessionId, reason }`.
+
+### Half-open circuit-breaker semantics
+
+A windowed `skip_tool` rule's block expires `windowMs` after the
+**threshold-firing** real failure. Blocked retries do **not** extend the
+expiry — that would let one transient failure burst become a self-
+sustaining outage just from the agent retrying. After the window
+elapses, the next call probes recovery; if it fails again, the rule
+re-trips normally.
+
+
+
+### Effective input post-rewrite
+
+`tool_call` events are built from `request.input` as it entered this
+middleware (the outermost intercept-phase wrapper). If an inner middleware
+rewrites the input before execution (e.g. permissions sanitizing args),
+match predicates and action templates will see the **pre-rewrite** input,
+not the value the tool actually executed with. This is a property of v2's
+wrapping middleware contract — there is no channel for inner middleware
+to surface effective input back to outer wrappers — and applies equally
+to peer audit/observe middleware. For policy decisions that depend on
+post-sanitization input, run rules on the rewriting middleware's output
+contract instead of relying on `tool_call` rules.
 
 ## Layer Compliance
 

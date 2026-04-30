@@ -73,6 +73,7 @@
     "@koi/middleware-call-limits": "workspace:*",
     "@koi/middleware-circuit-breaker": "workspace:*",
     "@koi/middleware-degenerate": "workspace:*",
+    "@koi/middleware-event-rules": "workspace:*",
     "@koi/middleware-dream": "workspace:*",
     "@koi/middleware-extraction": "workspace:*",
     "@koi/middleware-collective-memory": "workspace:*",

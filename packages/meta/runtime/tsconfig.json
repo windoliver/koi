@@ -72,6 +72,7 @@
     { "path": "../../lib/middleware-call-dedup" },
     { "path": "../../lib/middleware-call-limits" },
     { "path": "../../lib/middleware-circuit-breaker" },
+    { "path": "../../lib/middleware-event-rules" },
     { "path": "../../lib/middleware-feedback-loop" },
     { "path": "../../lib/middleware-plan-persist" },
     { "path": "../../lib/middleware-planning" },
