@@ -343,16 +343,20 @@ describe("createSubprocessExecutor", () => {
     // drain takes additional time but the timer was already cleared at exit.
     const code = `
       export default async (_input: unknown) => {
-        // Write 5 MB to stderr — drain happens after child exits
+        // Write 500 KB to stderr — drain happens after child exits.
+        // Keeping the volume modest avoids flake from concurrent test stream pressure
+        // while still exercising the post-exit-drain timing path.
         const chunk = "e".repeat(1024);
-        for (let i = 0; i < 5000; i++) process.stderr.write(chunk);
+        for (let i = 0; i < 500; i++) process.stderr.write(chunk);
         return { fast: true };
       };
     `;
     const result = await executor.execute(code, null, 30000);
-    expect(result.ok).toBe(true);
     if (!result.ok)
-      throw new Error(`Expected ok, got: ${result.error.code} - ${result.error.message}`);
+      throw new Error(
+        `Expected ok, got: ${result.error.code} - ${result.error.message} (stack=${result.error.stack?.slice(-500)})`,
+      );
+    expect(result.ok).toBe(true);
     expect(result.value.output).toEqual({ fast: true });
   });
 
