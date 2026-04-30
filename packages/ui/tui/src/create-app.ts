@@ -645,35 +645,18 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         // Startup was cancelled, failed, or timed out — reset closing so the
         // handle can be started again after a transient failure.
         closing = false;
-        // #1586: profiling release is delicate at this point. The 5s
-        // timeout fires when the in-flight start() is still pending its
-        // native FFI init. start() sets started=true ONLY after render()
-        // resolves, so a late-completing init can mount the TUI after
-        // we return from stop(). Releasing profiling here unconditionally
-        // would discard a profile that the late-mounted TUI's eventual
-        // stop() would have written.
+        // #1586: release profiling synchronously even on the timeout path.
+        // Deferring until startPromise settles risks waiting forever when
+        // the very failure mode the timeout exists for is a never-settling
+        // native FFI init: the sampler would keep ticking, the global
+        // run-active latch would block all future profiled starts, and the
+        // exit handler would write a bogus partial profile on process exit.
         //
-        // Instead: attach a settle hook to the captured startPromise.
-        // - If start() eventually fails → its catch arm releases
-        //   (profilingOwned -> false) and our hook is a no-op.
-        // - If start() eventually succeeds → started becomes true and
-        //   the hook leaves profiling armed for the mounted run.
-        // - If the run truly aborts without mounting → the hook
-        //   releases profiling without writing, freeing the latch for
-        //   a future profiled run.
-        if (profilingOwned && startPromise !== null) {
-          const pending = startPromise;
-          pending
-            .catch(() => {})
-            .finally(() => {
-              if (profilingOwned && !started) {
-                shutdownProfiling({ write: false });
-                profilingOwned = false;
-              }
-            });
-        } else if (profilingOwned) {
-          // No pending startPromise (e.g. timeout race resolved with
-          // startPromise already nulled) — release synchronously.
+        // If start() does eventually mount after this point, profiling is
+        // already disarmed so its probes are no-ops — the mounted TUI runs
+        // unprofiled. That is the lesser evil: a 5s-timed-out startup is
+        // already an aborted run from the caller's perspective.
+        if (profilingOwned) {
           shutdownProfiling({ write: false });
           profilingOwned = false;
         }

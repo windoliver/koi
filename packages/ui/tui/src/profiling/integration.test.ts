@@ -423,6 +423,60 @@ describe("initProfiling", () => {
     expect(after).toBe(goldenContent);
   });
 
+  test("abandoned pre-mount run releases sampler + ownership and exit handler does not write a stale report", () => {
+    // Regression: a stop()-timeout against a never-settling renderer init
+    // used to defer profiling release until startPromise resolved. If the
+    // very failure mode the timeout exists for is a hung native FFI init,
+    // that promise never settles — leaving the sampler ticking, blocking
+    // future profiled starts with ProfilingConflictError, and letting the
+    // exit handler write a bogus partial report. Synchronous shutdown on
+    // timeout must (a) clear the run latch so the next initProfiling()
+    // succeeds, and (b) suppress the exit-handler write.
+    process.env.KOI_TUI_PROFILE = "1";
+    const outPath = join(workDir, "abandoned.json");
+    process.env.KOI_TUI_PROFILE_OUT = outPath;
+    resetProfiler();
+
+    let exitHandler: (() => void) | null = null;
+    const onSpy = mock((event: string, handler: () => void) => {
+      if (event === "exit") exitHandler = handler;
+      return process;
+    });
+    const clearedIds: number[] = [];
+    const fakeClearInterval = ((id: ReturnType<typeof setInterval>) => {
+      clearedIds.push(id as unknown as number);
+    }) as unknown as typeof clearInterval;
+
+    // Run 1: take ownership, then immediately abandon (write:false).
+    const owned1 = initProfiling({
+      processOn: onSpy as unknown as typeof process.on,
+      cpuSamplerOptions: {
+        setIntervalFn: ((_fn: () => void, _ms: number) =>
+          42 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval,
+        clearIntervalFn: fakeClearInterval,
+      },
+    });
+    expect(owned1).toBe(true);
+    shutdownProfiling({ write: false });
+    expect(clearedIds).toContain(42);
+
+    // Run 2 (a fresh profiled start) must succeed — latch was released.
+    const owned2 = initProfiling({
+      processOn: onSpy as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    expect(owned2).toBe(true);
+    bumpCounter("messagerow.mount", 3);
+    shutdownProfiling();
+    expect(JSON.parse(readFileSync(outPath, "utf8")).counters["messagerow.mount"]).toBe(3);
+
+    // Now fire the exit handler. There is no live run; it must not throw,
+    // must not overwrite the run-2 report with abandoned-run-1 data.
+    expect(exitHandler).not.toBeNull();
+    if (exitHandler) (exitHandler as () => void)();
+    expect(JSON.parse(readFileSync(outPath, "utf8")).counters["messagerow.mount"]).toBe(3);
+  });
+
   test("atomic rename preserves the existing report when write fails", () => {
     process.env.KOI_TUI_PROFILE = "1";
     const outPath = join(workDir, "atomic.json");
