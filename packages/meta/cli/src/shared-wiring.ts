@@ -1208,22 +1208,33 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   // legacy unscoped behavior.
   // Layer order (innermost → outermost):
   //   globalThis.fetch         ← raw network
-  //   createSafeFetcher        ← DNS-backed SSRF: resolves hostname,
-  //                              rejects loopback/RFC1918/link-local/
-  //                              metadata IPs, validates each redirect
-  //                              hop. Catches DNS-rebinding tricks like
-  //                              localtest.me that preflightBlockReason
-  //                              cannot see (it's DNS-free by design).
-  //   createScopedFetcher      ← manifest URLPattern allowlist
-  // Both are required for credentialed fetches: URLPattern alone would
-  // accept attacker.example.com (a DNS-rebinding host that resolves to
-  // 127.0.0.1) if the operator allowlisted *.example.com.
+  //   createScopedFetcher      ← manifest URLPattern allowlist (INNER:
+  //                              gets called for every redirect hop
+  //                              that createSafeFetcher follows
+  //                              internally — so an off-allowlist
+  //                              redirect target is rejected even when
+  //                              the initial URL was allowed)
+  //   createSafeFetcher        ← DNS-backed SSRF + redirect handling.
+  //                              Each hop calls back through inner
+  //                              scopedFetcher → URL allowlist runs
+  //                              on every URL the network sees.
+  //
+  // The previous layering (safe inner, scoped outer) only checked the
+  // initial URL against the allowlist; redirects followed by safeFetcher
+  // bypassed the URLPattern gate. Inverting puts scoped underneath so
+  // the allowlist runs on every redirect hop — round-4 finding.
+  //
+  // Both layers are required for credentialed fetches: URLPattern alone
+  // would accept attacker.example.com (a DNS-rebinding host that
+  // resolves to 127.0.0.1) if the operator allowlisted *.example.com.
   const networkAllow = config.networkScope?.allow;
   const fetchFn =
     networkAllow !== undefined
-      ? createScopedFetcher(createSafeFetcher(globalThis.fetch), {
-          allow: networkAllow.map((p) => new URLPattern(p)),
-        })
+      ? createSafeFetcher(
+          createScopedFetcher(globalThis.fetch, {
+            allow: networkAllow.map((p) => new URLPattern(p)),
+          }),
+        )
       : undefined;
 
   if (includeWeb) {

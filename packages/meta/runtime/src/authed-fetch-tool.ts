@@ -126,17 +126,54 @@ export function createAuthedFetchTool(opts: AuthedFetchToolOptions): Tool {
         };
       }
 
+      // Round-4 finding: a credential longer than the response window
+      // can leak partial bytes that bypass exact-match redaction (a
+      // reflecting upstream returning `credValue.slice(0, MAX_BODY_BYTES)`
+      // would carry verbatim credential material, and string.split()
+      // wouldn't find the full credValue to replace). Refuse credentials
+      // bigger than what the redactor can safely handle. 1024 bytes is
+      // generous for any realistic API key — refuse anything larger
+      // with a stable INTERNAL error that does not echo the credKey.
+      const MAX_CRED_BYTES = 1024;
+      if (credValue.length > MAX_CRED_BYTES) {
+        return {
+          error: "credential value exceeds the safe-redaction limit",
+          code: "INTERNAL",
+        };
+      }
+
       const authHeader = scheme === "" ? credValue : `${scheme} ${credValue}`;
-      // Redact both the bare credential and the full Authorization header
-      // anywhere they appear in returned strings. An echo/debug endpoint
-      // (or a misconfigured upstream that surfaces request headers in error
-      // pages) would otherwise hand the credential straight back to the
-      // agent through `body` or `statusText`.
+      // Redact the credential everywhere it appears in returned strings.
+      // Two layers:
+      //   (1) Exact-match: replace every full-length occurrence of
+      //       authHeader and credValue with [REDACTED].
+      //   (2) Overlap-aware: walk every contiguous credValue substring
+      //       of length REDACT_MIN_FRAGMENT (sliding window). A
+      //       reflecting upstream that echoes any prefix/suffix/middle
+      //       slice longer than the window will hit at least one of
+      //       these fragments. Replacing it with [REDACTED] removes a
+      //       chain of leaked bytes — repeated passes erode the
+      //       reflection until no fragment survives.
+      // 16 bytes is the smallest fragment that's still identifying for
+      // typical high-entropy API keys (sk-live-XXXX, ghp_XXXX, etc.)
+      // while being unlikely to false-positive on body content.
+      const REDACT_MIN_FRAGMENT = 16;
+      const fragments: readonly string[] =
+        credValue.length >= REDACT_MIN_FRAGMENT
+          ? Array.from({ length: credValue.length - REDACT_MIN_FRAGMENT + 1 }, (_, i) =>
+              credValue.slice(i, i + REDACT_MIN_FRAGMENT),
+            )
+          : [];
       const redact = (s: string): string => {
         if (s.length === 0) return s;
         let out = s;
         if (authHeader.length > 0) out = out.split(authHeader).join("[REDACTED]");
         if (credValue.length > 0) out = out.split(credValue).join("[REDACTED]");
+        for (const fragment of fragments) {
+          if (out.includes(fragment)) {
+            out = out.split(fragment).join("[REDACTED]");
+          }
+        }
         return out;
       };
       const controller = new AbortController();

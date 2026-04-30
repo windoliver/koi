@@ -389,6 +389,19 @@ export async function resolveFileSystemAsync(
 
   // Non-nexus or nexus-http → synchronous resolution (no async needed)
   if (fsBackend === "local") {
+    // gov-15: mirror the sync resolver's fail-closed guard on rw glob
+    // scope. The async path is what TUI uses; without this check the
+    // symlink race the sync path explicitly blocks would be reachable
+    // in production. See resolveFileSystem (sync) for the full rationale.
+    if (globScope !== undefined && globScope.mode === "rw") {
+      throw new Error(
+        "filesystem.options.allow with mode: 'rw' is not supported on the local backend. " +
+          "rw glob scope requires atomic no-follow write support that the local backend " +
+          "does not yet provide; without it, a symlink race can land writes outside the " +
+          "allowlist. Use single-root scope (filesystem.options.root + mode: 'rw') for " +
+          "writable scope, or mode: 'ro' for read-only glob scope.",
+      );
+    }
     // See resolveFileSystem for the rationale on allowExternalPaths under glob scope.
     const rawBackend =
       scope !== undefined

@@ -171,6 +171,53 @@ describe("createAuthedFetchTool", () => {
     }
   });
 
+  test("redacts partial credential reflections via overlap-aware fragments (round-4)", async () => {
+    // An upstream that echoes only a prefix of the credential would
+    // bypass split-on-full-credValue redaction. With overlap-aware
+    // fragments (every 16-byte sliding window of credValue is also
+    // redacted), any reflection >= 16 bytes is removed.
+    const cred = "sk-secret-shouldnt-leak-at-all-12345";
+    const partialPrefix = cred.slice(0, 24); // 24-byte slice — bigger than 16-byte window
+    const body = `Debug echo: Authorization: Bearer ${partialPrefix}... [truncated upstream]`;
+    const spy = makeFetchSpy(new Response(body, { status: 200 }));
+    const credsLong: CredentialComponent = {
+      async get(key) {
+        if (key === "openai_api_key") return cred;
+        return undefined;
+      },
+    };
+    const tool = createAuthedFetchTool({ credentials: credsLong, fetchFn: spy.fn });
+    const result = (await tool.execute({
+      url: "https://example.com",
+      credKey: "openai_api_key",
+    })) as JsonObject;
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(partialPrefix);
+    expect(serialized).not.toContain(cred.slice(0, 16));
+  });
+
+  test("rejects credentials larger than the safe-redaction limit (round-4)", async () => {
+    // A credential longer than the redaction window can leak partial
+    // bytes that bypass exact-match redaction. Refuse credValue
+    // > 1024 bytes with a stable INTERNAL error.
+    const huge = "k".repeat(1025);
+    const credsHuge: CredentialComponent = {
+      async get(key) {
+        if (key === "huge_key") return huge;
+        return undefined;
+      },
+    };
+    const spy = makeFetchSpy(new Response("ok", { status: 200 }));
+    const tool = createAuthedFetchTool({ credentials: credsHuge, fetchFn: spy.fn });
+    const result = (await tool.execute({
+      url: "https://example.com",
+      credKey: "huge_key",
+    })) as JsonObject;
+    expect(result.code).toBe("INTERNAL");
+    expect(spy.calls).toHaveLength(0);
+    expect(JSON.stringify(result)).not.toContain(huge);
+  });
+
   test("redacts the credential even when response body straddles MAX_BODY_BYTES boundary", async () => {
     // Round-2 finding: if redaction runs after truncation, an attacker
     // who controls response padding can push the credential to span the
