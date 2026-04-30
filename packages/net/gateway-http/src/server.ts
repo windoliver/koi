@@ -71,6 +71,12 @@ export function createGatewayServer(
   config: Partial<GatewayHttpConfig>,
   deps: GatewayHttpDeps,
 ): GatewayServer {
+  // Track whether sourceLimit was explicitly provided BEFORE the default
+  // merge. The default value is "disabled-acknowledged"; if we relied solely
+  // on the post-merge value, an internet-facing operator could omit
+  // sourceLimit entirely and silently inherit "disabled". Forcing an explicit
+  // choice for non-loopback binds is what makes this fail-closed.
+  const sourceLimitProvided = Object.prototype.hasOwnProperty.call(config, "sourceLimit");
   const cfg: GatewayHttpConfig = { ...DEFAULT_GATEWAY_HTTP_CONFIG, ...config };
   const clock = deps.clock ?? Date.now;
   const channelRegistry = createChannelRegistry();
@@ -82,7 +88,8 @@ export function createGatewayServer(
   const inFlight = { count: 0 };
 
   return {
-    start: () => start(cfg, deps, channelRegistry, clock, drainingFlag, inFlight, handle),
+    start: () =>
+      start(cfg, sourceLimitProvided, deps, channelRegistry, clock, drainingFlag, inFlight, handle),
     stop: () => stop(cfg, deps, clock, drainingFlag, inFlight, handle),
     registerChannel: (reg: ChannelRegistration): Result<void, KoiError> =>
       channelRegistry.register(reg),
@@ -101,6 +108,7 @@ export function createGatewayServer(
 
 async function start(
   cfg: GatewayHttpConfig,
+  sourceLimitProvided: boolean,
   deps: GatewayHttpDeps,
   channelRegistry: ChannelRegistry,
   clock: () => number,
@@ -108,7 +116,7 @@ async function start(
   inFlight: { count: number },
   handle: ServerHandle,
 ): Promise<Result<void, KoiError>> {
-  const cfgErr = validateConfig(cfg);
+  const cfgErr = validateConfig(cfg, sourceLimitProvided);
   if (cfgErr !== null) return { ok: false, error: cfgErr };
 
   const parsed = parseBind(cfg.bind);
@@ -341,7 +349,7 @@ function emitStartupAudit(deps: GatewayHttpDeps, clock: () => number, bind: stri
 // Validation
 // ---------------------------------------------------------------------------
 
-function validateConfig(cfg: GatewayHttpConfig): KoiError | null {
+function validateConfig(cfg: GatewayHttpConfig, sourceLimitProvided: boolean): KoiError | null {
   const parsed = parseBind(cfg.bind);
   if (parsed === null) return invalidBindError(cfg.bind);
 
@@ -353,6 +361,19 @@ function validateConfig(cfg: GatewayHttpConfig): KoiError | null {
         "Non-loopback bind requires proxyTrust.mode='trusted'; otherwise sourceAddr is the proxy IP",
       retryable: false,
       context: { bind: cfg.bind, proxyTrustMode: cfg.proxyTrust.mode },
+    };
+  }
+  // Internet-facing deployments MUST make an explicit sourceLimit choice;
+  // silently inheriting the "disabled-acknowledged" default would leave the
+  // pre-auth body-read + HMAC unbounded. The default is intentionally only
+  // safe for loopback binds.
+  if (!isLoopback && !sourceLimitProvided) {
+    return {
+      code: "INVALID_CONFIG",
+      message:
+        "Non-loopback bind requires sourceLimit to be set explicitly (RateLimitConfig or 'disabled-acknowledged'); the default is loopback-only",
+      retryable: false,
+      context: { bind: cfg.bind },
     };
   }
   // Static type forbids `undefined`; this guard catches a caller threading

@@ -64,7 +64,19 @@ export function createShutdownController(deps: ShutdownDeps): ShutdownController
   const run = async (): Promise<void> => {
     const startedAt = deps.clock();
     currentState = "draining-http";
-    await deps.gateway.pauseIngress();
+
+    // pauseIngress() is async per the Gateway contract and may block, reject,
+    // or hang on a slow/stuck transport. Bound it by the remaining grace
+    // budget AND swallow rejection so a wedged or throwing implementation
+    // cannot stall shutdown indefinitely and strand the singleton lock.
+    const pauseSettled = Promise.resolve(deps.gateway.pauseIngress())
+      .then(() => true as const)
+      .catch(() => true as const);
+    const pauseResult = await raceWithDeadline(pauseSettled, startedAt);
+    if (pauseResult === undefined) {
+      finalize(true);
+      return;
+    }
 
     const httpDrained = await waitFor(deps.getInFlight, startedAt);
     if (!httpDrained) {
@@ -75,6 +87,20 @@ export function createShutdownController(deps: ShutdownDeps): ShutdownController
     currentState = "draining-ws";
     const wsDrained = await waitFor(deps.gateway.activeConnections, startedAt);
     finalize(!wsDrained);
+  };
+
+  const raceWithDeadline = async <T>(p: Promise<T>, startedAt: number): Promise<T | undefined> => {
+    const r = remaining(startedAt);
+    if (r <= 0) return undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), r);
+    });
+    try {
+      return await Promise.race([p, timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   };
 
   return {
