@@ -47,10 +47,30 @@ function extractGlobScope(
   cwd: string,
   backendType: "local" | "nexus",
 ): GlobScope | undefined {
+  // Absent `options` or `options.allow` → no glob scope configured.
+  // Falls through to legacy single-root scope or unscoped backend.
   if (options === undefined || options === null) return undefined;
+  if (!("allow" in options)) return undefined;
   const allowRaw = options.allow;
-  if (!Array.isArray(allowRaw) || allowRaw.length === 0) return undefined;
-  if (!allowRaw.every((p): p is string => typeof p === "string" && p.length > 0)) return undefined;
+
+  // gov-15: `allow` is a security field. Malformed values must fail
+  // closed (throw) rather than silently disable scope — `allow: 42` or
+  // `allow: ["", 7]` are operator typos that, under the previous
+  // "return undefined" behavior, would have removed the intended
+  // boundary. The throw surfaces at TUI/CLI startup so the operator
+  // sees the error before any agent is wired.
+  if (!Array.isArray(allowRaw)) {
+    throw new Error(
+      "filesystem.options.allow must be an array of glob strings (got non-array). " +
+        "Empty array is allowed and means deny-all.",
+    );
+  }
+  if (!allowRaw.every((p): p is string => typeof p === "string" && p.length > 0)) {
+    throw new Error(
+      "filesystem.options.allow entries must be non-empty strings. " +
+        "Reject malformed entries rather than silently disabling scope.",
+    );
+  }
 
   const mode = options.mode;
   const resolvedMode: "ro" | "rw" = mode === "rw" ? "rw" : "ro";
@@ -190,6 +210,29 @@ export function resolveFileSystem(
 
   let backend: FileSystemBackend;
   if (backendKind === "local") {
+    // gov-15: rw glob scope on the local backend is fail-closed disabled
+    // until the backend supports atomic no-follow writes (O_NOFOLLOW /
+    // openat). The current path is: pre-validate path → backend writes
+    // via fs.writeFile (which auto-follows symlinks). A concurrent
+    // attacker can race-replace the leaf with a symlink between the
+    // check and the write, causing the write to land outside the
+    // allowlist. The post-write revalidation in scoped-fs catches and
+    // unlinks the leak, but the data has already crossed the boundary.
+    //
+    // Operators wanting writable scope today should use single-root
+    // scope (`filesystem.options.root` + `mode: "rw"`) — the local
+    // backend's root realpath check + `allowExternalPaths: false`
+    // provides the structural boundary for that path. ro glob scope
+    // (`mode: "ro"`) is unaffected: reads cannot corrupt.
+    if (globScope !== undefined && globScope.mode === "rw") {
+      throw new Error(
+        "filesystem.options.allow with mode: 'rw' is not supported on the local backend. " +
+          "rw glob scope requires atomic no-follow write support that the local backend " +
+          "does not yet provide; without it, a symlink race can land writes outside the " +
+          "allowlist. Use single-root scope (filesystem.options.root + mode: 'rw') for " +
+          "writable scope, or mode: 'ro' for read-only glob scope.",
+      );
+    }
     // Single-root scope: root the local backend at the scope root so its
     // own workspace check aligns with the scope boundary.
     // Glob scope: the scope wrapper IS the boundary, so opt the local

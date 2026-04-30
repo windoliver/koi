@@ -747,9 +747,10 @@ function parseManifestNetwork(
       };
     }
   }
-  if (allow.length === 0) {
-    return { ok: true, value: undefined };
-  }
+  // gov-15: explicit `network: { allow: [] }` is a deny-all declaration,
+  // not "no scope". Preserve it as a present-but-empty config so
+  // downstream wiring builds a deny-everything URLPattern allowlist; only
+  // an absent `network:` block means legacy unscoped behavior.
   return { ok: true, value: { allow } };
 }
 

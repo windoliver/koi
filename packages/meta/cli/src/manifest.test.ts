@@ -983,14 +983,19 @@ describe("loadManifestConfig: network block (gov-15)", () => {
     expect(result.value.network?.allow.length).toBe(2);
   });
 
-  test("treats empty allow array as undefined (no scope)", async () => {
+  test("preserves empty allow array as deny-all (not undefined)", async () => {
     const p = writeManifest(
       ["model:", "  name: google/gemini-2.0-flash-001", "network:", "  allow: []"].join("\n"),
     );
     const result = await loadManifestConfig(p);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.network).toBeUndefined();
+    // gov-15: explicit empty allow is preserved so downstream wiring
+    // builds a deny-all URLPattern allowlist (createScopedFetcher with
+    // allow: [] throws on every URL). Collapsing to undefined would
+    // silently revert to legacy unscoped behavior, which is the wrong
+    // default for an explicit empty manifest declaration.
+    expect(result.value.network).toEqual({ allow: [] });
   });
 
   test("rejects non-string allow entries", async () => {

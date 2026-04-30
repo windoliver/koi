@@ -1199,9 +1199,15 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   // the same scope-wrapped instance is shared with `authed_fetch` below.
   // The executor's own pre-flight (resolveAndValidateUrl) still runs first —
   // scope is an additional fail-closed gate, not a replacement.
+  //
+  // Empty `network.allow: []` is a deny-all declaration, not "no scope":
+  // createScopedFetcher with an empty allowlist throws on every URL, so
+  // every outbound fetch (web_fetch and authed_fetch) is rejected. Only
+  // an absent `network:` block (`networkScope === undefined`) means
+  // legacy unscoped behavior.
   const networkAllow = config.networkScope?.allow;
   const fetchFn =
-    networkAllow !== undefined && networkAllow.length > 0
+    networkAllow !== undefined
       ? createScopedFetcher(globalThis.fetch, {
           allow: networkAllow.map((p) => new URLPattern(p)),
         })

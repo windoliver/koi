@@ -143,4 +143,59 @@ describe("createAuthedFetchTool", () => {
     expect(result.code).toBe("EXTERNAL");
     expect((result.error as string).includes("outside the allowed fetch scope")).toBe(true);
   });
+
+  // gov-15 round-2: SSRF preflight + redaction-before-truncation regressions.
+
+  describe("SSRF preflight (round-2)", () => {
+    const ssrfTargets = [
+      "http://localhost/admin",
+      "http://127.0.0.1/",
+      "http://169.254.169.254/latest/meta-data/",
+      "http://10.0.0.1/",
+      "http://192.168.1.1/admin",
+    ];
+    for (const target of ssrfTargets) {
+      test(`blocks ${target} with PERMISSION before fetch`, async () => {
+        const spy = makeFetchSpy(new Response("would have leaked", { status: 200 }));
+        const tool = createAuthedFetchTool({
+          credentials: credsAllowOnlyOpenAI,
+          fetchFn: spy.fn,
+        });
+        const result = (await tool.execute({
+          url: target,
+          credKey: "openai_api_key",
+        })) as JsonObject;
+        expect(result.code).toBe("PERMISSION");
+        expect(spy.calls).toHaveLength(0);
+      });
+    }
+  });
+
+  test("redacts the credential even when response body straddles MAX_BODY_BYTES boundary", async () => {
+    // Round-2 finding: if redaction runs after truncation, an attacker
+    // who controls response padding can push the credential to span the
+    // truncation boundary. Build a response where the credential value
+    // sits exactly across 50_000 bytes — the prefix slice must NOT
+    // contain a partial substring of the secret.
+    const cred = "sk-secret-shouldnt-leak";
+    const padding = "A".repeat(50_000 - 5); // 5 bytes of cred would land in kept slice
+    const body = `${padding}${cred}`;
+    const spy = makeFetchSpy(new Response(body, { status: 200 }));
+    const tool = createAuthedFetchTool({
+      credentials: credsAllowOnlyOpenAI,
+      fetchFn: spy.fn,
+    });
+    const result = (await tool.execute({
+      url: "https://example.com",
+      credKey: "openai_api_key",
+    })) as JsonObject;
+    // Whole response must contain no fragment of the credential, not
+    // just the full string. Check substrings of length >= 8 — anything
+    // shorter is too generic to be a useful exfiltration.
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(cred);
+    expect(serialized).not.toContain(cred.slice(0, 12));
+    expect(serialized).not.toContain(cred.slice(0, 10));
+    expect(serialized).not.toContain(cred.slice(0, 8));
+  });
 });

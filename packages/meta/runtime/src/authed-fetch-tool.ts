@@ -16,6 +16,7 @@
 
 import type { CredentialComponent, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import { preflightBlockReason } from "@koi/tools-web";
 
 const MAX_BODY_BYTES = 50_000;
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -85,6 +86,22 @@ export function createAuthedFetchTool(opts: AuthedFetchToolOptions): Tool {
       if (!url.startsWith("http://") && !url.startsWith("https://")) {
         return { error: "url must start with http:// or https://", code: "VALIDATION" };
       }
+      // SSRF preflight — same DNS-free static check used by web_fetch.
+      // Catches obvious targets (localhost, 127/8, 169.254.0.0/16,
+      // RFC1918, link-local, .internal, .localhost suffixes, IPv6
+      // private). Without this, an `authed_fetch` registered without a
+      // manifest `network.allow` falls through to the global fetch and
+      // can hit cloud-metadata IMDS or internal services with the
+      // credential attached. Returning PERMISSION (not VALIDATION) so
+      // the rejection is consistent with credential-scope rejections —
+      // agents see a uniform "request denied" surface.
+      const blockReason = preflightBlockReason(url);
+      if (blockReason !== undefined) {
+        return {
+          error: "request denied: target is not a public http(s) URL",
+          code: "PERMISSION",
+        };
+      }
       if (typeof args.credKey !== "string" || args.credKey.trim() === "") {
         return { error: "credKey must be a non-empty string", code: "VALIDATION" };
       }
@@ -136,12 +153,18 @@ export function createAuthedFetchTool(opts: AuthedFetchToolOptions): Tool {
           signal: controller.signal,
         });
         const body = await res.text();
-        const truncated = body.length > MAX_BODY_BYTES;
-        const safeBody = redact(truncated ? body.slice(0, MAX_BODY_BYTES) : body);
+        // Redact BEFORE truncation. If we sliced first, an attacker who
+        // controls response padding could push the credential value to
+        // straddle the truncation boundary, leaving a partial substring
+        // in the kept half that no longer matches the redaction tokens.
+        // Redacting first means every full-length occurrence is replaced
+        // with the same-or-shorter "[REDACTED]" before any slicing.
+        const redactedBody = redact(body);
+        const truncated = redactedBody.length > MAX_BODY_BYTES;
         return {
           status: res.status,
           statusText: redact(res.statusText),
-          body: safeBody,
+          body: truncated ? redactedBody.slice(0, MAX_BODY_BYTES) : redactedBody,
           truncated,
         };
       } catch (e: unknown) {
