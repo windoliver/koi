@@ -39,6 +39,7 @@ export type {
   EvalRunMeta,
   EvalScore,
   EvalStore,
+  EvalStoreSaveOptions,
   EvalSummary,
   EvalTask,
   EvalTrial,

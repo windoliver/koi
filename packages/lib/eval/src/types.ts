@@ -143,8 +143,18 @@ export interface AgentHandle {
 // Store
 // ---------------------------------------------------------------------------
 
+export interface EvalStoreSaveOptions {
+  /** Allow overwriting an existing run with the same id. Default: false. */
+  readonly overwrite?: boolean | undefined;
+}
+
 export interface EvalStore {
-  readonly save: (run: EvalRun) => Promise<void>;
+  /**
+   * Save a run. By default, fails if a run with the same id already exists
+   * for this suite — deterministic ids would otherwise silently destroy
+   * prior baselines. Pass `{ overwrite: true }` to opt in.
+   */
+  readonly save: (run: EvalRun, options?: EvalStoreSaveOptions) => Promise<void>;
   /**
    * Load a run by id. Pass `evalName` to disambiguate when run ids may
    * collide across suites; without it, returns undefined if more than one

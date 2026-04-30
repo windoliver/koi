@@ -30,6 +30,16 @@ afterEach(async () => {
 });
 
 describe("createFsStore", () => {
+  test("save fails on collision unless overwrite: true", async () => {
+    const store = createFsStore(root);
+    const r1 = makeRun("dup", "smoke", "2026-01-01T00:00:00Z");
+    await store.save(r1);
+    await expect(store.save(r1)).rejects.toThrow(/already exists/);
+    await store.save({ ...r1, timestamp: "2026-02-01T00:00:00Z" }, { overwrite: true });
+    const reloaded = await store.load("dup", "smoke");
+    expect(reloaded?.timestamp).toBe("2026-02-01T00:00:00Z");
+  });
+
   test("path-traversal evalName is rejected", async () => {
     const store = createFsStore(root);
     await expect(store.list("..")).rejects.toThrow(/not allowed/);

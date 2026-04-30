@@ -45,7 +45,13 @@ export async function runEval(config: EvalRunConfig): Promise<EvalRun> {
         now,
       );
       trials.push(trial);
-      config.onTrialComplete?.(trial);
+      // Isolate reporter failures from core execution: a logging hook
+      // throwing must not erase the eval results we already collected.
+      try {
+        config.onTrialComplete?.(trial);
+      } catch {
+        // swallow — hook failures are not the eval's job to surface
+      }
       // Hard isolation guarantee: once teardown of a timed-out agent
       // could not be confirmed, we cannot trust that subsequent trials
       // will run independently — the leaked agent may still be issuing

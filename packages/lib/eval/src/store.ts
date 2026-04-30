@@ -4,10 +4,18 @@ import type { EvalRun, EvalRunMeta, EvalStore } from "./types.js";
 
 export function createFsStore(rootDir: string): EvalStore {
   return {
-    save: async (run: EvalRun): Promise<void> => {
+    save: async (run, options): Promise<void> => {
       const filePath = pathFor(rootDir, run.name, run.id);
       const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
       await mkdir(dirname(filePath), { recursive: true });
+      // Refuse to clobber an existing run by default — deterministic ids
+      // (legitimate use case per docs) would otherwise destroy baselines
+      // silently. Caller must opt in to overwrite.
+      if (!(options?.overwrite === true) && (await fileExists(filePath))) {
+        throw new Error(
+          `EvalStore: run "${run.id}" already exists for suite "${run.name}" — pass { overwrite: true } to replace`,
+        );
+      }
       // Atomic write: stage to temp, rename into place. A crash between
       // steps leaves either the previous run or no file at the final path
       // — never a torn JSON document that would silently shadow newer

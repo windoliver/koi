@@ -308,6 +308,21 @@ describe("runEval", () => {
     ).rejects.toThrow(/duplicate task id/);
   });
 
+  test("onTrialComplete throwing does not lose collected run", async () => {
+    const events: readonly EngineEvent[] = [{ kind: "text_delta", delta: "ok" }];
+    const run = await runEval({
+      name: "hook-throws",
+      tasks: [task("t1", "ok", [exactMatch()])],
+      agentFactory: () => fakeAgent(events),
+      onTrialComplete: () => {
+        throw new Error("hook-broke");
+      },
+      idGen: () => "run-ht",
+    });
+    expect(run.id).toBe("run-ht");
+    expect(run.trials).toHaveLength(1);
+  });
+
   test("synchronous dispose throw does not crash the run", async () => {
     const events: readonly EngineEvent[] = [{ kind: "text_delta", delta: "ok" }];
     const run = await runEval({
