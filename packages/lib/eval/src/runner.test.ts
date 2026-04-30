@@ -559,8 +559,11 @@ describe("runEval", () => {
     expect(factoryCalled).toBe(0);
     expect(streamCalled).toBe(0);
     expect(run.trials[0]?.status).toBe("error");
-    expect(run.trials[0]?.cancellation).toBe("unconfirmed");
-    expect(run.aborted).toBe(true);
+    // Pre-start cancellation: no agent created → no leaked work →
+    // confirmed. Aborting the suite for this would poison baselines on
+    // benign stale signals.
+    expect(run.trials[0]?.cancellation).toBe("confirmed");
+    expect(run.aborted).toBeUndefined();
   });
 
   test("mid-flight upstream abort cancels the running trial", async () => {

@@ -242,6 +242,30 @@ describe("toolCall", () => {
     expect(score.pass).toBe(true);
   });
 
+  test("merges tool_call_start.args with later tool_call_delta fragments", async () => {
+    // Producers may emit a partial initial args object and stream
+    // additional fields/corrections in deltas. Treating them as
+    // mutually exclusive would compare expectations against a stale
+    // fragment.
+    const grader = toolCall();
+    const events: readonly EngineEvent[] = [
+      {
+        kind: "tool_call_start",
+        toolName: "search",
+        callId: "search-id" as ToolCallId,
+        args: { q: "hello" },
+      },
+      { kind: "tool_call_delta", callId: "search-id" as ToolCallId, delta: '{"limit":5}' },
+      callResult("search"),
+    ];
+    const score = await grader.grade(
+      events,
+      { kind: "tool_calls", calls: [{ toolName: "search", args: { q: "hello", limit: 5 } }] },
+      METRICS,
+    );
+    expect(score.pass).toBe(true);
+  });
+
   test("returns no-expectation reasoning when missing", async () => {
     const grader = toolCall();
     const score = await grader.grade([], undefined, METRICS);

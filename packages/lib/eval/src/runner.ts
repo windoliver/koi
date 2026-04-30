@@ -125,7 +125,11 @@ async function runTrial(
     // cancelled is a side effect we promised not to do.
     const upstream = (task.input as { signal?: AbortSignal }).signal;
     if (upstream?.aborted === true) {
-      throw createTimeoutMarker(new Error("upstream aborted before agent creation"), false);
+      // No agent was created — there is no iterator/sandbox/subprocess
+      // to tear down, so this is "confirmed" cancellation, not leaked
+      // work. Marking it `unconfirmed` would abort the rest of the
+      // suite and poison the produced run on a benign stale signal.
+      throw createTimeoutMarker(new Error("upstream aborted before agent creation"), true);
     }
     agent = await config.agentFactory();
     await collectTranscriptWithTimeout(agent, task, transcript, timeoutMs);
@@ -300,7 +304,9 @@ async function collectTranscriptWithTimeout(
     // start now is a side effect past the requested teardown.
     if (upstream?.aborted === true) {
       controller.abort(upstream.reason);
-      throw createTimeoutMarker(new Error("upstream aborted before stream start"), false);
+      // Same rationale as the agent-factory check above: no stream was
+      // started, so there is nothing to leak. Confirmed cancellation.
+      throw createTimeoutMarker(new Error("upstream aborted before stream start"), true);
     }
     // Mid-flight upstream abort: forward into our local controller so the
     // existing timeout/iterator-return path tears the agent down with the

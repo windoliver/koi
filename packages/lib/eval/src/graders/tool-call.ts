@@ -105,7 +105,17 @@ function collectToolCalls(
     } else if (ev.kind === "tool_result" || (acceptToolCallEnd && ev.kind === "tool_call_end")) {
       const start = pending.get(ev.callId);
       if (start === undefined) continue;
-      const args = start.args ?? parseDeltas(deltas.get(ev.callId));
+      // Merge start.args with parsed deltas: producers may emit a
+      // partial initial args object and stream additions/corrections in
+      // deltas. Treating them as mutually exclusive would compare
+      // expectations against a stale fragment.
+      const fromDeltas = parseDeltas(deltas.get(ev.callId));
+      const args =
+        start.args === undefined
+          ? fromDeltas
+          : fromDeltas === undefined
+            ? start.args
+            : { ...start.args, ...fromDeltas };
       out.push({ toolName: start.toolName, args });
       pending.delete(ev.callId);
       deltas.delete(ev.callId);
