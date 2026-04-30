@@ -258,6 +258,7 @@ async function collectTranscriptWithTimeout(
 ): Promise<CollectResult> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let upstreamForwardCleanup: (() => void) | undefined;
   // Suppress the orphan-rejection path: the consumer of `timeoutPromise`
   // is `Promise.race`; we still attach a no-op handler so a sync agent
   // failure (which exits before we ever race) cannot surface as an
@@ -277,6 +278,24 @@ async function collectTranscriptWithTimeout(
     // the agent stream. Overwriting `task.input.signal` would silently drop
     // the upstream cancel and leave tool side effects running.
     const upstream = (task.input as { signal?: AbortSignal }).signal;
+    // Fail fast on already-aborted upstream: do not call agent.stream() at
+    // all. The caller has already requested cancellation; any work we'd
+    // start now is a side effect past the requested teardown.
+    if (upstream?.aborted === true) {
+      controller.abort(upstream.reason);
+      throw createTimeoutMarker(new Error("upstream aborted before stream start"), false);
+    }
+    // Mid-flight upstream abort: forward into our local controller so the
+    // existing timeout/iterator-return path tears the agent down with the
+    // same semantics as a runner-owned timeout.
+    const upstreamForward =
+      upstream === undefined
+        ? undefined
+        : (): void => controller.abort(upstream.reason ?? new Error("upstream aborted"));
+    if (upstreamForward !== undefined && upstream !== undefined) {
+      upstream.addEventListener("abort", upstreamForward, { once: true });
+      upstreamForwardCleanup = (): void => upstream.removeEventListener("abort", upstreamForward);
+    }
     const composed =
       upstream === undefined ? controller.signal : anySignal([upstream, controller.signal]);
     const inputWithSignal = { ...task.input, signal: composed };
@@ -300,6 +319,7 @@ async function collectTranscriptWithTimeout(
     }
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    if (upstreamForwardCleanup !== undefined) upstreamForwardCleanup();
   }
 }
 
@@ -478,29 +498,29 @@ export function canonicalTaskSpec(task: EvalTask): string {
   });
 }
 
-function containsNonSerializable(v: unknown, seen: WeakSet<object> = new WeakSet()): boolean {
+function containsNonSerializable(v: unknown, stack: object[] = []): boolean {
   if (v === null) return false;
   const t = typeof v;
   if (t === "function" || t === "symbol") return true;
   if (t !== "object") return false;
-  // RegExp and the special objects canonicalize handles explicitly are
-  // deterministically encodable — not blockers.
   if (v instanceof RegExp || v instanceof Date || v instanceof URL) return false;
-  // Cycles: a graph that loops back on itself can't be fingerprinted
-  // deterministically without an explicit salt. Treat as non-serializable.
-  if (seen.has(v as object)) return true;
-  seen.add(v as object);
-  if (Array.isArray(v)) return v.some((e) => containsNonSerializable(e, seen));
-  // Reject any other non-plain object: Map/Set/typed arrays/class instances
-  // would otherwise canonicalize to "{}" because Object.keys() returns no
-  // enumerable string keys, collapsing materially different inputs to the
-  // same fingerprint. Force the caller to provide a fingerprintSalt.
-  const proto = Object.getPrototypeOf(v as object);
-  if (proto !== Object.prototype && proto !== null) return true;
-  for (const k of Object.keys(v as object)) {
-    if (containsNonSerializable((v as Record<string, unknown>)[k], seen)) return true;
+  // Cycle detection via the active recursion stack — a true cycle means
+  // an ancestor reference in the current descent. Aliased DAG references
+  // (the same plain object held by two siblings) are NOT cycles and must
+  // be allowed.
+  if (stack.includes(v as object)) return true;
+  stack.push(v as object);
+  try {
+    if (Array.isArray(v)) return v.some((e) => containsNonSerializable(e, stack));
+    const proto = Object.getPrototypeOf(v as object);
+    if (proto !== Object.prototype && proto !== null) return true;
+    for (const k of Object.keys(v as object)) {
+      if (containsNonSerializable((v as Record<string, unknown>)[k], stack)) return true;
+    }
+    return false;
+  } finally {
+    stack.pop();
   }
-  return false;
 }
 
 /**
@@ -513,7 +533,7 @@ function containsNonSerializable(v: unknown, seen: WeakSet<object> = new WeakSet
  * silently collapsing to `{}` — that way swapping in a new value cannot
  * leave the fingerprint unchanged.
  */
-function canonicalize(v: unknown, seen: WeakSet<object> = new WeakSet()): string {
+function canonicalize(v: unknown, stack: object[] = []): string {
   if (v === undefined) return "undefined";
   if (v === null) return "null";
   if (v instanceof RegExp) return `RegExp(${JSON.stringify(v.source)},${JSON.stringify(v.flags)})`;
@@ -524,21 +544,24 @@ function canonicalize(v: unknown, seen: WeakSet<object> = new WeakSet()): string
   if (t === "bigint") return `bigint:${(v as bigint).toString()}`;
   if (t === "function") return `fn:${(v as () => unknown).name || "anon"}`;
   if (t === "symbol") return `sym:${(v as symbol).toString()}`;
-  // Cycle guard: containsNonSerializable rejects cycles up front, but the
-  // canonicalizer must also be cycle-safe to avoid stack overflow if any
-  // future caller path bypasses the preflight.
-  if (seen.has(v as object)) {
+  // Cycle detection via active stack only — aliased references in a DAG
+  // are NOT cycles and must be canonicalized normally.
+  if (stack.includes(v as object)) {
     throw new Error("canonicalize: cyclic value (rejected before reaching here)");
   }
-  seen.add(v as object);
-  if (Array.isArray(v)) return `[${v.map((e) => canonicalize(e, seen)).join(",")}]`;
-  if (t === "object") {
-    const obj = v as Record<string, unknown>;
-    const keys = Object.keys(obj).sort();
-    const parts = keys.map((k) => `${JSON.stringify(k)}:${canonicalize(obj[k], seen)}`);
-    return `{${parts.join(",")}}`;
+  stack.push(v as object);
+  try {
+    if (Array.isArray(v)) return `[${v.map((e) => canonicalize(e, stack)).join(",")}]`;
+    if (t === "object") {
+      const obj = v as Record<string, unknown>;
+      const keys = Object.keys(obj).sort();
+      const parts = keys.map((k) => `${JSON.stringify(k)}:${canonicalize(obj[k], stack)}`);
+      return `{${parts.join(",")}}`;
+    }
+    return String(v);
+  } finally {
+    stack.pop();
   }
-  return String(v);
 }
 
 function sumScores(trials: readonly EvalTrial[]): number {

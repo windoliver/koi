@@ -212,6 +212,17 @@ describe("computeTaskFingerprint", () => {
     expect(computeTaskFingerprint(make("v1"))).not.toBe(computeTaskFingerprint(make("v2")));
   });
 
+  test("accepts aliased DAG references (same plain object via two paths)", () => {
+    const shared = { v: 1 };
+    const a: EvalTask = {
+      id: "t",
+      name: "t",
+      input: { ...baseInput, metaA: shared, metaB: shared } as never,
+      graders: [exactMatch()],
+    };
+    expect(() => computeTaskFingerprint(a)).not.toThrow();
+  });
+
   test("rejects cyclic input without crashing the process", () => {
     const cyclic: { self?: unknown } = {};
     cyclic.self = cyclic;

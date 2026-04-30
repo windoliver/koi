@@ -81,9 +81,35 @@ function serializeRun(run: EvalRun): string {
     if (t === "function" || t === "symbol") return { __unserializable: t };
     if (t !== "object") return value;
     const obj = value as object;
+    // Reversibly encode common host objects — silently degrading them to
+    // {} would lose debugging information that the persisted transcript
+    // is supposed to preserve.
+    if (value instanceof Date) return { __wrapped: "date", iso: value.toISOString() };
+    if (value instanceof URL) return { __wrapped: "url", href: value.href };
+    if (value instanceof RegExp) {
+      return { __wrapped: "regexp", source: value.source, flags: value.flags };
+    }
+    if (value instanceof Map) {
+      return {
+        __wrapped: "map",
+        entries: [...value.entries()].map(([k, v]) => [sanitize(k), sanitize(v)]),
+      };
+    }
+    if (value instanceof Set) {
+      return { __wrapped: "set", values: [...value.values()].map(sanitize) };
+    }
     if (seen.has(obj)) return { __unserializable: "circular" };
     seen.add(obj);
     if (Array.isArray(value)) return value.map(sanitize);
+    // Plain object or unknown class instance: enumerable keys only. Mark
+    // unknown class instances so they're not silently flattened to {}.
+    const proto = Object.getPrototypeOf(obj);
+    if (proto !== Object.prototype && proto !== null) {
+      return {
+        __unserializable: "non-plain-object",
+        constructor: (obj as { constructor?: { name?: string } }).constructor?.name ?? "unknown",
+      };
+    }
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       out[k] = sanitize(v);

@@ -423,41 +423,77 @@ describe("runEval", () => {
     expect(factoryCalled).toBe(0);
   });
 
-  test("upstream abort signal on task.input propagates to agent stream", async () => {
-    let observedSignal: AbortSignal | undefined;
-    const abortedSeen = (): boolean => observedSignal?.aborted === true;
+  test("already-aborted upstream signal fails the trial without calling agent.stream", async () => {
+    let factoryCalled = 0;
+    let streamCalled = 0;
     const upstream = new AbortController();
     upstream.abort(new Error("outer-cancel"));
     const run = await runEval({
-      name: "upstream-cancel",
+      name: "upstream-aborted",
       tasks: [
         {
           id: "t1",
           name: "t1",
           input: { ...{ kind: "text" as const, text: "go" }, signal: upstream.signal } as never,
           graders: [exactMatch()],
-          fingerprintSalt: "test-upstream-cancel",
+          fingerprintSalt: "test-upstream-aborted",
+        },
+      ],
+      agentFactory: () => {
+        factoryCalled += 1;
+        return {
+          stream: (): AsyncIterable<EngineEvent> => {
+            streamCalled += 1;
+            return (async function* (): AsyncIterable<EngineEvent> {})();
+          },
+        };
+      },
+      idGen: () => "ua",
+    });
+    expect(factoryCalled).toBe(1);
+    expect(streamCalled).toBe(0);
+    expect(run.trials[0]?.status).toBe("error");
+    expect(run.trials[0]?.cancellation).toBe("unconfirmed");
+    expect(run.aborted).toBe(true);
+  });
+
+  test("mid-flight upstream abort cancels the running trial", async () => {
+    const upstream = new AbortController();
+    const sawAbort = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        upstream.abort(new Error("cancel-now"));
+        resolve();
+      }, 30);
+    });
+    const run = await runEval({
+      name: "upstream-mid",
+      tasks: [
+        {
+          id: "t1",
+          name: "t1",
+          input: { ...{ kind: "text" as const, text: "go" }, signal: upstream.signal } as never,
+          graders: [exactMatch()],
+          fingerprintSalt: "test-upstream-mid",
+          timeoutMs: 5_000,
         },
       ],
       agentFactory: () => ({
-        stream: (input): AsyncIterable<EngineEvent> => {
-          observedSignal = (input as { signal?: AbortSignal }).signal;
-          async function* gen(): AsyncIterable<EngineEvent> {
-            // The composed signal should already be aborted when the
-            // generator yields its first value.
-            yield { kind: "text_delta", delta: abortedSeen() ? "aborted" : "live" };
-          }
-          return gen();
-        },
+        stream: (): AsyncIterable<EngineEvent> => ({
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise(() => {}),
+            return: async (): Promise<IteratorResult<EngineEvent>> => ({
+              value: undefined,
+              done: true,
+            }),
+          }),
+        }),
       }),
-      idGen: () => "uc",
+      disposeTimeoutMs: 50,
+      idGen: () => "um",
     });
-    expect(observedSignal).toBeDefined();
-    expect(observedSignal?.aborted).toBe(true);
-    // Trial may still complete (text_delta yielded synchronously); the
-    // contract is that the agent SAW the cancellation, not that the runner
-    // forced an error.
-    expect(run.trials).toHaveLength(1);
+    await sawAbort;
+    expect(run.trials[0]?.status).toBe("error");
+    expect(run.trials[0]?.cancellation).not.toBe("n/a");
   });
 
   test("rejects empty config", async () => {
