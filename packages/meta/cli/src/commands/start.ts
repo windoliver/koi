@@ -510,6 +510,20 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       );
     }
 
+    // Issue #2088: ACE schema is shipped but host activation has not landed
+    // yet. Reject ace.enabled: true at fresh manifest load on every host
+    // (matches backgroundSubprocesses + audit + network/credentials precedent
+    // above). The activation PR will replace this with real wiring.
+    if (manifestResult.value.ace?.enabled === true) {
+      return bail(
+        "manifest.ace.enabled: true is not yet wired in this build " +
+          "(tracked as issue 2088). The schema is shipped but neither koi start " +
+          "nor koi tui activates the middleware yet — set ace.enabled: false or " +
+          "remove the ace: block. The activation PR is the natural place for the " +
+          "host wiring.",
+      );
+    }
+
     // #1777 two-gate trust boundary for nexus backends:
     //   Gate 1 — manifest must declare scope (root + mode in options)
     //   Gate 2 — operator must pass --allow-remote-fs to explicitly
@@ -733,6 +747,16 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             "or remove the audit: block from the manifest.",
         );
       }
+      // Issue #2088 — note: a resume-time ACE rejection was deliberately
+      // NOT added here. The fresh-load rejection above suffices for new
+      // sessions, and adding a resume-specific guard would inherit the
+      // broader resume-provenance gap (readSessionMeta() returning {} for
+      // missing/malformed sidecars; manifest-parse failure short-circuiting
+      // before the check). Since this build does not actually wire ACE,
+      // a resumed session with ace.enabled: true behaves identically to
+      // any other session — the field is dead weight. The activation PR
+      // is the natural place to add comprehensive resume-time rejection
+      // alongside hardened sidecar validation.
     }
   }
 

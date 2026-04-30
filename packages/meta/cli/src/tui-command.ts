@@ -1147,6 +1147,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestCredentials = manifestResult.value.credentials;
     manifestLoadPath = resolvedManifestPath;
 
+    // Issue #2088 — manifest.ace.enabled: true is parsed by the schema but
+    // host activation has not landed yet. Fail closed here (mirrors the
+    // koi start rejection in commands/start.ts) so users cannot put
+    // ace.enabled: true in a manifest, see no error, and assume ACE is
+    // running. The activation PR will replace this rejection with real
+    // wiring under the spawn-gate + resume-provenance gate documented in
+    // docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md.
+    if (manifestResult.value.ace?.enabled === true) {
+      process.stderr.write(
+        "koi tui: manifest.ace.enabled: true is not yet wired in this build " +
+          "(tracked as issue 2088). Set ace.enabled: false or remove the ace: " +
+          "block to start the TUI; the activation PR is the natural place for " +
+          "the host wiring.\n",
+      );
+      process.exit(1);
+    }
+
     // Fail-closed audit intent enforcement — applies regardless of KOI_ALLOW_MANIFEST_FILE_SINKS.
     // manifest.audit paths are never used as actual file paths (atomic containment
     // requires openat-style APIs unavailable in Node.js/Bun). The manifest block
@@ -1533,6 +1550,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }
         }
       }
+      // Issue #2088 — note: a resume-time ACE rejection was deliberately
+      // NOT added here. See the matching comment in commands/start.ts —
+      // this build does not actually wire ACE, so a resumed session with
+      // ace.enabled: true behaves identically to any other session. The
+      // activation PR is the natural place to add comprehensive resume-
+      // time rejection alongside hardened sidecar validation (the
+      // readSessionMeta() {}-on-malformed gap is broader than ACE).
     }
   }
 
