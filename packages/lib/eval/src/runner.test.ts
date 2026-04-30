@@ -68,6 +68,32 @@ describe("runEval", () => {
     expect(run.summary.errorCount).toBe(1);
   });
 
+  test("times out a hanging agent that ignores abort signal", async () => {
+    const run = await runEval({
+      name: "hang",
+      tasks: [{ ...task("t1", "x", [exactMatch()]), timeoutMs: 30 }],
+      agentFactory: () => ({
+        stream: (): AsyncIterable<EngineEvent> => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          async function* gen(): AsyncGenerator<EngineEvent, void, unknown> {
+            try {
+              await new Promise<void>((resolve) => {
+                timer = setTimeout(resolve, 200);
+              });
+              yield { kind: "text_delta", delta: "never" };
+            } finally {
+              if (timer !== undefined) clearTimeout(timer);
+            }
+          }
+          return gen();
+        },
+      }),
+      idGen: () => "run-hang",
+    });
+    expect(run.trials[0]?.status).toBe("error");
+    expect(run.trials[0]?.error).toContain("timeout");
+  });
+
   test("times out long-running trial", async () => {
     const run = await runEval({
       name: "slow",

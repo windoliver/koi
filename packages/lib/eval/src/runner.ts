@@ -103,15 +103,30 @@ async function collectTranscriptWithTimeout(
   timeoutMs: number,
 ): Promise<void> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error("timeout")), timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort(new Error("timeout"));
+      reject(new Error("timeout"));
+    }, timeoutMs);
+  });
+  const inputWithSignal = { ...task.input, signal: controller.signal };
+  const iterator = agent.stream(inputWithSignal)[Symbol.asyncIterator]();
   try {
-    const inputWithSignal = { ...task.input, signal: controller.signal };
-    for await (const ev of agent.stream(inputWithSignal)) {
-      if (controller.signal.aborted) throw new Error("timeout");
-      transcript.push(ev);
+    while (true) {
+      const next = await Promise.race([iterator.next(), timeoutPromise]);
+      if (next.done) return;
+      transcript.push(next.value);
     }
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
+    if (controller.signal.aborted) {
+      // Fire-and-forget teardown: a non-cooperative agent may keep its own
+      // pending awaits alive, so we cannot block on iterator.return() here.
+      iterator.return?.(undefined).catch(() => {
+        // best-effort teardown — agent may already be broken
+      });
+    }
   }
 }
 

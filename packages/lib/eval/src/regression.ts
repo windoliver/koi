@@ -57,11 +57,24 @@ function collectRegressions(
   );
 
   const baselineByTask = new Map(baseline.byTask.map((t) => [t.taskId, t]));
+  const currentIds = new Set(current.byTask.map((t) => t.taskId));
   for (const cur of current.byTask) {
     const base = baselineByTask.get(cur.taskId);
     if (base === undefined) continue;
     pushIfRegressed(out, cur.taskId, "passRate", base.passRate, cur.passRate, passRateDelta);
     pushIfRegressed(out, cur.taskId, "meanScore", base.meanScore, cur.meanScore, scoreDelta);
+  }
+  // Treat removed baseline tasks as regressions — silent task removal
+  // would otherwise mask failures by shrinking the suite.
+  for (const base of baseline.byTask) {
+    if (currentIds.has(base.taskId)) continue;
+    out.push({
+      taskId: base.taskId,
+      metric: "passRate",
+      baseline: base.passRate,
+      current: 0,
+      delta: -base.passRate,
+    });
   }
   return out;
 }

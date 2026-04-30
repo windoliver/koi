@@ -60,6 +60,22 @@ describe("compareRuns", () => {
     }
   });
 
+  test("flags removed baseline task as regression", () => {
+    const baselineByTask = [
+      { taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1 },
+      { taskId: "t2", taskName: "t2", passRate: 1, meanScore: 1, trials: 1 },
+    ];
+    const currentByTask = [{ taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1 }];
+    const result = compareRuns(
+      run("b", summary(1, 1, baselineByTask)),
+      run("c", summary(1, 1, currentByTask)),
+    );
+    expect(result.kind).toBe("fail");
+    if (result.kind === "fail") {
+      expect(result.regressions.some((r) => r.taskId === "t2")).toBe(true);
+    }
+  });
+
   test("respects custom thresholds", () => {
     const baseline = run("b", summary(1, 1));
     const current = run("c", summary(0.5, 1));

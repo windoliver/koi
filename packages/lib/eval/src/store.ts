@@ -11,7 +11,7 @@ export function createFsStore(rootDir: string): EvalStore {
     },
     load: async (runId: string): Promise<EvalRun | undefined> => {
       const found = await findRunFile(rootDir, runId);
-      return found === undefined ? undefined : await readRun(found);
+      return found === undefined ? undefined : await readRun(found, runId);
     },
     latest: async (evalName: string): Promise<EvalRun | undefined> => {
       const metas = await listMetas(rootDir, evalName);
@@ -23,32 +23,39 @@ export function createFsStore(rootDir: string): EvalStore {
 }
 
 function pathFor(rootDir: string, evalName: string, runId: string): string {
-  return join(rootDir, sanitize(evalName), `${sanitize(runId)}.json`);
+  return join(rootDir, encode(evalName), `${encode(runId)}.json`);
 }
 
-function sanitize(s: string): string {
-  return s.replace(/[^a-zA-Z0-9._-]/g, "_");
+// encodeURIComponent guarantees a one-to-one, collision-free mapping from
+// arbitrary strings to safe path components. Decode mirrors it for listing.
+function encode(s: string): string {
+  return encodeURIComponent(s);
 }
 
-async function readRun(path: string): Promise<EvalRun | undefined> {
+async function readRun(path: string, expectedId?: string): Promise<EvalRun | undefined> {
   const file = Bun.file(path);
   if (!(await file.exists())) return undefined;
   const text = await file.text();
-  return JSON.parse(text) as EvalRun;
+  const run = JSON.parse(text) as EvalRun;
+  // Defense-in-depth: reject any run whose stored id disagrees with the
+  // requested id. Encoding is collision-free, so this should never trigger
+  // for well-formed stores — but it guards against hand-edited files.
+  if (expectedId !== undefined && run.id !== expectedId) return undefined;
+  return run;
 }
 
 async function findRunFile(rootDir: string, runId: string): Promise<string | undefined> {
-  const safe = sanitize(runId);
+  const encoded = `${encode(runId)}.json`;
   const dirs = await safeReaddir(rootDir);
   for (const evalName of dirs) {
-    const path = join(rootDir, evalName, `${safe}.json`);
+    const path = join(rootDir, evalName, encoded);
     if (await Bun.file(path).exists()) return path;
   }
   return undefined;
 }
 
 async function listMetas(rootDir: string, evalName: string): Promise<readonly EvalRunMeta[]> {
-  const dir = join(rootDir, sanitize(evalName));
+  const dir = join(rootDir, encode(evalName));
   const files = (await safeReaddir(dir)).filter((f) => f.endsWith(".json"));
   const metas: EvalRunMeta[] = [];
   for (const f of files) {

@@ -61,6 +61,16 @@ describe("createFsStore", () => {
     expect(metas[0]?.id).toBe("b");
   });
 
+  test("ids that differ only by reserved chars do not collide", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("a/b", "smoke", "2026-01-01T00:00:00Z"));
+    await store.save(makeRun("a_b", "smoke", "2026-02-01T00:00:00Z"));
+    const a1 = await store.load("a/b");
+    const a2 = await store.load("a_b");
+    expect(a1?.id).toBe("a/b");
+    expect(a2?.id).toBe("a_b");
+  });
+
   test("list returns empty for unknown eval", async () => {
     const store = createFsStore(root);
     expect(await store.list("missing")).toHaveLength(0);
