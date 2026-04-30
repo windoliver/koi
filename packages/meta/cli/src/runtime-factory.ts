@@ -93,6 +93,8 @@ import {
   fanOutComplianceRecorder,
 } from "@koi/governance-defaults";
 import type { PromptModelCaller } from "@koi/hook-prompt";
+import type { AceConfig } from "@koi/middleware-ace";
+import { createAceMiddleware } from "@koi/middleware-ace";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import {
@@ -960,6 +962,14 @@ export interface KoiRuntimeConfig {
    * that doesn't fit a preset stack. Order preserved.
    */
   readonly extraMiddleware?: readonly KoiMiddleware[] | undefined;
+  /**
+   * Optional ACE (Agentic Context Engineering) config. When provided,
+   * `@koi/middleware-ace` is instantiated and appended to `presetExtras`.
+   * The host (tui-command.ts) is responsible for the spawn-gate and
+   * resume-provenance gate before populating this field — runtime-factory
+   * trusts the caller's decision to activate. (#2088)
+   */
+  readonly ace?: AceConfig | undefined;
   /**
    * Progressive skill injector middleware for the root agent.
    * Placed in the post-permissions slot (zone C-bottom, after planPersist and
@@ -3877,6 +3887,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ...stackContribution.middleware,
         ...auditPresetExtras,
         ...(governanceMw !== undefined ? [governanceMw] : []),
+        ...(config.ace !== undefined ? [createAceMiddleware(config.ace)] : []),
         ...(config.extraMiddleware ?? []),
       ],
       manifestMiddleware: zoneBMiddleware,

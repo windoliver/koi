@@ -87,12 +87,12 @@ constraint, see #1715 design notes).
 
 ---
 
-## Manifest Schema (declarative; activation lands in a follow-up PR)
+## Manifest Schema
 
 Issue [#2088](https://github.com/windoliver/koi/issues/2088) introduces an opt-in
-`ace:` block in `koi.yaml`. The schema is shipped now (parser + validation +
-`koi start` rejection) so users can stage their config; the TUI host wiring
-that actually instantiates the middleware is tracked as the activation PR.
+`ace:` block in `koi.yaml`. `koi tui` activates the middleware under the gates
+documented below. `koi start` continues to reject `ace.enabled: true` because
+ACE is a TUI-only feature (no headless dogfood loop today).
 
 ```yaml
 ace:
@@ -112,45 +112,52 @@ ace:
   startup, not at the first model call.
 - `enabled: false` (and `ace: {}`) is a valid declarative no-op.
 
-### Host scope
+### Activation in TUI
 
-Both `koi start` and `koi tui` currently reject `manifest.ace.enabled: true`
-at fresh manifest load (matches the existing `backgroundSubprocesses` and
-`audit` rejection precedent in `commands/start.ts`). The schema is shipped
-but neither host activates the middleware in this build.
+`koi tui` builds an `AceConfig` from `manifest.ace`, instantiates
+`@koi/middleware-ace` with in-memory stores, and threads it through
+`createKoiRuntime({ ace })`. Two gates apply:
 
-**Resume-path note (intentional limitation):** the rejection runs only on
-fresh manifest load, not on `--resume` paths. A session created before
-this PR landed (with `ace.enabled: true` in its original manifest) will
-resume successfully because (a) the manifest field was silently ignored
-in older builds, so the session has no ACE state to honor, and (b) the
-broader resume-provenance pattern (`readSessionMeta()` returning `{}` for
-missing/malformed sidecars; manifest-parse-failure short-circuiting)
-applies to every manifest-governed feature, not just ACE. Hardening the
-resume path is the activation PR's responsibility — by the time real ACE
-wiring lands, the fresh-load rejection will have been replaced and resume
-becomes a real concern.
+1. **Spawn-gate.** When `manifest.stacks` is undefined (defaults include
+   `spawn`) or explicitly contains `"spawn"`, activation is refused with a
+   stderr message and the TUI continues without ACE. The spawn preset stack
+   would let child agents inherit the parent middleware instance and
+   contaminate the in-memory `PlaybookStore`. Per-agent partitioning is
+   tracked as future work alongside `@koi/playbook-store-sqlite`.
 
-### Activation PR (follow-up)
+   To dogfood ACE today, set an explicit `stacks` list that excludes spawn:
 
-The activation PR will add `manifestAce` to `KoiRuntimeConfig`, build an
-`AceConfig` from the manifest fields, and wire it into `createRuntime({ ace })`
-under the following gates:
+   ```yaml
+   stacks:
+     - observability
+     - checkpoint
+     - execution
+   ace:
+     enabled: true
+   ```
 
-1. **`spawn` preset stack must NOT be active** (no per-agent partitioning yet —
-   would contaminate child agents). Operators who want to dogfood ACE set
-   `manifest.stacks` to a list that excludes `spawn`.
-2. **Manifest provenance must be present on resume** (mirrors the existing
-   `audit` resume-handling pattern: when `readSessionMeta()` returns no
-   `manifestPath`, ACE is treated as off for the resumed session).
+2. **Resume-provenance gate.** When `koi tui --resume <id>` is invoked
+   without `--manifest`, the host skips manifest auto-discovery (so the
+   cwd manifest cannot silently override the original session's
+   model/stacks/governance). ACE activation runs inside that block, so a
+   resumed session without explicit `--manifest` defaults to ACE off.
+   This mirrors the existing `audit` resume-handling pattern.
 
-Known limitations of the activation design (documented for the activation PR):
+On successful activation the host writes:
 
-- In-memory store survives `/clear` and `/new` within one TUI process —
-  use process restart to reset. Tracked for the follow-up sqlite-store work
-  alongside per-session `clear()` semantics.
-- Cross-process persistence requires `@koi/playbook-store-sqlite` (not yet
-  shipped).
+```
+koi tui: ace: enabled (in-memory; lost on process exit; survives /clear and /new)
+```
+
+### Known limitations
+
+- **In-memory only.** State is lost on process exit. `/clear` and `/new`
+  reset the conversation but do not reset the `PlaybookStore` (no
+  `clear()` API yet on the store interface).
+- **No cross-process persistence.** Requires `@koi/playbook-store-sqlite`
+  (issue [#2087](https://github.com/windoliver/koi/issues/2087)).
+- **No spawn support.** ACE and the spawn preset stack are mutually
+  exclusive until per-agent partitioning lands.
 
 The full design analysis lives in
 `docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md` (10 review rounds
@@ -162,7 +169,8 @@ of refinement).
 
 | Phase | Adds |
 |-------|------|
-| TUI activation (issue #2088) | `manifestAce` in `KoiRuntimeConfig` + spawn-gate + resume-provenance gate; in-memory dogfood loop |
+| Per-agent partitioning | Allow ACE alongside the spawn preset stack |
+| `clear()` on `PlaybookStore` | Wire `/clear` and `/new` to reset ACE state in-process |
 | Middleware integration | `KoiMiddleware` with `wrapModelCall` (inject) + `wrapToolCall` (record) + `onSessionEnd` (consolidate) |
 | LLM pipeline | `reflector` + `curator` + `StructuredPlaybook` operations (`add` / `merge` / `prune`) with bullet credit assignment |
 | Promotion gate | Proposal → evaluation → commit/rollback flow; `PlaybookProposalStore` lineage |

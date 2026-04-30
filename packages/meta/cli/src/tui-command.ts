@@ -94,6 +94,7 @@ import {
 } from "@koi/tui";
 import { BLOCKED_HOST_SUFFIXES, BLOCKED_HOSTS, isBlockedIp } from "@koi/url-safety";
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
+import { resolveAceActivation } from "./ace-activation.js";
 import { mergeGovernanceFlags } from "./args/governance-flags.js";
 import type { TuiFlags } from "./args.js";
 import { formatAtReferencesForModel, resolveAtReferences } from "./at-reference.js";
@@ -1088,6 +1089,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestNetwork: import("./manifest.js").ManifestNetworkConfig | undefined;
   let manifestCredentials: import("./manifest.js").ManifestCredentialsConfig | undefined;
   let manifestLoadPath: string | undefined; // tracks which path was loaded, for TOCTOU revalidation
+  // #2088: built when manifest.ace.enabled === true and the spawn-gate
+  // permits activation. Passed into createKoiRuntime via `ace`.
+  let resolvedAceConfig: import("@koi/middleware-ace").AceConfig | undefined;
   // Mirror start.ts: when resuming without an explicit --manifest, bypass
   // auto-discovery so the cwd manifest cannot silently override the model,
   // stacks, plugins, filesystem scope, or governance of the original session.
@@ -1147,21 +1151,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestCredentials = manifestResult.value.credentials;
     manifestLoadPath = resolvedManifestPath;
 
-    // Issue #2088 — manifest.ace.enabled: true is parsed by the schema but
-    // host activation has not landed yet. Fail closed here (mirrors the
-    // koi start rejection in commands/start.ts) so users cannot put
-    // ace.enabled: true in a manifest, see no error, and assume ACE is
-    // running. The activation PR will replace this rejection with real
-    // wiring under the spawn-gate + resume-provenance gate documented in
-    // docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md.
-    if (manifestResult.value.ace?.enabled === true) {
-      process.stderr.write(
-        "koi tui: manifest.ace.enabled: true is not yet wired in this build " +
-          "(tracked as issue 2088). Set ace.enabled: false or remove the ace: " +
-          "block to start the TUI; the activation PR is the natural place for " +
-          "the host wiring.\n",
-      );
-      process.exit(1);
+    // Issue #2088 — ACE activation. Decide via resolveAceActivation
+    // (spawn-gate + skip-when-disabled). Resume-provenance gate is
+    // handled by the outer `skipManifestDiscovery` flag — when
+    // --resume is used without --manifest, this block is unreachable.
+    const aceActivation = resolveAceActivation(
+      manifestResult.value.ace,
+      manifestResult.value.stacks,
+    );
+    if (aceActivation.kind === "spawn-blocked") {
+      process.stderr.write(aceActivation.message);
+    } else if (aceActivation.kind === "activate") {
+      resolvedAceConfig = aceActivation.config;
+      process.stderr.write(aceActivation.message);
     }
 
     // Fail-closed audit intent enforcement — applies regardless of KOI_ALLOW_MANIFEST_FILE_SINKS.
@@ -2177,6 +2179,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // on the CREDENTIALS subsystem token AND used by the progressive skill
     // provider to gate skill `requires.credentials` at attach time.
     ...(scopedCredentials !== undefined ? { credentials: scopedCredentials } : {}),
+    // #2088: ACE activation. resolvedAceConfig is built above under the
+    // spawn-gate; on resume without --manifest, manifestResult is never
+    // loaded so resolvedAceConfig stays undefined (resume-provenance gate
+    // by construction). Passes undefined → no middleware installed.
+    ...(resolvedAceConfig !== undefined ? { ace: resolvedAceConfig } : {}),
     // Nexus backend (when resolved above) is passed through so the checkpoint
     // stack stamps the correct backend name and the restore protocol dispatches
     // compensating ops through the right backend. Omitted when undefined —

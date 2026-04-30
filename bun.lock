@@ -984,6 +984,7 @@
         "@koi/memory": "workspace:*",
         "@koi/memory-fs": "workspace:*",
         "@koi/memory-tools": "workspace:*",
+        "@koi/middleware-ace": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
         "@koi/middleware-call-dedup": "workspace:*",
         "@koi/middleware-call-limits": "workspace:*",
