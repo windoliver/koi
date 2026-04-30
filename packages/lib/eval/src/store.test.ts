@@ -82,6 +82,65 @@ describe("createFsStore", () => {
     expect(a2?.id).toBe("a_b");
   });
 
+  test("latest skips a stale corrupt artifact when a newer valid one exists", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("good", "smoke", "2026-02-01T00:00:00Z"));
+    // Inject an older corrupt file (smaller mtime by waiting + writing later
+    // would be wrong direction; we want the corrupt file to be older). Set
+    // mtime backward via utimes.
+    const dir = join(root, encodeURIComponent("smoke"));
+    const badPath = join(dir, "bad-old.json");
+    await writeFile(badPath, "{ corrupt", "utf8");
+    const past = new Date(2025, 0, 1);
+    await (await import("node:fs/promises")).utimes(badPath, past, past);
+    const latest = await store.latest("smoke");
+    expect(latest?.id).toBe("good");
+  });
+
+  test("latest fails closed when the newest file is corrupt", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("good", "smoke", "2026-01-01T00:00:00Z"));
+    // Newer file (now) that is corrupt
+    const dir = join(root, encodeURIComponent("smoke"));
+    await writeFile(join(dir, "newer-bad.json"), "{ corrupt", "utf8");
+    await expect(store.latest("smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("load rejects suite/name mismatch when scoped by evalName", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("r1", "right-suite", "2026-01-01T00:00:00Z"));
+    // Misplaced: physically copy the file under wrong-suite
+    const wrongDir = join(root, encodeURIComponent("wrong-suite"));
+    await (await import("node:fs/promises")).mkdir(wrongDir, { recursive: true });
+    const src = join(root, encodeURIComponent("right-suite"), `${encodeURIComponent("r1")}.json`);
+    const dst = join(wrongDir, `${encodeURIComponent("r1")}.json`);
+    await writeFile(dst, await (await import("node:fs/promises")).readFile(src, "utf8"));
+    await expect(store.load("r1", "wrong-suite")).rejects.toThrow(/mismatch/);
+  });
+
+  test("load rejects parseable JSON with malformed trials", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("seed", "smoke", "2026-01-01T00:00:00Z"));
+    const dir = join(root, encodeURIComponent("smoke"));
+    const malformed = JSON.stringify({
+      id: "bad-trials",
+      name: "smoke",
+      timestamp: "2026-01-02T00:00:00Z",
+      config: { name: "smoke", timeoutMs: 60000, passThreshold: 0.5, taskCount: 1 },
+      trials: [{ taskId: 42 }], // wrong type
+      summary: {
+        taskCount: 1,
+        trialCount: 1,
+        passRate: 1,
+        meanScore: 1,
+        errorCount: 0,
+        byTask: [],
+      },
+    });
+    await writeFile(join(dir, `${encodeURIComponent("bad-trials")}.json`), malformed, "utf8");
+    await expect(store.load("bad-trials", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
   test("load rejects parseable JSON that is missing required fields", async () => {
     const store = createFsStore(root);
     const dir = join(root, encodeURIComponent("smoke"));

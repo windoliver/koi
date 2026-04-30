@@ -24,7 +24,7 @@ export function createFsStore(rootDir: string): EvalStore {
     },
     load: async (runId: string, evalName?: string): Promise<EvalRun | undefined> => {
       if (evalName !== undefined) {
-        return await readRunStrict(pathFor(rootDir, evalName, runId), runId);
+        return await readRunStrict(pathFor(rootDir, evalName, runId), runId, evalName);
       }
       const matches = await findAllRunFiles(rootDir, runId);
       // Reject ambiguous lookups — caller must scope by evalName when ids
@@ -60,7 +60,11 @@ type ReadResult =
   | { readonly kind: "missing" }
   | { readonly kind: "corrupted"; readonly path: string; readonly cause: unknown };
 
-async function readRunResult(path: string, expectedId?: string): Promise<ReadResult> {
+async function readRunResult(
+  path: string,
+  expectedId?: string,
+  expectedName?: string,
+): Promise<ReadResult> {
   let run: EvalRun;
   try {
     const text = await readFile(path, "utf8");
@@ -76,6 +80,17 @@ async function readRunResult(path: string, expectedId?: string): Promise<ReadRes
       kind: "corrupted",
       path,
       cause: `id mismatch (file: ${run.id}, expected: ${expectedId})`,
+    };
+  }
+  // Bind stored JSON to its suite directory: if run.name disagrees with
+  // the directory it was loaded from, the artifact is misplaced — treat
+  // as corruption rather than silently accepting it as a baseline for
+  // the wrong suite.
+  if (expectedName !== undefined && run.name !== expectedName) {
+    return {
+      kind: "corrupted",
+      path,
+      cause: `name mismatch (file: ${run.name}, suite directory: ${expectedName})`,
     };
   }
   return { kind: "ok", run };
@@ -96,8 +111,12 @@ async function readRun(path: string, expectedId?: string): Promise<EvalRun | und
  * not-found, but throws for corruption so the regression gate fails
  * closed instead of silently degrading to "no_baseline".
  */
-async function readRunStrict(path: string, expectedId?: string): Promise<EvalRun | undefined> {
-  const r = await readRunResult(path, expectedId);
+async function readRunStrict(
+  path: string,
+  expectedId?: string,
+  expectedName?: string,
+): Promise<EvalRun | undefined> {
+  const r = await readRunResult(path, expectedId, expectedName);
   if (r.kind === "ok") return r.run;
   if (r.kind === "missing") return undefined;
   throw new Error(
@@ -113,8 +132,40 @@ function isEvalRunShape(v: unknown): v is EvalRun {
   if (typeof r["name"] !== "string") return false;
   if (typeof r["timestamp"] !== "string") return false;
   if (!Array.isArray(r["trials"])) return false;
+  for (const t of r["trials"] as readonly unknown[]) {
+    if (!isTrialShape(t)) return false;
+  }
   if (!isConfigSnapshot(r["config"])) return false;
   if (!isSummary(r["summary"])) return false;
+  return true;
+}
+
+function isTrialShape(v: unknown): boolean {
+  if (v === null || typeof v !== "object") return false;
+  const t = v as Record<string, unknown>;
+  if (typeof t["taskId"] !== "string") return false;
+  if (typeof t["trialIndex"] !== "number") return false;
+  if (!Array.isArray(t["transcript"])) return false;
+  if (!Array.isArray(t["scores"])) return false;
+  for (const s of t["scores"] as readonly unknown[]) {
+    if (s === null || typeof s !== "object") return false;
+    const sc = s as Record<string, unknown>;
+    if (typeof sc["graderId"] !== "string") return false;
+    if (typeof sc["score"] !== "number") return false;
+    if (typeof sc["pass"] !== "boolean") return false;
+  }
+  if (t["metrics"] === null || typeof t["metrics"] !== "object") return false;
+  const m = t["metrics"] as Record<string, unknown>;
+  if (typeof m["totalTokens"] !== "number") return false;
+  if (typeof m["durationMs"] !== "number") return false;
+  if (t["status"] !== "pass" && t["status"] !== "fail" && t["status"] !== "error") return false;
+  if (
+    t["cancellation"] !== "n/a" &&
+    t["cancellation"] !== "confirmed" &&
+    t["cancellation"] !== "unconfirmed"
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -152,31 +203,38 @@ async function findLatestStrict(rootDir: string, evalName: string): Promise<Eval
   const dir = join(rootDir, encode(evalName));
   const files = (await safeReaddir(dir)).filter((f) => f.endsWith(".json") && !f.includes(".tmp-"));
   if (files.length === 0) return undefined;
-  // Read every file's timestamp via readRunResult so we can find the newest
-  // candidate. The newest must be readable; older corrupt files are skipped.
-  type Entry = { readonly timestamp: string; readonly run: EvalRun };
-  const candidates: Entry[] = [];
-  let newestCorrupted: { readonly path: string; readonly cause: unknown } | undefined;
+
+  type OkEntry = { readonly path: string; readonly mtimeMs: number; readonly run: EvalRun };
+  type BadEntry = { readonly path: string; readonly mtimeMs: number; readonly cause: unknown };
+  const ok: OkEntry[] = [];
+  const bad: BadEntry[] = [];
   for (const f of files) {
     const path = join(dir, f);
-    const r = await readRunResult(path);
-    if (r.kind === "ok") {
-      candidates.push({ timestamp: r.run.timestamp, run: r.run });
-    } else if (r.kind === "corrupted") {
-      newestCorrupted = { path: r.path, cause: r.cause };
+    let mtimeMs = 0;
+    try {
+      mtimeMs = (await stat(path)).mtimeMs;
+    } catch {
+      continue;
     }
+    const r = await readRunResult(path, undefined, evalName);
+    if (r.kind === "ok") ok.push({ path, mtimeMs, run: r.run });
+    else if (r.kind === "corrupted") bad.push({ path, mtimeMs, cause: r.cause });
   }
-  candidates.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-  const top = candidates[0];
-  // If the corrupted file's timestamp would be newer than every readable
-  // candidate, we can't tell — fail closed. We approximate this by
-  // failing whenever any corruption was observed AND no valid candidate
-  // outranks it by mtime; simplest safe rule: any corruption blocks
-  // when the resulting candidate would otherwise be older than that file.
-  if (newestCorrupted !== undefined) {
+
+  // Pick the newest valid run by run.timestamp (the documented contract);
+  // mtime is only used to decide whether a corrupt file would have been
+  // newer than the chosen baseline.
+  ok.sort((a, b) => b.run.timestamp.localeCompare(a.run.timestamp));
+  const top = ok[0];
+  // Fail closed only when a corrupt artifact is newer (by mtime) than the
+  // chosen baseline — i.e., the corruption could have shadowed a newer
+  // run. Stale bad artifacts deeper in history are skipped silently.
+  const newestBadMtime = bad.length === 0 ? -1 : Math.max(...bad.map((b) => b.mtimeMs));
+  if (newestBadMtime !== -1 && (top === undefined || newestBadMtime >= top.mtimeMs)) {
+    const culprit = bad.find((b) => b.mtimeMs === newestBadMtime);
     throw new Error(
-      `EvalStore: corrupted run file at ${newestCorrupted.path} — refusing to demote latest() to an older baseline`,
-      { cause: newestCorrupted.cause instanceof Error ? newestCorrupted.cause : undefined },
+      `EvalStore: corrupted run file at ${culprit?.path} — refusing to demote latest() to an older baseline`,
+      { cause: culprit?.cause instanceof Error ? culprit.cause : undefined },
     );
   }
   return top?.run;
