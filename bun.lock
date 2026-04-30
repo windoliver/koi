@@ -546,6 +546,14 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/middleware-rlm": {
+      "name": "@koi/middleware-rlm",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
     "packages/lib/middleware-semantic-retry": {
       "name": "@koi/middleware-semantic-retry",
       "version": "0.0.0",
@@ -1089,6 +1097,7 @@
         "@koi/middleware-prompt-cache": "workspace:*",
         "@koi/middleware-reflex": "workspace:*",
         "@koi/middleware-report": "workspace:*",
+        "@koi/middleware-rlm": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-strict-agentic": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
@@ -2024,6 +2033,8 @@
     "@koi/middleware-reflex": ["@koi/middleware-reflex@workspace:packages/lib/middleware-reflex"],
 
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
+
+    "@koi/middleware-rlm": ["@koi/middleware-rlm@workspace:packages/lib/middleware-rlm"],
 
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/lib/middleware-semantic-retry"],
 
