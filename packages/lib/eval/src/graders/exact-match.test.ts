@@ -131,6 +131,26 @@ describe("exactMatch", () => {
     expect(second.pass).toBe(true);
   });
 
+  test("does not fall back to tool_result when done has non-text content (visibility)", async () => {
+    // includeToolResults=true must NOT match raw tool output when the
+    // user-visible final response is a structured non-text block. The user
+    // never saw the tool data; matching against it would be a false pass.
+    const grader = exactMatch({ includeToolResults: true });
+    const events: readonly EngineEvent[] = [
+      { kind: "tool_result", callId: "c1" as never, output: { rows: 42 } },
+      {
+        kind: "done",
+        output: {
+          content: [{ kind: "image", url: "https://example.test/x.png" }],
+          stopReason: "completed",
+          metrics: METRICS,
+        },
+      },
+    ];
+    const score = await grader.grade(events, { kind: "text", pattern: "42" }, METRICS);
+    expect(score.pass).toBe(false);
+  });
+
   test("falls back to text_delta when done has empty content array", async () => {
     const grader = exactMatch();
     const events: readonly EngineEvent[] = [

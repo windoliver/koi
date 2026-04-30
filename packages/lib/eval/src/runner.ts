@@ -406,19 +406,38 @@ export function computeTaskFingerprint(task: EvalTask): string {
   const canonical = canonicalize({
     input: task.input,
     expected: task.expected,
-    graderIds: [...task.graders.map((g) => g.id)].sort(),
+    graders: task.graders.map((g) => ({ id: g.id, config: g.configFingerprint ?? "" })),
   });
   return createHash("sha256").update(canonical).digest("hex");
 }
 
-/** Stable JSON: sort object keys recursively so equal values produce equal output. */
+/**
+ * Stable JSON-like serialization. Goals:
+ * - Sort object keys recursively so equal values produce equal output.
+ * - Preserve RegExp source + flags (default JSON.stringify drops them).
+ * - Preserve undefined as a distinct value from missing key.
+ *
+ * Anything still unrepresentable falls through to `String(v)` rather than
+ * silently collapsing to `{}` — that way swapping in a new value cannot
+ * leave the fingerprint unchanged.
+ */
 function canonicalize(v: unknown): string {
-  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (v === undefined) return "undefined";
+  if (v === null) return "null";
+  if (v instanceof RegExp) return `RegExp(${JSON.stringify(v.source)},${JSON.stringify(v.flags)})`;
+  const t = typeof v;
+  if (t === "string" || t === "number" || t === "boolean") return JSON.stringify(v);
+  if (t === "bigint") return `bigint:${(v as bigint).toString()}`;
+  if (t === "function") return `fn:${(v as () => unknown).name || "anon"}`;
+  if (t === "symbol") return `sym:${(v as symbol).toString()}`;
   if (Array.isArray(v)) return `[${v.map(canonicalize).join(",")}]`;
-  const obj = v as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
-  const parts = keys.map((k) => `${JSON.stringify(k)}:${canonicalize(obj[k])}`);
-  return `{${parts.join(",")}}`;
+  if (t === "object") {
+    const obj = v as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    const parts = keys.map((k) => `${JSON.stringify(k)}:${canonicalize(obj[k])}`);
+    return `{${parts.join(",")}}`;
+  }
+  return String(v);
 }
 
 function sumScores(trials: readonly EvalTrial[]): number {

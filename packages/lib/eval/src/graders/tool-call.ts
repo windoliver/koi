@@ -13,8 +13,10 @@ export function toolCall(options: ToolCallOptions = {}): EvalGrader {
   const id = options.id ?? DEFAULT_ID;
   const fallbackCalls = options.calls;
   const order = options.order ?? "any";
+  const configFingerprint = `order=${order};calls=${stableStringify(fallbackCalls)}`;
   return {
     id,
+    configFingerprint,
     grade: (transcript, expected): EvalScore => {
       const calls = resolveCalls(expected, fallbackCalls);
       if (calls === undefined || calls.length === 0) {
@@ -150,4 +152,13 @@ function missing(
 ): readonly string[] {
   const matchedSet = new Set(matched);
   return expected.filter((e) => !matchedSet.has(e)).map((e) => e.toolName);
+}
+
+function stableStringify(v: unknown): string {
+  if (v === undefined) return "undefined";
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
+  const obj = v as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
 }

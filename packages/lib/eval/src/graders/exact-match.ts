@@ -18,8 +18,10 @@ export function exactMatch(options: ExactMatchOptions = {}): EvalGrader {
   const id = options.id ?? DEFAULT_ID;
   const fallback = options.pattern;
   const includeToolResults = options.includeToolResults ?? false;
+  const configFingerprint = `pattern=${describePattern(fallback)};includeToolResults=${includeToolResults}`;
   return {
     id,
+    configFingerprint,
     grade: (transcript, expected): EvalScore => {
       const pattern = resolvePattern(expected, fallback);
       if (pattern === undefined) {
@@ -71,12 +73,12 @@ function collectAssistantText(
     if (doneText.length > 0) return doneText;
     // Done with non-text content blocks (image/file/button/custom) is a
     // deliberate structured response — do NOT fall back to streamed
-    // text_delta, which middleware (e.g. exfiltration guards) may have
-    // sanitized out of the final content. Returning empty here makes
-    // text-pattern grading fail with clear reasoning, which is correct.
-    if (done.output.content.length > 0) {
-      return includeToolResults ? collectFromToolResults(transcript) : "";
-    }
+    // text_delta or raw tool_result. The agent showed the user something
+    // structured; matching against backend data they never saw would be a
+    // false positive (and falling back to deltas could leak pre-sanitized
+    // text). Returning empty makes text-pattern grading fail with clear
+    // reasoning, which is correct.
+    if (done.output.content.length > 0) return "";
     // Done with truly empty content array — fall through to deltas, since
     // there is nothing structured to prefer over them.
   }
@@ -128,6 +130,12 @@ function stringifyOutput(value: unknown): string {
 
 function describe(pattern: string | RegExp): string {
   return typeof pattern === "string" ? JSON.stringify(pattern) : pattern.toString();
+}
+
+function describePattern(p: string | RegExp | undefined): string {
+  if (p === undefined) return "none";
+  if (typeof p === "string") return `s:${JSON.stringify(p)}`;
+  return `r:${JSON.stringify(p.source)}/${JSON.stringify(p.flags)}`;
 }
 
 function truncate(s: string): string {

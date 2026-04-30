@@ -17,6 +17,14 @@ export interface EvalGrader {
     expected: EvalExpectation | undefined,
     metrics: EngineMetrics,
   ) => EvalScore | Promise<EvalScore>;
+  /**
+   * Stable string capturing this grader instance's configuration
+   * (everything that changes its scoring behavior beyond its `id`).
+   * Used by `computeTaskFingerprint` so that swapping grader options
+   * under a reused taskId surfaces as a regression instead of a
+   * false-positive comparison. Optional: graders without config can omit.
+   */
+  readonly configFingerprint?: string | undefined;
 }
 
 export type EvalExpectation =
