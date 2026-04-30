@@ -436,6 +436,9 @@ const USER_MESSAGES: Readonly<Record<KoiErrorCode, string>> = {
   RESOURCE_EXHAUSTED: "Capacity limit reached. Please try again shortly.",
   UNAVAILABLE: "The service is currently unavailable.",
   HEARTBEAT_TIMEOUT: "The worker stopped responding.",
+  INVALID_BODY: "The request body was invalid or could not be parsed.",
+  INVALID_CONFIG: "The configuration is invalid. Please check the setup.",
+  ALREADY_RUNNING: "An instance is already running.",
 } as const;
 
 export type ChannelErrorOutput =
