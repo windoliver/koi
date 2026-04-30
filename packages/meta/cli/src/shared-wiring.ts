@@ -1206,36 +1206,37 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   // every outbound fetch (web_fetch and authed_fetch) is rejected. Only
   // an absent `network:` block (`networkScope === undefined`) means
   // legacy unscoped behavior.
-  // gov-15 fetch composition: createSafeFetcher with a `preDnsAllowCheck`
-  // hook for the URLPattern allowlist. The hook runs at the TOP of every
-  // hop (initial + each redirect target) BEFORE isSafeUrl resolves DNS
-  // and before HTTP IP pinning. This gives us:
-  //   • Pre-DNS URL allowlist: an off-allowlist URL is rejected without
-  //     ever touching the resolver — closes the DNS-exfil channel that
-  //     would let `https://<payload>.attacker.com` leak via DNS even if
-  //     SSRF/URLPattern ultimately deny.
-  //   • Per-hop check: every redirect target re-passes URLPattern
-  //     before DNS, so a 30x to an off-allowlist host is rejected.
-  //   • DNS-backed SSRF: isSafeUrl still resolves DNS for in-allowlist
-  //     URLs, rejecting hostnames that resolve to RFC1918 / loopback /
-  //     metadata IPs (defends DNS-rebinding tricks like localtest.me).
+  // gov-15: build the URLPattern allowlist as a `preDnsAllowCheck`
+  // callback. The callback is consumed by `createSafeFetcher` at the
+  // TOP of every hop, BEFORE isSafeUrl resolves DNS and before HTTP IP
+  // pinning. Threaded into createWebExecutor (web_fetch path) and
+  // wrapped once for authed_fetch — avoid double-wrap that would let
+  // the outer safe-fetcher do its DNS lookup before the inner allowlist
+  // hook fires (round-6 finding).
   const networkAllow = config.networkScope?.allow;
-  const fetchFn =
+  const preDnsAllowCheck =
     networkAllow !== undefined
-      ? createSafeFetcher(globalThis.fetch, {
-          preDnsAllowCheck: (() => {
-            const compiled = networkAllow.map((p) => new URLPattern(p));
-            return (url: string) => {
-              for (const pattern of compiled) {
-                if (pattern.test(url)) return { ok: true };
-              }
-              return {
-                ok: false,
-                reason: `URL '${url}' is outside the allowed fetch scope`,
-              };
+      ? (() => {
+          const compiled = networkAllow.map((p) => new URLPattern(p));
+          return (
+            url: string,
+          ): { readonly ok: true } | { readonly ok: false; readonly reason: string } => {
+            for (const pattern of compiled) {
+              if (pattern.test(url)) return { ok: true };
+            }
+            return {
+              ok: false,
+              reason: `URL '${url}' is outside the allowed fetch scope`,
             };
-          })(),
-        })
+          };
+        })()
+      : undefined;
+  // For authed_fetch: a single-wrapped safe-fetcher with the same hook.
+  // The createWebExecutor path threads preDnsAllowCheck directly into
+  // ITS createSafeFetcher call below (not re-wrapped here).
+  const fetchFn =
+    preDnsAllowCheck !== undefined
+      ? createSafeFetcher(globalThis.fetch, { preDnsAllowCheck })
       : undefined;
 
   if (includeWeb) {
@@ -1247,7 +1248,14 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
       // operator semantics (incidents, fast-moving topics) and shouldn't
       // be silently enabled just because fetch caching is.
       searchCacheTtlMs: 0,
-      ...(fetchFn !== undefined ? { fetchFn } : {}),
+      // gov-15 round-6: thread the URLPattern preDnsAllowCheck into the
+      // executor's OWN createSafeFetcher call. Do NOT pre-wrap fetchFn
+      // with createSafeFetcher here — the executor would re-wrap it
+      // again and the outer safe-fetcher would do its DNS lookup
+      // BEFORE the inner allowlist hook ran, defeating the pre-DNS
+      // guarantee. Passing the hook directly keeps the executor's
+      // single safe-fetcher as the only one in the chain.
+      ...(preDnsAllowCheck !== undefined ? { preDnsAllowCheck } : {}),
     });
     providers.push(
       createWebProvider({

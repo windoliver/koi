@@ -2150,3 +2150,57 @@ describe("createWebExecutor.fetch HTTPS", () => {
     expect(result.ok).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// preDnsAllowCheck — gov-15 round-6
+// ---------------------------------------------------------------------------
+
+describe("createWebExecutor.fetch — preDnsAllowCheck (gov-15 round-6)", () => {
+  test("rejects off-allowlist URL BEFORE DNS resolution and BEFORE fetchFn", async () => {
+    // Round-6 finding: a previous wiring layered createSafeFetcher around
+    // fetchFn externally, and the executor's own createSafeFetcher then
+    // wrapped that — the OUTER did DNS first, defeating the pre-DNS
+    // guarantee. Threading preDnsAllowCheck directly into the executor
+    // makes the executor's single safe-fetcher run the URL allowlist
+    // before isSafeUrl. Assert: an off-allowlist URL is rejected with
+    // ZERO DNS resolver calls and ZERO fetch calls.
+    let dnsCalls = 0;
+    const trackingDns: DnsResolverFn = async () => {
+      dnsCalls += 1;
+      return [PUBLIC_IP];
+    };
+    const fetchFn = mock(
+      async () => new Response("would have leaked", { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: trackingDns,
+      allowHttps: true,
+      preDnsAllowCheck: (url) =>
+        url.startsWith("https://api.example.com/")
+          ? { ok: true }
+          : { ok: false, reason: `URL '${url}' is outside the allowed fetch scope` },
+    });
+    const result = await executor.fetch("https://attacker.example.com/leak");
+    expect(result.ok).toBe(false);
+    expect(dnsCalls).toBe(0);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  test("allows in-allowlist URL through to DNS + fetch", async () => {
+    const fetchFn = mock(
+      async () => new Response("hi", { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: mockDnsResolver,
+      allowHttps: true,
+      preDnsAllowCheck: (url) =>
+        url.startsWith("https://api.example.com/")
+          ? { ok: true }
+          : { ok: false, reason: `URL '${url}' is outside the allowed fetch scope` },
+    });
+    const result = await executor.fetch("https://api.example.com/data");
+    expect(result.ok).toBe(true);
+  });
+});
