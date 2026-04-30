@@ -94,6 +94,7 @@ import {
 } from "@koi/tui";
 import { BLOCKED_HOST_SUFFIXES, BLOCKED_HOSTS, isBlockedIp } from "@koi/url-safety";
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
+import { resolveAceActivation } from "./ace-activation.js";
 import { mergeGovernanceFlags } from "./args/governance-flags.js";
 import type { TuiFlags } from "./args.js";
 import { formatAtReferencesForModel, resolveAtReferences } from "./at-reference.js";
@@ -1088,6 +1089,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestNetwork: import("./manifest.js").ManifestNetworkConfig | undefined;
   let manifestCredentials: import("./manifest.js").ManifestCredentialsConfig | undefined;
   let manifestLoadPath: string | undefined; // tracks which path was loaded, for TOCTOU revalidation
+  // #2088: built when manifest.ace.enabled === true and the spawn-gate
+  // permits activation. Passed into createKoiRuntime via `ace`.
+  let resolvedAceConfig: import("@koi/middleware-ace").AceConfig | undefined;
   // Mirror start.ts: when resuming without an explicit --manifest, bypass
   // auto-discovery so the cwd manifest cannot silently override the model,
   // stacks, plugins, filesystem scope, or governance of the original session.
@@ -1147,21 +1151,37 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestCredentials = manifestResult.value.credentials;
     manifestLoadPath = resolvedManifestPath;
 
-    // Issue #2088 — manifest.ace.enabled: true is parsed by the schema but
-    // host activation has not landed yet. Fail closed here (mirrors the
-    // koi start rejection in commands/start.ts) so users cannot put
-    // ace.enabled: true in a manifest, see no error, and assume ACE is
-    // running. The activation PR will replace this rejection with real
-    // wiring under the spawn-gate + resume-provenance gate documented in
-    // docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md.
-    if (manifestResult.value.ace?.enabled === true) {
+    // Issue #2088 — ACE activation. Spawn isolation is handled in
+    // runtime-factory.ts (`inheritedMiddlewareForChildren` excludes ACE),
+    // so spawn + ACE coexist safely. Resume-provenance gate is handled
+    // by the outer `skipManifestDiscovery` flag — when --resume is used
+    // without --manifest, this block is unreachable. The manifest schema
+    // already required `acknowledge_cross_session_state: true` to allow
+    // `enabled: true`, so /clear and /new survival is documented at load.
+    //
+    // Resume-with-explicit-manifest still flows through this block. Refuse
+    // to attach a fresh ACE store to a resumed transcript: even a freshly
+    // supplied --manifest cannot recover the prior process's PlaybookStore,
+    // so honoring `ace.enabled: true` here would silently drift learning
+    // state from what the transcript implies. Block until #2087 lands.
+    if (flags.resume !== undefined && manifestResult.value.ace?.enabled === true) {
       process.stderr.write(
-        "koi tui: manifest.ace.enabled: true is not yet wired in this build " +
-          "(tracked as issue 2088). Set ace.enabled: false or remove the ace: " +
-          "block to start the TUI; the activation PR is the natural place for " +
-          "the host wiring.\n",
+        "koi tui: --resume cannot start with manifest.ace.enabled: true — " +
+          "in-memory playbooks cannot be carried across processes, and attaching " +
+          "a fresh ACE store to an existing transcript would silently drift from " +
+          "the prior session's prompting and learning state. Wait for sqlite-backed " +
+          "playbook persistence (#2087), or omit --resume to start a new ACE session.\n",
       );
       process.exit(1);
+    }
+    const aceActivation = resolveAceActivation(manifestResult.value.ace);
+    if (aceActivation.kind === "block") {
+      process.stderr.write(aceActivation.message);
+      process.exit(1);
+    }
+    if (aceActivation.kind === "activate") {
+      resolvedAceConfig = aceActivation.config;
+      process.stderr.write(aceActivation.message);
     }
 
     // Fail-closed audit intent enforcement — applies regardless of KOI_ALLOW_MANIFEST_FILE_SINKS.
@@ -1446,10 +1466,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
 
   // Persist manifest provenance so future resumes can enforce audit intent
   // against the original session's manifest, not the cwd at resume time.
+  // When ACE is activated, the sidecar is the only signal a future
+  // koi start --resume has to refuse the unsupported host transition;
+  // missing it would silently downgrade. Fail closed in that case.
   if (flags.resume === undefined && resolvedManifestPath !== undefined) {
-    await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), {
+    const writeResult = await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), {
       manifestPath: resolvedManifestPath,
     });
+    if (!writeResult.ok && resolvedAceConfig !== undefined) {
+      process.stderr.write(
+        `koi tui: ace: refusing to start because session provenance sidecar could not be written: ${writeResult.error}. ACE-enabled sessions require a recoverable sidecar so future resumes can enforce host-safety constraints. Fix the filesystem (writable sessions directory) and retry, or remove ace.enabled: true from the manifest.\n`,
+      );
+      process.exit(1);
+    }
   }
 
   // Resume-path audit intent enforcement using stored session provenance.
@@ -1550,13 +1579,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }
         }
       }
-      // Issue #2088 — note: a resume-time ACE rejection was deliberately
-      // NOT added here. See the matching comment in commands/start.ts —
-      // this build does not actually wire ACE, so a resumed session with
-      // ace.enabled: true behaves identically to any other session. The
-      // activation PR is the natural place to add comprehensive resume-
-      // time rejection alongside hardened sidecar validation (the
-      // readSessionMeta() {}-on-malformed gap is broader than ACE).
+      // Issue #2088 — block resume of ACE-enabled sessions until the
+      // sqlite-backed playbook store (#2087) lands. ACE state lives only
+      // in the original process's PlaybookStore, so re-activating ACE on
+      // resume would start with an empty store while the transcript
+      // implies continuity — silent behavioral drift the operator can't
+      // diagnose. Fail closed unconditionally: --manifest is not an
+      // escape hatch because the operator cannot recover the prior
+      // PlaybookStore even with a matching manifest path.
+      if (resumeAuditResult.ok && resumeAuditResult.value.ace?.enabled === true) {
+        process.stderr.write(
+          "koi tui: original session manifest.ace.enabled: true cannot be resumed — " +
+            "in-memory playbooks from the prior session are unrecoverable, and re-activating " +
+            "ACE with an empty store would silently drift from the original prompting and " +
+            "learning behavior. Wait for sqlite-backed playbook persistence (#2087), or " +
+            "start a new session with `koi tui` (no --resume).\n",
+        );
+        process.exit(1);
+      }
     }
   }
 
@@ -2177,6 +2217,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // on the CREDENTIALS subsystem token AND used by the progressive skill
     // provider to gate skill `requires.credentials` at attach time.
     ...(scopedCredentials !== undefined ? { credentials: scopedCredentials } : {}),
+    // #2088: ACE activation. resolvedAceConfig is built above under the
+    // spawn-gate; on resume without --manifest, manifestResult is never
+    // loaded so resolvedAceConfig stays undefined (resume-provenance gate
+    // by construction). Passes undefined → no middleware installed.
+    ...(resolvedAceConfig !== undefined ? { ace: resolvedAceConfig } : {}),
     // Nexus backend (when resolved above) is passed through so the checkpoint
     // stack stamps the correct backend name and the restore protocol dispatches
     // compensating ops through the right backend. Omitted when undefined —
