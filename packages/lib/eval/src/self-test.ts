@@ -34,6 +34,12 @@ export async function runSelfTest(
       cancellation: result.cancellation,
     };
     results.push(cr);
+    // Always stop on `unconfirmed` cancellation: the underlying check may
+    // still be running, so subsequent checks could overlap with it and
+    // produce side-effects against shared state. This is the safe
+    // default; callers cannot opt out (the leaked work is the bug, not
+    // the stop).
+    if (cr.cancellation === "unconfirmed") break;
     if (bail && !result.pass) break;
   }
   return { pass: results.every((r) => r.pass), checks: results };

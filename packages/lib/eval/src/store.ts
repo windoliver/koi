@@ -12,7 +12,7 @@ export function createFsStore(rootDir: string): EvalStore {
       // steps leaves either the previous run or no file at the final path
       // — never a torn JSON document that would silently shadow newer
       // baselines.
-      await writeFile(tempPath, JSON.stringify(run, null, 2), "utf8");
+      await writeFile(tempPath, serializeRun(run), "utf8");
       try {
         await rename(tempPath, filePath);
       } catch (e: unknown) {
@@ -43,6 +43,33 @@ export function createFsStore(rootDir: string): EvalStore {
     },
     list: async (evalName: string): Promise<readonly EvalRunMeta[]> => listMetas(rootDir, evalName),
   };
+}
+
+/**
+ * Serialize a run defensively. Tool results and custom-event data carry
+ * `unknown` payloads, so a stray BigInt, host object, or circular structure
+ * could otherwise blow up `JSON.stringify` after a full eval run — losing
+ * the baseline. We sanitize unsupported leaves into a structured marker.
+ */
+function serializeRun(run: EvalRun): string {
+  const seen = new WeakSet<object>();
+  const sanitize = (value: unknown): unknown => {
+    if (value === null || value === undefined) return value;
+    const t = typeof value;
+    if (t === "bigint") return { __unserializable: "bigint", repr: value.toString() };
+    if (t === "function" || t === "symbol") return { __unserializable: t };
+    if (t !== "object") return value;
+    const obj = value as object;
+    if (seen.has(obj)) return { __unserializable: "circular" };
+    seen.add(obj);
+    if (Array.isArray(value)) return value.map(sanitize);
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = sanitize(v);
+    }
+    return out;
+  };
+  return JSON.stringify(sanitize(run), null, 2);
 }
 
 function pathFor(rootDir: string, evalName: string, runId: string): string {

@@ -51,6 +51,28 @@ describe("runSelfTest", () => {
     expect(result.checks[0]?.cancellation).toBe("unconfirmed");
   });
 
+  test("unconfirmed cancellation stops the self-test sequence by default", async () => {
+    let secondRan = false;
+    const checks: readonly SelfTestCheck[] = [
+      {
+        name: "ignores-signal",
+        run: () =>
+          new Promise<{ pass: true }>((resolve) => setTimeout(() => resolve({ pass: true }), 50)),
+        timeoutMs: 10,
+      },
+      {
+        name: "should-not-run",
+        run: () => {
+          secondRan = true;
+          return { pass: true };
+        },
+      },
+    ];
+    const result = await runSelfTest(checks);
+    expect(result.checks).toHaveLength(1);
+    expect(secondRan).toBe(false);
+  });
+
   test("late settlement without sentinel still reports cancellation: 'unconfirmed'", async () => {
     const checks: readonly SelfTestCheck[] = [
       {

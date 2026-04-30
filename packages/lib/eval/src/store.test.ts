@@ -30,6 +30,40 @@ afterEach(async () => {
 });
 
 describe("createFsStore", () => {
+  test("save sanitizes BigInt and circular tool-result payloads", async () => {
+    const store = createFsStore(root);
+    const baseRun = makeRun("sanitize", "smoke", "2026-01-01T00:00:00Z");
+    const circular: { self?: unknown } = {};
+    circular.self = circular;
+    const run = {
+      ...baseRun,
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [{ kind: "tool_result", callId: "c1", output: { big: 1n, ref: circular } }],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "fail" as const,
+          cancellation: "n/a" as const,
+        },
+      ],
+    } as unknown as Parameters<typeof store.save>[0];
+    await store.save(run);
+    const loaded = await store.load("sanitize", "smoke");
+    expect(loaded?.id).toBe("sanitize");
+    expect(loaded?.trials[0]?.transcript[0]).toMatchObject({
+      kind: "tool_result",
+      output: { big: { __unserializable: "bigint", repr: "1" } },
+    });
+  });
+
   test("save then load round-trips a run", async () => {
     const store = createFsStore(root);
     const run = makeRun("r1", "smoke", "2026-01-01T00:00:00Z");

@@ -118,11 +118,19 @@ async function runTrial(
     trialError = e;
   }
   const disposeAwaited = await disposeSafely(agent, disposeTimeoutMs);
+  // Teardown semantics:
+  // - Timeout path: confirmed only when both iterator.return() and
+  //   dispose() acknowledged.
+  // - Non-timeout path: a failed/hung dispose() is still a leaked agent —
+  //   surface it as `unconfirmed` so the outer loop aborts subsequent
+  //   trials instead of pretending isolation held.
   const cancellation: CancellationStatus = timedOut
     ? returnAwaited && disposeAwaited
       ? "confirmed"
       : "unconfirmed"
-    : "n/a";
+    : disposeAwaited
+      ? "n/a"
+      : "unconfirmed";
 
   const durationMs = now() - start;
   const metrics = mergeMetrics(extractMetrics(transcript), durationMs);
