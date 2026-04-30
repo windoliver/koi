@@ -1158,6 +1158,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // without --manifest, this block is unreachable. The manifest schema
     // already required `acknowledge_cross_session_state: true` to allow
     // `enabled: true`, so /clear and /new survival is documented at load.
+    //
+    // Resume-with-explicit-manifest still flows through this block. Refuse
+    // to attach a fresh ACE store to a resumed transcript: even a freshly
+    // supplied --manifest cannot recover the prior process's PlaybookStore,
+    // so honoring `ace.enabled: true` here would silently drift learning
+    // state from what the transcript implies. Block until #2087 lands.
+    if (flags.resume !== undefined && manifestResult.value.ace?.enabled === true) {
+      process.stderr.write(
+        "koi tui: --resume cannot start with manifest.ace.enabled: true — " +
+          "in-memory playbooks cannot be carried across processes, and attaching " +
+          "a fresh ACE store to an existing transcript would silently drift from " +
+          "the prior session's prompting and learning state. Wait for sqlite-backed " +
+          "playbook persistence (#2087), or omit --resume to start a new ACE session.\n",
+      );
+      process.exit(1);
+    }
     const aceActivation = resolveAceActivation(manifestResult.value.ace);
     if (aceActivation.kind === "activate") {
       resolvedAceConfig = aceActivation.config;
