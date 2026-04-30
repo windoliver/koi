@@ -742,10 +742,12 @@ function parseManifestAce(
         error: `manifest.ace.max_injected_tokens must be a finite number (got: ${JSON.stringify(maxInjectedTokens)})`,
       };
     }
-    if (maxInjectedTokens <= 0) {
+    // 0 is valid: the runtime injector treats it as "no injection" mode
+    // (see packages/lib/middleware-ace/src/injector.ts).
+    if (maxInjectedTokens < 0) {
       return {
         ok: false,
-        error: `manifest.ace.max_injected_tokens must be > 0 (got: ${maxInjectedTokens})`,
+        error: `manifest.ace.max_injected_tokens must be >= 0 (got: ${maxInjectedTokens})`,
       };
     }
   }
@@ -774,10 +776,12 @@ function parseManifestAce(
         error: `manifest.ace.lambda must be a finite number (got: ${JSON.stringify(lambda)})`,
       };
     }
-    if (lambda <= 0) {
+    // 0 is valid: disables recency decay (recency factor stays at 1).
+    // Existing runtime tests in stats-aggregator.test.ts use lambda: 0.
+    if (lambda < 0) {
       return {
         ok: false,
-        error: `manifest.ace.lambda must be > 0 (got: ${lambda})`,
+        error: `manifest.ace.lambda must be >= 0 (got: ${lambda})`,
       };
     }
   }

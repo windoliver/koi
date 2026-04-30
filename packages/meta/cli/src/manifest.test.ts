@@ -1051,7 +1051,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
     expect(result.error).toContain("manifest.ace.enabled must be a boolean");
   });
 
-  test("rejects max_injected_tokens <= 0", async () => {
+  test("accepts max_injected_tokens: 0 (no-injection mode in runtime)", async () => {
     const p = writeManifest(
       [
         "model:",
@@ -1062,9 +1062,25 @@ describe("loadManifestConfig: ace block (#2088)", () => {
       ].join("\n"),
     );
     const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.ace?.maxInjectedTokens).toBe(0);
+  });
+
+  test("rejects negative max_injected_tokens", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        "  max_injected_tokens: -1",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("manifest.ace.max_injected_tokens must be > 0");
+    expect(result.error).toContain("manifest.ace.max_injected_tokens must be >= 0");
   });
 
   test("rejects min_score outside [0, 1]", async () => {
@@ -1083,7 +1099,23 @@ describe("loadManifestConfig: ace block (#2088)", () => {
     expect(result.error).toContain("manifest.ace.min_score must be in [0, 1]");
   });
 
-  test("rejects lambda <= 0", async () => {
+  test("accepts lambda: 0 (disables recency decay in runtime)", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        "  lambda: 0",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.ace?.lambda).toBe(0);
+  });
+
+  test("rejects negative lambda", async () => {
     const p = writeManifest(
       [
         "model:",
@@ -1096,7 +1128,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
     const result = await loadManifestConfig(p);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("manifest.ace.lambda must be > 0");
+    expect(result.error).toContain("manifest.ace.lambda must be >= 0");
   });
 
   test("rejects non-object ace block", async () => {
