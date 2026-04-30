@@ -407,8 +407,18 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
         [Symbol.asyncIterator]: async function* () {
           try {
             for await (const chunk of inner) {
-              if (m !== undefined && chunk.kind === "usage") {
-                outputTokens = chunk.outputTokens;
+              if (m !== undefined) {
+                // Providers may report usage on `usage`, terminal `done`, or
+                // even `error` chunks. Capture all three so token tracking
+                // doesn't silently skip degraded paths or providers that
+                // emit usage only at end-of-stream.
+                if (chunk.kind === "usage") {
+                  outputTokens = chunk.outputTokens;
+                } else if (chunk.kind === "done" && chunk.response.usage !== undefined) {
+                  outputTokens = chunk.response.usage.outputTokens;
+                } else if (chunk.kind === "error" && chunk.usage !== undefined) {
+                  outputTokens = chunk.usage.outputTokens;
+                }
               }
               yield chunk;
             }

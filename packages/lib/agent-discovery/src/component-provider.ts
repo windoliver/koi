@@ -45,6 +45,10 @@ export function createDiscoveryProvider(config: DiscoveryProviderConfig = {}): C
     name: "agent-discovery",
     attach: async (_agent: Agent): Promise<AttachResult> => {
       const agents: readonly ExternalAgentDescriptor[] = await discovery.discover();
+      // Take an immutable boot snapshot but invalidate the shared cache so
+      // the first `discover_agents` invocation performs a real rescan
+      // instead of replaying stale attach-time state.
+      discovery.invalidate();
       const components = new Map<string, unknown>([
         [toolToken("discover_agents"), tool],
         [EXTERNAL_AGENTS, agents],

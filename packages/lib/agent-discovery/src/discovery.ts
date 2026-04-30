@@ -1,6 +1,8 @@
 import type { ExternalAgentDescriptor } from "@koi/core";
 import type { DiscoveryFilter, DiscoveryHandle, DiscoverySource } from "./types.js";
 
+const SOURCE_TIMEOUT_MS = 5_000;
+
 interface CacheState {
   readonly value: readonly ExternalAgentDescriptor[];
   readonly expiresAt: number;
@@ -27,8 +29,25 @@ export function createDiscovery(
     return [...byName.values()].map((v) => v.d);
   }
 
+  async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("DISCOVERY_TIMEOUT")), ms);
+    });
+    try {
+      return await Promise.race([p, timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   async function fetchAll(): Promise<readonly ExternalAgentDescriptor[]> {
-    const settled = await Promise.allSettled(sources.map((s) => s.discover()));
+    // Bound each source so a hung MCP server cannot block startup or every
+    // subsequent discover() call. Timed-out sources behave like any other
+    // per-source failure: results from healthy sources still come through.
+    const settled = await Promise.allSettled(
+      sources.map((s) => withTimeout(Promise.resolve(s.discover()), SOURCE_TIMEOUT_MS)),
+    );
     const flat: ExternalAgentDescriptor[] = [];
     for (const r of settled) {
       if (r.status === "fulfilled") flat.push(...r.value);
