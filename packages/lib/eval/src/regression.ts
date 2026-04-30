@@ -122,6 +122,20 @@ function collectRegressions(
       }
       continue;
     }
+    // Fingerprint drift: a reused taskId with changed input/expected/graders
+    // means the two runs measure different things. Surfacing the numeric
+    // delta would be misleading; flag as a regression and skip the value
+    // comparison so the gate forces an explicit baseline rebaseline.
+    if (base.taskFingerprint !== cur.taskFingerprint) {
+      out.push({
+        taskId: cur.taskId,
+        metric: "passRate",
+        baseline: base.passRate,
+        current: cur.passRate,
+        delta: cur.passRate - base.passRate,
+      });
+      continue;
+    }
     pushIfRegressed(out, cur.taskId, "passRate", base.passRate, cur.passRate, passRateDelta);
     pushIfRegressed(out, cur.taskId, "meanScore", base.meanScore, cur.meanScore, scoreDelta);
   }

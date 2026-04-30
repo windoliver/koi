@@ -112,6 +112,12 @@ export interface TaskSummary {
   readonly passRate: number;
   readonly meanScore: number;
   readonly trials: number;
+  /**
+   * Stable SHA-256 fingerprint of the task definition (input, expected,
+   * grader ids). Persisted so regression comparison can refuse to compare
+   * runs whose task definitions drifted under a reused taskId.
+   */
+  readonly taskFingerprint: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -46,9 +46,18 @@ describe("compareRuns", () => {
   });
 
   test("fails on per-task score drop", () => {
-    const baselineByTask = [{ taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1 }];
+    const baselineByTask = [
+      { taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1, taskFingerprint: "fp" },
+    ];
     const currentByTask = [
-      { taskId: "t1", taskName: "t1", passRate: 1, meanScore: 0.5, trials: 1 },
+      {
+        taskId: "t1",
+        taskName: "t1",
+        passRate: 1,
+        meanScore: 0.5,
+        trials: 1,
+        taskFingerprint: "fp",
+      },
     ];
     const result = compareRuns(
       run("b", summary(1, 1, baselineByTask)),
@@ -62,10 +71,12 @@ describe("compareRuns", () => {
 
   test("flags removed baseline task as regression", () => {
     const baselineByTask = [
-      { taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1 },
-      { taskId: "t2", taskName: "t2", passRate: 1, meanScore: 1, trials: 1 },
+      { taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1, taskFingerprint: "f1" },
+      { taskId: "t2", taskName: "t2", passRate: 1, meanScore: 1, trials: 1, taskFingerprint: "f2" },
     ];
-    const currentByTask = [{ taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1 }];
+    const currentByTask = [
+      { taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1, taskFingerprint: "f1" },
+    ];
     const result = compareRuns(
       run("b", summary(1, 1, baselineByTask)),
       run("c", summary(1, 1, currentByTask)),
@@ -77,10 +88,19 @@ describe("compareRuns", () => {
   });
 
   test("flags new task with low mean score even if pass rate is 100%", () => {
-    const baselineByTask = [{ taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1 }];
+    const baselineByTask = [
+      { taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1, taskFingerprint: "f1" },
+    ];
     const currentByTask = [
-      { taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1 },
-      { taskId: "t2-new", taskName: "t2-new", passRate: 1, meanScore: 0.6, trials: 1 },
+      { taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1, taskFingerprint: "f1" },
+      {
+        taskId: "t2-new",
+        taskName: "t2-new",
+        passRate: 1,
+        meanScore: 0.6,
+        trials: 1,
+        taskFingerprint: "f2",
+      },
     ];
     const result = compareRuns(
       run("b", summary(1, 1, baselineByTask)),
@@ -125,6 +145,26 @@ describe("compareRuns", () => {
     };
     const result = compareRuns(baseline, current);
     expect(result.kind).toBe("fail");
+  });
+
+  test("flags fingerprint drift on reused taskId", () => {
+    const baselineByTask = [
+      { taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1, taskFingerprint: "v1" },
+    ];
+    // Same numbers, different fingerprint = task definition drifted under
+    // a reused id. The gate must refuse the comparison instead of treating
+    // the runs as equivalent.
+    const currentByTask = [
+      { taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 1, taskFingerprint: "v2" },
+    ];
+    const result = compareRuns(
+      run("b", summary(1, 1, baselineByTask)),
+      run("c", summary(1, 1, currentByTask)),
+    );
+    expect(result.kind).toBe("fail");
+    if (result.kind === "fail") {
+      expect(result.regressions.some((r) => r.taskId === "t1")).toBe(true);
+    }
   });
 
   test("respects custom thresholds", () => {

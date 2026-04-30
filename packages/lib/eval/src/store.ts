@@ -364,6 +364,7 @@ function isSummary(v: unknown): boolean {
     if (typeof ts.passRate !== "number") return false;
     if (typeof ts.meanScore !== "number") return false;
     if (typeof ts.trials !== "number") return false;
+    if (typeof ts.taskFingerprint !== "string") return false;
   }
   return true;
 }
@@ -373,40 +374,28 @@ async function findLatestStrict(rootDir: string, evalName: string): Promise<Eval
   const files = (await safeReaddir(dir)).filter((f) => f.endsWith(".json") && !f.includes(".tmp-"));
   if (files.length === 0) return undefined;
 
-  type OkEntry = { readonly path: string; readonly mtimeMs: number; readonly run: EvalRun };
-  type BadEntry = { readonly path: string; readonly mtimeMs: number; readonly cause: unknown };
-  const ok: OkEntry[] = [];
-  const bad: BadEntry[] = [];
+  // Fail closed on ANY corrupt artifact in the suite. We cannot trust mtime
+  // to bound corruption (clock skew, copy/extract preserving older mtime,
+  // intentional touch) and a corrupt file with the newest logical
+  // run.timestamp could otherwise be silently demoted to an older baseline.
+  // Latest() is the regression-gate path — surfacing store damage is more
+  // important than answering at all.
+  const ok: EvalRun[] = [];
   for (const f of files) {
     const path = join(dir, f);
-    let mtimeMs = 0;
-    try {
-      mtimeMs = (await stat(path)).mtimeMs;
-    } catch {
-      continue;
-    }
     const r = await readRunResult(path, undefined, evalName);
-    if (r.kind === "ok") ok.push({ path, mtimeMs, run: r.run });
-    else if (r.kind === "corrupted") bad.push({ path, mtimeMs, cause: r.cause });
+    if (r.kind === "ok") ok.push(r.run);
+    else if (r.kind === "corrupted") {
+      throw new Error(
+        `EvalStore: corrupted run file at ${r.path} — refusing to choose a baseline while the suite contains damaged artifacts`,
+        { cause: r.cause instanceof Error ? r.cause : undefined },
+      );
+    }
   }
 
-  // Pick the newest valid run by run.timestamp (the documented contract);
-  // mtime is only used to decide whether a corrupt file would have been
-  // newer than the chosen baseline.
-  ok.sort((a, b) => b.run.timestamp.localeCompare(a.run.timestamp));
-  const top = ok[0];
-  // Fail closed only when a corrupt artifact is newer (by mtime) than the
-  // chosen baseline — i.e., the corruption could have shadowed a newer
-  // run. Stale bad artifacts deeper in history are skipped silently.
-  const newestBadMtime = bad.length === 0 ? -1 : Math.max(...bad.map((b) => b.mtimeMs));
-  if (newestBadMtime !== -1 && (top === undefined || newestBadMtime >= top.mtimeMs)) {
-    const culprit = bad.find((b) => b.mtimeMs === newestBadMtime);
-    throw new Error(
-      `EvalStore: corrupted run file at ${culprit?.path} — refusing to demote latest() to an older baseline`,
-      { cause: culprit?.cause instanceof Error ? culprit.cause : undefined },
-    );
-  }
-  return top?.run;
+  // Pick the newest valid run by run.timestamp.
+  ok.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  return ok[0];
 }
 
 async function findAllRunFiles(rootDir: string, runId: string): Promise<readonly string[]> {

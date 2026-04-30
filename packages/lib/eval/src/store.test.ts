@@ -62,7 +62,16 @@ describe("createFsStore", () => {
       ...run,
       summary: {
         ...run.summary,
-        byTask: [{ taskId: "t1", taskName: "t1", passRate: 0, meanScore: 0, trials: 0 }],
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 0,
+            taskFingerprint: "fp1",
+          },
+        ],
       },
     };
     await store.save(seeded);
@@ -71,7 +80,16 @@ describe("createFsStore", () => {
       ...seeded,
       summary: {
         ...seeded.summary,
-        byTask: [{ taskId: "t1", taskName: "t1", passRate: 1, meanScore: 1, trials: 5 }],
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 1,
+            meanScore: 1,
+            trials: 5,
+            taskFingerprint: "x",
+          },
+        ],
       },
     };
     await writeFile(path, JSON.stringify(tampered), "utf8");
@@ -127,7 +145,16 @@ describe("createFsStore", () => {
         trialCount: 1,
         passRate: 0,
         taskCount: 1,
-        byTask: [{ taskId: "t1", taskName: "t1", passRate: 0, meanScore: 0, trials: 1 }],
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 1,
+            taskFingerprint: "x",
+          },
+        ],
       },
     } as unknown as Parameters<typeof store.save>[0];
     await store.save(run);
@@ -191,19 +218,18 @@ describe("createFsStore", () => {
     expect(a2?.id).toBe("a_b");
   });
 
-  test("latest skips a stale corrupt artifact when a newer valid one exists", async () => {
+  test("latest fails closed on any corrupt artifact even with older mtime", async () => {
+    // Mtime is untrustworthy: clock skew, archive extraction, or `touch`
+    // can make a corrupt-but-newest-logical-timestamp file look stale. We
+    // refuse to choose a baseline while the suite contains damaged data.
     const store = createFsStore(root);
     await store.save(makeRun("good", "smoke", "2026-02-01T00:00:00Z"));
-    // Inject an older corrupt file (smaller mtime by waiting + writing later
-    // would be wrong direction; we want the corrupt file to be older). Set
-    // mtime backward via utimes.
     const dir = join(root, encodeURIComponent("smoke"));
     const badPath = join(dir, "bad-old.json");
     await writeFile(badPath, "{ corrupt", "utf8");
     const past = new Date(2025, 0, 1);
     await (await import("node:fs/promises")).utimes(badPath, past, past);
-    const latest = await store.latest("smoke");
-    expect(latest?.id).toBe("good");
+    await expect(store.latest("smoke")).rejects.toThrow(/corrupt/);
   });
 
   test("latest fails closed when the newest file is corrupt", async () => {

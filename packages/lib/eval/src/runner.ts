@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { EngineEvent, EngineMetrics } from "@koi/core";
 import {
   type AgentHandle,
@@ -115,6 +116,19 @@ async function runTrial(
   try {
     agent = await config.agentFactory();
     await collectTranscriptWithTimeout(agent, task, transcript, timeoutMs);
+    // Require a terminal `done` event with a "completed" stop reason. An
+    // adapter that exits early (iterator exhausted without emitting done)
+    // produces a partial transcript that graders' text_delta fallback
+    // could mis-grade as a pass. Surface as an error instead.
+    const terminal = findTerminalDone(transcript);
+    if (terminal === undefined) {
+      throw new Error("agent stream ended without a terminal 'done' event");
+    }
+    if (terminal.output.stopReason !== "completed") {
+      throw new Error(
+        `agent stream stopped with non-completed reason: ${terminal.output.stopReason}`,
+      );
+    }
   } catch (e: unknown) {
     const marker = readTimeoutMarker(e);
     if (marker !== undefined) {
@@ -167,9 +181,16 @@ async function runTrial(
  * undefined if the agent never emitted a `done` event (e.g. timeout).
  */
 function extractMetrics(transcript: readonly EngineEvent[]): EngineMetrics | undefined {
+  const done = findTerminalDone(transcript);
+  return done?.output.metrics;
+}
+
+function findTerminalDone(
+  transcript: readonly EngineEvent[],
+): Extract<EngineEvent, { kind: "done" }> | undefined {
   for (let i = transcript.length - 1; i >= 0; i--) {
     const ev = transcript[i];
-    if (ev?.kind === "done") return ev.output.metrics;
+    if (ev?.kind === "done") return ev;
   }
   return undefined;
 }
@@ -367,7 +388,37 @@ function taskSummary(task: EvalTask, trials: readonly EvalTrial[]): TaskSummary 
     passRate: taskTrials.length === 0 ? 0 : passed / taskTrials.length,
     meanScore,
     trials: taskTrials.length,
+    taskFingerprint: computeTaskFingerprint(task),
   };
+}
+
+/**
+ * Stable fingerprint of a task definition: SHA-256 over a canonical JSON
+ * encoding of its observable inputs. compareRuns() rejects per-task
+ * comparisons where the baseline and current fingerprints disagree.
+ *
+ * We deliberately fingerprint only what determines what's being measured:
+ * input messages, expectation, and the set of grader IDs (in stable order).
+ * Grader options live behind the EvalGrader interface and are not
+ * introspectable here without breaking the L0/L2 boundary.
+ */
+export function computeTaskFingerprint(task: EvalTask): string {
+  const canonical = canonicalize({
+    input: task.input,
+    expected: task.expected,
+    graderIds: [...task.graders.map((g) => g.id)].sort(),
+  });
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+/** Stable JSON: sort object keys recursively so equal values produce equal output. */
+function canonicalize(v: unknown): string {
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(canonicalize).join(",")}]`;
+  const obj = v as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  const parts = keys.map((k) => `${JSON.stringify(k)}:${canonicalize(obj[k])}`);
+  return `{${parts.join(",")}}`;
 }
 
 function sumScores(trials: readonly EvalTrial[]): number {

@@ -4,10 +4,25 @@ import { exactMatch } from "./graders/exact-match.js";
 import { runEval } from "./runner.js";
 import type { AgentHandle, EvalGrader, EvalTask } from "./types.js";
 
+// Empty content array → grader falls back to streamed text_delta. Tests
+// that exercise non-text final content set their own done event.
+const DONE_EVENT: EngineEvent = {
+  kind: "done",
+  output: {
+    content: [],
+    stopReason: "completed",
+    metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+  },
+};
+
 function fakeAgent(events: readonly EngineEvent[]): AgentHandle {
+  // Append a terminal done if the caller didn't include one — runner now
+  // requires a "completed" done event to grade as success.
+  const hasDone = events.some((e) => e.kind === "done");
+  const stream = hasDone ? events : [...events, DONE_EVENT];
   return {
     stream: async function* (_input: EngineInput): AsyncIterable<EngineEvent> {
-      for (const ev of events) yield ev;
+      for (const ev of stream) yield ev;
     },
   };
 }
@@ -393,6 +408,49 @@ describe("runEval", () => {
     await expect(
       runEval({ name: "x", tasks: [], agentFactory: () => fakeAgent([]) }),
     ).rejects.toThrow();
+  });
+
+  test("trial errors when stream ends without terminal done event", async () => {
+    const run = await runEval({
+      name: "no-done",
+      tasks: [task("t1", "anything", [exactMatch()])],
+      agentFactory: () => ({
+        stream: async function* (): AsyncIterable<EngineEvent> {
+          yield { kind: "text_delta", delta: "partial answer" };
+        },
+      }),
+      idGen: () => "run-nd",
+    });
+    expect(run.trials[0]?.status).toBe("error");
+    expect(run.trials[0]?.error).toContain("done");
+  });
+
+  test("trial errors when terminal done has non-completed stop reason", async () => {
+    const run = await runEval({
+      name: "stopped",
+      tasks: [task("t1", "x", [exactMatch()])],
+      agentFactory: () => ({
+        stream: async function* (): AsyncIterable<EngineEvent> {
+          yield {
+            kind: "done",
+            output: {
+              content: [{ kind: "text", text: "x" }],
+              stopReason: "max_turns",
+              metrics: {
+                totalTokens: 0,
+                inputTokens: 0,
+                outputTokens: 0,
+                turns: 0,
+                durationMs: 0,
+              },
+            },
+          };
+        },
+      }),
+      idGen: () => "run-st",
+    });
+    expect(run.trials[0]?.status).toBe("error");
+    expect(run.trials[0]?.error).toContain("max_turns");
   });
 
   test("grader exception becomes failed score, not crash", async () => {
