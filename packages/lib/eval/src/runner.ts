@@ -403,6 +403,17 @@ function taskSummary(task: EvalTask, trials: readonly EvalTrial[]): TaskSummary 
  * introspectable here without breaking the L0/L2 boundary.
  */
 export function computeTaskFingerprint(task: EvalTask): string {
+  // Reject silently-equivalent fingerprints: EngineInput may carry
+  // function values (callHandlers etc) whose identity matters for behavior
+  // but whose serialization collapses to "fn:<name>". Refuse to fingerprint
+  // such inputs unless the caller provides an explicit
+  // `fingerprintSalt` to capture the runtime semantics. Without this the
+  // gate could compare materially different agents as equivalent.
+  if (containsNonSerializable(task.input) && task.fingerprintSalt === undefined) {
+    throw new Error(
+      `EvalTask "${task.id}": input contains non-serializable values (functions, etc.); set fingerprintSalt to capture runtime semantics`,
+    );
+  }
   const canonical = canonicalize({
     input: task.input,
     expected: task.expected,
@@ -413,8 +424,22 @@ export function computeTaskFingerprint(task: EvalTask): string {
     // compare as equivalent.
     trialCount: task.trialCount,
     timeoutMs: task.timeoutMs,
+    salt: task.fingerprintSalt,
   });
   return createHash("sha256").update(canonical).digest("hex");
+}
+
+function containsNonSerializable(v: unknown, depth = 0): boolean {
+  if (depth > 20) return false;
+  if (v === null) return false;
+  const t = typeof v;
+  if (t === "function" || t === "symbol") return true;
+  if (t !== "object") return false;
+  if (Array.isArray(v)) return v.some((e) => containsNonSerializable(e, depth + 1));
+  for (const k of Object.keys(v as object)) {
+    if (containsNonSerializable((v as Record<string, unknown>)[k], depth + 1)) return true;
+  }
+  return false;
 }
 
 /**

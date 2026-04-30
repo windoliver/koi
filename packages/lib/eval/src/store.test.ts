@@ -33,7 +33,7 @@ afterEach(async () => {
 describe("createFsStore", () => {
   test("load rejects tampered summary that disagrees with trials", async () => {
     const store = createFsStore(root);
-    const run = makeRun("tampered", "smoke", "2026-01-01T00:00:00Z");
+    const run = makeRun("tampered", "smoke", "2026-01-01T00:00:00.000Z");
     await store.save(run);
     // Manually rewrite to add a fake passRate without matching trials
     const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("tampered")}.json`);
@@ -47,7 +47,7 @@ describe("createFsStore", () => {
 
   test("load rejects tampered meanScore", async () => {
     const store = createFsStore(root);
-    const run = makeRun("ms", "smoke", "2026-01-01T00:00:00Z");
+    const run = makeRun("ms", "smoke", "2026-01-01T00:00:00.000Z");
     await store.save(run);
     const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("ms")}.json`);
     const tampered = { ...run, summary: { ...run.summary, meanScore: 0.99 } };
@@ -57,7 +57,7 @@ describe("createFsStore", () => {
 
   test("load rejects tampered byTask aggregates", async () => {
     const store = createFsStore(root);
-    const run = makeRun("bt", "smoke", "2026-01-01T00:00:00Z");
+    const run = makeRun("bt", "smoke", "2026-01-01T00:00:00.000Z");
     const seeded = {
       ...run,
       summary: {
@@ -96,28 +96,41 @@ describe("createFsStore", () => {
     await expect(store.load("bt", "smoke")).rejects.toThrow(/corrupt/);
   });
 
+  test("load rejects non-canonical ISO-8601 timestamp", async () => {
+    const store = createFsStore(root);
+    const run = makeRun("ts", "smoke", "2026-01-01T00:00:00.000Z");
+    await store.save(run);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("ts")}.json`);
+    // Hand-edit timestamp to a non-canonical form (no millis, or
+    // far-future garbage). Both must be rejected as corruption — otherwise
+    // latest() can be poisoned to pin an attacker-chosen baseline.
+    const tampered = { ...run, timestamp: "9999-13-99T99:99:99Z" };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("ts", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
   test("save fails on collision unless overwrite: true", async () => {
     const store = createFsStore(root);
-    const r1 = makeRun("dup", "smoke", "2026-01-01T00:00:00Z");
+    const r1 = makeRun("dup", "smoke", "2026-01-01T00:00:00.000Z");
     await store.save(r1);
     await expect(store.save(r1)).rejects.toThrow(/already exists/);
-    await store.save({ ...r1, timestamp: "2026-02-01T00:00:00Z" }, { overwrite: true });
+    await store.save({ ...r1, timestamp: "2026-02-01T00:00:00.000Z" }, { overwrite: true });
     const reloaded = await store.load("dup", "smoke");
-    expect(reloaded?.timestamp).toBe("2026-02-01T00:00:00Z");
+    expect(reloaded?.timestamp).toBe("2026-02-01T00:00:00.000Z");
   });
 
   test("path-traversal evalName is rejected", async () => {
     const store = createFsStore(root);
     await expect(store.list("..")).rejects.toThrow(/not allowed/);
     await expect(store.latest("..")).rejects.toThrow(/not allowed/);
-    await expect(store.save(makeRun("r", "..", "2026-01-01T00:00:00Z"))).rejects.toThrow(
+    await expect(store.save(makeRun("r", "..", "2026-01-01T00:00:00.000Z"))).rejects.toThrow(
       /not allowed/,
     );
   });
 
   test("save sanitizes BigInt and circular tool-result payloads", async () => {
     const store = createFsStore(root);
-    const baseRun = makeRun("sanitize", "smoke", "2026-01-01T00:00:00Z");
+    const baseRun = makeRun("sanitize", "smoke", "2026-01-01T00:00:00.000Z");
     const circular: { self?: unknown } = {};
     circular.self = circular;
     const run = {
@@ -168,7 +181,7 @@ describe("createFsStore", () => {
 
   test("save then load round-trips a run", async () => {
     const store = createFsStore(root);
-    const run = makeRun("r1", "smoke", "2026-01-01T00:00:00Z");
+    const run = makeRun("r1", "smoke", "2026-01-01T00:00:00.000Z");
     await store.save(run);
     const loaded = await store.load("r1");
     expect(loaded?.id).toBe("r1");
@@ -182,16 +195,16 @@ describe("createFsStore", () => {
 
   test("latest returns most recent by timestamp", async () => {
     const store = createFsStore(root);
-    await store.save(makeRun("r1", "smoke", "2026-01-01T00:00:00Z"));
-    await store.save(makeRun("r2", "smoke", "2026-02-01T00:00:00Z"));
+    await store.save(makeRun("r1", "smoke", "2026-01-01T00:00:00.000Z"));
+    await store.save(makeRun("r2", "smoke", "2026-02-01T00:00:00.000Z"));
     const latest = await store.latest("smoke");
     expect(latest?.id).toBe("r2");
   });
 
   test("list returns metas sorted desc", async () => {
     const store = createFsStore(root);
-    await store.save(makeRun("a", "smoke", "2026-01-01T00:00:00Z"));
-    await store.save(makeRun("b", "smoke", "2026-03-01T00:00:00Z"));
+    await store.save(makeRun("a", "smoke", "2026-01-01T00:00:00.000Z"));
+    await store.save(makeRun("b", "smoke", "2026-03-01T00:00:00.000Z"));
     const metas = await store.list("smoke");
     expect(metas).toHaveLength(2);
     expect(metas[0]?.id).toBe("b");
@@ -199,8 +212,8 @@ describe("createFsStore", () => {
 
   test("load with same runId across suites returns undefined unless evalName given", async () => {
     const store = createFsStore(root);
-    await store.save(makeRun("shared", "suite-a", "2026-01-01T00:00:00Z"));
-    await store.save(makeRun("shared", "suite-b", "2026-02-01T00:00:00Z"));
+    await store.save(makeRun("shared", "suite-a", "2026-01-01T00:00:00.000Z"));
+    await store.save(makeRun("shared", "suite-b", "2026-02-01T00:00:00.000Z"));
     expect(await store.load("shared")).toBeUndefined();
     const a = await store.load("shared", "suite-a");
     const b = await store.load("shared", "suite-b");
@@ -210,8 +223,8 @@ describe("createFsStore", () => {
 
   test("ids that differ only by reserved chars do not collide", async () => {
     const store = createFsStore(root);
-    await store.save(makeRun("a/b", "smoke", "2026-01-01T00:00:00Z"));
-    await store.save(makeRun("a_b", "smoke", "2026-02-01T00:00:00Z"));
+    await store.save(makeRun("a/b", "smoke", "2026-01-01T00:00:00.000Z"));
+    await store.save(makeRun("a_b", "smoke", "2026-02-01T00:00:00.000Z"));
     const a1 = await store.load("a/b");
     const a2 = await store.load("a_b");
     expect(a1?.id).toBe("a/b");
@@ -223,7 +236,7 @@ describe("createFsStore", () => {
     // can make a corrupt-but-newest-logical-timestamp file look stale. We
     // refuse to choose a baseline while the suite contains damaged data.
     const store = createFsStore(root);
-    await store.save(makeRun("good", "smoke", "2026-02-01T00:00:00Z"));
+    await store.save(makeRun("good", "smoke", "2026-02-01T00:00:00.000Z"));
     const dir = join(root, encodeURIComponent("smoke"));
     const badPath = join(dir, "bad-old.json");
     await writeFile(badPath, "{ corrupt", "utf8");
@@ -234,7 +247,7 @@ describe("createFsStore", () => {
 
   test("latest fails closed when the newest file is corrupt", async () => {
     const store = createFsStore(root);
-    await store.save(makeRun("good", "smoke", "2026-01-01T00:00:00Z"));
+    await store.save(makeRun("good", "smoke", "2026-01-01T00:00:00.000Z"));
     // Newer file (now) that is corrupt
     const dir = join(root, encodeURIComponent("smoke"));
     await writeFile(join(dir, "newer-bad.json"), "{ corrupt", "utf8");
@@ -243,7 +256,7 @@ describe("createFsStore", () => {
 
   test("load rejects suite/name mismatch when scoped by evalName", async () => {
     const store = createFsStore(root);
-    await store.save(makeRun("r1", "right-suite", "2026-01-01T00:00:00Z"));
+    await store.save(makeRun("r1", "right-suite", "2026-01-01T00:00:00.000Z"));
     // Misplaced: physically copy the file under wrong-suite
     const wrongDir = join(root, encodeURIComponent("wrong-suite"));
     await (await import("node:fs/promises")).mkdir(wrongDir, { recursive: true });
@@ -255,12 +268,12 @@ describe("createFsStore", () => {
 
   test("load rejects parseable JSON with malformed trials", async () => {
     const store = createFsStore(root);
-    await store.save(makeRun("seed", "smoke", "2026-01-01T00:00:00Z"));
+    await store.save(makeRun("seed", "smoke", "2026-01-01T00:00:00.000Z"));
     const dir = join(root, encodeURIComponent("smoke"));
     const malformed = JSON.stringify({
       id: "bad-trials",
       name: "smoke",
-      timestamp: "2026-01-02T00:00:00Z",
+      timestamp: "2026-01-02T00:00:00.000Z",
       config: { name: "smoke", timeoutMs: 60000, passThreshold: 0.5, taskCount: 1 },
       trials: [{ taskId: 42 }], // wrong type
       summary: {
@@ -279,12 +292,12 @@ describe("createFsStore", () => {
   test("load rejects parseable JSON that is missing required fields", async () => {
     const store = createFsStore(root);
     const dir = join(root, encodeURIComponent("smoke"));
-    await store.save(makeRun("seed", "smoke", "2026-01-01T00:00:00Z"));
+    await store.save(makeRun("seed", "smoke", "2026-01-01T00:00:00.000Z"));
     // Valid JSON but missing config/trials/summary fields
     const malformed = JSON.stringify({
       id: "shallow",
       name: "smoke",
-      timestamp: "2026-01-02T00:00:00Z",
+      timestamp: "2026-01-02T00:00:00.000Z",
       summary: { passRate: 1 },
     });
     await writeFile(join(dir, `${encodeURIComponent("shallow")}.json`), malformed, "utf8");
@@ -293,7 +306,7 @@ describe("createFsStore", () => {
 
   test("load throws on corrupted run file (fail-closed for regression gate)", async () => {
     const store = createFsStore(root);
-    await store.save(makeRun("bad", "smoke", "2026-01-01T00:00:00Z"));
+    await store.save(makeRun("bad", "smoke", "2026-01-01T00:00:00.000Z"));
     const dir = join(root, encodeURIComponent("smoke"));
     await writeFile(join(dir, `${encodeURIComponent("bad")}.json`), "{ corrupt", "utf8");
     await expect(store.load("bad", "smoke")).rejects.toThrow(/corrupt/);
@@ -301,7 +314,7 @@ describe("createFsStore", () => {
 
   test("malformed sibling file does not break list, but blocks latest (fail-closed)", async () => {
     const store = createFsStore(root);
-    await store.save(makeRun("good", "smoke", "2026-02-01T00:00:00Z"));
+    await store.save(makeRun("good", "smoke", "2026-02-01T00:00:00.000Z"));
     const dir = join(root, encodeURIComponent("smoke"));
     await writeFile(join(dir, "bad.json"), "{ this is not json", "utf8");
     const metas = await store.list("smoke");

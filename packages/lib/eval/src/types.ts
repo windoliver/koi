@@ -52,6 +52,14 @@ export interface EvalTask {
   readonly timeoutMs?: number | undefined;
   readonly tags?: readonly string[] | undefined;
   readonly metadata?: JsonObject | undefined;
+  /**
+   * Caller-provided salt used by `computeTaskFingerprint` when `input`
+   * contains non-serializable runtime values (functions, custom call
+   * handlers, etc). Required in that case so swapping handlers under a
+   * reused taskId does not silently compare as equivalent. Bump this
+   * string whenever the runtime semantics of the input change.
+   */
+  readonly fingerprintSalt?: string | undefined;
 }
 
 /**

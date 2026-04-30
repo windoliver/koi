@@ -156,6 +156,29 @@ describe("computeTaskFingerprint", () => {
     expect(computeTaskFingerprint(a)).not.toBe(computeTaskFingerprint(b));
   });
 
+  test("throws when input contains a function value and no salt is set", () => {
+    const a: EvalTask = {
+      id: "t",
+      name: "t",
+      // EngineInput shapes can carry callHandlers etc. Function identity
+      // determines runtime behavior but cannot be hashed safely.
+      input: { ...baseInput, callHandlers: { foo: () => undefined } } as never,
+      graders: [exactMatch()],
+    };
+    expect(() => computeTaskFingerprint(a)).toThrow(/fingerprintSalt/);
+  });
+
+  test("salt distinguishes input variants with the same shape", () => {
+    const make = (salt: string): EvalTask => ({
+      id: "t",
+      name: "t",
+      input: { ...baseInput, callHandlers: { foo: () => undefined } } as never,
+      graders: [exactMatch()],
+      fingerprintSalt: salt,
+    });
+    expect(computeTaskFingerprint(make("v1"))).not.toBe(computeTaskFingerprint(make("v2")));
+  });
+
   test("stable for equivalent task definitions", () => {
     const make = (): EvalTask => ({
       id: "t",

@@ -18,7 +18,7 @@ const summary = (
 const run = (id: string, summaryArg: EvalSummary): EvalRun => ({
   id,
   name: "r",
-  timestamp: "2026-01-01T00:00:00Z",
+  timestamp: "2026-01-01T00:00:00.000Z",
   config: { name: "r", timeoutMs: 60_000, passThreshold: 0.5, taskCount: 1 },
   trials: [],
   summary: summaryArg,

@@ -292,12 +292,26 @@ async function readRunStrict(
   );
 }
 
+function isCanonicalIsoTimestamp(s: string): boolean {
+  // Only accept the exact format produced by Date.prototype.toISOString:
+  // YYYY-MM-DDTHH:MM:SS.sssZ. Round-tripping rejects "garbage", far-future
+  // strings that don't normalize, leap-second variants, etc.
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(s)) return false;
+  const t = Date.parse(s);
+  if (Number.isNaN(t)) return false;
+  return new Date(t).toISOString() === s;
+}
+
 function isEvalRunShape(v: unknown): v is EvalRun {
   if (v === null || typeof v !== "object") return false;
   const r = v as Record<string, unknown>;
   if (typeof r.id !== "string") return false;
   if (typeof r.name !== "string") return false;
   if (typeof r.timestamp !== "string") return false;
+  // Strict ISO-8601 (round-trip via Date.toISOString). Rejects anything
+  // that wouldn't have been produced by the runner — prevents hand-edited
+  // far-future timestamps from poisoning latest() baseline selection.
+  if (!isCanonicalIsoTimestamp(r.timestamp)) return false;
   if (!Array.isArray(r.trials)) return false;
   for (const t of r.trials as readonly unknown[]) {
     if (!isTrialShape(t)) return false;
