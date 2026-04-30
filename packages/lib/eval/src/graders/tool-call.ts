@@ -137,17 +137,18 @@ function matchStrict(
   observed: readonly ObservedCall[],
   expected: readonly ExpectedToolCall[],
 ): readonly ExpectedToolCall[] {
+  // Exact sequence: observed must equal expected in length and at every
+  // position. Any unexpected interleaved call (e.g. `read → delete → write`
+  // when expecting `read → write`) is a hard fail. This is the safe
+  // default for guarding against extra side-effecting tool activity.
+  if (observed.length !== expected.length) return [];
   const matched: ExpectedToolCall[] = [];
-  let cursor = 0;
-  for (const want of expected) {
-    while (cursor < observed.length) {
-      const o = observed[cursor];
-      cursor += 1;
-      if (o !== undefined && callMatches(o, want)) {
-        matched.push(want);
-        break;
-      }
-    }
+  for (let i = 0; i < expected.length; i++) {
+    const want = expected[i];
+    const got = observed[i];
+    if (want === undefined || got === undefined) return [];
+    if (!callMatches(got, want)) return [];
+    matched.push(want);
   }
   return matched;
 }

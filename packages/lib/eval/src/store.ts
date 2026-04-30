@@ -567,8 +567,12 @@ async function fileExists(path: string): Promise<boolean> {
   try {
     await stat(path);
     return true;
-  } catch {
-    return false;
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+    // Permission errors, transient I/O failures, and other filesystem
+    // problems must propagate so unscoped baseline discovery fails closed
+    // instead of silently returning `undefined` from load(runId).
+    throw e;
   }
 }
 

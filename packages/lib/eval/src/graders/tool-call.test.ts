@@ -145,6 +145,23 @@ describe("toolCall", () => {
     expect(score.pass).toBe(false);
   });
 
+  test("strict order rejects unexpected interleaved completed calls", async () => {
+    // read → DELETE → write must NOT satisfy expected read → write.
+    // Strict means exact sequence; interleaved mutations are a hard fail.
+    const grader = toolCall({ order: "strict" });
+    const events: readonly EngineEvent[] = [
+      ...completed("read"),
+      ...completed("delete"),
+      ...completed("write"),
+    ];
+    const score = await grader.grade(
+      events,
+      { kind: "tool_calls", calls: [{ toolName: "read" }, { toolName: "write" }] },
+      METRICS,
+    );
+    expect(score.pass).toBe(false);
+  });
+
   test("strict order requires sequential match", async () => {
     const grader = toolCall({ order: "strict" });
     const eventsBad: readonly EngineEvent[] = [...completed("write"), ...completed("read")];
