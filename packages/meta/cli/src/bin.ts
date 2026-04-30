@@ -24,16 +24,18 @@ Usage:
   koi <command> [options]
 
 Commands:
-  init [directory]       Create a new agent
+  init [directory]       Create a new agent (planned; exits 2)
   start [manifest]       Start an agent interactively
-  serve [manifest]       Run agent headless (for services)
+  serve [manifest]       Run agent headless HTTP service (planned; exits 2)
   tui                    Interactive terminal console
   sessions [list]        List chat sessions
-  logs [manifest]        View service logs
-  status [manifest]      Check service status
+  logs [manifest]        View service logs (planned; exits 2)
+  status [manifest]      Check service status (planned; exits 2)
   doctor [manifest]      Diagnose service health
-  stop [manifest]        Stop the service
-  deploy [manifest]      Install/uninstall OS service
+  dream                  Run memory consolidation
+  stop [manifest]        Stop the service (planned; exits 2)
+  deploy [manifest]      Install/uninstall OS service (planned; exits 2)
+  mcp <subcommand>       Manage MCP servers (list, auth, logout, debug)
   plugin <subcommand>    Manage plugins (install, remove, enable, disable, update, list)
   bg <subcommand>        Manage background agent sessions (ps, logs, kill, attach, detach)
 

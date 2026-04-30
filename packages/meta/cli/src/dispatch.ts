@@ -49,6 +49,16 @@ export type DispatchResult =
   | { readonly kind: "tui"; readonly flags: TuiFlags }
   | { readonly kind: "run"; readonly mod: CommandModule; readonly flags: CliFlags };
 
+function formatThrownMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  if (e !== null && typeof e === "object" && "message" in e) {
+    const message = (e as { readonly message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return "";
+}
+
 /**
  * Parse rawArgv, apply the short-circuit checks, and (for known
  * commands) load the command module. Does **not** call
@@ -113,7 +123,8 @@ export async function runDispatch(
       // type for this command. Single cast site.
       mod = (await loader()) as CommandModule;
     } catch (e: unknown) {
-      const msg = e instanceof Error ? `  ${e.message}\n` : "";
+      const formatted = formatThrownMessage(e);
+      const msg = formatted.length > 0 ? `  ${formatted}\n` : "";
       return {
         kind: "exit",
         code: 2,

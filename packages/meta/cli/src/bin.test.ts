@@ -51,6 +51,17 @@ describe("bin.ts", () => {
       expect(r.stdout).toContain("--help");
     });
 
+    test("--help labels planned lifecycle commands and lists wired commands", async () => {
+      const r = await runBin(["--help"]);
+      expect(r.exitCode).toBe(0);
+      for (const cmd of ["init", "serve", "logs", "status", "stop", "deploy"]) {
+        expect(r.stdout).toContain(`${cmd}`);
+        expect(r.stdout).toContain("planned");
+      }
+      expect(r.stdout).toContain("dream");
+      expect(r.stdout).toContain("mcp <subcommand>");
+    });
+
     test("-h shorthand exits 0 with help", async () => {
       const r = await runBin(["-h"]);
       expect(r.exitCode).toBe(0);
@@ -262,10 +273,12 @@ describe("bin.ts", () => {
       "logs",
       "status",
       "doctor",
+      "dream",
       "stop",
       "deploy",
       "plugin",
       "mcp",
+      "bg",
     ] as const;
 
     for (const cmd of SUBCOMMANDS) {
