@@ -17,6 +17,7 @@
 import type { AuditEntry, KoiError, Result } from "@koi/core";
 import type { GatewayFrame, Session } from "@koi/gateway-types";
 import type { Server } from "bun";
+import { buildGatewayRequestEntry } from "./audit.js";
 import { type ChannelRegistry, createChannelRegistry } from "./channel.js";
 import { applyCors } from "./cors.js";
 import { DEFAULT_GATEWAY_HTTP_CONFIG } from "./defaults.js";
@@ -29,6 +30,7 @@ import { matchRoute } from "./routing.js";
 import { createShutdownController } from "./shutdown.js";
 import { resolveSourceId } from "./source-id.js";
 import type {
+  AuthAuditResult,
   ChannelRegistration,
   GatewayHttpConfig,
   GatewayHttpDeps,
@@ -298,25 +300,52 @@ async function handleFetch(
   srv: BunServerLike,
   state: RuntimeState,
 ): Promise<Response | undefined> {
+  const startedAt = state.pipelineDeps.clock();
   const socketAddr = srv.requestIP(req)?.address ?? "unknown";
   const sourceAddr = resolveSourceId(req, socketAddr, state.cfg.proxyTrust);
   const url = new URL(req.url);
   const route = matchRoute(req.method, url.pathname);
 
+  // Every server-boundary early return emits a gateway.request audit entry
+  // so the threat-model claim "every accept/reject decision is audited"
+  // holds for health checks, preflight, drain rejects, and 404s — not just
+  // pipeline traffic. Recon, preflight abuse, and load-balancer health
+  // flips during shutdown are exactly the events operators need to see.
+  const auditEdge = (status: number, authResult: AuthAuditResult): void => {
+    state.pipelineDeps.audit(
+      buildGatewayRequestEntry({
+        timestamp: state.pipelineDeps.clock(),
+        kind: "gateway.request",
+        path: url.pathname,
+        method: req.method,
+        status,
+        latencyMs: Math.max(0, state.pipelineDeps.clock() - startedAt),
+        authResult,
+        remoteAddr: sourceAddr,
+      }),
+    );
+  };
+
   if (route.kind === "health") {
     const drained = state.draining.value;
+    const status = drained ? 503 : 200;
+    auditEdge(status, "ok");
     return new Response(JSON.stringify({ ok: !drained, draining: drained }), {
-      status: drained ? 503 : 200,
+      status,
       headers: { "Content-Type": "application/json" },
     });
   }
 
   if (route.kind === "preflight") {
     const r = applyCors(req, state.cfg.cors);
-    if (r !== null) return r;
+    if (r !== null) {
+      auditEdge(r.status, "ok");
+      return r;
+    }
   }
 
   if (state.draining.value) {
+    auditEdge(503, "rejected:draining");
     return new Response("draining", { status: 503 });
   }
 
@@ -324,6 +353,7 @@ async function handleFetch(
     return runPipeline(req, { ...state.pipelineDeps, sourceAddr });
   }
 
+  auditEdge(404, "rejected:not-found");
   return new Response("not found", { status: 404 });
 }
 

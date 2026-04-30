@@ -106,6 +106,8 @@ export type AuthAuditResult =
   | "idempotent-replay"
   | "idempotent-in-flight"
   | "idempotency-disabled"
+  | "rejected:not-found"
+  | "rejected:draining"
   | "skipped";
 
 // Re-exports for convenience (so consumers don't need to import multiple packages)
