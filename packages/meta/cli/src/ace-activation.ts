@@ -30,15 +30,28 @@ import type { ManifestAceConfig } from "./manifest.js";
 
 export type AceActivationResult =
   | { readonly kind: "skip" }
-  | { readonly kind: "activate"; readonly config: AceConfig; readonly message: string };
+  | { readonly kind: "activate"; readonly config: AceConfig; readonly message: string }
+  | { readonly kind: "block"; readonly message: string };
 
 /** Override the in-memory store factory. Tests pass a deterministic stub. */
 export interface AceStoreFactories {
   readonly playbookStore: () => AceConfig["playbookStore"];
+  /** Read the operator acknowledgement env var. Tests inject deterministically. */
+  readonly readOperatorAck?: () => string | undefined;
 }
+
+/**
+ * Env var the local operator must set to authorize cross-session
+ * playbook retention. Repo-controlled `acknowledge_cross_session_state`
+ * is not enough on its own — a checked-in manifest cannot opt every
+ * downstream operator into process-wide retention without their
+ * explicit local consent.
+ */
+export const ACE_OPERATOR_ACK_ENV_VAR = "KOI_ACE_ACKNOWLEDGE_CROSS_SESSION_STATE" as const;
 
 const DEFAULT_FACTORIES: AceStoreFactories = {
   playbookStore: createInMemoryPlaybookStore,
+  readOperatorAck: () => process.env[ACE_OPERATOR_ACK_ENV_VAR],
 };
 
 const ACTIVATED_MESSAGE =
@@ -51,6 +64,18 @@ export function resolveAceActivation(
   factories: AceStoreFactories = DEFAULT_FACTORIES,
 ): AceActivationResult {
   if (manifestAce?.enabled !== true) return { kind: "skip" };
+  const ack = factories.readOperatorAck?.();
+  if (ack !== "true" && ack !== "1") {
+    return {
+      kind: "block",
+      message:
+        `koi tui: ace.enabled: true requires local operator consent — set ${ACE_OPERATOR_ACK_ENV_VAR}=true ` +
+        "in your environment to authorize cross-session playbook retention. " +
+        "The manifest's acknowledge_cross_session_state field is necessary but " +
+        "not sufficient because checked-in manifest content cannot opt downstream " +
+        "operators into process-wide retention without their explicit local consent.\n",
+    };
+  }
   // Intentionally omit `trajectoryStore`: the in-memory store grows
   // unboundedly across sessions with no pruning hook today, and ACE
   // consolidates trajectories at `onSessionEnd` even without a persistent

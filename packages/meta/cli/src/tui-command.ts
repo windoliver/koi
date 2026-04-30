@@ -1175,6 +1175,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       process.exit(1);
     }
     const aceActivation = resolveAceActivation(manifestResult.value.ace);
+    if (aceActivation.kind === "block") {
+      process.stderr.write(aceActivation.message);
+      process.exit(1);
+    }
     if (aceActivation.kind === "activate") {
       resolvedAceConfig = aceActivation.config;
       process.stderr.write(aceActivation.message);

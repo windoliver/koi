@@ -11,6 +11,12 @@ const STUB_FACTORIES = {
       save: async () => {},
       remove: async () => false,
     }) as const,
+  readOperatorAck: () => "true",
+};
+
+const STUB_FACTORIES_NO_ACK = {
+  ...STUB_FACTORIES,
+  readOperatorAck: () => undefined,
 };
 
 const ENABLED_BARE: ManifestAceConfig = {
@@ -55,6 +61,15 @@ describe("resolveAceActivation — issue #2088", () => {
       expect(result.config.maxInjectedTokens).toBeUndefined();
       expect(result.config.minScore).toBeUndefined();
       expect(result.config.lambda).toBeUndefined();
+    }
+  });
+
+  test("blocks when manifest opts in but operator env-var ack is missing", () => {
+    const result = resolveAceActivation(ENABLED_BARE, STUB_FACTORIES_NO_ACK);
+    expect(result.kind).toBe("block");
+    if (result.kind === "block") {
+      expect(result.message).toContain("KOI_ACE_ACKNOWLEDGE_CROSS_SESSION_STATE");
+      expect(result.message).toContain("local operator consent");
     }
   });
 
