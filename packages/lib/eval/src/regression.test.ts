@@ -164,6 +164,46 @@ describe("compareRuns", () => {
     }
   });
 
+  test("new task with sub-perfect mean score within scoreDelta still fails", () => {
+    // Regression delta is for tasks with an established baseline. A
+    // brand-new task with no baseline must be held to a strict perfect
+    // bar — otherwise degraded coverage (e.g. meanScore 0.95 with
+    // default scoreDelta 0.1) sneaks into the suite as regression-clean.
+    const baselineByTask = [
+      {
+        taskId: "t1",
+        taskName: "t1",
+        passRate: 1,
+        meanScore: 1,
+        trials: 1,
+        taskFingerprint: "f1",
+        taskSpec: "spec-f1",
+      },
+    ];
+    const currentByTask = [
+      ...baselineByTask,
+      {
+        taskId: "t2-new",
+        taskName: "t2-new",
+        passRate: 1,
+        meanScore: 0.95,
+        trials: 1,
+        taskFingerprint: "f2",
+        taskSpec: "spec-f2",
+      },
+    ];
+    const result = compareRuns(
+      run("b", summary(1, 1, baselineByTask)),
+      run("c", summary(1, 0.975, currentByTask)),
+    );
+    expect(result.kind).toBe("fail");
+    if (result.kind === "fail") {
+      expect(
+        result.regressions.some((r) => r.taskId === "t2-new" && r.metric === "meanScore"),
+      ).toBe(true);
+    }
+  });
+
   test("aborted current run is treated as a regression", () => {
     const baseline = run("b", summary(1, 1));
     const current = { ...run("c", summary(1, 1)), aborted: true as const };

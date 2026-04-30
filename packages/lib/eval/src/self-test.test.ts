@@ -133,6 +133,35 @@ describe("runSelfTest", () => {
     expect(result.checks[1]?.name).toBe("should-run");
   });
 
+  test("non-abort rejection after timeout is reported as unconfirmed", async () => {
+    // A check that times out and then rejects with an unrelated error
+    // (programmer bug, network failure, etc.) must NOT be treated as
+    // confirmed cancellation — the check may still be cleaning up
+    // detached work, and letting the next check start could overlap
+    // with leaked side effects.
+    let secondRan = false;
+    const checks: readonly SelfTestCheck[] = [
+      {
+        name: "unrelated-failure",
+        run: () =>
+          new Promise<{ pass: true }>((_, reject) => {
+            setTimeout(() => reject(new Error("unrelated network failure")), 30);
+          }),
+        timeoutMs: 10,
+      },
+      {
+        name: "should-not-run",
+        run: () => {
+          secondRan = true;
+          return { pass: true };
+        },
+      },
+    ];
+    const result = await runSelfTest(checks);
+    expect(result.checks[0]?.cancellation).toBe("unconfirmed");
+    expect(secondRan).toBe(false);
+  });
+
   test("bail stops at first failure", async () => {
     let secondRan = false;
     const checks: readonly SelfTestCheck[] = [
