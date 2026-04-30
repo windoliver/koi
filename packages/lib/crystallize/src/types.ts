@@ -9,11 +9,21 @@
 
 import type { SessionId } from "@koi/core";
 
-/** A single tool invocation in a sequence. */
+/**
+ * A single tool invocation in a sequence. `outcome` is classified at trace
+ * ingest time:
+ *  - `"success"` — captured non-error output.
+ *  - `"failure"` — explicit error / denied / quarantined / `ok:false` /
+ *    truthy top-level `error` envelope.
+ *  - `"validation"` — pre-execution validation reject (kind:"validation"
+ *    or top-level/nested `code:"VALIDATION"`). Distinguished from
+ *    `undefined` so validation-only patterns score against `successRate`
+ *    instead of receiving a false-perfect 1.0.
+ *  - `undefined` — no captured output (no signal at all).
+ */
 export interface ToolStep {
   readonly toolId: string;
-  /** Outcome of the tool call, derived from trace output. */
-  readonly outcome?: "success" | "failure" | undefined;
+  readonly outcome?: "success" | "failure" | "validation" | undefined;
 }
 
 /** An ordered sequence of tool steps with a stable deduplication key. */
@@ -35,17 +45,28 @@ export interface TurnLocation {
 }
 
 /**
- * Aggregated outcome statistics at the **occurrence** level. An occurrence
- * counts as successful only when every signal-bearing step in that
- * occurrence succeeded — partial-step success is not enough, because
- * crystallization callers care whether the *whole* repeated workflow is
- * safe to automate (a 5-step pattern that fails on the final side-effecting
- * step is not a healthy forge candidate even when 4/5 step calls succeeded).
+ * Aggregated outcome statistics at the **occurrence** level.
+ *
+ * `withOutcome` counts every occurrence that produced *any* signal —
+ * success, failure, *or* validation reject. Validation-only patterns are
+ * therefore visible in the denominator: a workflow that has only ever
+ * been rejected by validation gets `successes: 0, withOutcome: N` and
+ * scores `0` on `successRate`, instead of being false-perfect at 1.0.
+ *
+ * An occurrence counts as `success` only when every signal-bearing step in
+ * that occurrence succeeded — partial-step success is not enough. A 5-step
+ * pattern that fails on the final side-effecting step is not a healthy
+ * forge candidate even when 4/5 step calls succeeded.
  */
 export interface OutcomeStats {
   /** Occurrences where every signal-bearing step succeeded. */
   readonly successes: number;
-  /** Occurrences with at least one signal-bearing step. */
+  /**
+   * Occurrences with at least one signal-bearing step (success, failure, or
+   * validation reject). Validation-only occurrences contribute to this
+   * total so `successRate = successes / withOutcome` punishes never-
+   * executed workflows.
+   */
   readonly withOutcome: number;
 }
 

@@ -33,9 +33,19 @@ describe("extractToolSequences", () => {
     expect(seqs[0]?.steps[0]?.outcome).toBeUndefined();
   });
 
-  test("plain object with non-envelope `error` field still scores as success", () => {
+  test("plain object with truthy top-level `error` is classified as failure", () => {
+    // Hook-blocked tool calls and tool-side error envelopes both surface as
+    // `output: { error: ... }` — treating those as success would crystallize
+    // denied workflows.
     const seqs = extractToolSequences([createTrace(0, ["broken"], [{ error: "boom" }])]);
-    expect(seqs[0]?.steps[0]?.outcome).toBe("success");
+    expect(seqs[0]?.steps[0]?.outcome).toBe("failure");
+  });
+
+  test("empty / falsy top-level `error` does not flip success to failure", () => {
+    const seqs = extractToolSequences([
+      createTrace(0, ["x", "y"], [{ error: "" }, { error: null }]),
+    ]);
+    expect(seqs[0]?.steps.map((s) => s.outcome)).toEqual(["success", "success"]);
   });
 
   test("classifies kind:error envelopes as failure", () => {
@@ -62,21 +72,21 @@ describe("extractToolSequences", () => {
     const seqs = extractToolSequences([
       createTrace(0, ["v"], [{ kind: "validation", error: "bad input" }]),
     ]);
-    expect(seqs[0]?.steps[0]?.outcome).toBeUndefined();
+    expect(seqs[0]?.steps[0]?.outcome).toBe("validation");
   });
 
   test("validation reject with code:VALIDATION (no kind) is neutral (no outcome signal)", () => {
     const seqs = extractToolSequences([
       createTrace(0, ["v"], [{ error: "bad input", code: "VALIDATION" }]),
     ]);
-    expect(seqs[0]?.steps[0]?.outcome).toBeUndefined();
+    expect(seqs[0]?.steps[0]?.outcome).toBe("validation");
   });
 
   test("LSP-style { ok: false, error: { code: 'VALIDATION' } } is neutral", () => {
     const seqs = extractToolSequences([
       createTrace(0, ["v"], [{ ok: false, error: { code: "VALIDATION", message: "bad arg" } }]),
     ]);
-    expect(seqs[0]?.steps[0]?.outcome).toBeUndefined();
+    expect(seqs[0]?.steps[0]?.outcome).toBe("validation");
   });
 
   test("forge_tool_quarantined envelope is classified as failure", () => {

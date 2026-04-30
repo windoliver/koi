@@ -29,24 +29,32 @@ function isNestedValidation(error: unknown): boolean {
   return (error as { readonly code?: unknown }).code === "VALIDATION";
 }
 
+/** True when `value` is a non-empty error indicator (truthy, not `false`/`""`/`null`). */
+function isNonEmptyError(value: unknown): boolean {
+  if (value === undefined || value === null || value === false || value === "") return false;
+  return true;
+}
+
 /**
- * Infer outcome from a tool call's output. Mirrors the failure/reject
- * envelopes already used by the repo's telemetry and demand-detection
- * surfaces so a pattern repeatedly hitting an invalid or quarantined tool
- * cannot be misclassified as healthy:
+ * Infer outcome from a tool call's output. Aligns with the broader repo
+ * failure taxonomy so denied, blocked, validation, or generic-error
+ * payloads cannot be misclassified as healthy:
  *
  *  - `undefined` (no captured output) → `undefined` (no signal).
  *  - `kind: "error"`, `kind: "denied"`, `kind: "forge_tool_quarantined"`
- *    → failure (execution failed, blocked, or forcibly stopped).
+ *    → failure.
  *  - `kind: "validation"` / top-level `code: "VALIDATION"` / nested
- *    `error.code: "VALIDATION"` → `undefined` (pre-execution reject;
- *    neutral, must not skew successRate).
- *  - `ok: false` (without a validation envelope) → failure (generic
- *    structured failure envelope used by LSP / Result-style returns).
- *  - Anything else captured — primitives, `null`, plain objects without a
- *    failure or validation envelope — counts as success.
+ *    `error.code: "VALIDATION"` → `validation` (pre-execution reject).
+ *    Distinct from `undefined` so a validation-only pattern is visible in
+ *    `OutcomeStats.withOutcome` and scores `0` on successRate.
+ *  - `ok: false` (without a validation envelope) → failure.
+ *  - Truthy top-level `error` field → failure. Hook-blocked tool calls
+ *    surface as `output: { error: ... }`, and tool-side error envelopes
+ *    (web-fetch SSRF blocks, etc.) carry the same shape; treating these
+ *    as success would crystallize denied workflows.
+ *  - Primitives, `null`, plain objects without any of the above → success.
  */
-function inferOutcome(output: unknown): "success" | "failure" | undefined {
+function inferOutcome(output: unknown): "success" | "failure" | "validation" | undefined {
   if (output === undefined) return undefined;
   if (output === null || typeof output !== "object") return "success";
 
@@ -61,9 +69,10 @@ function inferOutcome(output: unknown): "success" | "failure" | undefined {
     return "failure";
   }
   if (obj.kind === "validation" || obj.code === "VALIDATION" || isNestedValidation(obj.error)) {
-    return undefined;
+    return "validation";
   }
   if (obj.ok === false) return "failure";
+  if (isNonEmptyError(obj.error)) return "failure";
   return "success";
 }
 
@@ -121,10 +130,12 @@ interface MutableEntry {
   readonly locations: TurnLocation[];
   /** Composite identity of the turn currently being aggregated, or null. */
   pendingLocKey: string | null;
-  /** Whether any window matched in the pending turn carried outcome signal. */
-  pendingHadSignal: boolean;
-  /** Whether any window matched in the pending turn carried a failure. */
+  /** Whether any window in the pending turn had an explicit success step. */
+  pendingHadSuccess: boolean;
+  /** Whether any window in the pending turn had an explicit failure step. */
   pendingHadFailure: boolean;
+  /** Whether any window in the pending turn had a validation-reject step. */
+  pendingHadValidation: boolean;
   /** Committed occurrence-level counts across already-finalized turns. */
   successes: number;
   withOutcome: number;
@@ -137,26 +148,46 @@ function locationKey(loc: TurnLocation): string {
   return JSON.stringify([loc.sessionId, loc.agentId, loc.turnIndex]);
 }
 
-function windowSignal(steps: readonly ToolStep[]): { signal: boolean; failure: boolean } {
-  let signal = false;
+function windowSignal(steps: readonly ToolStep[]): {
+  success: boolean;
+  failure: boolean;
+  validation: boolean;
+} {
+  let success = false;
   let failure = false;
+  let validation = false;
   for (const step of steps) {
-    if (step.outcome === undefined) continue;
-    signal = true;
-    if (step.outcome === "failure") failure = true;
+    if (step.outcome === "success") success = true;
+    else if (step.outcome === "failure") failure = true;
+    else if (step.outcome === "validation") validation = true;
   }
-  return { signal, failure };
+  return { success, failure, validation };
 }
 
+/**
+ * Commit the pending turn's verdict to the entry's running counts. An
+ * occurrence is recorded against `withOutcome` whenever it carried any
+ * signal — success, failure, or validation reject — so validation-only
+ * patterns score `0` on successRate instead of receiving a false-perfect
+ * 1.0 from the no-signal default.
+ */
 function commitPending(entry: MutableEntry): void {
   if (entry.pendingLocKey === null) return;
-  if (entry.pendingHadSignal) {
+  const hadAnySignal =
+    entry.pendingHadSuccess || entry.pendingHadFailure || entry.pendingHadValidation;
+  if (hadAnySignal) {
     entry.withOutcome += 1;
-    if (!entry.pendingHadFailure) entry.successes += 1;
+    // Success requires explicit success, no failure, and no validation
+    // reject. Validation-only or failure-tainted turns count as denominator
+    // but not numerator.
+    if (entry.pendingHadSuccess && !entry.pendingHadFailure && !entry.pendingHadValidation) {
+      entry.successes += 1;
+    }
   }
   entry.pendingLocKey = null;
-  entry.pendingHadSignal = false;
+  entry.pendingHadSuccess = false;
   entry.pendingHadFailure = false;
+  entry.pendingHadValidation = false;
 }
 
 function freezeEntry(entry: MutableEntry): NgramEntry {
@@ -187,15 +218,16 @@ export function extractNgrams(
       for (let start = 0; start <= seq.length - size; start++) {
         const steps = seq.slice(start, start + size);
         const key = computeNgramKey(steps);
-        const { signal, failure } = windowSignal(steps);
+        const { success, failure, validation } = windowSignal(steps);
         let entry = accum.get(key);
         if (entry === undefined) {
           entry = {
             ngram: { steps, key },
             locations: [location],
             pendingLocKey: locKey,
-            pendingHadSignal: signal,
+            pendingHadSuccess: success,
             pendingHadFailure: failure,
+            pendingHadValidation: validation,
             successes: 0,
             withOutcome: 0,
           };
@@ -203,11 +235,12 @@ export function extractNgrams(
           continue;
         }
         if (entry.pendingLocKey === locKey) {
-          // Same turn — fold this window's signal into the pending verdict.
-          // Conservative rule: any failed window fails the turn; success
-          // requires at least one signal-bearing window with zero failures.
-          entry.pendingHadSignal = entry.pendingHadSignal || signal;
+          // Same turn — fold this window's signals into the pending verdict.
+          // Failure / validation taint the whole turn; success only counts
+          // when no failure or validation appeared in any window.
+          entry.pendingHadSuccess = entry.pendingHadSuccess || success;
           entry.pendingHadFailure = entry.pendingHadFailure || failure;
+          entry.pendingHadValidation = entry.pendingHadValidation || validation;
           continue;
         }
         // New turn — commit the previous turn's verdict, record the new
@@ -215,8 +248,9 @@ export function extractNgrams(
         commitPending(entry);
         entry.locations.push(location);
         entry.pendingLocKey = locKey;
-        entry.pendingHadSignal = signal;
+        entry.pendingHadSuccess = success;
         entry.pendingHadFailure = failure;
+        entry.pendingHadValidation = validation;
       }
     }
   }

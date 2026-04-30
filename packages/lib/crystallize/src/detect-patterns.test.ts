@@ -307,10 +307,10 @@ describe("detectPatterns", () => {
     expect(candidates[0]?.outcomeStats).toEqual({ successes: 0, withOutcome: 3 });
   });
 
-  test("validation rejects do not inflate successRate (kind:validation is neutral)", () => {
+  test("validation-only patterns score 0 successRate (cannot be ranked as healthy)", () => {
     // Three turns of [a,b] where each tool returns a validation reject.
-    // Pattern should surface (3 occurrences) but with zero outcome signal —
-    // validation rejects must not be counted as successful tool runs.
+    // Validation occurrences must contribute to `withOutcome` so the success
+    // rate is 0/3, not the no-signal default of 1.0.
     const v = { kind: "validation" as const, error: "bad" };
     const traces = [
       createTrace(0, ["a", "b"], [v, v]),
@@ -319,7 +319,26 @@ describe("detectPatterns", () => {
     ];
     const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
     expect(candidates).toHaveLength(1);
-    expect(candidates[0]?.outcomeStats).toEqual({ successes: 0, withOutcome: 0 });
+    expect(candidates[0]?.outcomeStats).toEqual({ successes: 0, withOutcome: 3 });
+  });
+
+  test("validation-only pattern is outranked by a fresh successful pattern", () => {
+    // Same frequency, same length; one is validation-only, one fully healthy.
+    // Score-driven sort must put the healthy pattern first because the
+    // validation-only one has successRate=0.
+    const v = { kind: "validation" as const, error: "bad" };
+    const traces = [
+      createTrace(0, ["bad1", "bad2"], [v, v]),
+      createTrace(1, ["bad1", "bad2"], [v, v]),
+      createTrace(2, ["bad1", "bad2"], [v, v]),
+      createTrace(3, ["good1", "good2"], [{}, {}]),
+      createTrace(4, ["good1", "good2"], [{}, {}]),
+      createTrace(5, ["good1", "good2"], [{}, {}]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates[0]?.ngram.key).toBe("good1|good2");
+    expect(candidates[1]?.ngram.key).toBe("bad1|bad2");
+    expect(candidates[1]?.score ?? 1).toBe(0);
   });
 
   test("does not collapse occurrences across sessions when turn indices collide", () => {
