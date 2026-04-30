@@ -29,10 +29,10 @@ Issue #2088 says "koi.toml". The repo's manifest is **`koi.yaml`** — confirmed
 | `packages/meta/cli/src/runtime-factory.ts` | ~40 | Add `manifestAce?: ManifestAceConfig` to `KoiRuntimeConfig`; when `enabled === true` build `AceConfig` (in-memory stores + default consolidator) → pass via `RuntimeConfig.ace` to `createRuntime` |
 | `packages/meta/cli/src/runtime-factory.test.ts` | ~80 | Middleware chain snapshot (off vs on); in-process two-turn behavior test |
 | `packages/meta/cli/src/tui-command.ts` | ~10 | Forward `manifest.ace` into `createKoiRuntime({ manifestAce })` (the only host that should — start.ts already rejected the field) |
-| `packages/meta/cli/src/tui-command.test.ts` | ~40 | TUI startup with `[ace] enabled = true` plumbs `manifestAce` into `createKoiRuntime`; `/clear` and `/new` reset playbook store (see Reset semantics below) |
-| `docs/L2/middleware-ace.md` | ~30 | New "Enabling in TUI" section, including reset semantics + host scope |
+| `packages/meta/cli/src/tui-command.test.ts` | ~25 | TUI startup with `[ace] enabled = true` plumbs `manifestAce` into `createKoiRuntime` |
+| `docs/L2/middleware-ace.md` | ~30 | New "Enabling in TUI" section, including lifecycle scope + host scope |
 
-Total: ~380 LOC.
+Total: ~330 LOC.
 
 ## Surface
 
@@ -101,7 +101,7 @@ const aceConfig: AceConfig | undefined =
 
 Single startup log line on enable:
 ```
-ace: enabled (in-memory store; playbooks reset on /clear, /new, and process exit)
+ace: enabled (in-memory store; shared across all sessions and child agents in this process; playbooks lost on process exit)
 ```
 
 ## Host scope
@@ -115,20 +115,27 @@ ace: enabled (in-memory store; playbooks reset on /clear, /new, and process exit
 
 This prevents shared manifests from silently enabling ACE in headless `koi start`, which has a different safety posture (no `/clear`, `/new` reset hooks; longer-lived processes).
 
-## Reset semantics
+## Lifecycle and isolation (intentional limitations)
 
-The in-memory playbook store lives for the lifetime of the TUI process, so without explicit reset hooks, `/clear` and `/new` would carry forward learned guidance from a prior conversation — surprising the user and potentially leaking stale context.
+The in-memory `PlaybookStore` and `TrajectoryStore` are constructed once at runtime init and **persist for the lifetime of the TUI process**. This matches issue #2088 AC ("playbooks will not survive process exit") and the v2 ACE store API surface (`PlaybookStore` / in-memory `TrajectoryStore` expose no `clear()` operation; see `packages/lib/middleware-ace/src/in-memory-store.ts`).
 
-This PR wires reset behavior:
+Concretely, in this PR:
 
-- **`/clear`** (truncate transcript, keep session) → clear in-memory `PlaybookStore` and `TrajectoryStore`.
-- **`/new`** (start a new session) → clear both stores.
-- **Resume** (`--resume`) → no clear (resuming the same logical conversation).
-- **Process exit** → store is GC'd, all playbooks lost (documented; sqlite store will fix this in the follow-up issue).
+- **Cross-session within process** — playbooks learned in session N are visible to session N+1 (this is the feature). Includes `/clear` and `/new` boundaries: ACE state is NOT reset by these. Documented loudly in the doc-update.
+- **Cross-agent within process** — child agents spawned via `spawn` / `task_delegate` SHARE the parent's playbook store. A child's tool failures CAN surface as `[Active Playbooks]` in the parent's next model call, and vice-versa.
+- **Cross-process** — none. Process exit drops everything.
 
-Implementation: `runtime-factory.ts` retains a reference to the constructed stores and exposes a `resetAceStores()` callback on the runtime handle. `tui-command.ts` invokes this callback from the existing `/clear` and `/new` reset paths (next to `rewindBoundaryActive` flagging at `tui-command.ts:2944`).
+Why we accept these limits in this PR:
 
-If a future PR adds session/workspace partitioning to the ACE store, this hook can become a no-op or a per-session selector — the boundary is preserved.
+1. The opt-in flag is the user's signal that they accept dogfood-grade behavior. Issue #2088 explicitly frames this as a telemetry-gathering rollout, not a default-on feature.
+2. The v2 in-memory store API (already merged in PR #2086) doesn't expose a `clear()` op; designing reset semantics requires extending the L2 surface, which belongs in the sqlite-store follow-up issue alongside namespacing.
+3. Adding per-session reset hooks would require a new `resetSessionState`-pipeline lifecycle hook in `@koi/engine`, which is out of scope (issue #2088 is "wire what exists").
+
+The follow-up `@koi/playbook-store-sqlite` issue is the natural home for: (a) per-root-agent partitioning, (b) explicit `clear()` on stores, (c) `/clear` and `/new` reset wiring.
+
+Until then, the doc-update warns:
+
+> **Warning.** When `[ace]` is enabled, learned playbooks persist across `/clear` and `/new`, and are shared between this conversation and any child agents spawned via `task_delegate`. To fully reset ACE state, restart the TUI process. This limitation will be removed when `@koi/playbook-store-sqlite` lands.
 
 ## Defaults & error handling
 
@@ -161,10 +168,6 @@ If a future PR adds session/workspace partitioning to the ACE store, this hook c
 1. Manifest has `ace: { enabled: true, ... }` → `createKoiRuntime` is called with matching `manifestAce` payload
 2. Manifest has no `ace:` → `createKoiRuntime` receives `manifestAce: undefined`
 
-### Reset hooks (~2 tests)
-1. After `/clear`, the in-memory `PlaybookStore` and `TrajectoryStore` are empty
-2. After `/new`, both stores are empty; resume path does NOT clear
-
 ### Runtime-factory plumbing (~2 tests)
 1. `manifestAce` undefined → middleware chain snapshot has NO `ace` middleware
 2. `manifestAce.enabled === true` → middleware chain snapshot has `ace` at the expected position
@@ -178,6 +181,8 @@ If a future PR adds session/workspace partitioning to the ACE store, this hook c
 
 - `playbook_path` / persistent backend — `@koi/playbook-store-sqlite` does not exist; tracked as separate follow-up issue. Until it lands, only in-memory store is supported. Schema rejects `playbook_path` rather than silently ignoring it (issue AC: "invalid keys produce a clear error").
 - Cross-session TUI smoke test — deferred to the sqlite-store PR where it actually verifies persistence.
+- **`/clear` and `/new` reset semantics** — see Lifecycle and isolation. Requires extending in-memory store API or runtime session-reset hook; both belong in the sqlite-store follow-up.
+- **Per-root-agent / per-workspace partitioning** — see Lifecycle and isolation. Same follow-up.
 - LLM reflector + curator — separate scope of #1715.
 - AGP promotion gate — separate scope of #1715.
 - `--ace` CLI flag — manifest is single source of truth (issue non-goal).
