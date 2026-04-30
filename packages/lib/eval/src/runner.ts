@@ -78,7 +78,15 @@ export async function runEval(config: EvalRunConfig): Promise<EvalRun> {
 function validateRunConfig(config: EvalRunConfig): void {
   if (config.name.length === 0) throw new Error("EvalRunConfig.name must be non-empty");
   if (config.tasks.length === 0) throw new Error("EvalRunConfig.tasks must be non-empty");
+  const seenIds = new Set<string>();
   for (const task of config.tasks) {
+    if (task.id.length === 0) throw new Error("EvalTask.id must be non-empty");
+    if (seenIds.has(task.id)) {
+      // Summaries and regression comparison key on taskId; duplicates would
+      // merge unrelated tasks into the same bucket and mask failures.
+      throw new Error(`EvalRunConfig.tasks: duplicate task id "${task.id}"`);
+    }
+    seenIds.add(task.id);
     if (task.graders.length === 0) throw new Error(`EvalTask "${task.id}" has no graders`);
   }
 }
@@ -303,12 +311,13 @@ async function disposeSafely(agent: AgentHandle | undefined, timeoutMs: number):
   try {
     const winner = await Promise.race([
       Promise.resolve(agent.dispose()).then(
-        () => true,
-        () => true, // dispose() rejected — still counts as confirmed teardown
+        () => true as const,
+        () => "rejected" as const, // dispose() threw — teardown not confirmed
       ),
       timeout,
     ]);
-    return winner !== timeoutMarker;
+    if (winner === timeoutMarker || winner === "rejected") return false;
+    return true;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

@@ -282,7 +282,11 @@ async function listMetas(rootDir: string, evalName: string): Promise<readonly Ev
 async function safeReaddir(path: string): Promise<readonly string[]> {
   try {
     return await readdir(path);
-  } catch {
-    return [];
+  } catch (e: unknown) {
+    // Only suppress true not-found — propagate permission/IO errors so
+    // callers can fail closed instead of silently degrading to "no
+    // baseline" against a broken store.
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
   }
 }

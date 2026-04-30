@@ -298,6 +298,31 @@ describe("runEval", () => {
     expect(disposed).toBe(1);
   });
 
+  test("rejects duplicate task ids", async () => {
+    await expect(
+      runEval({
+        name: "dup",
+        tasks: [task("same", "x", [exactMatch()]), task("same", "y", [exactMatch()])],
+        agentFactory: () => fakeAgent([]),
+      }),
+    ).rejects.toThrow(/duplicate task id/);
+  });
+
+  test("dispose rejection causes cancellation: 'unconfirmed' on timeout", async () => {
+    const run = await runEval({
+      name: "dispose-throw",
+      tasks: [{ ...task("t1", "x", [exactMatch()]), timeoutMs: 20 }],
+      agentFactory: () => ({
+        stream: (): AsyncIterable<EngineEvent> => ({
+          [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}) }),
+        }),
+        dispose: () => Promise.reject(new Error("dispose-fail")),
+      }),
+      idGen: () => "run-dt",
+    });
+    expect(run.trials[0]?.cancellation).toBe("unconfirmed");
+  });
+
   test("rejects empty config", async () => {
     await expect(
       runEval({
