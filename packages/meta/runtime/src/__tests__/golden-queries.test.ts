@@ -2459,6 +2459,20 @@ describe("Golden: @koi/eval", () => {
       { kind: "tool_call_start", toolName: "search", callId: "c1" as never, args: { q: "x" } },
       { kind: "tool_result", callId: "c1" as never, output: { hits: 42 } },
       { kind: "text_delta", delta: "found 42 results" },
+      {
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "completed",
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 1,
+            durationMs: 0,
+          },
+        },
+      },
     ];
     const run = await runEval({
       name: "eval-golden",
