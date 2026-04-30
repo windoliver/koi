@@ -204,11 +204,13 @@ describe("createAgentMonitorMiddleware", () => {
     }
     for (let i = 0; i < 3; i++) {
       const it = mw.wrapModelStream?.(ctx, {} as ModelRequest, fastStream);
+      if (it === undefined) throw new Error("wrapModelStream missing");
       for await (const _ of it) {
         /* drain */
       }
     }
     const it = mw.wrapModelStream?.(ctx, {} as ModelRequest, slowStream);
+    if (it === undefined) throw new Error("wrapModelStream missing");
     for await (const _ of it) {
       /* drain */
     }
