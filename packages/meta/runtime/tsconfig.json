@@ -93,6 +93,8 @@
     { "path": "../../lib/bash-ast" },
     { "path": "../../lib/bash-security" },
     { "path": "../../lib/tools-bash" },
+    { "path": "../../sandbox/sandbox-docker" },
+    { "path": "../../sandbox/sandbox-executor" },
     { "path": "../../sandbox/sandbox-os" },
     { "path": "../../sched/scheduler" },
     { "path": "../../sched/scheduler-provider" },

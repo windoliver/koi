@@ -15451,3 +15451,64 @@ describe("Golden: @koi/middleware-prompt-cache", () => {
     expect(toolSteps.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/sandbox-docker (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/sandbox-docker", () => {
+  test("createDockerAdapter returns UNAVAILABLE error when client is missing", async () => {
+    const { createDockerAdapter } = await import("@koi/sandbox-docker");
+
+    // Use a probe that returns nonzero so Docker is reported unavailable (no real daemon needed)
+    const unavailableProbe = async (): Promise<number> => 1;
+    const result = await createDockerAdapter({ image: "ubuntu:22.04", probe: unavailableProbe });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("UNAVAILABLE");
+    }
+  });
+
+  test("createDockerAdapter returns a named SandboxAdapter when a client is provided", async () => {
+    const { createDockerAdapter } = await import("@koi/sandbox-docker");
+
+    // Minimal stub DockerClient — never actually called in this test
+    const stubClient = {
+      createContainer: async () => {
+        throw new Error("not used in this test");
+      },
+    };
+
+    const result = await createDockerAdapter({ image: "ubuntu:22.04", client: stubClient });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.name).toBe("docker");
+      expect(typeof result.value.create).toBe("function");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/sandbox-executor (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/sandbox-executor", () => {
+  test("createSubprocessExecutor returns a SandboxExecutor with an execute function", async () => {
+    const { createSubprocessExecutor } = await import("@koi/sandbox-executor");
+
+    const executor = createSubprocessExecutor({ bunPath: "bun" });
+    expect(typeof executor.execute).toBe("function");
+  });
+
+  test("timeout returns SandboxError TIMEOUT", async () => {
+    const { createSubprocessExecutor } = await import("@koi/sandbox-executor");
+
+    // externalIsolation: true bypasses the default-deny guard (no context needed here,
+    // but guard only triggers when context is provided — no context → no guard trigger)
+    const exec = createSubprocessExecutor({ externalIsolation: true });
+    const code = `export default async () => { while (true) { /* spin */ } };`;
+    const r = await exec.execute(code, null, 250);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("TIMEOUT");
+  });
+});
