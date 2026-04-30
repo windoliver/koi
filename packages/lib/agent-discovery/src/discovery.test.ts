@@ -73,13 +73,15 @@ describe("createDiscovery", () => {
     expect(s.calls()).toBe(1);
   });
 
-  test("dedup-by-name: MCP wins over PATH for shared name", async () => {
+  test("dedup-by-identity: MCP and PATH descriptors with same name coexist (different transports)", async () => {
     const path = counterSource("path", 2, () => [cliClaude]);
     const mcp = counterSource("mcp", 0, () => [mcpClaude]);
     const d = createDiscovery([path, mcp], 1000);
     const r = await d.discover();
-    expect(r.length).toBe(1);
-    expect(r[0]?.transport).toBe("mcp");
+    // Both must be visible — an MCP server cannot shadow a local CLI binary
+    // just by reusing the same name across a different transport.
+    expect(r.length).toBe(2);
+    expect(r.map((x) => x.transport).sort()).toEqual(["cli", "mcp"]);
   });
 
   test("filter by transport", async () => {

@@ -15590,7 +15590,7 @@ describe("Golden: @koi/agent-discovery", () => {
     expect(map.has(EXTERNAL_AGENTS)).toBe(true);
   });
 
-  test("dedup-by-name: MCP source wins over PATH", async () => {
+  test("dedup-by-identity: MCP and PATH descriptors with same name coexist", async () => {
     const { createDiscovery, createPathSource, createMcpSource } = await import(
       "@koi/agent-discovery"
     );
@@ -15623,8 +15623,9 @@ describe("Golden: @koi/agent-discovery", () => {
     ]);
     const discovery = createDiscovery([path, mcp], 1000);
     const agents = await discovery.discover();
-    const shared = agents.find((a) => a.name === "shared");
-    expect(shared?.source).toBe("mcp");
+    const shared = agents.filter((a) => a.name === "shared");
+    expect(shared.length).toBe(2);
+    expect(shared.map((a) => a.transport).sort()).toEqual(["cli", "mcp"]);
   });
 });
 

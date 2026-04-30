@@ -18,7 +18,7 @@ function fakeAgent(): Agent {
 }
 
 describe("agent-discovery integration", () => {
-  test("3 sources contribute, MCP wins on shared name", async () => {
+  test("3 sources contribute, descriptors from each source coexist (no cross-transport shadowing)", async () => {
     const sc: SystemCalls = {
       which: async (b) => (b === "claude" ? "/bin/claude" : null),
       readDir: async () => ["claude.json"],
@@ -47,8 +47,11 @@ describe("agent-discovery integration", () => {
     const result = await provider.attach(fakeAgent());
     const map = isAttachResult(result) ? result.components : result;
     const agents = map.get(EXTERNAL_AGENTS) as readonly ExternalAgentDescriptor[];
-    const claude = agents.find((a) => a.name === "claude-code");
-    expect(claude?.source).toBe("mcp");
+    const claudes = agents.filter((a) => a.name === "claude-code");
+    // All three sources produce a descriptor for "claude-code"; identity is
+    // (source, transport, name) so an MCP server cannot shadow local CLI
+    // entries by reusing the name.
+    expect(claudes.map((a) => a.source).sort()).toEqual(["filesystem", "mcp", "path"]);
   });
 
   test("partial failure: MCP source rejects, PATH+FS still produce", async () => {

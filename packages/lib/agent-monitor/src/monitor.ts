@@ -232,11 +232,14 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
   }
 
   function isErrorOutput(output: unknown): boolean {
+    // Require an explicit failure marker — many tools return structured
+    // results with an `error` field or `ok:false` as part of their normal
+    // output contract (e.g. web-fetch, browser nav). Only treat the explicit
+    // kind:"error" envelope as an execution failure to avoid false-positive
+    // error_spike anomalies on routine validation/permission responses.
     if (output === null || typeof output !== "object") return false;
-    if ("kind" in output && (output as { kind?: unknown }).kind === "error") return true;
-    if ("error" in output) return true;
-    if ("ok" in output && (output as { ok?: unknown }).ok === false) return true;
-    return false;
+    if (!("kind" in output)) return false;
+    return output.kind === "error";
   }
 
   function isDeniedOutput(output: unknown): boolean {
