@@ -1,6 +1,6 @@
 {
   "name": "@koi/eval",
-  "description": "Agent evaluation framework: define eval suites, run against agent, score, persist, detect regressions, self-test capabilities",
+  "description": "Agent eval framework: run suites, score transcripts, persist runs, detect regressions, self-test capabilities",
   "version": "0.0.0",
   "private": true,
   "type": "module",
