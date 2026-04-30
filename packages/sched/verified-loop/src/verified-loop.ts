@@ -235,7 +235,17 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
               : [],
           context: `Working on: ${current.description}`,
         };
-        await appendLearning(learningsPath, learningEntry, maxLearningEntries);
+        // Learnings are advisory — never fail the run after PRD state has
+        // already been mutated. A learnings disk error here would leave the
+        // caller with a thrown run() but the authoritative item state already
+        // committed, which is exactly the retry/rollback ambiguity we avoid.
+        try {
+          await appendLearning(learningsPath, learningEntry, maxLearningEntries);
+        } catch (e: unknown) {
+          console.warn(
+            `[verified-loop] Failed to append learning entry (non-fatal): ${extractMessage(e)}`,
+          );
+        }
 
         const record: IterationRecord = {
           iteration: i,

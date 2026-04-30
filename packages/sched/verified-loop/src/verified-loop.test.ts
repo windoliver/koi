@@ -244,6 +244,29 @@ describe("VerifiedLoop.run", () => {
     await expect(loop.run()).rejects.toThrow(/PRD/);
   });
 
+  test("learnings write failure does not abort the run after PRD has been mutated", async () => {
+    // Regression: appendLearning throwing left run() rejecting AFTER markDone
+    // already committed PRD state, producing an inconsistent caller view.
+    // Now learnings persistence is best-effort.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+
+    // Force a learnings write failure: pass a learningsPath that points at an
+    // existing directory so Bun.write to "<dir>.tmp" then rename fails.
+    const dirAsLearnings = join(tmpDir, "learnings-dir");
+    await Bun.write(join(dirAsLearnings, "marker.txt"), "x"); // creates the dir
+
+    const loop = createVerifiedLoop(
+      makeConfig({
+        learningsPath: dirAsLearnings,
+      }),
+    );
+    const result = await loop.run();
+
+    // Run completed successfully despite the broken learnings path.
+    expect(result.completed).toContain("a");
+    expect(result.iterations).toBe(1);
+  });
+
   test("operator stop does not consume the consecutive-failure budget", async () => {
     // Regression: previously stop() flowed through the catch path as
     // passed:false, which bumped consecutiveFailureCount and could even

@@ -138,6 +138,21 @@ describe("createTestGate signal handling", () => {
     expect(elapsed).toBeLessThan(2_000); // not 10s
   }, 5_000);
 
+  test("kills forked descendants of the gate command (process-group kill)", async () => {
+    // Regression: a per-PID kill leaves descendants alive after timeout/abort.
+    // With detached:true + kill(-pgid), the whole tree must die. Test case is
+    // bash that traps TERM, forks sleep, then waits — single-PID kill of bash
+    // would leave sleep re-parented and holding stderr open until 30s.
+    const controller = new AbortController();
+    const gate = createTestGate(["bash", "-c", "trap '' TERM; sleep 30 & wait"]);
+    setTimeout(() => controller.abort("force"), 50);
+    const start = performance.now();
+    const result = await gate(makeCtx({ signal: controller.signal }));
+    const elapsed = performance.now() - start;
+    expect(result.passed).toBe(false);
+    expect(elapsed).toBeLessThan(5_000); // not 30s
+  }, 10_000);
+
   test("escalates to SIGKILL when child ignores SIGTERM", async () => {
     // Regression: a child that ignores or traps the initial termination
     // request would stay alive past proc.kill(); the gate could return

@@ -31,35 +31,42 @@ export function createTestGate(
       // can deadlock the child once the kernel buffer fills (fixed-size, OS
       // dependent). stderr is piped because we surface it on failure, but we
       // drain it concurrently with proc.exited for the same reason.
+      //
+      // detached:true puts the child in its own process group (pgid = pid),
+      // so a `kill(-pid, signal)` reaches every descendant the child forks.
+      // Without this, a `bash -c "..."` whose body forks workers leaks those
+      // workers past timeout/abort — they keep mutating the workspace after
+      // the loop has advanced.
       const proc = Bun.spawn(args as string[], {
         cwd,
         stdout: "ignore",
         stderr: "pipe",
+        detached: true,
       });
 
-      // Two-phase kill: SIGTERM gives well-behaved children a chance to clean
-      // up, then a 1s grace + SIGKILL guarantees they actually exit before we
-      // advance. Without this, a child that ignores SIGTERM (or traps it) can
-      // continue mutating the workspace after the loop has already started
-      // another iteration.
+      // Two-phase kill of the entire process group: SIGTERM gives
+      // well-behaved descendants a chance to clean up, then a 1s grace +
+      // SIGKILL guarantees they actually exit before we advance.
+      const killGroup = (signal: NodeJS.Signals): void => {
+        try {
+          // Negative pid = process-group kill (POSIX). Bun.spawn detached:true
+          // sets pgid = pid, so this targets the whole tree.
+          if (proc.pid !== undefined) {
+            process.kill(-proc.pid, signal);
+          }
+        } catch {
+          // Group already gone, or kernel rejected (e.g. permissions). Fall
+          // back to per-PID kill on the leader as a best-effort.
+          try {
+            proc.kill(signal);
+          } catch {
+            // already exited
+          }
+        }
+      };
       const escalate = (): void => {
-        // Use let — justified: short-lived escalation timer reference
-        const sigterm = (): void => {
-          try {
-            proc.kill("SIGTERM");
-          } catch {
-            // already exited
-          }
-        };
-        const sigkill = (): void => {
-          try {
-            proc.kill("SIGKILL");
-          } catch {
-            // already exited
-          }
-        };
-        sigterm();
-        setTimeout(sigkill, 1_000);
+        killGroup("SIGTERM");
+        setTimeout(() => killGroup("SIGKILL"), 1_000);
       };
 
       const onAbort = (): void => {
