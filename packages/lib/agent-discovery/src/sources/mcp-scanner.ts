@@ -15,6 +15,10 @@ export function createMcpSource(managers: readonly McpAgentSource[]): DiscoveryS
     discover: async (): Promise<readonly ExternalAgentDescriptor[]> => {
       const out: ExternalAgentDescriptor[] = [];
       for (const m of managers) {
+        // Trust boundary: only servers that explicitly declare themselves as
+        // agents are surfaced. Keyword matches on tool names alone are not
+        // sufficient (a "code_search" tool does not make the server an agent).
+        if (m.isAgent !== true) continue;
         let r: Awaited<ReturnType<typeof m.listTools>>;
         try {
           r = await m.listTools();
@@ -23,16 +27,15 @@ export function createMcpSource(managers: readonly McpAgentSource[]): DiscoveryS
         }
         if (!r.ok) continue;
         const matched = r.value.some((t) => qualifies(t.name) || qualifies(t.description));
-        if (matched) {
-          out.push({
-            name: m.name,
-            transport: "mcp",
-            capabilities: ["code-generation"],
-            healthy: true,
-            source: "mcp",
-            metadata: { tools: r.value.map((t) => t.name) },
-          });
-        }
+        if (!matched) continue;
+        out.push({
+          name: m.name,
+          transport: "mcp",
+          capabilities: m.capabilities ?? ["code-generation"],
+          healthy: true,
+          source: "mcp",
+          metadata: { tools: r.value.map((t) => t.name) },
+        });
       }
       return out;
     },

@@ -76,6 +76,7 @@ describe("createDiscoveryProvider", () => {
       mcpSources: [
         {
           name: "mcp-x",
+          isAgent: true,
           listTools: async () => ({
             ok: true as const,
             value: [{ name: "code_assist" }],

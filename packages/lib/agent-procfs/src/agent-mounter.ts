@@ -48,8 +48,13 @@ export function createAgentMounter(config: AgentMounterConfig): AgentMounter {
 
   const unsubscribe = registry.watch((event) => {
     if (disposed) return;
-    if (event.kind === "registered") mountAgent(event.entry.agentId);
-    else if (event.kind === "deregistered") unmountAgent(event.agentId);
+    if (event.kind === "registered") {
+      // Clear hydration-race tombstone so a reused AgentId can remount.
+      deregistered.delete(event.entry.agentId);
+      mountAgent(event.entry.agentId);
+    } else if (event.kind === "deregistered") {
+      unmountAgent(event.agentId);
+    }
   });
 
   // Hydrate from existing registry state. Late results respect dispose +

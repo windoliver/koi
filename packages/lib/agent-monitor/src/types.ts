@@ -49,4 +49,6 @@ export interface SessionMetrics {
   pingPongAltCount: number;
   latency: LatencyStats;
   outputTokens: LatencyStats;
+  /** In-flight async drift evaluations awaited during onSessionEnd. */
+  pendingDrift: Set<Promise<void>>;
 }

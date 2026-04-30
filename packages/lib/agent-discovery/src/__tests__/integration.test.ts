@@ -33,6 +33,7 @@ describe("agent-discovery integration", () => {
     };
     const mcp: McpAgentSource = {
       name: "claude-code",
+      isAgent: true,
       listTools: async () => ({
         ok: true as const,
         value: [{ name: "code_review" }],
@@ -64,6 +65,7 @@ describe("agent-discovery integration", () => {
     };
     const broken: McpAgentSource = {
       name: "x",
+      isAgent: true,
       listTools: async () => {
         throw new Error("nope");
       },
@@ -89,6 +91,7 @@ describe("agent-discovery integration", () => {
     };
     const mcp: McpAgentSource = {
       name: "mcp-x",
+      isAgent: true,
       listTools: async () => ({
         ok: true as const,
         value: [{ name: "code_assist" }],

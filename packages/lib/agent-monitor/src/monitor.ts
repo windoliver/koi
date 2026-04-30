@@ -52,6 +52,7 @@ function freshMetrics(sessionId: SessionId, agentId: AgentId): SessionMetrics {
     pingPongAltCount: 0,
     latency: emptyStats(),
     outputTokens: emptyStats(),
+    pendingDrift: new Set(),
   };
 }
 
@@ -169,7 +170,7 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
     const snapshotMatched = m.goalDriftMatchedThisTurn;
     if (config.goalDrift?.scorer !== undefined) {
       const scorer = config.goalDrift.scorer;
-      Promise.resolve()
+      const p: Promise<void> = Promise.resolve()
         .then(() => scorer(snapshotToolIds, objectives))
         .then((score) => {
           if (score >= driftThreshold) {
@@ -201,7 +202,11 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
           } catch {
             // never throw
           }
+        })
+        .finally(() => {
+          m.pendingDrift.delete(p);
         });
+      m.pendingDrift.add(p);
       return;
     }
     if (!snapshotMatched) {
@@ -255,6 +260,14 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
     onSessionEnd: async (ctx: SessionContext) => {
       const m = sessions.get(ctx.sessionId);
       if (m === undefined) return;
+      // Evaluate the final turn's drift before exporting metrics — otherwise
+      // signals for the last turn would be lost (no subsequent onBeforeTurn).
+      evaluatePreviousTurnDrift(m);
+      // Wait for any in-flight async scorers so their signals land before we
+      // export the summary and delete the session.
+      if (m.pendingDrift.size > 0) {
+        await Promise.allSettled([...m.pendingDrift]);
+      }
       try {
         config.onMetrics?.(ctx.sessionId, snapshot(m));
       } catch {

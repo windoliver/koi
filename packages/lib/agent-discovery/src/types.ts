@@ -21,6 +21,19 @@ export interface KnownCliAgent {
 
 export interface McpAgentSource {
   readonly name: string;
+  /**
+   * REQUIRED for the server to be surfaced as an external agent. Servers must
+   * explicitly declare themselves as agents — keyword matches on tool names
+   * alone are not sufficient (a generic "code_search" tool does not make the
+   * server an agent). When false/undefined, the server is ignored entirely.
+   */
+  readonly isAgent: boolean;
+  /**
+   * Capabilities advertised by the server. When provided, used verbatim on
+   * the resulting descriptor. When omitted, defaults to ["code-generation"]
+   * for backwards compatibility with existing coding-agent integrations.
+   */
+  readonly capabilities?: readonly string[];
   readonly listTools: () => Promise<
     | {
         readonly ok: true;

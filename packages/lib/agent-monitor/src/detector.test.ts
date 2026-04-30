@@ -30,6 +30,7 @@ function freshMetrics(): SessionMetrics {
     pingPongAltCount: 0,
     latency: emptyStats(),
     outputTokens: emptyStats(),
+    pendingDrift: new Set(),
   };
 }
 

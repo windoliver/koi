@@ -15614,6 +15614,7 @@ describe("Golden: @koi/agent-discovery", () => {
     const mcp = createMcpSource([
       {
         name: "shared",
+        isAgent: true,
         listTools: async () => ({
           ok: true as const,
           value: [{ name: "code_assist" }],
