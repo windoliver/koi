@@ -1,0 +1,94 @@
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { __resetProfilingForTests, initProfiling } from "./integration.js";
+import { bumpCounter, resetProfiler } from "./profiler.js";
+
+describe("initProfiling", () => {
+  let prevEnv: string | undefined;
+  let prevOut: string | undefined;
+  let workDir: string;
+
+  beforeEach(() => {
+    prevEnv = process.env.KOI_TUI_PROFILE;
+    prevOut = process.env.KOI_TUI_PROFILE_OUT;
+    workDir = mkdtempSync(join(tmpdir(), "koi-prof-"));
+    __resetProfilingForTests();
+  });
+
+  afterEach(() => {
+    if (prevEnv === undefined) delete process.env.KOI_TUI_PROFILE;
+    else process.env.KOI_TUI_PROFILE = prevEnv;
+    if (prevOut === undefined) delete process.env.KOI_TUI_PROFILE_OUT;
+    else process.env.KOI_TUI_PROFILE_OUT = prevOut;
+    rmSync(workDir, { recursive: true, force: true });
+    __resetProfilingForTests();
+    resetProfiler({ enabled: false });
+  });
+
+  test("no-op when profiling disabled", () => {
+    process.env.KOI_TUI_PROFILE = "0";
+    resetProfiler();
+    const onSpy = mock((_event: string, _handler: () => void) => process);
+    initProfiling({ processOn: onSpy as unknown as typeof process.on });
+    expect(onSpy).not.toHaveBeenCalled();
+  });
+
+  test("when enabled, registers exit handler that writes report to KOI_TUI_PROFILE_OUT", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    const outPath = join(workDir, "report.json");
+    process.env.KOI_TUI_PROFILE_OUT = outPath;
+    resetProfiler();
+
+    let exitHandler: (() => void) | null = null;
+    const onSpy = mock((event: string, handler: () => void) => {
+      if (event === "exit") exitHandler = handler;
+      return process;
+    });
+
+    initProfiling({
+      processOn: onSpy as unknown as typeof process.on,
+      cpuSamplerOptions: {
+        // pass a no-op scheduler so no real timer is created
+        setIntervalFn: ((_fn: () => void, _ms: number) =>
+          1 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval,
+      },
+    });
+
+    bumpCounter("messagerow.mount", 5);
+    expect(exitHandler).not.toBeNull();
+    if (!exitHandler) return;
+    (exitHandler as () => void)();
+
+    const written = JSON.parse(readFileSync(outPath, "utf8")) as {
+      counters: Record<string, number>;
+    };
+    expect(written.counters["messagerow.mount"]).toBe(5);
+  });
+
+  test("ignores duplicate calls", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    process.env.KOI_TUI_PROFILE_OUT = join(workDir, "report.json");
+    resetProfiler();
+
+    const onSpy = mock((_event: string, _handler: () => void) => process);
+    initProfiling({
+      processOn: onSpy as unknown as typeof process.on,
+      cpuSamplerOptions: {
+        setIntervalFn: ((_fn: () => void, _ms: number) =>
+          1 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval,
+      },
+    });
+    initProfiling({
+      processOn: onSpy as unknown as typeof process.on,
+      cpuSamplerOptions: {
+        setIntervalFn: ((_fn: () => void, _ms: number) =>
+          1 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval,
+      },
+    });
+    // exit handler registered exactly once
+    const exitCalls = onSpy.mock.calls.filter((c) => c[0] === "exit");
+    expect(exitCalls.length).toBe(1);
+  });
+});

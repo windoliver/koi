@@ -1,3 +1,5 @@
+import { recordHistogram } from "../profiling/profiler.js";
+
 /**
  * EventBatcher — coalesces high-frequency events into render-cadence batches.
  *
@@ -83,6 +85,18 @@ export function createEventBatcher<T>(
   let microtaskPending = false;
   let flushTimer: TimerHandle | null = null;
   let disposed = false;
+  // `let` justified: timestamp of previous flush for inter-flush-gap histogram
+  let lastFlushAt = -1;
+
+  function recordFlushMetrics(batchSize: number, onFlushDurationMs: number): void {
+    recordHistogram("batcher.flush.batchSize", batchSize);
+    recordHistogram("batcher.flush.onFlushMs", onFlushDurationMs);
+    const now = performance.now();
+    if (lastFlushAt >= 0) {
+      recordHistogram("batcher.flush.gapMs", now - lastFlushAt);
+    }
+    lastFlushAt = now;
+  }
 
   function scheduleFlush(): void {
     if (flushTimer !== null) return; // already scheduled
@@ -94,7 +108,12 @@ export function createEventBatcher<T>(
     if (disposed || buffer.length === 0) return;
     const batch = buffer;
     buffer = [];
-    onFlush(batch); // may throw — intentional: caller sees the error
+    const t0 = performance.now();
+    try {
+      onFlush(batch); // may throw — intentional: caller sees the error
+    } finally {
+      recordFlushMetrics(batch.length, performance.now() - t0);
+    }
   }
 
   return {
@@ -120,7 +139,12 @@ export function createEventBatcher<T>(
       microtaskPending = false;
       const batch = buffer;
       buffer = [];
-      onFlush(batch);
+      const t0 = performance.now();
+      try {
+        onFlush(batch);
+      } finally {
+        recordFlushMetrics(batch.length, performance.now() - t0);
+      }
     },
 
     dispose(): void {
