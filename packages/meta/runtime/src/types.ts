@@ -1,10 +1,10 @@
+import type { DiscoveryProviderConfig } from "@koi/agent-discovery";
+import type { AgentMonitorConfig } from "@koi/agent-monitor";
 import type {
   AgentLoadWarning,
   AgentResolverDirs,
   RegistryConflictWarning,
 } from "@koi/agent-runtime";
-import type { DiscoveryProviderConfig } from "@koi/agent-discovery";
-import type { AgentMonitorConfig } from "@koi/agent-monitor";
 import type { ArtifactStore } from "@koi/artifacts";
 import type { NdjsonRotationConfig } from "@koi/audit-sink-ndjson";
 import type { SqliteRetentionConfig } from "@koi/audit-sink-sqlite";

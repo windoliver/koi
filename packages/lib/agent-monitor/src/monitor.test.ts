@@ -60,12 +60,12 @@ describe("createAgentMonitorMiddleware", () => {
       },
     });
     const session = makeSession();
-    await mw.onSessionStart!(session);
+    await mw.onSessionStart?.(session);
     const ctx = makeTurn(session, 0);
-    await mw.onBeforeTurn!(ctx);
+    await mw.onBeforeTurn?.(ctx);
     const next = async (_r: ToolRequest): Promise<ToolResponse> => ({ output: "ok" });
     for (let i = 0; i < 3; i++) {
-      await mw.wrapToolCall!(ctx, { toolId: `t${i}`, input: {} } as ToolRequest, next);
+      await mw.wrapToolCall?.(ctx, { toolId: `t${i}`, input: {} } as ToolRequest, next);
     }
     await tick();
     expect(signals.some((s) => s.kind === "tool_rate_exceeded")).toBe(true);
@@ -80,12 +80,12 @@ describe("createAgentMonitorMiddleware", () => {
       },
     });
     const session = makeSession();
-    await mw.onSessionStart!(session);
+    await mw.onSessionStart?.(session);
     const ctx = makeTurn(session, 0);
-    await mw.onBeforeTurn!(ctx);
+    await mw.onBeforeTurn?.(ctx);
     const next = async (_r: ToolRequest): Promise<ToolResponse> => ({ output: "ok" });
     for (let i = 0; i < 3; i++) {
-      await mw.wrapToolCall!(ctx, { toolId: "same", input: {} } as ToolRequest, next);
+      await mw.wrapToolCall?.(ctx, { toolId: "same", input: {} } as ToolRequest, next);
     }
     await tick();
     expect(signals.some((s) => s.kind === "tool_repeated")).toBe(true);
@@ -101,12 +101,12 @@ describe("createAgentMonitorMiddleware", () => {
       },
     });
     const session = makeSession();
-    await mw.onSessionStart!(session);
+    await mw.onSessionStart?.(session);
     const ctx = makeTurn(session, 0);
-    await mw.onBeforeTurn!(ctx);
+    await mw.onBeforeTurn?.(ctx);
     const next = async (_r: ToolRequest): Promise<ToolResponse> => ({ output: "ok" });
     for (let i = 0; i < 2; i++) {
-      await mw.wrapToolCall!(ctx, { toolId: "delete", input: {} } as ToolRequest, next);
+      await mw.wrapToolCall?.(ctx, { toolId: "delete", input: {} } as ToolRequest, next);
     }
     await tick();
     expect(signals.some((s) => s.kind === "irreversible_action_rate")).toBe(true);
@@ -123,10 +123,10 @@ describe("createAgentMonitorMiddleware", () => {
       },
     });
     const session = makeSession();
-    await mw.onSessionStart!(session);
+    await mw.onSessionStart?.(session);
     const ctx = makeTurn(session, 0);
-    await mw.onBeforeTurn!(ctx);
-    await mw.wrapToolCall!(ctx, { toolId: "spawn", input: {} } as ToolRequest, async () => ({
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapToolCall?.(ctx, { toolId: "spawn", input: {} } as ToolRequest, async () => ({
       output: "ok",
     }));
     await tick();
@@ -142,15 +142,15 @@ describe("createAgentMonitorMiddleware", () => {
       },
     });
     const session = makeSession();
-    await mw.onSessionStart!(session);
+    await mw.onSessionStart?.(session);
     const ctx = makeTurn(session, 0);
-    await mw.onBeforeTurn!(ctx);
+    await mw.onBeforeTurn?.(ctx);
     const next = async (_r: ToolRequest): Promise<ToolResponse> => {
       throw new Error("boom");
     };
     for (let i = 0; i < 2; i++) {
       try {
-        await mw.wrapToolCall!(ctx, { toolId: `t${i}`, input: {} } as ToolRequest, next);
+        await mw.wrapToolCall?.(ctx, { toolId: `t${i}`, input: {} } as ToolRequest, next);
       } catch {
         /* expected */
       }
@@ -168,11 +168,11 @@ describe("createAgentMonitorMiddleware", () => {
       },
     });
     const session = makeSession();
-    await mw.onSessionStart!(session);
+    await mw.onSessionStart?.(session);
     const ctx = makeTurn(session, 0);
-    await mw.onBeforeTurn!(ctx);
+    await mw.onBeforeTurn?.(ctx);
     for (let i = 0; i < 2; i++) {
-      mw.onPermissionDecision!(
+      mw.onPermissionDecision?.(
         ctx,
         { toolId: "t", input: {}, kind: "tool_call" } as never,
         { effect: "deny", reason: "no" } as never,
@@ -191,9 +191,9 @@ describe("createAgentMonitorMiddleware", () => {
       },
     });
     const session = makeSession();
-    await mw.onSessionStart!(session);
+    await mw.onSessionStart?.(session);
     const ctx = makeTurn(session, 0);
-    await mw.onBeforeTurn!(ctx);
+    await mw.onBeforeTurn?.(ctx);
 
     async function* fastStream(): AsyncIterable<ModelChunk> {
       yield { kind: "usage", inputTokens: 10, outputTokens: 50 };
@@ -203,12 +203,12 @@ describe("createAgentMonitorMiddleware", () => {
       yield { kind: "usage", inputTokens: 10, outputTokens: 50 };
     }
     for (let i = 0; i < 3; i++) {
-      const it = mw.wrapModelStream!(ctx, {} as ModelRequest, fastStream);
+      const it = mw.wrapModelStream?.(ctx, {} as ModelRequest, fastStream);
       for await (const _ of it) {
         /* drain */
       }
     }
-    const it = mw.wrapModelStream!(ctx, {} as ModelRequest, slowStream);
+    const it = mw.wrapModelStream?.(ctx, {} as ModelRequest, slowStream);
     for await (const _ of it) {
       /* drain */
     }
@@ -224,13 +224,13 @@ describe("createAgentMonitorMiddleware", () => {
       },
     });
     const session = makeSession();
-    await mw.onSessionStart!(session);
+    await mw.onSessionStart?.(session);
     const ctx = makeTurn(session, 0);
-    await mw.onBeforeTurn!(ctx);
-    await mw.wrapToolCall!(ctx, { toolId: "x", input: {} } as ToolRequest, async () => ({
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapToolCall?.(ctx, { toolId: "x", input: {} } as ToolRequest, async () => ({
       output: "ok",
     }));
-    await mw.onSessionEnd!(session);
+    await mw.onSessionEnd?.(session);
     expect(captured).not.toBeNull();
   });
 
@@ -244,14 +244,14 @@ describe("createAgentMonitorMiddleware", () => {
       },
     });
     const session = makeSession();
-    await mw.onSessionStart!(session);
+    await mw.onSessionStart?.(session);
     const t1 = makeTurn(session, 0);
-    await mw.onBeforeTurn!(t1);
-    await mw.wrapToolCall!(t1, { toolId: "email_send", input: {} } as ToolRequest, async () => ({
+    await mw.onBeforeTurn?.(t1);
+    await mw.wrapToolCall?.(t1, { toolId: "email_send", input: {} } as ToolRequest, async () => ({
       output: "ok",
     }));
     const t2 = makeTurn(session, 1);
-    await mw.onBeforeTurn!(t2);
+    await mw.onBeforeTurn?.(t2);
     await tick();
     expect(signals.some((s) => s.kind === "goal_drift")).toBe(true);
   });
@@ -266,14 +266,14 @@ describe("createAgentMonitorMiddleware", () => {
       },
     });
     const session = makeSession();
-    await mw.onSessionStart!(session);
+    await mw.onSessionStart?.(session);
     const t1 = makeTurn(session, 0);
-    await mw.onBeforeTurn!(t1);
-    await mw.wrapToolCall!(t1, { toolId: "web_search", input: {} } as ToolRequest, async () => ({
+    await mw.onBeforeTurn?.(t1);
+    await mw.wrapToolCall?.(t1, { toolId: "web_search", input: {} } as ToolRequest, async () => ({
       output: "ok",
     }));
     const t2 = makeTurn(session, 1);
-    await mw.onBeforeTurn!(t2);
+    await mw.onBeforeTurn?.(t2);
     await tick();
     expect(signals.some((s) => s.kind === "goal_drift")).toBe(false);
   });
@@ -288,10 +288,10 @@ describe("createAgentMonitorMiddleware", () => {
       onAnomalyError: (err) => errors.push(err),
     });
     const session = makeSession();
-    await mw.onSessionStart!(session);
+    await mw.onSessionStart?.(session);
     const ctx = makeTurn(session, 0);
-    await mw.onBeforeTurn!(ctx);
-    await mw.wrapToolCall!(ctx, { toolId: "x", input: {} } as ToolRequest, async () => ({
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapToolCall?.(ctx, { toolId: "x", input: {} } as ToolRequest, async () => ({
       output: "ok",
     }));
     await tick();

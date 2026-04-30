@@ -114,7 +114,10 @@ export function validateAgentMonitorConfig(raw: unknown): Result<AgentMonitorCon
       };
     }
   }
-  if (c.goalDrift?.shutdownTimeoutMs !== undefined && !isFiniteNonNeg(c.goalDrift.shutdownTimeoutMs)) {
+  if (
+    c.goalDrift?.shutdownTimeoutMs !== undefined &&
+    !isFiniteNonNeg(c.goalDrift.shutdownTimeoutMs)
+  ) {
     return {
       ok: false,
       error: {
