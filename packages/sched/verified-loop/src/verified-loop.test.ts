@@ -244,6 +244,72 @@ describe("VerifiedLoop.run", () => {
     await expect(loop.run()).rejects.toThrow(/PRD/);
   });
 
+  test("operator stop does not consume the consecutive-failure budget", async () => {
+    // Regression: previously stop() flowed through the catch path as
+    // passed:false, which bumped consecutiveFailureCount and could even
+    // mark unrelated items skipped after enough operator restarts.
+    await writePrd({
+      items: [
+        { id: "a", description: "Task A", done: false },
+        { id: "b", description: "Task B", done: false },
+      ],
+    });
+
+    const loop = createVerifiedLoop(
+      makeConfig({
+        maxConsecutiveFailures: 1,
+        verify: async (ctx) => {
+          // Stop the loop, then have the gate observe the abort and "fail".
+          loop.stop();
+          // ctx.signal may already be aborted by the time we get here; check first.
+          if (!ctx.signal.aborted) {
+            await new Promise<void>((resolve) => {
+              ctx.signal.addEventListener("abort", () => resolve());
+            });
+          }
+          return { passed: false, details: "cooperatively cancelled" };
+        },
+      }),
+    );
+    await loop.run();
+
+    const after = JSON.parse(await Bun.file(prdPath).text()) as PRDFile;
+    // Item must NOT be skipped just because the operator stopped the loop.
+    expect(after.items[0]?.skipped).toBeFalsy();
+    expect(after.items[0]?.consecutiveFailureCount ?? 0).toBe(0);
+  });
+
+  test("markDone clears prior skipped + consecutiveFailureCount", async () => {
+    // Regression: a previously skipped item completed indirectly via
+    // itemsCompleted would still appear in `result.skipped`, and stale
+    // consecutiveFailureCount would reduce the budget on a reopened item.
+    await writePrd({
+      items: [
+        {
+          id: "a",
+          description: "Was skipped",
+          done: false,
+          skipped: true,
+          consecutiveFailureCount: 3,
+        },
+        { id: "b", description: "Current", done: false },
+      ],
+    });
+
+    const loop = createVerifiedLoop(
+      makeConfig({ verify: async () => ({ passed: true, itemsCompleted: ["a"] }) }),
+    );
+    const result = await loop.run();
+
+    expect(result.completed).toContain("a");
+    expect(result.skipped).not.toContain("a"); // no longer in skipped set
+    const after = JSON.parse(await Bun.file(prdPath).text()) as PRDFile;
+    const a = after.items.find((i) => i.id === "a");
+    expect(a?.done).toBe(true);
+    expect(a?.skipped).toBe(false);
+    expect(a?.consecutiveFailureCount).toBe(0);
+  });
+
   test("consecutive failure count persists across separate runs", async () => {
     // Regression: previously the failure budget was an in-memory Map, so a
     // process restart reset it and a permanently failing item could never

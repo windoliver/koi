@@ -185,13 +185,20 @@ export async function markSkipped(path: string, itemId: string): Promise<Result<
   return updateItem(path, itemId, (target) => ({ ...target, skipped: true }));
 }
 
-/** Mark a PRD item as done with atomic write-temp-rename. */
+/**
+ * Mark a PRD item as done with atomic write-temp-rename. Also normalizes
+ * any prior failure metadata: clears `skipped` (an item completed indirectly
+ * via `itemsCompleted` should not remain in the skipped result set) and
+ * resets `consecutiveFailureCount` (success cancels prior streak).
+ */
 export async function markDone(path: string, itemId: string): Promise<Result<void, KoiError>> {
   return updateItem(path, itemId, (target) => ({
     ...target,
     done: true,
     verifiedAt: new Date().toISOString(),
     iterationCount: (target.iterationCount ?? 0) + 1,
+    skipped: false,
+    consecutiveFailureCount: 0,
   }));
 }
 

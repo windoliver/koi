@@ -186,6 +186,14 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           gateResult = { passed: false, details: `Gate error: ${extractMessage(e)}` };
         }
 
+        // Operator-stop / external-abort is NOT a verification failure. Do not
+        // consume the per-item skip budget when the loop is being torn down —
+        // a noisy operator who restarts often would otherwise mark unrelated
+        // items as skipped. The abortController.signal is the loop-level signal
+        // (loop.stop() or external config.signal); a per-call gate timeout
+        // fires the local gateSignal but leaves abortController.signal clear.
+        const cancelled = abortController.signal.aborted;
+
         if (gateResult.passed) {
           // A passing gate always marks the current item done. itemsCompleted
           // adds *additional* ids (e.g., a single iteration that completes
@@ -200,7 +208,7 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
               );
             }
           }
-        } else {
+        } else if (!cancelled) {
           // Persist the consecutive-failure count to disk in the same atomic
           // write that may also flip skipped:true. Survives crash/restart.
           const bumpResult = await bumpFailureCount(

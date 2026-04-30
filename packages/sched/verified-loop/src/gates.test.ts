@@ -137,6 +137,32 @@ describe("createTestGate signal handling", () => {
     expect(result.passed).toBe(false);
     expect(elapsed).toBeLessThan(2_000); // not 10s
   }, 5_000);
+
+  test("escalates to SIGKILL when child ignores SIGTERM", async () => {
+    // Regression: a child that ignores or traps the initial termination
+    // request would stay alive past proc.kill(); the gate could return
+    // before the child died. Two-phase kill (SIGTERM then SIGKILL after a
+    // grace) guarantees the process is gone before we advance.
+    const controller = new AbortController();
+    // Single-process child that ignores SIGTERM; SIGKILL cannot be trapped.
+    // (A bash subshell with `trap '' TERM` is not a valid test because bash's
+    // child sleep keeps stderr open after bash dies — re-parenting hides our
+    // sleep from sigkill until it naturally exits. Any production gate that
+    // forks subshells will exhibit similar long-lived descendants. Killing
+    // the whole process group is out of scope here.)
+    const gate = createTestGate([
+      "bun",
+      "-e",
+      'process.on("SIGTERM", () => {}); await new Promise(() => {})',
+    ]);
+    setTimeout(() => controller.abort("force"), 50);
+    const start = performance.now();
+    const result = await gate(makeCtx({ signal: controller.signal }));
+    const elapsed = performance.now() - start;
+    expect(result.passed).toBe(false);
+    // Must die from SIGKILL within (50ms abort + 1s SIGTERM grace + slack).
+    expect(elapsed).toBeLessThan(5_000);
+  }, 10_000);
 });
 
 describe("createCompositeGate", () => {

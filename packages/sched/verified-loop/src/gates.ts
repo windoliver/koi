@@ -37,13 +37,38 @@ export function createTestGate(
         stderr: "pipe",
       });
 
+      // Two-phase kill: SIGTERM gives well-behaved children a chance to clean
+      // up, then a 1s grace + SIGKILL guarantees they actually exit before we
+      // advance. Without this, a child that ignores SIGTERM (or traps it) can
+      // continue mutating the workspace after the loop has already started
+      // another iteration.
+      const escalate = (): void => {
+        // Use let — justified: short-lived escalation timer reference
+        const sigterm = (): void => {
+          try {
+            proc.kill("SIGTERM");
+          } catch {
+            // already exited
+          }
+        };
+        const sigkill = (): void => {
+          try {
+            proc.kill("SIGKILL");
+          } catch {
+            // already exited
+          }
+        };
+        sigterm();
+        setTimeout(sigkill, 1_000);
+      };
+
       const onAbort = (): void => {
-        proc.kill();
+        escalate();
       };
       ctx.signal.addEventListener("abort", onAbort, { once: true });
 
       const timer = setTimeout(() => {
-        proc.kill();
+        escalate();
       }, timeoutMs);
 
       // Drain stderr concurrently — never await proc.exited with a pipe still buffering.
