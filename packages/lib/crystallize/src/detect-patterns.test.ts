@@ -69,6 +69,103 @@ describe("filterSubsumed", () => {
     expect(filterSubsumed([a, b])).toHaveLength(2);
   });
 
+  test("does not subsume when shorter's locations are not covered by the longer", () => {
+    // [a,b] occurred in turns 0..2 from the test session; [a,b,c] occurred in
+    // turns 5..7 (disjoint). Shape contains, count matches, but locations
+    // do not — the shorter must survive.
+    const shorter: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }], key: "a|b" },
+      occurrences: 3,
+      locations: [0, 1, 2].map((i) => ({
+        sessionId: TEST_SESSION,
+        agentId: TEST_AGENT,
+        turnIndex: i,
+      })),
+      detectedAt: 0,
+      suggestedName: "a-then-b",
+      outcomeStats: { successes: 0, withOutcome: 0 },
+    };
+    const longer: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }, { toolId: "c" }], key: "a|b|c" },
+      occurrences: 3,
+      locations: [5, 6, 7].map((i) => ({
+        sessionId: TEST_SESSION,
+        agentId: TEST_AGENT,
+        turnIndex: i,
+      })),
+      detectedAt: 0,
+      suggestedName: "a-then-b-then-c",
+      outcomeStats: { successes: 0, withOutcome: 0 },
+    };
+    const kept = filterSubsumed([shorter, longer]);
+    expect(kept).toHaveLength(2);
+  });
+
+  test("does not subsume a healthy shorter prefix beneath a failing longer composite", () => {
+    // Longer pattern fails on its last step every turn (score 0); shorter
+    // prefix succeeds every turn (score > 0). Same locations, same shape
+    // containment — quality dominance must veto the subsumption.
+    const sharedLocs = [0, 1, 2].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
+    const healthy: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "read" }, { toolId: "parse" }], key: "read|parse" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "read-then-parse",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 6,
+    };
+    const failing: CrystallizationCandidate = {
+      ngram: {
+        steps: [{ toolId: "read" }, { toolId: "parse" }, { toolId: "save" }],
+        key: "read|parse|save",
+      },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "read-then-parse-then-save",
+      outcomeStats: { successes: 0, withOutcome: 3 },
+      score: 0,
+    };
+    const kept = filterSubsumed([healthy, failing]);
+    const keys = kept.map((c) => c.ngram.key).sort();
+    expect(keys).toEqual(["read|parse", "read|parse|save"]);
+  });
+
+  test("subsumes when shape, coverage, and quality all dominate", () => {
+    // Shorter [a,b] only appears as part of [a,b,c]; longer has equal score
+    // and identical locations. Subsume the shorter as before.
+    const sharedLocs = [0, 1, 2].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
+    const shorter: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }], key: "a|b" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 3,
+    };
+    const longer: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }, { toolId: "c" }], key: "a|b|c" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b-then-c",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 6,
+    };
+    const kept = filterSubsumed([shorter, longer]);
+    expect(kept.map((c) => c.ngram.key)).toEqual(["a|b|c"]);
+  });
+
   test("does not subsume across pipe-key boundaries (regression: substring vs subsequence)", () => {
     // Pipe-joined keys: "b|c" vs "a|b|cd". Naive substring match would falsely
     // claim "b|c" is contained in "a|b|cd"; tokenised subsequence comparison

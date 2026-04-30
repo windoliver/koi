@@ -59,10 +59,40 @@ function containsContiguous(haystack: readonly ToolStep[], needle: readonly Tool
   return false;
 }
 
+function locationKeyOf(loc: {
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly turnIndex: number;
+}): string {
+  return JSON.stringify([loc.sessionId, loc.agentId, loc.turnIndex]);
+}
+
 /**
- * Drop candidates that are wholly subsumed by a longer candidate with at
- * least the same occurrence count. The longer pattern carries strictly more
- * information at no statistical cost, so the shorter one is redundant.
+ * True when every location in `needle` also appears in `haystack`. Required
+ * before subsumption can drop the shorter pattern: shape containment alone
+ * is not enough — `[a,b]` and `[a,b,c]` may live in disjoint turns and the
+ * shorter must survive as an independent candidate.
+ */
+function isLocationSubset(
+  needle: readonly CrystallizationCandidate["locations"][number][],
+  haystack: readonly CrystallizationCandidate["locations"][number][],
+): boolean {
+  const seen = new Set(haystack.map(locationKeyOf));
+  for (const loc of needle) if (!seen.has(locationKeyOf(loc))) return false;
+  return true;
+}
+
+/**
+ * Drop candidates wholly subsumed by a longer candidate. Subsumption now
+ * requires three independent conditions:
+ *  - **Shape**: longer contains shorter as a contiguous tool-id subsequence.
+ *  - **Coverage**: every location of the shorter is also a location of the
+ *    longer. Without this, two patterns that happen to share a substring
+ *    but live in different turns would silently delete one another.
+ *  - **Quality**: longer's `score` is at least the shorter's. Without this,
+ *    a longer composite that always fails on its final step (e.g. a
+ *    publish-step that never succeeds) would suppress its healthy
+ *    successful prefix from the candidate set.
  */
 export function filterSubsumed(
   candidates: readonly CrystallizationCandidate[],
@@ -72,8 +102,9 @@ export function filterSubsumed(
       (other) =>
         other.ngram.key !== candidate.ngram.key &&
         other.ngram.steps.length > candidate.ngram.steps.length &&
-        other.occurrences >= candidate.occurrences &&
-        containsContiguous(other.ngram.steps, candidate.ngram.steps),
+        containsContiguous(other.ngram.steps, candidate.ngram.steps) &&
+        isLocationSubset(candidate.locations, other.locations) &&
+        (other.score ?? 0) >= (candidate.score ?? 0),
     );
   });
 }
