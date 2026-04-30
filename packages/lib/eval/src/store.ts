@@ -43,13 +43,34 @@ function encode(s: string): string {
 async function readRun(path: string, expectedId?: string): Promise<EvalRun | undefined> {
   const file = Bun.file(path);
   if (!(await file.exists())) return undefined;
-  const text = await file.text();
-  const run = JSON.parse(text) as EvalRun;
+  let run: EvalRun;
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text) as unknown;
+    if (!isEvalRunShape(parsed)) return undefined;
+    run = parsed;
+  } catch {
+    // Malformed JSON or unreadable file — skip silently so a single corrupt
+    // artifact cannot blind enumeration of the rest of the suite history.
+    return undefined;
+  }
   // Defense-in-depth: reject any run whose stored id disagrees with the
   // requested id. Encoding is collision-free, so this should never trigger
   // for well-formed stores — but it guards against hand-edited files.
   if (expectedId !== undefined && run.id !== expectedId) return undefined;
   return run;
+}
+
+function isEvalRunShape(v: unknown): v is EvalRun {
+  if (v === null || typeof v !== "object") return false;
+  const r = v as Record<string, unknown>;
+  return (
+    typeof r["id"] === "string" &&
+    typeof r["name"] === "string" &&
+    typeof r["timestamp"] === "string" &&
+    typeof r["summary"] === "object" &&
+    r["summary"] !== null
+  );
 }
 
 async function findAllRunFiles(rootDir: string, runId: string): Promise<readonly string[]> {

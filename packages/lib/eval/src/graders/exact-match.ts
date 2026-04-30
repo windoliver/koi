@@ -1,4 +1,4 @@
-import type { EngineEvent } from "@koi/core";
+import type { ContentBlock, EngineEvent } from "@koi/core";
 import type { EvalExpectation, EvalGrader, EvalScore } from "../types.js";
 
 export interface ExactMatchOptions {
@@ -19,7 +19,12 @@ export function exactMatch(options: ExactMatchOptions = {}): EvalGrader {
         return { graderId: id, score: 0, pass: false, reasoning: "no text expectation provided" };
       }
       const text = collectAssistantText(transcript);
-      const matches = typeof pattern === "string" ? text.includes(pattern) : pattern.test(text);
+      const matches =
+        typeof pattern === "string"
+          ? text.includes(pattern)
+          : // Clone the regex so stateful flags (g/y) cannot leak `lastIndex`
+            // across grade() calls — graders are reused across trials.
+            new RegExp(pattern.source, pattern.flags).test(text);
       return {
         graderId: id,
         score: matches ? 1 : 0,
@@ -38,12 +43,58 @@ function resolvePattern(
   return fallback;
 }
 
+/**
+ * Collect candidate assistant text from a transcript using the same
+ * fall-back order the runtime's output collector uses: streaming
+ * text_delta events first; otherwise concatenate text content from the
+ * terminal `done` event; otherwise fall back to stringified tool_result
+ * outputs (a tool-only agent's "answer").
+ */
 function collectAssistantText(transcript: readonly EngineEvent[]): string {
-  const parts: string[] = [];
+  const deltas: string[] = [];
   for (const ev of transcript) {
-    if (ev.kind === "text_delta") parts.push(ev.delta);
+    if (ev.kind === "text_delta") deltas.push(ev.delta);
+  }
+  if (deltas.length > 0) return deltas.join("");
+
+  const doneText = collectFromDone(transcript);
+  if (doneText.length > 0) return doneText;
+
+  return collectFromToolResults(transcript);
+}
+
+function collectFromDone(transcript: readonly EngineEvent[]): string {
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const ev = transcript[i];
+    if (ev?.kind === "done") return contentBlocksToText(ev.output.content);
+  }
+  return "";
+}
+
+function contentBlocksToText(content: readonly ContentBlock[]): string {
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block.kind === "text") parts.push(block.text);
   }
   return parts.join("");
+}
+
+function collectFromToolResults(transcript: readonly EngineEvent[]): string {
+  const parts: string[] = [];
+  for (const ev of transcript) {
+    if (ev.kind === "tool_result") parts.push(stringifyOutput(ev.output));
+  }
+  return parts.join("\n");
+}
+
+function stringifyOutput(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function describe(pattern: string | RegExp): string {

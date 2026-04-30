@@ -82,6 +82,18 @@ describe("createFsStore", () => {
     expect(a2?.id).toBe("a_b");
   });
 
+  test("malformed run file does not break list/latest", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("good", "smoke", "2026-02-01T00:00:00Z"));
+    // Inject a corrupt sibling file
+    const dir = join(root, encodeURIComponent("smoke"));
+    await Bun.write(join(dir, "bad.json"), "{ this is not json");
+    const metas = await store.list("smoke");
+    expect(metas).toHaveLength(1);
+    expect(metas[0]?.id).toBe("good");
+    expect((await store.latest("smoke"))?.id).toBe("good");
+  });
+
   test("list returns empty for unknown eval", async () => {
     const store = createFsStore(root);
     expect(await store.list("missing")).toHaveLength(0);

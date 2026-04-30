@@ -68,6 +68,41 @@ describe("exactMatch", () => {
     expect(score.pass).toBe(true);
   });
 
+  test("falls back to done.output.content when no text_delta", async () => {
+    const grader = exactMatch();
+    const events: readonly EngineEvent[] = [
+      {
+        kind: "done",
+        output: {
+          content: [{ kind: "text", text: "final answer" }],
+          stopReason: "completed",
+          metrics: METRICS,
+        },
+      },
+    ];
+    const score = await grader.grade(events, { kind: "text", pattern: "final" }, METRICS);
+    expect(score.pass).toBe(true);
+  });
+
+  test("falls back to tool_result output for tool-only agents", async () => {
+    const grader = exactMatch();
+    const events: readonly EngineEvent[] = [
+      { kind: "tool_result", callId: "c1" as never, output: { rows: 42 } },
+    ];
+    const score = await grader.grade(events, { kind: "text", pattern: "42" }, METRICS);
+    expect(score.pass).toBe(true);
+  });
+
+  test("regex with global flag matches deterministically across calls", async () => {
+    const grader = exactMatch();
+    const pattern = /hello/g;
+    const expected = { kind: "text" as const, pattern };
+    const first = await grader.grade(transcript("hello world"), expected, METRICS);
+    const second = await grader.grade(transcript("hello world"), expected, METRICS);
+    expect(first.pass).toBe(true);
+    expect(second.pass).toBe(true);
+  });
+
   test("uses custom id", () => {
     const grader = exactMatch({ id: "my-grader" });
     expect(grader.id).toBe("my-grader");
