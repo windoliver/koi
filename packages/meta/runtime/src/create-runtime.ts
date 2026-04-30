@@ -460,9 +460,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     );
     const agentMonitorMiddleware =
       config.agentMonitor !== undefined && !hasAgentMonitor
-        ? createAgentMonitorMiddleware(
-            config.agentMonitor === true ? {} : config.agentMonitor,
-          )
+        ? createAgentMonitorMiddleware(config.agentMonitor === true ? {} : config.agentMonitor)
         : undefined;
     const middleware: readonly KoiMiddleware[] =
       agentMonitorMiddleware !== undefined
@@ -527,9 +525,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // and the caller forwards it into createKoi({ providers }).
     const discoveryProvider: ComponentProvider | undefined =
       config.agentDiscovery !== undefined
-        ? createDiscoveryProvider(
-            config.agentDiscovery === true ? {} : config.agentDiscovery,
-          )
+        ? createDiscoveryProvider(config.agentDiscovery === true ? {} : config.agentDiscovery)
         : undefined;
 
     // Fail closed: if a real (non-stub) "permissions" middleware is installed
