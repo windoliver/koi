@@ -301,11 +301,14 @@ function extractAuthHandoff(error: KoiError): {
     const PLAIN_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]*$/;
     const SAFE_SCOPE_NAME = /^[A-Za-z][A-Za-z0-9_]*(?::[A-Za-z][A-Za-z0-9_]*)+$/;
     // Microsoft Graph and similar issuers use dotted PascalCase scope
-    // names (`User.Read`, `Mail.Send`, `Files.Read.All`,
-    // `Calendars.ReadWrite`). Accept tokens that match an
-    // `Identifier(.Identifier)+` shape AND whose leading namespace is
-    // on the allowlist.
-    const DOTTED_SCOPE_NAME = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
+    // names — every segment starts with an uppercase letter
+    // (`User.Read`, `Mail.Send`, `Files.Read.All`, `Calendars.ReadWrite`,
+    // `Sites.Read.All`). Requiring uppercase initials per segment is
+    // what distinguishes a real provider scope from a bare-domain
+    // autolink shape (`login.attacker.email`, `evil.support`) that
+    // would otherwise render as a clickable phishing target on
+    // chat/HTML transports.
+    const DOTTED_SCOPE_NAME = /^[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)+$/;
     // Known OAuth scope-name prefixes. Lowercase — matched
     // case-insensitively against the leading namespace before the
     // first colon. Maintained as a small explicit set instead of a

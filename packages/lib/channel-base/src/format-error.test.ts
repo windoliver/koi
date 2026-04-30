@@ -391,6 +391,32 @@ describe("classifyErrorForChannel discriminated output", () => {
       expect(out.auth.scope).toBeUndefined();
     });
 
+    it("rejects lowercase host-like dotted tokens in scope (bare-domain phishing path)", () => {
+      // Regression: loop-6 round 9 finding. The dotted-scope branch
+      // accepts only PascalCase segments — lowercase host shapes like
+      // `login.attacker.email`, `evil.support`, `cdn.bad.info` would
+      // otherwise survive into `auth.scope` and autolink on chat/HTML
+      // transports, defeating the surrounding deny-by-default sanitizer.
+      const cases = [
+        "login.attacker.email",
+        "evil.support",
+        "cdn.bad.info",
+        "phish.co.uk",
+        "auth.example.travel",
+      ];
+      for (const bad of cases) {
+        const err = baseError("AUTH_REQUIRED", "x", {
+          context: {
+            authorizationUrl: "https://issuer.example",
+            scope: `read ${bad} email`,
+          },
+        });
+        const out = classifyErrorForChannel(err);
+        if (out.kind !== "auth-required") throw new Error("expected auth-required");
+        expect(out.auth.scope).toBeUndefined();
+      }
+    });
+
     it("preserves dotted PascalCase OAuth scope names (Microsoft Graph + extended)", () => {
       // Regression: loop-6 round 5 finding 2 + round 8 finding.
       // Microsoft Graph uses dotted PascalCase scope names. The
