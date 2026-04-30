@@ -64,9 +64,14 @@ export function createTestGate(
           }
         }
       };
+      // Use let — justified: SIGKILL escalation timer must be clearable from
+      // the exit path so we never fire SIGKILL after the child already exited.
+      // POSIX recycles PIDs/PGIDs aggressively; an untracked late kill could
+      // hit an unrelated process group.
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
       const escalate = (): void => {
         killGroup("SIGTERM");
-        setTimeout(() => killGroup("SIGKILL"), 1_000);
+        killTimer = setTimeout(() => killGroup("SIGKILL"), 1_000);
       };
 
       const onAbort = (): void => {
@@ -81,6 +86,7 @@ export function createTestGate(
       // Drain stderr concurrently — never await proc.exited with a pipe still buffering.
       const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
       clearTimeout(timer);
+      if (killTimer !== undefined) clearTimeout(killTimer);
       ctx.signal.removeEventListener("abort", onAbort);
 
       return {

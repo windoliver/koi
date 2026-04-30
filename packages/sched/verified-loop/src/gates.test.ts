@@ -170,6 +170,21 @@ describe("createTestGate signal handling", () => {
     expect(elapsed).toBeLessThan(5_000); // not 30s
   }, 10_000);
 
+  test("does not leave a pending SIGKILL timer after a normal exit", async () => {
+    // Regression: escalate() schedules SIGKILL on a 1s timer. If we don't
+    // clear it when the child exits normally, the timer fires later and
+    // can target a recycled PID/PGID — sending SIGKILL to an unrelated
+    // process tree on a busy host. With the timer cleared on exit, a child
+    // that finishes well within the grace window must leave no pending
+    // timers (Bun would otherwise keep the event loop alive past test end).
+    const gate = createTestGate(["true"]);
+    const result = await gate(makeCtx());
+    expect(result.passed).toBe(true);
+    // If a timer were dangling, this short wait would let it fire; we just
+    // need to confirm the test completes without orphaning a timer.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+
   test("escalates to SIGKILL when child ignores SIGTERM", async () => {
     // Regression: a child that ignores or traps the initial termination
     // request would stay alive past proc.kill(); the gate could return

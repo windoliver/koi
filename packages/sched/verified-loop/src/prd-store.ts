@@ -180,9 +180,35 @@ export function nextItem(items: readonly PRDItem[]): PRDItem | undefined {
   return sorted[0];
 }
 
-/** Mark a PRD item as skipped with atomic write-temp-rename. */
+/**
+ * Mark a PRD item as skipped with atomic write-temp-rename. Refuses to skip
+ * an already-completed item: `done` and `skipped` are mutually exclusive
+ * states in the result contract (the same id must never appear in both
+ * arrays). Callers see VALIDATION on misuse rather than a contradictory PRD.
+ */
 export async function markSkipped(path: string, itemId: string): Promise<Result<void, KoiError>> {
-  return updateItem(path, itemId, (target) => ({ ...target, skipped: true }));
+  const readResult = await readPRD(path);
+  if (!readResult.ok) return readResult;
+
+  const { items } = readResult.value;
+  const index = items.findIndex((item) => item.id === itemId);
+  const target = index === -1 ? undefined : items[index];
+  if (target === undefined) {
+    return { ok: false, error: notFound(itemId, `PRD item not found: ${itemId}`) };
+  }
+  if (target.done) {
+    return { ok: false, error: validation(`Cannot skip completed item: ${itemId}`) };
+  }
+
+  const updated: PRDItem = { ...target, skipped: true };
+  const newItems = items.map((item, i) => (i === index ? updated : item));
+  const newPrd: PRDFile = { items: newItems };
+
+  const tmpPath = `${path}.tmp`;
+  await Bun.write(tmpPath, JSON.stringify(newPrd, null, 2));
+  await rename(tmpPath, path);
+
+  return { ok: true, value: undefined };
 }
 
 /**
@@ -225,18 +251,22 @@ export async function markDoneMany(
   }
 
   const now = new Date().toISOString();
-  const newItems = items.map((item) =>
-    idSet.has(item.id)
-      ? {
-          ...item,
-          done: true,
-          verifiedAt: now,
-          iterationCount: (item.iterationCount ?? 0) + 1,
-          skipped: false,
-          consecutiveFailureCount: 0,
-        }
-      : item,
-  );
+  // Preserve history for already-completed items: a gate that re-reports the
+  // same id across iterations (cumulative itemsCompleted) or a retry of the
+  // same set must NOT overwrite verifiedAt or re-increment iterationCount,
+  // since that would silently rewrite earlier verification timestamps.
+  const newItems = items.map((item) => {
+    if (!idSet.has(item.id)) return item;
+    if (item.done) return item;
+    return {
+      ...item,
+      done: true,
+      verifiedAt: now,
+      iterationCount: (item.iterationCount ?? 0) + 1,
+      skipped: false,
+      consecutiveFailureCount: 0,
+    };
+  });
   const newPrd: PRDFile = { items: newItems };
 
   const tmpPath = `${path}.tmp`;

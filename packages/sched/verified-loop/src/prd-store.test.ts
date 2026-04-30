@@ -256,6 +256,24 @@ describe("markSkipped", () => {
       expect(itemC?.skipped).toBeUndefined();
     }
   });
+
+  test("refuses to skip an already-completed item (no contradictory state)", async () => {
+    // Item "b" is done in SAMPLE_PRD. The result contract treats done and
+    // skipped as mutually exclusive — the same id must never appear in both
+    // arrays. Marking a done item as skipped is a misuse, not a state change.
+    await Bun.write(prdPath, JSON.stringify(SAMPLE_PRD, null, 2));
+    const result = await markSkipped(prdPath, "b");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+    }
+    const after = await readPRD(prdPath);
+    if (after.ok) {
+      const b = after.value.items.find((i) => i.id === "b");
+      expect(b?.done).toBe(true);
+      expect(b?.skipped).toBeUndefined();
+    }
+  });
 });
 
 describe("markDone", () => {
@@ -361,6 +379,28 @@ describe("markDoneMany (atomic batch completion)", () => {
     await Bun.write(prdPath, JSON.stringify(SAMPLE_PRD, null, 2));
     const result = await markDoneMany(prdPath, []);
     expect(result.ok).toBe(true);
+  });
+
+  test("preserves verifiedAt and iterationCount on already-completed items", async () => {
+    // A gate that re-reports a completed id (cumulative itemsCompleted) or a
+    // retry of the same set must not silently overwrite earlier verification
+    // history. Item "b" is already done in SAMPLE_PRD with a fixed timestamp.
+    await Bun.write(prdPath, JSON.stringify(SAMPLE_PRD, null, 2));
+    const result = await markDoneMany(prdPath, ["a", "b"]);
+    expect(result.ok).toBe(true);
+
+    const after = await readPRD(prdPath);
+    if (after.ok) {
+      const a = after.value.items.find((i) => i.id === "a");
+      const b = after.value.items.find((i) => i.id === "b");
+      // a was pending: now done with fresh timestamp, iterationCount = 1.
+      expect(a?.done).toBe(true);
+      expect(a?.iterationCount).toBe(1);
+      // b was already done: history preserved, no rewrite.
+      expect(b?.done).toBe(true);
+      expect(b?.verifiedAt).toBe("2024-01-01T00:00:00.000Z");
+      expect(b?.iterationCount).toBeUndefined();
+    }
   });
 });
 
