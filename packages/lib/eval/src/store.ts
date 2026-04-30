@@ -1,4 +1,4 @@
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { EvalRun, EvalRunMeta, EvalStore } from "./types.js";
 
@@ -6,8 +6,21 @@ export function createFsStore(rootDir: string): EvalStore {
   return {
     save: async (run: EvalRun): Promise<void> => {
       const filePath = pathFor(rootDir, run.name, run.id);
+      const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
       await mkdir(dirname(filePath), { recursive: true });
-      await Bun.write(filePath, JSON.stringify(run, null, 2));
+      // Atomic write: stage to temp, rename into place. A crash between
+      // steps leaves either the previous run or no file at the final path
+      // — never a torn JSON document that would silently shadow newer
+      // baselines.
+      await Bun.write(tempPath, JSON.stringify(run, null, 2));
+      try {
+        await rename(tempPath, filePath);
+      } catch (e: unknown) {
+        await unlink(tempPath).catch(() => {
+          // best-effort cleanup — surface the original failure below
+        });
+        throw e;
+      }
     },
     load: async (runId: string, evalName?: string): Promise<EvalRun | undefined> => {
       if (evalName !== undefined) {
@@ -86,7 +99,7 @@ async function findAllRunFiles(rootDir: string, runId: string): Promise<readonly
 
 async function listMetas(rootDir: string, evalName: string): Promise<readonly EvalRunMeta[]> {
   const dir = join(rootDir, encode(evalName));
-  const files = (await safeReaddir(dir)).filter((f) => f.endsWith(".json"));
+  const files = (await safeReaddir(dir)).filter((f) => f.endsWith(".json") && !f.includes(".tmp-"));
   const metas: EvalRunMeta[] = [];
   for (const f of files) {
     const run = await readRun(join(dir, f));

@@ -36,18 +36,38 @@ describe("runSelfTest", () => {
     expect(result.checks[0]?.message).toContain("crash");
   });
 
-  test("times out a slow check", async () => {
+  test("times out a slow check, reports cancellation: 'unconfirmed' for non-cooperative work", async () => {
     const checks: readonly SelfTestCheck[] = [
       {
         name: "slow",
         run: () =>
-          new Promise<{ pass: true }>((resolve) => setTimeout(() => resolve({ pass: true }), 100)),
+          new Promise<{ pass: true }>((resolve) => setTimeout(() => resolve({ pass: true }), 5000)),
         timeoutMs: 10,
       },
     ];
     const result = await runSelfTest(checks);
     expect(result.pass).toBe(false);
     expect(result.checks[0]?.message).toContain("timeout");
+    expect(result.checks[0]?.cancellation).toBe("unconfirmed");
+  });
+
+  test("cooperative check that aborts on signal reports cancellation: 'confirmed'", async () => {
+    const checks: readonly SelfTestCheck[] = [
+      {
+        name: "cooperative",
+        run: (signal) =>
+          new Promise<{ pass: false; message: string }>((resolve) => {
+            const t = setTimeout(() => resolve({ pass: true, message: "" } as never), 5_000);
+            signal.addEventListener("abort", () => {
+              clearTimeout(t);
+              resolve({ pass: false, message: "aborted" });
+            });
+          }),
+        timeoutMs: 10,
+      },
+    ];
+    const result = await runSelfTest(checks);
+    expect(result.checks[0]?.cancellation).toBe("confirmed");
   });
 
   test("bail stops at first failure", async () => {

@@ -1,6 +1,7 @@
 import type { EngineEvent, EngineMetrics } from "@koi/core";
 import {
   type AgentHandle,
+  type CancellationStatus,
   EVAL_DEFAULTS,
   type EvalRun,
   type EvalRunConfig,
@@ -84,10 +85,28 @@ async function runTrial(
   const start = now();
   const transcript: EngineEvent[] = [];
   let agent: AgentHandle | undefined;
+  let timedOut = false;
+  let returnAwaited = false;
+  let trialError: unknown;
   try {
     agent = await config.agentFactory();
     await collectTranscriptWithTimeout(agent, task, transcript, timeoutMs);
   } catch (e: unknown) {
+    const marker = readTimeoutMarker(e);
+    if (marker !== undefined) {
+      timedOut = true;
+      returnAwaited = marker.returnAwaited;
+    }
+    trialError = e;
+  }
+  const disposeAwaited = await disposeSafely(agent, disposeTimeoutMs);
+  const cancellation: CancellationStatus = timedOut
+    ? returnAwaited && disposeAwaited
+      ? "confirmed"
+      : "unconfirmed"
+    : "n/a";
+
+  if (trialError !== undefined) {
     return {
       taskId: task.id,
       trialIndex,
@@ -95,15 +114,27 @@ async function runTrial(
       scores: [],
       metrics: { ...EMPTY_METRICS, durationMs: now() - start },
       status: "error",
-      error: errorMessage(e),
+      error:
+        cancellation === "unconfirmed"
+          ? `${errorMessage(trialError)} (cancellation unconfirmed — agent may still be running)`
+          : errorMessage(trialError),
+      cancellation,
     };
-  } finally {
-    await disposeSafely(agent, disposeTimeoutMs);
   }
+
   const metrics: EngineMetrics = { ...EMPTY_METRICS, durationMs: now() - start };
   const scores = await gradeAll(task, transcript, metrics);
   const status = scores.every((s) => s.pass && s.score >= passThreshold) ? "pass" : "fail";
-  return { taskId: task.id, trialIndex, transcript, scores, metrics, status };
+  return { taskId: task.id, trialIndex, transcript, scores, metrics, status, cancellation };
+}
+
+/** Brief acknowledgement window for iterator.return() after a timeout. */
+const RETURN_ACK_TIMEOUT_MS = 250;
+
+interface CollectResult {
+  readonly timedOut: boolean;
+  /** True when iterator.return() resolved within RETURN_ACK_TIMEOUT_MS. */
+  readonly returnAwaited: boolean;
 }
 
 async function collectTranscriptWithTimeout(
@@ -111,7 +142,7 @@ async function collectTranscriptWithTimeout(
   task: EvalTask,
   transcript: EngineEvent[],
   timeoutMs: number,
-): Promise<void> {
+): Promise<CollectResult> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -125,18 +156,60 @@ async function collectTranscriptWithTimeout(
   try {
     while (true) {
       const next = await Promise.race([iterator.next(), timeoutPromise]);
-      if (next.done) return;
+      if (next.done) return { timedOut: false, returnAwaited: true };
       transcript.push(next.value);
     }
+  } catch (e: unknown) {
+    if (timer !== undefined) clearTimeout(timer);
+    if (controller.signal.aborted && iterator.return !== undefined) {
+      // Wait briefly for cooperative teardown so we can report whether the
+      // agent acknowledged cancellation. If it doesn't ack in time, the
+      // trial's cancellation status will be "unconfirmed".
+      const returnAwaited = await raceReturn(iterator);
+      throw createTimeoutMarker(e, returnAwaited);
+    }
+    throw e;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
-    if (controller.signal.aborted) {
-      // Fire-and-forget teardown: a non-cooperative agent may keep its own
-      // pending awaits alive, so we cannot block on iterator.return() here.
-      iterator.return?.(undefined).catch(() => {
-        // best-effort teardown — agent may already be broken
-      });
-    }
+  }
+}
+
+interface TimeoutMarker {
+  readonly cause: unknown;
+  readonly returnAwaited: boolean;
+  readonly timedOut: true;
+}
+
+function createTimeoutMarker(cause: unknown, returnAwaited: boolean): Error {
+  const err = new Error(errorMessage(cause), { cause });
+  Object.assign(err, { __evalTimeout: true, returnAwaited } satisfies Partial<TimeoutMarker> & {
+    __evalTimeout: true;
+  });
+  return err;
+}
+
+function readTimeoutMarker(e: unknown): { timedOut: true; returnAwaited: boolean } | undefined {
+  if (typeof e !== "object" || e === null) return undefined;
+  const marker = e as { __evalTimeout?: boolean; returnAwaited?: boolean };
+  if (marker.__evalTimeout !== true) return undefined;
+  return { timedOut: true, returnAwaited: marker.returnAwaited === true };
+}
+
+async function raceReturn(iterator: AsyncIterator<EngineEvent>): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutFalse = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), RETURN_ACK_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([
+      iterator
+        .return?.(undefined)
+        .then(() => true)
+        .catch(() => false) ?? Promise.resolve(false),
+      timeoutFalse,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -166,21 +239,25 @@ async function safeGrade(
 /** Maximum time to wait for an agent's dispose() before abandoning it. */
 const DEFAULT_DISPOSE_TIMEOUT_MS = 5_000;
 
-async function disposeSafely(agent: AgentHandle | undefined, timeoutMs: number): Promise<void> {
-  if (agent?.dispose === undefined) return;
+/** @returns true if dispose() finished within timeoutMs (or wasn't needed). */
+async function disposeSafely(agent: AgentHandle | undefined, timeoutMs: number): Promise<boolean> {
+  if (agent?.dispose === undefined) return true;
   // Bound disposal so a non-cooperative agent that hangs in dispose() cannot
   // wedge the entire eval run after its trial has already timed out.
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, timeoutMs);
+  const timeoutMarker: unique symbol = Symbol();
+  const timeout = new Promise<typeof timeoutMarker>((resolve) => {
+    timer = setTimeout(() => resolve(timeoutMarker), timeoutMs);
   });
   try {
-    await Promise.race([
-      Promise.resolve(agent.dispose()).catch(() => {
-        // dispose failures are non-fatal — eval results still valid
-      }),
+    const winner = await Promise.race([
+      Promise.resolve(agent.dispose()).then(
+        () => true,
+        () => true, // dispose() rejected — still counts as confirmed teardown
+      ),
       timeout,
     ]);
+    return winner !== timeoutMarker;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

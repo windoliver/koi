@@ -68,6 +68,42 @@ describe("runEval", () => {
     expect(run.summary.errorCount).toBe(1);
   });
 
+  test("hanging agent's trial is reported with cancellation: 'unconfirmed'", async () => {
+    const run = await runEval({
+      name: "hang-cancel",
+      tasks: [{ ...task("t1", "x", [exactMatch()]), timeoutMs: 20 }],
+      agentFactory: () => ({
+        stream: (): AsyncIterable<EngineEvent> => {
+          async function* gen(): AsyncGenerator<EngineEvent, void, unknown> {
+            await new Promise<void>((resolve) => setTimeout(resolve, 5_000));
+            yield { kind: "text_delta", delta: "never" };
+          }
+          return gen();
+        },
+        dispose: () => new Promise<void>(() => {}),
+      }),
+      disposeTimeoutMs: 20,
+      idGen: () => "run-uc",
+    });
+    expect(run.trials[0]?.status).toBe("error");
+    expect(run.trials[0]?.cancellation).toBe("unconfirmed");
+    expect(run.trials[0]?.error).toContain("cancellation unconfirmed");
+  });
+
+  test("cooperative agent reports cancellation: 'n/a' on success", async () => {
+    const run = await runEval({
+      name: "ok",
+      tasks: [task("t1", "ok", [exactMatch()])],
+      agentFactory: () => ({
+        stream: async function* (): AsyncIterable<EngineEvent> {
+          yield { kind: "text_delta", delta: "ok" };
+        },
+      }),
+      idGen: () => "run-ok",
+    });
+    expect(run.trials[0]?.cancellation).toBe("n/a");
+  });
+
   test("times out a hanging agent that ignores abort signal", async () => {
     const run = await runEval({
       name: "hang",

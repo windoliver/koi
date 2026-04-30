@@ -46,6 +46,16 @@ export interface EvalTask {
   readonly metadata?: JsonObject | undefined;
 }
 
+/**
+ * Cancellation outcome for a trial:
+ *   - "n/a"          — trial completed without cancellation (status pass/fail)
+ *   - "confirmed"    — agent acknowledged abort; no background work continues
+ *   - "unconfirmed"  — timeout fired but agent did not finish teardown in time;
+ *                      side-effects may still be in flight. Treat downstream
+ *                      data from this trial as suspect.
+ */
+export type CancellationStatus = "n/a" | "confirmed" | "unconfirmed";
+
 export interface EvalTrial {
   readonly taskId: string;
   readonly trialIndex: number;
@@ -54,6 +64,7 @@ export interface EvalTrial {
   readonly metrics: EngineMetrics;
   readonly status: "pass" | "fail" | "error";
   readonly error?: string | undefined;
+  readonly cancellation: CancellationStatus;
 }
 
 export interface EvalScore {
@@ -184,7 +195,13 @@ export interface RegressionThresholds {
 
 export interface SelfTestCheck {
   readonly name: string;
-  readonly run: () => Promise<CheckResult> | CheckResult;
+  /**
+   * Run the check. Implementations SHOULD listen on `signal` and stop side
+   * effects when it aborts; if they cannot, a timed-out check will be
+   * reported with `cancellation: "unconfirmed"` so callers know the work
+   * may still be in flight.
+   */
+  readonly run: (signal: AbortSignal) => Promise<CheckResult> | CheckResult;
   readonly timeoutMs?: number | undefined;
 }
 
@@ -210,6 +227,12 @@ export interface SelfTestCheckResult {
   readonly pass: boolean;
   readonly message?: string | undefined;
   readonly durationMs: number;
+  /**
+   * Cancellation outcome — "unconfirmed" means the check timed out and did
+   * not acknowledge the abort signal in time. Callers MUST NOT retry
+   * unconfirmed checks blindly: the underlying work may still be running.
+   */
+  readonly cancellation: CancellationStatus;
 }
 
 // ---------------------------------------------------------------------------
