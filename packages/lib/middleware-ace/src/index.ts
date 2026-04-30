@@ -10,6 +10,10 @@ export type { AceConfig } from "./ace-middleware.js";
 export { createAceMiddleware } from "./ace-middleware.js";
 export type { ConsolidateFn, DefaultConsolidatorOptions } from "./consolidator.js";
 export { createDefaultConsolidator } from "./consolidator.js";
+export {
+  createInMemoryPlaybookStore,
+  createInMemoryTrajectoryStore,
+} from "./in-memory-store.js";
 export type { SelectOptions } from "./injector.js";
 export { formatActivePlaybooksMessage, selectPlaybooks } from "./injector.js";
 export { computeCurationScore, computeRecencyFactor } from "./scoring.js";

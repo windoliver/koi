@@ -69,6 +69,7 @@ import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-tra
 import { createForgeDemandDetector, validateForgeDemandConfig } from "@koi/forge-demand";
 import { createHttpTransport, type NexusTransport } from "@koi/fs-nexus";
 import { createGovernanceMiddleware, GOVERNANCE_MIDDLEWARE_NAME } from "@koi/governance-core";
+import { createAceMiddleware } from "@koi/middleware-ace";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createFeedbackLoopMiddleware } from "@koi/middleware-feedback-loop";
 import { createOtelMiddleware, type OtelMiddlewareConfig } from "@koi/middleware-otel";
@@ -268,6 +269,16 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         ? [...baseWithGovernance, feedbackLoopMiddleware]
         : baseWithGovernance;
 
+    // Install ACE middleware when config.ace is provided and not already present.
+    // Phase observe / priority 800 — runs after intercept + resolve so injection
+    // observes the final systemPrompt and trajectory recording captures the real
+    // outcome of every model + tool call. (#1715)
+    const hasAce = new Set(baseWithFeedbackLoop.map((mw) => mw.name)).has("ace");
+    const aceMiddleware =
+      config.ace !== undefined && !hasAce ? createAceMiddleware(config.ace) : undefined;
+    const baseWithAce: readonly KoiMiddleware[] =
+      aceMiddleware !== undefined ? [...baseWithFeedbackLoop, aceMiddleware] : baseWithFeedbackLoop;
+
     // Install forge-demand detector when config.forgeDemand is provided and not already
     // present. Priority 445 — outer relative to feedback-loop (450) so the detector
     // observes only AFTER feedback-loop has updated tool-health and run validators/retry.
@@ -339,7 +350,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         // it was already vetted (or rejected) by the forgeHealth
         // check above; reaching here means it failed that check and
         // must NOT be wired silently.
-        const preinstalled = baseWithFeedbackLoop.find(
+        const preinstalled = baseWithAce.find(
           (mw) => mw.name === "feedback-loop" && mw !== feedbackLoopMiddleware,
         );
         const handle = (preinstalled as { readonly healthHandle?: unknown } | undefined)
@@ -377,10 +388,10 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     const baseWithForgeDemand: readonly KoiMiddleware[] =
       forgeDemandHandle !== undefined
         ? [
-            ...baseWithFeedbackLoop.filter((mw) => mw.name !== "forge-demand-detector"),
+            ...baseWithAce.filter((mw) => mw.name !== "forge-demand-detector"),
             forgeDemandHandle.middleware,
           ]
-        : baseWithFeedbackLoop;
+        : baseWithAce;
 
     // Install exfiltration guard by default when: (1) not explicitly disabled,
     // (2) not already provided, and (3) the adapter has terminals so the intercept

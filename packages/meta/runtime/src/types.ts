@@ -496,6 +496,16 @@ export interface RuntimeConfig {
   readonly feedbackLoop?: import("@koi/middleware-feedback-loop").FeedbackLoopConfig | undefined;
 
   /**
+   * ACE (Adaptive Continuous Enhancement) middleware configuration. When
+   * provided, wires `@koi/middleware-ace` which records per-session
+   * trajectory, consolidates it into versioned playbooks via
+   * `frequency × successRate × recency` scoring, and injects the top
+   * playbooks into future model calls within a token budget. Skipped if
+   * a middleware named "ace" is already present in `config.middleware`.
+   */
+  readonly ace?: import("@koi/middleware-ace").AceConfig | undefined;
+
+  /**
    * Circuit breaker middleware configuration. When provided, wires
    * `@koi/middleware-circuit-breaker` which fails fast on unhealthy
    * model providers (CLOSED → OPEN → HALF_OPEN state machine).
