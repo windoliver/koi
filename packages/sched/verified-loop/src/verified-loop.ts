@@ -232,11 +232,19 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
             maxConsecutiveFailures,
           );
           if (!bumpResult.ok) {
-            // Same rationale as the markDone failure above. Without a working
-            // skip budget on disk, a permanently failing item could be retried
-            // indefinitely across runs.
-            throw new Error(
-              `VerifiedLoop: failed to persist failure count for "${current.id}" (${bumpResult.error.code}): ${bumpResult.error.message}`,
+            // VALIDATION = the item was completed out-of-band (concurrent run,
+            // hand edit) between selection and failure persistence. The store
+            // refuses to write done:true + skipped:true; the loop just moves on
+            // to the next pending item. NOT_FOUND / IO errors remain fatal —
+            // without a working skip budget on disk, a permanently failing
+            // item could be retried indefinitely across runs.
+            if (bumpResult.error.code !== "VALIDATION") {
+              throw new Error(
+                `VerifiedLoop: failed to persist failure count for "${current.id}" (${bumpResult.error.code}): ${bumpResult.error.message}`,
+              );
+            }
+            console.warn(
+              `[verified-loop] Skipping failure-count bump for "${current.id}" (already completed): ${bumpResult.error.message}`,
             );
           }
         }

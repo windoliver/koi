@@ -133,6 +133,24 @@ describe("readPRD", () => {
     }
   });
 
+  test("rejects an item that is both done:true and skipped:true", async () => {
+    // PRD is the source of truth — a contradictory record (item appears in
+    // both completed[] and skipped[] of the result) must fail fast at read
+    // time rather than silently propagate.
+    await Bun.write(
+      prdPath,
+      JSON.stringify({
+        items: [{ id: "a", description: "x", done: true, skipped: true }],
+      }),
+    );
+    const result = await readPRD(prdPath);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("'done' and 'skipped' cannot both be true");
+    }
+  });
+
   test("accepts valid optional fields", async () => {
     await Bun.write(
       prdPath,
@@ -460,6 +478,29 @@ describe("bumpFailureCount", () => {
     const result = await bumpFailureCount(prdPath, "ghost", 5);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
+  });
+
+  test("refuses to bump on already-completed item (mutual-exclusion guard)", async () => {
+    // Out-of-band completion (concurrent run, hand edit) between item
+    // selection and failure persistence must not produce done:true +
+    // skipped:true. markSkipped enforces this; bumpFailureCount must too.
+    await Bun.write(
+      prdPath,
+      JSON.stringify({
+        items: [{ id: "a", description: "x", done: true, verifiedAt: "2024-01-01T00:00:00.000Z" }],
+      }),
+    );
+    const result = await bumpFailureCount(prdPath, "a", 2);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+
+    const after = await readPRD(prdPath);
+    if (after.ok) {
+      const a = after.value.items[0];
+      expect(a?.done).toBe(true);
+      expect(a?.skipped).toBeUndefined();
+      expect(a?.consecutiveFailureCount).toBeUndefined();
+    }
   });
 });
 

@@ -117,6 +117,14 @@ function validatePRDItem(item: unknown): string | undefined {
   ) {
     return `'consecutiveFailureCount' must be a number if present`;
   }
+  // done and skipped are mutually exclusive in the result contract — the
+  // same id must never appear in both completed[] and skipped[]. A PRD that
+  // persists this combination (hand edit, partial-write recovery, third
+  // party) must fail fast rather than silently feed the loop contradictory
+  // state that downstream reports cannot disambiguate.
+  if (obj.done === true && obj.skipped === true) {
+    return `'done' and 'skipped' cannot both be true`;
+  }
   return undefined;
 }
 
@@ -140,6 +148,19 @@ export async function bumpFailureCount(
   const target = index === -1 ? undefined : items[index];
   if (target === undefined) {
     return { ok: false, error: notFound(itemId, `PRD item not found: ${itemId}`) };
+  }
+
+  // Refuse to bump failure count on an item that is already done. An
+  // out-of-band edit (or a concurrent run) could complete the item between
+  // the loop selecting it and the failed gate persisting the failure; without
+  // this guard, that race produces a contradictory done:true + skipped:true
+  // record. markSkipped enforces the same invariant — bumpFailureCount must
+  // not be a back door around it.
+  if (target.done) {
+    return {
+      ok: false,
+      error: validation(`Cannot bump failure count on completed item: ${itemId}`),
+    };
   }
 
   const newCount = (target.consecutiveFailureCount ?? 0) + 1;
