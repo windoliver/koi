@@ -82,6 +82,7 @@
     { "path": "../../lib/middleware-task-anchor" },
     { "path": "../../lib/middleware-turn-ack" },
     { "path": "../../security/middleware-exfiltration-guard" },
+    { "path": "../../security/middleware-intent-capsule" },
     { "path": "../../lib/middleware-otel" },
     { "path": "../../lib/middleware-output-verifier" },
     { "path": "../../lib/middleware-degenerate" },
