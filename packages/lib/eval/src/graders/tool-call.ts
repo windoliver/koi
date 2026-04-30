@@ -91,19 +91,38 @@ function collectToolCalls(
   // execution; counting it would let denied/failed/aborted calls pass.
   // Opt in via `acceptToolCallEnd` for replay sources that don't emit
   // `tool_result`.
-  const pending = new Map<string, ObservedCall>();
+  const pending = new Map<string, { toolName: string; args: JsonObject | undefined }>();
+  const deltas = new Map<string, string>();
   const out: ObservedCall[] = [];
   for (const ev of transcript) {
     if (ev.kind === "tool_call_start") {
       pending.set(ev.callId, { toolName: ev.toolName, args: ev.args });
+    } else if (ev.kind === "tool_call_delta") {
+      // Streamed args: accumulate the JSON string for parsing at completion.
+      // Producers may emit args ONLY via deltas (start.args left undefined),
+      // so the grader must reconstruct or every args expectation would fail.
+      deltas.set(ev.callId, (deltas.get(ev.callId) ?? "") + ev.delta);
     } else if (ev.kind === "tool_result" || (acceptToolCallEnd && ev.kind === "tool_call_end")) {
       const start = pending.get(ev.callId);
       if (start === undefined) continue;
-      out.push(start);
+      const args = start.args ?? parseDeltas(deltas.get(ev.callId));
+      out.push({ toolName: start.toolName, args });
       pending.delete(ev.callId);
+      deltas.delete(ev.callId);
     }
   }
   return out;
+}
+
+function parseDeltas(joined: string | undefined): JsonObject | undefined {
+  if (joined === undefined || joined.length === 0) return undefined;
+  try {
+    const parsed = JSON.parse(joined) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    return parsed as JsonObject;
+  } catch {
+    return undefined;
+  }
 }
 
 function resolveCalls(

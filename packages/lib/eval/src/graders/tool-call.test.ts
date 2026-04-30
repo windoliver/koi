@@ -223,6 +223,25 @@ describe("toolCall", () => {
     expect(score.pass).toBe(true);
   });
 
+  test("matches args reconstructed from tool_call_delta when start.args is absent", async () => {
+    // Producers may stream the JSON args via tool_call_delta and leave
+    // tool_call_start.args undefined. Without delta accumulation any
+    // expectation that includes `args` would fail on a valid transcript.
+    const grader = toolCall();
+    const events: readonly EngineEvent[] = [
+      { kind: "tool_call_start", toolName: "search", callId: "search-id" as ToolCallId },
+      { kind: "tool_call_delta", callId: "search-id" as ToolCallId, delta: '{"q":"' },
+      { kind: "tool_call_delta", callId: "search-id" as ToolCallId, delta: 'hello"}' },
+      callResult("search"),
+    ];
+    const score = await grader.grade(
+      events,
+      { kind: "tool_calls", calls: [{ toolName: "search", args: { q: "hello" } }] },
+      METRICS,
+    );
+    expect(score.pass).toBe(true);
+  });
+
   test("returns no-expectation reasoning when missing", async () => {
     const grader = toolCall();
     const score = await grader.grade([], undefined, METRICS);
