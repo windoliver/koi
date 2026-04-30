@@ -371,3 +371,90 @@ describe("SessionTranscriptMiddleware — retry deduplication", () => {
     }
   });
 });
+
+describe("SessionTranscriptMiddleware — system:internal:* skip (verifier scratch)", () => {
+  test("messages with senderId starting with system:internal: are NOT persisted (regression)", async () => {
+    // Output-verifier injects scratch messages (e.g., revise feedback) using
+    // senderId "system:internal:verifier". They drive in-flight model behavior
+    // but must not corrupt the durable transcript — otherwise resume context
+    // sees verifier judge/check signal as part of the original turn input.
+    const transcript = createInMemoryTranscript();
+    const mw = createSessionTranscriptMiddleware({ transcript, sessionId: SID });
+    if (!mw.wrapModelStream) throw new Error("wrapModelStream not defined");
+
+    const verifierRequest: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text", text: "<<<verifier-feedback>>> revise: be concise" }],
+          senderId: "system:internal:verifier",
+          timestamp: 1000,
+        },
+      ],
+      tools: [],
+      model: "test-model",
+      systemPrompt: undefined,
+    };
+
+    const successChunks: ModelChunk[] = [
+      { kind: "done", response: { content: "concise output", model: "m" } },
+    ];
+
+    await drainStream(
+      mw.wrapModelStream(makeTurnContext(), verifierRequest, () => makeChunks(successChunks)),
+    );
+    await new Promise((r) => setTimeout(r, 10));
+
+    const result = await transcript.load(SID);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Assistant entry persisted; user/system entry skipped because the
+      // last inbound message was a system:internal:* scratch.
+      const userOrSystemEntries = result.value.entries.filter(
+        (e) => e.role === "user" || e.role === "system",
+      );
+      expect(userOrSystemEntries.length).toBe(0);
+      const assistantEntries = result.value.entries.filter((e) => e.role === "assistant");
+      expect(assistantEntries.length).toBe(1);
+      expect(assistantEntries[0]?.content).toBe("concise output");
+      // Crucially, no transcript entry contains the verifier feedback text.
+      const allContent = result.value.entries.map((e) => e.content).join(" ");
+      expect(allContent).not.toContain("verifier-feedback");
+      expect(allContent).not.toContain("revise: be concise");
+    }
+  });
+
+  test("system:internal:verifier-replay senderId is also skipped", async () => {
+    const transcript = createInMemoryTranscript();
+    const mw = createSessionTranscriptMiddleware({ transcript, sessionId: SID });
+    if (!mw.wrapModelStream) throw new Error("wrapModelStream not defined");
+
+    const replayRequest: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text", text: "earlier-assistant-output" }],
+          senderId: "system:internal:verifier-replay",
+          timestamp: 1000,
+        },
+      ],
+      tools: [],
+      model: "test-model",
+      systemPrompt: undefined,
+    };
+
+    await drainStream(
+      mw.wrapModelStream(makeTurnContext(), replayRequest, () =>
+        makeChunks([{ kind: "done", response: { content: "next", model: "m" } }]),
+      ),
+    );
+    await new Promise((r) => setTimeout(r, 10));
+
+    const result = await transcript.load(SID);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // No persisted entry replays "earlier-assistant-output" via the
+      // verifier-replay channel — only the actual assistant turn.
+      const allContent = result.value.entries.map((e) => e.content).join(" ");
+      expect(allContent).not.toContain("earlier-assistant-output");
+    }
+  });
+});

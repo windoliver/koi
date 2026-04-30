@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { decodeDocId, docIdToFilename, encodeDocId, filenameToDocId } from "./path-encoding.js";
+import {
+  decodeDocId,
+  docIdToFilename,
+  docIdToMetadataFilename,
+  docIdToStepChunkFilename,
+  encodeDocId,
+  filenameToDocId,
+  metadataFilenameToDocId,
+  stepChunkFilenameToInfo,
+} from "./path-encoding.js";
 
 describe("encodeDocId / decodeDocId", () => {
   test("round-trips ASCII", () => {
@@ -51,5 +60,26 @@ describe("docIdToFilename / filenameToDocId", () => {
 
   test("decodeDocId returns undefined for malformed percent escapes", () => {
     expect(decodeDocId("bad%ZZ")).toBeUndefined();
+  });
+});
+
+describe("chunked ATIF filenames", () => {
+  test("round-trips metadata filenames", () => {
+    const filename = docIdToMetadataFilename("../session.1");
+    expect(filename).toBe("%2E%2E%2Fsession%2E1.atif.meta.json");
+    expect(metadataFilenameToDocId(filename)).toBe("../session.1");
+  });
+
+  test("round-trips step chunk filenames", () => {
+    const filename = docIdToStepChunkFilename("session-🐟", 42);
+    expect(stepChunkFilenameToInfo(filename)).toEqual({
+      docId: "session-🐟",
+      startIndex: 42,
+    });
+  });
+
+  test("ignores malformed step chunk filenames", () => {
+    expect(stepChunkFilenameToInfo("session.atif.steps.not-a-number.json")).toBeUndefined();
+    expect(stepChunkFilenameToInfo("bad%ZZ.atif.steps.000000000001.json")).toBeUndefined();
   });
 });

@@ -163,11 +163,13 @@ describe("createHttpTransport", () => {
 });
 
 describe("mapNexusError", () => {
-  test("maps AbortError DOMException to TIMEOUT", () => {
+  test("maps AbortError DOMException to non-retryable TIMEOUT", () => {
+    // Aborts are intentional — never retryable. Retrying would defeat the
+    // cancellation contract and could loop until the next deadline fires.
     const err = new DOMException("aborted", "AbortError");
     const result = mapNexusError(err, "read");
     expect(result.code).toBe("TIMEOUT");
-    expect(result.retryable).toBe(true);
+    expect(result.retryable).toBe(false);
   });
 
   test("maps generic Error to EXTERNAL with retryable true", () => {

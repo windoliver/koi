@@ -36,6 +36,7 @@ import type { LspClient, LspProviderConfig, LspServerFailure } from "@koi/lsp";
 import type { MemoryStore, MemoryStoreConfig } from "@koi/memory-fs";
 import type { ExfiltrationGuardConfig } from "@koi/middleware-exfiltration-guard";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
+import type { SpawnResultCache } from "@koi/spawn-tools";
 import type { BrowserOperation } from "@koi/tool-browser";
 import type { ActivityTimeoutConfig } from "./apply-activity-timeout.js";
 
@@ -221,6 +222,24 @@ export interface RuntimeConfig {
    * When omitted the DEFAULT_SPAWN_POLICY is used.
    */
   readonly spawnPolicy?: SpawnPolicy | undefined;
+
+  /**
+   * Spawn result cache for idempotent agent_spawn retries (#1709).
+   *
+   * When provided, the runtime exposes it on `RuntimeHandle.spawnResultCache`
+   * so consumers building the L2 `agent_spawn` MCP tool (via
+   * `@koi/spawn-tools` `createSpawnTools`) can pass it through and gain
+   * cross-call retry-dedup. When omitted, the runtime constructs a default
+   * 256-entry LRU. Pass an explicit cache to share state across multiple
+   * runtimes in the same process, or to swap in a custom implementation
+   * (e.g. with telemetry hooks).
+   *
+   * Note: as of #1709 the runtime does not itself construct spawn-tools —
+   * that's left to the caller. Wiring exists so the cache outlives the
+   * tool's per-invocation lifetime and survives session reset boundaries
+   * within a runtime.
+   */
+  readonly spawnResultCache?: SpawnResultCache | undefined;
 
   /**
    * Filesystem backend configuration. Controls which FileSystemBackend
@@ -698,6 +717,14 @@ export interface RuntimeHandle {
    * the `Spawn` tool and enable agent-to-agent delegation for that agent.
    */
   readonly spawnProvider: ComponentProvider | undefined;
+
+  /**
+   * Shared spawn-result cache for idempotent retries (#1709). Always
+   * populated — defaults to a 256-entry LRU when not provided in config.
+   * Pass to `createSpawnTools({ resultCache })` to enable retry-dedup on
+   * the agent_spawn MCP tool.
+   */
+  readonly spawnResultCache: SpawnResultCache;
 
   /**
    * Agent load warnings from `config.agentDirs` resolution (unparseable .md files).

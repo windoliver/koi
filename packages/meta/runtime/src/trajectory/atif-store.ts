@@ -5,7 +5,7 @@
 
 import type { RichTrajectoryStep, TrajectoryDocumentStore } from "@koi/core";
 import { mapAtifToRichTrajectory, mapRichTrajectoryToAtif } from "./atif-mapper.js";
-import type { AtifAgent, AtifDocument, AtifToolDefinition } from "./atif-types.js";
+import type { AtifAgent, AtifDocument, AtifStep, AtifToolDefinition } from "./atif-types.js";
 
 /** Default size cap for ATIF documents (10MB). */
 const DEFAULT_MAX_SIZE_BYTES = 10 * 1024 * 1024;
@@ -16,12 +16,29 @@ export interface AtifDocumentStoreConfig {
   readonly maxSizeBytes?: number;
 }
 
+export type AtifDocumentHeader = Omit<AtifDocument, "steps">;
+
+export interface AtifDocumentAppendState {
+  readonly document: AtifDocumentHeader;
+  readonly stepCount: number;
+  readonly nextStepIndex: number;
+  readonly lastTimestampMs: number;
+  readonly sizeBytes: number;
+}
+
+export interface AtifDocumentAppendBatch extends AtifDocumentAppendState {
+  readonly startIndex: number;
+  readonly steps: readonly AtifStep[];
+}
+
 /** Delegate interface for raw ATIF document persistence. */
 export interface AtifDocumentDelegate {
   readonly read: (docId: string) => Promise<AtifDocument | undefined>;
   readonly write: (docId: string, doc: AtifDocument) => Promise<void>;
   readonly list: () => Promise<readonly string[]>;
   readonly delete: (docId: string) => Promise<boolean>;
+  readonly readAppendState?: (docId: string) => Promise<AtifDocumentAppendState | undefined>;
+  readonly appendSteps?: (docId: string, batch: AtifDocumentAppendBatch) => Promise<void>;
 }
 
 /**
@@ -124,7 +141,7 @@ export function createAtifDocumentStore(
   const maxSize = config.maxSizeBytes ?? DEFAULT_MAX_SIZE_BYTES;
   const mutex = createDocMutex();
 
-  function createEmptyDoc(docId: string): AtifDocument {
+  function createEmptyHeader(docId: string): AtifDocumentHeader {
     return {
       schema_version: "ATIF-v1.6",
       session_id: docId,
@@ -132,8 +149,11 @@ export function createAtifDocumentStore(
         name: config.agentName,
         ...(config.agentVersion !== undefined ? { version: config.agentVersion } : {}),
       },
-      steps: [],
     };
+  }
+
+  function createEmptyDoc(docId: string): AtifDocument {
+    return { ...createEmptyHeader(docId), steps: [] };
   }
 
   return {
@@ -142,62 +162,25 @@ export function createAtifDocumentStore(
 
       const unlock = await mutex.lock(docId);
       try {
+        if (supportsAppend(delegate)) {
+          await appendUsingChunkDelegate(
+            docId,
+            steps,
+            config,
+            maxSize,
+            delegate,
+            createEmptyHeader,
+          );
+          return;
+        }
+
         const existing = await delegate.read(docId);
         const doc = existing ?? createEmptyDoc(docId);
 
-        // Reassign stepIndex to be globally unique across the document.
-        // Enforce monotonic timestamps as a safety net for L1 emitters that
-        // lack clock injection (#1558). When a step's timestamp goes backward
-        // (concurrent Date.now() race), the original timestamp is preserved
-        // in metadata._original_timestamp so auditors can reconstruct true
-        // chronology. The per-stream monotonic clock handles most cases;
-        // this only fires for engine-compose instrumentation timestamps.
-        const baseIndex = doc.steps.length;
-        const lastExistingTs =
-          doc.steps.length > 0
-            ? (() => {
-                const lastStep = doc.steps[doc.steps.length - 1];
-                if (lastStep === undefined) return 0;
-                return typeof lastStep.timestamp === "string"
-                  ? new Date(lastStep.timestamp).getTime()
-                  : (lastStep.timestamp as number);
-              })()
-            : 0;
-        // let: mutable — tracks the running maximum timestamp for monotonicity
-        let prevTs = lastExistingTs;
-        const reindexedSteps = steps.map((s, i) => {
-          const ts = s.timestamp;
-          if (ts > prevTs) {
-            prevTs = ts;
-            return { ...s, stepIndex: baseIndex + i };
-          }
-          // Timestamp went backward — adjust but preserve original
-          const adjusted = prevTs + 1;
-          prevTs = adjusted;
-          return {
-            ...s,
-            stepIndex: baseIndex + i,
-            timestamp: adjusted,
-            metadata: {
-              ...(s.metadata ?? {}),
-              _original_timestamp: ts,
-            },
-          };
-        });
-
-        const newAtifDoc = mapRichTrajectoryToAtif(reindexedSteps, {
-          sessionId: docId,
-          agentName: config.agentName,
-          ...(config.agentVersion !== undefined ? { agentVersion: config.agentVersion } : {}),
-        });
-
-        // Enrich agent metadata from step data (first-write-wins)
-        const enrichedAgent = enrichAgentMetadata(doc.agent, steps);
-
+        const prepared = prepareAppend(config, docId, stripSteps(doc), doc.steps, steps);
         const merged: AtifDocument = {
-          ...doc,
-          agent: enrichedAgent,
-          steps: [...doc.steps, ...newAtifDoc.steps],
+          ...prepared.document,
+          steps: [...doc.steps, ...prepared.steps],
         };
 
         const serialized = JSON.stringify(merged);
@@ -259,13 +242,187 @@ export function createAtifDocumentStore(
   };
 }
 
+export function createAtifAppendStateFromDocument(doc: AtifDocument): AtifDocumentAppendState {
+  return {
+    document: stripSteps(doc),
+    stepCount: doc.steps.length,
+    nextStepIndex: nextStepIndex(doc.steps),
+    lastTimestampMs: lastTimestampMs(doc.steps),
+    sizeBytes: JSON.stringify(doc).length,
+  };
+}
+
+function supportsAppend(
+  delegate: AtifDocumentDelegate,
+): delegate is AtifDocumentDelegate &
+  Required<Pick<AtifDocumentDelegate, "readAppendState" | "appendSteps">> {
+  return delegate.readAppendState !== undefined && delegate.appendSteps !== undefined;
+}
+
+async function appendUsingChunkDelegate(
+  docId: string,
+  steps: readonly RichTrajectoryStep[],
+  config: AtifDocumentStoreConfig,
+  maxSize: number,
+  delegate: AtifDocumentDelegate &
+    Required<Pick<AtifDocumentDelegate, "readAppendState" | "appendSteps">>,
+  createEmptyHeader: (docId: string) => AtifDocumentHeader,
+): Promise<void> {
+  const state = await delegate.readAppendState(docId);
+  const currentHeader = state?.document ?? createEmptyHeader(docId);
+  const prepared = prepareAppend(
+    config,
+    docId,
+    currentHeader,
+    [],
+    steps,
+    state?.nextStepIndex,
+    state?.lastTimestampMs,
+  );
+  const projectedSize = estimateAppendedSize(
+    state,
+    currentHeader,
+    prepared.document,
+    prepared.steps,
+  );
+
+  if (projectedSize <= maxSize) {
+    await delegate.appendSteps(docId, {
+      document: prepared.document,
+      steps: prepared.steps,
+      startIndex: prepared.startIndex,
+      stepCount: (state?.stepCount ?? 0) + prepared.steps.length,
+      nextStepIndex: prepared.nextStepIndex,
+      lastTimestampMs: prepared.lastTimestampMs,
+      sizeBytes: projectedSize,
+    });
+    return;
+  }
+
+  const existing = await delegate.read(docId);
+  const doc: AtifDocument = existing ?? { ...currentHeader, steps: [] };
+  const merged: AtifDocument = {
+    ...prepared.document,
+    steps: [...doc.steps, ...prepared.steps],
+  };
+  await delegate.write(docId, pruneToSize(merged, maxSize));
+}
+
+function prepareAppend(
+  config: AtifDocumentStoreConfig,
+  docId: string,
+  header: AtifDocumentHeader,
+  existingSteps: readonly AtifStep[],
+  steps: readonly RichTrajectoryStep[],
+  baseIndexOverride?: number,
+  lastTimestampOverride?: number,
+): AtifDocumentAppendBatch {
+  // Reassign stepIndex to be globally unique across the document.
+  // Enforce monotonic timestamps as a safety net for L1 emitters that
+  // lack clock injection (#1558). When a step's timestamp goes backward
+  // (concurrent Date.now() race), the original timestamp is preserved
+  // in metadata._original_timestamp so auditors can reconstruct true
+  // chronology. The per-stream monotonic clock handles most cases;
+  // this only fires for engine-compose instrumentation timestamps.
+  const baseIndex = baseIndexOverride ?? nextStepIndex(existingSteps);
+  const lastExistingTs = lastTimestampOverride ?? lastTimestampMs(existingSteps);
+  let prevTs = lastExistingTs;
+  const reindexedSteps = steps.map((s, i) => {
+    const ts = s.timestamp;
+    if (ts > prevTs) {
+      prevTs = ts;
+      return { ...s, stepIndex: baseIndex + i };
+    }
+    const adjusted = prevTs + 1;
+    prevTs = adjusted;
+    return {
+      ...s,
+      stepIndex: baseIndex + i,
+      timestamp: adjusted,
+      metadata: {
+        ...(s.metadata ?? {}),
+        _original_timestamp: ts,
+      },
+    };
+  });
+
+  const newAtifDoc = mapRichTrajectoryToAtif(reindexedSteps, {
+    sessionId: docId,
+    agentName: config.agentName,
+    ...(config.agentVersion !== undefined ? { agentVersion: config.agentVersion } : {}),
+  });
+
+  const document: AtifDocumentHeader = {
+    ...header,
+    agent: enrichAgentMetadata(header.agent, steps),
+  };
+
+  return {
+    document,
+    steps: newAtifDoc.steps,
+    startIndex: baseIndex,
+    stepCount: existingSteps.length + newAtifDoc.steps.length,
+    nextStepIndex: baseIndex + newAtifDoc.steps.length,
+    lastTimestampMs: prevTs,
+    sizeBytes: 0,
+  };
+}
+
+function estimateAppendedSize(
+  state: AtifDocumentAppendState | undefined,
+  currentHeader: AtifDocumentHeader,
+  nextHeader: AtifDocumentHeader,
+  steps: readonly AtifStep[],
+): number {
+  if (state === undefined) {
+    return JSON.stringify({ ...nextHeader, steps }).length;
+  }
+
+  const currentEmptySize = JSON.stringify({ ...currentHeader, steps: [] }).length;
+  const nextEmptySize = JSON.stringify({ ...nextHeader, steps: [] }).length;
+  const stepBytes = steps.reduce((total, step) => total + JSON.stringify(step).length, 0);
+  const commaBytes =
+    steps.length === 0 ? 0 : state.stepCount > 0 ? steps.length : Math.max(0, steps.length - 1);
+  return state.sizeBytes + (nextEmptySize - currentEmptySize) + stepBytes + commaBytes;
+}
+
+function stripSteps(doc: AtifDocument): AtifDocumentHeader {
+  const { steps: _steps, ...header } = doc;
+  return header;
+}
+
+function nextStepIndex(steps: readonly AtifStep[]): number {
+  const lastStep = steps[steps.length - 1];
+  return lastStep === undefined ? 0 : lastStep.step_id + 1;
+}
+
+function lastTimestampMs(steps: readonly AtifStep[]): number {
+  const lastStep = steps[steps.length - 1];
+  if (lastStep === undefined) return 0;
+  const timestampMs = new Date(lastStep.timestamp).getTime();
+  return Number.isFinite(timestampMs) ? timestampMs : 0;
+}
+
 /** Prune oldest steps until document fits within maxSize. */
 function pruneToSize(doc: AtifDocument, maxSize: number): AtifDocument {
-  const steps = [...doc.steps];
-  while (steps.length > 1) {
-    steps.shift();
-    const candidate: AtifDocument = { ...doc, steps };
-    if (JSON.stringify(candidate).length <= maxSize) return candidate;
+  if (doc.steps.length <= 1) return { ...doc, steps: [...doc.steps] };
+
+  // Find the earliest retained index that fits. Keeping this logarithmic avoids
+  // repeatedly shifting and reserializing every suffix for large documents.
+  let low = 0;
+  let high = doc.steps.length - 1;
+  let best = doc.steps.length - 1;
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate: AtifDocument = { ...doc, steps: doc.steps.slice(mid) };
+    if (JSON.stringify(candidate).length <= maxSize) {
+      best = mid;
+      high = mid - 1;
+    } else {
+      low = mid + 1;
+    }
   }
-  return { ...doc, steps };
+
+  return { ...doc, steps: doc.steps.slice(best) };
 }

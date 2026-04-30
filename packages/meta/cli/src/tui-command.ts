@@ -1759,7 +1759,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       });
       tuiAuthInterceptor = createAuthInterceptor(transport);
       // Store for createKoiRuntime — permissions + audit nexus wiring
-      nexusFilesystemTransport = transport as unknown as import("@koi/nexus-client").NexusTransport;
+      nexusFilesystemTransport = transport;
     } else if (manifestFilesystemConfig?.backend === "nexus") {
       // HTTP nexus backend: create a lightweight HTTP transport for permissions/audit.
       // resolveFileSystemAsync only returns transport for local-bridge; HTTP transport

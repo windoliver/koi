@@ -151,9 +151,16 @@ export const DEFAULT_FORK_MAX_TURNS = 200;
 
 /**
  * Unified spawn result — success with output string, or failure with KoiError.
+ *
+ * `cacheable` is optional and defaults to `true` for streaming delivery (the
+ * common case where `output` represents the child's completed work). Engine
+ * implementations that return success before the child finishes — deferred
+ * or on-demand delivery — should set `cacheable: false` so retry-dedup layers
+ * (e.g. `@koi/spawn-tools` `SpawnResultCache`) do not mask later background
+ * failures by replaying the placeholder admission.
  */
 export type SpawnResult =
-  | { readonly ok: true; readonly output: string }
+  | { readonly ok: true; readonly output: string; readonly cacheable?: boolean }
   | { readonly ok: false; readonly error: KoiError };
 
 // ---------------------------------------------------------------------------

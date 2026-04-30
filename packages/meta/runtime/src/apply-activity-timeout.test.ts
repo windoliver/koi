@@ -103,6 +103,50 @@ describe("applyActivityTimeout", () => {
     expect(events.some((e) => isCustom(e, "activity.terminated.idle"))).toBe(false);
   });
 
+  test("queued burst drain does not shift once per event", async () => {
+    const originalShift = Array.prototype.shift;
+    let shiftCalls = 0;
+    Array.prototype.shift = function patchedShift<T>(this: T[]): T | undefined {
+      shiftCalls += 1;
+      return originalShift.call(this);
+    };
+
+    try {
+      const adapter: EngineAdapter = {
+        engineId: "burst",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+          for (let i = 0; i < 64; i += 1) {
+            yield { kind: "text_delta", delta: `tick-${i}` };
+          }
+          yield {
+            kind: "done",
+            output: {
+              content: [],
+              stopReason: "completed",
+              metrics: {
+                totalTokens: 0,
+                inputTokens: 0,
+                outputTokens: 0,
+                turns: 0,
+                durationMs: 0,
+              },
+            },
+          };
+        },
+      };
+
+      const wrapped = applyActivityTimeout(adapter, { maxDurationMs: 10_000 });
+      const events = await collect(wrapped.stream({ kind: "text", text: "go" }));
+
+      expect(events.filter((e) => e.kind === "text_delta")).toHaveLength(64);
+      expect(events.at(-1)?.kind).toBe("done");
+      expect(shiftCalls).toBeLessThan(10);
+    } finally {
+      Array.prototype.shift = originalShift;
+    }
+  });
+
   test("idle stream emits warning at threshold", async () => {
     let warned = false;
     const wrapped = applyActivityTimeout(

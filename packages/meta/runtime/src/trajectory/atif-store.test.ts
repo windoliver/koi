@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { RichTrajectoryStep } from "@koi/core";
-import type { AtifDocumentDelegate } from "./atif-store.js";
+import type {
+  AtifDocumentAppendBatch,
+  AtifDocumentAppendState,
+  AtifDocumentDelegate,
+} from "./atif-store.js";
 import { createAtifDocumentStore } from "./atif-store.js";
-import type { AtifDocument } from "./atif-types.js";
+import type { AtifDocument, AtifStep } from "./atif-types.js";
 
 function createInMemoryDelegate(): AtifDocumentDelegate {
   const docs = new Map<string, AtifDocument>();
@@ -18,6 +22,82 @@ function createInMemoryDelegate(): AtifDocumentDelegate {
     },
     async delete(docId: string) {
       return docs.delete(docId);
+    },
+  };
+}
+
+function createAppendOnlyInMemoryDelegate(): AtifDocumentDelegate & {
+  readonly counts: {
+    read: number;
+    write: number;
+    appendSteps: number;
+  };
+} {
+  const states = new Map<string, AtifDocumentAppendState>();
+  const chunks = new Map<
+    string,
+    { readonly startIndex: number; readonly steps: readonly AtifStep[] }[]
+  >();
+  const counts = { read: 0, write: 0, appendSteps: 0 };
+
+  function assemble(docId: string): AtifDocument | undefined {
+    const state = states.get(docId);
+    if (state === undefined) return undefined;
+    const steps = (chunks.get(docId) ?? [])
+      .slice()
+      .sort((a, b) => a.startIndex - b.startIndex)
+      .flatMap((chunk) => chunk.steps);
+    return { ...state.document, steps };
+  }
+
+  function stateFromDocument(doc: AtifDocument): AtifDocumentAppendState {
+    const lastStep = doc.steps[doc.steps.length - 1];
+    return {
+      document: {
+        schema_version: doc.schema_version,
+        session_id: doc.session_id,
+        agent: doc.agent,
+        ...(doc.notes !== undefined ? { notes: doc.notes } : {}),
+        ...(doc.final_metrics !== undefined ? { final_metrics: doc.final_metrics } : {}),
+        ...(doc.extra !== undefined ? { extra: doc.extra } : {}),
+      },
+      stepCount: doc.steps.length,
+      nextStepIndex: lastStep === undefined ? 0 : lastStep.step_id + 1,
+      lastTimestampMs: lastStep === undefined ? 0 : new Date(lastStep.timestamp).getTime(),
+      sizeBytes: JSON.stringify(doc).length,
+    };
+  }
+
+  return {
+    counts,
+    async read(docId: string) {
+      counts.read += 1;
+      return assemble(docId);
+    },
+    async write(docId: string, doc: AtifDocument) {
+      counts.write += 1;
+      states.set(docId, stateFromDocument(doc));
+      chunks.set(docId, [{ startIndex: doc.steps[0]?.step_id ?? 0, steps: doc.steps }]);
+    },
+    async list() {
+      return [...states.keys()];
+    },
+    async delete(docId: string) {
+      const existed = states.delete(docId);
+      chunks.delete(docId);
+      return existed;
+    },
+    async readAppendState(docId: string) {
+      return states.get(docId);
+    },
+    async appendSteps(docId: string, batch: AtifDocumentAppendBatch) {
+      counts.appendSteps += 1;
+      const { startIndex: _startIndex, steps: _steps, ...state } = batch;
+      states.set(docId, state);
+      chunks.set(docId, [
+        ...(chunks.get(docId) ?? []),
+        { startIndex: batch.startIndex, steps: batch.steps },
+      ]);
     },
   };
 }
@@ -148,5 +228,52 @@ describe("createAtifDocumentStore", () => {
     expect(doc?.agent.tool_definitions?.[0]?.name).toBe("add_numbers");
     expect(doc?.agent.tool_definitions?.[0]?.description).toBe("Add two numbers");
     expect(doc?.agent.tool_definitions?.[1]?.name).toBe("read_file");
+  });
+
+  test("append uses append-only delegate path without whole-document rewrite", async () => {
+    const delegate = createAppendOnlyInMemoryDelegate();
+    const store = createAtifDocumentStore({ agentName: "test" }, delegate);
+
+    await store.append("session-1", [makeStep(0)]);
+    await store.append("session-1", [makeStep(1)]);
+
+    expect(delegate.counts.read).toBe(0);
+    expect(delegate.counts.write).toBe(0);
+    expect(delegate.counts.appendSteps).toBe(2);
+
+    const steps = await store.getDocument("session-1");
+    expect(steps).toHaveLength(2);
+    expect(steps[0]?.stepIndex).toBe(0);
+    expect(steps[1]?.stepIndex).toBe(1);
+  });
+
+  test("pruning a large append does not shift once per dropped step", async () => {
+    const originalShift = Array.prototype.shift;
+    let shiftCalls = 0;
+    Array.prototype.shift = function patchedShift<T>(this: T[]): T | undefined {
+      shiftCalls += 1;
+      return originalShift.call(this);
+    };
+
+    try {
+      const delegate = createInMemoryDelegate();
+      const store = createAtifDocumentStore({ agentName: "test", maxSizeBytes: 600 }, delegate);
+
+      await store.append(
+        "prune-test",
+        Array.from({ length: 30 }, (_, index) => ({
+          ...makeStep(index),
+          request: { text: `request-${index}`.repeat(20) },
+          response: { text: `response-${index}`.repeat(20) },
+        })),
+      );
+
+      const doc = await delegate.read("prune-test");
+      expect(doc?.steps.length).toBeGreaterThanOrEqual(1);
+      expect(doc?.steps.length).toBeLessThan(30);
+      expect(shiftCalls).toBeLessThan(5);
+    } finally {
+      Array.prototype.shift = originalShift;
+    }
   });
 });

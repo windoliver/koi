@@ -14,4 +14,10 @@ export { recoverOrphanedTasks, recoverStaleDelegations } from "./cascade/recover
 export type { TaskCascade } from "./cascade/task-cascade.js";
 export { createTaskCascade } from "./cascade/task-cascade.js";
 export { createSpawnTools } from "./create-spawn-tools.js";
+export type { SpawnResultCache } from "./spawn-result-cache.js";
+export {
+  createSpawnResultCache,
+  DEFAULT_SPAWN_CACHE_CAP,
+  spawnCacheKey,
+} from "./spawn-result-cache.js";
 export type { SpawnToolsConfig } from "./types.js";
