@@ -617,3 +617,8 @@ createKoi({ adapter, middleware: [agentMonitorMw, ...] })
 - All detection functions are pure — no I/O, no side effects, easily unit tested
 - Middleware `priority: 350` places it after audit (300) and before permissions (400),
   so it observes the raw tool call before permissions strips or denies it
+
+
+## Changelog
+
+- 2026-04-29: Adversarial review hardening (#1378) — bounded shutdown waits, pre-await accounting, identity-based dedup (transport+name), allowlist-based env exposure, reused in-flight scans, and lint cleanup.

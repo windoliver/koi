@@ -302,3 +302,8 @@ L2  @koi/agent-procfs ◄──────────────────�
     ✗ never imports @koi/engine (L1)
     ✗ never imports peer L2 packages
 ```
+
+
+## Changelog
+
+- 2026-04-29: Adversarial review hardening (#1378) — bounded shutdown waits, pre-await accounting, identity-based dedup (transport+name), allowlist-based env exposure, reused in-flight scans, and lint cleanup.

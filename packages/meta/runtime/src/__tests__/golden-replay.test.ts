@@ -15512,3 +15512,172 @@ describe("Golden: @koi/sandbox-executor", () => {
     if (!r.ok) expect(r.error.code).toBe("TIMEOUT");
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/agent-procfs (2 queries)
+//
+// Standalone — no cassette replay. Validates createProcFs TTL caching and
+// createAgentMounter wiring against the @koi/core ProcFs / AgentRegistry
+// contracts. Per docs/L2/agent-procfs.md.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/agent-procfs", () => {
+  test("createProcFs TTL cache + write invalidation", async () => {
+    const { createProcFs } = await import("@koi/agent-procfs");
+    let calls = 0;
+    const procFs = createProcFs({ cacheTtlMs: 1_000 });
+    procFs.mount("/x", {
+      read: () => ++calls,
+      write: () => {},
+    });
+    await procFs.read("/x");
+    await procFs.read("/x");
+    expect(calls).toBe(1);
+    await procFs.write("/x", null);
+    await procFs.read("/x");
+    expect(calls).toBe(2);
+  });
+
+  test("ENTRY_NAMES is the canonical 7-entry list", async () => {
+    const { ENTRY_NAMES } = await import("@koi/agent-procfs");
+    const names = [...ENTRY_NAMES].sort();
+    expect(names.length).toBe(7);
+    expect(names).toContain("status");
+    expect(names).toContain("tools");
+    expect(names).toContain("middleware");
+    expect(names).toContain("children");
+    expect(names).toContain("config");
+    expect(names).toContain("env");
+    expect(names).toContain("metrics");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/agent-discovery (2 queries)
+//
+// Standalone — no cassette replay. Validates createDiscoveryProvider attaches
+// the discover_agents tool + EXTERNAL_AGENTS singleton, and dedup priority
+// (MCP > filesystem > PATH) per docs/L2/agent-discovery.md.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/agent-discovery", () => {
+  test("provider attaches discover_agents tool + EXTERNAL_AGENTS", async () => {
+    const { createDiscoveryProvider } = await import("@koi/agent-discovery");
+    const { EXTERNAL_AGENTS, isAttachResult, toolToken, agentId } = await import("@koi/core");
+
+    const fakeAgent = {
+      pid: { id: agentId("golden-disc"), name: "golden", type: "worker", depth: 0 },
+      manifest: { name: "golden", description: "test" },
+      state: "running",
+      component: () => undefined,
+      has: () => false,
+      hasAll: () => false,
+      query: () => new Map(),
+      components: () => new Map(),
+    };
+
+    const provider = createDiscoveryProvider({
+      systemCalls: {
+        which: async (b: string) => (b === "claude" ? "/bin/claude" : null),
+        readDir: async () => [],
+        readFile: async () => "",
+        spawn: async () => ({ stdout: "", exitCode: 0 }),
+      },
+    });
+    const result = await provider.attach(fakeAgent as never);
+    const map = isAttachResult(result) ? result.components : result;
+    expect(map.has(toolToken("discover_agents"))).toBe(true);
+    expect(map.has(EXTERNAL_AGENTS)).toBe(true);
+  });
+
+  test("dedup-by-identity: MCP and PATH descriptors with same name coexist", async () => {
+    const { createDiscovery, createPathSource, createMcpSource } = await import(
+      "@koi/agent-discovery"
+    );
+
+    const path = createPathSource({
+      knownAgents: [
+        {
+          name: "shared",
+          binaries: ["shared"],
+          capabilities: [],
+          transport: "cli",
+        },
+      ],
+      systemCalls: {
+        which: async (b: string) => (b === "shared" ? "/bin/shared" : null),
+        readDir: async () => [],
+        readFile: async () => "",
+        spawn: async () => ({ stdout: "", exitCode: 0 }),
+      },
+    });
+    const mcp = createMcpSource([
+      {
+        name: "shared",
+        isAgent: true,
+        listTools: async () => ({
+          ok: true as const,
+          value: [{ name: "code_assist" }],
+        }),
+      },
+    ]);
+    const discovery = createDiscovery([path, mcp], 1000);
+    const agents = await discovery.discover();
+    const shared = agents.filter((a) => a.name === "shared");
+    expect(shared.length).toBe(2);
+    expect(shared.map((a) => a.transport).sort()).toEqual(["cli", "mcp"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/agent-monitor (2 queries)
+//
+// Standalone — no cassette replay. Validates middleware identity and
+// tool_rate_exceeded firing per docs/L2/agent-monitor.md.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/agent-monitor", () => {
+  test("middleware identity (name + priority + describeCapabilities)", async () => {
+    const { createAgentMonitorMiddleware, AGENT_MONITOR_PRIORITY } = await import(
+      "@koi/agent-monitor"
+    );
+    const mw = createAgentMonitorMiddleware({});
+    expect(mw.name).toBe("agent-monitor");
+    expect(mw.priority).toBe(AGENT_MONITOR_PRIORITY);
+    expect(mw.priority).toBe(350);
+    expect(typeof mw.describeCapabilities).toBe("function");
+  });
+
+  test("tool_rate_exceeded fires after >maxToolCallsPerTurn calls", async () => {
+    const { createAgentMonitorMiddleware } = await import("@koi/agent-monitor");
+    const core = await import("@koi/core");
+    const signals: Array<{ kind: string }> = [];
+    const mw = createAgentMonitorMiddleware({
+      thresholds: { maxToolCallsPerTurn: 1 },
+      onAnomaly: (s) => {
+        signals.push(s);
+      },
+    });
+    const session = {
+      agentId: "a",
+      sessionId: core.sessionId("s") as never,
+      runId: core.runId("r"),
+      metadata: {},
+    };
+    await mw.onSessionStart?.(session as never);
+    const ctx = {
+      session,
+      turnIndex: 0,
+      turnId: core.turnId(session.runId, 0) as never,
+      messages: [],
+      metadata: {},
+    };
+    await mw.onBeforeTurn?.(ctx as never);
+    const next = async (): Promise<{ output: string }> => ({ output: "ok" });
+    for (let i = 0; i < 2; i++) {
+      await mw.wrapToolCall?.(ctx as never, { toolId: `t${i}`, input: {} } as never, next as never);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    expect(signals.some((s) => s.kind === "tool_rate_exceeded")).toBe(true);
+  });
+});

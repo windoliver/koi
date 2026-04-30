@@ -112,6 +112,27 @@
         "@koi/event-delivery": "workspace:*",
       },
     },
+    "packages/lib/agent-discovery": {
+      "name": "@koi/agent-discovery",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/agent-monitor": {
+      "name": "@koi/agent-monitor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/agent-procfs": {
+      "name": "@koi/agent-procfs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/agent-runtime": {
       "name": "@koi/agent-runtime",
       "version": "0.0.0",
@@ -1029,6 +1050,9 @@
       "name": "@koi/runtime",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/agent-discovery": "workspace:*",
+        "@koi/agent-monitor": "workspace:*",
+        "@koi/agent-procfs": "workspace:*",
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
         "@koi/artifacts": "workspace:*",
@@ -1894,6 +1918,12 @@
     "@jsonjoy.com/util": ["@jsonjoy.com/util@1.9.0", "", { "dependencies": { "@jsonjoy.com/buffers": "^1.0.0", "@jsonjoy.com/codegen": "^1.0.0" }, "peerDependencies": { "tslib": "2" } }, "sha512-pLuQo+VPRnN8hfPqUTLTHk126wuYdXVxE6aDmjSeV4NCAgyxWbiOIeNJVtID3h1Vzpoi9m4jXezf73I6LgabgQ=="],
 
     "@koi-agent/cli": ["@koi-agent/cli@workspace:packages/meta/cli"],
+
+    "@koi/agent-discovery": ["@koi/agent-discovery@workspace:packages/lib/agent-discovery"],
+
+    "@koi/agent-monitor": ["@koi/agent-monitor@workspace:packages/lib/agent-monitor"],
+
+    "@koi/agent-procfs": ["@koi/agent-procfs@workspace:packages/lib/agent-procfs"],
 
     "@koi/agent-runtime": ["@koi/agent-runtime@workspace:packages/lib/agent-runtime"],
 

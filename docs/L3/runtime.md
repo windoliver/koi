@@ -487,3 +487,8 @@ Changes visible at the `@koi/runtime` integration boundary:
 `createTemporalWorker` now accepts a flat `WorkerConfig` object `{ taskQueue, url?, namespace?, maxCachedWorkflows? }` as its first argument (replacing the previous `{ config: TemporalConfig }` wrapper). The argument order is `(config, activities, workflowsPath, factory?)`. `WorkerConfig` is exported from `@koi/temporal` for downstream typing.
 
 `createTemporalScheduler` now implements `TaskScheduler.querySchedules(agentId)` returning all cron schedules for a given agent.
+
+
+## Changelog
+
+- 2026-04-29: Adversarial review hardening (#1378) — bounded shutdown waits, pre-await accounting, identity-based dedup (transport+name), allowlist-based env exposure, reused in-flight scans, and lint cleanup.

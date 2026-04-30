@@ -1,3 +1,5 @@
+import type { DiscoveryProviderConfig } from "@koi/agent-discovery";
+import type { AgentMonitorConfig } from "@koi/agent-monitor";
 import type {
   AgentLoadWarning,
   AgentResolverDirs,
@@ -571,6 +573,27 @@ export interface RuntimeConfig {
   readonly forgeDemand?: RuntimeForgeDemandConfig | undefined;
 
   /**
+   * Adversarial agent-behavior monitor (`@koi/agent-monitor`). When provided,
+   * a pure observer middleware is appended to the chain that fires
+   * `AnomalySignal` callbacks for the 12 OWASP-ASI10 anomaly classes
+   * (rate spikes, ping-pong, irreversible action rate, goal drift, etc.).
+   * Pass `true` for default thresholds, or an `AgentMonitorConfig` to tune
+   * thresholds and register `onAnomaly` / `onMetrics` callbacks.
+   */
+  readonly agentMonitor?: AgentMonitorConfig | true | undefined;
+
+  /**
+   * External agent discovery (`@koi/agent-discovery`). When provided, builds
+   * a `ComponentProvider` that attaches the `discover_agents` tool plus an
+   * immutable `EXTERNAL_AGENTS` boot snapshot. The provider is exposed on
+   * `RuntimeHandle.discoveryProvider` so callers can pass it through to
+   * `createKoi({ providers })`. Pass `true` for PATH-only discovery against
+   * the bundled known-CLI list, or a `DiscoveryProviderConfig` to add
+   * filesystem and MCP sources.
+   */
+  readonly agentDiscovery?: DiscoveryProviderConfig | true | undefined;
+
+  /**
    * Browser tool provider configuration. When provided, wires `@koi/tool-browser`
    * and exposes the resulting `ComponentProvider` on `RuntimeHandle.browserProvider`
    * so callers can pass it to `createKoi({ providers })`.
@@ -785,6 +808,14 @@ export interface RuntimeHandle {
    * Only populated when filesystem is explicitly configured.
    */
   readonly filesystemProvider: ComponentProvider | undefined;
+
+  /**
+   * External agent discovery provider. Only populated when
+   * `config.agentDiscovery` is provided. Pass to
+   * `createKoi({ providers: [handle.discoveryProvider] })` to expose the
+   * `discover_agents` tool and attach an `EXTERNAL_AGENTS` boot snapshot.
+   */
+  readonly discoveryProvider?: ComponentProvider | undefined;
 
   /**
    * Factory for a per-session decision ledger reader over the runtime's

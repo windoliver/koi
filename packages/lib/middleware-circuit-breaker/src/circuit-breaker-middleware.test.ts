@@ -448,7 +448,6 @@ describe("createCircuitBreakerMiddleware", () => {
     if (stream === undefined) throw new Error("no stream");
     await expect(
       (async () => {
-        // biome-ignore lint/correctness/noUnusedVariables: trigger iteration
         for await (const _ of stream) {
         }
       })(),
