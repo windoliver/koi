@@ -20,8 +20,13 @@ export function metricsEntry(agent: Agent, registry: AgentRegistry): WritablePro
         throw new Error("VALIDATION: expected { priority: number }");
       }
       const { priority } = value;
-      if (typeof priority !== "number") {
-        throw new Error("VALIDATION: 'priority' must be a number");
+      if (
+        typeof priority !== "number" ||
+        !Number.isInteger(priority) ||
+        priority < 0 ||
+        priority > 39
+      ) {
+        throw new Error("VALIDATION: 'priority' must be an integer in [0, 39]");
       }
       const result = await registry.patch(agent.pid.id, { priority });
       if (!result.ok) {

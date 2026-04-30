@@ -133,6 +133,10 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
   }
 
   function fireWithTurn(detail: AnomalyDetail, m: SessionMetrics, turnIndex: number): void {
+    // Drop late signals from async scorers that resolve after onSessionEnd —
+    // otherwise we'd mutate counts on a discarded session and emit signals
+    // for a session whose summary has already been exported.
+    if (sessions.get(m.sessionId) !== m) return;
     const signal: AnomalySignal = {
       sessionId: m.sessionId,
       agentId: m.agentId,

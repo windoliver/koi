@@ -13,6 +13,14 @@ import type {
   SystemCalls as SystemCallsRef,
 } from "./types.js";
 
+/**
+ * Create a discovery component provider.
+ *
+ * The `EXTERNAL_AGENTS` singleton attached here is an immutable boot snapshot
+ * taken at agent assembly time. It is NOT live state — for fresh discovery
+ * results during a session, callers must invoke the `discover_agents` tool,
+ * which re-runs sources (subject to the discovery cache TTL).
+ */
 export function createDiscoveryProvider(config: DiscoveryProviderConfig = {}): ComponentProvider {
   const pathConfig: { knownAgents?: readonly KnownCliAgentRef[]; systemCalls?: SystemCallsRef } =
     {};
