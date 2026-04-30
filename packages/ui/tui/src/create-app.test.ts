@@ -134,6 +134,26 @@ describe("createTuiApp — no-TTY", () => {
       else process.env.KOI_TUI_PROFILE = prevEnv;
     }
   });
+
+  test("createTuiApp() without start() does not arm profiling (#1586)", async () => {
+    // Regression: initProfiling() previously ran during factory construction,
+    // so a handle that was never start()ed left a live sampler interval.
+    // Profiling is now bound to start() ownership.
+    const prevEnv = process.env.KOI_TUI_PROFILE;
+    process.env.KOI_TUI_PROFILE = "1";
+    try {
+      const setIntervalSpy = spyOn(globalThis, "setInterval");
+      const callsBefore = setIntervalSpy.mock.calls.length;
+      const result = createTuiApp(await makeConfig());
+      expect(result.ok).toBe(true);
+      // No start() — sampler must not be armed.
+      expect(setIntervalSpy.mock.calls.length).toBe(callsBefore);
+      setIntervalSpy.mockRestore();
+    } finally {
+      if (prevEnv === undefined) delete process.env.KOI_TUI_PROFILE;
+      else process.env.KOI_TUI_PROFILE = prevEnv;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

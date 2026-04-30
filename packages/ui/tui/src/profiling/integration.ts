@@ -40,7 +40,22 @@ let runActive = false;
 let writtenForRun = false;
 let exitHandlerRegistered = false;
 
-export function initProfiling(options?: InitProfilingOptions): void {
+/**
+ * Try to start profiling for the calling TUI run.
+ *
+ * Returns `true` when this call took ownership of the global profiler
+ * state — the caller must invoke `shutdownProfiling()` exactly once when
+ * the run ends (whether via normal stop or aborted start).
+ *
+ * Returns `false` when:
+ *   - profiling is disabled (KOI_TUI_PROFILE!=1)
+ *   - another run already owns profiling (concurrent profiled createTuiApp);
+ *     a stderr warning is emitted in this case.
+ *
+ * A non-owning caller MUST NOT call shutdownProfiling() — doing so would
+ * tear down the active run's measurement.
+ */
+export function initProfiling(options?: InitProfilingOptions): boolean {
   if (runActive) {
     // Concurrent profiled createTuiApp() — profiling state is process-global
     // so a second app would silently mix metrics into the active run's
@@ -53,9 +68,9 @@ export function initProfiling(options?: InitProfilingOptions): void {
           "or in separate processes.\n",
       );
     }
-    return;
+    return false;
   }
-  if (!isProfilingEnabled()) return;
+  if (!isProfilingEnabled()) return false;
 
   // Fresh state for this run — must come before sampler start so the
   // sampler's first tick lands in a clean state map.
@@ -70,6 +85,7 @@ export function initProfiling(options?: InitProfilingOptions): void {
     const onProcess = options?.processOn ?? process.on.bind(process);
     onProcess("exit", () => writeReportIfNeeded());
   }
+  return true;
 }
 
 /**

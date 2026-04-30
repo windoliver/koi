@@ -214,11 +214,6 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
     return { ok: false, error: { kind: "no_tty" } };
   }
 
-  // Wave 5 measurement (#1586): wire profiler if KOI_TUI_PROFILE=1.
-  // Must run AFTER the no-TTY guard — initProfiling() starts a repeating
-  // interval that would otherwise keep a non-TTY process alive indefinitely.
-  initProfiling();
-
   const {
     store,
     permissionBridge,
@@ -280,6 +275,11 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
   // `let`: re-entrancy guard so a critical-subscriber failure during stop()
   // does not recursively trigger another stop().
   let fatalShutdownActive = false;
+  // Wave 5 (#1586): true when this handle owns the process-global profiler
+  // state. Set by start() via initProfiling(); only an owner may call
+  // shutdownProfiling() in stop()/error paths — otherwise a non-owner stop
+  // would tear down another running profiled run.
+  let profilingOwned = false;
   // Captured reference to the renderer.once("destroy") handler so stop()
   // can unregister it before calling renderer.destroy(). Without this,
   // destroy's synchronous "destroy" event would fire the handler during
@@ -296,6 +296,13 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
       if (started) return; // already running
       if (closing) return; // stop() was called — handle is permanently closed
       if (startPromise !== null) return startPromise; // concurrent call — share init
+
+      // Wave 5 measurement (#1586): try to take profiler ownership before
+      // we start any heavy work. Only this handle's stop()/error paths
+      // will tear profiling down, so a concurrent profiled handle (which
+      // gets profilingOwned=false) cannot truncate this run's report.
+      // No-op when KOI_TUI_PROFILE!=1.
+      profilingOwned = initProfiling();
 
       // Wire fatal-listener teardown (#1940). Installed AFTER the concurrency
       // guard so concurrent start() calls do not stack multiple wrappers; the
@@ -565,6 +572,12 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           restoreFatalHandler?.();
           restoreFatalHandler = undefined;
           fatalShutdownActive = false;
+          // #1586: aborted mount — release profiling ownership so a later
+          // createTuiApp() can profile cleanly. stop() will not be called.
+          if (profilingOwned) {
+            shutdownProfiling();
+            profilingOwned = false;
+          }
         }
       } catch (e) {
         // Renderer creation / render() failed. Unwind fatal handler so a
@@ -573,6 +586,12 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         restoreFatalHandler?.();
         restoreFatalHandler = undefined;
         fatalShutdownActive = false;
+        // #1586: failed start — same logic. stop() will not run for a
+        // never-mounted handle, so release profiling here.
+        if (profilingOwned) {
+          shutdownProfiling();
+          profilingOwned = false;
+        }
         throw e;
       } finally {
         // Clear the in-flight promise so a failed start can be retried and
@@ -705,10 +724,14 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
       }
 
       // Wave 5 measurement (#1586): stop the sampler and flush the report
-      // bound to this run. Without this, the sampler would keep ticking
-      // through idle time after stop() and contaminate any subsequent
-      // createTuiApp() in the same process. No-op when profiling is off.
-      shutdownProfiling();
+      // ONLY if this handle took profiling ownership in start(). A
+      // non-owning handle (concurrent profiled createTuiApp; was rejected
+      // by initProfiling) must not call shutdownProfiling — that would
+      // truncate the active owner's measurement.
+      if (profilingOwned) {
+        shutdownProfiling();
+        profilingOwned = false;
+      }
 
       // Resolve the per-run deferred — unblocks callers awaiting handle.done().
       currentDoneResolve?.();

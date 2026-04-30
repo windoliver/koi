@@ -30,12 +30,24 @@ describe("initProfiling", () => {
     resetProfiler({ enabled: false });
   });
 
-  test("no-op when profiling disabled", () => {
+  test("no-op when profiling disabled — returns false (no ownership)", () => {
     process.env.KOI_TUI_PROFILE = "0";
     resetProfiler();
     const onSpy = mock((_event: string, _handler: () => void) => process);
-    initProfiling({ processOn: onSpy as unknown as typeof process.on });
+    const owned = initProfiling({ processOn: onSpy as unknown as typeof process.on });
+    expect(owned).toBe(false);
     expect(onSpy).not.toHaveBeenCalled();
+  });
+
+  test("returns true when this call took profiling ownership", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    process.env.KOI_TUI_PROFILE_OUT = join(workDir, "report.json");
+    resetProfiler();
+    const owned = initProfiling({
+      processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    expect(owned).toBe(true);
   });
 
   test("when enabled, registers exit handler that writes report to KOI_TUI_PROFILE_OUT", () => {
@@ -183,14 +195,16 @@ describe("initProfiling", () => {
       return true;
     }) as typeof process.stderr.write;
 
+    let ownedA = false;
+    let ownedB = false;
     try {
-      // First run starts cleanly
-      initProfiling({
+      // First run starts cleanly — owns profiling
+      ownedA = initProfiling({
         processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
         cpuSamplerOptions: { setIntervalFn: setIntervalA },
       });
-      // Second run while first is still active — must be refused, not silently merged
-      initProfiling({
+      // Second run while first is still active — must be refused (not owner)
+      ownedB = initProfiling({
         processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
         cpuSamplerOptions: { setIntervalFn: setIntervalB },
       });
@@ -198,6 +212,8 @@ describe("initProfiling", () => {
       process.stderr.write = origWrite;
     }
 
+    expect(ownedA).toBe(true);
+    expect(ownedB).toBe(false);
     expect(secondSetIntervalCalls).toBe(0);
     expect(stderrWrites.some((w) => w.includes("already being profiled"))).toBe(true);
   });
