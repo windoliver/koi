@@ -513,6 +513,15 @@
         "@koi/variant-selection": "workspace:*",
       },
     },
+    "packages/lib/middleware-event-rules": {
+      "name": "@koi/middleware-event-rules",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/middleware-feedback-loop": {
       "name": "@koi/middleware-feedback-loop",
       "version": "0.0.0",
@@ -990,6 +999,7 @@
         "@koi/middleware-circuit-breaker": "workspace:*",
         "@koi/middleware-collective-memory": "workspace:*",
         "@koi/middleware-dream": "workspace:*",
+        "@koi/middleware-event-rules": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
         "@koi/middleware-feedback-loop": "workspace:*",
@@ -1132,6 +1142,7 @@
         "@koi/middleware-collective-memory": "workspace:*",
         "@koi/middleware-degenerate": "workspace:*",
         "@koi/middleware-dream": "workspace:*",
+        "@koi/middleware-event-rules": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
         "@koi/middleware-feedback-loop": "workspace:*",
@@ -2104,6 +2115,8 @@
     "@koi/middleware-degenerate": ["@koi/middleware-degenerate@workspace:packages/lib/middleware-degenerate"],
 
     "@koi/middleware-dream": ["@koi/middleware-dream@workspace:packages/mm/middleware-dream"],
+
+    "@koi/middleware-event-rules": ["@koi/middleware-event-rules@workspace:packages/lib/middleware-event-rules"],
 
     "@koi/middleware-exfiltration-guard": ["@koi/middleware-exfiltration-guard@workspace:packages/security/middleware-exfiltration-guard"],
 

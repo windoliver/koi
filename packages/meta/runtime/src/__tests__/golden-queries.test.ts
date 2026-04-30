@@ -2448,10 +2448,90 @@ describe("Golden: @koi/middleware-call-dedup", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Golden: @koi/governance-scope (2 queries)
+// Golden: @koi/middleware-event-rules
 // ---------------------------------------------------------------------------
 
+import { sessionId as makeSessionId } from "@koi/core";
 import { createScopedCredentials, createScopedFetcher } from "@koi/governance-scope";
+import { createEventRulesMiddleware, validateEventRulesConfig } from "@koi/middleware-event-rules";
+
+describe("Golden: @koi/middleware-event-rules", () => {
+  test("skip_tool action circuit-breaks tool after windowed failure threshold", async () => {
+    const compiled = validateEventRulesConfig({
+      rules: [
+        {
+          name: "trip-on-failures",
+          on: "tool_call",
+          match: { ok: false, toolId: "shell_exec" },
+          condition: { count: 2, window: "1m" },
+          actions: [{ type: "skip_tool", toolId: "shell_exec" }],
+        },
+      ],
+    });
+    if (!compiled.ok) throw new Error(compiled.error.message);
+
+    const mw = createEventRulesMiddleware({ ruleset: compiled.value });
+    const ctx = {
+      session: { sessionId: makeSessionId("er-golden"), agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core").TurnContext;
+
+    const failing: import("@koi/core").ToolHandler = async () => ({
+      output: "boom",
+      metadata: { error: true },
+    });
+    const ok: import("@koi/core").ToolHandler = async () => ({ output: "ok" });
+
+    await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: {} }, failing);
+    await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: {} }, failing);
+    const blocked = await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: {} }, ok);
+    expect(blocked?.metadata?.blocked).toBe(true);
+  });
+
+  test("log action fires through injected logger on matching tool failure", async () => {
+    const compiled = validateEventRulesConfig({
+      rules: [
+        {
+          name: "log-failures",
+          on: "tool_call",
+          match: { ok: false },
+          actions: [{ type: "log", level: "warn", message: "tool {{toolId}} failed" }],
+        },
+      ],
+    });
+    if (!compiled.ok) throw new Error(compiled.error.message);
+
+    const warnings: string[] = [];
+    const mw = createEventRulesMiddleware({
+      ruleset: compiled.value,
+      actionContext: {
+        logger: {
+          info: () => {},
+          warn: (m: string) => warnings.push(m),
+          error: () => {},
+          debug: () => {},
+        },
+      },
+    });
+    const ctx = {
+      session: { sessionId: makeSessionId("er-golden-2"), agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core").TurnContext;
+    const failing: import("@koi/core").ToolHandler = async () => ({
+      output: "x",
+      metadata: { error: true },
+    });
+
+    await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: {} }, failing);
+    expect(warnings).toEqual(["tool shell_exec failed"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/governance-scope (2 queries)
+// ---------------------------------------------------------------------------
 
 describe("Golden: @koi/governance-scope", () => {
   test("createScopedCredentials fails closed — out-of-scope key returns undefined, in-scope key resolves", async () => {
