@@ -209,14 +209,15 @@ export function createPermissionRespondWithParserReset(
  * and to call stop() multiple times.
  */
 export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, TuiStartError> {
-  // Wave 5 measurement (#1586): wire profiler if KOI_TUI_PROFILE=1.
-  // No-op when the env flag is unset, so production paths are untouched.
-  initProfiling();
-
   // Decision 8A: TTY check is an expected failure — return Result, not throw
   if (!process.stdout.isTTY) {
     return { ok: false, error: { kind: "no_tty" } };
   }
+
+  // Wave 5 measurement (#1586): wire profiler if KOI_TUI_PROFILE=1.
+  // Must run AFTER the no-TTY guard — initProfiling() starts a repeating
+  // interval that would otherwise keep a non-TTY process alive indefinitely.
+  initProfiling();
 
   const {
     store,

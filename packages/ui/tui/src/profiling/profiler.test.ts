@@ -4,6 +4,7 @@ import {
   dumpProfile,
   isProfilingEnabled,
   recordHistogram,
+  recordSample,
   resetProfiler,
 } from "./profiler.js";
 
@@ -35,6 +36,13 @@ describe("profiler", () => {
       recordHistogram("h", 100);
       const report = dumpProfile();
       expect(report.histograms).toEqual({});
+    });
+
+    test("recordSample is a no-op", () => {
+      resetProfiler({ enabled: false });
+      recordSample("s", 100);
+      const report = dumpProfile();
+      expect(report.samples).toEqual({});
     });
   });
 
@@ -102,6 +110,43 @@ describe("profiler", () => {
       const r2 = dumpProfile();
       expect(r1.counters.x).toBe(1);
       expect(r2.counters.x).toBe(1);
+    });
+
+    test("recordSample stores [t, value] pairs with explicit timestamp", () => {
+      recordSample("cpu.userUs", 1234, 100);
+      recordSample("cpu.userUs", 5678, 200);
+      const report = dumpProfile();
+      expect(report.samples["cpu.userUs"]).toEqual([
+        [100, 1234],
+        [200, 5678],
+      ]);
+    });
+
+    test("recordSample defaults timestamp to performance.now()", () => {
+      const before = performance.now();
+      recordSample("cpu.userUs", 42);
+      const after = performance.now();
+      const samples = dumpProfile().samples["cpu.userUs"];
+      expect(samples).toBeDefined();
+      if (!samples || samples.length === 0) return;
+      const first = samples[0];
+      expect(first).toBeDefined();
+      if (!first) return;
+      expect(first[0]).toBeGreaterThanOrEqual(before);
+      expect(first[0]).toBeLessThanOrEqual(after);
+      expect(first[1]).toBe(42);
+    });
+
+    test("dumpProfile returns a copy of samples — not the live array", () => {
+      recordSample("x", 1, 1);
+      const r1 = dumpProfile();
+      recordSample("x", 2, 2);
+      const r2 = dumpProfile();
+      expect(r1.samples.x).toEqual([[1, 1]]);
+      expect(r2.samples.x).toEqual([
+        [1, 1],
+        [2, 2],
+      ]);
     });
   });
 

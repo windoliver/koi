@@ -86,10 +86,16 @@ describe("cpu-sampler", () => {
     tick();
     tick();
     const report = dumpProfile();
-    expect(report.histograms["cpu.userUs"]).toBeDefined();
-    expect(report.histograms["cpu.systemUs"]).toBeDefined();
-    expect(report.histograms["cpu.wallMs"]).toBeDefined();
-    expect(report.histograms["cpu.utilizationPct"]).toBeDefined();
-    expect(report.histograms["cpu.userUs"]?.count).toBe(2);
+    expect(report.samples["cpu.userUs"]).toBeDefined();
+    expect(report.samples["cpu.systemUs"]).toBeDefined();
+    expect(report.samples["cpu.wallMs"]).toBeDefined();
+    expect(report.samples["cpu.utilizationPct"]).toBeDefined();
+    expect(report.samples["cpu.userUs"]?.length).toBe(2);
+    // All four series share the same timestamp at each tick so consumers can
+    // window any one and read the others at the same point.
+    const tA = report.samples["cpu.userUs"]?.[0]?.[0];
+    const tB = report.samples["cpu.systemUs"]?.[0]?.[0];
+    expect(tA).toBeDefined();
+    expect(tA).toBe(tB ?? -1);
   });
 });

@@ -1,18 +1,22 @@
 /**
  * CPU sampler — periodic process.cpuUsage deltas while profiling is enabled.
  *
- * Records four histograms sampled at `intervalMs` cadence (default 1s):
+ * Records four time-stamped sample series at `intervalMs` cadence (default 1s):
  *   - cpu.userUs        — user-space CPU microseconds per interval
  *   - cpu.systemUs      — kernel-space CPU microseconds per interval
  *   - cpu.wallMs        — wall-clock ms per interval (for context)
  *   - cpu.utilizationPct — (user+system) / wall, as percent (single core)
+ *
+ * Stored as `recordSample` (not `recordHistogram`) so consumers can compute
+ * statistics over a specific scenario window — long idle tails would
+ * otherwise dilute the global percentiles the protocol doc relies on.
  *
  * Drives the end-to-end Wave 5 (#1586) measurements: questions about render
  * cost / parse cost can't be answered from inside `@koi/ui-tui` (they live
  * inside OpenTUI). End-to-end CPU during scripted scenarios catches them.
  */
 
-import { isProfilingEnabled, recordHistogram } from "./profiler.js";
+import { isProfilingEnabled, recordSample } from "./profiler.js";
 
 type IntervalHandle = ReturnType<typeof setInterval>;
 
@@ -44,11 +48,13 @@ export function startCpuSampler(options?: CpuSamplerOptions): void {
     const delta = process.cpuUsage(lastCpu);
     const now = performance.now();
     const wallMs = now - lastT;
-    recordHistogram("cpu.userUs", delta.user);
-    recordHistogram("cpu.systemUs", delta.system);
-    recordHistogram("cpu.wallMs", wallMs);
+    // All four series share the same `now` timestamp so consumers can window
+    // on any one and read the others at the same point.
+    recordSample("cpu.userUs", delta.user, now);
+    recordSample("cpu.systemUs", delta.system, now);
+    recordSample("cpu.wallMs", wallMs, now);
     if (wallMs > 0) {
-      recordHistogram("cpu.utilizationPct", ((delta.user + delta.system) / 1000 / wallMs) * 100);
+      recordSample("cpu.utilizationPct", ((delta.user + delta.system) / 1000 / wallMs) * 100, now);
     }
     lastCpu = process.cpuUsage();
     lastT = now;

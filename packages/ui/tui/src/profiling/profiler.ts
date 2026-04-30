@@ -23,9 +23,19 @@ export interface HistogramSummary {
   readonly p99: number;
 }
 
+/** Timestamped (t, value) pair. `t` is `performance.now()` ms at record time. */
+export type Sample = readonly [t: number, value: number];
+
 export interface ProfileReport {
   readonly counters: Readonly<Record<string, number>>;
   readonly histograms: Readonly<Record<string, HistogramSummary>>;
+  /**
+   * Time-stamped samples — for metrics where post-hoc windowing matters
+   * (e.g. CPU during a specific scrolling window). Histograms aggregate the
+   * whole run; samples preserve enough resolution to compute statistics for
+   * an arbitrary phase boundary.
+   */
+  readonly samples: Readonly<Record<string, ReadonlyArray<Sample>>>;
 }
 
 export interface ResetOptions {
@@ -33,10 +43,18 @@ export interface ResetOptions {
   readonly enabled?: boolean;
 }
 
+/**
+ * Cap on the number of timestamped samples retained per metric name. Prevents
+ * unbounded growth on long sessions: at 1Hz CPU sampling, this caps memory at
+ * ~13.9 hours of data per CPU metric — well past any realistic scenario.
+ */
+const SAMPLE_CAP_PER_METRIC = 50_000;
+
 interface ProfilerState {
   enabled: boolean;
   readonly counters: Map<string, number>;
   readonly histograms: Map<string, number[]>;
+  readonly samples: Map<string, Sample[]>;
 }
 
 function defaultEnabledFromEnv(): boolean {
@@ -44,7 +62,7 @@ function defaultEnabledFromEnv(): boolean {
 }
 
 function createState(enabled: boolean): ProfilerState {
-  return { enabled, counters: new Map(), histograms: new Map() };
+  return { enabled, counters: new Map(), histograms: new Map(), samples: new Map() };
 }
 
 // `let` justified: replaced wholesale by resetProfiler().
@@ -66,6 +84,28 @@ export function recordHistogram(name: string, value: number): void {
     existing.push(value);
   } else {
     state.histograms.set(name, [value]);
+  }
+}
+
+/**
+ * Record a timestamped sample for `name`. Use for metrics where the consumer
+ * needs to compute statistics over a specific time window (e.g. CPU during a
+ * scroll-only window) — `recordHistogram` aggregates over the whole run and
+ * cannot answer windowed questions.
+ *
+ * Capped at SAMPLE_CAP_PER_METRIC entries per metric; further samples are
+ * dropped silently. The cap is large enough that realistic measurement
+ * sessions never hit it.
+ */
+export function recordSample(name: string, value: number, t?: number): void {
+  if (!state.enabled) return;
+  const ts = t ?? performance.now();
+  const existing = state.samples.get(name);
+  if (existing) {
+    if (existing.length >= SAMPLE_CAP_PER_METRIC) return;
+    existing.push([ts, value]);
+  } else {
+    state.samples.set(name, [[ts, value]]);
   }
 }
 
@@ -100,7 +140,10 @@ export function dumpProfile(): ProfileReport {
   for (const [k, v] of state.counters) counters[k] = v;
   const histograms: Record<string, HistogramSummary> = {};
   for (const [k, v] of state.histograms) histograms[k] = summarizeHistogram(v);
-  return { counters, histograms };
+  const samples: Record<string, ReadonlyArray<Sample>> = {};
+  // Copy each samples array — callers may otherwise observe later mutations.
+  for (const [k, v] of state.samples) samples[k] = v.slice();
+  return { counters, histograms, samples };
 }
 
 export function resetProfiler(opts?: ResetOptions): void {

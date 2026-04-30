@@ -29,7 +29,16 @@ On normal exit, the harness writes `./profile.json` (or whatever you set
 | `batcher.flush.batchSize` | `batcher/event-batcher.ts` | How many events per flush? Is 16ms over- or under-coalescing? |
 | `batcher.flush.gapMs` | `batcher/event-batcher.ts` | Actual interval between flushes |
 | `batcher.flush.onFlushMs` | `batcher/event-batcher.ts` | How long does the store dispatch take per flush? |
-| `cpu.userUs` / `cpu.systemUs` / `cpu.utilizationPct` | `profiling/cpu-sampler.ts` | End-to-end CPU during scenarios — picks up costs we can't see from inside `@koi/ui-tui` (e.g. `<scrollbox>` redraws, `<markdown>` parses) |
+| `cpu.userUs` / `cpu.systemUs` / `cpu.utilizationPct` (timestamped samples) | `profiling/cpu-sampler.ts` | End-to-end CPU during scenarios — picks up costs we can't see from inside `@koi/ui-tui` (e.g. `<scrollbox>` redraws, `<markdown>` parses) |
+
+### Histograms vs timestamped samples
+
+The report has two storage shapes:
+
+- `histograms` — global aggregates over the whole run. Used for **flush-bound** metrics (the batcher only emits while events are flowing, so the histogram already approximates "during streaming" without windowing).
+- `samples` — `[timestampMs, value]` pairs, used for **time-driven** metrics (the CPU sampler ticks during idle too). Long idle tails would dilute global percentiles, so the protocol thresholds below operate on a windowed slice of `samples`.
+
+Each scenario tells you which window to slice on. Use `performance.now()` (or wall-clock relative to the report timestamp) to mark scenario start/end before sending input.
 
 ### What is **not** measured (and why)
 
@@ -66,9 +75,9 @@ content (e.g. a recorded session loaded with `koi resume`).
 **Read**:
 - `counters.messagerow.mount` ≈ message count → no virtualization at Solid layer (rows stay mounted)
 - `counters.messagerow.cleanup` >> 0 during scroll → Solid `<For>` is virtualizing
-- `histograms["cpu.utilizationPct"].p95` during the scroll-only window — if low, OpenTUI is already efficient; if high, the scrollbox is redrawing all rows
+- p95 of `samples["cpu.utilizationPct"]` **filtered to the scroll window** — if low, OpenTUI is already efficient; if high, the scrollbox is redrawing all rows. Filter samples to only those whose `t` falls between scroll-start and scroll-end (mark these timestamps before/after sending PageUp/PageDown).
 
-**Verdict thresholds**:
+**Verdict thresholds** (windowed p95):
 - p95 CPU < 15% during pure scroll → **don't virtualize** (mutable store is enough).
 - p95 CPU > 40% → consider virtualization in `message-list.tsx`.
 - 15–40% → inconclusive; instrument OpenTUI scrollbox before deciding.
@@ -84,15 +93,15 @@ content (e.g. a recorded session loaded with `koi resume`).
 4. Quit.
 
 **Read**:
-- `histograms["batcher.flush.batchSize"]` p50, p95, max
+- `histograms["batcher.flush.batchSize"]` p50, p95, max (no windowing — flushes only fire during streaming)
 - `histograms["batcher.flush.gapMs"]` p50, p95
 - `histograms["batcher.flush.onFlushMs"]` p50, p95
-- `histograms["cpu.utilizationPct"]` during streaming window
+- `samples["cpu.utilizationPct"]` filtered to the streaming window (mark start/end timestamps)
 
 **Verdict thresholds**:
 - `batcher.flush.batchSize.p50` >> 1 (e.g. ≥ 5 events per flush) → 16ms is over-coalescing; **try 8ms**.
 - `batcher.flush.batchSize.p50` ≈ 1 and `onFlushMs.p95` < 1ms → flushes are cheap; **don't change** the interval.
-- `cpu.utilizationPct.p95` > 50% during streaming → batcher is not the bottleneck regardless; investigate elsewhere first.
+- Windowed `cpu.utilizationPct` p95 > 50% during streaming → batcher is not the bottleneck regardless; investigate elsewhere first.
 
 ### S3 — Code-block scroll (CPU only)
 
@@ -103,10 +112,10 @@ content (e.g. a recorded session loaded with `koi resume`).
 3. Quit.
 
 **Read**:
-- `histograms["cpu.utilizationPct"]` during the scroll window only
-  (compare to baseline idle — sample CPU before scrolling starts as control)
+- `samples["cpu.utilizationPct"]` filtered to the scroll window
+  (compare to a separate baseline-idle window — sit idle for 5+ seconds before scrolling starts and use that as the control window)
 
-**Verdict thresholds**:
+**Verdict thresholds** (windowed):
 - p95 CPU during code-block scroll close to baseline idle → **no LRU needed**.
 - p95 CPU >> baseline (3×+) → likely re-parsing on scroll; **consider LRU cache**.
 
@@ -116,13 +125,15 @@ content (e.g. a recorded session loaded with `koi resume`).
 {
   "counters": { "messagerow.mount": 543, "messagerow.cleanup": 41 },
   "histograms": {
-    "batcher.flush.batchSize": { "count": 312, "min": 1, "max": 47, "mean": 4.2, "p50": 3, "p95": 12, "p99": 31 },
-    "cpu.utilizationPct":      { "count":  18, "min": 0.5, "max": 22.4, "mean": 5.1, "p50": 3.8, "p95": 18.2, "p99": 22.4 }
+    "batcher.flush.batchSize": { "count": 312, "min": 1, "max": 47, "mean": 4.2, "p50": 3, "p95": 12, "p99": 31 }
+  },
+  "samples": {
+    "cpu.utilizationPct": [[1234.5, 3.8], [2234.6, 18.2], [3234.7, 12.1]]
   }
 }
 ```
 
-Percentiles use nearest-rank.
+Each sample is `[timestampMs, value]` where `timestampMs` is `performance.now()` at record time. To compute a windowed p95, filter the array on `t` and sort by `value`. Percentiles in `histograms` use nearest-rank.
 
 ## Results
 

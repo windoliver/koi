@@ -112,6 +112,28 @@ describe("createTuiApp — no-TTY", () => {
     createTuiApp(await makeConfig({ renderer }));
     expect(destroySpy).not.toHaveBeenCalled();
   });
+
+  test("does not start the profiling sampler on no-TTY (#1586)", async () => {
+    // Regression: initProfiling() once ran before the TTY guard. If
+    // KOI_TUI_PROFILE=1 was set, the sampler interval would keep a
+    // non-TTY process alive indefinitely.
+    Object.defineProperty(process.stdout, "isTTY", {
+      configurable: true,
+      get: () => false,
+    });
+    const prevEnv = process.env.KOI_TUI_PROFILE;
+    process.env.KOI_TUI_PROFILE = "1";
+    try {
+      const setIntervalSpy = spyOn(globalThis, "setInterval");
+      const callsBefore = setIntervalSpy.mock.calls.length;
+      createTuiApp(await makeConfig());
+      expect(setIntervalSpy.mock.calls.length).toBe(callsBefore);
+      setIntervalSpy.mockRestore();
+    } finally {
+      if (prevEnv === undefined) delete process.env.KOI_TUI_PROFILE;
+      else process.env.KOI_TUI_PROFILE = prevEnv;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
