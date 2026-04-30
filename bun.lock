@@ -1494,6 +1494,15 @@
         "@koi/redaction": "workspace:*",
       },
     },
+    "packages/security/middleware-intent-capsule": {
+      "name": "@koi/middleware-intent-capsule",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
     "packages/security/middleware-permissions": {
       "name": "@koi/middleware-permissions",
       "version": "0.0.0",
@@ -2110,6 +2119,8 @@
     "@koi/middleware-extraction": ["@koi/middleware-extraction@workspace:packages/mm/middleware-extraction"],
 
     "@koi/middleware-feedback-loop": ["@koi/middleware-feedback-loop@workspace:packages/lib/middleware-feedback-loop"],
+
+    "@koi/middleware-intent-capsule": ["@koi/middleware-intent-capsule@workspace:packages/security/middleware-intent-capsule"],
 
     "@koi/middleware-memory-recall": ["@koi/middleware-memory-recall@workspace:packages/mm/middleware-memory-recall"],
 
