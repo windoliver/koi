@@ -27,10 +27,16 @@ captured. A final synchronous tick is emitted at `stop()` so the trailing
 partial interval is included.
 
 **Limitations:**
-- Profiling state is process-global. Running two profiled `createTuiApp`
-  instances concurrently in the same process is rejected with a stderr
-  warning ("already being profiled") rather than silently mixing reports.
-  Profile sequentially or in separate processes.
+- **Single profiled TUI per process.** Profiling state is process-global.
+  A second profiled `createTuiApp` while one is active throws
+  `ProfilingConflictError`. Profile sequentially or in separate processes.
+- **Concurrent unprofiled TUIs contaminate the active report.** An
+  unprofiled `createTuiApp` started alongside an active profiled run is
+  permitted (so unrelated startups are not blocked), but its
+  `MessageRow` / batcher activity flows into the active run's counters
+  and histograms — the probes are wired at module scope, not per
+  instance. If you need a clean measurement, run a single TUI in the
+  process while profiling.
 - Per-metric storage is capped at 50,000 values. Exceeded only on multi-hour
   runs at saturated rates; further values are dropped silently.
 
