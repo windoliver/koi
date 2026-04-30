@@ -57,11 +57,28 @@ const NON_RETRYABLE_CODES: ReadonlySet<KoiErrorCode> = new Set([
 ]);
 
 /**
- * Determines whether an error should be retried based on its code.
+ * Determines whether an error should be retried.
+ *
+ * Asymmetric trust model:
+ *   - Hard non-retryable codes (VALIDATION, NOT_FOUND, PERMISSION,
+ *     INTERNAL) are NEVER retried, even if a producer mis-sets
+ *     `retryable: true`. This protects generic callers (e.g. withRetry,
+ *     middleware-feedback-loop) from replaying permanent failures or
+ *     authorization denials due to bad error translation.
+ *   - Explicit `retryable: false` IS honored: producers can downgrade a
+ *     normally-retryable code (e.g. TIMEOUT with delivery-unknown
+ *     semantics) so callers cannot blindly replay an in-flight send.
+ *   - For all other codes, the `retryable` field overrides code defaults
+ *     when present; otherwise the code-based retryable set decides.
+ *
+ * If the field is missing (untyped JS caller, malformed object), fall
+ * back to code-based defaults.
  */
 export function isRetryable(error: KoiError): boolean {
-  if (error.retryable) return true;
+  // Hard floor: non-retryable codes can never be escalated to retry.
   if (NON_RETRYABLE_CODES.has(error.code)) return false;
+  // Explicit producer classification wins for the remaining codes.
+  if (typeof error.retryable === "boolean") return error.retryable;
   return RETRYABLE_CODES.has(error.code);
 }
 

@@ -13,6 +13,36 @@ const mockDnsResolver: DnsResolverFn = async (): Promise<readonly string[]> => [
 /** Base config for tests — mock DNS + HTTPS opt-in (default is false). */
 const HTTPS_DEFAULTS = { dnsResolver: mockDnsResolver, allowHttps: true } as const;
 
+function countAbortListenerLifecycle(signal: AbortSignal): {
+  readonly counts: () => { readonly added: number; readonly removed: number };
+  readonly restore: () => void;
+} {
+  const originalAdd = signal.addEventListener.bind(signal);
+  const originalRemove = signal.removeEventListener.bind(signal);
+  let added = 0;
+  let removed = 0;
+
+  signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => {
+    const [type] = args;
+    if (type === "abort") added++;
+    return originalAdd(...args);
+  }) as typeof signal.addEventListener;
+
+  signal.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => {
+    const [type] = args;
+    if (type === "abort") removed++;
+    return originalRemove(...args);
+  }) as typeof signal.removeEventListener;
+
+  return {
+    counts: () => ({ added, removed }),
+    restore: () => {
+      signal.addEventListener = originalAdd as typeof signal.addEventListener;
+      signal.removeEventListener = originalRemove as typeof signal.removeEventListener;
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // fetch — basic
 // ---------------------------------------------------------------------------
@@ -95,6 +125,22 @@ describe("createWebExecutor.fetch", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("TIMEOUT");
+    }
+  });
+
+  test("removes caller abort listener after fetch settles", async () => {
+    const fetchFn = mock(async () => new Response("ok")) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({ fetchFn, ...HTTPS_DEFAULTS });
+    const controller = new AbortController();
+    const tracker = countAbortListenerLifecycle(controller.signal);
+
+    try {
+      const result = await executor.fetch("https://example.com", { signal: controller.signal });
+
+      expect(result.ok).toBe(true);
+      expect(tracker.counts()).toEqual({ added: 1, removed: 1 });
+    } finally {
+      tracker.restore();
     }
   });
 
@@ -1918,6 +1964,25 @@ describe("createWebExecutor.search", () => {
     if (result.ok) {
       expect(result.value).toHaveLength(1);
       expect(result.value[0]?.title).toBe("Result");
+    }
+  });
+
+  test("removes caller abort listener after search settles", async () => {
+    const searchProvider: SearchProvider = {
+      name: "mock",
+      search: async () => ({ ok: true, value: [] }),
+    };
+    const executor = createWebExecutor({ searchProvider, allowHttps: false });
+    const controller = new AbortController();
+    const tracker = countAbortListenerLifecycle(controller.signal);
+
+    try {
+      const result = await executor.search("test", { signal: controller.signal });
+
+      expect(result.ok).toBe(true);
+      expect(tracker.counts()).toEqual({ added: 1, removed: 1 });
+    } finally {
+      tracker.restore();
     }
   });
 

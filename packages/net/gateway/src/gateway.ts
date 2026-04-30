@@ -10,6 +10,7 @@
 import type { KoiError, Result } from "@koi/core";
 import { notFound } from "@koi/core";
 import { swallowError } from "@koi/errors";
+import type { Gateway as GatewayContract } from "@koi/gateway-types";
 import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
 import { handleHandshake } from "./auth.js";
 import { createBackpressureMonitor } from "./backpressure.js";
@@ -57,7 +58,20 @@ export interface Gateway {
   readonly dispatch: (session: Session, frame: GatewayFrame) => void;
   readonly destroySession: (sessionId: string, reason?: string) => Promise<Result<void, KoiError>>;
   readonly onSessionEvent: (handler: (event: SessionEvent) => void) => () => void;
+  // Ingestion contract methods (additive; satisfies @koi/gateway-types Gateway).
+  // `ingest` reuses the in-process dispatch path so HTTP ingestion shares the same
+  // subscriber fan-out as WS frames. `pauseIngress` silences external WS-frame ingress
+  // only — internal `ingest()` callers continue (graceful-shutdown design intent).
+  readonly ingest: (session: Session, frame: GatewayFrame) => void;
+  readonly pauseIngress: () => void;
+  readonly forceClose: () => void;
+  readonly activeConnections: () => number;
 }
+
+// Compile-time check: the local `Gateway` interface satisfies the L0u contract.
+// Zero runtime cost; exported under a private name so it's not flagged as unused.
+// If a future change breaks structural compatibility this errors at typecheck.
+export type _GatewayContractCompat = Gateway extends GatewayContract ? true : never;
 
 // ---------------------------------------------------------------------------
 // Deps
@@ -130,6 +144,10 @@ export function createGateway(
   const connSessionCache = new Map<string, Session>();
   // Set to true by stop() so pending handshake continuations bail out before store.set().
   let stopped = false;
+  // Set to true by pauseIngress() so external WS-frame ingestion is silenced during
+  // graceful shutdown. Internal ingest() callers (HTTP path) are NOT gated by this —
+  // they continue draining so in-flight in-process work can complete.
+  let paused = false;
 
   // Frame handlers keyed by agentId. Delivery is scoped: emitFrames only fans out to
   // handlers whose agentId matches the session's agentId, preventing cross-tenant/agent
@@ -844,6 +862,9 @@ export function createGateway(
     },
 
     onMessage(conn: TransportConnection, data: string): void {
+      // Drop external WS frames once pauseIngress() has been called. Internal ingest()
+      // callers are unaffected — they bypass the transport handler entirely.
+      if (paused) return;
       // Serialize per-connection: chain onto the tail of this connection's queue so
       // each frame completes parse → accept → persist → emit before the next begins,
       // preventing remoteSeq regression from interleaved async store.set() completions.
@@ -1289,6 +1310,40 @@ export function createGateway(
 
     dispatch(session: Session, frame: GatewayFrame): void {
       emitFrames(session, [frame]);
+    },
+
+    // Gateway contract (@koi/gateway-types) — implemented additively. `ingest`
+    // shares the in-process dispatch path so HTTP-ingestion frames fan out via
+    // the same subscriber set as WS frames.
+    ingest(session: Session, frame: GatewayFrame): void {
+      emitFrames(session, [frame]);
+    },
+
+    pauseIngress(): void {
+      paused = true;
+      // Initiate a graceful close on every connected transport so the
+      // shutdown controller's waitFor(activeConnections) can actually drain.
+      // Without this, paused only stops NEW ingress; live sockets remain in
+      // connMap until the grace budget expires and forceClose() fires.
+      // Using GOING_AWAY (1001) signals an orderly server-initiated shutdown
+      // so well-behaved clients reconnect to a healthy replacement.
+      for (const conn of connMap.values()) {
+        conn.close(CLOSE_CODES.SERVER_SHUTTING_DOWN, "ingress paused");
+      }
+    },
+
+    forceClose(): void {
+      // Close all transport-attached sessions immediately. cleanupConn is intentionally
+      // not invoked here — the transport's onClose callback will fire cleanupConn for
+      // each socket so we keep a single cleanup path. Use SERVER_SHUTTING_DOWN (1001)
+      // to signal an orderly server-initiated termination to the client.
+      for (const conn of connMap.values()) {
+        conn.close(CLOSE_CODES.SERVER_SHUTTING_DOWN, "shutting down");
+      }
+    },
+
+    activeConnections(): number {
+      return connMap.size;
     },
 
     async destroySession(

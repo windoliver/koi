@@ -189,6 +189,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/lib/channel-cli": {
@@ -544,6 +545,14 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-rlm": {
+      "name": "@koi/middleware-rlm",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
     },
     "packages/lib/middleware-semantic-retry": {
@@ -1052,6 +1061,8 @@
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
         "@koi/gateway": "workspace:*",
+        "@koi/gateway-http": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
         "@koi/gateway-webhook": "workspace:*",
         "@koi/governance-approval-tiers": "workspace:*",
         "@koi/governance-core": "workspace:*",
@@ -1091,6 +1102,7 @@
         "@koi/middleware-prompt-cache": "workspace:*",
         "@koi/middleware-reflex": "workspace:*",
         "@koi/middleware-report": "workspace:*",
+        "@koi/middleware-rlm": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-strict-agentic": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
@@ -1264,6 +1276,16 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
+      },
+    },
+    "packages/net/gateway-http": {
+      "name": "@koi/gateway-http",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
       },
     },
     "packages/net/gateway-webhook": {
@@ -1953,6 +1975,8 @@
 
     "@koi/gateway": ["@koi/gateway@workspace:packages/net/gateway"],
 
+    "@koi/gateway-http": ["@koi/gateway-http@workspace:packages/net/gateway-http"],
+
     "@koi/gateway-types": ["@koi/gateway-types@workspace:packages/lib/gateway-types"],
 
     "@koi/gateway-webhook": ["@koi/gateway-webhook@workspace:packages/net/gateway-webhook"],
@@ -2036,6 +2060,8 @@
     "@koi/middleware-reflex": ["@koi/middleware-reflex@workspace:packages/lib/middleware-reflex"],
 
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
+
+    "@koi/middleware-rlm": ["@koi/middleware-rlm@workspace:packages/lib/middleware-rlm"],
 
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/lib/middleware-semantic-retry"],
 

@@ -14,6 +14,7 @@ import {
   isTestFile,
   L0_RUNTIME_ALLOWLIST,
   scanFilesForViolations,
+  scanMiddlewareForSessionLeaks,
 } from "./check-layers.js";
 
 // ---------------------------------------------------------------------------
@@ -390,7 +391,7 @@ describe("L0_RUNTIME_ALLOWLIST", () => {
   test("does not contain type-only files", () => {
     expect(L0_RUNTIME_ALLOWLIST.has("middleware.ts")).toBe(false);
     expect(L0_RUNTIME_ALLOWLIST.has("channel.ts")).toBe(false);
-    expect(L0_RUNTIME_ALLOWLIST.has("message.ts")).toBe(false);
+    expect(L0_RUNTIME_ALLOWLIST.has("model-adapter.ts")).toBe(false);
   });
 });
 
@@ -438,5 +439,74 @@ describe("hasSessionMapWithoutCleanup", () => {
     // This is a false positive for non-middleware — but the scanner only runs
     // on middleware packages, so the predicate itself is correct
     expect(hasSessionMapWithoutCleanup(source)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scanMiddlewareForSessionLeaks — package-level session cleanup lint
+// ---------------------------------------------------------------------------
+
+describe("scanMiddlewareForSessionLeaks", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "koi-layer-session-lint-"));
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function writeMiddlewarePackage(
+    name: string,
+    files: Readonly<Record<string, string>>,
+  ): Promise<void> {
+    const packageDir = join(tmpDir, "lib", name);
+    await mkdir(join(packageDir, "src"), { recursive: true });
+    await writeFile(
+      join(packageDir, "package.json"),
+      JSON.stringify({ name: `@koi/${name}`, version: "0.0.0" }),
+    );
+    await Promise.all(
+      Object.entries(files).map(([fileName, source]) =>
+        writeFile(join(packageDir, "src", fileName), source),
+      ),
+    );
+  }
+
+  test("does not warn for helper Maps when the middleware package has onSessionEnd cleanup", async () => {
+    await writeMiddlewarePackage("middleware-cleaned", {
+      "state.ts":
+        "const cache = new Map<string, number>();\nexport const read = (k: string) => cache.get(k);",
+      "middleware.ts": [
+        "const sessions = new Map<string, unknown>();",
+        "export const middleware = {",
+        "  async onSessionEnd(ctx: { sessionId: string }) {",
+        "    sessions.delete(ctx.sessionId);",
+        "  }",
+        "};",
+      ].join("\n"),
+    });
+
+    await expect(scanMiddlewareForSessionLeaks(`${tmpDir}/`)).resolves.toEqual([]);
+  });
+
+  test("warns when a middleware package has a session Map but no onSessionEnd hook", async () => {
+    await writeMiddlewarePackage("middleware-leaky", {
+      "middleware.ts": [
+        "const sessions = new Map<string, unknown>();",
+        "export const middleware = {",
+        "  async wrapModelCall(ctx: { session: { sessionId: string } }, req: unknown, next: (r: unknown) => unknown) {",
+        "    sessions.set(ctx.session.sessionId, {});",
+        "    return next(req);",
+        "  }",
+        "};",
+      ].join("\n"),
+    });
+
+    const warnings = await scanMiddlewareForSessionLeaks(`${tmpDir}/`);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.pkg).toBe("@koi/middleware-leaky");
   });
 });

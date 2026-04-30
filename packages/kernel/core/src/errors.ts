@@ -83,7 +83,31 @@ export type KoiErrorCode =
    * retryable: false — timeout implies the caller tore the worker down; auto-restart
    * policy is deferred to a future issue.
    */
-  | "HEARTBEAT_TIMEOUT";
+  | "HEARTBEAT_TIMEOUT"
+  /**
+   * A request body could not be parsed (malformed JSON, non-object payload,
+   * unsupported content-type without a channel-specific parser). Emitted by
+   * gateway/HTTP body parsers at the system boundary.
+   *
+   * retryable: false — caller must fix the payload before retrying.
+   */
+  | "INVALID_BODY"
+  /**
+   * A configuration value is malformed or violates an invariant (e.g., negative
+   * timeout, missing required field, conflicting options). Emitted by config
+   * validators at process startup or registration time.
+   *
+   * retryable: false — caller must fix the configuration before retrying.
+   */
+  | "INVALID_CONFIG"
+  /**
+   * An attempt was made to start a singleton resource (server, worker, daemon)
+   * that is already running, typically detected via a lock file or process
+   * registry. Emitted by lifecycle managers guarding against double-start.
+   *
+   * retryable: false — caller must stop the existing instance first.
+   */
+  | "ALREADY_RUNNING";
 
 export interface KoiError {
   readonly code: KoiErrorCode;
@@ -115,6 +139,9 @@ export const RETRYABLE_DEFAULTS: Readonly<Record<KoiErrorCode, boolean>> = Objec
   RESOURCE_EXHAUSTED: true, // retryable — retry once capacity is freed
   UNAVAILABLE: false, // not retryable — caller must fix config or wait for service recovery
   HEARTBEAT_TIMEOUT: false, // retryable=false: timeout implies caller tore the worker down; auto-restart policy is deferred to a future issue
+  INVALID_BODY: false, // not retryable — caller must fix the payload
+  INVALID_CONFIG: false, // not retryable — caller must fix configuration
+  ALREADY_RUNNING: false, // not retryable — caller must stop existing instance first
 });
 
 export type Result<T, E = KoiError> =
