@@ -28,6 +28,7 @@ import { type PipelineDeps, runPipeline } from "./pipeline.js";
 import { createRateLimitStore } from "./rate-limit.js";
 import { matchRoute } from "./routing.js";
 import { createShutdownController } from "./shutdown.js";
+import { resolveSourceId } from "./source-id.js";
 import type {
   ChannelRegistration,
   GatewayHttpConfig,
@@ -36,7 +37,9 @@ import type {
 } from "./types.js";
 import { createWsGate, type WsGate } from "./ws-gate.js";
 
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost", "0.0.0.0"]);
+// 0.0.0.0 binds all interfaces and is externally reachable — it must not be
+// classified as loopback or the non-loopback proxy-trust guard would be bypassed.
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
 interface ParsedBind {
   readonly host: string;
@@ -272,7 +275,8 @@ async function handleFetch(
   srv: BunServerLike,
   state: RuntimeState,
 ): Promise<Response | undefined> {
-  const sourceAddr = srv.requestIP(req)?.address ?? "unknown";
+  const socketAddr = srv.requestIP(req)?.address ?? "unknown";
+  const sourceAddr = resolveSourceId(req, socketAddr, state.cfg.proxyTrust);
   const url = new URL(req.url);
   const route = matchRoute(req.method, url.pathname);
 

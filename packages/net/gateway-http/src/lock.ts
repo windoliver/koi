@@ -66,9 +66,13 @@ function isPidAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (err: unknown) {
-    // ESRCH (no such process) or EPERM (exists but inaccessible) — treat as
-    // not-alive-by-us; either way the lock is reclaimable.
-    void err;
+    // EPERM means the process EXISTS but the caller lacks permission to signal it
+    // (e.g., owned by another user). Treating EPERM as "alive" prevents stealing
+    // a lock from a live gateway running under a different uid. Only ESRCH (no
+    // such process) — or any other definite-nonexistence error — releases the
+    // lock for reclaim.
+    const code = (err as { readonly code?: string } | null)?.code;
+    if (code === "EPERM") return true;
     return false;
   }
 }
