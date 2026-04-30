@@ -722,6 +722,9 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // Persist manifest provenance so future resumes can enforce audit intent
   // against the original session's manifest, not the cwd at resume time.
   if (flags.resume === undefined && resolvedManifestPath !== undefined) {
+    // koi start does not wire ACE, so a sidecar-write failure here cannot
+    // silently downgrade an ACE-enabled session — the fresh-load rejection
+    // already barred that. Best-effort persistence is appropriate.
     await writeSessionMeta(SESSIONS_DIR, String(sid), { manifestPath: resolvedManifestPath });
   }
 

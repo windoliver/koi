@@ -767,14 +767,15 @@ export async function writeSessionMeta(
   sessionsDir: string,
   sid: string,
   meta: { readonly manifestPath?: string },
-): Promise<void> {
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: string }> {
   try {
     const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
     const { mkdir } = await import("node:fs/promises");
     await mkdir(sessionsDir, { recursive: true });
     await Bun.write(path, JSON.stringify({ version: SESSION_META_VERSION, ...meta }));
-  } catch {
-    // Non-fatal: filesystem may reject (read-only mount, permission denied).
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

@@ -1446,10 +1446,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
 
   // Persist manifest provenance so future resumes can enforce audit intent
   // against the original session's manifest, not the cwd at resume time.
+  // When ACE is activated, the sidecar is the only signal a future
+  // koi start --resume has to refuse the unsupported host transition;
+  // missing it would silently downgrade. Fail closed in that case.
   if (flags.resume === undefined && resolvedManifestPath !== undefined) {
-    await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), {
+    const writeResult = await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), {
       manifestPath: resolvedManifestPath,
     });
+    if (!writeResult.ok && resolvedAceConfig !== undefined) {
+      process.stderr.write(
+        `koi tui: ace: refusing to start because session provenance sidecar could not be written: ${writeResult.error}. ACE-enabled sessions require a recoverable sidecar so future resumes can enforce host-safety constraints. Fix the filesystem (writable sessions directory) and retry, or remove ace.enabled: true from the manifest.\n`,
+      );
+      process.exit(1);
+    }
   }
 
   // Resume-path audit intent enforcement using stored session provenance.
@@ -1550,26 +1559,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }
         }
       }
-      // Issue #2088 — restore ACE activation from the stored manifest so a
-      // resumed session continues with the same prompting and learning
-      // behavior as when it was created. Mirrors the network/credential
-      // re-derivation above. Only applied when the operator did not pass
-      // --manifest (an explicit override wins) and the stored manifest
-      // parsed cleanly. The resolveAceActivation call uses the same
-      // double-opt-in check as the fresh-load path.
+      // Issue #2088 — block resume of ACE-enabled sessions until the
+      // sqlite-backed playbook store (#2087) lands. ACE state lives only
+      // in the original process's PlaybookStore, so re-activating ACE on
+      // resume would start with an empty store while the transcript
+      // implies continuity — silent behavioral drift the operator can't
+      // diagnose. Fail closed instead, matching the audit/network resume
+      // pattern that refuses ambiguous host transitions. Only applies
+      // when the operator did not pass --manifest (an explicit override
+      // is treated as the operator accepting the empty-store outcome).
       if (
         resumeAuditResult.ok &&
         flags.manifest === undefined &&
-        resolvedAceConfig === undefined
+        resumeAuditResult.value.ace?.enabled === true
       ) {
-        const aceResume = resolveAceActivation(resumeAuditResult.value.ace);
-        if (aceResume.kind === "activate") {
-          resolvedAceConfig = aceResume.config;
-          process.stderr.write(
-            `koi tui: ace: restored from resumed session manifest (${resumeMeta.manifestPath}).\n`,
-          );
-          process.stderr.write(aceResume.message);
-        }
+        process.stderr.write(
+          "koi tui: original session manifest.ace.enabled: true cannot be resumed — " +
+            "in-memory playbooks from the prior session are unrecoverable, and re-activating " +
+            "ACE with an empty store would silently drift from the original prompting and " +
+            "learning behavior. Wait for sqlite-backed playbook persistence (#2087), or " +
+            "pass --manifest to acknowledge starting ACE with a fresh store.\n",
+        );
+        process.exit(1);
       }
     }
   }
