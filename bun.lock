@@ -1412,6 +1412,14 @@
         "@koi/scheduler": "workspace:*",
       },
     },
+    "packages/sched/verified-loop": {
+      "name": "@koi/verified-loop",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/security/audit-sink-ndjson": {
       "name": "@koi/audit-sink-ndjson",
       "version": "0.0.0",
@@ -2257,6 +2265,8 @@
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
 
     "@koi/variant-selection": ["@koi/variant-selection@workspace:packages/lib/variant-selection"],
+
+    "@koi/verified-loop": ["@koi/verified-loop@workspace:packages/sched/verified-loop"],
 
     "@koi/violation-store-sqlite": ["@koi/violation-store-sqlite@workspace:packages/security/violation-store-sqlite"],
 

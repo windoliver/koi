@@ -1,0 +1,26 @@
+{
+  "name": "@koi/verified-loop",
+  "description": "External verification loop — iterate agent against objective gates instead of LLM self-assessment",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*"
+  },
+  "koi": {
+    "optional": true
+  }
+}
