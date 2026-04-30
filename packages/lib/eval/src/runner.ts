@@ -224,6 +224,23 @@ function mergeMetrics(
   };
 }
 
+/**
+ * Compose multiple AbortSignals into one that aborts when any input signal
+ * aborts. Mirrors the (still-Stage-2) `AbortSignal.any` semantics; we
+ * implement it directly so we don't depend on runtime support.
+ */
+function anySignal(signals: readonly AbortSignal[]): AbortSignal {
+  const c = new AbortController();
+  for (const s of signals) {
+    if (s.aborted) {
+      c.abort(s.reason);
+      return c.signal;
+    }
+    s.addEventListener("abort", () => c.abort(s.reason), { once: true });
+  }
+  return c.signal;
+}
+
 /** Brief acknowledgement window for iterator.return() after a timeout. */
 const RETURN_ACK_TIMEOUT_MS = 250;
 
@@ -255,7 +272,14 @@ async function collectTranscriptWithTimeout(
     // intentionally swallowed — the only meaningful consumer is Promise.race below
   });
   try {
-    const inputWithSignal = { ...task.input, signal: controller.signal };
+    // Compose with the caller's signal (if any) so external cancellation
+    // — user cancel, outer shutdown, parent test timeout — propagates into
+    // the agent stream. Overwriting `task.input.signal` would silently drop
+    // the upstream cancel and leave tool side effects running.
+    const upstream = (task.input as { signal?: AbortSignal }).signal;
+    const composed =
+      upstream === undefined ? controller.signal : anySignal([upstream, controller.signal]);
+    const inputWithSignal = { ...task.input, signal: composed };
     const iterator = agent.stream(inputWithSignal)[Symbol.asyncIterator]();
     try {
       while (true) {
@@ -454,8 +478,7 @@ export function canonicalTaskSpec(task: EvalTask): string {
   });
 }
 
-function containsNonSerializable(v: unknown, depth = 0): boolean {
-  if (depth > 20) return false;
+function containsNonSerializable(v: unknown, seen: WeakSet<object> = new WeakSet()): boolean {
   if (v === null) return false;
   const t = typeof v;
   if (t === "function" || t === "symbol") return true;
@@ -463,7 +486,11 @@ function containsNonSerializable(v: unknown, depth = 0): boolean {
   // RegExp and the special objects canonicalize handles explicitly are
   // deterministically encodable — not blockers.
   if (v instanceof RegExp || v instanceof Date || v instanceof URL) return false;
-  if (Array.isArray(v)) return v.some((e) => containsNonSerializable(e, depth + 1));
+  // Cycles: a graph that loops back on itself can't be fingerprinted
+  // deterministically without an explicit salt. Treat as non-serializable.
+  if (seen.has(v as object)) return true;
+  seen.add(v as object);
+  if (Array.isArray(v)) return v.some((e) => containsNonSerializable(e, seen));
   // Reject any other non-plain object: Map/Set/typed arrays/class instances
   // would otherwise canonicalize to "{}" because Object.keys() returns no
   // enumerable string keys, collapsing materially different inputs to the
@@ -471,7 +498,7 @@ function containsNonSerializable(v: unknown, depth = 0): boolean {
   const proto = Object.getPrototypeOf(v as object);
   if (proto !== Object.prototype && proto !== null) return true;
   for (const k of Object.keys(v as object)) {
-    if (containsNonSerializable((v as Record<string, unknown>)[k], depth + 1)) return true;
+    if (containsNonSerializable((v as Record<string, unknown>)[k], seen)) return true;
   }
   return false;
 }
@@ -486,7 +513,7 @@ function containsNonSerializable(v: unknown, depth = 0): boolean {
  * silently collapsing to `{}` — that way swapping in a new value cannot
  * leave the fingerprint unchanged.
  */
-function canonicalize(v: unknown): string {
+function canonicalize(v: unknown, seen: WeakSet<object> = new WeakSet()): string {
   if (v === undefined) return "undefined";
   if (v === null) return "null";
   if (v instanceof RegExp) return `RegExp(${JSON.stringify(v.source)},${JSON.stringify(v.flags)})`;
@@ -497,11 +524,18 @@ function canonicalize(v: unknown): string {
   if (t === "bigint") return `bigint:${(v as bigint).toString()}`;
   if (t === "function") return `fn:${(v as () => unknown).name || "anon"}`;
   if (t === "symbol") return `sym:${(v as symbol).toString()}`;
-  if (Array.isArray(v)) return `[${v.map(canonicalize).join(",")}]`;
+  // Cycle guard: containsNonSerializable rejects cycles up front, but the
+  // canonicalizer must also be cycle-safe to avoid stack overflow if any
+  // future caller path bypasses the preflight.
+  if (seen.has(v as object)) {
+    throw new Error("canonicalize: cyclic value (rejected before reaching here)");
+  }
+  seen.add(v as object);
+  if (Array.isArray(v)) return `[${v.map((e) => canonicalize(e, seen)).join(",")}]`;
   if (t === "object") {
     const obj = v as Record<string, unknown>;
     const keys = Object.keys(obj).sort();
-    const parts = keys.map((k) => `${JSON.stringify(k)}:${canonicalize(obj[k])}`);
+    const parts = keys.map((k) => `${JSON.stringify(k)}:${canonicalize(obj[k], seen)}`);
     return `{${parts.join(",")}}`;
   }
   return String(v);

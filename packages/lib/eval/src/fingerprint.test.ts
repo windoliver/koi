@@ -212,6 +212,18 @@ describe("computeTaskFingerprint", () => {
     expect(computeTaskFingerprint(make("v1"))).not.toBe(computeTaskFingerprint(make("v2")));
   });
 
+  test("rejects cyclic input without crashing the process", () => {
+    const cyclic: { self?: unknown } = {};
+    cyclic.self = cyclic;
+    const a: EvalTask = {
+      id: "t",
+      name: "t",
+      input: { ...baseInput, ctx: cyclic } as never,
+      graders: [exactMatch()],
+    };
+    expect(() => computeTaskFingerprint(a)).toThrow(/fingerprintSalt/);
+  });
+
   test("stable for equivalent task definitions", () => {
     const make = (): EvalTask => ({
       id: "t",
