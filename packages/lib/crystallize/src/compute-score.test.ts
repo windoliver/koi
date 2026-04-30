@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { sessionId } from "@koi/core";
 import { computeCrystallizeScore, computeSuccessRate } from "./compute-score.js";
-import type { CrystallizationCandidate, OutcomeStats, ToolStep } from "./types.js";
+import type { CrystallizationCandidate, OutcomeStats, ToolStep, TurnLocation } from "./types.js";
+
+const TEST_SESSION = sessionId("score-session");
+const TEST_AGENT = "score-agent";
 
 /**
  * Build occurrence-level OutcomeStats from a representative step list. An
@@ -28,10 +32,15 @@ function makeCandidate(
   outcomeStats?: OutcomeStats,
 ): CrystallizationCandidate {
   const key = steps.map((s) => s.toolId).join("|");
+  const locations: TurnLocation[] = Array.from({ length: occurrences }, (_, i) => ({
+    sessionId: TEST_SESSION,
+    agentId: TEST_AGENT,
+    turnIndex: i,
+  }));
   return {
     ngram: { steps, key },
     occurrences,
-    turnIndices: Array.from({ length: occurrences }, (_, i) => i),
+    locations,
     detectedAt,
     suggestedName: key,
     outcomeStats: outcomeStats ?? statsFromSteps(steps, occurrences),

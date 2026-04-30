@@ -80,11 +80,11 @@ function buildCandidates(
 ): readonly CrystallizationCandidate[] {
   const raw: CrystallizationCandidate[] = [];
   for (const [, entry] of ngramMap) {
-    if (entry.turnIndices.length < minOccurrences) continue;
+    if (entry.locations.length < minOccurrences) continue;
     const base: CrystallizationCandidate = {
       ngram: entry.ngram,
-      occurrences: entry.turnIndices.length,
-      turnIndices: entry.turnIndices,
+      occurrences: entry.locations.length,
+      locations: entry.locations,
       detectedAt: firstSeenTimes?.get(entry.ngram.key) ?? now,
       suggestedName: computeSuggestedName(entry.ngram),
       outcomeStats: entry.outcomeStats,

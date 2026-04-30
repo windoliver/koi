@@ -7,6 +7,8 @@
  * and auto-forge are out of scope here and live in sibling packages.
  */
 
+import type { SessionId } from "@koi/core";
+
 /** A single tool invocation in a sequence. */
 export interface ToolStep {
   readonly toolId: string;
@@ -18,6 +20,18 @@ export interface ToolStep {
 export interface ToolNgram {
   readonly steps: readonly ToolStep[];
   readonly key: string;
+}
+
+/**
+ * Composite identity for one occurrence of a pattern. `turnIndex` alone is
+ * not unique across multi-session or multi-agent trace sets — every session
+ * starts at turn 0 — so dedup and downstream reporting must use the full
+ * `(sessionId, agentId, turnIndex)` triple.
+ */
+export interface TurnLocation {
+  readonly sessionId: SessionId;
+  readonly agentId: string;
+  readonly turnIndex: number;
 }
 
 /**
@@ -35,10 +49,10 @@ export interface OutcomeStats {
   readonly withOutcome: number;
 }
 
-/** N-gram occurrence record — n-gram plus turn indices and aggregated outcomes. */
+/** N-gram occurrence record — n-gram plus per-occurrence locations and aggregated outcomes. */
 export interface NgramEntry {
   readonly ngram: ToolNgram;
-  readonly turnIndices: readonly number[];
+  readonly locations: readonly TurnLocation[];
   readonly outcomeStats: OutcomeStats;
 }
 
@@ -46,7 +60,11 @@ export interface NgramEntry {
 export interface CrystallizationCandidate {
   readonly ngram: ToolNgram;
   readonly occurrences: number;
-  readonly turnIndices: readonly number[];
+  /**
+   * Composite locations of every occurrence: `(sessionId, agentId, turnIndex)`
+   * triples. Stable across multi-session input where turn numbers reset.
+   */
+  readonly locations: readonly TurnLocation[];
   readonly detectedAt: number;
   readonly suggestedName: string;
   /** Aggregated outcome stats across every occurrence — drives success-rate scoring. */

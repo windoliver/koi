@@ -1,16 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import { sessionId } from "@koi/core";
+import type { TurnSequence } from "./ngram.js";
 import { computeNgramKey, extractNgrams, extractToolSequences } from "./ngram.js";
 import { createTrace } from "./test-helpers.js";
-import type { ToolStep } from "./types.js";
 
-function turn(
-  turnIndex: number,
-  ids: readonly string[],
-): {
-  readonly turnIndex: number;
-  readonly steps: readonly ToolStep[];
-} {
-  return { turnIndex, steps: ids.map((toolId) => ({ toolId })) };
+const SESSION = sessionId("test-session");
+const AGENT = "test-agent";
+
+function turn(turnIndex: number, ids: readonly string[]): TurnSequence {
+  return {
+    location: { sessionId: SESSION, agentId: AGENT, turnIndex },
+    steps: ids.map((toolId) => ({ toolId })),
+  };
 }
 
 describe("computeNgramKey", () => {
@@ -20,10 +21,10 @@ describe("computeNgramKey", () => {
 });
 
 describe("extractToolSequences", () => {
-  test("projects tool_call events in order, preserving real turnIndex", () => {
+  test("projects tool_call events in order, preserving real turnIndex + identity", () => {
     const seqs = extractToolSequences([createTrace(7, ["read", "parse", "save"])]);
     expect(seqs).toHaveLength(1);
-    expect(seqs[0]?.turnIndex).toBe(7);
+    expect(seqs[0]?.location.turnIndex).toBe(7);
     expect(seqs[0]?.steps.map((s) => s.toolId)).toEqual(["read", "parse", "save"]);
   });
 
@@ -32,7 +33,7 @@ describe("extractToolSequences", () => {
     expect(seqs[0]?.steps[0]?.outcome).toBeUndefined();
   });
 
-  test("yields no outcome signal for plain object with `error` field (not a kind:error envelope)", () => {
+  test("plain object with non-envelope `error` field still scores as success", () => {
     const seqs = extractToolSequences([createTrace(0, ["broken"], [{ error: "boom" }])]);
     expect(seqs[0]?.steps[0]?.outcome).toBe("success");
   });
@@ -52,11 +53,18 @@ describe("extractToolSequences", () => {
     expect(seqs[0]?.steps[0]?.outcome).toBeUndefined();
   });
 
-  test("treats validation rejects (kind:validation, error code) as success, not failure", () => {
+  test("validation reject with kind:validation is neutral (no outcome signal)", () => {
     const seqs = extractToolSequences([
-      createTrace(0, ["v"], [{ kind: "validation", error: "bad input", code: "VALIDATION" }]),
+      createTrace(0, ["v"], [{ kind: "validation", error: "bad input" }]),
     ]);
-    expect(seqs[0]?.steps[0]?.outcome).toBe("success");
+    expect(seqs[0]?.steps[0]?.outcome).toBeUndefined();
+  });
+
+  test("validation reject with code:VALIDATION (no kind) is neutral (no outcome signal)", () => {
+    const seqs = extractToolSequences([
+      createTrace(0, ["v"], [{ error: "bad input", code: "VALIDATION" }]),
+    ]);
+    expect(seqs[0]?.steps[0]?.outcome).toBeUndefined();
   });
 });
 
@@ -71,7 +79,7 @@ describe("extractNgrams", () => {
 
   test("counts a turn once per key even when pattern repeats within turn", () => {
     const map = extractNgrams([turn(0, ["a", "b", "a", "b"])], 2, 2);
-    expect(map.get("a|b")?.turnIndices).toEqual([0]);
+    expect(map.get("a|b")?.locations.map((l) => l.turnIndex)).toEqual([0]);
   });
 
   test("aggregates same n-gram across multiple turns", () => {
@@ -80,7 +88,7 @@ describe("extractNgrams", () => {
       2,
       2,
     );
-    expect(map.get("a|b")?.turnIndices).toEqual([0, 1, 2]);
+    expect(map.get("a|b")?.locations.map((l) => l.turnIndex)).toEqual([0, 1, 2]);
   });
 
   test("preserves real (non-zero, non-contiguous) turn indices from the source traces", () => {
@@ -89,7 +97,30 @@ describe("extractNgrams", () => {
       2,
       2,
     );
-    expect(map.get("a|b")?.turnIndices).toEqual([10, 42, 100]);
+    expect(map.get("a|b")?.locations.map((l) => l.turnIndex)).toEqual([10, 42, 100]);
+  });
+
+  test("does not collapse occurrences from different sessions even when turn indices collide", () => {
+    const sA = sessionId("sess-A");
+    const sB = sessionId("sess-B");
+    const make = (sid: typeof sA): TurnSequence => ({
+      location: { sessionId: sid, agentId: AGENT, turnIndex: 0 },
+      steps: [{ toolId: "a" }, { toolId: "b" }],
+    });
+    const map = extractNgrams([make(sA), make(sB)], 2, 2);
+    const locs = map.get("a|b")?.locations ?? [];
+    expect(locs).toHaveLength(2);
+    expect(new Set(locs.map((l) => l.sessionId)).size).toBe(2);
+  });
+
+  test("does not collapse occurrences from different agents even when (session, turn) collide", () => {
+    const sid = sessionId("shared-sess");
+    const make = (agentId: string): TurnSequence => ({
+      location: { sessionId: sid, agentId, turnIndex: 0 },
+      steps: [{ toolId: "a" }, { toolId: "b" }],
+    });
+    const map = extractNgrams([make("agent-A"), make("agent-B")], 2, 2);
+    expect(map.get("a|b")?.locations).toHaveLength(2);
   });
 
   test("empty sequence contributes no n-grams", () => {

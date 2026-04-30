@@ -1,14 +1,23 @@
 import { describe, expect, test } from "bun:test";
+import { sessionId } from "@koi/core";
 import { computeSuggestedName, detectPatterns, filterSubsumed } from "./detect-patterns.js";
 import { createTrace } from "./test-helpers.js";
-import type { CrystallizationCandidate } from "./types.js";
+import type { CrystallizationCandidate, TurnLocation } from "./types.js";
+
+const TEST_SESSION = sessionId("test-session");
+const TEST_AGENT = "test-agent";
 
 function makeCandidate(toolIds: readonly string[], occurrences: number): CrystallizationCandidate {
   const key = toolIds.join("|");
+  const locations: TurnLocation[] = Array.from({ length: occurrences }, (_, i) => ({
+    sessionId: TEST_SESSION,
+    agentId: TEST_AGENT,
+    turnIndex: i,
+  }));
   return {
     ngram: { steps: toolIds.map((id) => ({ toolId: id })), key },
     occurrences,
-    turnIndices: Array.from({ length: occurrences }, (_, i) => i),
+    locations,
     detectedAt: 0,
     suggestedName: toolIds.join("-then-"),
     outcomeStats: { successes: 0, withOutcome: 0 },
@@ -114,7 +123,7 @@ describe("detectPatterns", () => {
     expect(candidates).toHaveLength(1);
     expect(candidates[0]?.ngram.key).toBe("a|b");
     expect(candidates[0]?.occurrences).toBe(4);
-    expect(candidates[0]?.turnIndices).toEqual([0, 1, 2, 3]);
+    expect(candidates[0]?.locations.map((l) => l.turnIndex)).toEqual([0, 1, 2, 3]);
   });
 
   test("merges duplicates via subsumption when longer pattern dominates", () => {
@@ -278,6 +287,63 @@ describe("detectPatterns", () => {
     expect(candidates).toHaveLength(1);
     expect(candidates[0]?.occurrences).toBe(3);
     expect(candidates[0]?.outcomeStats).toEqual({ successes: 1, withOutcome: 3 });
+  });
+
+  test("turn with both succeeding and failing matches is folded as a failure (per-turn fold)", () => {
+    // Turn 0 has [a,b] twice — first window succeeds (output: {}), second
+    // fails (kind:error). Turn must be recorded as failure, not the first
+    // window's success. Two more all-failing turns ensure the pattern reaches
+    // the minOccurrences threshold.
+    const fail = { kind: "error" as const, message: "boom" };
+    const traces = [
+      createTrace(0, ["a", "b", "a", "b"], [{}, {}, fail, fail]),
+      createTrace(1, ["a", "b"], [fail, fail]),
+      createTrace(2, ["a", "b"], [fail, fail]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates).toHaveLength(1);
+    // 0 successful occurrences, 3 with outcome — first turn's later failure
+    // must not be masked by its earlier success.
+    expect(candidates[0]?.outcomeStats).toEqual({ successes: 0, withOutcome: 3 });
+  });
+
+  test("validation rejects do not inflate successRate (kind:validation is neutral)", () => {
+    // Three turns of [a,b] where each tool returns a validation reject.
+    // Pattern should surface (3 occurrences) but with zero outcome signal —
+    // validation rejects must not be counted as successful tool runs.
+    const v = { kind: "validation" as const, error: "bad" };
+    const traces = [
+      createTrace(0, ["a", "b"], [v, v]),
+      createTrace(1, ["a", "b"], [v, v]),
+      createTrace(2, ["a", "b"], [v, v]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.outcomeStats).toEqual({ successes: 0, withOutcome: 0 });
+  });
+
+  test("does not collapse occurrences across sessions when turn indices collide", () => {
+    // Two sessions, each emitting [a,b] at turn 0/1/2. Total occurrences
+    // must be 6, not 3 — turn-index dedup must use the composite identity.
+    const sessA = sessionId("sessA");
+    const sessB = sessionId("sessB");
+    const make = (sid: typeof sessA, turnIndex: number): import("@koi/core").TurnTrace => {
+      const trace = createTrace(turnIndex, ["a", "b"]);
+      // Override sessionId on the constructed trace.
+      return { ...trace, sessionId: sid };
+    };
+    const traces = [
+      make(sessA, 0),
+      make(sessA, 1),
+      make(sessA, 2),
+      make(sessB, 0),
+      make(sessB, 1),
+      make(sessB, 2),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.occurrences).toBe(6);
+    expect(new Set(candidates[0]?.locations.map((l) => l.sessionId)).size).toBe(2);
   });
 
   test("accepts undefined config (uses internal defaults)", () => {

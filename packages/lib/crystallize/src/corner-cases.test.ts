@@ -12,16 +12,23 @@ import { computeCrystallizeScore } from "./compute-score.js";
 import { detectPatterns, filterSubsumed } from "./detect-patterns.js";
 import { computeNgramKey, extractNgrams, extractToolSequences } from "./ngram.js";
 import { createTrace } from "./test-helpers.js";
-import type { CrystallizationCandidate } from "./types.js";
+import type { CrystallizationCandidate, TurnLocation } from "./types.js";
 
 const clock = (): number => 0;
+const CORNER_SESSION = sessionId("corner-session");
+const CORNER_AGENT = "corner-agent";
 
 function makeCandidate(toolIds: readonly string[], occurrences: number): CrystallizationCandidate {
   const key = computeNgramKey(toolIds.map((id) => ({ toolId: id })));
+  const locations: TurnLocation[] = Array.from({ length: occurrences }, (_, i) => ({
+    sessionId: CORNER_SESSION,
+    agentId: CORNER_AGENT,
+    turnIndex: i,
+  }));
   return {
     ngram: { steps: toolIds.map((id) => ({ toolId: id })), key },
     occurrences,
-    turnIndices: Array.from({ length: occurrences }, (_, i) => i),
+    locations,
     detectedAt: 0,
     suggestedName: toolIds.join("-then-"),
     outcomeStats: { successes: 0, withOutcome: 0 },
@@ -194,7 +201,7 @@ describe("detectPatterns — degenerate inputs", () => {
       createTrace(2, ["a", "a", "a", "a"]),
     ];
     const map = extractNgrams(extractToolSequences(traces), 2, 2);
-    expect(map.get("a|a")?.turnIndices).toEqual([0, 1, 2]);
+    expect(map.get("a|a")?.locations.map((l) => l.turnIndex)).toEqual([0, 1, 2]);
   });
 });
 

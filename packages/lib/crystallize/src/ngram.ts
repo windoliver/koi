@@ -3,33 +3,39 @@
  *
  * The detection pipeline walks turns, projects each turn down to an ordered
  * sequence of `ToolStep`s, then slides a window of size [min..max] over each
- * sequence to populate an immutable `Map<key, NgramEntry>`. Per-turn
- * deduplication ensures a pattern that occurs twice within the same turn is
- * counted as one occurrence (we score across-turn repetition, not within-turn
- * burst). Step-level outcome counts are aggregated across every occurrence so
- * downstream success-rate scoring reflects the full pattern history rather
- * than a single representative window.
+ * sequence to populate an immutable `Map<key, NgramEntry>`.
+ *
+ * Per-turn dedup uses the full `(sessionId, agentId, turnIndex)` triple
+ * because turn numbers reset per session — keying on `turnIndex` alone would
+ * silently merge unrelated occurrences across sessions or agents.
+ *
+ * Per-turn outcome folding: when a pattern matches multiple windows in the
+ * same turn (e.g. `[a,b]` appearing twice within one turn), the turn's
+ * verdict is a fold of all matching windows' step signals — *any* failed
+ * window fails the turn, success requires at least one signal-bearing
+ * window with no failures. This prevents a turn whose first window happened
+ * to succeed from masking later failures in the same turn.
  */
 
 import type { TurnTrace } from "@koi/core";
-import type { NgramEntry, OutcomeStats, ToolNgram, ToolStep } from "./types.js";
+import type { NgramEntry, OutcomeStats, ToolNgram, ToolStep, TurnLocation } from "./types.js";
 
 /**
  * Infer outcome from a tool call's output, matching the repo's existing
- * tool-failure semantics (`agent-monitor.isErrorOutput` /
- * `isDeniedOutput`): only the explicit `kind: "error"` and `kind: "denied"`
- * envelopes mark a real execution failure. Any other payload — including
- * `null`, primitives, plain objects with a non-failure `error` field (e.g.
- * web-fetch's structured error result), or output where capture is missing —
- * yields `undefined`, meaning "no outcome signal" rather than "failure". This
- * prevents non-failure responses from systematically demoting healthy
- * patterns through `successRate`.
+ * tool-failure semantics:
+ *  - `kind: "error"` and `kind: "denied"` → failure (execution failed or
+ *    was blocked, per `agent-monitor.isErrorOutput` / `isDeniedOutput`).
+ *  - `kind: "validation"` or `code: "VALIDATION"` → undefined (pre-execution
+ *    reject; not a tool execution success or failure, so it must not skew
+ *    successRate).
+ *  - Anything else with a non-null object payload → success.
+ *  - Missing capture, primitives, null → undefined (no signal).
  */
 function inferOutcome(output: unknown): "success" | "failure" | undefined {
   if (output === null || typeof output !== "object") return undefined;
-  if (!("kind" in output)) return "success";
-  const kind = (output as { readonly kind?: unknown }).kind;
-  if (kind === "error" || kind === "denied") return "failure";
+  const obj = output as { readonly kind?: unknown; readonly code?: unknown };
+  if (obj.kind === "error" || obj.kind === "denied") return "failure";
+  if (obj.kind === "validation" || obj.code === "VALIDATION") return undefined;
   return "success";
 }
 
@@ -44,20 +50,27 @@ function projectTurn(trace: TurnTrace): readonly ToolStep[] {
   return steps;
 }
 
-/** A turn's projected tool steps paired with the trace's real `turnIndex`. */
+/**
+ * One turn's projected tool steps paired with the source trace's composite
+ * occurrence identity. Carrying the full `(sessionId, agentId, turnIndex)`
+ * tuple keeps occurrence dedup correct across multi-session input.
+ */
 export interface TurnSequence {
-  readonly turnIndex: number;
+  readonly location: TurnLocation;
   readonly steps: readonly ToolStep[];
 }
 
 /**
  * Project each `TurnTrace` to an ordered sequence of `ToolStep`s alongside
- * the original `TurnTrace.turnIndex`. Preserving the real turn id keeps
- * downstream `turnIndices` stable when callers analyze sliced or
- * non-contiguous trace subsets.
+ * its composite identity. Mixing traces from multiple sessions or agents is
+ * supported because the identity carries enough information to keep their
+ * occurrences disjoint.
  */
 export function extractToolSequences(traces: readonly TurnTrace[]): readonly TurnSequence[] {
-  return traces.map((trace) => ({ turnIndex: trace.turnIndex, steps: projectTurn(trace) }));
+  return traces.map((trace) => ({
+    location: { sessionId: trace.sessionId, agentId: trace.agentId, turnIndex: trace.turnIndex },
+    steps: projectTurn(trace),
+  }));
 }
 
 /**
@@ -77,42 +90,61 @@ export function computeNgramKey(steps: readonly ToolStep[]): string {
 
 interface MutableEntry {
   readonly ngram: ToolNgram;
-  readonly turnIndices: number[];
-  /** Count of occurrences where every signal-bearing step succeeded. */
+  readonly locations: TurnLocation[];
+  /** Composite identity of the turn currently being aggregated, or null. */
+  pendingLocKey: string | null;
+  /** Whether any window matched in the pending turn carried outcome signal. */
+  pendingHadSignal: boolean;
+  /** Whether any window matched in the pending turn carried a failure. */
+  pendingHadFailure: boolean;
+  /** Committed occurrence-level counts across already-finalized turns. */
   successes: number;
-  /** Count of occurrences with at least one signal-bearing step. */
   withOutcome: number;
 }
 
-/** Classify one occurrence's whole-pattern outcome from its step-level signals. */
-function occurrenceOutcome(steps: readonly ToolStep[]): "success" | "failure" | undefined {
-  let sawSignal = false;
-  for (const step of steps) {
-    if (step.outcome === undefined) continue;
-    sawSignal = true;
-    if (step.outcome === "failure") return "failure";
-  }
-  return sawSignal ? "success" : undefined;
+function locationKey(loc: TurnLocation): string {
+  // Trace-level metadata is opaque to this package; serialize to an
+  // unambiguous composite key. JSON keeps quoting + escaping for free and
+  // avoids ad-hoc separator collisions.
+  return JSON.stringify([loc.sessionId, loc.agentId, loc.turnIndex]);
 }
 
-function recordOccurrence(entry: MutableEntry, steps: readonly ToolStep[]): void {
-  const verdict = occurrenceOutcome(steps);
-  if (verdict === undefined) return;
-  entry.withOutcome += 1;
-  if (verdict === "success") entry.successes += 1;
+function windowSignal(steps: readonly ToolStep[]): { signal: boolean; failure: boolean } {
+  let signal = false;
+  let failure = false;
+  for (const step of steps) {
+    if (step.outcome === undefined) continue;
+    signal = true;
+    if (step.outcome === "failure") failure = true;
+  }
+  return { signal, failure };
+}
+
+function commitPending(entry: MutableEntry): void {
+  if (entry.pendingLocKey === null) return;
+  if (entry.pendingHadSignal) {
+    entry.withOutcome += 1;
+    if (!entry.pendingHadFailure) entry.successes += 1;
+  }
+  entry.pendingLocKey = null;
+  entry.pendingHadSignal = false;
+  entry.pendingHadFailure = false;
 }
 
 function freezeEntry(entry: MutableEntry): NgramEntry {
+  // Final commit at extraction end; safe to do once per entry.
+  commitPending(entry);
   const stats: OutcomeStats = { successes: entry.successes, withOutcome: entry.withOutcome };
-  return { ngram: entry.ngram, turnIndices: entry.turnIndices, outcomeStats: stats };
+  return { ngram: entry.ngram, locations: entry.locations, outcomeStats: stats };
 }
 
 /**
  * Extract every n-gram of length `[minSize..maxSize]` from `sequences` via
  * sliding window. Returns a key→entry map; each entry records all turn
- * indices where the n-gram appeared (a single turn contributes at most one
- * occurrence per key, even if the pattern repeats within that turn) and an
- * aggregated `OutcomeStats` summed across every occurrence's step outcomes.
+ * locations where the n-gram appeared (one location per turn-with-pattern,
+ * even if the pattern repeats within that turn) and an aggregated
+ * `OutcomeStats` over per-occurrence verdicts (a turn is successful only if
+ * every matching window in that turn succeeded).
  */
 export function extractNgrams(
   sequences: readonly TurnSequence[],
@@ -121,31 +153,42 @@ export function extractNgrams(
 ): ReadonlyMap<string, NgramEntry> {
   const accum = new Map<string, MutableEntry>();
 
-  for (const { turnIndex, steps: seq } of sequences) {
+  for (const { location, steps: seq } of sequences) {
+    const locKey = locationKey(location);
     for (let size = minSize; size <= maxSize; size++) {
       for (let start = 0; start <= seq.length - size; start++) {
         const steps = seq.slice(start, start + size);
         const key = computeNgramKey(steps);
-        const existing = accum.get(key);
-        if (existing === undefined) {
-          const entry: MutableEntry = {
+        const { signal, failure } = windowSignal(steps);
+        let entry = accum.get(key);
+        if (entry === undefined) {
+          entry = {
             ngram: { steps, key },
-            turnIndices: [turnIndex],
+            locations: [location],
+            pendingLocKey: locKey,
+            pendingHadSignal: signal,
+            pendingHadFailure: failure,
             successes: 0,
             withOutcome: 0,
           };
-          recordOccurrence(entry, steps);
           accum.set(key, entry);
           continue;
         }
-        // Per-turn dedup: only the first window match in a given turn
-        // counts as a new occurrence. Frequency and outcome aggregation use
-        // the same unit (turns containing the pattern), so a retry storm
-        // inside one turn cannot inflate or distort the score.
-        const indices = existing.turnIndices;
-        if (indices[indices.length - 1] === turnIndex) continue;
-        indices.push(turnIndex);
-        recordOccurrence(existing, steps);
+        if (entry.pendingLocKey === locKey) {
+          // Same turn — fold this window's signal into the pending verdict.
+          // Conservative rule: any failed window fails the turn; success
+          // requires at least one signal-bearing window with zero failures.
+          entry.pendingHadSignal = entry.pendingHadSignal || signal;
+          entry.pendingHadFailure = entry.pendingHadFailure || failure;
+          continue;
+        }
+        // New turn — commit the previous turn's verdict, record the new
+        // occurrence location, start a fresh pending bucket.
+        commitPending(entry);
+        entry.locations.push(location);
+        entry.pendingLocKey = locKey;
+        entry.pendingHadSignal = signal;
+        entry.pendingHadFailure = failure;
       }
     }
   }
