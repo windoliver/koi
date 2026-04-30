@@ -2,7 +2,8 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "lib": ["ES2025", "esnext.disposable", "DOM"]
   },
   "include": ["src/**/*"],
   "references": [
@@ -28,6 +29,7 @@
     { "path": "../../lib/nexus-client" },
     { "path": "../../lib/fs-scoped" },
     { "path": "../../lib/ipc-local" },
+    { "path": "../../lib/eval" },
     { "path": "../../lib/event-trace" },
     { "path": "../../lib/execution-context" },
     { "path": "../../lib/hooks" },

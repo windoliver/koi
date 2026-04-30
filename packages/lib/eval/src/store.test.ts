@@ -1,0 +1,753 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createFsStore } from "./store.js";
+import type { EvalRun } from "./types.js";
+
+const fp = (spec: string): string => createHash("sha256").update(spec).digest("hex");
+
+const makeRun = (id: string, name: string, timestamp: string): EvalRun => ({
+  id,
+  name,
+  timestamp,
+  config: { name, timeoutMs: 60_000, passThreshold: 0.5, taskCount: 0 },
+  trials: [],
+  // Coherent empty summary: 0 trials, 0 tasks → byTask must equal taskCount.
+  summary: {
+    taskCount: 0,
+    trialCount: 0,
+    passRate: 0,
+    meanScore: 0,
+    errorCount: 0,
+    byTask: [],
+  },
+});
+
+let root: string;
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), "koi-eval-"));
+});
+afterEach(async () => {
+  await rm(root, { recursive: true, force: true });
+});
+
+describe("createFsStore", () => {
+  test("load rejects tampered summary that disagrees with trials", async () => {
+    const store = createFsStore(root);
+    const run = makeRun("tampered", "smoke", "2026-01-01T00:00:00.000Z");
+    await store.save(run);
+    // Manually rewrite to add a fake passRate without matching trials
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("tampered")}.json`);
+    const tampered = {
+      ...run,
+      summary: { ...run.summary, passRate: 1, trialCount: 5 },
+    };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("tampered", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("load rejects tampered meanScore", async () => {
+    const store = createFsStore(root);
+    const run = makeRun("ms", "smoke", "2026-01-01T00:00:00.000Z");
+    await store.save(run);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("ms")}.json`);
+    const tampered = { ...run, summary: { ...run.summary, meanScore: 0.99 } };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("ms", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("load rejects tampered byTask aggregates", async () => {
+    const store = createFsStore(root);
+    const run = makeRun("bt", "smoke", "2026-01-01T00:00:00.000Z");
+    const seeded = {
+      ...run,
+      config: { ...run.config, taskCount: 1 },
+      summary: {
+        ...run.summary,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 0,
+            taskFingerprint: fp("spec-fp1"),
+            taskSpec: "spec-fp1",
+          },
+        ],
+      },
+    };
+    await store.save(seeded);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("bt")}.json`);
+    const tampered = {
+      ...seeded,
+      summary: {
+        ...seeded.summary,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 1,
+            meanScore: 1,
+            trials: 5,
+            taskFingerprint: fp("spec-x"),
+            taskSpec: "spec-x",
+          },
+        ],
+      },
+    };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("bt", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("load rejects non-canonical ISO-8601 timestamp", async () => {
+    const store = createFsStore(root);
+    const run = makeRun("ts", "smoke", "2026-01-01T00:00:00.000Z");
+    await store.save(run);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("ts")}.json`);
+    // Hand-edit timestamp to a non-canonical form (no millis, or
+    // far-future garbage). Both must be rejected as corruption — otherwise
+    // latest() can be poisoned to pin an attacker-chosen baseline.
+    const tampered = { ...run, timestamp: "9999-13-99T99:99:99Z" };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("ts", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("save rejects inconsistent summary instead of persisting it", async () => {
+    const store = createFsStore(root);
+    const bad = {
+      ...makeRun("bad", "smoke", "2026-01-01T00:00:00.000Z"),
+      summary: {
+        taskCount: 0,
+        trialCount: 5,
+        passRate: 1,
+        meanScore: 1,
+        errorCount: 0,
+        byTask: [],
+      },
+    };
+    await expect(store.save(bad)).rejects.toThrow(/summary does not match trials/);
+  });
+
+  test("ids containing '.tmp-' are still listed and findable as latest", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("run.tmp-2026", "smoke", "2026-03-01T00:00:00.000Z"));
+    const metas = await store.list("smoke");
+    expect(metas.some((m) => m.id === "run.tmp-2026")).toBe(true);
+    const latest = await store.latest("smoke");
+    expect(latest?.id).toBe("run.tmp-2026");
+  });
+
+  test("load rejects run with stripped aborted/cancellation metadata", async () => {
+    const store = createFsStore(root);
+    const seeded = makeRun("anc", "smoke", "2026-01-01T00:00:00.000Z");
+    await store.save(seeded);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("anc")}.json`);
+    // Forge a run where a trial was unconfirmed but aborted=true was stripped.
+    const tampered = {
+      ...seeded,
+      summary: { ...seeded.summary, taskCount: 1, trialCount: 1 },
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "pass",
+          cancellation: "unconfirmed",
+        },
+      ],
+    };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("anc", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("load rejects byTask with duplicate taskId", async () => {
+    const store = createFsStore(root);
+    const base = makeRun("dup", "smoke", "2026-01-01T00:00:00.000Z");
+    const seeded = {
+      ...base,
+      config: { ...base.config, taskCount: 2 },
+      summary: {
+        ...base.summary,
+        taskCount: 2,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 0,
+            taskFingerprint: fp("spec-a"),
+            taskSpec: "spec-a",
+          },
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 0,
+            taskFingerprint: fp("spec-b"),
+            taskSpec: "spec-b",
+          },
+        ],
+      },
+    };
+    await expect(store.save(seeded)).rejects.toThrow(/duplicate taskId/);
+    // And that a hand-edited file with a duplicate taskId is rejected at load.
+    const honest = {
+      ...base,
+      config: { ...base.config, taskCount: 1 },
+      summary: {
+        ...base.summary,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 0,
+            taskFingerprint: fp("spec-a"),
+            taskSpec: "spec-a",
+          },
+        ],
+      },
+    };
+    await store.save(honest);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("dup")}.json`);
+    const tampered = {
+      ...honest,
+      summary: {
+        ...honest.summary,
+        taskCount: 2,
+        byTask: [...honest.summary.byTask, ...honest.summary.byTask],
+      },
+      config: { ...honest.config, taskCount: 2 },
+    };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("dup", "smoke")).rejects.toThrow(/duplicate taskId/);
+  });
+
+  test("load rejects config.taskCount mismatched with summary.taskCount", async () => {
+    const store = createFsStore(root);
+    const base = makeRun("miscount", "smoke", "2026-01-01T00:00:00.000Z");
+    const seeded = {
+      ...base,
+      config: { ...base.config, taskCount: 1 },
+      summary: {
+        ...base.summary,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 0,
+            taskFingerprint: fp("spec-a"),
+            taskSpec: "spec-a",
+          },
+        ],
+      },
+    };
+    await store.save(seeded);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("miscount")}.json`);
+    // Strip a configured task from summary while leaving config.taskCount=1.
+    // Without the cross-check, an attacker could omit a failing task to
+    // make a baseline look clean.
+    const tampered = {
+      ...seeded,
+      summary: { ...seeded.summary, taskCount: 0, byTask: [] },
+    };
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("miscount", "smoke")).rejects.toThrow(/config\.taskCount/);
+  });
+
+  test("load rejects byTask with mutated taskFingerprint not matching taskSpec", async () => {
+    const store = createFsStore(root);
+    const base = makeRun("fpc", "smoke", "2026-01-01T00:00:00.000Z");
+    const seeded = {
+      ...base,
+      config: { ...base.config, taskCount: 1 },
+      summary: {
+        taskCount: 1,
+        trialCount: 0,
+        passRate: 0,
+        meanScore: 0,
+        errorCount: 0,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 0,
+            taskFingerprint: fp("spec-original"),
+            taskSpec: "spec-original",
+          },
+        ],
+      },
+    };
+    await store.save(seeded);
+    const path = join(root, encodeURIComponent("smoke"), `${encodeURIComponent("fpc")}.json`);
+    // Mutate only taskFingerprint, leave taskSpec — must be rejected.
+    const tampered = JSON.parse(JSON.stringify(seeded));
+    tampered.summary.byTask[0].taskFingerprint = fp("spec-different");
+    await writeFile(path, JSON.stringify(tampered), "utf8");
+    await expect(store.load("fpc", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("round-trips Date/URL/RegExp/Map/Set in transcript payloads", async () => {
+    const store = createFsStore(root);
+    const baseRun = makeRun("rt", "smoke", "2026-01-01T00:00:00.000Z");
+    const run = {
+      ...baseRun,
+      config: { ...baseRun.config, taskCount: 1 },
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [
+            {
+              kind: "tool_result",
+              callId: "c1",
+              output: {
+                when: new Date("2026-05-01T00:00:00.000Z"),
+                where: new URL("https://example.test/path?q=1"),
+                pat: /hello/i,
+                tags: new Set(["a", "b"]),
+                meta: new Map<string, number>([["k", 7]]),
+              },
+            },
+          ],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "fail" as const,
+          cancellation: "n/a" as const,
+        },
+      ],
+      summary: {
+        ...baseRun.summary,
+        trialCount: 1,
+        passRate: 0,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 1,
+            taskFingerprint: fp("spec-rt"),
+            taskSpec: "spec-rt",
+          },
+        ],
+      },
+    } as unknown as Parameters<typeof store.save>[0];
+    await store.save(run);
+    const loaded = await store.load("rt", "smoke");
+    const out = (loaded?.trials[0]?.transcript[0] as { output: Record<string, unknown> }).output;
+    expect(out.when).toBeInstanceOf(Date);
+    expect((out.when as Date).toISOString()).toBe("2026-05-01T00:00:00.000Z");
+    expect(out.where).toBeInstanceOf(URL);
+    expect((out.where as URL).href).toBe("https://example.test/path?q=1");
+    expect(out.pat).toBeInstanceOf(RegExp);
+    expect(out.tags).toBeInstanceOf(Set);
+    expect((out.tags as Set<string>).has("a")).toBe(true);
+    expect(out.meta).toBeInstanceOf(Map);
+    expect((out.meta as Map<string, number>).get("k")).toBe(7);
+  });
+
+  test("save fails on collision unless overwrite: true", async () => {
+    const store = createFsStore(root);
+    const r1 = makeRun("dup", "smoke", "2026-01-01T00:00:00.000Z");
+    await store.save(r1);
+    await expect(store.save(r1)).rejects.toThrow(/already exists/);
+    await store.save({ ...r1, timestamp: "2026-02-01T00:00:00.000Z" }, { overwrite: true });
+    const reloaded = await store.load("dup", "smoke");
+    expect(reloaded?.timestamp).toBe("2026-02-01T00:00:00.000Z");
+  });
+
+  test("path-traversal evalName is rejected", async () => {
+    const store = createFsStore(root);
+    await expect(store.list("..")).rejects.toThrow(/not allowed/);
+    await expect(store.latest("..")).rejects.toThrow(/not allowed/);
+    await expect(store.save(makeRun("r", "..", "2026-01-01T00:00:00.000Z"))).rejects.toThrow(
+      /not allowed/,
+    );
+  });
+
+  test("save sanitizes BigInt and circular tool-result payloads", async () => {
+    const store = createFsStore(root);
+    const baseRun = makeRun("sanitize", "smoke", "2026-01-01T00:00:00.000Z");
+    const circular: { self?: unknown } = {};
+    circular.self = circular;
+    const run = {
+      ...baseRun,
+      config: { ...baseRun.config, taskCount: 1 },
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [{ kind: "tool_result", callId: "c1", output: { big: 1n, ref: circular } }],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "fail" as const,
+          cancellation: "n/a" as const,
+        },
+      ],
+      // Match recomputed aggregates: 1 trial, 0 passes, 0 errors, 1 task.
+      summary: {
+        ...baseRun.summary,
+        trialCount: 1,
+        passRate: 0,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 1,
+            taskFingerprint: fp("spec-x"),
+            taskSpec: "spec-x",
+          },
+        ],
+      },
+    } as unknown as Parameters<typeof store.save>[0];
+    await store.save(run);
+    const loaded = await store.load("sanitize", "smoke");
+    expect(loaded?.id).toBe("sanitize");
+    expect(loaded?.trials[0]?.transcript[0]).toMatchObject({
+      kind: "tool_result",
+      output: { big: { __koiEvalUnserializable: "bigint", repr: "1" } },
+    });
+  });
+
+  test("save then load round-trips a run", async () => {
+    const store = createFsStore(root);
+    const run = makeRun("r1", "smoke", "2026-01-01T00:00:00.000Z");
+    await store.save(run);
+    const loaded = await store.load("r1");
+    expect(loaded?.id).toBe("r1");
+    expect(loaded?.name).toBe("smoke");
+  });
+
+  test("load returns undefined for unknown id", async () => {
+    const store = createFsStore(root);
+    expect(await store.load("nope")).toBeUndefined();
+  });
+
+  test("latest returns most recent by timestamp", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("r1", "smoke", "2026-01-01T00:00:00.000Z"));
+    await store.save(makeRun("r2", "smoke", "2026-02-01T00:00:00.000Z"));
+    const latest = await store.latest("smoke");
+    expect(latest?.id).toBe("r2");
+  });
+
+  test("list returns metas sorted desc", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("a", "smoke", "2026-01-01T00:00:00.000Z"));
+    await store.save(makeRun("b", "smoke", "2026-03-01T00:00:00.000Z"));
+    const metas = await store.list("smoke");
+    expect(metas).toHaveLength(2);
+    expect(metas[0]?.id).toBe("b");
+  });
+
+  test("load with same runId across suites returns undefined unless evalName given", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("shared", "suite-a", "2026-01-01T00:00:00.000Z"));
+    await store.save(makeRun("shared", "suite-b", "2026-02-01T00:00:00.000Z"));
+    expect(await store.load("shared")).toBeUndefined();
+    const a = await store.load("shared", "suite-a");
+    const b = await store.load("shared", "suite-b");
+    expect(a?.name).toBe("suite-a");
+    expect(b?.name).toBe("suite-b");
+  });
+
+  test("ids that differ only by reserved chars do not collide", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("a/b", "smoke", "2026-01-01T00:00:00.000Z"));
+    await store.save(makeRun("a_b", "smoke", "2026-02-01T00:00:00.000Z"));
+    const a1 = await store.load("a/b");
+    const a2 = await store.load("a_b");
+    expect(a1?.id).toBe("a/b");
+    expect(a2?.id).toBe("a_b");
+  });
+
+  test("latest fails closed on any corrupt artifact even with older mtime", async () => {
+    // Mtime is untrustworthy: clock skew, archive extraction, or `touch`
+    // can make a corrupt-but-newest-logical-timestamp file look stale. We
+    // refuse to choose a baseline while the suite contains damaged data.
+    const store = createFsStore(root);
+    await store.save(makeRun("good", "smoke", "2026-02-01T00:00:00.000Z"));
+    const dir = join(root, encodeURIComponent("smoke"));
+    const badPath = join(dir, "bad-old.json");
+    await writeFile(badPath, "{ corrupt", "utf8");
+    const past = new Date(2025, 0, 1);
+    await (await import("node:fs/promises")).utimes(badPath, past, past);
+    await expect(store.latest("smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("latest fails closed when the newest file is corrupt", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("good", "smoke", "2026-01-01T00:00:00.000Z"));
+    // Newer file (now) that is corrupt
+    const dir = join(root, encodeURIComponent("smoke"));
+    await writeFile(join(dir, "newer-bad.json"), "{ corrupt", "utf8");
+    await expect(store.latest("smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("load rejects suite/name mismatch when scoped by evalName", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("r1", "right-suite", "2026-01-01T00:00:00.000Z"));
+    // Misplaced: physically copy the file under wrong-suite
+    const wrongDir = join(root, encodeURIComponent("wrong-suite"));
+    await (await import("node:fs/promises")).mkdir(wrongDir, { recursive: true });
+    const src = join(root, encodeURIComponent("right-suite"), `${encodeURIComponent("r1")}.json`);
+    const dst = join(wrongDir, `${encodeURIComponent("r1")}.json`);
+    await writeFile(dst, await (await import("node:fs/promises")).readFile(src, "utf8"));
+    await expect(store.load("r1", "wrong-suite")).rejects.toThrow(/mismatch/);
+  });
+
+  test("load rejects parseable JSON with malformed trials", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("seed", "smoke", "2026-01-01T00:00:00.000Z"));
+    const dir = join(root, encodeURIComponent("smoke"));
+    const malformed = JSON.stringify({
+      id: "bad-trials",
+      name: "smoke",
+      timestamp: "2026-01-02T00:00:00.000Z",
+      config: { name: "smoke", timeoutMs: 60000, passThreshold: 0.5, taskCount: 1 },
+      trials: [{ taskId: 42 }], // wrong type
+      summary: {
+        taskCount: 1,
+        trialCount: 1,
+        passRate: 1,
+        meanScore: 1,
+        errorCount: 0,
+        byTask: [],
+      },
+    });
+    await writeFile(join(dir, `${encodeURIComponent("bad-trials")}.json`), malformed, "utf8");
+    await expect(store.load("bad-trials", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("load rejects parseable JSON that is missing required fields", async () => {
+    const store = createFsStore(root);
+    const dir = join(root, encodeURIComponent("smoke"));
+    await store.save(makeRun("seed", "smoke", "2026-01-01T00:00:00.000Z"));
+    // Valid JSON but missing config/trials/summary fields
+    const malformed = JSON.stringify({
+      id: "shallow",
+      name: "smoke",
+      timestamp: "2026-01-02T00:00:00.000Z",
+      summary: { passRate: 1 },
+    });
+    await writeFile(join(dir, `${encodeURIComponent("shallow")}.json`), malformed, "utf8");
+    await expect(store.load("shallow", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("load throws on corrupted run file (fail-closed for regression gate)", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("bad", "smoke", "2026-01-01T00:00:00.000Z"));
+    const dir = join(root, encodeURIComponent("smoke"));
+    await writeFile(join(dir, `${encodeURIComponent("bad")}.json`), "{ corrupt", "utf8");
+    await expect(store.load("bad", "smoke")).rejects.toThrow(/corrupt/);
+  });
+
+  test("malformed sibling file does not break list, but blocks latest (fail-closed)", async () => {
+    const store = createFsStore(root);
+    await store.save(makeRun("good", "smoke", "2026-02-01T00:00:00.000Z"));
+    const dir = join(root, encodeURIComponent("smoke"));
+    await writeFile(join(dir, "bad.json"), "{ this is not json", "utf8");
+    const metas = await store.list("smoke");
+    expect(metas).toHaveLength(1);
+    expect(metas[0]?.id).toBe("good");
+    await expect(store.latest("smoke")).rejects.toThrow(/corrupted/);
+  });
+
+  test("round-trips DAG-aliased payloads without flagging them as circular", async () => {
+    // Aliased-but-acyclic objects (`{a: shared, b: shared}`) used to be
+    // marked as a circular reference because the visited-set was never
+    // unwound. Verify that both refs round-trip with their data preserved.
+    const store = createFsStore(root);
+    const baseRun = makeRun("dag", "smoke", "2026-01-01T00:00:00.000Z");
+    const shared = { hello: "world", count: 7 };
+    const run = {
+      ...baseRun,
+      config: { ...baseRun.config, taskCount: 1 },
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [{ kind: "tool_result", callId: "c1", output: { a: shared, b: shared } }],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "fail" as const,
+          cancellation: "n/a" as const,
+        },
+      ],
+      summary: {
+        ...baseRun.summary,
+        trialCount: 1,
+        passRate: 0,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 1,
+            taskFingerprint: fp("spec-dag"),
+            taskSpec: "spec-dag",
+          },
+        ],
+      },
+    } as unknown as Parameters<typeof store.save>[0];
+    await store.save(run);
+    const loaded = await store.load("dag", "smoke");
+    const out = loaded?.trials[0]?.transcript[0] as { output: { a: unknown; b: unknown } };
+    expect(out.output.a).toEqual({ hello: "world", count: 7 });
+    expect(out.output.b).toEqual({ hello: "world", count: 7 });
+  });
+
+  test("round-trips user objects whose keys collide with reserved markers", async () => {
+    // A user-supplied tool result that already contains `__koiEvalWrapped:
+    // "url"` must NOT come back as a URL instance. The store escapes the
+    // envelope at serialize time and unwraps it on revive.
+    const store = createFsStore(root);
+    const baseRun = makeRun("collide", "smoke", "2026-01-01T00:00:00.000Z");
+    const collide = { __koiEvalWrapped: "url", href: "https://not-a-url-instance.example" };
+    const run = {
+      ...baseRun,
+      config: { ...baseRun.config, taskCount: 1 },
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [{ kind: "tool_result", callId: "c1", output: collide }],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "fail" as const,
+          cancellation: "n/a" as const,
+        },
+      ],
+      summary: {
+        ...baseRun.summary,
+        trialCount: 1,
+        passRate: 0,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 1,
+            taskFingerprint: fp("spec-coll"),
+            taskSpec: "spec-coll",
+          },
+        ],
+      },
+    } as unknown as Parameters<typeof store.save>[0];
+    await store.save(run);
+    const loaded = await store.load("collide", "smoke");
+    const out = loaded?.trials[0]?.transcript[0] as { output: unknown };
+    expect(out.output).toEqual(collide);
+    expect(out.output instanceof URL).toBe(false);
+  });
+
+  test("invalid Date in transcript payload does not crash save()", async () => {
+    // `new Date("nope")` is still a Date; toISOString() throws RangeError.
+    // The serializer must encode it as a marker instead of dropping the
+    // run on the floor — transcript payloads are untrusted by definition.
+    const store = createFsStore(root);
+    const baseRun = makeRun("baddate", "smoke", "2026-01-01T00:00:00.000Z");
+    const run = {
+      ...baseRun,
+      config: { ...baseRun.config, taskCount: 1 },
+      trials: [
+        {
+          taskId: "t1",
+          trialIndex: 0,
+          transcript: [{ kind: "tool_result", callId: "c1", output: { when: new Date("nope") } }],
+          scores: [],
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+          status: "fail" as const,
+          cancellation: "n/a" as const,
+        },
+      ],
+      summary: {
+        ...baseRun.summary,
+        trialCount: 1,
+        passRate: 0,
+        taskCount: 1,
+        byTask: [
+          {
+            taskId: "t1",
+            taskName: "t1",
+            passRate: 0,
+            meanScore: 0,
+            trials: 1,
+            taskFingerprint: fp("spec-bd"),
+            taskSpec: "spec-bd",
+          },
+        ],
+      },
+    } as unknown as Parameters<typeof store.save>[0];
+    await store.save(run);
+    const loaded = await store.load("baddate", "smoke");
+    const out = loaded?.trials[0]?.transcript[0] as { output: { when: unknown } };
+    expect(out.output.when instanceof Date).toBe(true);
+    expect(Number.isNaN((out.output.when as Date).getTime())).toBe(true);
+  });
+
+  test("list returns empty for unknown eval", async () => {
+    const store = createFsStore(root);
+    expect(await store.list("missing")).toHaveLength(0);
+  });
+});

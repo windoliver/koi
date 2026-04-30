@@ -903,4 +903,5 @@ spans on both model and tool paths in `/trajectory`.
 
 ## Changelog
 
+- 2026-04-30: `@koi/governance-scope` `tsconfig.json` adds `DOM` to `lib` for `URLPattern` resolution (transitive surface; no behavior change for the CLI).
 - 2026-04-29: Adversarial review hardening (#1378) — bounded shutdown waits, pre-await accounting, identity-based dedup (transport+name), allowlist-based env exposure, reused in-flight scans, and lint cleanup.
