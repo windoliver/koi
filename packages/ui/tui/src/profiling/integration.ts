@@ -24,7 +24,18 @@
 
 import { writeFileSync } from "node:fs";
 import { type CpuSamplerOptions, startCpuSampler, stopCpuSampler } from "./cpu-sampler.js";
-import { dumpProfile, isProfilingEnabled, resetProfiler } from "./profiler.js";
+import { dumpProfile, resetProfiler } from "./profiler.js";
+
+/**
+ * Read the env each time. The profiler's `state.enabled` flag is a runtime
+ * "currently recording" marker that persists across init/shutdown and is
+ * not authoritative for the question "should this run be profiled" — using
+ * it as the gate would let profiling leak into runs after KOI_TUI_PROFILE
+ * is unset, silently adding overhead and report writes.
+ */
+function isProfilingRequestedByEnv(): boolean {
+  return process.env.KOI_TUI_PROFILE === "1";
+}
 
 const DEFAULT_OUT_PATH = "./koi-tui-profile.json";
 
@@ -56,6 +67,17 @@ export class ProfilingConflictError extends Error {
 }
 
 /**
+ * Conflict detection runs even when the current env says profiling is off.
+ * That covers the case where a long-lived process turns profiling off mid-
+ * way: a still-running profiled TUI must not be silently mixed with a
+ * newly-starting unprofiled TUI's activity. The non-profiled run is
+ * rejected so the active run stays clean.
+ *
+ * For the common case (env off, no run active), this is a fast path that
+ * never throws.
+ */
+
+/**
  * Try to start profiling for the calling TUI run.
  *
  * Returns `true` when this call took ownership of the global profiler
@@ -77,7 +99,16 @@ export function initProfiling(options?: InitProfilingOptions): boolean {
   if (runActive) {
     throw new ProfilingConflictError();
   }
-  if (!isProfilingEnabled()) return false;
+  // Gate on the *current* env, not the profiler's runtime state. Otherwise
+  // profiling latches on after the first profiled run because state.enabled
+  // is set true by run 1's resetProfiler() and never cleared.
+  if (!isProfilingRequestedByEnv()) {
+    // Defensive: if state.enabled was somehow left true (e.g. a test
+    // forgot to clean up), wipe it so probes are no-ops in this
+    // non-profiled run.
+    resetProfiler({ enabled: false });
+    return false;
+  }
 
   // Fresh state for this run — must come before sampler start so the
   // sampler's first tick lands in a clean state map.
@@ -107,6 +138,10 @@ export function shutdownProfiling(): void {
   if (!runActive) return;
   stopCpuSampler();
   writeReportIfNeeded();
+  // Disable probes so any stray batcher / sampler call between now and the
+  // next initProfiling() is a no-op rather than silently writing into the
+  // already-flushed state.
+  resetProfiler({ enabled: false });
   runActive = false;
 }
 

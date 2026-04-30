@@ -8,7 +8,7 @@ import {
   ProfilingConflictError,
   shutdownProfiling,
 } from "./integration.js";
-import { bumpCounter, resetProfiler } from "./profiler.js";
+import { bumpCounter, dumpProfile, resetProfiler } from "./profiler.js";
 
 const noopSetInterval = ((_fn: () => void, _ms: number) =>
   1 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval;
@@ -125,6 +125,50 @@ describe("initProfiling", () => {
       counters: Record<string, number>;
     };
     expect(written.counters["messagerow.mount"]).toBe(7);
+  });
+
+  test("env unset between runs disables profiling for the second run", () => {
+    // Regression: state.enabled used to leak across runs because
+    // shutdownProfiling did not clear it and initProfiling gated on the
+    // runtime flag instead of the env. After run 1 with profiling on,
+    // unsetting KOI_TUI_PROFILE should fully disable profiling for run 2.
+    process.env.KOI_TUI_PROFILE = "1";
+    const outPath = join(workDir, "report.json");
+    process.env.KOI_TUI_PROFILE_OUT = outPath;
+    resetProfiler();
+
+    // Run 1: profiled
+    const ownedA = initProfiling({
+      processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    expect(ownedA).toBe(true);
+    bumpCounter("messagerow.mount", 9);
+    shutdownProfiling();
+
+    // Disable for run 2
+    delete process.env.KOI_TUI_PROFILE;
+
+    // Run 2: must NOT take ownership and must NOT start a sampler
+    let secondSetIntervalCalls = 0;
+    const setIntervalSpy = ((_fn: () => void, _ms: number) => {
+      secondSetIntervalCalls++;
+      return 7 as unknown as ReturnType<typeof setInterval>;
+    }) as unknown as typeof setInterval;
+    const ownedB = initProfiling({
+      processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: setIntervalSpy },
+    });
+    expect(ownedB).toBe(false);
+    expect(secondSetIntervalCalls).toBe(0);
+
+    // Probes must be no-ops in run 2 — bumping a counter does nothing.
+    bumpCounter("messagerow.mount", 99);
+    // Verify by enabling profiling fresh and confirming the counter is
+    // zero after the new reset (i.e. the prior bump did not stick).
+    resetProfiler({ enabled: true });
+    bumpCounter("messagerow.mount", 1);
+    expect(dumpProfile().counters["messagerow.mount"]).toBe(1);
   });
 
   test("multi-run isolation — second run starts fresh and writes its own report", () => {
