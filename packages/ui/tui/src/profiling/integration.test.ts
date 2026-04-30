@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { __resetProfilingForTests, initProfiling } from "./integration.js";
+import { __resetProfilingForTests, initProfiling, shutdownProfiling } from "./integration.js";
 import { bumpCounter, resetProfiler } from "./profiler.js";
+
+const noopSetInterval = ((_fn: () => void, _ms: number) =>
+  1 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval;
 
 describe("initProfiling", () => {
   let prevEnv: string | undefined;
@@ -75,20 +78,125 @@ describe("initProfiling", () => {
     const onSpy = mock((_event: string, _handler: () => void) => process);
     initProfiling({
       processOn: onSpy as unknown as typeof process.on,
-      cpuSamplerOptions: {
-        setIntervalFn: ((_fn: () => void, _ms: number) =>
-          1 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval,
-      },
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
     });
     initProfiling({
       processOn: onSpy as unknown as typeof process.on,
-      cpuSamplerOptions: {
-        setIntervalFn: ((_fn: () => void, _ms: number) =>
-          1 as unknown as ReturnType<typeof setInterval>) as unknown as typeof setInterval,
-      },
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
     });
     // exit handler registered exactly once
     const exitCalls = onSpy.mock.calls.filter((c) => c[0] === "exit");
     expect(exitCalls.length).toBe(1);
+  });
+
+  test("shutdownProfiling writes the run's report and resets state", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    const outPath = join(workDir, "report.json");
+    process.env.KOI_TUI_PROFILE_OUT = outPath;
+    resetProfiler();
+
+    initProfiling({
+      processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    bumpCounter("messagerow.mount", 7);
+    shutdownProfiling();
+
+    const written = JSON.parse(readFileSync(outPath, "utf8")) as {
+      counters: Record<string, number>;
+    };
+    expect(written.counters["messagerow.mount"]).toBe(7);
+  });
+
+  test("multi-run isolation — second run starts fresh and writes its own report", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    const outPath = join(workDir, "report.json");
+    process.env.KOI_TUI_PROFILE_OUT = outPath;
+    resetProfiler();
+
+    // Run 1
+    initProfiling({
+      processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    bumpCounter("messagerow.mount", 100);
+    shutdownProfiling();
+
+    const run1 = JSON.parse(readFileSync(outPath, "utf8")) as {
+      counters: Record<string, number>;
+    };
+    expect(run1.counters["messagerow.mount"]).toBe(100);
+
+    // Run 2 — must NOT carry run 1's counters
+    initProfiling({
+      processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    bumpCounter("messagerow.mount", 3);
+    shutdownProfiling();
+
+    const run2 = JSON.parse(readFileSync(outPath, "utf8")) as {
+      counters: Record<string, number>;
+    };
+    expect(run2.counters["messagerow.mount"]).toBe(3);
+  });
+
+  test("exit handler is registered exactly once across multiple runs", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    process.env.KOI_TUI_PROFILE_OUT = join(workDir, "report.json");
+    resetProfiler();
+
+    const onSpy = mock((_event: string, _handler: () => void) => process);
+
+    initProfiling({
+      processOn: onSpy as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    shutdownProfiling();
+    initProfiling({
+      processOn: onSpy as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    shutdownProfiling();
+
+    const exitCalls = onSpy.mock.calls.filter((c) => c[0] === "exit");
+    expect(exitCalls.length).toBe(1);
+  });
+
+  test("exit handler is idempotent after shutdownProfiling already wrote", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    const outPath = join(workDir, "report.json");
+    process.env.KOI_TUI_PROFILE_OUT = outPath;
+    resetProfiler();
+
+    let exitHandler: (() => void) | null = null;
+    const onSpy = mock((event: string, handler: () => void) => {
+      if (event === "exit") exitHandler = handler;
+      return process;
+    });
+
+    initProfiling({
+      processOn: onSpy as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    bumpCounter("messagerow.mount", 9);
+    shutdownProfiling();
+
+    // After shutdown, the report exists with the correct value
+    const after = JSON.parse(readFileSync(outPath, "utf8")) as {
+      counters: Record<string, number>;
+    };
+    expect(after.counters["messagerow.mount"]).toBe(9);
+
+    // Now bump a new counter that should NOT appear in any subsequent
+    // exit-triggered write (since shutdown already flushed this run).
+    bumpCounter("messagerow.mount", 50);
+    if (!exitHandler) return;
+    (exitHandler as () => void)();
+
+    const stillSame = JSON.parse(readFileSync(outPath, "utf8")) as {
+      counters: Record<string, number>;
+    };
+    expect(stillSame.counters["messagerow.mount"]).toBe(9);
   });
 });

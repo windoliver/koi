@@ -1,19 +1,30 @@
 /**
- * Integration glue — one-shot init that the TUI entrypoint calls. Wires the
- * CPU sampler and registers a `process.on("exit")` handler that flushes the
- * profile report to disk.
+ * Integration glue — binds profiling lifecycle to a TUI run.
  *
- * Idempotent: a second initProfiling() call is a no-op so we don't double-
- * register exit handlers if the TUI re-enters createTuiApp.
+ * `initProfiling()` is called from `createTuiApp` after the TTY guard. It
+ * resets profile state for this run, starts the CPU sampler, and registers
+ * a fallback `process.on("exit")` flush in case the process dies before
+ * the TUI's own `stop()` calls `shutdownProfiling()`.
+ *
+ * `shutdownProfiling()` is called from `TuiAppHandle.stop()`. It stops the
+ * sampler and writes the report immediately, so subsequent createTuiApp
+ * calls in the same process get fresh measurements (the sampler would
+ * otherwise keep ticking through idle time and contaminate the next run).
+ *
+ * The exit handler is registered exactly once per process — subsequent
+ * runs reuse it. A `writtenForRun` flag keeps it idempotent so it does
+ * not double-write after a normal shutdown.
  *
  * Output path: `KOI_TUI_PROFILE_OUT` (default `./koi-tui-profile.json`).
+ * Multiple runs in one process overwrite the same file unless the env
+ * var is changed between runs.
  *
  * Disabled path: zero work — `isProfilingEnabled()` is checked first.
  */
 
 import { writeFileSync } from "node:fs";
 import { type CpuSamplerOptions, startCpuSampler, stopCpuSampler } from "./cpu-sampler.js";
-import { dumpProfile, isProfilingEnabled } from "./profiler.js";
+import { dumpProfile, isProfilingEnabled, resetProfiler } from "./profiler.js";
 
 const DEFAULT_OUT_PATH = "./koi-tui-profile.json";
 
@@ -24,32 +35,61 @@ export interface InitProfilingOptions {
   readonly cpuSamplerOptions?: CpuSamplerOptions;
 }
 
-// `let` justified: idempotency latch
-let initialized = false;
+// `let` justified: per-run lifecycle latches
+let runActive = false;
+let writtenForRun = false;
+let exitHandlerRegistered = false;
 
 export function initProfiling(options?: InitProfilingOptions): void {
-  if (initialized) return;
+  if (runActive) return; // already running this TUI session
   if (!isProfilingEnabled()) return;
-  initialized = true;
 
-  const onProcess = options?.processOn ?? process.on.bind(process);
+  // Fresh state for this run — must come before sampler start so the
+  // sampler's first tick lands in a clean state map.
+  resetProfiler({ enabled: true });
+  runActive = true;
+  writtenForRun = false;
+
   startCpuSampler(options?.cpuSamplerOptions);
 
-  onProcess("exit", () => {
-    stopCpuSampler();
-    const report = dumpProfile();
-    const path = process.env.KOI_TUI_PROFILE_OUT ?? DEFAULT_OUT_PATH;
-    try {
-      writeFileSync(path, JSON.stringify(report, null, 2));
-      // Surface the path so users can find the report.
-      process.stderr.write(`[koi-tui-profile] report written to ${path}\n`);
-    } catch (err) {
-      process.stderr.write(`[koi-tui-profile] failed to write ${path}: ${String(err)}\n`);
-    }
-  });
+  if (!exitHandlerRegistered) {
+    exitHandlerRegistered = true;
+    const onProcess = options?.processOn ?? process.on.bind(process);
+    onProcess("exit", () => writeReportIfNeeded());
+  }
 }
 
-/** Test-only: clear the idempotency latch. Not exported from the package. */
+/**
+ * End the current profiling run: stop the sampler, flush the report, and
+ * reset the run latch so the next createTuiApp() in this process can
+ * start a clean measurement.
+ *
+ * Idempotent — safe to call from `TuiAppHandle.stop()` even when
+ * profiling was not enabled.
+ */
+export function shutdownProfiling(): void {
+  if (!runActive) return;
+  stopCpuSampler();
+  writeReportIfNeeded();
+  runActive = false;
+}
+
+function writeReportIfNeeded(): void {
+  if (writtenForRun) return;
+  writtenForRun = true;
+  const report = dumpProfile();
+  const path = process.env.KOI_TUI_PROFILE_OUT ?? DEFAULT_OUT_PATH;
+  try {
+    writeFileSync(path, JSON.stringify(report, null, 2));
+    process.stderr.write(`[koi-tui-profile] report written to ${path}\n`);
+  } catch (err) {
+    process.stderr.write(`[koi-tui-profile] failed to write ${path}: ${String(err)}\n`);
+  }
+}
+
+/** Test-only: clear all latches. Not exported from the package. */
 export function __resetProfilingForTests(): void {
-  initialized = false;
+  runActive = false;
+  writtenForRun = false;
+  exitHandlerRegistered = false;
 }

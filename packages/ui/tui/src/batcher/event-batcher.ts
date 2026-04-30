@@ -85,17 +85,19 @@ export function createEventBatcher<T>(
   let microtaskPending = false;
   let flushTimer: TimerHandle | null = null;
   let disposed = false;
-  // `let` justified: timestamp of previous flush for inter-flush-gap histogram
-  let lastFlushAt = -1;
+  // `let` justified: timestamp of previous flush START — gap is start-to-start,
+  // not end-to-start, so a slow onFlush does not bias the metric upward.
+  let lastFlushStartAt = -1;
 
-  function recordFlushMetrics(batchSize: number, onFlushDurationMs: number): void {
+  function recordFlushMetrics(batchSize: number, flushStartT: number, onFlushEndT: number): void {
     recordHistogram("batcher.flush.batchSize", batchSize);
-    recordHistogram("batcher.flush.onFlushMs", onFlushDurationMs);
-    const now = performance.now();
-    if (lastFlushAt >= 0) {
-      recordHistogram("batcher.flush.gapMs", now - lastFlushAt);
+    recordHistogram("batcher.flush.onFlushMs", onFlushEndT - flushStartT);
+    if (lastFlushStartAt >= 0) {
+      // Start-to-start gap: pure scheduler/coalescing interval, independent
+      // of how long the previous onFlush took.
+      recordHistogram("batcher.flush.gapMs", flushStartT - lastFlushStartAt);
     }
-    lastFlushAt = now;
+    lastFlushStartAt = flushStartT;
   }
 
   function scheduleFlush(): void {
@@ -112,7 +114,7 @@ export function createEventBatcher<T>(
     try {
       onFlush(batch); // may throw — intentional: caller sees the error
     } finally {
-      recordFlushMetrics(batch.length, performance.now() - t0);
+      recordFlushMetrics(batch.length, t0, performance.now());
     }
   }
 
@@ -143,7 +145,7 @@ export function createEventBatcher<T>(
       try {
         onFlush(batch);
       } finally {
-        recordFlushMetrics(batch.length, performance.now() - t0);
+        recordFlushMetrics(batch.length, t0, performance.now());
       }
     },
 

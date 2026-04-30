@@ -25,11 +25,11 @@ On normal exit, the harness writes `./profile.json` (or whatever you set
 
 | Probe | Where | Question it answers |
 |-------|-------|---------------------|
-| `messagerow.mount` / `messagerow.cleanup` | `components/message-row.tsx` | Does Solid `<For>` unmount off-screen rows on scroll? |
+| `messagerow.mount` / `messagerow.cleanup` | `components/message-row.tsx` | Counts transcript mount / unmount events. **Does not** observe scroll virtualization (Solid `<For>` does not unmount on scroll — it unmounts only when the messages array changes, e.g. session clear). Useful as a baseline check that the transcript array is stable across a scroll scenario. |
 | `batcher.flush.batchSize` | `batcher/event-batcher.ts` | How many events per flush? Is 16ms over- or under-coalescing? |
-| `batcher.flush.gapMs` | `batcher/event-batcher.ts` | Actual interval between flushes |
+| `batcher.flush.gapMs` | `batcher/event-batcher.ts` | Start-to-start interval between flushes (independent of onFlush duration) |
 | `batcher.flush.onFlushMs` | `batcher/event-batcher.ts` | How long does the store dispatch take per flush? |
-| `cpu.userUs` / `cpu.systemUs` / `cpu.utilizationPct` (timestamped samples) | `profiling/cpu-sampler.ts` | End-to-end CPU during scenarios — picks up costs we can't see from inside `@koi/ui-tui` (e.g. `<scrollbox>` redraws, `<markdown>` parses) |
+| `cpu.userUs` / `cpu.systemUs` / `cpu.utilizationPct` (timestamped samples) | `profiling/cpu-sampler.ts` | End-to-end CPU during scenarios — picks up costs we can't see from inside `@koi/ui-tui` (e.g. `<scrollbox>` redraws, `<markdown>` parses). **This is the only signal that observes scroll-induced render cost.** |
 
 ### Histograms vs timestamped samples
 
@@ -73,9 +73,10 @@ content (e.g. a recorded session loaded with `koi resume`).
 4. Quit (Ctrl+C → confirm).
 
 **Read**:
-- `counters.messagerow.mount` ≈ message count → no virtualization at Solid layer (rows stay mounted)
-- `counters.messagerow.cleanup` >> 0 during scroll → Solid `<For>` is virtualizing
+- `counters.messagerow.mount` should equal the loaded message count (sanity check: transcript wired correctly).
+- `counters.messagerow.cleanup` should be **0** during a pure scroll (no session changes). A non-zero value indicates the transcript is mutating during the scenario — invalidates the run; restart and avoid actions that trigger session reload.
 - p95 of `samples["cpu.utilizationPct"]` **filtered to the scroll window** — if low, OpenTUI is already efficient; if high, the scrollbox is redrawing all rows. Filter samples to only those whose `t` falls between scroll-start and scroll-end (mark these timestamps before/after sending PageUp/PageDown).
+- Since neither Solid lifecycle counter observes virtualization, the windowed CPU figure is the **only** signal for this verdict.
 
 **Verdict thresholds** (windowed p95):
 - p95 CPU < 15% during pure scroll → **don't virtualize** (mutable store is enough).

@@ -22,7 +22,7 @@ import type { CliRenderer, SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { createComponent } from "solid-js";
 import type { PermissionBridge } from "./bridge/permission-bridge.js";
-import { initProfiling } from "./profiling/integration.js";
+import { initProfiling, shutdownProfiling } from "./profiling/integration.js";
 import type { TuiStore } from "./state/store.js";
 import type { FetchModelsResult, ModelEntry } from "./state/types.js";
 import { wireStdinResurrection } from "./stdin-resurrection.js";
@@ -703,6 +703,12 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         clearInterval(keepAliveTimer);
         keepAliveTimer = null;
       }
+
+      // Wave 5 measurement (#1586): stop the sampler and flush the report
+      // bound to this run. Without this, the sampler would keep ticking
+      // through idle time after stop() and contaminate any subsequent
+      // createTuiApp() in the same process. No-op when profiling is off.
+      shutdownProfiling();
 
       // Resolve the per-run deferred — unblocks callers awaiting handle.done().
       currentDoneResolve?.();
