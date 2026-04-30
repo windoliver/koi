@@ -889,3 +889,8 @@ deterministic tools and is opt-in via `RuntimeConfig.callDedup`.
 End-to-end verified via TUI: glob tool call shows
 `koi:circuit-breaker` + `koi:model-call-limit` + `koi:tool-call-limit`
 spans on both model and tool paths in `/trajectory`.
+
+
+## Changelog
+
+- 2026-04-29: Adversarial review hardening (#1378) — bounded shutdown waits, pre-await accounting, identity-based dedup (transport+name), allowlist-based env exposure, reused in-flight scans, and lint cleanup.

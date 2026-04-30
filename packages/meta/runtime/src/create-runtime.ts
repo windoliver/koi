@@ -1,3 +1,5 @@
+import { createDiscoveryProvider } from "@koi/agent-discovery";
+import { createAgentMonitorMiddleware } from "@koi/agent-monitor";
 import { createAgentResolver } from "@koi/agent-runtime";
 import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit-sink-ndjson";
 import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
@@ -67,6 +69,7 @@ import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-tra
 import { createForgeDemandDetector, validateForgeDemandConfig } from "@koi/forge-demand";
 import { createHttpTransport, type NexusTransport } from "@koi/fs-nexus";
 import { createGovernanceMiddleware, GOVERNANCE_MIDDLEWARE_NAME } from "@koi/governance-core";
+import { createAceMiddleware } from "@koi/middleware-ace";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createFeedbackLoopMiddleware } from "@koi/middleware-feedback-loop";
 import { createOtelMiddleware, type OtelMiddlewareConfig } from "@koi/middleware-otel";
@@ -266,6 +269,16 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         ? [...baseWithGovernance, feedbackLoopMiddleware]
         : baseWithGovernance;
 
+    // Install ACE middleware when config.ace is provided and not already present.
+    // Phase observe / priority 800 — runs after intercept + resolve so injection
+    // observes the final systemPrompt and trajectory recording captures the real
+    // outcome of every model + tool call. (#1715)
+    const hasAce = new Set(baseWithFeedbackLoop.map((mw) => mw.name)).has("ace");
+    const aceMiddleware =
+      config.ace !== undefined && !hasAce ? createAceMiddleware(config.ace) : undefined;
+    const baseWithAce: readonly KoiMiddleware[] =
+      aceMiddleware !== undefined ? [...baseWithFeedbackLoop, aceMiddleware] : baseWithFeedbackLoop;
+
     // Install forge-demand detector when config.forgeDemand is provided and not already
     // present. Priority 445 — outer relative to feedback-loop (450) so the detector
     // observes only AFTER feedback-loop has updated tool-health and run validators/retry.
@@ -337,7 +350,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         // it was already vetted (or rejected) by the forgeHealth
         // check above; reaching here means it failed that check and
         // must NOT be wired silently.
-        const preinstalled = baseWithFeedbackLoop.find(
+        const preinstalled = baseWithAce.find(
           (mw) => mw.name === "feedback-loop" && mw !== feedbackLoopMiddleware,
         );
         const handle = (preinstalled as { readonly healthHandle?: unknown } | undefined)
@@ -375,10 +388,10 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     const baseWithForgeDemand: readonly KoiMiddleware[] =
       forgeDemandHandle !== undefined
         ? [
-            ...baseWithFeedbackLoop.filter((mw) => mw.name !== "forge-demand-detector"),
+            ...baseWithAce.filter((mw) => mw.name !== "forge-demand-detector"),
             forgeDemandHandle.middleware,
           ]
-        : baseWithFeedbackLoop;
+        : baseWithAce;
 
     // Install exfiltration guard by default when: (1) not explicitly disabled,
     // (2) not already provided, and (3) the adapter has terminals so the intercept
@@ -448,8 +461,22 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     ) {
       resilienceAdds.push(createCallDedupMiddleware(config.callDedup));
     }
-    const middleware: readonly KoiMiddleware[] =
+    const middlewareBeforeMonitor: readonly KoiMiddleware[] =
       resilienceAdds.length > 0 ? [...afterModelRouter, ...resilienceAdds] : afterModelRouter;
+
+    // Agent monitor (#1378) — pure observer, runs in observe phase.
+    // Skip when already provided in config.middleware by name.
+    const hasAgentMonitor = new Set(middlewareBeforeMonitor.map((mw) => mw.name)).has(
+      "agent-monitor",
+    );
+    const agentMonitorMiddleware =
+      config.agentMonitor !== undefined && !hasAgentMonitor
+        ? createAgentMonitorMiddleware(config.agentMonitor === true ? {} : config.agentMonitor)
+        : undefined;
+    const middleware: readonly KoiMiddleware[] =
+      agentMonitorMiddleware !== undefined
+        ? [...middlewareBeforeMonitor, agentMonitorMiddleware]
+        : middlewareBeforeMonitor;
 
     const activityTimeoutConfig = resolveActivityTimeoutConfig(
       config.activityTimeout,
@@ -502,6 +529,14 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
               }
             },
           }
+        : undefined;
+
+    // External agent discovery (#1378). When configured, build the
+    // ComponentProvider here so it appears on RuntimeHandle.discoveryProvider
+    // and the caller forwards it into createKoi({ providers }).
+    const discoveryProvider: ComponentProvider | undefined =
+      config.agentDiscovery !== undefined
+        ? createDiscoveryProvider(config.agentDiscovery === true ? {} : config.agentDiscovery)
         : undefined;
 
     // Fail closed: if a real (non-stub) "permissions" middleware is installed
@@ -1079,6 +1114,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       artifacts: artifactsHandle,
       filesystemBackend,
       filesystemProvider,
+      discoveryProvider,
       browserProvider,
       lspProvider,
       memoryStore,

@@ -16,6 +16,7 @@ export const L0_PACKAGES: ReadonlySet<string> = new Set(["@koi/core"]);
  * Importable by both L1 and L2 packages.
  */
 export const L0U_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/ace-types",
   "@koi/bash-ast",
   "@koi/bash-classifier",
   "@koi/bash-security",
@@ -82,6 +83,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/long-running",
   "@koi/loop",
   "@koi/mcp",
+  "@koi/middleware-ace",
   "@koi/middleware-audit",
   "@koi/middleware-degenerate",
   "@koi/middleware-feedback-loop",
@@ -92,6 +94,8 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/nexus-delegation",
   "@koi/permissions-nexus",
   "@koi/plugins",
+  "@koi/sandbox-docker",
+  "@koi/sandbox-executor",
   "@koi/sandbox-os",
   "@koi/session",
   "@koi/skill-tool",

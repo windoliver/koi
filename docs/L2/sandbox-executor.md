@@ -1,234 +1,123 @@
-# @koi/sandbox-executor — Sandbox Executor Backends
+# @koi/sandbox-executor — Subprocess-backed SandboxExecutor
 
-`@koi/sandbox-executor` is an L2 package that provides sandbox execution backends for
-brick verification and runtime. It offers two execution strategies — subprocess isolation
-(with OS-level sandboxing) for verification, and in-process execution for promoted bricks.
-
----
+Implements the `SandboxExecutor` contract from `@koi/core` by spawning a Bun
+subprocess that loads untrusted code, runs it, and returns the result through a
+stderr-framed protocol. OS-level isolation (seatbelt/bwrap) is delegated to
+`@koi/sandbox-os`; this package is the executor wrapper.
 
 ## Why it exists
 
-Forged bricks range from untrusted (community-authored, freshly forged) to human-approved
-(promoted middleware). Running all of them in the same process with full privileges is a
-security flaw. This package implements **defense in depth**: sandbox verification runs code
-in an isolated subprocess, while promoted bricks run in-process for performance.
+`@koi/forge` (verifier) and `@koi/sandbox-ipc` need to run brick code in a separate
+process so timeouts can SIGKILL, OOM crashes don't take down the host, and the
+host heap is invisible. This package is the *minimal* subprocess executor: it
+spawns Bun, frames the result, captures bounded output, and translates exit
+modes into typed `SandboxError` values.
+
+## Layer
 
 ```
-  Executor               Isolation level           Used for
-  ────────               ───────────────           ────────
-  subprocess-executor    ● Separate process        Forge verification
-                         ● Restricted env vars
-                         ● Network deny (Seatbelt / Bubblewrap)
-                         ● Resource limits (ulimit)
-                         ● Timeout + SIGKILL
-                         ● 10 MB stdout cap
-
-  promoted-executor      ● In-process import()     Runtime execution
-                         ● LRU cache (256-entry)    of promoted bricks
-                         ● Promise.race timeout
+L2  @koi/sandbox-executor
+    depends on: @koi/core (L0)
+    does NOT import: @koi/engine (L1), peer L2
 ```
 
-```
-                           ┌──────────────────────────────┐
-                           │  @koi/forge verify pipeline   │
-                           │  or ForgeRuntime.resolveTool  │
-                           └──────────────┬───────────────┘
-                                          │
-                        ┌─────────────────┼─────────────────┐
-                        │                                   │
-                        ▼                                   ▼
-               ┌────────────────┐                  ┌────────────────┐
-               │  subprocess    │                  │  promoted      │
-               │  executor      │                  │  executor      │
-               │  (verification)│                  │  (runtime)     │
-               └────────────────┘                  └────────────────┘
-               Process-level                       In-process
-               isolation via                       new Function()
-               Bun.spawn()                         or import()
-```
-
----
-
-## Architecture
-
-### Layer position
-
-```
-L0  @koi/core                ─ SandboxExecutor, SandboxResult, SandboxError,
-                               ExecutionContext, TrustTier (types only)
-L2  @koi/sandbox-executor    ─ this package (no L1 dependency)
-    @koi/sandbox             ─ OS-level sandbox profiles (dev dependency)
-    @koi/sandbox-ipc         ─ IPC bridge to sandbox workers (dev dependency)
-```
-
-`@koi/sandbox-executor` only imports from `@koi/core` (L0) in production.
-It never touches `@koi/engine` (L1) or peer L2 packages.
-
-### Internal module map
-
-```
-index.ts                         ← public re-exports
-│
-├── promoted-executor.ts         ← in-process executor (new Function + import)
-│
-├── subprocess-executor.ts       ← child-process executor with OS isolation
-├── subprocess-runner.ts         ← child process entry point (stdin/stdout JSON)
-│
-├── subprocess-executor.test.ts  ← subprocess isolation tests
-├── promoted-executor.test.ts    ← promoted executor tests
-└── __tests__/
-    └── ipc-integration.test.ts  ← IPC bridge integration (gated)
-```
-
----
-
-## Core concepts
-
-### Subprocess executor — process-level isolation
-
-The subprocess executor spawns a child Bun process for each execution. This provides
-five layers of isolation:
-
-```
-  ┌─────────────────────────────────────────────────────────────────┐
-  │  HOST PROCESS (Koi Engine)                                      │
-  │                                                                 │
-  │  subprocess-executor.ts                                         │
-  │  ├── buildIsolatedCommand(["bun", "run", runner.ts], context)   │
-  │  ├── Bun.spawn(isolatedCmd, { stdin, stdout, stderr, env })     │
-  │  ├── setTimeout → proc.kill("SIGKILL")                          │
-  │  └── parse JSON from stdout → SandboxResult                    │
-  │                                                                 │
-  │  Five isolation layers:                                         │
-  │                                                                 │
-  │  1. PROCESS ISOLATION                                           │
-  │     Separate memory space. Child crash ≠ host crash.            │
-  │                                                                 │
-  │  2. ENVIRONMENT ISOLATION                                       │
-  │     Only 5 safe env vars forwarded.                             │
-  │                                                                 │
-  │  3. NETWORK ISOLATION (when networkAllowed=false)               │
-  │     macOS: sandbox-exec / Linux: bwrap --unshare-net            │
-  │                                                                 │
-  │  4. RESOURCE LIMITS (when resourceLimits set)                   │
-  │     ulimit -v (memory) and ulimit -u (PIDs, Linux)              │
-  │                                                                 │
-  │  5. OUTPUT CAP                                                  │
-  │     Max 10 MB stdout.                                           │
-  │                                                                 │
-  └─────────────────────────────────────────────────────────────────┘
-```
-
-### Promoted executor — in-process execution
-
-For human-approved bricks (`promoted` tier), isolation is unnecessary. The promoted
-executor runs code in the host process for maximum performance:
-
-```
-  Two execution modes:
-
-  1. import() mode (when context.entryPath is provided):
-     ├── Dynamic import() with query-string cache busting
-     ├── Calls default export with input
-     ├── Promise.race timeout
-     └── LRU cached (256 entries, keyed by entryPath)
-
-  2. new Function() mode (fallback, no entry file):
-     ├── new Function("input", code) → CompiledFn
-     ├── Promise.resolve(fn(input))
-     └── LRU cached (256 entries, keyed by code string)
-```
-
----
-
-## API reference
-
-### Factory functions
+## Public API
 
 ```typescript
-// Subprocess executor — spawns child Bun processes with OS isolation
-createSubprocessExecutor(): SandboxExecutor
-
-// Promoted executor — in-process new Function() / import()
-createPromotedExecutor(): SandboxExecutor
-```
-
-### Types
-
-| Type | Source | Description |
-|------|--------|-------------|
-| `SandboxExecutor` | `@koi/core` | Pluggable executor contract (`execute()`) |
-| `SandboxResult` | `@koi/core` | `{ output, durationMs, memoryUsedBytes? }` |
-| `SandboxError` | `@koi/core` | `{ code, message, durationMs }` |
-| `SandboxErrorCode` | `@koi/core` | `"TIMEOUT" \| "OOM" \| "PERMISSION" \| "CRASH"` |
-| `ExecutionContext` | `@koi/core` | `{ workspacePath?, entryPath?, networkAllowed?, resourceLimits? }` |
-| `TrustTier` | `@koi/core` | `"sandbox" \| "verified" \| "promoted"` |
-| `SandboxPlatform` | this pkg | `"seatbelt" \| "bwrap" \| "none"` |
-
-### Utility functions
-
-```typescript
-// Detect OS sandbox capability (cached, one-time detection)
-detectSandboxPlatform(): SandboxPlatform
-```
-
----
-
-## Examples
-
-### Subprocess executor for verification
-
-```typescript
-import { createSubprocessExecutor } from "@koi/sandbox-executor";
-
-const executor = createSubprocessExecutor();
-
-const result = await executor.execute(
-  "",
-  { email: "test@test.com" },
-  10_000,
-  {
-    entryPath: "/tmp/workspace/validate-email.ts",
-    workspacePath: "/tmp/workspace",
-    networkAllowed: false,
-    resourceLimits: { maxMemoryMb: 256 },
-  },
-);
-```
-
-### Integration with @koi/forge
-
-```typescript
-import { createSubprocessExecutor } from "@koi/sandbox-executor";
-import { createForgeRuntime, createInMemoryForgeStore } from "@koi/forge";
-
-const executor = createSubprocessExecutor();
-const store = createInMemoryForgeStore();
-const runtime = createForgeRuntime({ store, executor });
-
-const tool = await runtime.resolveTool("my-tool");
-if (tool !== undefined) {
-  const result = await tool.execute({ a: 40, b: 2 });
+export interface SubprocessExecutorConfig {
+  readonly bunPath?: string;       // default: "bun"
+  readonly maxOutputBytes?: number; // default: 10 MiB
+  readonly cwd?: string;
+  /**
+   * Caller asserts that real isolation is provided externally (e.g., by composing
+   * with @koi/sandbox-os, running in a container, or operating in a trusted env).
+   * When false (default), the executor refuses ExecutionContext fields that would
+   * require enforcement (networkAllowed=false, resourceLimits) — failing closed
+   * prevents silent trust-boundary leaks.
+   */
+  readonly externalIsolation?: boolean;
+  /**
+   * When true (default), the executor refuses to run if process-group isolation
+   * via `setsid` is unavailable on PATH. This prevents silent leakage of grandchild
+   * processes after timeout — without process-group kill, only the direct Bun child
+   * is SIGKILLed; grandchildren spawned by user code keep running.
+   *
+   * Set to false to opt out (e.g., trusted code, Windows, minimal containers).
+   *
+   * Default: true (fail-closed).
+   */
+  readonly requireProcessGroupIsolation?: boolean;
+  /**
+   * Dependency-injection override for setsid resolution.
+   * Useful in tests to simulate setsid absence without PATH manipulation.
+   */
+  readonly resolveSetsid?: () => string | null;
 }
 
-runtime.dispose?.();
+export function createSubprocessExecutor(
+  config?: SubprocessExecutorConfig,
+): SandboxExecutor;
 ```
 
----
+## Isolation / explicit-deny guard
 
-## Platform support
+`subprocess-executor` can only *signal* isolation constraints (via env vars such as
+`KOI_NETWORK_ALLOWED=0`, `KOI_MAX_MEMORY_MB`, `KOI_MAX_PIDS`) — it cannot *enforce*
+them without OS-level support. The guard fires only on **explicit** isolation requests:
 
-| Platform | Network isolation | Memory limits | PID limits |
-|----------|------------------|---------------|------------|
-| macOS (Darwin) | Seatbelt (`sandbox-exec -p`) | `ulimit -v` | Not supported |
-| Linux | Bubblewrap (`bwrap --unshare-net`) | `ulimit -v` | `ulimit -u` |
-| Other | Fail closed (PERMISSION error) | `ulimit -v` | `ulimit -u` |
+- Passing `context: { networkAllowed: false }` without `externalIsolation: true`
+  returns `{ ok: false, error: { code: "PERMISSION" } }` immediately — explicit
+  network-deny cannot be enforced in plain subprocess mode.
+- Same for any `context.resourceLimits` value — OS-level enforcement required.
+- **Omitting** `networkAllowed` (undefined) means "caller has no isolation opinion" —
+  the executor passes through. `ExecutionContext` is also used for non-isolation
+  metadata (`workspacePath`, `entryPath`, `env`) and those fields never trigger the guard.
+- Passing `context: {}` or `context: { workspacePath: "/tmp/x", entryPath: "..." }` is
+  always allowed — no isolation opinion, no guard.
 
----
+To opt in to OS-enforced isolation — for example when composing with `@koi/sandbox-os`
+which wraps the process with real OS isolation — set `externalIsolation: true` in the
+config. The env-var signals are then forwarded to the child process as before.
 
-## Related
+`executor.execute(code, input, timeoutMs, context?)`:
 
-- [Koi Architecture](../architecture/Koi.md) — system overview and layer rules
-- [@koi/forge](./forge.md) — self-extension runtime
-- `@koi/sandbox` — OS-level sandbox profiles
-- `@koi/core` — L0 contract definitions (`SandboxExecutor`, `ExecutionContext`)
+1. Writes `code` to a temp file under `os.tmpdir()`.
+2. Spawns `bun run <runner.ts>` with the temp path + JSON-encoded `input` on argv.
+3. Reads stderr until the `__KOI_RESULT__\n` marker; rest is `SubprocessOutput`.
+4. SIGKILLs on timeout; classifies non-zero exits as `CRASH`/`OOM`/`PERMISSION`.
+5. Returns `Result<SandboxResult, SandboxError>`.
+
+## Output capping (drain-not-kill)
+
+Both stdout and stderr are read with a streaming byte-cap (`readBoundedText`) that
+stops accumulating bytes once `maxOutputBytes` is reached. When the cap is hit, the
+reader **continues draining** the underlying pipe silently (discarding excess bytes)
+so the child is not blocked on a full pipe buffer — which would otherwise cause a
+false TIMEOUT. The child is NOT killed on cap; only the timeout timer kills the child.
+
+This means a noisy-but-correct child that logs more than `maxOutputBytes` to stdout
+is not killed; it runs to completion. If the stderr framing marker was past the cap,
+the run is classified as CRASH after natural exit. This is intentional — reserving
+marker space is more complex and reserved for a future improvement.
+
+## Process-group kill (fail-closed)
+
+On Linux/macOS with `setsid` on PATH, the child is wrapped in a new session
+(`setsid bun run ...`). Kill sends `SIGKILL` to `-proc.pid` (negative PID = whole
+process group), cleaning up grandchild processes automatically.
+
+By default (`requireProcessGroupIsolation: true`), the executor **refuses to run**
+if `setsid` is not available on PATH. This is a security fail-closed: without
+process-group isolation, grandchild processes spawned by user code survive the SIGKILL
+timeout, leaking into the host process tree indefinitely.
+
+To opt out — for example on Windows, in minimal containers, or for trusted code where
+descendant cleanup is not a concern — pass `requireProcessGroupIsolation: false`.
+
+**TODO**: explore Bun.spawn posix\_spawn flags as a portable alternative to setsid.
+
+## v1 references
+
+`archive/v1/packages/virt/sandbox-executor` — ported `subprocess-runner.ts`,
+trimmed `subprocess-executor.ts` (517 → ~200 LOC). Dropped inline
+seatbelt/bwrap profile generation (callers now compose with `@koi/sandbox-os`).

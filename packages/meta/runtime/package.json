@@ -11,6 +11,9 @@
     }
   },
   "dependencies": {
+    "@koi/agent-discovery": "workspace:*",
+    "@koi/agent-monitor": "workspace:*",
+    "@koi/agent-procfs": "workspace:*",
     "@koi/agent-runtime": "workspace:*",
     "@koi/agent-summary": "workspace:*",
     "@koi/artifacts": "workspace:*",
@@ -63,6 +66,8 @@
     "@koi/audit-sink-nexus": "workspace:*",
     "@koi/audit-sink-sqlite": "workspace:*",
     "@koi/violation-store-sqlite": "workspace:*",
+    "@koi/ace-types": "workspace:*",
+    "@koi/middleware-ace": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
     "@koi/middleware-call-dedup": "workspace:*",
     "@koi/middleware-call-limits": "workspace:*",
@@ -102,6 +107,8 @@
     "@koi/bash-ast": "workspace:*",
     "@koi/bash-security": "workspace:*",
     "@koi/tools-bash": "workspace:*",
+    "@koi/sandbox-docker": "workspace:*",
+    "@koi/sandbox-executor": "workspace:*",
     "@koi/sandbox-os": "workspace:*",
     "@koi/scheduler": "workspace:*",
     "@koi/scheduler-provider": "workspace:*",
