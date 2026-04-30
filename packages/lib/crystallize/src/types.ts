@@ -20,10 +20,24 @@ export interface ToolNgram {
   readonly key: string;
 }
 
-/** N-gram occurrence record — n-gram plus the turn indices where it appeared. */
+/**
+ * Aggregated outcome statistics across every occurrence of an n-gram. Counts
+ * step-level outcomes (one increment per step that carried `outcome` data),
+ * not per-occurrence verdicts — this preserves resolution when occurrences
+ * have mixed step outcomes.
+ */
+export interface OutcomeStats {
+  /** Steps with `outcome === "success"` summed across all occurrences. */
+  readonly successes: number;
+  /** Steps that carried any `outcome` value summed across all occurrences. */
+  readonly withOutcome: number;
+}
+
+/** N-gram occurrence record — n-gram plus turn indices and aggregated outcomes. */
 export interface NgramEntry {
   readonly ngram: ToolNgram;
   readonly turnIndices: readonly number[];
+  readonly outcomeStats: OutcomeStats;
 }
 
 /** A detected repeating pattern surfaced as a forge candidate. */
@@ -33,6 +47,8 @@ export interface CrystallizationCandidate {
   readonly turnIndices: readonly number[];
   readonly detectedAt: number;
   readonly suggestedName: string;
+  /** Aggregated outcome stats across every occurrence — drives success-rate scoring. */
+  readonly outcomeStats: OutcomeStats;
   /** Quality score — higher = better forge candidate. Computed by `computeCrystallizeScore`. */
   readonly score?: number | undefined;
 }

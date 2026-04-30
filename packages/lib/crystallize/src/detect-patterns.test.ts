@@ -11,6 +11,7 @@ function makeCandidate(toolIds: readonly string[], occurrences: number): Crystal
     turnIndices: Array.from({ length: occurrences }, (_, i) => i),
     detectedAt: 0,
     suggestedName: toolIds.join("-then-"),
+    outcomeStats: { successes: 0, withOutcome: 0 },
   };
 }
 
@@ -57,6 +58,26 @@ describe("filterSubsumed", () => {
     const a = makeCandidate(["x", "y"], 3);
     const b = makeCandidate(["p", "q"], 3);
     expect(filterSubsumed([a, b])).toHaveLength(2);
+  });
+
+  test("does not subsume across pipe-key boundaries (regression: substring vs subsequence)", () => {
+    // Pipe-joined keys: "b|c" vs "a|b|cd". Naive substring match would falsely
+    // claim "b|c" is contained in "a|b|cd"; tokenised subsequence comparison
+    // must reject it because [b, c] is not a contiguous subsequence of
+    // [a, b, cd].
+    const shorter = makeCandidate(["b", "c"], 3);
+    const longer = makeCandidate(["a", "b", "cd"], 3);
+    const kept = filterSubsumed([shorter, longer]);
+    expect(kept.map((c) => c.ngram.key).sort()).toEqual(["a|b|cd", "b|c"]);
+  });
+
+  test("does not subsume when needle is a non-contiguous subsequence of haystack", () => {
+    // [a, c] is a non-contiguous subsequence of [a, b, c]; subsumption must
+    // require contiguity.
+    const shorter = makeCandidate(["a", "c"], 3);
+    const longer = makeCandidate(["a", "b", "c"], 3);
+    const kept = filterSubsumed([shorter, longer]);
+    expect(kept.map((c) => c.ngram.key).sort()).toEqual(["a|b|c", "a|c"]);
   });
 });
 
@@ -157,6 +178,71 @@ describe("detectPatterns", () => {
       clock,
     );
     expect(candidates).toHaveLength(2);
+  });
+
+  test("ranks fresher pattern above stale higher-frequency pattern (score-driven sort)", () => {
+    // 5 fresh occurrences at turns 0..4 vs 6 ancient occurrences at turns
+    // 5..10. The stale pattern has more raw occurrences but recency decay
+    // should drop its score below the fresh pattern's once enough time has
+    // passed.
+    const traces = [
+      createTrace(0, ["fresh1", "fresh2"]),
+      createTrace(1, ["fresh1", "fresh2"]),
+      createTrace(2, ["fresh1", "fresh2"]),
+      createTrace(3, ["fresh1", "fresh2"]),
+      createTrace(4, ["fresh1", "fresh2"]),
+      createTrace(5, ["stale1", "stale2"]),
+      createTrace(6, ["stale1", "stale2"]),
+      createTrace(7, ["stale1", "stale2"]),
+      createTrace(8, ["stale1", "stale2"]),
+      createTrace(9, ["stale1", "stale2"]),
+      createTrace(10, ["stale1", "stale2"]),
+    ];
+    const stalePastTime = -10 * 1_800_000;
+    const firstSeenTimes = new Map<string, number>([["stale1|stale2", stalePastTime]]);
+    const candidates = detectPatterns(
+      traces,
+      { minNgramSize: 2, maxNgramSize: 2, firstSeenTimes },
+      () => 0,
+    );
+    expect(candidates).toHaveLength(2);
+    expect(candidates[0]?.ngram.key).toBe("fresh1|fresh2");
+    expect(candidates[1]?.ngram.key).toBe("stale1|stale2");
+  });
+
+  test("ranks healthier pattern above failure-prone pattern (score-driven sort)", () => {
+    // Two patterns with equal frequency but different aggregate success
+    // rates. Score-driven ordering must put the healthy one first.
+    const ok = [{}, {}] as const;
+    const bad = [undefined, undefined] as const;
+    const traces = [
+      createTrace(0, ["good1", "good2"], ok),
+      createTrace(1, ["good1", "good2"], ok),
+      createTrace(2, ["good1", "good2"], ok),
+      createTrace(3, ["bad1", "bad2"], bad),
+      createTrace(4, ["bad1", "bad2"], bad),
+      createTrace(5, ["bad1", "bad2"], bad),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates).toHaveLength(2);
+    expect(candidates[0]?.ngram.key).toBe("good1|good2");
+    expect(candidates[1]?.ngram.key).toBe("bad1|bad2");
+  });
+
+  test("aggregates outcome stats across every occurrence (not just one representative)", () => {
+    // Same pattern across 4 turns: 3 succeed, 1 fails. Aggregate outcome
+    // stats must reflect the full set, not the single n-gram representative.
+    const traces = [
+      createTrace(0, ["a", "b"], [{}, {}]),
+      createTrace(1, ["a", "b"], [{}, {}]),
+      createTrace(2, ["a", "b"], [{}, {}]),
+      createTrace(3, ["a", "b"], [undefined, undefined]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates).toHaveLength(1);
+    const stats = candidates[0]?.outcomeStats;
+    // 3 turns × 2 successes + 1 turn × 2 failures = 6 successes, 8 with outcome
+    expect(stats).toEqual({ successes: 6, withOutcome: 8 });
   });
 
   test("uses firstSeenTimes for detectedAt when key was previously observed", () => {

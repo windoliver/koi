@@ -1,11 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { computeCrystallizeScore, computeSuccessRate } from "./compute-score.js";
-import type { CrystallizationCandidate } from "./types.js";
+import type { CrystallizationCandidate, OutcomeStats, ToolStep } from "./types.js";
+
+function statsFromSteps(steps: readonly ToolStep[], occurrences: number): OutcomeStats {
+  let successes = 0;
+  let withOutcome = 0;
+  for (const step of steps) {
+    if (step.outcome === undefined) continue;
+    withOutcome += 1;
+    if (step.outcome === "success") successes += 1;
+  }
+  return { successes: successes * occurrences, withOutcome: withOutcome * occurrences };
+}
 
 function makeCandidate(
-  steps: readonly { readonly toolId: string; readonly outcome?: "success" | "failure" }[],
+  steps: readonly ToolStep[],
   occurrences: number,
   detectedAt: number,
+  outcomeStats?: OutcomeStats,
 ): CrystallizationCandidate {
   const key = steps.map((s) => s.toolId).join("|");
   return {
@@ -14,6 +26,7 @@ function makeCandidate(
     turnIndices: Array.from({ length: occurrences }, (_, i) => i),
     detectedAt,
     suggestedName: key,
+    outcomeStats: outcomeStats ?? statsFromSteps(steps, occurrences),
   };
 }
 
@@ -23,22 +36,26 @@ describe("computeSuccessRate", () => {
     expect(computeSuccessRate(c)).toBe(1.0);
   });
 
-  test("returns successes / steps-with-outcome", () => {
-    const c = makeCandidate(
-      [
-        { toolId: "a", outcome: "success" },
-        { toolId: "b", outcome: "failure" },
-        { toolId: "c", outcome: "success" },
-      ],
-      3,
-      0,
-    );
+  test("returns successes / steps-with-outcome from aggregate stats", () => {
+    const c = makeCandidate([{ toolId: "a" }, { toolId: "b" }, { toolId: "c" }], 1, 0, {
+      successes: 2,
+      withOutcome: 3,
+    });
     expect(computeSuccessRate(c)).toBeCloseTo(2 / 3);
   });
 
-  test("ignores steps without outcome when computing rate", () => {
-    const c = makeCandidate([{ toolId: "a", outcome: "success" }, { toolId: "b" }], 3, 0);
-    expect(computeSuccessRate(c)).toBe(1.0);
+  test("respects aggregate stats over single-occurrence representative", () => {
+    // Representative steps look fully successful but aggregate shows mixed outcomes
+    const c = makeCandidate(
+      [
+        { toolId: "a", outcome: "success" },
+        { toolId: "b", outcome: "success" },
+      ],
+      5,
+      0,
+      { successes: 4, withOutcome: 10 },
+    );
+    expect(computeSuccessRate(c)).toBeCloseTo(0.4);
   });
 });
 
@@ -60,7 +77,6 @@ describe("computeCrystallizeScore", () => {
   test("decays exponentially with age (recency)", () => {
     const c = makeCandidate([{ toolId: "a" }, { toolId: "b" }], 3, 0);
     const fresh = computeCrystallizeScore(c, 0);
-    // One half-life — should halve.
     const halved = computeCrystallizeScore(c, 1_800_000);
     expect(halved).toBeCloseTo(fresh / 2);
   });
@@ -71,7 +87,7 @@ describe("computeCrystallizeScore", () => {
     expect(halved).toBeCloseTo(computeCrystallizeScore(c, 0) / 2);
   });
 
-  test("penalizes patterns with failures via successRate", () => {
+  test("penalizes patterns with failures via aggregate successRate", () => {
     const allGood = makeCandidate(
       [
         { toolId: "a", outcome: "success" },

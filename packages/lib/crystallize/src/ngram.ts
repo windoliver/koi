@@ -6,11 +6,13 @@
  * sequence to populate an immutable `Map<key, NgramEntry>`. Per-turn
  * deduplication ensures a pattern that occurs twice within the same turn is
  * counted as one occurrence (we score across-turn repetition, not within-turn
- * burst).
+ * burst). Step-level outcome counts are aggregated across every occurrence so
+ * downstream success-rate scoring reflects the full pattern history rather
+ * than a single representative window.
  */
 
 import type { TurnTrace } from "@koi/core";
-import type { NgramEntry, ToolNgram, ToolStep } from "./types.js";
+import type { NgramEntry, OutcomeStats, ToolNgram, ToolStep } from "./types.js";
 
 /**
  * Infer outcome from a tool call's output. `undefined` (no result captured) is
@@ -49,18 +51,39 @@ export function computeNgramKey(steps: readonly ToolStep[]): string {
   return steps.map((s) => s.toolId).join("|");
 }
 
+interface MutableEntry {
+  readonly ngram: ToolNgram;
+  readonly turnIndices: number[];
+  successes: number;
+  withOutcome: number;
+}
+
+function accumulateStepOutcomes(entry: MutableEntry, steps: readonly ToolStep[]): void {
+  for (const step of steps) {
+    if (step.outcome === undefined) continue;
+    entry.withOutcome += 1;
+    if (step.outcome === "success") entry.successes += 1;
+  }
+}
+
+function freezeEntry(entry: MutableEntry): NgramEntry {
+  const stats: OutcomeStats = { successes: entry.successes, withOutcome: entry.withOutcome };
+  return { ngram: entry.ngram, turnIndices: entry.turnIndices, outcomeStats: stats };
+}
+
 /**
  * Extract every n-gram of length `[minSize..maxSize]` from `sequences` via
  * sliding window. Returns a key→entry map; each entry records all turn
  * indices where the n-gram appeared (a single turn contributes at most one
- * occurrence per key, even if the pattern repeats within that turn).
+ * occurrence per key, even if the pattern repeats within that turn) and an
+ * aggregated `OutcomeStats` summed across every occurrence's step outcomes.
  */
 export function extractNgrams(
   sequences: readonly (readonly ToolStep[])[],
   minSize: number,
   maxSize: number,
 ): ReadonlyMap<string, NgramEntry> {
-  const result = new Map<string, { readonly ngram: ToolNgram; readonly turnIndices: number[] }>();
+  const accum = new Map<string, MutableEntry>();
 
   for (let turnIndex = 0; turnIndex < sequences.length; turnIndex++) {
     const seq = sequences[turnIndex];
@@ -70,25 +93,28 @@ export function extractNgrams(
       for (let start = 0; start <= seq.length - size; start++) {
         const steps = seq.slice(start, start + size);
         const key = computeNgramKey(steps);
-        const existing = result.get(key);
-        if (existing !== undefined) {
-          // Per-turn dedup: only record this turn once per key.
-          const indices = existing.turnIndices;
-          if (indices[indices.length - 1] !== turnIndex) {
-            result.set(key, {
-              ngram: existing.ngram,
-              turnIndices: [...indices, turnIndex],
-            });
-          }
-        } else {
-          result.set(key, {
+        const existing = accum.get(key);
+        if (existing === undefined) {
+          const entry: MutableEntry = {
             ngram: { steps, key },
             turnIndices: [turnIndex],
-          });
+            successes: 0,
+            withOutcome: 0,
+          };
+          accumulateStepOutcomes(entry, steps);
+          accum.set(key, entry);
+          continue;
         }
+        // Per-turn dedup of the turn-indices list, but always aggregate
+        // outcomes — every occurrence contributes its step-level signal.
+        const indices = existing.turnIndices;
+        if (indices[indices.length - 1] !== turnIndex) indices.push(turnIndex);
+        accumulateStepOutcomes(existing, steps);
       }
     }
   }
 
+  const result = new Map<string, NgramEntry>();
+  for (const [key, entry] of accum) result.set(key, freezeEntry(entry));
   return result;
 }
