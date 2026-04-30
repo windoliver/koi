@@ -50,6 +50,11 @@ export interface InitProfilingOptions {
 let runActive = false;
 let writtenForRun = false;
 let exitHandlerRegistered = false;
+// Output path is captured at initProfiling() time so a mid-run change to
+// KOI_TUI_PROFILE_OUT cannot redirect the current run's report into a
+// different file (or overwrite an unrelated run's output) at flush time.
+// `let` justified: assigned per-run by initProfiling, cleared by shutdown.
+let activeOutPath: string | null = null;
 
 /**
  * Sentinel error class so callers can identify conflict rejections without
@@ -110,6 +115,10 @@ export function initProfiling(options?: InitProfilingOptions): boolean {
   resetProfiler({ enabled: true });
   runActive = true;
   writtenForRun = false;
+  // Snapshot the destination NOW. Any later mutation of
+  // KOI_TUI_PROFILE_OUT (including by other code in the same process)
+  // is ignored for this run.
+  activeOutPath = process.env.KOI_TUI_PROFILE_OUT ?? DEFAULT_OUT_PATH;
 
   startCpuSampler(options?.cpuSamplerOptions);
 
@@ -138,13 +147,18 @@ export function shutdownProfiling(): void {
   // already-flushed state.
   resetProfiler({ enabled: false });
   runActive = false;
+  activeOutPath = null;
 }
 
 function writeReportIfNeeded(): void {
   if (writtenForRun) return;
   writtenForRun = true;
+  // Use the path captured at init — never re-read env at flush time.
+  // If init never ran (e.g. exit-handler fallback fires after a never-
+  // profiled process), there is nothing to write.
+  const path = activeOutPath;
+  if (path === null) return;
   const report = dumpProfile();
-  const path = process.env.KOI_TUI_PROFILE_OUT ?? DEFAULT_OUT_PATH;
   try {
     writeFileSync(path, JSON.stringify(report, null, 2));
     process.stderr.write(`[koi-tui-profile] report written to ${path}\n`);
@@ -158,4 +172,5 @@ export function __resetProfilingForTests(): void {
   runActive = false;
   writtenForRun = false;
   exitHandlerRegistered = false;
+  activeOutPath = null;
 }

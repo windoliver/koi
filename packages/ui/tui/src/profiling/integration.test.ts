@@ -108,6 +108,33 @@ describe("initProfiling", () => {
     expect(exitCalls.length).toBe(1);
   });
 
+  test("output path is captured at init — mid-run env mutation is ignored", () => {
+    process.env.KOI_TUI_PROFILE = "1";
+    const stablePath = join(workDir, "stable.json");
+    const decoyPath = join(workDir, "decoy.json");
+    process.env.KOI_TUI_PROFILE_OUT = stablePath;
+    resetProfiler();
+
+    initProfiling({
+      processOn: ((_event: string, _h: () => void) => process) as unknown as typeof process.on,
+      cpuSamplerOptions: { setIntervalFn: noopSetInterval },
+    });
+    bumpCounter("messagerow.mount", 4);
+
+    // Mid-run, redirect the env. A naive impl reading env at flush time
+    // would write to decoyPath, losing this run's report.
+    process.env.KOI_TUI_PROFILE_OUT = decoyPath;
+
+    shutdownProfiling();
+
+    const written = JSON.parse(readFileSync(stablePath, "utf8")) as {
+      counters: Record<string, number>;
+    };
+    expect(written.counters["messagerow.mount"]).toBe(4);
+    // Decoy must NOT have been touched.
+    expect(() => readFileSync(decoyPath, "utf8")).toThrow();
+  });
+
   test("shutdownProfiling writes the run's report and resets state", () => {
     process.env.KOI_TUI_PROFILE = "1";
     const outPath = join(workDir, "report.json");
