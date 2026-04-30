@@ -26,6 +26,13 @@ const DEFAULT_MIN_OCCURRENCES = 3;
 const DEFAULT_MAX_CANDIDATES = 5;
 const SUGGESTED_NAME_MAX_LEN = 60;
 
+function requirePositiveInteger(value: number, name: string): number {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
+    throw new Error(`crystallize: ${name} must be a positive integer, got ${String(value)}`);
+  }
+  return value;
+}
+
 /** Generate a human-readable name from an n-gram by joining tool IDs with "-then-". */
 export function computeSuggestedName(ngram: ToolNgram): string {
   const parts = ngram.steps.map((s) => s.toolId.replace(/_/g, "-"));
@@ -119,10 +126,25 @@ export function detectPatterns(
   clock: () => number,
 ): readonly CrystallizationCandidate[] {
   const cfg = config ?? {};
-  const minSize = cfg.minNgramSize ?? DEFAULT_MIN_NGRAM_SIZE;
-  const maxSize = cfg.maxNgramSize ?? DEFAULT_MAX_NGRAM_SIZE;
-  const minOccurrences = cfg.minOccurrences ?? DEFAULT_MIN_OCCURRENCES;
-  const maxCandidates = cfg.maxCandidates ?? DEFAULT_MAX_CANDIDATES;
+  const minSize = requirePositiveInteger(
+    cfg.minNgramSize ?? DEFAULT_MIN_NGRAM_SIZE,
+    "minNgramSize",
+  );
+  const maxSize = requirePositiveInteger(
+    cfg.maxNgramSize ?? DEFAULT_MAX_NGRAM_SIZE,
+    "maxNgramSize",
+  );
+  if (maxSize < minSize) {
+    throw new Error(`crystallize: maxNgramSize (${maxSize}) must be >= minNgramSize (${minSize})`);
+  }
+  const minOccurrences = requirePositiveInteger(
+    cfg.minOccurrences ?? DEFAULT_MIN_OCCURRENCES,
+    "minOccurrences",
+  );
+  const maxCandidates = requirePositiveInteger(
+    cfg.maxCandidates ?? DEFAULT_MAX_CANDIDATES,
+    "maxCandidates",
+  );
 
   const sequences = extractToolSequences(traces);
   const ngramMap = extractNgrams(sequences, minSize, maxSize);

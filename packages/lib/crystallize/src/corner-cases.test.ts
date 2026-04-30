@@ -144,13 +144,40 @@ describe("detectPatterns — degenerate inputs", () => {
     expect(detectPatterns([], {}, clock)).toEqual([]);
   });
 
-  test("minSize > maxSize emits no candidates (empty inner range)", () => {
+  test("minSize > maxSize throws — fail-fast on invalid sizing", () => {
     const traces = [
       createTrace(0, ["a", "b"]),
       createTrace(1, ["a", "b"]),
       createTrace(2, ["a", "b"]),
     ];
-    expect(detectPatterns(traces, { minNgramSize: 5, maxNgramSize: 2 }, clock)).toEqual([]);
+    expect(() => detectPatterns(traces, { minNgramSize: 5, maxNgramSize: 2 }, clock)).toThrow(
+      /maxNgramSize.*must be >= minNgramSize/,
+    );
+  });
+
+  test("minNgramSize: 0 throws — empty windows would produce a bogus empty-key candidate", () => {
+    const traces = [
+      createTrace(0, ["a", "b"]),
+      createTrace(1, ["a", "b"]),
+      createTrace(2, ["a", "b"]),
+    ];
+    expect(() => detectPatterns(traces, { minNgramSize: 0 }, clock)).toThrow(
+      /minNgramSize.*positive integer/,
+    );
+  });
+
+  test("non-finite n-gram size throws", () => {
+    const traces = [createTrace(0, ["a", "b"])];
+    expect(() =>
+      detectPatterns(traces, { minNgramSize: Number.NaN, maxNgramSize: 3 }, clock),
+    ).toThrow(/minNgramSize.*positive integer/);
+  });
+
+  test("non-integer n-gram size throws", () => {
+    const traces = [createTrace(0, ["a", "b"])];
+    expect(() => detectPatterns(traces, { minNgramSize: 2.5, maxNgramSize: 3 }, clock)).toThrow(
+      /minNgramSize.*positive integer/,
+    );
   });
 
   test("minNgramSize: 1 surfaces single-tool repetition as a candidate", () => {

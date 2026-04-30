@@ -21,21 +21,25 @@ import type { TurnTrace } from "@koi/core";
 import type { NgramEntry, OutcomeStats, ToolNgram, ToolStep, TurnLocation } from "./types.js";
 
 /**
- * Infer outcome from a tool call's output, matching the repo's existing
- * tool-failure semantics:
- *  - `kind: "error"` and `kind: "denied"` → failure (execution failed or
- *    was blocked, per `agent-monitor.isErrorOutput` / `isDeniedOutput`).
- *  - `kind: "validation"` or `code: "VALIDATION"` → undefined (pre-execution
- *    reject; not a tool execution success or failure, so it must not skew
- *    successRate).
- *  - Anything else with a non-null object payload → success.
- *  - Missing capture, primitives, null → undefined (no signal).
+ * Infer outcome from a tool call's output:
+ *  - `undefined` (no captured output) → `undefined` (no signal).
+ *  - Object payload with `kind: "error"` / `kind: "denied"` → failure
+ *    (matches `agent-monitor.isErrorOutput` / `isDeniedOutput`).
+ *  - Object payload with `kind: "validation"` or `code: "VALIDATION"` →
+ *    `undefined` (pre-execution reject; neutral, must not skew successRate).
+ *  - Anything else captured — primitives (`string`, `number`, `boolean`),
+ *    `null`, plain objects without a known failure/validation envelope —
+ *    counts as success. A tool that legitimately returns a primitive
+ *    contributes positive health signal; treating those as `undefined`
+ *    would silently zero out successRate for entire pattern classes.
  */
 function inferOutcome(output: unknown): "success" | "failure" | undefined {
-  if (output === null || typeof output !== "object") return undefined;
-  const obj = output as { readonly kind?: unknown; readonly code?: unknown };
-  if (obj.kind === "error" || obj.kind === "denied") return "failure";
-  if (obj.kind === "validation" || obj.code === "VALIDATION") return undefined;
+  if (output === undefined) return undefined;
+  if (output !== null && typeof output === "object") {
+    const obj = output as { readonly kind?: unknown; readonly code?: unknown };
+    if (obj.kind === "error" || obj.kind === "denied") return "failure";
+    if (obj.kind === "validation" || obj.code === "VALIDATION") return undefined;
+  }
   return "success";
 }
 

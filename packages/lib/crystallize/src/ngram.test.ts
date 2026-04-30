@@ -48,9 +48,14 @@ describe("extractToolSequences", () => {
     expect(seqs[0]?.steps[0]?.outcome).toBe("failure");
   });
 
-  test("treats null output as no outcome (not failure)", () => {
+  test("treats null output as success (explicit void return, no error)", () => {
     const seqs = extractToolSequences([createTrace(0, ["void_tool"], [null])]);
-    expect(seqs[0]?.steps[0]?.outcome).toBeUndefined();
+    expect(seqs[0]?.steps[0]?.outcome).toBe("success");
+  });
+
+  test("treats primitive outputs (string / number / boolean) as success", () => {
+    const seqs = extractToolSequences([createTrace(0, ["s", "n", "b"], ["hello", 42, true])]);
+    expect(seqs[0]?.steps.map((s) => s.outcome)).toEqual(["success", "success", "success"]);
   });
 
   test("validation reject with kind:validation is neutral (no outcome signal)", () => {
