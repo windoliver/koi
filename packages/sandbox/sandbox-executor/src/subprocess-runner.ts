@@ -18,6 +18,8 @@
 
 import { writeSync } from "node:fs";
 
+export {};
+
 /** Framing marker separating protocol output from any other stderr content. */
 const RESULT_MARKER = "__KOI_RESULT__\n";
 
