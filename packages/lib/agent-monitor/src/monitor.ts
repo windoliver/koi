@@ -34,6 +34,7 @@ function freshMetrics(sessionId: SessionId, agentId: AgentId): SessionMetrics {
     agentId,
     startedAt: Date.now(),
     turnIndex: 0,
+    turnsSeen: 0,
     totalToolCalls: 0,
     totalModelCalls: 0,
     totalErrorCalls: 0,
@@ -64,7 +65,7 @@ function snapshot(m: SessionMetrics): SessionMetricsSummary {
     totalDeniedCalls: m.totalDeniedCalls,
     totalDestructiveCalls: m.totalDestructiveCalls,
     anomalyCount: m.anomalyCount,
-    turnCount: m.turnIndex,
+    turnCount: m.turnsSeen,
     meanLatencyMs: m.latency.mean,
     latencyStddevMs: m.latency.stddev,
     meanOutputTokens: m.outputTokens.mean,
@@ -131,16 +132,44 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
     m.lastToolId = toolId;
   }
 
+  function fireWithTurn(detail: AnomalyDetail, m: SessionMetrics, turnIndex: number): void {
+    const signal: AnomalySignal = {
+      sessionId: m.sessionId,
+      agentId: m.agentId,
+      timestamp: Date.now(),
+      turnIndex,
+      ...detail,
+    };
+    m.anomalyCount++;
+    const cb = config.onAnomaly;
+    if (cb === undefined) return;
+    Promise.resolve()
+      .then(() => cb(signal))
+      .catch((err: unknown) => {
+        try {
+          config.onAnomalyError?.(err, signal);
+        } catch {
+          // never throw from observer callbacks
+        }
+      });
+  }
+
   function evaluatePreviousTurnDrift(m: SessionMetrics): void {
     if (m.toolCallsThisTurn === 0 || (config.objectives?.length ?? 0) === 0) return;
     const objectives = config.objectives ?? [];
+    // Snapshot per-turn inputs and the turn index BEFORE any await/reset, so
+    // async scorers always see the data for the turn they are evaluating
+    // and emitted signals carry that turn's index, not a later one.
+    const snapshotToolIds: readonly string[] = [...m.toolIdsThisTurn];
+    const snapshotTurnIndex = m.turnIndex;
+    const snapshotMatched = m.goalDriftMatchedThisTurn;
     if (config.goalDrift?.scorer !== undefined) {
       const scorer = config.goalDrift.scorer;
       Promise.resolve()
-        .then(() => scorer(m.toolIdsThisTurn, objectives))
+        .then(() => scorer(snapshotToolIds, objectives))
         .then((score) => {
           if (score >= driftThreshold) {
-            fire(
+            fireWithTurn(
               {
                 kind: "goal_drift",
                 driftScore: score,
@@ -148,20 +177,22 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
                 objectives,
               },
               m,
+              snapshotTurnIndex,
             );
           }
         })
         .catch((err: unknown) => {
           try {
-            const synthetic = makeSignal(
-              {
-                kind: "goal_drift",
-                driftScore: -1,
-                threshold: driftThreshold,
-                objectives,
-              },
-              m,
-            );
+            const synthetic: AnomalySignal = {
+              sessionId: m.sessionId,
+              agentId: m.agentId,
+              timestamp: Date.now(),
+              turnIndex: snapshotTurnIndex,
+              kind: "goal_drift",
+              driftScore: -1,
+              threshold: driftThreshold,
+              objectives,
+            };
             config.onAnomalyError?.(err, synthetic);
           } catch {
             // never throw
@@ -169,8 +200,8 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
         });
       return;
     }
-    if (!m.goalDriftMatchedThisTurn) {
-      fire(
+    if (!snapshotMatched) {
+      fireWithTurn(
         {
           kind: "goal_drift",
           driftScore: 1.0,
@@ -178,6 +209,7 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
           objectives,
         },
         m,
+        snapshotTurnIndex,
       );
     }
   }
@@ -240,7 +272,10 @@ export function createAgentMonitorMiddleware(rawConfig: AgentMonitorConfig): Koi
       m.destructiveThisTurn.clear();
       m.goalDriftMatchedThisTurn = false;
       m.toolIdsThisTurn = [];
-      m.turnIndex++;
+      // Align internal counter with engine's turn index so signals tag the
+      // turn the engine is actually running, not an off-by-one.
+      m.turnIndex = ctx.turnIndex;
+      m.turnsSeen++;
     },
 
     wrapToolCall: async (

@@ -28,7 +28,10 @@ export interface SessionMetrics {
   readonly sessionId: SessionId;
   readonly agentId: AgentId;
   readonly startedAt: number;
+  /** Latest TurnContext.turnIndex seen — used for signal tagging. */
   turnIndex: number;
+  /** Count of distinct turns observed — used for summary turnCount. */
+  turnsSeen: number;
   totalToolCalls: number;
   totalModelCalls: number;
   totalErrorCalls: number;

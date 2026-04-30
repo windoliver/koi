@@ -12,6 +12,7 @@ function freshMetrics(): SessionMetrics {
     agentId: agentId("a1") as AgentId,
     startedAt: Date.now(),
     turnIndex: 0,
+    turnsSeen: 0,
     totalToolCalls: 0,
     totalModelCalls: 0,
     totalErrorCalls: 0,
