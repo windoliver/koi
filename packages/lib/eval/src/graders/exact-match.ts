@@ -69,17 +69,21 @@ function collectAssistantText(
 ): string {
   const done = findDone(transcript);
   if (done !== undefined) {
-    // Terminal done is the SOLE source of truth. Empty content can mean
-    // either "nothing produced" or "intentionally redacted by middleware";
-    // in either case grading against streamed text_delta would be
-    // unsafe — we cannot tell whether the user actually saw it. Returning
-    // empty makes the grader fail with clear reasoning, which is correct.
-    return contentBlocksToText(done.output.content);
+    const doneText = contentBlocksToText(done.output.content);
+    if (doneText.length > 0) return doneText;
+    // Done with non-text content blocks (image/file/button/custom) is a
+    // deliberate structured response — do NOT fall back to streamed
+    // text_delta or raw tool_result. The agent showed the user something
+    // structured; matching against backend data they never saw would be a
+    // false positive (and falling back to deltas could leak pre-sanitized
+    // text). Returning empty makes text-pattern grading fail with clear
+    // reasoning, which is correct.
+    if (done.output.content.length > 0) return "";
+    // Truly empty content array — adapter omitted final content (some
+    // engines stream text but emit `done` with content: []). Fall through
+    // to deltas, since there's nothing structured to prefer over them.
   }
 
-  // No done event: caller hasn't enforced terminal-done (e.g. legacy or
-  // partial transcript path). Fall back to streamed text_delta, then
-  // optionally tool_result.
   const deltas: string[] = [];
   for (const ev of transcript) {
     if (ev.kind === "text_delta") deltas.push(ev.delta);

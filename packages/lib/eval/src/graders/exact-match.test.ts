@@ -151,9 +151,10 @@ describe("exactMatch", () => {
     expect(score.pass).toBe(false);
   });
 
-  test("done with empty content array does not fall back to streamed deltas", async () => {
-    // Empty content can mean "redacted by middleware" — falling back to
-    // streamed text would let pre-sanitized content slip through.
+  test("done with empty content array falls back to streamed deltas", async () => {
+    // Empty `content: []` means "adapter omitted final content" (common
+    // when engines stream text but don't repackage it in done). Real
+    // redactions emit non-text blocks (handled by the test below).
     const grader = exactMatch();
     const events: readonly EngineEvent[] = [
       { kind: "text_delta", delta: "streamed answer" },
@@ -163,7 +164,7 @@ describe("exactMatch", () => {
       },
     ];
     const score = await grader.grade(events, { kind: "text", pattern: "streamed" }, METRICS);
-    expect(score.pass).toBe(false);
+    expect(score.pass).toBe(true);
   });
 
   test("does not fall back to text_delta when done has non-text content blocks", async () => {
