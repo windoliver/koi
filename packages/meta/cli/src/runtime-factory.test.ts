@@ -407,6 +407,7 @@ describe("createKoiRuntime — tool inventory", () => {
     "task_output",
     "task_stop",
     "task_update",
+    "task_delegate",
   ] as const;
 
   test("all expected tools are registered as agent components", async () => {

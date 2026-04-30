@@ -312,6 +312,14 @@
         "@koi/test": "workspace:*",
       },
     },
+    "packages/lib/forge-integrity": {
+      "name": "@koi/forge-integrity",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
     "packages/lib/forge-tools": {
       "name": "@koi/forge-tools",
       "version": "0.0.0",
@@ -748,6 +756,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
         "@koi/task-board": "workspace:*",
         "zod": "4.3.6",
       },
@@ -1928,6 +1937,8 @@
     "@koi/file-type": ["@koi/file-type@workspace:packages/lib/file-type"],
 
     "@koi/forge-demand": ["@koi/forge-demand@workspace:packages/lib/forge-demand"],
+
+    "@koi/forge-integrity": ["@koi/forge-integrity@workspace:packages/lib/forge-integrity"],
 
     "@koi/forge-tools": ["@koi/forge-tools@workspace:packages/lib/forge-tools"],
 

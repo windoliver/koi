@@ -5,10 +5,5 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [
-    { "path": "../../kernel/core" },
-    { "path": "../hash" },
-    { "path": "../task-board" },
-    { "path": "../tasks" }
-  ]
+  "references": [{ "path": "../../kernel/core" }, { "path": "../hash" }]
 }

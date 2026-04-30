@@ -410,6 +410,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeout);
+      let callerAbortListener: (() => void) | undefined;
 
       try {
         if (options?.signal?.aborted) {
@@ -417,7 +418,8 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
           return publishFlight(abortedError());
         }
         if (options?.signal) {
-          options.signal.addEventListener("abort", () => controller.abort(), { once: true });
+          callerAbortListener = () => controller.abort();
+          options.signal.addEventListener("abort", callerAbortListener, { once: true });
         }
 
         // Wrap fetchFn per-call so we can observe the final URL the safe
@@ -551,6 +553,10 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         }
         return publishFlight(catchFetchError(url, method, e));
       } finally {
+        clearTimeout(timer);
+        if (callerAbortListener !== undefined && options?.signal !== undefined) {
+          options.signal.removeEventListener("abort", callerAbortListener);
+        }
         releaseRefreshSlot();
         releaseInFlightAndMaybePrune();
       }
@@ -581,6 +587,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       const timeout = Math.min(defaultTimeout, MAX_TIMEOUT_MS);
       const searchController = new AbortController();
       const timer = setTimeout(() => searchController.abort(), timeout);
+      let callerAbortListener: (() => void) | undefined;
 
       try {
         if (options?.signal) {
@@ -588,7 +595,8 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
             clearTimeout(timer);
             return abortedError();
           }
-          options.signal.addEventListener("abort", () => searchController.abort(), { once: true });
+          callerAbortListener = () => searchController.abort();
+          options.signal.addEventListener("abort", callerAbortListener, { once: true });
         }
 
         const searchOptions: WebSearchOptions = {
@@ -615,6 +623,11 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
             retryable: !isTimeout,
           },
         };
+      } finally {
+        clearTimeout(timer);
+        if (callerAbortListener !== undefined && options?.signal !== undefined) {
+          options.signal.removeEventListener("abort", callerAbortListener);
+        }
       }
     },
   };

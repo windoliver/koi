@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import { agentId } from "@koi/core";
 import type { InMemoryHealthMonitor, InMemoryRegistry } from "@koi/engine-reconcile";
 import { createHealthMonitor, createInMemoryRegistry } from "@koi/engine-reconcile";
@@ -204,6 +205,35 @@ describe("HealthMonitor", () => {
 
     expect(monitor.stats().bufferSize).toBe(0);
     expect(monitor.stats().flushCount).toBeGreaterThanOrEqual(1);
+  });
+
+  test("auto-flush timer does not pin a short-lived process", async () => {
+    const script = `
+      import { createHealthMonitor, createInMemoryRegistry } from "@koi/engine-reconcile";
+      const registry = createInMemoryRegistry();
+      createHealthMonitor(registry, {
+        flushIntervalMs: 60_000,
+        sweepIntervalMs: 60_000,
+        suspectThresholdMs: 60_000,
+        deadThresholdMs: 120_000,
+      });
+    `;
+    const enginePackageRoot = fileURLToPath(new URL("../../", import.meta.url));
+    const proc = Bun.spawn([process.execPath, "--config=/dev/null", "-e", script], {
+      cwd: enginePackageRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const result = await Promise.race([
+      proc.exited,
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 500)),
+    ]);
+    if (result === "timeout") {
+      proc.kill(9);
+    }
+
+    expect(result).toBe(0);
   });
 
   // --- Dispose ---

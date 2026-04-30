@@ -6,6 +6,13 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **Review lifecycle doc sync (#2081)**: no CLI dependency or TUI wiring changes.
+  CLI consumes the refreshed L2 behavior from `@koi/task-tools`,
+  `@koi/tools-web`, and `@koi/middleware-memory-recall`: task-tools'
+  factory comment now matches the existing seven-tool surface, web executor
+  fetch/search calls unregister caller abort listeners on settlement, and
+  memory-recall clears per-session state on `onSessionEnd`.
+
 - **Session transcript pollution guard (#1417)**: `@koi/session`'s transcript middleware now skips inbound messages whose `senderId` starts with `system:internal:` (e.g., `system:internal:verifier`, `system:internal:verifier-replay` from `@koi/middleware-output-verifier`). No CLI/TUI wiring change — the session middleware is composed unchanged through `runtime-factory.ts`; the skip applies on commit only, so live model behavior is unaffected. This unblocks future opt-in wiring of `@koi/middleware-output-verifier` without leaking judge/check feedback into resume context.
 
 - **Phase-2 bug-bash fixes (#2072)**: TUI / runtime-factory wiring tidied up — no L2 dep set changes. `tui-command.ts` defers `microcompact`, `createAgentSummary`, `createArgvGate` + `runUntilPass`, and the browser provider behind dynamic `await import()` in their respective use sites so cold-start no longer pays for post-paint features eagerly. `runtime-factory.ts` now installs the audit-middleware compliance recorder (`createAuditMiddlewareComplianceRecorder`) so governance events share the chained signing path, and moves the audit-sink close into a manifest-middleware shutdown hook so it runs **after** `runtime.dispose()` fires `audit.onSessionEnd` (otherwise the closing `session_end` record was silently dropped at /quit). `bin.ts` removed the one-off `KOI_BOOT_TRACE` probe to keep the post-fast-path purity gate (#1637) green. The `@koi/middleware-permissions` fix (out-of-workspace `fs_read` no longer bypassed by stored grants) flows through unchanged wiring.
@@ -327,7 +334,7 @@ Engine adapter is wired directly from environment variables. Manifest-based
 `--agent` wiring is pending full #1459 integration.
 
 **Behaviour:**
-- Runtime assembly is delegated to `createTuiRuntime()` (`tui-runtime.ts`), which wires the full L2 tool stack including memory-tools (file-backed via `@koi/memory-fs`), memory recall (frozen-snapshot injection at session start), spawn-tools (stub spawn function), semantic-retry middleware, hook observer (ATIF recording of hook executions), and hooks loaded from `~/.koi/hooks.json`.
+- Runtime assembly is delegated to `createTuiRuntime()` (`tui-runtime.ts`), which wires the full L2 tool stack including memory-tools (file-backed via `@koi/memory-fs`), memory recall (frozen-snapshot injection at session start), spawn-tools (stub spawn function; `RuntimeHandle.spawnResultCache` is provisioned but not yet threaded — the agent_spawn tool itself is gated on #1582), semantic-retry middleware, hook observer (ATIF recording of hook executions), and hooks loaded from `~/.koi/hooks.json`.
 - Submitting a message streams a real model response via `@koi/model-openai-compat` + `@koi/runtime`.
 - Tree-sitter client is initialized at startup (`getTreeSitterClient()` + `initialize()`), enabling `<markdown>` rendering with full prose, headings, code fences, and tables in assistant text blocks.
 - Tool call results are displayed with structured title/subtitle/chips (e.g., `✓ Read  package.json`, `✓ Shell  echo hello`) via `getToolDisplay()` mapper. Result metadata chips (exitCode, status, bytesWritten, cached) are extracted from JSON results via `getResultDisplay()`. Boolean chips `cached` and `truncated` are quiet-false: only rendered when `true`, so the default 3-chip budget still surfaces the meaningful signal for `web_fetch` results.
