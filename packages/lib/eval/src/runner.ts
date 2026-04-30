@@ -440,7 +440,16 @@ function containsNonSerializable(v: unknown, depth = 0): boolean {
   const t = typeof v;
   if (t === "function" || t === "symbol") return true;
   if (t !== "object") return false;
+  // RegExp and the special objects canonicalize handles explicitly are
+  // deterministically encodable — not blockers.
+  if (v instanceof RegExp || v instanceof Date || v instanceof URL) return false;
   if (Array.isArray(v)) return v.some((e) => containsNonSerializable(e, depth + 1));
+  // Reject any other non-plain object: Map/Set/typed arrays/class instances
+  // would otherwise canonicalize to "{}" because Object.keys() returns no
+  // enumerable string keys, collapsing materially different inputs to the
+  // same fingerprint. Force the caller to provide a fingerprintSalt.
+  const proto = Object.getPrototypeOf(v as object);
+  if (proto !== Object.prototype && proto !== null) return true;
   for (const k of Object.keys(v as object)) {
     if (containsNonSerializable((v as Record<string, unknown>)[k], depth + 1)) return true;
   }
@@ -461,6 +470,8 @@ function canonicalize(v: unknown): string {
   if (v === undefined) return "undefined";
   if (v === null) return "null";
   if (v instanceof RegExp) return `RegExp(${JSON.stringify(v.source)},${JSON.stringify(v.flags)})`;
+  if (v instanceof Date) return `Date(${v.toISOString()})`;
+  if (v instanceof URL) return `URL(${JSON.stringify(v.href)})`;
   const t = typeof v;
   if (t === "string" || t === "number" || t === "boolean") return JSON.stringify(v);
   if (t === "bigint") return `bigint:${(v as bigint).toString()}`;

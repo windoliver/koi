@@ -156,6 +156,39 @@ describe("computeTaskFingerprint", () => {
     expect(computeTaskFingerprint(a)).not.toBe(computeTaskFingerprint(b));
   });
 
+  test("rejects Map/Set/class instances without salt", () => {
+    const a: EvalTask = {
+      id: "t",
+      name: "t",
+      input: { ...baseInput, ctx: new Map([["k", 1]]) } as never,
+      graders: [exactMatch()],
+    };
+    expect(() => computeTaskFingerprint(a)).toThrow(/fingerprintSalt/);
+    const b: EvalTask = {
+      id: "t",
+      name: "t",
+      input: { ...baseInput, ctx: new Set([1, 2]) } as never,
+      graders: [exactMatch()],
+    };
+    expect(() => computeTaskFingerprint(b)).toThrow(/fingerprintSalt/);
+  });
+
+  test("Date and URL inputs distinguish different values", () => {
+    const a: EvalTask = {
+      id: "t",
+      name: "t",
+      input: { ...baseInput, when: new Date("2026-01-01T00:00:00Z") } as never,
+      graders: [exactMatch()],
+    };
+    const b: EvalTask = {
+      id: "t",
+      name: "t",
+      input: { ...baseInput, when: new Date("2026-02-01T00:00:00Z") } as never,
+      graders: [exactMatch()],
+    };
+    expect(computeTaskFingerprint(a)).not.toBe(computeTaskFingerprint(b));
+  });
+
   test("throws when input contains a function value and no salt is set", () => {
     const a: EvalTask = {
       id: "t",

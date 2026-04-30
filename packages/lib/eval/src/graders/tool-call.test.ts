@@ -87,6 +87,21 @@ describe("toolCall", () => {
     expect(score.pass).toBe(true);
   });
 
+  test("nested args use recursive subset (extra observed keys are tolerated)", async () => {
+    const grader = toolCall();
+    // Tool added a new optional `meta.requestId` field; old expectations
+    // should still pass as long as the expected fields still match.
+    const events: readonly EngineEvent[] = [
+      ...completed("search", { filter: { q: "x" }, meta: { requestId: "r1" } }),
+    ];
+    const score = await grader.grade(
+      events,
+      { kind: "tool_calls", calls: [{ toolName: "search", args: { filter: { q: "x" } } }] },
+      METRICS,
+    );
+    expect(score.pass).toBe(true);
+  });
+
   test("strict order requires sequential match", async () => {
     const grader = toolCall({ order: "strict" });
     const eventsBad: readonly EngineEvent[] = [...completed("write"), ...completed("read")];

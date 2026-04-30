@@ -79,34 +79,35 @@ function resolveCalls(
 function callMatches(observed: ObservedCall, expected: ExpectedToolCall): boolean {
   if (observed.toolName !== expected.toolName) return false;
   if (expected.args === undefined) return true;
-  return shallowSubset(expected.args, observed.args ?? {});
+  return subsetMatches(expected.args, observed.args ?? {});
 }
 
-function shallowSubset(want: Readonly<Record<string, unknown>>, have: JsonObject): boolean {
-  for (const key of Object.keys(want)) {
-    if (!deepEquals(want[key], have[key])) return false;
-  }
-  return true;
-}
-
-function deepEquals(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  if (a === null || b === null) return false;
-  if (typeof a !== "object" || typeof b !== "object") return false;
-  if (Array.isArray(a)) {
-    if (!Array.isArray(b) || a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-      if (!deepEquals(a[i], b[i])) return false;
+/**
+ * Recursive subset match: `want` is satisfied by `have` if every key in
+ * `want` matches a value in `have`. For objects, the same rule applies
+ * recursively — extra keys in `have` are allowed at every depth. Arrays
+ * still require exact length and element equality (positional semantics).
+ *
+ * This makes evals stable under additive tool-schema changes: a new
+ * optional nested field on the tool's args won't break existing
+ * expectations as long as the required values still match.
+ */
+function subsetMatches(want: unknown, have: unknown): boolean {
+  if (Object.is(want, have)) return true;
+  if (want === null || have === null) return false;
+  if (typeof want !== "object" || typeof have !== "object") return false;
+  if (Array.isArray(want)) {
+    if (!Array.isArray(have) || want.length !== have.length) return false;
+    for (let i = 0; i < want.length; i++) {
+      if (!subsetMatches(want[i], have[i])) return false;
     }
     return true;
   }
-  if (Array.isArray(b)) return false;
-  const aObj = a as Readonly<Record<string, unknown>>;
-  const bObj = b as Readonly<Record<string, unknown>>;
-  const aKeys = Object.keys(aObj);
-  if (aKeys.length !== Object.keys(bObj).length) return false;
-  for (const k of aKeys) {
-    if (!deepEquals(aObj[k], bObj[k])) return false;
+  if (Array.isArray(have)) return false;
+  const wObj = want as Readonly<Record<string, unknown>>;
+  const hObj = have as Readonly<Record<string, unknown>>;
+  for (const k of Object.keys(wObj)) {
+    if (!subsetMatches(wObj[k], hObj[k])) return false;
   }
   return true;
 }
