@@ -226,6 +226,7 @@ mock.module("../shared-wiring.js", () => ({
   resumeSessionFromJsonl: mockResumeSessionFromJsonl,
   writeSessionMeta: mock(async () => {}),
   readSessionMeta: mock(async () => ({})),
+  readSessionMetaResult: mock(async () => ({ kind: "missing" }) as const),
   buildCoreMiddleware: mock(() => ({
     permissions: {},
     hook: {},

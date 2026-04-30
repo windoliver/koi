@@ -118,7 +118,7 @@ import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js"
 import { createSecurityBridge, type SecurityBridge } from "./security-bridge.js";
 import {
   buildScopedCredentials,
-  readSessionMeta,
+  readSessionMetaResult,
   resumeSessionFromJsonl,
   writeSessionMeta,
 } from "./shared-wiring.js";
@@ -1180,6 +1180,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       process.exit(1);
     }
     if (aceActivation.kind === "activate") {
+      // /rewind is provided by the checkpoint preset stack and is in the
+      // default stack set. ACE has no rewind hook today: playbooks
+      // consolidated from a turn the operator subsequently rolls back
+      // remain in the in-memory store and continue to influence later
+      // prompts. That breaks rewind's isolation contract. Refuse to
+      // activate ACE while checkpoint is active; the operator must
+      // explicitly opt out of /rewind to use ACE until a clearable
+      // PlaybookStore lands (#2087).
+      const checkpointActive =
+        manifestStacks === undefined || manifestStacks.includes("checkpoint");
+      if (checkpointActive) {
+        process.stderr.write(
+          "koi tui: ace.enabled: true is incompatible with the checkpoint preset stack. " +
+            "/rewind would discard transcript turns but cannot roll back ACE-learned playbooks, " +
+            "so prompting could still be steered by hidden state derived from rolled-back turns. " +
+            "Explicitly set `stacks:` in the manifest to a list that excludes \"checkpoint\" to " +
+            "use ACE today, or wait for a clearable PlaybookStore (#2087).\n",
+        );
+        process.exit(1);
+      }
       resolvedAceConfig = aceActivation.config;
       process.stderr.write(aceActivation.message);
     }
@@ -1485,8 +1505,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The check mirrors the new-session path but is keyed on the manifest that
   // actually governed the original session, not a cwd rediscovery.
   if (flags.resume !== undefined) {
-    const resumeMeta = await readSessionMeta(SESSIONS_DIR, String(tuiSessionId));
-    if (resumeMeta.manifestPath !== undefined) {
+    const resumeMeta = await readSessionMetaResult(SESSIONS_DIR, String(tuiSessionId));
+    if (resumeMeta.kind === "corrupt") {
+      process.stderr.write(
+        "koi tui: session provenance sidecar is unreadable or malformed — " +
+          `refusing to resume because original manifest cannot be verified (${resumeMeta.error}). ` +
+          "Restore a valid sidecar, or start a fresh session without --resume.\n",
+      );
+      process.exit(1);
+    }
+    if (resumeMeta.kind === "ok") {
       const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
         allowOAuthSchemes: true,
         skipAuditValidation: false,

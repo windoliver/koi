@@ -780,8 +780,49 @@ export async function writeSessionMeta(
 }
 
 /**
- * Read session provenance metadata; returns an empty object if the sidecar is
- * absent, unreadable, or malformed — callers treat this as "no manifest recorded."
+ * Read session provenance metadata. Distinguishes three outcomes:
+ *   - `{ kind: "missing" }`     — sidecar absent (legacy session or never written)
+ *   - `{ kind: "ok", manifestPath }` — sidecar present and parseable
+ *   - `{ kind: "corrupt", error }` — sidecar present but unreadable/malformed
+ *
+ * Callers must fail closed on `corrupt` for manifest-governed resumes
+ * (audit, ACE) so an attacker cannot bypass host-safety checks by
+ * truncating or tampering with `<sid>.koi-meta.json`.
+ */
+export type SessionMetaReadResult =
+  | { readonly kind: "missing" }
+  | { readonly kind: "ok"; readonly manifestPath: string }
+  | { readonly kind: "ok-empty" }
+  | { readonly kind: "corrupt"; readonly error: string };
+
+export async function readSessionMetaResult(
+  sessionsDir: string,
+  sid: string,
+): Promise<SessionMetaReadResult> {
+  const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
+  const file = Bun.file(path);
+  if (!(await file.exists())) return { kind: "missing" };
+  try {
+    const raw = await file.text();
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed === null || typeof parsed !== "object") {
+      return { kind: "corrupt", error: "sidecar root is not a JSON object" };
+    }
+    const meta = parsed as Record<string, unknown>;
+    if (meta.manifestPath === undefined) return { kind: "ok-empty" };
+    if (typeof meta.manifestPath !== "string") {
+      return { kind: "corrupt", error: "manifestPath field is not a string" };
+    }
+    return { kind: "ok", manifestPath: meta.manifestPath };
+  } catch (err) {
+    return { kind: "corrupt", error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Backwards-compatible wrapper. Collapses corrupt sidecars to `{}` for
+ * callers that don't yet enforce fail-closed behavior. Prefer
+ * `readSessionMetaResult` for new call sites.
  */
 export async function readSessionMeta(
   sessionsDir: string,

@@ -50,7 +50,7 @@ import { loadPolicyFile } from "../policy-file.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
 import { resolveManifestPath } from "../resolve-manifest-path.js";
 import { createKoiRuntime, PolicyLoadError } from "../runtime-factory.js";
-import { readSessionMeta, resumeSessionFromJsonl, writeSessionMeta } from "../shared-wiring.js";
+import { readSessionMetaResult, resumeSessionFromJsonl, writeSessionMeta } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
 
@@ -731,8 +731,15 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // Resume-path audit check using stored session provenance.
   // koi start hard-rejects manifest.audit — check the original session's manifest.
   if (flags.resume !== undefined) {
-    const resumeMeta = await readSessionMeta(SESSIONS_DIR, String(sid));
-    if (resumeMeta.manifestPath !== undefined) {
+    const resumeMeta = await readSessionMetaResult(SESSIONS_DIR, String(sid));
+    if (resumeMeta.kind === "corrupt") {
+      return bail(
+        "session provenance sidecar is unreadable or malformed — " +
+          `refusing to resume because original manifest cannot be verified (${resumeMeta.error}). ` +
+          "Restore a valid sidecar, or start a fresh session.",
+      );
+    }
+    if (resumeMeta.kind === "ok") {
       const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
         skipAuditValidation: true,
       });
