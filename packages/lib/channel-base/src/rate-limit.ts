@@ -725,6 +725,30 @@ export function createRateLimiter(config?: RateLimiterConfig): RateLimiter {
                 const r2After = sanitizeRetryAfterMs(safeExtract(lateAfterSleep.error));
                 const r2Retryable = r2After !== undefined || safeIsRetryable(lateAfterSleep.error);
                 if (!r2Retryable) break;
+                // Recompute backoff from the real error and honor any
+                // additional cooldown beyond the already-slept delay.
+                // Without this, a late `RATE_LIMIT { retryAfterMs: 1000 }`
+                // that lands during a 5ms backoff sleep (liveness mode
+                // races sleep against run.settled) would reissue
+                // immediately — hammering the throttling provider and
+                // defeating the rate-limit contract.
+                let r2Delay: number;
+                try {
+                  r2Delay = computeBackoff(attempt, retryConfig, r2After, undefined, prevDelayMs);
+                  prevDelayMs = r2Delay;
+                } catch (backoffError) {
+                  reportInternal("backoff", backoffError);
+                  break;
+                }
+                const remainingCooldownMs = r2Delay - delay;
+                if (remainingCooldownMs > 0) {
+                  try {
+                    await sleep(remainingCooldownMs);
+                  } catch (sleepError) {
+                    reportInternal("sleep", sleepError);
+                    break;
+                  }
+                }
               }
             }
           }

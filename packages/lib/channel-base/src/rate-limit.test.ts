@@ -1245,6 +1245,75 @@ describe("createRateLimiter", () => {
       expect(completed).toEqual(["ok"]);
     });
 
+    it("late RATE_LIMIT during liveness backoff sleep honors the real retryAfterMs cooldown", async () => {
+      // Regression: loop-6 round 10 finding 1. In liveness mode the
+      // backoff sleep is raced against run.settled. If the timed-out
+      // attempt resolves DURING that sleep with a real retryable error
+      // carrying `retryAfterMs`, the post-sleep recheck previously
+      // updated retryability but never honored the real cooldown —
+      // reissuing immediately and hammering the throttling provider.
+      // Uses real timers (sleepSpy restored) so the post-sleep late-
+      // settlement window can be deterministically reached: real
+      // settlement at +60ms, while the first synthetic-TIMEOUT backoff
+      // is 200ms, so the race transitions through state[run.settled]
+      // ~140ms before the synthetic-TIMEOUT-derived sleep would have
+      // ended.
+      sleepSpy.mockRestore();
+      const realSleeps: number[] = [];
+      const realSpy = spyOn(errors, "sleep").mockImplementation(async (ms: number) => {
+        realSleeps.push(ms);
+        await new Promise<void>((res) => setTimeout(res, ms));
+      });
+      try {
+        const limiter = createRateLimiter({
+          retry: {
+            ...errors.DEFAULT_RETRY_CONFIG,
+            maxRetries: 1,
+            initialDelayMs: 200,
+            jitter: false,
+          },
+          sendTimeoutMs: 20,
+          advanceOnTimeout: true,
+          isRetryable: (e: unknown): boolean =>
+            typeof e === "object" && e !== null && (e as { code?: string }).code === "TIMEOUT",
+        });
+        let attempts = 0;
+        const fn: SendFn = (signal) =>
+          new Promise<void>((_resolve, reject) => {
+            attempts++;
+            if (attempts === 1) {
+              // Real settlement at +120ms — past BOTH bounded waits
+              // (deadline 20ms + first 20ms grace + second 20ms grace
+              // race = 60ms total), and inside the 200ms backoff sleep
+              // race. This forces the post-sleep recheck path.
+              setTimeout(() => {
+                const e: KoiError = {
+                  code: "RATE_LIMIT",
+                  message: "throttled",
+                  retryable: true,
+                  retryAfterMs: 500,
+                };
+                reject(e);
+              }, 120);
+              void signal;
+            } else {
+              _resolve();
+            }
+          });
+        await limiter.enqueue(fn);
+        // First sleep is the 200ms synthetic-TIMEOUT backoff. Post-
+        // sleep recheck must additionally sleep the remaining cooldown:
+        // 500 - 200 = 300ms.
+        expect(realSleeps).toContain(300);
+        expect(attempts).toBe(2);
+      } finally {
+        realSpy.mockRestore();
+        // Re-mock for any subsequent tests in this describe block
+        // (afterEach already restores, but we replaced the spy).
+        sleepSpy = spyOn(errors, "sleep").mockImplementation(() => Promise.resolve());
+      }
+    });
+
     it("late RATE_LIMIT with retryAfterMs reclassifies BOTH retryability and backoff delay", async () => {
       // Regression: loop-6 round 6 finding 1. When a synthetic TIMEOUT
       // is later replaced by a real failure carrying `retryAfterMs`,
