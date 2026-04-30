@@ -23,7 +23,7 @@ const ENABLED_BARE: ManifestAceConfig = {
 
 describe("resolveAceActivation — issue #2088", () => {
   test("skips when manifest.ace is undefined", () => {
-    const result = resolveAceActivation(undefined, ["observability"], STUB_FACTORIES);
+    const result = resolveAceActivation(undefined, STUB_FACTORIES);
     expect(result.kind).toBe("skip");
   });
 
@@ -36,37 +36,13 @@ describe("resolveAceActivation — issue #2088", () => {
         minScore: undefined,
         lambda: undefined,
       },
-      ["observability"],
       STUB_FACTORIES,
     );
     expect(result.kind).toBe("skip");
   });
 
-  test("spawn-blocks when stacks is undefined (defaults include spawn)", () => {
-    const result = resolveAceActivation(ENABLED_BARE, undefined, STUB_FACTORIES);
-    expect(result.kind).toBe("spawn-blocked");
-    if (result.kind === "spawn-blocked") {
-      expect(result.message).toContain("refusing to activate");
-      expect(result.message).toContain("spawn");
-      expect(result.message).toContain("Continuing without ACE");
-    }
-  });
-
-  test("spawn-blocks when stacks explicitly contains 'spawn'", () => {
-    const result = resolveAceActivation(
-      ENABLED_BARE,
-      ["observability", "spawn", "execution"],
-      STUB_FACTORIES,
-    );
-    expect(result.kind).toBe("spawn-blocked");
-  });
-
-  test("activates when stacks excludes spawn and ace.enabled is true", () => {
-    const result = resolveAceActivation(
-      ENABLED_BARE,
-      ["observability", "checkpoint", "execution"],
-      STUB_FACTORIES,
-    );
+  test("activates when ace.enabled is true", () => {
+    const result = resolveAceActivation(ENABLED_BARE, STUB_FACTORIES);
     expect(result.kind).toBe("activate");
     if (result.kind === "activate") {
       expect(result.message).toContain("ace: enabled");
@@ -76,7 +52,6 @@ describe("resolveAceActivation — issue #2088", () => {
       expect(result.config.playbookStore).toBeDefined();
       // No trajectoryStore wired by default — see ace-activation.ts comment.
       expect(result.config.trajectoryStore).toBeUndefined();
-      // Optional fields omitted when manifest didn't provide them.
       expect(result.config.maxInjectedTokens).toBeUndefined();
       expect(result.config.minScore).toBeUndefined();
       expect(result.config.lambda).toBeUndefined();
@@ -92,7 +67,6 @@ describe("resolveAceActivation — issue #2088", () => {
         minScore: 0.1,
         lambda: 0.07,
       },
-      ["observability"],
       STUB_FACTORIES,
     );
     expect(result.kind).toBe("activate");
@@ -101,10 +75,5 @@ describe("resolveAceActivation — issue #2088", () => {
       expect(result.config.minScore).toBe(0.1);
       expect(result.config.lambda).toBe(0.07);
     }
-  });
-
-  test("activates with empty stacks array (no preset stacks at all)", () => {
-    const result = resolveAceActivation(ENABLED_BARE, [], STUB_FACTORIES);
-    expect(result.kind).toBe("activate");
   });
 });

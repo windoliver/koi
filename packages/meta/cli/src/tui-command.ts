@@ -1151,17 +1151,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestCredentials = manifestResult.value.credentials;
     manifestLoadPath = resolvedManifestPath;
 
-    // Issue #2088 — ACE activation. Decide via resolveAceActivation
-    // (spawn-gate + skip-when-disabled). Resume-provenance gate is
-    // handled by the outer `skipManifestDiscovery` flag — when
-    // --resume is used without --manifest, this block is unreachable.
-    const aceActivation = resolveAceActivation(
-      manifestResult.value.ace,
-      manifestResult.value.stacks,
-    );
-    if (aceActivation.kind === "spawn-blocked") {
-      process.stderr.write(aceActivation.message);
-    } else if (aceActivation.kind === "activate") {
+    // Issue #2088 — ACE activation. Spawn isolation is handled in
+    // runtime-factory.ts (`inheritedMiddlewareForChildren` excludes ACE),
+    // so spawn + ACE coexist safely. Resume-provenance gate is handled
+    // by the outer `skipManifestDiscovery` flag — when --resume is used
+    // without --manifest, this block is unreachable. The manifest schema
+    // already required `acknowledge_cross_session_state: true` to allow
+    // `enabled: true`, so /clear and /new survival is documented at load.
+    const aceActivation = resolveAceActivation(manifestResult.value.ace);
+    if (aceActivation.kind === "activate") {
       resolvedAceConfig = aceActivation.config;
       process.stderr.write(aceActivation.message);
     }

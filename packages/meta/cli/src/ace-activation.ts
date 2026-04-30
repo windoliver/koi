@@ -4,18 +4,23 @@
  * after the manifest loads, then writes the returned `message` to
  * stderr and threads `config` (when present) into createKoiRuntime.
  *
- * Three gates apply, evaluated in order:
+ * Two outcomes:
  *   1. `manifest.ace.enabled !== true` → kind: "skip" (silent)
- *   2. `manifest.stacks` is undefined OR includes "spawn" → kind:
- *      "spawn-blocked" (the spawn preset stack would let child agents
- *      inherit and contaminate the in-memory PlaybookStore)
- *   3. otherwise → kind: "activate" with an in-memory AceConfig
+ *   2. otherwise → kind: "activate" with an in-memory AceConfig
+ *
+ * Spawn isolation is provided by the runtime, not this function:
+ * `inheritedMiddlewareForChildren` in `runtime-factory.ts` deliberately
+ * excludes ACE, so spawned children never see ACE injection or recording.
+ * The parent's `PlaybookStore` is unreachable from the child path; the
+ * spawn preset stack and ACE coexist safely.
  *
  * Resume-provenance is gated outside this function: when `koi tui
  * --resume` is invoked without `--manifest`, the host skips manifest
- * discovery entirely so this function is never called.
+ * discovery entirely so this function is never called. The double opt-in
+ * (`enabled` + `acknowledge_cross_session_state`) makes the
+ * /clear- and /new-survival behavior explicit at manifest load.
  *
- * See docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md round 10.
+ * See docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md.
  */
 
 import type { AceConfig } from "@koi/middleware-ace";
@@ -25,7 +30,6 @@ import type { ManifestAceConfig } from "./manifest.js";
 
 export type AceActivationResult =
   | { readonly kind: "skip" }
-  | { readonly kind: "spawn-blocked"; readonly message: string }
   | { readonly kind: "activate"; readonly config: AceConfig; readonly message: string };
 
 /** Override the in-memory store factory. Tests pass a deterministic stub. */
@@ -37,12 +41,6 @@ const DEFAULT_FACTORIES: AceStoreFactories = {
   playbookStore: createInMemoryPlaybookStore,
 };
 
-const SPAWN_BLOCKED_MESSAGE =
-  "koi tui: ace: refusing to activate while the spawn preset stack is active. " +
-  "Set manifest.stacks to a list that excludes 'spawn' " +
-  '(e.g., ["observability", "checkpoint", "execution"]) to dogfood ACE. ' +
-  "Continuing without ACE.\n";
-
 const ACTIVATED_MESSAGE =
   "koi tui: ace: enabled (in-memory). Learned playbooks persist across " +
   "/clear and /new within this process; they are lost on process exit. " +
@@ -50,12 +48,9 @@ const ACTIVATED_MESSAGE =
 
 export function resolveAceActivation(
   manifestAce: ManifestAceConfig | undefined,
-  manifestStacks: readonly string[] | undefined,
   factories: AceStoreFactories = DEFAULT_FACTORIES,
 ): AceActivationResult {
   if (manifestAce?.enabled !== true) return { kind: "skip" };
-  const spawnActive = manifestStacks === undefined || manifestStacks.includes("spawn");
-  if (spawnActive) return { kind: "spawn-blocked", message: SPAWN_BLOCKED_MESSAGE };
   // Intentionally omit `trajectoryStore`: the in-memory store grows
   // unboundedly across sessions with no pruning hook today, and ACE
   // consolidates trajectories at `onSessionEnd` even without a persistent

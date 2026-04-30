@@ -122,33 +122,22 @@ than buried in a startup banner.
 ### Activation in TUI
 
 `koi tui` builds an `AceConfig` from `manifest.ace`, instantiates
-`@koi/middleware-ace` with in-memory stores, and threads it through
-`createKoiRuntime({ ace })`. Two gates apply:
+`@koi/middleware-ace` with an in-memory `PlaybookStore`, and threads it
+through `createKoiRuntime({ ace })`.
 
-1. **Spawn-gate.** When `manifest.stacks` is undefined (defaults include
-   `spawn`) or explicitly contains `"spawn"`, activation is refused with a
-   stderr message and the TUI continues without ACE. The spawn preset stack
-   would let child agents inherit the parent middleware instance and
-   contaminate the in-memory `PlaybookStore`. Per-agent partitioning is
-   tracked as future work alongside `@koi/playbook-store-sqlite`.
+**Spawn isolation is automatic.** `runtime-factory.ts` builds
+`inheritedMiddlewareForChildren` from a fixed allowlist (permissions,
+exfiltration-guard, hooks, system-prompt, plan, plan-persist,
+skill-injector). ACE is deliberately not in that list, so spawned
+children never see ACE injection or recording — no contamination of the
+parent's `PlaybookStore`. ACE and the `spawn` preset stack coexist.
 
-   To dogfood ACE today, set an explicit `stacks` list that excludes spawn:
-
-   ```yaml
-   stacks:
-     - observability
-     - checkpoint
-     - execution
-   ace:
-     enabled: true
-   ```
-
-2. **Resume-provenance gate.** When `koi tui --resume <id>` is invoked
-   without `--manifest`, the host skips manifest auto-discovery (so the
-   cwd manifest cannot silently override the original session's
-   model/stacks/governance). ACE activation runs inside that block, so a
-   resumed session without explicit `--manifest` defaults to ACE off.
-   This mirrors the existing `audit` resume-handling pattern.
+**Resume-provenance gate.** When `koi tui --resume <id>` is invoked
+without `--manifest`, the host skips manifest auto-discovery (so the
+cwd manifest cannot silently override the original session's
+model/stacks/governance). ACE activation runs inside that block, so a
+resumed session without explicit `--manifest` defaults to ACE off.
+Mirrors the existing `audit` resume-handling pattern.
 
 On successful activation the host writes:
 
