@@ -485,10 +485,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
 
     if (manifestResult.value.ace?.enabled === true) {
       return bail(
-        "manifest.ace.enabled: true is not supported on this host. " +
-          "ACE (Adaptive Continuous Enhancement) is a TUI-only feature in this build " +
-          "(see issue 2088). Remove the ace: block (or set enabled: false) to run under " +
-          "koi start, or use koi tui.",
+        "manifest.ace.enabled: true is not yet wired in this build " +
+          "(tracked as issue 2088). The schema is shipped but neither koi start " +
+          "nor koi tui activates the middleware yet — set ace.enabled: false or " +
+          "remove the ace: block. The activation PR is the natural place for the " +
+          "host wiring.",
       );
     }
 
@@ -713,6 +714,14 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           "original session manifest.audit is not supported on this host. " +
             "koi start does not wire audit sinks — use koi tui to resume this session, " +
             "or remove the audit: block from the manifest.",
+        );
+      }
+      if (resumeAuditResult.value.ace?.enabled === true) {
+        return bail(
+          "original session manifest.ace.enabled: true is not yet wired in this build " +
+            "(tracked as issue 2088). Neither koi start nor koi tui activates the " +
+            "middleware yet — set ace.enabled: false or remove the ace: block to " +
+            "resume this session.",
         );
       }
     }
