@@ -54,12 +54,21 @@ These are not yak-shaving. Each one is the failure mode of an actual flagged reg
 
 ### For this branch (`feat/tui-ace-toml`)
 
-Two acceptable paths:
+The blocker analysis must persist somewhere durable — the in-repo `docs/superpowers/specs/` directory or the GitHub issue tracker. Pick one of these consistent paths:
 
-- **Close without merging.** This spec stays in `docs/superpowers/specs/` as the record of why; the branch is deleted. Maintainer reopens against the prerequisite issues above when they land.
-- **Repurpose for a single prerequisite.** Pick one of the prerequisite issues that's small and self-contained (for example, the operator activation gate, which is repo-config and CLI-level, not L2-coupled) and rewrite this branch to deliver just that. Update the branch name and commits accordingly.
+- **Path A: Merge this decision document.** Open a docs-only PR titled `docs(spec): block #2088 on prerequisites — analysis from 7 review rounds` containing only `docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md`. Body must avoid GitHub close-keywords (no `closes #2088` etc.) — use `refs issue 2088` instead. The spec lands on `main` as the durable record; the branch is then deleted. Subsequent prerequisite PRs link back to this spec.
 
-The branch should not be merged in its current form (one decision doc, no code, no test coverage).
+- **Path B: Move the analysis to GitHub, close the branch unmerged.** Before deleting the branch:
+  1. Open the prerequisite issues listed above and link each to #2088 as `Blocks: #2088`.
+  2. Post the "Why issue #2088 is blocked" section as a comment on #2088 (preserve the prerequisite numbering and references).
+  3. Edit #2088's body to reference the new prerequisite issues at the top: `Blocked by: #<sqlite>, #<partitioning>, #<resume>`.
+  4. Then delete the branch.
+
+  After this, the spec file ceases to exist anywhere — that's acceptable because the analysis lives on the issue tracker.
+
+Either path produces a durable record. Do **not** delete the branch without first executing Path A or Path B in full — that would lose the seven rounds of analysis.
+
+The branch must not be merged in its current form *as a fix for #2088* (one decision doc, no code, no test coverage). Path A above merges it as a *block-record document*, which is a different and acceptable use of the repo.
 
 ### For the issue text itself
 
