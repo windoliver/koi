@@ -44,19 +44,39 @@ const DEFAULT_PASSTHROUGH_CODES: readonly string[] = ["RATE_LIMIT", "PERMISSION"
 
 const TRUNCATION_SUFFIX = "... (truncated)";
 
+const CYCLE_MARKER = "[Circular]";
+
 /**
  * Recursively sanitize string values inside a JSON-shaped value. Used to
  * scrub secrets from `KoiError.context` and similar structured fields before
  * we hand them to downstream observers — tools sometimes embed auth tokens,
  * cookies, or request bodies in `context` and we treat that as untrusted.
+ *
+ * Cycle-safe via a WeakSet of in-progress containers; any back-edge resolves
+ * to the string `"[Circular]"` so the formatter never recurses infinitely on
+ * cyclic error payloads.
  */
 function sanitizeJsonValue(value: unknown, patterns: readonly RegExp[]): unknown {
+  return sanitizeJsonValueInner(value, patterns, new WeakSet<object>());
+}
+
+function sanitizeJsonValueInner(
+  value: unknown,
+  patterns: readonly RegExp[],
+  seen: WeakSet<object>,
+): unknown {
   if (typeof value === "string") return sanitizeSecrets(value, patterns);
-  if (Array.isArray(value)) return value.map((v) => sanitizeJsonValue(v, patterns));
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return CYCLE_MARKER;
+    seen.add(value);
+    return value.map((v) => sanitizeJsonValueInner(v, patterns, seen));
+  }
   if (value !== null && typeof value === "object") {
+    if (seen.has(value)) return CYCLE_MARKER;
+    seen.add(value);
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = sanitizeJsonValue(v, patterns);
+      out[k] = sanitizeJsonValueInner(v, patterns, seen);
     }
     return out;
   }
@@ -158,7 +178,13 @@ export function createToolErrorFormatterMiddleware(
 ): ToolErrorFormatterHandle {
   const customFormatter = config?.formatter;
   const maxMessageLength = config?.maxMessageLength ?? DEFAULT_MAX_MESSAGE_LENGTH;
-  const secretPatterns = config?.secretPatterns ?? DEFAULT_SECRET_PATTERNS;
+  // Caller-supplied patterns extend the defaults rather than replacing them —
+  // a custom pattern must never silently disable redaction of `sk-…` API keys
+  // or HTTP `Bearer` tokens. Use `replaceDefaultSecretPatterns: true` to opt
+  // out (e.g., a test that needs predictable output).
+  const secretPatterns: readonly RegExp[] = config?.replaceDefaultSecretPatterns
+    ? (config.secretPatterns ?? [])
+    : [...DEFAULT_SECRET_PATTERNS, ...(config?.secretPatterns ?? [])];
   const passthroughCodes = new Set<string>(config?.passthroughCodes ?? DEFAULT_PASSTHROUGH_CODES);
 
   const capabilityFragment: CapabilityFragment = {

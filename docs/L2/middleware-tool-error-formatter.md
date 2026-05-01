@@ -153,10 +153,11 @@ The middleware itself never throws.
 
 ## Security
 
-- All error messages pass through `sanitizeSecrets` before being returned, regardless of formatter source.
+- All error messages, stacks, and structured `metadata.context` pass through `sanitizeSecrets` before being returned, regardless of formatter source.
 - Default patterns redact OpenAI-style API keys (`sk-…`) and HTTP `Bearer` tokens.
-- Custom patterns extend (replace) the default set — provide both your patterns and the defaults if you want both.
+- Caller-supplied `secretPatterns` are **merged with** the defaults — you cannot accidentally disable built-in redaction by adding a custom pattern. Set `replaceDefaultSecretPatterns: true` to opt out (rare; mostly for tests with predictable output).
 - Truncation suffix `… (truncated)` is appended after sanitization, so secrets cannot escape via truncation boundaries.
+- `metadata.context` is recursively sanitized (string values inside arrays / nested objects). Cycles in the context graph are replaced with the marker string `"[Circular]"` so cyclic error payloads cannot crash the formatter.
 
 ---
 

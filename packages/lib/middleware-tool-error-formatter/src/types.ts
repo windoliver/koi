@@ -16,8 +16,20 @@ export interface ToolErrorFormatterConfig {
   readonly formatter?: ToolErrorFormatter | undefined;
   /** Maximum error message length before truncation. Default: 1000. */
   readonly maxMessageLength?: number | undefined;
-  /** Regex patterns for secrets to sanitize from error messages. */
+  /**
+   * Additional regex patterns for secrets to sanitize. Merged with the
+   * defaults (`sk-…` API keys, HTTP `Bearer` tokens) so callers cannot
+   * silently disable the built-in redactions by adding their own.
+   */
   readonly secretPatterns?: readonly RegExp[] | undefined;
+  /**
+   * When true, `secretPatterns` REPLACES `DEFAULT_SECRET_PATTERNS` instead
+   * of extending it. Default: false. Setting this to true is a deliberate
+   * security choice — make sure you have your own coverage for `sk-…` keys
+   * and `Bearer` tokens, or pass `[]` to fully disable redaction (only
+   * appropriate for tests).
+   */
+  readonly replaceDefaultSecretPatterns?: boolean | undefined;
   /**
    * KoiError codes that should propagate as throws instead of being formatted
    * into a ToolResponse. These represent guardrail / control-flow aborts that

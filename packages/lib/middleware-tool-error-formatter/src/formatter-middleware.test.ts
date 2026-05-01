@@ -248,6 +248,46 @@ describe("createToolErrorFormatterMiddleware", () => {
       expect(output).not.toContain("xoxb-123-456-abc");
       expect(output).toContain("[REDACTED]");
     });
+
+    test("custom patterns extend defaults — sk- and Bearer still redacted", async () => {
+      const wrap = getWrapToolCall({
+        secretPatterns: [/xoxb-[A-Za-z0-9-]+/g],
+      });
+      const failing = createFailingToolHandler(
+        new Error(
+          "Slack xoxb-123-456-abc and Bearer eyJhbGciOiJIUzI1NiI and key sk-abc123def456ghi789jklmnopqrst",
+        ),
+      );
+
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+
+      const output = response.output;
+      expect(typeof output).toBe("string");
+      if (typeof output !== "string") return;
+      expect(output).not.toContain("xoxb-123-456-abc");
+      expect(output).not.toContain("eyJhbGciOiJIUzI1NiI");
+      expect(output).not.toContain("sk-abc123def456ghi789jklmnopqrst");
+    });
+
+    test("replaceDefaultSecretPatterns: true opts out of default merging", async () => {
+      const wrap = getWrapToolCall({
+        secretPatterns: [/xoxb-[A-Za-z0-9-]+/g],
+        replaceDefaultSecretPatterns: true,
+      });
+      const failing = createFailingToolHandler(
+        new Error("custom xoxb-1-2-3 and default sk-abc123def456ghi789jklmnopqrst"),
+      );
+
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+
+      const output = response.output;
+      expect(typeof output).toBe("string");
+      if (typeof output !== "string") return;
+      // Custom pattern still applied
+      expect(output).not.toContain("xoxb-1-2-3");
+      // Defaults bypassed — sk- present in raw output
+      expect(output).toContain("sk-abc123def456ghi789jklmnopqrst");
+    });
   });
 
   describe("truncation", () => {
@@ -295,6 +335,29 @@ describe("createToolErrorFormatterMiddleware", () => {
       expect(response.metadata?.context).toEqual({ resourceId: "/api/v1/foo", limit: 100 });
       expect(response.metadata?.retryAfterMs).toBe(5000);
       expect(response.metadata?.originalMessage).toBe("rate limited");
+    });
+
+    test("cyclic context does not crash; cycles become [Circular]", async () => {
+      const wrap = getWrapToolCall();
+      const cyclic: Record<string, unknown> = {
+        name: "loop",
+        token: "sk-abc123def456ghi789jklmnopqrst",
+      };
+      cyclic.self = cyclic;
+      const koiError: KoiError = {
+        code: "INTERNAL",
+        message: "boom",
+        retryable: false,
+        context: cyclic,
+      };
+      const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
+
+      // Must not throw / not stack overflow
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+      const ctx = response.metadata?.context as Record<string, unknown>;
+      expect(ctx.name).toBe("loop");
+      expect(ctx.token).toBe("[REDACTED]"); // sanitized before cycle hits
+      expect(ctx.self).toBe("[Circular]");
     });
 
     test("KoiError context is recursively sanitized for secrets", async () => {
