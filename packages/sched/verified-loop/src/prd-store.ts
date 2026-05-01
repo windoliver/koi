@@ -1,13 +1,14 @@
 /**
  * File-based PRD (Product Requirements Document) store.
  *
- * Reads, queries, and updates PRD items with atomic write-temp-rename.
- *
- * IMPORTANT: This module assumes a single event loop per PRD file.
- * The read-modify-write pattern in markDone/markSkipped is NOT safe
- * for concurrent multi-process access — concurrent writes will
- * silently overwrite each other. If multi-process access is needed,
- * add external file locking or serialise through a single coordinator.
+ * Reads, queries, and updates PRD items with atomic write-temp-rename plus
+ * an optimistic concurrency check: every mutator re-reads the file just
+ * before rename and aborts with CONFLICT if the bytes changed since the
+ * snapshot used to build the new state. This narrows the lost-update
+ * window for crash recovery and accidental dual coordinators — but
+ * file-locking still belongs at the deployment layer for true
+ * multi-writer scenarios. Single-coordinator deployments see no behavior
+ * change.
  */
 
 import { rename } from "node:fs/promises";
@@ -17,6 +18,19 @@ import type { PRDFile, PRDItem } from "./types.js";
 
 /** Read and parse a PRD JSON file. */
 export async function readPRD(path: string): Promise<Result<PRDFile, KoiError>> {
+  const result = await readPRDWithSnapshot(path);
+  if (!result.ok) return result;
+  return { ok: true, value: result.value.prd };
+}
+
+/**
+ * Internal variant of readPRD that also returns the raw bytes for
+ * optimistic concurrency control. Mutators use this to capture a snapshot
+ * to compare against just before rename.
+ */
+async function readPRDWithSnapshot(
+  path: string,
+): Promise<Result<{ readonly prd: PRDFile; readonly raw: string }, KoiError>> {
   const file = Bun.file(path);
   const exists = await file.exists();
   if (!exists) {
@@ -76,7 +90,58 @@ export async function readPRD(path: string): Promise<Result<PRDFile, KoiError>> 
     seenIds.add(id);
   }
 
-  return { ok: true, value: parsed as PRDFile };
+  return { ok: true, value: { prd: parsed as PRDFile, raw } };
+}
+
+/**
+ * Atomic write with optimistic concurrency control: re-reads the file just
+ * before rename and refuses if its bytes differ from `originalRaw`. Returns
+ * CONFLICT on a lost-update race (another writer wrote in between), giving
+ * the caller a chance to retry against the new state instead of silently
+ * overwriting it.
+ */
+async function writePRDIfUnchanged(
+  path: string,
+  originalRaw: string,
+  newPrd: PRDFile,
+): Promise<Result<void, KoiError>> {
+  const file = Bun.file(path);
+  const exists = await file.exists();
+  if (!exists) {
+    // The file vanished between read and write — treat as CONFLICT, not
+    // NOT_FOUND, so callers know it was a concurrent state change rather
+    // than a missing-from-the-start error.
+    return {
+      ok: false,
+      error: conflict(path, `PRD file disappeared between read and write: ${path}`),
+    };
+  }
+  const currentRaw = await file.text();
+  if (currentRaw !== originalRaw) {
+    return {
+      ok: false,
+      error: conflict(
+        path,
+        `PRD file changed between read and write (concurrent writer detected): ${path}`,
+      ),
+    };
+  }
+  // Use a random suffix on the tmp path so two concurrent writers don't
+  // collide on the same `${path}.tmp`. Without this, a parallel mutator
+  // could rename our staged tmp out from under us, producing ENOENT
+  // instead of a clean CONFLICT.
+  const tmpPath = `${path}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+  await Bun.write(tmpPath, JSON.stringify(newPrd, null, 2));
+  try {
+    await rename(tmpPath, path);
+  } catch (e: unknown) {
+    // Best-effort tmp cleanup; if rename failed we don't want to leak it.
+    await Bun.file(tmpPath)
+      .delete()
+      .catch(() => undefined);
+    throw e;
+  }
+  return { ok: true, value: undefined };
 }
 
 /**
@@ -102,20 +167,38 @@ function validatePRDItem(item: unknown): string | undefined {
   if (obj.skipped !== undefined && typeof obj.skipped !== "boolean") {
     return `'skipped' must be a boolean if present`;
   }
-  if (obj.priority !== undefined && typeof obj.priority !== "number") {
-    return `'priority' must be a number if present`;
+  if (obj.priority !== undefined) {
+    if (typeof obj.priority !== "number" || !Number.isFinite(obj.priority)) {
+      return `'priority' must be a finite number if present`;
+    }
   }
-  if (obj.iterationCount !== undefined && typeof obj.iterationCount !== "number") {
-    return `'iterationCount' must be a number if present`;
+  if (obj.iterationCount !== undefined) {
+    // Non-negative integer — counts can never be fractional or negative.
+    // A hand-edited PRD with iterationCount: -5 would otherwise distort
+    // every subsequent +1 and produce nonsensical history.
+    if (
+      typeof obj.iterationCount !== "number" ||
+      !Number.isInteger(obj.iterationCount) ||
+      obj.iterationCount < 0
+    ) {
+      return `'iterationCount' must be a non-negative integer if present`;
+    }
   }
   if (obj.verifiedAt !== undefined && typeof obj.verifiedAt !== "string") {
     return `'verifiedAt' must be a string if present`;
   }
-  if (
-    obj.consecutiveFailureCount !== undefined &&
-    typeof obj.consecutiveFailureCount !== "number"
-  ) {
-    return `'consecutiveFailureCount' must be a number if present`;
+  if (obj.consecutiveFailureCount !== undefined) {
+    // Same rationale as iterationCount: bumpFailureCount does
+    // (count ?? 0) + 1 and compares to the skip threshold. Negative or
+    // fractional persisted values would delay skipping or make the
+    // budget behave unpredictably across restarts.
+    if (
+      typeof obj.consecutiveFailureCount !== "number" ||
+      !Number.isInteger(obj.consecutiveFailureCount) ||
+      obj.consecutiveFailureCount < 0
+    ) {
+      return `'consecutiveFailureCount' must be a non-negative integer if present`;
+    }
   }
   // done and skipped are mutually exclusive in the result contract — the
   // same id must never appear in both completed[] and skipped[]. A PRD that
@@ -140,10 +223,11 @@ export async function bumpFailureCount(
   itemId: string,
   maxConsecutiveFailures: number,
 ): Promise<Result<{ readonly count: number; readonly skipped: boolean }, KoiError>> {
-  const readResult = await readPRD(path);
+  const readResult = await readPRDWithSnapshot(path);
   if (!readResult.ok) return readResult;
 
-  const { items } = readResult.value;
+  const { prd, raw } = readResult.value;
+  const { items } = prd;
   const index = items.findIndex((item) => item.id === itemId);
   const target = index === -1 ? undefined : items[index];
   if (target === undefined) {
@@ -178,9 +262,8 @@ export async function bumpFailureCount(
   const newItems = items.map((item, i) => (i === index ? updated : item));
   const newPrd: PRDFile = { items: newItems };
 
-  const tmpPath = `${path}.tmp`;
-  await Bun.write(tmpPath, JSON.stringify(newPrd, null, 2));
-  await rename(tmpPath, path);
+  const writeResult = await writePRDIfUnchanged(path, raw, newPrd);
+  if (!writeResult.ok) return writeResult;
 
   return { ok: true, value: { count: newCount, skipped: shouldSkip } };
 }
@@ -213,10 +296,11 @@ export function nextItem(items: readonly PRDItem[]): PRDItem | undefined {
  * arrays). Callers see VALIDATION on misuse rather than a contradictory PRD.
  */
 export async function markSkipped(path: string, itemId: string): Promise<Result<void, KoiError>> {
-  const readResult = await readPRD(path);
+  const readResult = await readPRDWithSnapshot(path);
   if (!readResult.ok) return readResult;
 
-  const { items } = readResult.value;
+  const { prd, raw } = readResult.value;
+  const { items } = prd;
   const index = items.findIndex((item) => item.id === itemId);
   const target = index === -1 ? undefined : items[index];
   if (target === undefined) {
@@ -230,11 +314,7 @@ export async function markSkipped(path: string, itemId: string): Promise<Result<
   const newItems = items.map((item, i) => (i === index ? updated : item));
   const newPrd: PRDFile = { items: newItems };
 
-  const tmpPath = `${path}.tmp`;
-  await Bun.write(tmpPath, JSON.stringify(newPrd, null, 2));
-  await rename(tmpPath, path);
-
-  return { ok: true, value: undefined };
+  return writePRDIfUnchanged(path, raw, newPrd);
 }
 
 /**
@@ -264,10 +344,11 @@ export async function markDoneMany(
     return { ok: true, value: undefined };
   }
 
-  const readResult = await readPRD(path);
+  const readResult = await readPRDWithSnapshot(path);
   if (!readResult.ok) return readResult;
 
-  const { items } = readResult.value;
+  const { prd, raw } = readResult.value;
+  const { items } = prd;
   const idSet = new Set(itemIds);
   // Pre-flight: every requested id must exist before we touch the file.
   for (const id of idSet) {
@@ -295,11 +376,7 @@ export async function markDoneMany(
   });
   const newPrd: PRDFile = { items: newItems };
 
-  const tmpPath = `${path}.tmp`;
-  await Bun.write(tmpPath, JSON.stringify(newPrd, null, 2));
-  await rename(tmpPath, path);
-
-  return { ok: true, value: undefined };
+  return writePRDIfUnchanged(path, raw, newPrd);
 }
 
 async function updateItem(
@@ -307,12 +384,11 @@ async function updateItem(
   itemId: string,
   mutate: (item: PRDItem) => PRDItem,
 ): Promise<Result<void, KoiError>> {
-  const readResult = await readPRD(path);
-  if (!readResult.ok) {
-    return readResult;
-  }
+  const readResult = await readPRDWithSnapshot(path);
+  if (!readResult.ok) return readResult;
 
-  const { items } = readResult.value;
+  const { prd, raw } = readResult.value;
+  const { items } = prd;
   const index = items.findIndex((item) => item.id === itemId);
   const target = index === -1 ? undefined : items[index];
   if (target === undefined) {
@@ -323,9 +399,5 @@ async function updateItem(
   const newItems = items.map((item, i) => (i === index ? updated : item));
   const newPrd: PRDFile = { items: newItems };
 
-  const tmpPath = `${path}.tmp`;
-  await Bun.write(tmpPath, JSON.stringify(newPrd, null, 2));
-  await rename(tmpPath, path);
-
-  return { ok: true, value: undefined };
+  return writePRDIfUnchanged(path, raw, newPrd);
 }
