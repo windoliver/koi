@@ -811,6 +811,19 @@ export async function writeSessionMeta(
   options?: { readonly requireDurable?: boolean },
 ): Promise<void> {
   const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
+  // Ensure the sessions directory exists. The JSONL transcript store
+  // creates it lazily on first append, but writeSessionMeta runs earlier
+  // (right after session-id allocation) — without the mkdir, a fresh
+  // install with no ~/.koi/sessions yet would ENOENT, and ACE sessions
+  // (requireDurable:true) would refuse to start. Round 9 finding.
+  try {
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(sessionsDir, { recursive: true });
+  } catch {
+    // mkdir failures fall through to the Bun.write attempt below; for
+    // requireDurable sessions, that write will surface the underlying
+    // error with a useful message.
+  }
   // v2 invariant: ace block is ALWAYS present, set to enabled:false when
   // the session ran without ACE. A v2 sidecar missing its ace block is
   // malformed (truncated/corrupted), not "no ACE recorded" — round 6.

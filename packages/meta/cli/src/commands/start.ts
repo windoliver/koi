@@ -757,14 +757,17 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       }
       // Issue #2088 — note: a resume-time ACE rejection was deliberately
       // NOT added here. The fresh-load rejection above suffices for new
-      // sessions, and adding a resume-specific guard would inherit the
-      // broader resume-provenance gap (readSessionMeta() returning {} for
-      // missing/malformed sidecars; manifest-parse failure short-circuiting
-      // before the check). Since this build does not actually wire ACE,
-      // a resumed session with ace.enabled: true behaves identically to
-      // any other session — the field is dead weight. The activation PR
-      // is the natural place to add comprehensive resume-time rejection
-      // alongside hardened sidecar validation.
+    }
+    // Round 9 finding: a session originally created in koi tui with
+    // ace.enabled:true was previously resumable under koi start with no
+    // warning — koi start does not wire ACE at all, so the resumed run
+    // would silently stop injecting playbooks and stop appending to the
+    // trajectory store. Refuse with an actionable error.
+    if (resumeMeta.ace?.enabled === true) {
+      return bail(
+        "original session ran with ace.enabled: true — koi start does not wire ACE. " +
+          "Use koi tui to resume this session, or start a new non-ACE session.",
+      );
     }
   }
 
