@@ -115,6 +115,7 @@
     { "path": "../../security/nexus-delegation" },
     { "path": "../../security/permissions" },
     { "path": "../../security/permissions-nexus" },
+    { "path": "../../security/redaction" },
     { "path": "../../security/skill-scanner" },
     { "path": "../../lib/skill-tool" },
     { "path": "../../lib/skills-runtime" },

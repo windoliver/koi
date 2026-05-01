@@ -105,6 +105,7 @@
     "@koi/model-openai-compat": "workspace:*",
     "@koi/permissions": "workspace:*",
     "@koi/permissions-nexus": "workspace:*",
+    "@koi/redaction": "workspace:*",
     "@koi/plugins": "workspace:*",
     "@koi/query-engine": "workspace:*",
     "@koi/replay": "workspace:*",

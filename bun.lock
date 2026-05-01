@@ -314,6 +314,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/redaction": "workspace:*",
       },
     },
     "packages/lib/execution-context": {
@@ -1202,6 +1203,7 @@
         "@koi/permissions-nexus": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
+        "@koi/redaction": "workspace:*",
         "@koi/replay": "workspace:*",
         "@koi/rules-loader": "workspace:*",
         "@koi/sandbox-docker": "workspace:*",
