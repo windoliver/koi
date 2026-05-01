@@ -789,7 +789,9 @@ describe("Golden: @koi/middleware-tool-error-formatter", () => {
       readonly session_id: string;
       readonly steps: readonly {
         readonly source?: string;
+        readonly outcome?: string;
         readonly extra?: Record<string, unknown>;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
       }[];
     };
 
@@ -802,11 +804,20 @@ describe("Golden: @koi/middleware-tool-error-formatter", () => {
     );
     expect(tefSpans.length).toBeGreaterThanOrEqual(1);
 
-    // A tool step is present (model invoked the failing tool); the formatter
-    // catches the throw at wrapToolCall and surfaces it as a tool result, so
-    // the step's source is "tool".
-    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    // The trajectory must contain BOTH a tool step (model invoked the failing
+    // tool, formatter surfaced the throw as a result) AND a second agent step
+    // proving the formatted ToolResponse reached a follow-up model call —
+    // without that second model call the formatter is unobservable.
+    const toolSteps = doc.steps.filter(
+      (s) =>
+        s.source === "tool" &&
+        Array.isArray(s.tool_calls) &&
+        s.tool_calls.some((tc) => tc.function_name === "fragile_lookup"),
+    );
     expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -842,27 +853,51 @@ describe("Golden: @koi/middleware-tool-disclosure", () => {
     expect(schema.required).toContain("names");
   });
 
-  test("trajectory fixture contains tool-disclosure middleware spans and at least one model step", async () => {
+  test("trajectory fixture proves promote_tools→add_numbers disclosure flow", async () => {
     const doc = (await Bun.file(`${FIXTURES}/tool-disclosure.trajectory.json`).json()) as {
       readonly schema_version: string;
       readonly session_id: string;
       readonly steps: readonly {
         readonly source?: string;
+        readonly message?: string;
         readonly extra?: Record<string, unknown>;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
       }[];
     };
 
     expect(doc.schema_version).toBe("ATIF-v1.6");
     expect(doc.session_id).toBe("tool-disclosure");
 
+    // Disclosure middleware spans fire on every model+tool call.
     const tdSpans = doc.steps.filter(
       (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "tool-disclosure",
     );
-    expect(tdSpans.length).toBeGreaterThanOrEqual(1);
+    expect(tdSpans.length).toBeGreaterThanOrEqual(2);
 
-    // Model agent steps present
+    // promote_tools is intercepted by the middleware (it short-circuits at
+    // wrapToolCall and never reaches tool execution), so the call is observable
+    // as a middleware span whose message is `promote_tools(...)` — assert at
+    // least one such span exists.
+    const promoteSpans = tdSpans.filter(
+      (s) => typeof s.message === "string" && s.message.startsWith("promote_tools("),
+    );
+    expect(promoteSpans.length).toBeGreaterThanOrEqual(1);
+
+    // add_numbers must execute as an actual tool step after promotion: this
+    // proves the disclosure middleware promoted the summary descriptor to
+    // full schema and let the call through.
+    const addNumbersSteps = doc.steps.filter(
+      (s) =>
+        s.source === "tool" &&
+        Array.isArray(s.tool_calls) &&
+        s.tool_calls.some((tc) => tc.function_name === "add_numbers"),
+    );
+    expect(addNumbersSteps.length).toBeGreaterThanOrEqual(1);
+
+    // At least three model agent steps: initial (sees summary), post-promote
+    // (sees full schema, calls add_numbers), final (reports result).
     const agentSteps = doc.steps.filter((s) => s.source === "agent");
-    expect(agentSteps.length).toBeGreaterThanOrEqual(1);
+    expect(agentSteps.length).toBeGreaterThanOrEqual(3);
   });
 });
 

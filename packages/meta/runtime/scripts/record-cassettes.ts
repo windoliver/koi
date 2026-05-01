@@ -1019,6 +1019,23 @@ interface QueryConfig {
    */
   readonly extraMiddleware?: readonly KoiMiddleware[];
   /**
+   * Optional list of middleware `name`s to omit from the traced chain.
+   * Use sparingly — needed when a default middleware (e.g. `semantic-retry`)
+   * would loop on the SUT under test (e.g. classifies tool throws as
+   * `tool_misuse` and forces retries until budget exhausts).
+   */
+  readonly skipMiddleware?: readonly string[];
+  /**
+   * Force the engine to synthesize the model stream from the non-streaming
+   * `modelCall` terminal. Set to `true` for queries that depend on call-only
+   * middleware (those that implement `wrapModelCall` but not
+   * `wrapModelStream`, e.g. `@koi/middleware-tool-disclosure`). With a native
+   * stream terminal in place, the engine's stream chain bypasses the
+   * synthesized call chain entirely (see `compose-bridge.ts` round-14 note),
+   * so call-only middleware never observe the model request.
+   */
+  readonly forceCallOnlyStream?: boolean;
+  /**
    * Optional prior messages to seed the conversation before `prompt`.
    * Use for session-resume scenarios where a crashed session's transcript has
    * been converted to InboundMessages via resumeFromTranscript() and should
@@ -1241,7 +1258,10 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   const bridge: EngineAdapter = {
     engineId: `golden-${name}`,
     capabilities: { text: true, images: false, files: false, audio: false },
-    terminals: { modelCall: queryModelAdapter.complete, modelStream: queryModelAdapter.stream },
+    terminals:
+      config.forceCallOnlyStream === true
+        ? { modelCall: queryModelAdapter.complete }
+        : { modelCall: queryModelAdapter.complete, modelStream: queryModelAdapter.stream },
     stream(input: EngineInput): AsyncIterable<EngineEvent> {
       const h = input.callHandlers;
       if (!h)
@@ -1395,6 +1415,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     progressive: true,
   });
 
+  const skip = new Set(config.skipMiddleware ?? []);
   const tracedMiddleware = [
     eventTrace,
     coreHookMw,
@@ -1404,7 +1425,9 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     skillInjectorMw,
     semanticRetryMw,
     ...(config.extraMiddleware ?? []),
-  ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId, clock }));
+  ]
+    .filter((mw) => !skip.has(mw.name))
+    .map((mw) => wrapMiddlewareWithTrace(mw, { store, docId, clock }));
 
   // Resolve providers: factory takes precedence when present (e.g., spawn-inheritance
   // needs to inject a child-scoped eventTrace into spawnToolProvider.inheritedMiddleware
@@ -1470,15 +1493,53 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   }
   console.log(`  Waited ${waited}ms for trajectory flush`);
 
-  // Save ATIF document
+  // Save ATIF document. The fs delegate persists chunked storage
+  // (`.atif.meta.json` + `.atif.steps.NNN.json`); legacy single-file
+  // `.atif.json` is also still supported. Reassemble by reading the metadata
+  // (which contains the document shell) and concatenating step chunks in
+  // ascending order. Fall back to the legacy single-file form when present.
   const { readdir, readFile } = await import("node:fs/promises");
   const files = await readdir(trajDir);
-  const atifFile = files.find((f) => f.endsWith(".atif.json"));
-  if (!atifFile) {
+  const legacy = files.find((f) => f.endsWith(".atif.json"));
+  const meta = files.find((f) => f.endsWith(".atif.meta.json"));
+  type RawAtif = {
+    readonly steps?: readonly {
+      readonly step_id: number;
+      readonly source?: string;
+      readonly outcome?: string;
+      readonly duration_ms?: number;
+      readonly extra?: { readonly type?: string; readonly middlewareName?: string };
+      readonly observation?: { readonly results?: readonly { readonly content?: string }[] };
+    }[];
+    readonly agent?: {
+      readonly model_name?: string;
+      readonly tool_definitions?: readonly { readonly name: string }[];
+    };
+  };
+  const rawAtif: RawAtif | undefined = await (async (): Promise<RawAtif | undefined> => {
+    if (legacy !== undefined) {
+      return JSON.parse(await readFile(`${trajDir}/${legacy}`, "utf-8")) as RawAtif;
+    }
+    if (meta !== undefined) {
+      const state = JSON.parse(await readFile(`${trajDir}/${meta}`, "utf-8")) as {
+        readonly document: Record<string, unknown>;
+      };
+      const stepFiles = files
+        .filter((f) => /\.atif\.steps\.\d+\.json$/.test(f))
+        .sort((a, b) => a.localeCompare(b));
+      const steps: unknown[] = [];
+      for (const f of stepFiles) {
+        const chunk = JSON.parse(await readFile(`${trajDir}/${f}`, "utf-8")) as readonly unknown[];
+        steps.push(...chunk);
+      }
+      return { ...state.document, steps } as RawAtif;
+    }
+    return undefined;
+  })();
+  if (rawAtif === undefined) {
     console.error(`  ERROR: No ATIF file for ${name}`);
     return;
   }
-  const rawAtif = JSON.parse(await readFile(`${trajDir}/${atifFile}`, "utf-8"));
   await Bun.write(`${FIXTURES}/${name}.trajectory.json`, JSON.stringify(rawAtif, null, 2));
 
   // Side-car: agent-hook inputs (what the hook sub-agents actually saw).
@@ -4531,6 +4592,10 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     extraMiddleware: [createToolErrorFormatterMiddleware().middleware],
+    // semantic-retry classifies any tool throw as `tool_misuse` and would loop
+    // until budget exhausts, hiding the error-formatter's behavior. Skip it for
+    // this fixture so the formatted ToolResponse reaches the second model call.
+    skipMiddleware: ["semantic-retry"],
     maxTurns: 2,
   },
 
@@ -4541,7 +4606,7 @@ const queries: readonly QueryConfig[] = [
   {
     name: "tool-disclosure",
     prompt:
-      'Use the add_numbers tool to compute 3+4. The tool may be summarized; if so, call promote_tools with names=["add_numbers"] first to lift it to its full schema, then call add_numbers. Report the result.',
+      'You will see compact tool summaries instead of full schemas. To use any tool other than promote_tools you MUST FIRST call promote_tools with the tool name to receive its full schema, then call the tool. Step 1: call promote_tools with names=["add_numbers"]. Step 2: call add_numbers to compute 3+4. Step 3: report the result.',
     permissionMode: "bypass",
     permissionRules: BYPASS_RULES,
     permissionDescription: "bypass (allow all)",
@@ -4572,6 +4637,16 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     extraMiddleware: [disclosureBundle.middleware],
+    // semantic-retry would interpret any incidental tool failure (e.g. model
+    // calls add_numbers before promote_tools) as `tool_misuse` and loop. Skip
+    // it so the disclosure flow stays deterministic.
+    skipMiddleware: ["semantic-retry"],
+    // Disclosure is a call-only middleware (no wrapModelStream). With a
+    // streaming terminal in place, compose-bridge skips the synthCall chain
+    // and disclosure's wrapModelCall never fires — knownNames stays empty
+    // and every promote_tools call resolves to "no names matched". Force
+    // the engine to synthesize the stream so disclosure observes each turn.
+    forceCallOnlyStream: true,
     maxTurns: 4,
   },
 

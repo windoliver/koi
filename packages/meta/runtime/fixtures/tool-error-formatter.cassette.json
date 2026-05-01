@@ -2,16 +2,16 @@
   "schemaVersion": "cassette-v1",
   "name": "tool-error-formatter",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1777617554920,
+  "recordedAt": 1777623422044,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "fragile_lookup",
-      "callId": "tool_fragile_lookup_mOalf5Bc2HXIqiWaNpTt"
+      "callId": "tool_fragile_lookup_1FtL9gia7c5pIm5uTuDK"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_fragile_lookup_mOalf5Bc2HXIqiWaNpTt",
+      "callId": "tool_fragile_lookup_1FtL9gia7c5pIm5uTuDK",
       "delta": "{\"id\":\"abc-123\"}"
     },
     {
@@ -21,7 +21,7 @@
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_fragile_lookup_mOalf5Bc2HXIqiWaNpTt"
+      "callId": "tool_fragile_lookup_1FtL9gia7c5pIm5uTuDK"
     },
     {
       "kind": "done",
@@ -29,11 +29,11 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1777617554-Azo3tHKNYe0Pudy73ER5",
+        "responseId": "gen-1777623421-SC4G5ji0NTqVWdK9h7SQ",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_fragile_lookup_mOalf5Bc2HXIqiWaNpTt",
+            "id": "tool_fragile_lookup_1FtL9gia7c5pIm5uTuDK",
             "name": "fragile_lookup",
             "arguments": {
               "id": "abc-123"
