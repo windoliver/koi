@@ -5,6 +5,14 @@
  * Only runtime code: branded type constructors for SubsystemToken.
  */
 
+// adapter capabilities — selection metadata for sandbox-router
+export type {
+  AdapterCapabilities,
+  AdapterCapability,
+  BackendDescriptor,
+  BackendState,
+  CapabilityRequirements,
+} from "./adapter-capabilities.js";
 // agent anomaly — statistical and behavioral anomaly signal types for agent monitor
 export type { AnomalyBase, AnomalyDetail, AnomalySignal } from "./agent-anomaly.js";
 // agent definition — declarative agent template for discovery and loading
@@ -946,14 +954,6 @@ export type {
   RunDuration,
   RunReport,
 } from "./run-report.js";
-// adapter capabilities — selection metadata for sandbox-router
-export type {
-  AdapterCapability,
-  AdapterCapabilities,
-  BackendState,
-  BackendDescriptor,
-  CapabilityRequirements,
-} from "./adapter-capabilities.js";
 // sandbox adapter — pluggable sandbox backends (OS-level, cloud, WASM)
 export type {
   SandboxAdapter,
@@ -980,6 +980,7 @@ export type {
   NexusFuseMount,
   ResourceLimits,
   SandboxProfile,
+  SandboxSshTarget,
 } from "./sandbox-profile.js";
 // scheduler — types
 export type {

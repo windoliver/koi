@@ -1,3 +1,5 @@
+import type { CapabilityRequirements } from "./adapter-capabilities.js";
+
 /**
  * Sandbox profile contract — platform-agnostic isolation policy.
  *
@@ -39,6 +41,20 @@ export interface NexusFuseMount {
   readonly agentId?: string;
 }
 
+/**
+ * Generic SSH connection target. Consumed only by `@koi/sandbox-ssh`.
+ * Other adapters MUST ignore this field.
+ *
+ * Kept as a generic L0 struct so no SSH library types leak into the kernel.
+ * Auth is key-based only — no password fields exist here by design.
+ */
+export interface SandboxSshTarget {
+  readonly host: string;
+  readonly user: string;
+  /** Absolute path to a private key file readable by the calling process. */
+  readonly keyPath: string;
+}
+
 /** Declarative sandbox profile — platform-agnostic policy. */
 export interface SandboxProfile {
   readonly filesystem: FilesystemPolicy;
@@ -46,4 +62,11 @@ export interface SandboxProfile {
   readonly resources: ResourceLimits;
   readonly env?: Readonly<Record<string, string>>;
   readonly nexusMounts?: readonly NexusFuseMount[];
+  /**
+   * Capabilities the chosen backend MUST satisfy. Read by `@koi/sandbox-router`
+   * to filter the adapter set. Profiles that omit this field accept any adapter.
+   */
+  readonly required?: CapabilityRequirements;
+  /** SSH target for the SSH backend. Ignored by all other adapters. */
+  readonly ssh?: SandboxSshTarget;
 }
