@@ -849,13 +849,42 @@ function parseManifestAce(
         error: `manifest.ace.playbook_path must be a non-empty string (got: ${JSON.stringify(playbookPathRaw)})`,
       };
     }
-    // Anchor relative paths against the manifest dir so a checked-in
-    // koi.yaml resolves the same way regardless of shell cwd. Absolute
-    // paths and the special ":memory:" sentinel pass through unchanged.
-    playbookPath =
-      playbookPathRaw === ":memory:" || isAbsolute(playbookPathRaw)
-        ? playbookPathRaw
-        : resolvePath(manifestDir, playbookPathRaw);
+    // Trust boundary: the manifest is repo-controlled. A checked-in
+    // koi.yaml must NOT be able to point the SQLite store at arbitrary
+    // filesystem locations — `createSqlitePlaybookStore` eagerly creates
+    // parent directories and opens the target with `create: true`, so
+    // honoring an absolute or escaping path would let an untrusted repo
+    // create/overwrite files anywhere `koi tui` can write.
+    //
+    // Policy: only the `:memory:` sentinel and paths that resolve
+    // strictly inside `manifestDir` are accepted. Absolute paths and
+    // any path that escapes via `..` are rejected at parse time.
+    if (playbookPathRaw === ":memory:") {
+      playbookPath = ":memory:";
+    } else if (isAbsolute(playbookPathRaw)) {
+      return {
+        ok: false,
+        error:
+          "manifest.ace.playbook_path must be relative to the manifest directory " +
+          `(got absolute: ${JSON.stringify(playbookPathRaw)}). Use a path inside the repo, ` +
+          'or ":memory:" for an ephemeral store.',
+      };
+    } else {
+      const resolved = resolvePath(manifestDir, playbookPathRaw);
+      const manifestDirResolved = resolvePath(manifestDir);
+      const isInside =
+        resolved === manifestDirResolved || resolved.startsWith(manifestDirResolved + sep);
+      if (!isInside) {
+        return {
+          ok: false,
+          error:
+            "manifest.ace.playbook_path must resolve inside the manifest directory " +
+            `(got: ${JSON.stringify(playbookPathRaw)} → ${JSON.stringify(resolved)}). ` +
+            'Use a relative path that stays inside the repo, or ":memory:".',
+        };
+      }
+      playbookPath = resolved;
+    }
   }
 
   return {

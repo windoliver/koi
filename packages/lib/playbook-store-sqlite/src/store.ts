@@ -6,7 +6,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type {
@@ -131,17 +131,98 @@ export function createSqlitePlaybookStore(config: SqlitePlaybookStoreConfig): Sq
   if (config.path !== ":memory:") {
     mkdirSync(dirname(config.path), { recursive: true });
   }
-  const db = new Database(config.path, { create: true });
-  applyPragmas(db, config.durability ?? "process");
-  applySchema(db);
+  // Single-writer guard. ACE snapshots the playbook set at session start and
+  // writes back version-bumped updates at session end. With concurrent TUI
+  // processes against one file, both would learn from the same baseline and
+  // the second to finish would hit the version-CAS rejection during shutdown,
+  // poisoning the session lifecycle. Refuse activation up front instead, with
+  // an actionable error. Skipped for ":memory:" (per-process by definition).
+  const releaseLock = config.path === ":memory:" ? noopRelease : acquireWriterLock(config.path);
+  let db: Database;
+  try {
+    db = new Database(config.path, { create: true });
+    applyPragmas(db, config.durability ?? "process");
+    applySchema(db);
+  } catch (err) {
+    releaseLock();
+    throw err;
+  }
 
   return {
     playbooks: createPlaybookStore(db),
     structuredPlaybooks: createStructuredPlaybookStore(db),
     trajectories: createTrajectoryStore(db),
     proposals: createProposalStore(db),
-    close: () => db.close(),
+    close: () => {
+      try {
+        db.close();
+      } finally {
+        releaseLock();
+      }
+    },
   };
+}
+
+const noopRelease = (): void => {};
+
+/**
+ * Acquire a PID-based writer lock for `dbPath`. Writes `<dbPath>.lock`
+ * containing this process's PID. If the lockfile already exists and names a
+ * live PID, throws — concurrent writers are unsupported (see explanation in
+ * `createSqlitePlaybookStore`). Stale locks (PID no longer alive) are
+ * reclaimed; callers always get the lock if no live writer holds it.
+ */
+function acquireWriterLock(dbPath: string): () => void {
+  const lockPath = `${dbPath}.lock`;
+  const myPid = process.pid;
+  // Reclaim stale lock if the recorded PID is no longer alive.
+  try {
+    const raw = readFileSync(lockPath, "utf8").trim();
+    const heldPid = Number.parseInt(raw, 10);
+    if (Number.isFinite(heldPid) && heldPid > 0 && heldPid !== myPid) {
+      if (isProcessAlive(heldPid)) {
+        throw new Error(
+          `playbook-store-sqlite: refusing to open ${dbPath} — another process (pid ${heldPid}) ` +
+            "holds the writer lock. Concurrent ACE writers against one SQLite file are not supported. " +
+            `Stop the other process or remove ${lockPath} if it is stale.`,
+        );
+      }
+      // Stale: PID dead. Fall through to overwrite.
+    }
+  } catch (err) {
+    // ENOENT is the common path: no lock held. Re-throw the explicit refusal.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      if (err instanceof Error && err.message.startsWith("playbook-store-sqlite:")) {
+        throw err;
+      }
+      // Unreadable/corrupt lockfile: treat as stale and overwrite.
+    }
+  }
+  writeFileSync(lockPath, String(myPid), { encoding: "utf8" });
+  let released = false;
+  return (): void => {
+    if (released) return;
+    released = true;
+    try {
+      const raw = readFileSync(lockPath, "utf8").trim();
+      if (Number.parseInt(raw, 10) === myPid) {
+        unlinkSync(lockPath);
+      }
+    } catch {
+      // Lock file already gone or unreadable; nothing to do.
+    }
+  };
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    // Signal 0 probes existence without delivering a signal.
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM means a process exists but we lack permission — still alive.
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 // ---------------------------------------------------------------------------

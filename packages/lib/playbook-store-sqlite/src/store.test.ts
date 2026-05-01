@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1571,6 +1571,41 @@ describe("createSqlitePlaybookStore — crash safety", () => {
       b.playbooks.save(pb({ id: "p-b", strategy: "b" })),
     ]);
     expect((await a.playbooks.list()).map((p) => p.id).sort()).toEqual(["p-a", "p-b"]);
+    a.close();
+    b.close();
+  });
+});
+
+describe("createSqlitePlaybookStore — writer lock", () => {
+  // Concurrent ACE writers against one SQLite file would learn from the same
+  // baseline at session start and the second to finish would hit the
+  // version-CAS rejection at session end. The store refuses up front instead.
+
+  test("refuses to open when another live process holds the lock", () => {
+    // Foreign-PID lock: use PID 1 (init), guaranteed to exist on macOS/Linux.
+    writeFileSync(`${dbPath}.lock`, "1");
+    expect(() => createSqlitePlaybookStore({ path: dbPath })).toThrow(/writer lock/);
+  });
+
+  test("reclaims a stale lock whose PID is no longer alive", () => {
+    // Use a PID extremely unlikely to be live: 2^31-1.
+    writeFileSync(`${dbPath}.lock`, "2147483647");
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    expect(readFileSync(`${dbPath}.lock`, "utf8")).toBe(String(process.pid));
+    store.close();
+  });
+
+  test("removes the lock file on close", () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    expect(readFileSync(`${dbPath}.lock`, "utf8")).toBe(String(process.pid));
+    store.close();
+    expect(() => readFileSync(`${dbPath}.lock`, "utf8")).toThrow(/ENOENT/);
+  });
+
+  test(":memory: stores skip the lock entirely", () => {
+    // Per-process by definition; no cross-process coordination needed.
+    const a = createSqlitePlaybookStore({ path: ":memory:" });
+    const b = createSqlitePlaybookStore({ path: ":memory:" });
     a.close();
     b.close();
   });

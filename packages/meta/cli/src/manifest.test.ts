@@ -1027,7 +1027,10 @@ describe("loadManifestConfig: ace block (#2088)", () => {
     expect(result.error).toContain("bogus_key");
   });
 
-  test("accepts absolute playbook_path verbatim", async () => {
+  test("rejects absolute playbook_path (trust boundary)", async () => {
+    // A repo-controlled manifest must not be able to point the SQLite store at
+    // arbitrary filesystem locations: createSqlitePlaybookStore eagerly
+    // creates parent dirs and opens with create:true.
     const p = writeManifest(
       [
         "model:",
@@ -1038,9 +1041,26 @@ describe("loadManifestConfig: ace block (#2088)", () => {
       ].join("\n"),
     );
     const result = await loadManifestConfig(p);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.ace?.playbookPath).toBe("/tmp/koi-ace.sqlite");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.ace.playbook_path");
+    expect(result.error).toContain("relative to the manifest directory");
+  });
+
+  test("rejects relative playbook_path that escapes the manifest dir", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        "  playbook_path: ../escape.sqlite",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("must resolve inside the manifest directory");
   });
 
   test("anchors relative playbook_path against manifest dir", async () => {
