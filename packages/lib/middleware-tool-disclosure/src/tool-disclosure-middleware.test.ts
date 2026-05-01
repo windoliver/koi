@@ -318,6 +318,7 @@ describe("createToolDisclosureMiddleware", () => {
 
     test("wrapToolCall routes promote_tools by ctx.session.sessionId", async () => {
       const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      mw.notifyCompanionRegistered();
       const tools = descriptors(10);
       const sidA: SessionId = sessionId("a");
       const sidB: SessionId = sessionId("b");
@@ -511,6 +512,103 @@ describe("createToolDisclosureMiddleware", () => {
       await mw.wrapModelCall?.(ctxSwap, { messages: [], tools: v2 }, seen.handler);
       const t3 = (seen.seen.request?.tools ?? []).find((t) => t.name === "tool-3");
       expect(t3 && isSummary(t3)).toBe(true);
+    });
+
+    test("benign description/tag churn does NOT revoke promotion (fingerprint is schema-only)", async () => {
+      // Regression: tenant-specific wording, dynamic hints, regenerated
+      // description text must not invalidate a previously promoted tool —
+      // schema-equivalent descriptors stay promoted across turns.
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const sid: SessionId = sessionId("text-churn");
+      const ctxT = createMockTurnContext({ session: { sessionId: sid } });
+
+      const v1: readonly ToolDescriptor[] = [
+        ...descriptors(9),
+        {
+          name: "tool-9",
+          description: "Tool: tool-9 (tenant alpha hint)",
+          inputSchema: { type: "object", properties: { x: { type: "string" } } },
+          tags: ["alpha"],
+        },
+      ];
+      await mw.wrapModelCall?.(ctxT, { messages: [], tools: v1 }, captureNext().handler);
+      mw.promoteByNameForSession(sid, ["tool-9"]);
+
+      // Same schema, different presentation: description AND tags churn
+      const v2: readonly ToolDescriptor[] = [
+        ...descriptors(9),
+        {
+          name: "tool-9",
+          description: "Tool: tool-9 (tenant beta hint - regenerated)",
+          inputSchema: { type: "object", properties: { x: { type: "string" } } },
+          tags: ["beta", "v2"],
+        },
+      ];
+      const seen = captureNext();
+      await mw.wrapModelCall?.(ctxT, { messages: [], tools: v2 }, seen.handler);
+      const t9 = (seen.seen.request?.tools ?? []).find((t) => t.name === "tool-9");
+      // Promotion preserved — full schema, NOT summary
+      expect(t9 && isSummary(t9)).toBe(false);
+    });
+
+    test("companion call is NOT intercepted when notifyCompanionRegistered() was not called", async () => {
+      // Regression: an application that has its own real tool named
+      // 'promote_tools' (without registering our bundle) must NOT have
+      // its tool silently hijacked by the middleware.
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      // notifyCompanionRegistered() intentionally NOT called — we are
+      // simulating standalone use where the bundle is absent.
+      const sid: SessionId = sessionId("collision");
+      const ctxK = createMockTurnContext({ session: { sessionId: sid } });
+
+      // First disclose a 10-tool set so promote_tools is implicitly known
+      // and then promote it as a regular tool.
+      const tools: readonly ToolDescriptor[] = [...descriptors(9), descriptor(PROMOTE_TOOL_NAME)];
+      await mw.wrapModelCall?.(ctxK, { messages: [], tools }, captureNext().handler);
+      mw.promoteByNameForSession(sid, [PROMOTE_TOOL_NAME]);
+
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      let nextCalled = false;
+      const realHandler = async (): Promise<ToolResponse> => {
+        nextCalled = true;
+        return { output: "user-tool-ran" };
+      };
+      const response = await wrap(
+        ctxK,
+        { toolId: PROMOTE_TOOL_NAME, input: { foo: "bar" } },
+        realHandler,
+      );
+      expect(nextCalled).toBe(true);
+      expect(response.output).toBe("user-tool-ran");
+    });
+
+    test("companion name can be overridden via promoteToolName config", async () => {
+      const customName = "__koi_promote_tools";
+      const mw = createToolDisclosureMiddleware({
+        threshold: 5,
+        promoteToolName: customName,
+      });
+      mw.notifyCompanionRegistered();
+      const sid: SessionId = sessionId("custom-name");
+      const ctxC = createMockTurnContext({ session: { sessionId: sid } });
+
+      const tools: readonly ToolDescriptor[] = [...descriptors(9), descriptor(customName)];
+      await mw.wrapModelCall?.(ctxC, { messages: [], tools }, captureNext().handler);
+
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      const noopNext = async (): Promise<ToolResponse> => {
+        throw new Error("next should not run for promote_tools companion");
+      };
+      const response = await wrap(
+        ctxC,
+        { toolId: customName, input: { names: ["tool-3"] } },
+        noopNext,
+      );
+      const out = response.output as { ok: boolean; promoted?: readonly string[] };
+      expect(out.ok).toBe(true);
+      expect(out.promoted).toEqual(["tool-3"]);
     });
 
     test("undefined tools clears stale advertised set (no carryover authorization)", async () => {

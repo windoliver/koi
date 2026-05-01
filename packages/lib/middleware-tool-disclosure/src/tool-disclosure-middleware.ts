@@ -44,6 +44,17 @@ export interface ToolDisclosureConfig {
    * Default: 50.
    */
   readonly threshold?: number;
+  /**
+   * Name of the companion tool used to promote summary-level tools to full
+   * descriptors. Default: `"promote_tools"`.
+   *
+   * Override only when the default collides with an existing tool in the
+   * advertised set — installing this middleware with the default would
+   * otherwise silently hijack the real tool of that name. Use a unique
+   * suffix (e.g., `"__koi_promote_tools"`) and pass the same value to
+   * `createPromoteToolDescriptor` and the bundle.
+   */
+  readonly promoteToolName?: string;
 }
 
 export interface ToolDisclosureMiddleware extends KoiMiddleware {
@@ -87,12 +98,21 @@ interface SessionState {
   everAdvertised: boolean;
 }
 
+/**
+ * Compute a stable identity fingerprint for a tool descriptor. Only fields
+ * that affect *execution semantics* are included — name and inputSchema.
+ * Presentation fields (description, tags) are intentionally excluded
+ * because they routinely churn (tenant-specific wording, dynamic hints,
+ * regenerated text) without changing what the tool actually does;
+ * including them would revoke valid promotions on benign updates and
+ * surface user-visible VALIDATION errors. If a registry needs a tighter
+ * binding (e.g., binary identity across same-schema swaps), it should
+ * expose an immutable revision and we can extend this to consume it.
+ */
 function fingerprintDescriptor(tool: ToolDescriptor): string {
   return JSON.stringify({
     name: tool.name,
-    description: tool.description,
     inputSchema: tool.inputSchema,
-    tags: tool.tags ?? null,
   });
 }
 
@@ -114,6 +134,7 @@ function summarize(tool: ToolDescriptor): ToolDescriptor {
 
 function validatePromoteInput(
   input: JsonObject,
+  promoteToolName: string,
 ):
   | { readonly ok: true; readonly names: readonly string[] }
   | { readonly ok: false; readonly response: ToolResponse } {
@@ -126,7 +147,7 @@ function validatePromoteInput(
           ok: false,
           error: {
             code: "VALIDATION",
-            message: `${PROMOTE_TOOL_NAME} requires a 'names' array of tool name strings`,
+            message: `${promoteToolName} requires a 'names' array of tool name strings`,
           },
         } satisfies PromoteResult,
       },
@@ -143,7 +164,7 @@ function validatePromoteInput(
           ok: false,
           error: {
             code: "VALIDATION",
-            message: `${PROMOTE_TOOL_NAME} requires at least one tool name string`,
+            message: `${promoteToolName} requires at least one tool name string`,
           },
         } satisfies PromoteResult,
       },
@@ -156,6 +177,7 @@ export function createToolDisclosureMiddleware(
   config?: ToolDisclosureConfig,
 ): ToolDisclosureMiddleware {
   const threshold = config?.threshold ?? DEFAULT_DISCLOSURE_THRESHOLD;
+  const promoteToolName = config?.promoteToolName ?? PROMOTE_TOOL_NAME;
 
   // Per-session state map. Populated on session start, torn down on session end.
   // let justified: mutable map keyed by SessionId.
@@ -205,7 +227,7 @@ export function createToolDisclosureMiddleware(
       if (promotedFp !== undefined && promotedFp !== fp) {
         state.promoted.delete(tool.name);
       }
-      if (state.promoted.has(tool.name) || tool.name === PROMOTE_TOOL_NAME) {
+      if (state.promoted.has(tool.name) || tool.name === promoteToolName) {
         result.push(tool);
       } else {
         result.push(summarize(tool));
@@ -306,8 +328,12 @@ export function createToolDisclosureMiddleware(
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      if (request.toolId === PROMOTE_TOOL_NAME) {
-        const validated = validatePromoteInput(request.input);
+      // Only intercept the companion call if the bundle wired our companion
+      // tool. Without notifyCompanionRegistered(), a real tool of that name
+      // owned by the application would be silently hijacked — fail open
+      // instead and let it through to its real handler.
+      if (request.toolId === promoteToolName && companionToolRegistered) {
+        const validated = validatePromoteInput(request.input, promoteToolName);
         if (!validated.ok) return validated.response;
 
         const promoted = promoteForSession(ctx.session.sessionId, validated.names);
@@ -352,7 +378,7 @@ export function createToolDisclosureMiddleware(
               ok: false,
               error: {
                 code: "VALIDATION",
-                message: `Tool '${request.toolId}' is at summary level — call ${PROMOTE_TOOL_NAME}(["${request.toolId}"]) first to load its full schema, then retry.`,
+                message: `Tool '${request.toolId}' is at summary level — call ${promoteToolName}(["${request.toolId}"]) first to load its full schema, then retry.`,
               },
             },
             metadata: { error: true, toolId: request.toolId, code: "VALIDATION" },
@@ -370,7 +396,7 @@ export function createToolDisclosureMiddleware(
       const count = state?.promoted.size ?? 0;
       return {
         label: "tool-disclosure",
-        description: `${count} tools promoted to full descriptor. Use ${PROMOTE_TOOL_NAME} to load full schemas for tools you want to call.`,
+        description: `${count} tools promoted to full descriptor. Use ${promoteToolName} to load full schemas for tools you want to call.`,
       };
     },
 
