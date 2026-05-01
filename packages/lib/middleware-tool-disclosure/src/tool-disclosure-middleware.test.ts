@@ -474,6 +474,74 @@ describe("createToolDisclosureMiddleware", () => {
       expect(t3 && isSummary(t3)).toBe(true);
     });
 
+    test("promotion is invalidated when descriptor is swapped under the same name", async () => {
+      // Regression: a tool whose name persists but whose schema or backing
+      // implementation changes between turns must require fresh promotion.
+      // Selector rotation, tenant change, schema migration are real-world
+      // sources of same-name swaps.
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const sid: SessionId = sessionId("swap");
+      const ctxSwap = createMockTurnContext({ session: { sessionId: sid } });
+
+      // Turn 1: tool-3 has schema A; promote it.
+      const v1: readonly ToolDescriptor[] = [
+        ...descriptors(3),
+        {
+          name: "tool-3",
+          description: "Tool: tool-3",
+          inputSchema: { type: "object", properties: { a: { type: "string" } } },
+        },
+        ...Array.from({ length: 6 }, (_, i) => descriptor(`tool-${i + 4}`)),
+      ];
+      await mw.wrapModelCall?.(ctxSwap, { messages: [], tools: v1 }, captureNext().handler);
+      mw.promoteByNameForSession(sid, ["tool-3"]);
+
+      // Turn 2: tool-3's schema changes (different property). Must drop the
+      // promotion — model has not approved this descriptor.
+      const v2: readonly ToolDescriptor[] = [
+        ...descriptors(3),
+        {
+          name: "tool-3",
+          description: "Tool: tool-3",
+          inputSchema: { type: "object", properties: { b: { type: "number" } } },
+        },
+        ...Array.from({ length: 6 }, (_, i) => descriptor(`tool-${i + 4}`)),
+      ];
+      const seen = captureNext();
+      await mw.wrapModelCall?.(ctxSwap, { messages: [], tools: v2 }, seen.handler);
+      const t3 = (seen.seen.request?.tools ?? []).find((t) => t.name === "tool-3");
+      expect(t3 && isSummary(t3)).toBe(true);
+    });
+
+    test("undefined tools clears stale advertised set (no carryover authorization)", async () => {
+      // Regression: if a turn omits request.tools, prior knownNames/promoted
+      // state must not continue authorizing tools from a previous turn.
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const sid: SessionId = sessionId("no-tools-turn");
+      const ctxN = createMockTurnContext({ session: { sessionId: sid } });
+
+      // Turn 1: 10 tools, promote tool-3.
+      await mw.wrapModelCall?.(
+        ctxN,
+        { messages: [], tools: descriptors(10) },
+        captureNext().handler,
+      );
+      mw.promoteByNameForSession(sid, ["tool-3"]);
+
+      // Turn 2: tools omitted entirely.
+      await mw.wrapModelCall?.(ctxN, { messages: [] }, captureNext().handler);
+
+      // Direct call to tool-3 must now be rejected — prior advertisement is
+      // out of scope.
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      const noop = async (): Promise<ToolResponse> => ({ output: "ok" });
+      const response = await wrap(ctxN, { toolId: "tool-3", input: {} }, noop);
+      const out = response.output as { ok: boolean; error?: { code: string; message: string } };
+      expect(out.ok).toBe(false);
+      expect(out.error?.code).toBe("VALIDATION");
+    });
+
     test("stale disclosure state is cleared when tool count drops below threshold", async () => {
       // Session sees 10 tools (threshold 5 — disclosure active) → state.knownNames populated
       // Then sees 3 tools (below threshold) → must clear knownNames so the

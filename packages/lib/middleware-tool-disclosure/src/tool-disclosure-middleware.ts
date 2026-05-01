@@ -67,8 +67,33 @@ export interface ToolDisclosureMiddleware extends KoiMiddleware {
 }
 
 interface SessionState {
-  promoted: Set<string>;
+  // Map of tool name → fingerprint of the descriptor at the moment it was
+  // promoted. A name in this map is "promoted" only if its current
+  // descriptor still fingerprint-matches; otherwise the entry is invalidated
+  // because a same-name descriptor swap (selector rotation, tenant change,
+  // schema migration) means the previously approved schema/implementation is
+  // gone and the model must explicitly promote the replacement.
+  promoted: Map<string, string>;
   knownNames: ReadonlySet<string>;
+  // Fingerprints of every descriptor in the most recent advertised tool set.
+  // Used by promote_tools to record the fingerprint at the moment of
+  // promotion, so a later same-name swap can be detected.
+  lastFingerprints: ReadonlyMap<string, string>;
+  // True once any wrapModelCall has materialized a tool list for this
+  // session. After that, even an empty knownNames set should be treated as
+  // "no tools advertised this turn" and fail closed in wrapToolCall —
+  // otherwise turns that omit request.tools would silently re-enable any
+  // tool the engine still knows about.
+  everAdvertised: boolean;
+}
+
+function fingerprintDescriptor(tool: ToolDescriptor): string {
+  return JSON.stringify({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    tags: tool.tags ?? null,
+  });
 }
 
 interface PromoteResult extends JsonObject {
@@ -142,10 +167,23 @@ export function createToolDisclosureMiddleware(
   function getOrCreate(sid: SessionId): SessionState {
     let state = sessions.get(sid);
     if (state === undefined) {
-      state = { promoted: new Set<string>(), knownNames: new Set<string>() };
+      state = {
+        promoted: new Map<string, string>(),
+        knownNames: new Set<string>(),
+        lastFingerprints: new Map<string, string>(),
+        everAdvertised: false,
+      };
       sessions.set(sid, state);
     }
     return state;
+  }
+
+  function clearSessionState(sid: SessionId): void {
+    const state = sessions.get(sid);
+    if (state === undefined) return;
+    if (state.promoted.size > 0) state.promoted = new Map<string, string>();
+    if (state.knownNames.size > 0) state.knownNames = new Set();
+    if (state.lastFingerprints.size > 0) state.lastFingerprints = new Map<string, string>();
   }
 
   function disclose(
@@ -155,22 +193,31 @@ export function createToolDisclosureMiddleware(
     if (tools.length <= threshold) return tools;
     const result: ToolDescriptor[] = [];
     const names = new Set<string>();
+    const currentFingerprints = new Map<string, string>();
     for (const tool of tools) {
       names.add(tool.name);
+      const fp = fingerprintDescriptor(tool);
+      currentFingerprints.set(tool.name, fp);
+      const promotedFp = state.promoted.get(tool.name);
+      // Same-name descriptor swap: previous promotion approved a different
+      // schema/implementation. Drop that grant — the model must re-promote
+      // before this descriptor can be sent at full schema.
+      if (promotedFp !== undefined && promotedFp !== fp) {
+        state.promoted.delete(tool.name);
+      }
       if (state.promoted.has(tool.name) || tool.name === PROMOTE_TOOL_NAME) {
         result.push(tool);
       } else {
         result.push(summarize(tool));
       }
     }
-    // Drop promotions for names no longer in the current tool list. A tool
-    // descriptor that was previously promoted may have been swapped, retired,
-    // or replaced by a different implementation under the same name (selector
-    // middleware, tenant rotation). Re-promotion is the safe gate.
-    for (const name of state.promoted) {
+    // Drop promotions for names no longer in the current tool list.
+    for (const name of state.promoted.keys()) {
       if (!names.has(name)) state.promoted.delete(name);
     }
     state.knownNames = names;
+    state.lastFingerprints = currentFingerprints;
+    state.everAdvertised = true;
     return result;
   }
 
@@ -180,7 +227,8 @@ export function createToolDisclosureMiddleware(
     const ok: string[] = [];
     for (const name of names) {
       if (state.knownNames.has(name)) {
-        state.promoted.add(name);
+        const fp = state.lastFingerprints.get(name) ?? "";
+        state.promoted.set(name, fp);
         ok.push(name);
       }
     }
@@ -206,19 +254,32 @@ export function createToolDisclosureMiddleware(
       next: ModelHandler,
     ): Promise<ModelResponse> {
       if (request.tools === undefined) {
+        // No tool list this turn: prior advertisement is no longer in scope.
+        // Clear knownNames/promoted/lastFingerprints so wrapToolCall does not
+        // continue authorizing tools the model did not see this turn.
+        clearSessionState(ctx.session.sessionId);
         return next(request);
       }
       if (request.tools.length <= threshold) {
         // Below-threshold: the model sees FULL schemas, so every advertised
-        // tool is implicitly promoted. Populate knownNames + promoted with
-        // the current set so wrapToolCall still rejects stale/leaked names
-        // not in the latest advertised list (covers dynamic shrinkage where
-        // a tool drops out but is still registered upstream).
+        // tool is implicitly promoted. Populate knownNames + promoted (with
+        // current fingerprints) and lastFingerprints so wrapToolCall rejects
+        // stale/leaked names not in the latest advertised list, and a later
+        // same-name swap still invalidates the implicit grant.
         const state = getOrCreate(ctx.session.sessionId);
         const names = new Set<string>();
-        for (const tool of request.tools) names.add(tool.name);
+        const fingerprints = new Map<string, string>();
+        const newPromoted = new Map<string, string>();
+        for (const tool of request.tools) {
+          names.add(tool.name);
+          const fp = fingerprintDescriptor(tool);
+          fingerprints.set(tool.name, fp);
+          newPromoted.set(tool.name, fp);
+        }
         state.knownNames = names;
-        state.promoted = new Set(names);
+        state.promoted = newPromoted;
+        state.lastFingerprints = fingerprints;
+        state.everAdvertised = true;
         return next(request);
       }
       const state = getOrCreate(ctx.session.sessionId);
@@ -265,7 +326,7 @@ export function createToolDisclosureMiddleware(
       //    inputSchema:{} can't validate args, so the call is unsafe.
       // 3. Tool was disclosed and promoted — pass through.
       const state = sessions.get(ctx.session.sessionId);
-      if (state !== undefined && state.knownNames.size > 0) {
+      if (state?.everAdvertised) {
         if (!state.knownNames.has(request.toolId)) {
           return {
             output: {
