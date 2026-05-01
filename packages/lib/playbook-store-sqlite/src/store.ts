@@ -888,21 +888,30 @@ function createProposalStore(db: Database): PlaybookProposalStore {
           }
           const existingByProposal = db
             .query(
-              "SELECT verdict, metrics, notes, proposal_id, evaluated_at FROM playbook_evaluations WHERE proposal_id = ?",
+              "SELECT id, verdict, metrics, notes, proposal_id, evaluated_at FROM playbook_evaluations WHERE proposal_id = ?",
             )
             .get(e.proposalId) as {
+            readonly id: string;
             readonly verdict: string;
             readonly metrics: string;
             readonly notes: string | null;
             readonly proposal_id: string;
             readonly evaluated_at: number;
           } | null;
-          if (existingByProposal === null || !checkSameContent(existingByProposal)) {
-            throw new Error(
-              `evaluation for proposal ${e.proposalId} already recorded with different content`,
-            );
+          if (existingByProposal === null) {
+            throw err;
           }
-          // Same content under a different id — treat as idempotent success.
+          // Surface the lineage break: the caller's evaluation id will
+          // never reach disk because the proposal already has an
+          // evaluation under a DIFFERENT id. Returning silent success
+          // would leave callers holding a dangling id that cannot be
+          // resolved back to stored audit evidence. Even if content
+          // matches, refuse the write so callers either reuse the
+          // canonical id (visible in the error message) or surface the
+          // conflict to the operator.
+          throw new Error(
+            `evaluation ${e.id} cannot be recorded: proposal ${e.proposalId} already has evaluation ${existingByProposal.id}; reuse that id for retries`,
+          );
         }
       })();
     },

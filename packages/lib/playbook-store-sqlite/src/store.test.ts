@@ -1506,21 +1506,19 @@ describe("createSqlitePlaybookStore — append-only invariants", () => {
     store.close();
   });
 
-  test("recordEvaluation idempotent on regenerated id when proposalId+content match", async () => {
+  test("recordEvaluation surfaces lineage conflict on regenerated id (does not silently accept)", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
     await seedAnchor(store, "pb-A");
     await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
     await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
-    // Retry with NEW evaluation id but SAME proposalId + content — must
-    // succeed (treated as same-content idempotent retry, not raw FK error).
-    await store.proposals.recordEvaluation({ ...makeEvaluation("e-2", "p-1") });
-    // Conflicting content under reused proposalId must surface domain error.
-    await expect(
-      store.proposals.recordEvaluation({
-        ...makeEvaluation("e-3", "p-1"),
-        verdict: "reject",
-      }),
-    ).rejects.toThrow(/already recorded with different content/);
+    // Retry with NEW evaluation id but SAME proposalId — must reject with
+    // a domain error naming the canonical id, so callers cannot end up
+    // holding a dangling id that was never persisted.
+    await expect(store.proposals.recordEvaluation(makeEvaluation("e-2", "p-1"))).rejects.toThrow(
+      /already has evaluation e-1; reuse that id/,
+    );
+    // Same id idempotent retry still succeeds.
+    await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
     store.close();
   });
 
