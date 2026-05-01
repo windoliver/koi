@@ -1581,34 +1581,47 @@ describe("createSqlitePlaybookStore — writer lock", () => {
   // baseline at session start and the second to finish would hit the
   // version-CAS rejection at session end. The store refuses up front instead.
 
-  test("refuses to open when another live process holds the lock", async () => {
-    // Foreign-PID lock with matching boot epoch (= same host boot, can't be
-    // reclaimed via the boot-mismatch path; PID 1 is alive, can't be reclaimed
-    // via the dead-PID path either). Must refuse.
-    const { uptime } = await import("node:os");
-    const bootEpochMs = Date.now() - Math.round(uptime() * 1000);
-    writeFileSync(`${dbPath}.lock`, JSON.stringify({ pid: 1, bootEpochMs }));
+  test("refuses to open when another live process holds the lock", () => {
+    // Foreign live PID with matching bootId (or both undefined on macOS):
+    // can't be reclaimed via boot-mismatch and PID 1 is alive — must refuse.
+    const myBootId = (() => {
+      try {
+        return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      } catch {
+        return undefined;
+      }
+    })();
+    writeFileSync(
+      `${dbPath}.lock`,
+      JSON.stringify(myBootId !== undefined ? { pid: 1, bootId: myBootId } : { pid: 1 }),
+    );
     expect(() => createSqlitePlaybookStore({ path: dbPath })).toThrow(/writer lock/);
   });
 
-  test("reclaims a stale lock whose PID is no longer alive", async () => {
-    const { uptime } = await import("node:os");
-    const bootEpochMs = Date.now() - Math.round(uptime() * 1000);
-    writeFileSync(`${dbPath}.lock`, JSON.stringify({ pid: 2_147_483_647, bootEpochMs }));
+  test("reclaims a stale lock whose PID is no longer alive", () => {
+    writeFileSync(`${dbPath}.lock`, JSON.stringify({ pid: 2_147_483_647 }));
     const store = createSqlitePlaybookStore({ path: dbPath });
     const meta = JSON.parse(readFileSync(`${dbPath}.lock`, "utf8")) as { pid: number };
     expect(meta.pid).toBe(process.pid);
     store.close();
   });
 
-  test("reclaims a lock from a previous boot even if PID happens to be alive", () => {
-    // Crash recovery scenario: lock from previous host boot, PID was reused
-    // by an unrelated process. Without bootEpoch, the PID-aliveness probe
-    // would falsely treat the foreign live process as the lock owner and
-    // refuse forever. The boot-epoch mismatch reclaims it.
+  test("reclaims a lock from a previous boot even if PID happens to be alive (Linux only)", () => {
+    // Crash-recovery scenario: PID 1 is alive but bootId differs (= host
+    // rebooted since lock was written). Only Linux has the kernel UUID;
+    // platforms without it skip this test.
+    let myBootId: string;
+    try {
+      myBootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    } catch {
+      // Skip on platforms without kernel boot UUID — boot-mismatch reclaim
+      // is intentionally not exercised there (wall-clock heuristic was
+      // removed per round-4 review).
+      return;
+    }
     writeFileSync(
       `${dbPath}.lock`,
-      JSON.stringify({ pid: 1, bootEpochMs: 1 }), // ancient boot epoch
+      JSON.stringify({ pid: 1, bootId: `00000000-0000-0000-0000-${myBootId.slice(-12)}-old` }),
     );
     const store = createSqlitePlaybookStore({ path: dbPath });
     const meta = JSON.parse(readFileSync(`${dbPath}.lock`, "utf8")) as { pid: number };
@@ -1617,7 +1630,6 @@ describe("createSqlitePlaybookStore — writer lock", () => {
   });
 
   test("legacy bare-PID lockfile is honored when PID is alive", () => {
-    // Backwards compatibility: locks written by a pre-bootEpoch build.
     writeFileSync(`${dbPath}.lock`, "1");
     expect(() => createSqlitePlaybookStore({ path: dbPath })).toThrow(/writer lock/);
   });

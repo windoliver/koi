@@ -756,6 +756,25 @@ export async function resumeSessionFromJsonl(
 const SESSION_META_VERSION = 1 as const;
 
 /**
+ * Immutable ACE provenance snapshot persisted into the session sidecar at
+ * session creation. Resume must compare against THIS snapshot, not against
+ * a re-read of the manifest file (which the operator may have edited
+ * between session start and resume — see Codex round 4 finding).
+ */
+export interface SessionAceProvenance {
+  readonly enabled: boolean;
+  readonly playbookPath: string | undefined;
+  readonly maxInjectedTokens: number | undefined;
+  readonly minScore: number | undefined;
+  readonly lambda: number | undefined;
+}
+
+export interface SessionMeta {
+  readonly manifestPath?: string;
+  readonly ace?: SessionAceProvenance;
+}
+
+/**
  * Write session provenance metadata to a sidecar file alongside the JSONL
  * transcript. Non-fatal if the sessions directory does not exist yet — the
  * transcript's first append creates it; a missing sidecar means "no provenance
@@ -764,7 +783,7 @@ const SESSION_META_VERSION = 1 as const;
 export async function writeSessionMeta(
   sessionsDir: string,
   sid: string,
-  meta: { readonly manifestPath?: string },
+  meta: SessionMeta,
 ): Promise<void> {
   try {
     const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
@@ -778,17 +797,30 @@ export async function writeSessionMeta(
  * Read session provenance metadata; returns an empty object if the sidecar is
  * absent, unreadable, or malformed — callers treat this as "no manifest recorded."
  */
-export async function readSessionMeta(
-  sessionsDir: string,
-  sid: string,
-): Promise<{ readonly manifestPath?: string }> {
+export async function readSessionMeta(sessionsDir: string, sid: string): Promise<SessionMeta> {
   const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
   try {
     const raw = await Bun.file(path).text();
     const parsed = JSON.parse(raw) as unknown;
     if (parsed !== null && typeof parsed === "object") {
       const meta = parsed as Record<string, unknown>;
-      if (typeof meta.manifestPath === "string") return { manifestPath: meta.manifestPath };
+      const out: { manifestPath?: string; ace?: SessionAceProvenance } = {};
+      if (typeof meta.manifestPath === "string") out.manifestPath = meta.manifestPath;
+      const ace = meta.ace;
+      if (ace !== null && typeof ace === "object") {
+        const a = ace as Record<string, unknown>;
+        if (typeof a.enabled === "boolean") {
+          out.ace = {
+            enabled: a.enabled,
+            playbookPath: typeof a.playbookPath === "string" ? a.playbookPath : undefined,
+            maxInjectedTokens:
+              typeof a.maxInjectedTokens === "number" ? a.maxInjectedTokens : undefined,
+            minScore: typeof a.minScore === "number" ? a.minScore : undefined,
+            lambda: typeof a.lambda === "number" ? a.lambda : undefined,
+          };
+        }
+      }
+      return out;
     }
   } catch {
     // ENOENT or malformed — treat as no provenance

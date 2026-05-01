@@ -1469,10 +1469,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
 
   // Persist manifest provenance so future resumes can enforce audit intent
   // against the original session's manifest, not the cwd at resume time.
+  // Also persist a frozen ACE snapshot — at resume we must compare against
+  // THIS, not a re-read of the manifest file (the operator may have edited
+  // the manifest between session start and resume; round 4 finding).
   if (flags.resume === undefined && resolvedManifestPath !== undefined) {
-    await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), {
-      manifestPath: resolvedManifestPath,
-    });
+    const meta: import("./shared-wiring.js").SessionMeta = { manifestPath: resolvedManifestPath };
+    if (manifestAceConfig !== undefined) {
+      (meta as { ace?: import("./shared-wiring.js").SessionAceProvenance }).ace = {
+        enabled: manifestAceConfig.enabled,
+        playbookPath: manifestAceConfig.playbookPath,
+        maxInjectedTokens: manifestAceConfig.maxInjectedTokens,
+        minScore: manifestAceConfig.minScore,
+        lambda: manifestAceConfig.lambda,
+      };
+    }
+    await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), meta);
   }
 
   // Resume-path audit intent enforcement using stored session provenance.
@@ -1573,30 +1584,36 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }
         }
       }
-      // Issue #2088 — ACE resume safety. When the original session ran
-      // with ace.enabled: true, silently resuming without ACE (bare
-      // --resume → skipManifestDiscovery → manifestAceConfig undefined)
-      // OR with a different playbook_path (--resume --manifest other.yaml)
-      // would either drop ACE state on the floor or attach the resumed
-      // run to the wrong playbook DB. Refuse both; the operator must
-      // re-specify the matching --manifest to continue.
-      if (resumeAuditResult.ok && resumeAuditResult.value.ace?.enabled === true) {
-        const originalAce = resumeAuditResult.value.ace;
-        const currentMatches =
-          manifestAceConfig?.enabled === true &&
-          manifestAceConfig.playbookPath === originalAce.playbookPath;
-        if (!currentMatches) {
-          process.stderr.write(
-            "koi tui: original session ran with ace.enabled: true" +
-              (originalAce.playbookPath !== undefined
-                ? ` and playbook_path: ${JSON.stringify(originalAce.playbookPath)}`
-                : "") +
-              " — refusing to resume without the matching ACE config. " +
-              "Pass --manifest <path> pointing to the original manifest (or one with matching ace config), " +
-              "or start a new session.\n",
-          );
-          process.exit(1);
-        }
+    }
+
+    // Issue #2088 — ACE resume safety. When the original session ran with
+    // ace.enabled: true, the resumed run must use the matching ACE config.
+    // Compared against the FROZEN sidecar snapshot (resumeMeta.ace), NOT a
+    // re-read of resumeMeta.manifestPath (the manifest file may have been
+    // edited between session start and resume; round 4 finding). Lives
+    // outside the "resumeMeta.manifestPath !== undefined" block above so a
+    // session created without manifest provenance but WITH an ace snapshot
+    // is still validated.
+    if (resumeMeta.ace?.enabled === true) {
+      const originalAce = resumeMeta.ace;
+      const currentMatches =
+        manifestAceConfig?.enabled === true &&
+        manifestAceConfig.playbookPath === originalAce.playbookPath &&
+        manifestAceConfig.maxInjectedTokens === originalAce.maxInjectedTokens &&
+        manifestAceConfig.minScore === originalAce.minScore &&
+        manifestAceConfig.lambda === originalAce.lambda;
+      if (!currentMatches) {
+        process.stderr.write(
+          "koi tui: original session ran with ace.enabled: true" +
+            (originalAce.playbookPath !== undefined
+              ? ` and playbook_path: ${JSON.stringify(originalAce.playbookPath)}`
+              : "") +
+            " — refusing to resume without the matching ACE config (compared against the " +
+            "frozen session sidecar, not the current manifest file contents). " +
+            "Pass --manifest <path> pointing to a manifest whose ace block matches the original, " +
+            "or start a new session.\n",
+        );
+        process.exit(1);
       }
     }
   }

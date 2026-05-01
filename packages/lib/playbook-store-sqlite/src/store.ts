@@ -7,7 +7,6 @@
 
 import { Database } from "bun:sqlite";
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
-import { uptime as osUptime } from "node:os";
 import { dirname } from "node:path";
 
 import type {
@@ -181,27 +180,36 @@ const noopRelease = (): void => {};
 interface LockMetadata {
   readonly pid: number;
   /**
-   * Approximate host boot time as `Date.now() - os.uptime()*1000`. Used to
-   * detect locks left over from a previous boot: if the host has rebooted,
-   * any lock from before the reboot is unconditionally stale, regardless
-   * of whether the OS later reused the recorded PID for an unrelated
-   * process. Tolerance is wide (5 seconds) because uptime granularity and
-   * NTP corrections can shift the inferred boot epoch by small amounts.
+   * Stable host boot identifier when one is available from the kernel.
+   * On Linux, `/proc/sys/kernel/random/boot_id` is a UUID regenerated only
+   * on actual reboot — it is immune to NTP wall-clock corrections, sleep/
+   * wake skew, and manual time changes. On platforms without a kernel boot
+   * UUID (macOS, Windows), this is `undefined` and reclaim falls back to
+   * proven-dead-PID only (operators may need to remove a stranded .lock
+   * file by hand after a crash with PID reuse — never automatic eviction
+   * based on a wall-clock heuristic).
    */
-  readonly bootEpochMs: number;
+  readonly bootId: string | undefined;
 }
 
-function currentBootEpochMs(): number {
-  return Date.now() - Math.round(osUptime() * 1000);
+function readBootId(): string | undefined {
+  try {
+    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
-function bootEpochsMatch(a: number, b: number): boolean {
-  return Math.abs(a - b) < 5_000;
+function bootIdsMatch(a: string | undefined, b: string | undefined): boolean {
+  // Both undefined = same platform without kernel boot UUID. Treat as
+  // "unknown / cannot disprove" — boot mismatch reclaim is not triggered.
+  if (a === undefined && b === undefined) return true;
+  return a === b;
 }
 
 function acquireWriterLock(dbPath: string): () => void {
   const lockPath = `${dbPath}.lock`;
-  const meta: LockMetadata = { pid: process.pid, bootEpochMs: currentBootEpochMs() };
+  const meta: LockMetadata = { pid: process.pid, bootId: readBootId() };
   // In-process refcount: multiple handles in one process share the lock
   // (same fate, single-threaded). Only unlink when the LAST handle closes,
   // otherwise an early close would drop the lock while another in-process
@@ -236,7 +244,7 @@ function makeReleaser(lockPath: string, owned: LockMetadata): () => void {
     INPROC_LOCKS.delete(lockPath);
     try {
       const parsed = parseLockMetadata(readFileSync(lockPath, "utf8"));
-      if (parsed?.pid === owned.pid && bootEpochsMatch(parsed.bootEpochMs, owned.bootEpochMs)) {
+      if (parsed?.pid === owned.pid && bootIdsMatch(parsed.bootId, owned.bootId)) {
         unlinkSync(lockPath);
       }
     } catch {
@@ -248,29 +256,26 @@ function makeReleaser(lockPath: string, owned: LockMetadata): () => void {
 function parseLockMetadata(raw: string): LockMetadata | undefined {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return undefined;
-  // New format: JSON {pid, bootEpochMs}.
+  // New format: JSON {pid, bootId?}.
   if (trimmed.startsWith("{")) {
     try {
-      const parsed = JSON.parse(trimmed) as Partial<LockMetadata>;
-      if (
-        typeof parsed.pid === "number" &&
-        Number.isFinite(parsed.pid) &&
-        typeof parsed.bootEpochMs === "number" &&
-        Number.isFinite(parsed.bootEpochMs)
-      ) {
-        return { pid: parsed.pid, bootEpochMs: parsed.bootEpochMs };
+      const parsed = JSON.parse(trimmed) as Partial<LockMetadata> & {
+        readonly bootEpochMs?: number;
+      };
+      if (typeof parsed.pid === "number" && Number.isFinite(parsed.pid)) {
+        const bootId = typeof parsed.bootId === "string" ? parsed.bootId : undefined;
+        return { pid: parsed.pid, bootId };
       }
     } catch {
       // Fall through.
     }
     return undefined;
   }
-  // Legacy format: bare integer PID. Treat boot epoch as "unknown" so the
-  // boot-mismatch reclaim path doesn't fire (we can't tell). PID-aliveness
-  // alone gates reclaim, matching pre-bootEpoch behavior.
+  // Legacy format: bare integer PID. PID-aliveness alone gates reclaim,
+  // matching pre-bootId behavior.
   const pid = Number.parseInt(trimmed, 10);
   if (!Number.isFinite(pid) || pid <= 0) return undefined;
-  return { pid, bootEpochMs: Number.NaN };
+  return { pid, bootId: undefined };
 }
 
 function openLockExclusive(lockPath: string, dbPath: string, allowReclaim: boolean): number {
@@ -297,10 +302,18 @@ function openLockExclusive(lockPath: string, dbPath: string, allowReclaim: boole
       // Open for write so subsequent writeSync overwrites the same PID.
       return openSync(lockPath, "w");
     }
+    const myBootId = readBootId();
+    // Boot mismatch is decisive only when BOTH sides have a real bootId.
+    // If either side is undefined (legacy lock, or platform without
+    // /proc/sys/kernel/random/boot_id), do NOT reclaim on boot grounds —
+    // wall-clock heuristics are unsafe per round-4 review. Operators on
+    // such platforms must remove a stranded .lock by hand if PID-reuse
+    // happens to fool the dead-PID probe.
     const bootMismatched =
       parsed !== undefined &&
-      Number.isFinite(parsed.bootEpochMs) &&
-      !bootEpochsMatch(parsed.bootEpochMs, currentBootEpochMs());
+      parsed.bootId !== undefined &&
+      myBootId !== undefined &&
+      !bootIdsMatch(parsed.bootId, myBootId);
     const pidDead = parsed !== undefined && !isProcessAlive(parsed.pid);
     if (parsed !== undefined && (bootMismatched || pidDead)) {
       try {
