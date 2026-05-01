@@ -667,7 +667,11 @@ describe("VerifiedLoop.run", () => {
     expect(result.completed).toContain("low");
   });
 
-  test("gate timeout records error and continues", async () => {
+  test("gate timeout records error and continues (cooperative gate)", async () => {
+    // Updated for the gate-quiescence contract: a gate that ignores
+    // ctx.signal and never settles after timeout is fatal RunnerStuckError
+    // (see "gate-stuck" test below). Cooperative gates that DO honor
+    // ctx.signal still let the loop continue past a single timeout.
     await writePrd({
       items: [
         { id: "a", description: "Task A", done: false },
@@ -682,9 +686,18 @@ describe("VerifiedLoop.run", () => {
         gateTimeoutMs: 50,
         maxIterations: 3,
         maxConsecutiveFailures: 2,
-        verify: async (_ctx) => {
+        verify: async (ctx) => {
           gateCalls++;
-          if (gateCalls === 1) return new Promise(() => {});
+          if (gateCalls === 1) {
+            // Cooperative: settle when ctx.signal aborts.
+            return new Promise<VerificationResult>((resolve) => {
+              ctx.signal.addEventListener(
+                "abort",
+                () => resolve({ passed: false, details: "Gate aborted by ctx.signal" }),
+                { once: true },
+              );
+            });
+          }
           return { passed: true };
         },
       }),
@@ -695,6 +708,30 @@ describe("VerifiedLoop.run", () => {
     expect(result.iterationRecords[0]?.gateResult.details).toContain("Gate");
     expect(result.completed.length).toBeGreaterThan(0);
   }, 10_000);
+
+  test("uncooperative gate (ignores ctx.signal) is fatal RunnerStuckError after timeout", async () => {
+    // Regression: a gate that times out but keeps running background work
+    // would let the loop advance to the next iteration while the previous
+    // verify() was still mutating external systems. Now the loop waits a
+    // bounded grace for the gate promise to settle; if it doesn't, fatal.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+    const loop = createVerifiedLoop(
+      makeConfig({
+        gateTimeoutMs: 50,
+        verify: () => new Promise(() => {}), // ignores signal forever
+      }),
+    );
+    let threw = false;
+    let message: string | undefined;
+    try {
+      await loop.run();
+    } catch (e: unknown) {
+      threw = true;
+      message = e instanceof Error ? e.message : String(e);
+    }
+    expect(threw).toBe(true);
+    expect(message).toContain("did not quiesce");
+  }, 15_000);
 
   test("stop() aborts a running iteration", async () => {
     await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });

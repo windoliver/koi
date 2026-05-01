@@ -26,6 +26,7 @@ const DEFAULT_GATE_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES = 3;
 
 const ITERATOR_RETURN_TIMEOUT_MS = 5_000;
+const GATE_QUIESCE_TIMEOUT_MS = 5_000;
 
 /**
  * Thrown when the runner's iterator.return() does not settle within the
@@ -320,17 +321,17 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           abortController.signal,
           AbortSignal.timeout(gateTimeoutMs),
         ]);
+        const gatePromise = config.verify({
+          iteration: i,
+          currentItem: current,
+          workingDir,
+          iterationRecords: [...iterationRecords],
+          learnings,
+          remainingItems,
+          completedItems,
+          signal: gateSignal,
+        });
         try {
-          const gatePromise = config.verify({
-            iteration: i,
-            currentItem: current,
-            workingDir,
-            iterationRecords: [...iterationRecords],
-            learnings,
-            remainingItems,
-            completedItems,
-            signal: gateSignal,
-          });
           const timeoutPromise = new Promise<never>((_, reject) => {
             gateSignal.addEventListener("abort", () => reject(new Error("Gate timed out")), {
               once: true,
@@ -338,7 +339,31 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           });
           gateResult = await Promise.race([gatePromise, timeoutPromise]);
         } catch (e: unknown) {
+          // Gate timed out or aborted. The gate's promise is still in
+          // flight unless it cooperatively settles after seeing
+          // gateSignal abort. Wait for quiescence with a bounded grace
+          // budget; if the gate refuses to settle, fail the run fatally
+          // — continuing while a verification call is still mutating
+          // external systems would produce overlapping work.
           gateResult = { passed: false, details: `Gate error: ${extractMessage(e)}` };
+          // Use let — justified: race outcome flag.
+          let gateStuck = false;
+          const settled = gatePromise.then(
+            () => undefined,
+            () => undefined,
+          );
+          const grace = new Promise<void>((resolve) => {
+            setTimeout(() => {
+              gateStuck = true;
+              resolve();
+            }, GATE_QUIESCE_TIMEOUT_MS).unref?.();
+          });
+          await Promise.race([settled, grace]);
+          if (gateStuck) {
+            throw new RunnerStuckError(
+              `VerifiedLoop: gate did not quiesce within ${GATE_QUIESCE_TIMEOUT_MS}ms after timeout/abort; aborting run to avoid overlapping verification work`,
+            );
+          }
         }
       }
 

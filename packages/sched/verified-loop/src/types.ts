@@ -15,16 +15,36 @@ import type { EngineEvent, EngineInput, KoiError, Result } from "@koi/core";
 /**
  * Injected by consumer — runs one agent iteration and yields engine events.
  *
- * The returned iterator MUST implement `return()` so the loop can confirm
- * cancellation when iterationTimeoutMs fires or `loop.stop()` is called.
- * Without it, the loop has no way to prove the runner stopped and will
- * fail the run with RunnerStuckError rather than risk overlapping
- * iterations behind a still-mutating runner. Async generators
- * (`async function*`) satisfy this requirement automatically.
+ * Cancellation contract (load-bearing — the loop's safety guarantees
+ * depend on adapters honoring this):
+ *
+ *  1. The body executing under `next()` MUST observe `input.signal` and
+ *     halt all side effects when it aborts. The loop confirms cancellation
+ *     by awaiting `iterator.return()`, but resolving `return()` is taken
+ *     as proof the runner has quiesced — a runner whose `next()` keeps
+ *     running detached work after `return()` resolves WILL produce
+ *     overlapping iterations, duplicate side effects, and corrupt
+ *     workspace state. The loop cannot detect this from outside.
+ *  2. The returned iterator MUST implement `return()` so cancellation
+ *     can be signalled when iterationTimeoutMs fires or loop.stop() is
+ *     called. Async generators (`async function*`) satisfy both #1 and
+ *     #2 automatically when their body awaits signal-aware operations.
+ *  3. A missing `return()` on early exit is treated as fatal
+ *     RunnerStuckError. A `return()` that hangs or rejects is also
+ *     fatal.
  */
 export type RunIterationFn = (input: EngineInput) => AsyncIterable<EngineEvent>;
 
-/** External verification gate — returns pass/fail after each iteration. */
+/**
+ * External verification gate — returns pass/fail after each iteration.
+ *
+ * Cancellation contract: the gate body MUST honor `ctx.signal` and stop
+ * touching external systems when it aborts. The loop races verify against
+ * a per-call timeout (gateTimeoutMs); on timeout/abort, the loop waits up
+ * to ~5s for the verify promise to settle, then fails the run fatally if
+ * it is still in flight. A gate that ignores ctx.signal and keeps running
+ * background work past its timeout WILL surface as RunnerStuckError.
+ */
 export type VerificationFn = (ctx: GateContext) => Promise<VerificationResult>;
 
 // ---------------------------------------------------------------------------
