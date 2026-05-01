@@ -200,12 +200,12 @@ export function createE2bInstance(
           durationMs,
           ...(truncated ? { truncated: true as const } : {}),
         };
-        // Re-read `aborted` here — TS narrows after the pre-abort guard, but
-        // the signal could have aborted *during* the SDK call.
-        const abortedNow: boolean = options?.signal?.aborted ?? false;
-        if (abortedNow) {
-          return { exitCode: 130, timedOut: false, oomKilled: false, ...baseResult };
-        }
+        // Once the SDK has resolved with a result we trust it. A signal that
+        // aborts after the command has already finished must NOT rewrite the
+        // exit code to 130 — that would tell callers their side-effecting
+        // command was cancelled when in fact it ran to completion, inviting
+        // duplicate execution on retry. Cancellation is only honoured when
+        // the SDK itself signals it (rejection / AbortError, handled below).
         return { exitCode: result.exitCode, timedOut, oomKilled, ...baseResult };
       } catch (e: unknown) {
         const durationMs = performance.now() - start;

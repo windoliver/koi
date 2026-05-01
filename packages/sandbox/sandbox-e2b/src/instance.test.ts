@@ -60,33 +60,33 @@ describe("createE2bInstance", () => {
     expect(result.stderr).toBe("warn");
   });
 
-  test("exec returns exitCode 130 when SDK observes the abort", async () => {
-    // SDK must advertise supportsAbort and is contracted to settle only after
-    // the remote command is killed.
+  test("exec preserves successful SDK result when abort fires after completion", async () => {
+    // Race regression: if the SDK has already resolved successfully and *then*
+    // the caller aborts, we MUST report the real exit code. Mapping a finished
+    // command to 130 would tell the caller their side-effecting command was
+    // cancelled — encouraging a duplicate retry of work that already ran.
     const base = createFakeSandbox();
     const sdk = {
       ...base,
       commands: {
         ...base.commands,
         supportsAbort: true,
-        run: async (
-          _cmd: string,
-          opts?: import("./types.js").E2bRunOpts,
-        ): Promise<import("./types.js").E2bRunResult> => {
-          // Wait until the signal fires before resolving — simulates a kill.
-          await new Promise<void>((resolve) => {
-            if (opts?.signal?.aborted === true) resolve();
-            else opts?.signal?.addEventListener("abort", () => resolve(), { once: true });
-          });
-          return { exitCode: 137, stdout: "", stderr: "" };
-        },
+        run: async (): Promise<import("./types.js").E2bRunResult> => ({
+          exitCode: 0,
+          stdout: "done",
+          stderr: "",
+        }),
       },
     };
     const instance = createE2bInstance(sdk);
     const ac = new AbortController();
+    const promise = instance.exec("echo", ["hi"], { signal: ac.signal });
+    // Abort after the SDK promise has already resolved — the adapter must
+    // ignore this late abort and keep the real exit code.
     queueMicrotask(() => ac.abort());
-    const result = await instance.exec("echo", ["hi"], { signal: ac.signal });
-    expect(result.exitCode).toBe(130);
+    const result = await promise;
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("done");
   });
 
   test("exec short-circuits with exit 130 when signal is pre-aborted (no SDK call)", async () => {

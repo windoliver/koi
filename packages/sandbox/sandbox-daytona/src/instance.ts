@@ -158,10 +158,11 @@ export function createDaytonaInstance(
           durationMs,
           ...(truncated ? { truncated: true as const } : {}),
         };
-        const abortedNow: boolean = options?.signal?.aborted ?? false;
-        if (abortedNow) {
-          return { exitCode: 130, timedOut: false, oomKilled: false, ...baseResult };
-        }
+        // Trust the SDK's resolved result. A signal that aborts after the
+        // command has already finished must NOT rewrite the exit code to 130
+        // — callers would conclude their side-effecting command was cancelled
+        // and retry it, when it actually ran to completion. Cancellation is
+        // only honoured when the SDK itself signals it (handled in catch).
         return { exitCode: result.exitCode, timedOut, oomKilled, ...baseResult };
       } catch (e: unknown) {
         const durationMs = performance.now() - start;
@@ -225,31 +226,32 @@ export function createDaytonaInstance(
     /**
      * Permanently delete the remote workspace.
      *
-     * Prefers `sdk.delete` (genuine workspace deletion) over `sdk.close` —
-     * in some Daytona SDK versions `close()` is a client-side detach that
-     * leaves the workspace running, which would silently leak billable
-     * resources. If only `close` is available, the adapter calls it but
-     * surfaces a warning: callers are expected to inject a `delete`-capable
-     * wrapper for production hosted use.
+     * Requires `sdk.delete` (genuine workspace deletion). Several Daytona SDK
+     * versions implement `close()` as a client-side detach that leaves the
+     * workspace running and billable, so the adapter refuses to fall back to
+     * `close()` — calling it would mark the instance destroyed locally while
+     * the remote workspace silently keeps running. Production callers must
+     * inject a `delete`-capable SDK wrapper.
      *
-     * Once `destroy()` is invoked, all subsequent `exec`/`readFile`/`writeFile`
-     * calls reject. Only marks `destroyed = true` after the SDK call settles
+     * Once `destroy()` resolves, all subsequent `exec`/`readFile`/`writeFile`
+     * calls reject. Only marks `destroyed = true` after `sdk.delete()` settles
      * so transient failures stay retryable; concurrent calls coalesce.
      */
     destroy: async (): Promise<void> => {
       if (destroyed) return;
       if (destroyPending !== undefined) return destroyPending;
+      const deleteFn = sdk.delete;
+      if (deleteFn === undefined) {
+        throw new Error(
+          "sandbox-daytona: destroy() requires sdk.delete to permanently delete the " +
+            "remote workspace. The injected SDK exposes only close(), which in several " +
+            "Daytona versions is a client-side detach that leaves the workspace running " +
+            "and billable. Inject a delete-capable wrapper.",
+        );
+      }
       destroyPending = (async () => {
         try {
-          if (sdk.delete !== undefined) {
-            await sdk.delete();
-          } else {
-            // Fallback: client-side close. May leave the workspace running
-            // depending on SDK version. The adapter does its best, but this
-            // path is provider-dependent — production callers should provide
-            // a `delete`-capable wrapper.
-            await sdk.close();
-          }
+          await deleteFn();
           destroyed = true;
         } finally {
           destroyPending = undefined;

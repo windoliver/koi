@@ -23,30 +23,31 @@ describe("createDaytonaInstance", () => {
     expect(call?.opts?.timeoutMs).toBe(1000);
   });
 
-  test("exec returns exitCode 130 when SDK observes the abort", async () => {
+  test("exec preserves successful SDK result when abort fires after completion", async () => {
+    // Race regression: a late abort (after the SDK has already resolved with
+    // success) must NOT rewrite the exit code to 130. Mapping a finished
+    // command to 130 would tell the caller their side-effecting command was
+    // cancelled, encouraging duplicate-execution retries.
     const base = createFakeSandbox();
     const sdk = {
       ...base,
       commands: {
         ...base.commands,
         supportsAbort: true,
-        run: async (
-          _cmd: string,
-          opts?: import("./types.js").DaytonaRunOpts,
-        ): Promise<import("./types.js").DaytonaRunResult> => {
-          await new Promise<void>((resolve) => {
-            if (opts?.signal?.aborted === true) resolve();
-            else opts?.signal?.addEventListener("abort", () => resolve(), { once: true });
-          });
-          return { exitCode: 137, stdout: "", stderr: "" };
-        },
+        run: async (): Promise<import("./types.js").DaytonaRunResult> => ({
+          exitCode: 0,
+          stdout: "done",
+          stderr: "",
+        }),
       },
     };
     const instance = createDaytonaInstance(sdk);
     const ac = new AbortController();
+    const promise = instance.exec("ls", [], { signal: ac.signal });
     queueMicrotask(() => ac.abort());
-    const result = await instance.exec("ls", [], { signal: ac.signal });
-    expect(result.exitCode).toBe(130);
+    const result = await promise;
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("done");
   });
 
   test("exec short-circuits with exit 130 when signal is pre-aborted (no SDK call)", async () => {
@@ -173,14 +174,20 @@ describe("createDaytonaInstance", () => {
     expect(sdk.closed()).toBe(false);
   });
 
-  test("destroy falls back to sdk.close when sdk.delete is not provided", async () => {
+  test("destroy fails closed when sdk.delete is not provided (no close-only fallback)", async () => {
+    // Some Daytona SDK versions implement close() as a client-side detach
+    // that leaves the workspace running and billable. Falling back to close
+    // here would mark the instance destroyed locally while the remote
+    // workspace silently keeps running, so the adapter must refuse and
+    // propagate the failure to the caller.
     const base = createFakeSandbox();
-    // Strip `delete` so the fallback path runs. Spreading would set the key to
-    // `undefined` which `exactOptionalPropertyTypes` rejects; rebuild without it.
     const { delete: _omit, ...sdk } = base;
     const instance = createDaytonaInstance(sdk);
-    await instance.destroy();
-    expect(base.closed()).toBe(true);
+    await expect(instance.destroy()).rejects.toThrow(/sdk\.delete/);
+    expect(base.closed()).toBe(false);
+    // Subsequent ops must still work (instance is not marked destroyed).
+    await instance.exec("ls", []);
+    expect(base.runCalls).toHaveLength(1);
   });
 
   test("operations after destroy throw", async () => {
