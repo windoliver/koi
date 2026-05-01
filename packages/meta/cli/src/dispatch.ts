@@ -27,6 +27,7 @@ import {
   COMMAND_NAMES,
   isKnownCommand,
   isTuiFlags,
+  type KnownCommand,
   ParseError,
   parseArgs,
   type TuiFlags,
@@ -49,6 +50,18 @@ export type DispatchResult =
   | { readonly kind: "tui"; readonly flags: TuiFlags }
   | { readonly kind: "run"; readonly mod: CommandModule; readonly flags: CliFlags };
 
+type CommandLoaderMap = Readonly<Partial<Record<KnownCommand, () => Promise<unknown>>>>;
+
+function formatThrownMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  if (e !== null && typeof e === "object" && "message" in e) {
+    const message = (e as { readonly message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return "";
+}
+
 /**
  * Parse rawArgv, apply the short-circuit checks, and (for known
  * commands) load the command module. Does **not** call
@@ -63,6 +76,7 @@ export async function runDispatch(
   rawArgv: readonly string[],
   helpText: string,
   version: string,
+  commandLoaders?: CommandLoaderMap,
 ): Promise<DispatchResult> {
   let flags: CliFlags;
   try {
@@ -104,8 +118,15 @@ export async function runDispatch(
   }
 
   if (isKnownCommand(flags.command)) {
-    const { COMMAND_LOADERS } = await import("./registry.js");
-    const loader = COMMAND_LOADERS[flags.command];
+    const registryLoaders = commandLoaders ?? (await import("./registry.js")).COMMAND_LOADERS;
+    const loader = registryLoaders[flags.command];
+    if (loader === undefined) {
+      return {
+        kind: "exit",
+        code: 2,
+        stderr: `koi ${flags.command}: missing command module loader\n`,
+      };
+    }
     let mod: CommandModule;
     try {
       // Justified cast: loader returns CommandModule<XxxFlags>, but flags
@@ -113,7 +134,8 @@ export async function runDispatch(
       // type for this command. Single cast site.
       mod = (await loader()) as CommandModule;
     } catch (e: unknown) {
-      const msg = e instanceof Error ? `  ${e.message}\n` : "";
+      const formatted = formatThrownMessage(e);
+      const msg = formatted.length > 0 ? `  ${formatted}\n` : "";
       return {
         kind: "exit",
         code: 2,

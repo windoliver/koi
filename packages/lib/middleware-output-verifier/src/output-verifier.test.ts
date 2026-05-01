@@ -873,7 +873,7 @@ describe("setRubric (session-scoped)", () => {
     expect(seenPrompts[1]?.prompt).not.toContain("RUBRIC-A");
   });
 
-  test("session end clears the scoped override", async () => {
+  test("onSessionEnd clears matching session override", async () => {
     const seenPrompts: string[] = [];
     const h = createOutputVerifierMiddleware({
       judge: {

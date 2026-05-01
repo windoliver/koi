@@ -1,0 +1,681 @@
+import { describe, expect, test } from "bun:test";
+import { sessionId } from "@koi/core";
+import { computeSuggestedName, detectPatterns, filterSubsumed } from "./detect-patterns.js";
+import { createTrace } from "./test-helpers.js";
+import type { CrystallizationCandidate, TurnLocation } from "./types.js";
+
+const TEST_SESSION = sessionId("test-session");
+const TEST_AGENT = "test-agent";
+
+function locKey(loc: TurnLocation): string {
+  return JSON.stringify([loc.sessionId, loc.agentId, loc.turnIndex]);
+}
+
+function makeCandidate(toolIds: readonly string[], occurrences: number): CrystallizationCandidate {
+  const key = toolIds.join("|");
+  const locations: TurnLocation[] = Array.from({ length: occurrences }, (_, i) => ({
+    sessionId: TEST_SESSION,
+    agentId: TEST_AGENT,
+    turnIndex: i,
+  }));
+  // Every occurrence is taken to start at offset 0 in its turn — keeps
+  // hand-crafted fixtures simple and lets shape-containing longer patterns
+  // (also at offset 0) cover shorter ones.
+  const windowsByTurn = new Map<string, ReadonlySet<number>>(
+    locations.map((loc) => [locKey(loc), new Set([0])]),
+  );
+  return {
+    ngram: { steps: toolIds.map((id) => ({ toolId: id })), key },
+    occurrences,
+    locations,
+    detectedAt: 0,
+    suggestedName: toolIds.join("-then-"),
+    outcomeStats: { successes: 0, withOutcome: 0 },
+    windowsByTurn,
+  };
+}
+
+describe("computeSuggestedName", () => {
+  test("joins tool IDs with -then- and replaces underscores", () => {
+    expect(
+      computeSuggestedName({
+        steps: [{ toolId: "read_file" }, { toolId: "parse_json" }],
+        key: "read_file|parse_json",
+      }),
+    ).toBe("read-file-then-parse-json");
+  });
+
+  test("truncates names longer than 60 chars", () => {
+    const name = computeSuggestedName({
+      steps: [
+        { toolId: "very_long_tool_name_one" },
+        { toolId: "very_long_tool_name_two" },
+        { toolId: "very_long_tool_name_three" },
+      ],
+      key: "x",
+    });
+    expect(name.length).toBeLessThanOrEqual(60);
+    expect(name.endsWith("...")).toBe(true);
+  });
+});
+
+describe("filterSubsumed", () => {
+  test("drops a shorter candidate when a longer one with ≥ frequency contains it", () => {
+    const shorter = makeCandidate(["a", "b"], 3);
+    const longer = makeCandidate(["a", "b", "c"], 3);
+    const kept = filterSubsumed([shorter, longer]);
+    expect(kept.map((c) => c.ngram.key)).toEqual(["a|b|c"]);
+  });
+
+  test("keeps the shorter candidate when it has strictly higher frequency", () => {
+    const shorter = makeCandidate(["a", "b"], 5);
+    const longer = makeCandidate(["a", "b", "c"], 3);
+    const kept = filterSubsumed([shorter, longer]);
+    expect(kept.map((c) => c.ngram.key).sort()).toEqual(["a|b", "a|b|c"]);
+  });
+
+  test("keeps disjoint candidates", () => {
+    const a = makeCandidate(["x", "y"], 3);
+    const b = makeCandidate(["p", "q"], 3);
+    expect(filterSubsumed([a, b])).toHaveLength(2);
+  });
+
+  test("does not subsume when shorter's locations are not covered by the longer", () => {
+    // [a,b] occurred in turns 0..2 from the test session; [a,b,c] occurred in
+    // turns 5..7 (disjoint). Shape contains, count matches, but locations
+    // do not — the shorter must survive.
+    const shorterLocs: TurnLocation[] = [0, 1, 2].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
+    const longerLocs: TurnLocation[] = [5, 6, 7].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
+    const shorter: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }], key: "a|b" },
+      occurrences: 3,
+      locations: shorterLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b",
+      outcomeStats: { successes: 0, withOutcome: 0 },
+      windowsByTurn: new Map(shorterLocs.map((loc) => [locKey(loc), new Set([0])])),
+    };
+    const longer: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }, { toolId: "c" }], key: "a|b|c" },
+      occurrences: 3,
+      locations: longerLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b-then-c",
+      outcomeStats: { successes: 0, withOutcome: 0 },
+      windowsByTurn: new Map(longerLocs.map((loc) => [locKey(loc), new Set([0])])),
+    };
+    const kept = filterSubsumed([shorter, longer]);
+    expect(kept).toHaveLength(2);
+  });
+
+  test("does not subsume a healthy shorter prefix beneath a failing longer composite", () => {
+    // Longer pattern fails on its last step every turn (score 0); shorter
+    // prefix succeeds every turn (score > 0). Same locations, same shape
+    // containment — quality dominance must veto the subsumption.
+    const sharedLocs: TurnLocation[] = [0, 1, 2].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
+    const sharedWindows = new Map<string, ReadonlySet<number>>(
+      sharedLocs.map((loc) => [locKey(loc), new Set([0])]),
+    );
+    const healthy: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "read" }, { toolId: "parse" }], key: "read|parse" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "read-then-parse",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 6,
+      windowsByTurn: sharedWindows,
+    };
+    const failing: CrystallizationCandidate = {
+      ngram: {
+        steps: [{ toolId: "read" }, { toolId: "parse" }, { toolId: "save" }],
+        key: "read|parse|save",
+      },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "read-then-parse-then-save",
+      outcomeStats: { successes: 0, withOutcome: 3 },
+      score: 0,
+      windowsByTurn: sharedWindows,
+    };
+    const kept = filterSubsumed([healthy, failing]);
+    const keys = kept.map((c) => c.ngram.key).sort();
+    expect(keys).toEqual(["read|parse", "read|parse|save"]);
+  });
+
+  test("subsumes when shape, coverage, and quality all dominate", () => {
+    // Shorter [a,b] only appears as part of [a,b,c]; longer has equal score
+    // and identical locations. Subsume the shorter as before.
+    const sharedLocs: TurnLocation[] = [0, 1, 2].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
+    const sharedWindows = new Map<string, ReadonlySet<number>>(
+      sharedLocs.map((loc) => [locKey(loc), new Set([0])]),
+    );
+    const shorter: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }], key: "a|b" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 3,
+      windowsByTurn: sharedWindows,
+    };
+    const longer: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }, { toolId: "c" }], key: "a|b|c" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b-then-c",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 6,
+      windowsByTurn: sharedWindows,
+    };
+    const kept = filterSubsumed([shorter, longer]);
+    expect(kept.map((c) => c.ngram.key)).toEqual(["a|b|c"]);
+  });
+
+  test("keeps shorter when it has extra in-turn occurrences not covered by the longer", () => {
+    // Trace `[a,b,c,a,b]` repeated across turns: `[a,b]` matches windows at
+    // start 0 and start 3 in each turn, but `[a,b,c]` matches only at start
+    // 0. Turn-level coverage alone would let `[a,b,c]` erase `[a,b]`, yet
+    // the second `[a,b]` window in each turn falls outside the longer
+    // pattern's window. Both candidates must survive.
+    const traces = [
+      createTrace(0, ["a", "b", "c", "a", "b"]),
+      createTrace(1, ["a", "b", "c", "a", "b"]),
+      createTrace(2, ["a", "b", "c", "a", "b"]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 3 }, () => 0);
+    const keys = candidates.map((c) => c.ngram.key).sort();
+    expect(keys).toContain("a|b");
+    expect(keys).toContain("a|b|c");
+  });
+
+  test("requires reliability dominance: flakier longer cannot tie-and-bury healthier shorter", () => {
+    // Equal frequency, equal length-vs-frequency product, but the longer's
+    // success rate is materially lower. Aggregate-score dominance alone
+    // would let `score(longer) >= score(shorter)` and erase the safer
+    // prefix; reliability-first dominance must keep both.
+    const sharedLocs: TurnLocation[] = [0, 1, 2].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
+    const sharedWindows = new Map<string, ReadonlySet<number>>(
+      sharedLocs.map((loc) => [locKey(loc), new Set([0])]),
+    );
+    const healthyShort: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }], key: "a|b" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 5,
+      windowsByTurn: sharedWindows,
+    };
+    const flakyLong: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }, { toolId: "c" }], key: "a|b|c" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b-then-c",
+      outcomeStats: { successes: 1, withOutcome: 3 },
+      score: 5,
+      windowsByTurn: sharedWindows,
+    };
+    const kept = filterSubsumed([healthyShort, flakyLong]);
+    expect(kept.map((c) => c.ngram.key).sort()).toEqual(["a|b", "a|b|c"]);
+  });
+
+  test("does not subsume when longer has zero outcome evidence and shorter is observed-healthy", () => {
+    // Longer has withOutcome=0 (never executed, no evidence). Shorter has
+    // 3 successful occurrences. A naive successRate fallback to 1.0 for
+    // no-evidence would let the longer dominate; reliability dominance
+    // must require the longer to have at least as much evidence.
+    const sharedLocs: TurnLocation[] = [0, 1, 2].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
+    const sharedWindows = new Map<string, ReadonlySet<number>>(
+      sharedLocs.map((loc) => [locKey(loc), new Set([0])]),
+    );
+    const observed: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }], key: "a|b" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 5,
+      windowsByTurn: sharedWindows,
+    };
+    const noEvidence: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }, { toolId: "c" }], key: "a|b|c" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b-then-c",
+      outcomeStats: { successes: 0, withOutcome: 0 },
+      score: 5,
+      windowsByTurn: sharedWindows,
+    };
+    const kept = filterSubsumed([observed, noEvidence]);
+    expect(kept.map((c) => c.ngram.key).sort()).toEqual(["a|b", "a|b|c"]);
+  });
+
+  test("does not subsume when longer has a strictly worse final score than shorter", () => {
+    // Longer covers shorter on shape + windows + reliability, but its
+    // aggregate score is lower (e.g. older detectedAt → recency decay).
+    // Final-score dominance must keep the higher-scoring shorter alive.
+    const sharedLocs: TurnLocation[] = [0, 1, 2].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
+    const sharedWindows = new Map<string, ReadonlySet<number>>(
+      sharedLocs.map((loc) => [locKey(loc), new Set([0])]),
+    );
+    const freshShort: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }], key: "a|b" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 10,
+      windowsByTurn: sharedWindows,
+    };
+    const staleLong: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }, { toolId: "c" }], key: "a|b|c" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b-then-c",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 5,
+      windowsByTurn: sharedWindows,
+    };
+    const kept = filterSubsumed([freshShort, staleLong]);
+    expect(kept.map((c) => c.ngram.key).sort()).toEqual(["a|b", "a|b|c"]);
+  });
+
+  test("does not subsume across pipe-key boundaries (regression: substring vs subsequence)", () => {
+    // Pipe-joined keys: "b|c" vs "a|b|cd". Naive substring match would falsely
+    // claim "b|c" is contained in "a|b|cd"; tokenised subsequence comparison
+    // must reject it because [b, c] is not a contiguous subsequence of
+    // [a, b, cd].
+    const shorter = makeCandidate(["b", "c"], 3);
+    const longer = makeCandidate(["a", "b", "cd"], 3);
+    const kept = filterSubsumed([shorter, longer]);
+    expect(kept.map((c) => c.ngram.key).sort()).toEqual(["a|b|cd", "b|c"]);
+  });
+
+  test("does not subsume when needle is a non-contiguous subsequence of haystack", () => {
+    // [a, c] is a non-contiguous subsequence of [a, b, c]; subsumption must
+    // require contiguity.
+    const shorter = makeCandidate(["a", "c"], 3);
+    const longer = makeCandidate(["a", "b", "c"], 3);
+    const kept = filterSubsumed([shorter, longer]);
+    expect(kept.map((c) => c.ngram.key).sort()).toEqual(["a|b|c", "a|c"]);
+  });
+});
+
+describe("detectPatterns", () => {
+  const clock = (): number => 0;
+
+  test("detects a 3-step sequence repeated across turns", () => {
+    const traces = [
+      createTrace(0, ["read", "parse", "save"]),
+      createTrace(1, ["read", "parse", "save"]),
+      createTrace(2, ["read", "parse", "save"]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 3, maxNgramSize: 3 }, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.ngram.key).toBe("read|parse|save");
+    expect(candidates[0]?.occurrences).toBe(3);
+  });
+
+  test("does not flag a single-occurrence sequence", () => {
+    const traces = [createTrace(0, ["once", "only", "here"])];
+    const candidates = detectPatterns(traces, {}, clock);
+    expect(candidates).toHaveLength(0);
+  });
+
+  test("tracks frequency correctly across many turns", () => {
+    const traces = [
+      createTrace(0, ["a", "b"]),
+      createTrace(1, ["a", "b"]),
+      createTrace(2, ["a", "b"]),
+      createTrace(3, ["a", "b"]),
+      createTrace(4, ["x", "y"]), // noise
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.ngram.key).toBe("a|b");
+    expect(candidates[0]?.occurrences).toBe(4);
+    expect(candidates[0]?.locations.map((l) => l.turnIndex)).toEqual([0, 1, 2, 3]);
+  });
+
+  test("merges duplicates via subsumption when longer pattern dominates", () => {
+    // Same 3-step pattern across 3 turns — sub-2-grams are subsumed.
+    const traces = [
+      createTrace(0, ["a", "b", "c"]),
+      createTrace(1, ["a", "b", "c"]),
+      createTrace(2, ["a", "b", "c"]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 3 }, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.ngram.key).toBe("a|b|c");
+  });
+
+  test("scores candidates by frequency × complexity (longer + more frequent ranks higher)", () => {
+    const traces = [
+      // 4-step pattern: 3 occurrences
+      createTrace(0, ["w", "x", "y", "z"]),
+      createTrace(1, ["w", "x", "y", "z"]),
+      createTrace(2, ["w", "x", "y", "z"]),
+      // 2-step pattern: 3 occurrences (different tool IDs to avoid subsumption)
+      createTrace(3, ["p", "q"]),
+      createTrace(4, ["p", "q"]),
+      createTrace(5, ["p", "q"]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 4 }, clock);
+    const big = candidates.find((c) => c.ngram.key === "w|x|y|z");
+    const small = candidates.find((c) => c.ngram.key === "p|q");
+    expect(big).toBeDefined();
+    expect(small).toBeDefined();
+    expect(big?.score ?? 0).toBeGreaterThan(small?.score ?? 0);
+  });
+
+  test("respects minOccurrences threshold", () => {
+    const traces = [createTrace(0, ["a", "b"]), createTrace(1, ["a", "b"])];
+    const candidates = detectPatterns(
+      traces,
+      { minNgramSize: 2, maxNgramSize: 2, minOccurrences: 3 },
+      clock,
+    );
+    expect(candidates).toHaveLength(0);
+  });
+
+  test("truncates results to maxCandidates", () => {
+    const traces: ReturnType<typeof createTrace>[] = [];
+    // Build 5 distinct 2-step patterns each with 3 occurrences.
+    const patterns = [
+      ["a", "b"],
+      ["c", "d"],
+      ["e", "f"],
+      ["g", "h"],
+      ["i", "j"],
+    ];
+    let turn = 0;
+    for (const pat of patterns) {
+      for (let i = 0; i < 3; i++) traces.push(createTrace(turn++, pat));
+    }
+    const candidates = detectPatterns(
+      traces,
+      { minNgramSize: 2, maxNgramSize: 2, maxCandidates: 2 },
+      clock,
+    );
+    expect(candidates).toHaveLength(2);
+  });
+
+  test("ranks fresher pattern above stale higher-frequency pattern (score-driven sort)", () => {
+    // 5 fresh occurrences at turns 0..4 vs 6 ancient occurrences at turns
+    // 5..10. The stale pattern has more raw occurrences but recency decay
+    // should drop its score below the fresh pattern's once enough time has
+    // passed.
+    const traces = [
+      createTrace(0, ["fresh1", "fresh2"]),
+      createTrace(1, ["fresh1", "fresh2"]),
+      createTrace(2, ["fresh1", "fresh2"]),
+      createTrace(3, ["fresh1", "fresh2"]),
+      createTrace(4, ["fresh1", "fresh2"]),
+      createTrace(5, ["stale1", "stale2"]),
+      createTrace(6, ["stale1", "stale2"]),
+      createTrace(7, ["stale1", "stale2"]),
+      createTrace(8, ["stale1", "stale2"]),
+      createTrace(9, ["stale1", "stale2"]),
+      createTrace(10, ["stale1", "stale2"]),
+    ];
+    const stalePastTime = -10 * 1_800_000;
+    const firstSeenTimes = new Map<string, number>([["stale1|stale2", stalePastTime]]);
+    const candidates = detectPatterns(
+      traces,
+      { minNgramSize: 2, maxNgramSize: 2, firstSeenTimes },
+      () => 0,
+    );
+    expect(candidates).toHaveLength(2);
+    expect(candidates[0]?.ngram.key).toBe("fresh1|fresh2");
+    expect(candidates[1]?.ngram.key).toBe("stale1|stale2");
+  });
+
+  test("ranks healthier pattern above failure-prone pattern (score-driven sort)", () => {
+    // Two patterns with equal frequency but different aggregate success
+    // rates. Score-driven ordering must put the healthy one first.
+    const errEnv = { kind: "error" as const, message: "boom" };
+    const ok = [{}, {}] as const;
+    const bad = [errEnv, errEnv] as const;
+    const traces = [
+      createTrace(0, ["good1", "good2"], ok),
+      createTrace(1, ["good1", "good2"], ok),
+      createTrace(2, ["good1", "good2"], ok),
+      createTrace(3, ["bad1", "bad2"], bad),
+      createTrace(4, ["bad1", "bad2"], bad),
+      createTrace(5, ["bad1", "bad2"], bad),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates).toHaveLength(2);
+    expect(candidates[0]?.ngram.key).toBe("good1|good2");
+    expect(candidates[1]?.ngram.key).toBe("bad1|bad2");
+  });
+
+  test("aggregates occurrence-level outcome stats across every occurrence", () => {
+    // Same pattern across 4 turns: 3 succeed, 1 fails (kind:error envelope).
+    // Outcome stats are occurrence-level: 3 successful occurrences, 4 with
+    // any signal-bearing step.
+    const fail = { kind: "error" as const, message: "boom" };
+    const traces = [
+      createTrace(0, ["a", "b"], [{}, {}]),
+      createTrace(1, ["a", "b"], [{}, {}]),
+      createTrace(2, ["a", "b"], [{}, {}]),
+      createTrace(3, ["a", "b"], [fail, fail]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.outcomeStats).toEqual({ successes: 3, withOutcome: 4 });
+  });
+
+  test("treats whole occurrence as failure when any signal-bearing step failed (not partial)", () => {
+    // 3 occurrences each have 4 successful steps and 1 failed final step.
+    // Step-level scoring would yield 12/15 = 0.8 successRate; occurrence-level
+    // scoring must yield 0/3 = 0 because the workflow never fully succeeded.
+    const fail = { kind: "error" as const, message: "boom" };
+    const traces = [
+      createTrace(0, ["a", "b", "c", "d", "e"], [{}, {}, {}, {}, fail]),
+      createTrace(1, ["a", "b", "c", "d", "e"], [{}, {}, {}, {}, fail]),
+      createTrace(2, ["a", "b", "c", "d", "e"], [{}, {}, {}, {}, fail]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 5, maxNgramSize: 5 }, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.outcomeStats).toEqual({ successes: 0, withOutcome: 3 });
+  });
+
+  test("retry storm inside a single turn does not distort outcome stats", () => {
+    // One turn with 20 repeated [a,b] occurrences (all successes), plus 2
+    // more turns each with one [a,b] failure occurrence. Frequency unit is
+    // turns (3 occurrences); outcome stats are also turn-aligned: 1
+    // successful occurrence, 3 with outcome.
+    const fail = { kind: "error" as const, message: "boom" };
+    const burst = Array.from({ length: 20 }, () => ["a", "b"]).flat();
+    const burstOutputs = Array.from({ length: 20 }, () => [{}, {}]).flat();
+    const traces = [
+      createTrace(0, burst, burstOutputs),
+      createTrace(1, ["a", "b"], [fail, fail]),
+      createTrace(2, ["a", "b"], [fail, fail]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.occurrences).toBe(3);
+    expect(candidates[0]?.outcomeStats).toEqual({ successes: 1, withOutcome: 3 });
+  });
+
+  test("turn with both succeeding and failing matches is folded as a failure (per-turn fold)", () => {
+    // Turn 0 has [a,b] twice — first window succeeds (output: {}), second
+    // fails (kind:error). Turn must be recorded as failure, not the first
+    // window's success. Two more all-failing turns ensure the pattern reaches
+    // the minOccurrences threshold.
+    const fail = { kind: "error" as const, message: "boom" };
+    const traces = [
+      createTrace(0, ["a", "b", "a", "b"], [{}, {}, fail, fail]),
+      createTrace(1, ["a", "b"], [fail, fail]),
+      createTrace(2, ["a", "b"], [fail, fail]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates).toHaveLength(1);
+    // 0 successful occurrences, 3 with outcome — first turn's later failure
+    // must not be masked by its earlier success.
+    expect(candidates[0]?.outcomeStats).toEqual({ successes: 0, withOutcome: 3 });
+  });
+
+  test("validation-only patterns score 0 successRate (cannot be ranked as healthy)", () => {
+    // Three turns of [a,b] where each tool returns a validation reject.
+    // Validation occurrences must contribute to `withOutcome` so the success
+    // rate is 0/3, not the no-signal default of 1.0.
+    const v = { kind: "validation" as const, error: "bad" };
+    const traces = [
+      createTrace(0, ["a", "b"], [v, v]),
+      createTrace(1, ["a", "b"], [v, v]),
+      createTrace(2, ["a", "b"], [v, v]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.outcomeStats).toEqual({ successes: 0, withOutcome: 3 });
+  });
+
+  test("validation-only pattern is outranked by a fresh successful pattern", () => {
+    // Same frequency, same length; one is validation-only, one fully healthy.
+    // Score-driven sort must put the healthy pattern first because the
+    // validation-only one has successRate=0.
+    const v = { kind: "validation" as const, error: "bad" };
+    const traces = [
+      createTrace(0, ["bad1", "bad2"], [v, v]),
+      createTrace(1, ["bad1", "bad2"], [v, v]),
+      createTrace(2, ["bad1", "bad2"], [v, v]),
+      createTrace(3, ["good1", "good2"], [{}, {}]),
+      createTrace(4, ["good1", "good2"], [{}, {}]),
+      createTrace(5, ["good1", "good2"], [{}, {}]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates[0]?.ngram.key).toBe("good1|good2");
+    expect(candidates[1]?.ngram.key).toBe("bad1|bad2");
+    expect(candidates[1]?.score ?? 1).toBe(0);
+  });
+
+  test("does not collapse occurrences across sessions when turn indices collide", () => {
+    // Two sessions, each emitting [a,b] at turn 0/1/2. Total occurrences
+    // must be 6, not 3 — turn-index dedup must use the composite identity.
+    const sessA = sessionId("sessA");
+    const sessB = sessionId("sessB");
+    const make = (sid: typeof sessA, turnIndex: number): import("@koi/core").TurnTrace => {
+      const trace = createTrace(turnIndex, ["a", "b"]);
+      // Override sessionId on the constructed trace.
+      return { ...trace, sessionId: sid };
+    };
+    const traces = [
+      make(sessA, 0),
+      make(sessA, 1),
+      make(sessA, 2),
+      make(sessB, 0),
+      make(sessB, 1),
+      make(sessB, 2),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 2 }, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.occurrences).toBe(6);
+    expect(new Set(candidates[0]?.locations.map((l) => l.sessionId)).size).toBe(2);
+  });
+
+  test("accepts undefined config (uses internal defaults)", () => {
+    // Public-API hardening: omitting `config` from JS callers must not crash.
+    const traces = [
+      createTrace(0, ["a", "b"]),
+      createTrace(1, ["a", "b"]),
+      createTrace(2, ["a", "b"]),
+    ];
+    const candidates = detectPatterns(traces, undefined, clock);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.ngram.key).toBe("a|b");
+  });
+
+  test("ignores non-finite firstSeenTimes values (NaN / Infinity) and falls back to now", () => {
+    // Persisted state can be corrupted; NaN/Infinity must not poison
+    // detectedAt or leak into score (which would yield NaN scores and
+    // unstable sort ordering).
+    const traces = [
+      createTrace(0, ["a", "b"]),
+      createTrace(1, ["a", "b"]),
+      createTrace(2, ["a", "b"]),
+    ];
+    const firstSeenTimes = new Map<string, number>([["a|b", Number.NaN]]);
+    const candidates = detectPatterns(
+      traces,
+      { minNgramSize: 2, maxNgramSize: 2, firstSeenTimes },
+      () => 9999,
+    );
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.detectedAt).toBe(9999);
+    expect(Number.isFinite(candidates[0]?.score ?? 0)).toBe(true);
+  });
+
+  test("ignores firstSeenTimes timestamps strictly in the future and falls back to now", () => {
+    // A persisted timestamp from a clock-skewed run could be ahead of the
+    // analysis clock. Treating it as valid would compute negative ageMs
+    // and inflate recency boost; clamp to `now` instead.
+    const traces = [
+      createTrace(0, ["a", "b"]),
+      createTrace(1, ["a", "b"]),
+      createTrace(2, ["a", "b"]),
+    ];
+    const firstSeenTimes = new Map<string, number>([["a|b", 999_999]]);
+    const candidates = detectPatterns(
+      traces,
+      { minNgramSize: 2, maxNgramSize: 2, firstSeenTimes },
+      () => 1000,
+    );
+    expect(candidates[0]?.detectedAt).toBe(1000);
+  });
+
+  test("uses firstSeenTimes for detectedAt when key was previously observed", () => {
+    const traces = [
+      createTrace(0, ["a", "b"]),
+      createTrace(1, ["a", "b"]),
+      createTrace(2, ["a", "b"]),
+    ];
+    const firstSeenTimes = new Map<string, number>([["a|b", 1234]]);
+    const candidates = detectPatterns(
+      traces,
+      { minNgramSize: 2, maxNgramSize: 2, firstSeenTimes },
+      () => 9999,
+    );
+    expect(candidates[0]?.detectedAt).toBe(1234);
+  });
+});

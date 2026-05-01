@@ -616,7 +616,7 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
-      sessionRubrics.delete(ctx.sessionId as string);
+      sessionRubrics.delete(ctx.sessionId);
     },
   };
 

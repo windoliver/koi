@@ -23,6 +23,7 @@ const TUI_IMPORT_ANALYSIS_PATHS: readonly string[] = [
   `${ROOT}packages/meta/cli/src/runtime-factory.ts`,
   `${ROOT}packages/meta/cli/src/shared-wiring.ts`,
   `${ROOT}packages/meta/cli/src/plugin-activation.ts`,
+  `${ROOT}packages/meta/cli/src/middleware-registry.ts`,
 ];
 const TUI_PRESET_STACKS_GLOB = "packages/meta/cli/src/preset-stacks/*.ts";
 
@@ -90,6 +91,8 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/ipc-local",
   // Long-running harness — alternate execution mode, not default interactive TUI wiring.
   "@koi/long-running",
+  // Eval framework — opt-in regression/scoring harness, not default interactive TUI wiring.
+  "@koi/eval",
   // Optional middleware packages that require explicit host configuration.
   "@koi/middleware-call-dedup",
   "@koi/middleware-collective-memory",

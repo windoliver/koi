@@ -87,14 +87,104 @@ constraint, see #1715 design notes).
 
 ---
 
+## Manifest Schema
+
+Issue [#2088](https://github.com/windoliver/koi/issues/2088) introduces an opt-in
+`ace:` block in `koi.yaml`. `koi tui` activates the middleware under the gates
+documented below. `koi start` continues to reject `ace.enabled: true` because
+ACE is a TUI-only feature (no headless dogfood loop today).
+
+```yaml
+ace:
+  enabled: true                          # boolean — required to opt in
+  acknowledge_cross_session_state: true  # required when enabled: true (see below)
+  max_injected_tokens: 800               # >0; maps to AceConfig.maxInjectedTokens
+  min_score: 0.05                        # in [0, 1]; maps to AceConfig.minScore
+  lambda: 0.05                           # >0; maps to AceConfig.lambda
+```
+
+`enabled: true` requires `acknowledge_cross_session_state: true`. ACE-learned
+playbooks persist across `/clear` and `/new` within a TUI process — they
+survive conversation resets and are only discarded on process exit. The
+double opt-in makes this trade-off explicit at manifest-load time rather
+than buried in a startup banner.
+
+### Validation
+
+- Unknown keys are rejected at manifest load (typo guard).
+- `playbook_path` is rejected with a pointer to the future
+  `@koi/playbook-store-sqlite` issue. Schema additions for persistence land
+  atomically with their consumer.
+- Numeric ranges are checked at parse time so misconfiguration fails at
+  startup, not at the first model call.
+- `enabled: false` (and `ace: {}`) is a valid declarative no-op.
+
+### Activation in TUI
+
+`koi tui` builds an `AceConfig` from `manifest.ace`, instantiates
+`@koi/middleware-ace` with an in-memory `PlaybookStore`, and threads it
+through `createKoiRuntime({ ace })`.
+
+**Spawn isolation is automatic.** `runtime-factory.ts` builds
+`inheritedMiddlewareForChildren` from a fixed allowlist (permissions,
+exfiltration-guard, hooks, system-prompt, plan, plan-persist,
+skill-injector). ACE is deliberately not in that list, so spawned
+children never see ACE injection or recording — no contamination of the
+parent's `PlaybookStore`. ACE and the `spawn` preset stack coexist.
+
+**Resume-provenance gate.** When `koi tui --resume <id>` is invoked
+without `--manifest`, the host skips manifest auto-discovery (so the
+cwd manifest cannot silently override the original session's
+model/stacks/governance). ACE activation runs inside that block, so a
+resumed session without explicit `--manifest` defaults to ACE off.
+Mirrors the existing `audit` resume-handling pattern.
+
+On successful activation the host writes:
+
+```
+koi tui: ace: enabled (in-memory). Learned playbooks persist across
+/clear and /new within this process; they are lost on process exit.
+Restart the TUI for a privacy boundary.
+```
+
+### Known limitations
+
+- **State leaks across `/clear` and `/new`.** ACE intentionally accumulates
+  learned playbooks across sessions in a single process — that is how the
+  injection-on-`onSessionStart` loop works. Today the runtime cycles the
+  session lifecycle on `/clear` and `/new` instead of recreating the whole
+  runtime, so the `PlaybookStore` survives. Operators who want a privacy
+  boundary must restart the TUI process. A future `clear()` API on
+  `PlaybookStore` (and hooks into reset) is tracked alongside the sqlite
+  follow-up.
+- **In-memory trajectory store deliberately omitted.** ACE's
+  `trajectoryStore` is left undefined on the TUI activation path. Without
+  a pruning hook, an in-memory trajectory store would grow for the life of
+  the process. Trajectory consolidation still happens at `onSessionEnd`
+  using the in-process working buffer; persistent trajectory storage lands
+  with `@koi/playbook-store-sqlite`.
+- **No cross-process persistence.** Requires `@koi/playbook-store-sqlite`
+  (issue [#2087](https://github.com/windoliver/koi/issues/2087)).
+- **No spawn support.** ACE and the spawn preset stack are mutually
+  exclusive until per-agent partitioning lands.
+
+The full design analysis lives in
+`docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md` (10 review rounds
+of refinement).
+
+---
+
 ## Future Work
 
 | Phase | Adds |
 |-------|------|
+| Per-agent partitioning | Allow ACE alongside the spawn preset stack |
+| `clear()` on `PlaybookStore` | Wire `/clear` and `/new` to reset ACE state in-process |
 | Middleware integration | `KoiMiddleware` with `wrapModelCall` (inject) + `wrapToolCall` (record) + `onSessionEnd` (consolidate) |
 | LLM pipeline | `reflector` + `curator` + `StructuredPlaybook` operations (`add` / `merge` / `prune`) with bullet credit assignment |
 | Promotion gate | Proposal → evaluation → commit/rollback flow; `PlaybookProposalStore` lineage |
 | `ace_reflect` tool | Agent-initiated mid-session reflection |
+| `@koi/playbook-store-sqlite` | Cross-process persistence; per-session/per-root-agent partitioning; `clear()` API |
 | Golden query | `@koi/runtime` cassette + replay assertion |
 
 ---

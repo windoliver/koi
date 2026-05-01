@@ -5,7 +5,8 @@
 import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import type { ContentBlock } from "@koi/core/message";
 import type { Accessor, JSX } from "solid-js";
-import { createEffect, createSignal, For, Match, on, Show, Switch } from "solid-js";
+import { createEffect, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
+import { bumpCounter, isProfilingEnabled } from "../profiling/profiler.js";
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
 import { useTuiStore } from "../store-context.js";
 import { ErrorBlock } from "./error-block.js";
@@ -242,6 +243,13 @@ function InfoMessage(props: { readonly message: InfoMessage_ }): JSX.Element {
 }
 
 export function MessageRow(props: MessageRowProps): JSX.Element {
+  // M1 (#1586): mount/cleanup counters answer whether <For> in MessageList
+  // unmounts off-screen rows on scroll. Disabled-path is a single boolean
+  // check — zero allocation.
+  if (isProfilingEnabled()) {
+    onMount(() => bumpCounter("messagerow.mount"));
+    onCleanup(() => bumpCounter("messagerow.cleanup"));
+  }
   return (
     <Switch>
       <Match when={props.message.kind === "user" ? (props.message as UserMessage_) : undefined}>
