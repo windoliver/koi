@@ -5,6 +5,15 @@
  * (name + description, empty inputSchema) in the model request. Tools are
  * promoted to full descriptor level on demand via the `promote_tools` companion
  * tool. Below the threshold, all tools pass through unchanged.
+ *
+ * Promotion state is keyed by SessionId so concurrent or interleaved sessions
+ * sharing one middleware instance cannot corrupt each other's promoted set.
+ * Per-session entries are populated on `onSessionStart` and torn down on
+ * `onSessionEnd`. The companion tool (registered via the bundle factory)
+ * targets the session whose model call most recently passed through
+ * `wrapModelCall`; this matches the engine's serial per-session execution
+ * model. Truly concurrent multi-session use of one middleware instance is not
+ * supported — instantiate one middleware per runtime.
  */
 
 import type {
@@ -13,6 +22,8 @@ import type {
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  SessionContext,
+  SessionId,
   ToolDescriptor,
   TurnContext,
 } from "@koi/core";
@@ -34,11 +45,22 @@ export interface ToolDisclosureConfig {
 
 export interface ToolDisclosureMiddleware extends KoiMiddleware {
   /**
-   * Promote tools by name. Adds names to the promoted set if they exist in
-   * the most recent input descriptor list. Returns the names actually promoted.
+   * Promote tools by name within the most recently active session. Adds names
+   * to the session's promoted set if they exist in the latest input descriptor
+   * list. Returns the names actually promoted. Used by the `promote_tools`
+   * companion tool, which has no SessionId in scope.
    */
   readonly promoteByName: (names: readonly string[]) => readonly string[];
-  /** Clear the promotion set. */
+  /**
+   * Promote tools by name for an explicit session. Use this when you have a
+   * SessionId in hand (e.g., from a custom dispatcher). Returns the names
+   * actually promoted; an empty array if the session is unknown.
+   */
+  readonly promoteByNameForSession: (
+    sessionId: SessionId,
+    names: readonly string[],
+  ) => readonly string[];
+  /** Drop all per-session promotion state. Useful for tests. */
   readonly clearCache: () => void;
   /**
    * Notify the middleware that the `promote_tools` companion tool has been
@@ -46,6 +68,11 @@ export interface ToolDisclosureMiddleware extends KoiMiddleware {
    * Without this call (standalone use), the capability fragment is suppressed.
    */
   readonly notifyCompanionRegistered: () => void;
+}
+
+interface SessionState {
+  promoted: Set<string>;
+  knownNames: ReadonlySet<string>;
 }
 
 function summarize(tool: ToolDescriptor): ToolDescriptor {
@@ -62,32 +89,57 @@ export function createToolDisclosureMiddleware(
 ): ToolDisclosureMiddleware {
   const threshold = config?.threshold ?? DEFAULT_DISCLOSURE_THRESHOLD;
 
-  // Set of tool names currently in full-descriptor (promoted) state.
-  // let justified: mutable set updated by promoteByName / clearCache.
-  const promoted = new Set<string>();
+  // Per-session state map. Populated on session start, torn down on session end.
+  // let justified: mutable map keyed by SessionId.
+  const sessions = new Map<SessionId, SessionState>();
 
-  // Snapshot of the most recent input tool name set — used to validate
-  // promotion requests without keeping descriptor copies around.
-  // let justified: mutable, rebuilt on each above-threshold call.
-  let knownNames: ReadonlySet<string> = new Set();
+  // Most recently active session — used by the companion tool's promoteByName,
+  // which has no SessionId in its execute() scope. Updated by wrapModelCall.
+  // let justified: mutable ref tracking last-touched session.
+  let activeSessionId: SessionId | undefined;
 
   // let justified: mutable flag — set once by notifyCompanionRegistered().
   let companionToolRegistered = false;
 
-  function disclose(tools: readonly ToolDescriptor[]): readonly ToolDescriptor[] {
+  function getOrCreate(sid: SessionId): SessionState {
+    let state = sessions.get(sid);
+    if (state === undefined) {
+      state = { promoted: new Set<string>(), knownNames: new Set<string>() };
+      sessions.set(sid, state);
+    }
+    return state;
+  }
+
+  function disclose(
+    state: SessionState,
+    tools: readonly ToolDescriptor[],
+  ): readonly ToolDescriptor[] {
     if (tools.length <= threshold) return tools;
     const result: ToolDescriptor[] = [];
     const names = new Set<string>();
     for (const tool of tools) {
       names.add(tool.name);
-      if (promoted.has(tool.name) || tool.name === PROMOTE_TOOL_NAME) {
+      if (state.promoted.has(tool.name) || tool.name === PROMOTE_TOOL_NAME) {
         result.push(tool);
       } else {
         result.push(summarize(tool));
       }
     }
-    knownNames = names;
+    state.knownNames = names;
     return result;
+  }
+
+  function promoteForSession(sid: SessionId, names: readonly string[]): readonly string[] {
+    const state = sessions.get(sid);
+    if (state === undefined) return [];
+    const ok: string[] = [];
+    for (const name of names) {
+      if (state.knownNames.has(name)) {
+        state.promoted.add(name);
+        ok.push(name);
+      }
+    }
+    return ok;
   }
 
   const middleware: ToolDisclosureMiddleware = {
@@ -95,39 +147,52 @@ export function createToolDisclosureMiddleware(
     priority: 50,
     phase: "intercept",
 
+    async onSessionStart(ctx: SessionContext): Promise<void> {
+      getOrCreate(ctx.sessionId);
+    },
+
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      sessions.delete(ctx.sessionId);
+      if (activeSessionId === ctx.sessionId) activeSessionId = undefined;
+    },
+
     wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
+      activeSessionId = ctx.session.sessionId;
       if (request.tools === undefined || request.tools.length <= threshold) {
         return next(request);
       }
-      const disclosed = disclose(request.tools);
+      const state = getOrCreate(ctx.session.sessionId);
+      const disclosed = disclose(state, request.tools);
       return next({ ...request, tools: disclosed });
     },
 
-    describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
+    describeCapabilities(ctx: TurnContext): CapabilityFragment | undefined {
       if (!companionToolRegistered) return undefined;
+      const sid: SessionId | undefined = ctx?.session?.sessionId ?? activeSessionId;
+      const state = sid !== undefined ? sessions.get(sid) : undefined;
+      const count = state?.promoted.size ?? 0;
       return {
         label: "tool-disclosure",
-        description: `${promoted.size} tools promoted to full descriptor. Use ${PROMOTE_TOOL_NAME} to load full schemas for tools you want to call.`,
+        description: `${count} tools promoted to full descriptor. Use ${PROMOTE_TOOL_NAME} to load full schemas for tools you want to call.`,
       };
     },
 
     promoteByName(names: readonly string[]): readonly string[] {
-      const ok: string[] = [];
-      for (const name of names) {
-        if (knownNames.has(name)) {
-          promoted.add(name);
-          ok.push(name);
-        }
-      }
-      return ok;
+      if (activeSessionId === undefined) return [];
+      return promoteForSession(activeSessionId, names);
+    },
+
+    promoteByNameForSession(sid: SessionId, names: readonly string[]): readonly string[] {
+      return promoteForSession(sid, names);
     },
 
     clearCache(): void {
-      promoted.clear();
+      sessions.clear();
+      activeSessionId = undefined;
     },
 
     notifyCompanionRegistered(): void {

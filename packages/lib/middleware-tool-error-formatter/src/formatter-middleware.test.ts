@@ -278,6 +278,133 @@ describe("createToolErrorFormatterMiddleware", () => {
     });
   });
 
+  describe("structured failure metadata", () => {
+    test("KoiError context is preserved in metadata", async () => {
+      const wrap = getWrapToolCall();
+      const koiError: KoiError = {
+        code: "EXTERNAL",
+        message: "rate limited",
+        retryable: true,
+        context: { resourceId: "/api/v1/foo", limit: 100 },
+        retryAfterMs: 5000,
+      };
+      const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
+
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+
+      expect(response.metadata?.context).toEqual({ resourceId: "/api/v1/foo", limit: 100 });
+      expect(response.metadata?.retryAfterMs).toBe(5000);
+      expect(response.metadata?.originalMessage).toBe("rate limited");
+    });
+
+    test("KoiError cause is captured (sanitized)", async () => {
+      const wrap = getWrapToolCall();
+      const koiError: KoiError = {
+        code: "INTERNAL",
+        message: "wrapped",
+        retryable: false,
+        cause: new Error("inner sk-abc123def456ghi789jklmnopqrst leaked"),
+      };
+      const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
+
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+
+      const cause = response.metadata?.cause;
+      expect(typeof cause).toBe("string");
+      if (typeof cause === "string") {
+        expect(cause).toContain("[REDACTED]");
+        expect(cause).not.toContain("sk-abc123def456ghi789jklmnopqrst");
+      }
+    });
+
+    test("generic Error stack is preserved (sanitized)", async () => {
+      const wrap = getWrapToolCall();
+      const failing = createFailingToolHandler(new Error("boom"));
+
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+
+      expect(typeof response.metadata?.stack).toBe("string");
+      expect(response.metadata?.originalMessage).toBe("boom");
+    });
+
+    test("originalMessage is sanitized but not truncated like the output", async () => {
+      const wrap = getWrapToolCall({ maxMessageLength: 50 });
+      const longMsg = `${"X".repeat(200)} sk-abc123def456ghi789jklmnopqrst`;
+      const failing = createFailingToolHandler(new Error(longMsg));
+
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+
+      const orig = response.metadata?.originalMessage;
+      expect(typeof orig).toBe("string");
+      if (typeof orig === "string") {
+        expect(orig.length).toBeGreaterThan(100); // not truncated
+        expect(orig).toContain("[REDACTED]"); // sanitized
+        expect(orig).not.toContain("sk-abc123def456ghi789jklmnopqrst");
+      }
+    });
+
+    test("non-Error throw produces originalMessage", async () => {
+      const wrap = getWrapToolCall();
+      const failing = createFailingToolHandler("plain string failure");
+
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+
+      expect(response.metadata?.originalMessage).toBe("plain string failure");
+    });
+  });
+
+  describe("cancellation propagation", () => {
+    test("AbortError is re-thrown, not converted to ToolResponse", async () => {
+      const wrap = getWrapToolCall();
+      const abortError = new Error("aborted");
+      abortError.name = "AbortError";
+      const failing = createFailingToolHandler(abortError);
+
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBe(abortError);
+    });
+
+    test("Error with code ABORT_ERR is re-thrown", async () => {
+      const wrap = getWrapToolCall();
+      const err = Object.assign(new Error("aborted"), { code: "ABORT_ERR" });
+      const failing = createFailingToolHandler(err);
+
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBe(err);
+    });
+
+    test("aborted signal on request: throw is re-thrown even if not an AbortError", async () => {
+      const wrap = getWrapToolCall();
+      const controller = new AbortController();
+      controller.abort();
+      const request: ToolRequest = {
+        toolId: "test-tool",
+        input: { key: "value" },
+        signal: controller.signal,
+      };
+      const generic = new Error("io interrupted");
+      const failing = createFailingToolHandler(generic);
+
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, request, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBe(generic);
+    });
+  });
+
   describe("immutability", () => {
     test("original request is not mutated", async () => {
       const wrap = getWrapToolCall();

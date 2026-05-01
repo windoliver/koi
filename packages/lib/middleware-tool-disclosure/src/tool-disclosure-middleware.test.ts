@@ -3,9 +3,11 @@ import type {
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  SessionId,
   ToolDescriptor,
   TurnContext,
 } from "@koi/core";
+import { sessionId } from "@koi/core";
 import { createMockTurnContext } from "@koi/test";
 import {
   createPromoteToolDescriptor,
@@ -232,6 +234,88 @@ describe("createToolDisclosureMiddleware", () => {
       mw.promoteByName(["tool-1", "tool-2"]);
       const result = mw.describeCapabilities?.(ctx);
       expect(result?.description).toContain("2 tools promoted");
+    });
+  });
+
+  describe("per-session isolation", () => {
+    test("promotion in session A does not affect session B", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const tools = descriptors(10);
+      const sidA: SessionId = sessionId("session-A");
+      const sidB: SessionId = sessionId("session-B");
+      const ctxA = createMockTurnContext({ session: { sessionId: sidA } });
+      const ctxB = createMockTurnContext({ session: { sessionId: sidB } });
+
+      // Both sessions see the tools
+      await mw.wrapModelCall?.(ctxA, { messages: [], tools }, captureNext().handler);
+      await mw.wrapModelCall?.(ctxB, { messages: [], tools }, captureNext().handler);
+
+      // Promote in B (active session was B since it was last)
+      mw.promoteByName(["tool-1"]);
+
+      // A should NOT see tool-1 promoted on its next call
+      const seenA = captureNext();
+      await mw.wrapModelCall?.(ctxA, { messages: [], tools }, seenA.handler);
+      const t1A = (seenA.seen.request?.tools ?? []).find((t) => t.name === "tool-1");
+      expect(t1A && isSummary(t1A)).toBe(true);
+
+      // B should see tool-1 promoted on its next call
+      const seenB = captureNext();
+      await mw.wrapModelCall?.(ctxB, { messages: [], tools }, seenB.handler);
+      const t1B = (seenB.seen.request?.tools ?? []).find((t) => t.name === "tool-1");
+      expect(t1B && isSummary(t1B)).toBe(false);
+    });
+
+    test("onSessionEnd evicts the session's promoted state", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const tools = descriptors(10);
+      const sid: SessionId = sessionId("ephemeral");
+      const ctxOne = createMockTurnContext({ session: { sessionId: sid } });
+
+      await mw.onSessionStart?.(ctxOne.session);
+      await mw.wrapModelCall?.(ctxOne, { messages: [], tools }, captureNext().handler);
+      mw.promoteByName(["tool-3"]);
+
+      await mw.onSessionEnd?.(ctxOne.session);
+
+      // Re-disclose under same sessionId — promotion must NOT carry across the end
+      const ctxTwo = createMockTurnContext({ session: { sessionId: sid } });
+      const seen = captureNext();
+      await mw.wrapModelCall?.(ctxTwo, { messages: [], tools }, seen.handler);
+      const t3 = (seen.seen.request?.tools ?? []).find((t) => t.name === "tool-3");
+      expect(t3 && isSummary(t3)).toBe(true);
+    });
+
+    test("promoteByNameForSession targets explicit sessions", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const tools = descriptors(10);
+      const sidA: SessionId = sessionId("a");
+      const sidB: SessionId = sessionId("b");
+      const ctxA = createMockTurnContext({ session: { sessionId: sidA } });
+      const ctxB = createMockTurnContext({ session: { sessionId: sidB } });
+
+      await mw.wrapModelCall?.(ctxA, { messages: [], tools }, captureNext().handler);
+      await mw.wrapModelCall?.(ctxB, { messages: [], tools }, captureNext().handler);
+
+      // Promote into A specifically — even though B was the most recent active session
+      const promoted = mw.promoteByNameForSession(sidA, ["tool-2"]);
+      expect(promoted).toEqual(["tool-2"]);
+
+      const seenA = captureNext();
+      await mw.wrapModelCall?.(ctxA, { messages: [], tools }, seenA.handler);
+      const t2A = (seenA.seen.request?.tools ?? []).find((t) => t.name === "tool-2");
+      expect(t2A && isSummary(t2A)).toBe(false);
+
+      const seenB = captureNext();
+      await mw.wrapModelCall?.(ctxB, { messages: [], tools }, seenB.handler);
+      const t2B = (seenB.seen.request?.tools ?? []).find((t) => t.name === "tool-2");
+      expect(t2B && isSummary(t2B)).toBe(true);
+    });
+
+    test("promoteByNameForSession returns empty for unknown session", () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const promoted = mw.promoteByNameForSession(sessionId("never-touched"), ["foo"]);
+      expect(promoted).toEqual([]);
     });
   });
 

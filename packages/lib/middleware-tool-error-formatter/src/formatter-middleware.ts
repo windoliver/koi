@@ -39,10 +39,78 @@ function sanitizeSecrets(message: string, patterns: readonly RegExp[]): string {
   return result;
 }
 
+/**
+ * True if the value represents a cancellation/abort signal failure.
+ *
+ * The turn runner short-circuits the loop on aborted signal or AbortError —
+ * but only if the throw escapes the middleware chain. If we converted an
+ * abort into a ToolResponse, the runner would continue with another model
+ * call after the user already pressed cancel.
+ */
+function isAbortError(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  const name = (error as { name?: unknown }).name;
+  if (name === "AbortError") return true;
+  const code = (error as { code?: unknown }).code;
+  if (code === "ABORT_ERR" || code === "ABORTED") return true;
+  return false;
+}
+
 function truncateMessage(message: string, maxLength: number): string {
   if (message.length <= maxLength) return message;
   const cutoff = maxLength - TRUNCATION_SUFFIX.length;
   return `${message.slice(0, Math.max(0, cutoff))}${TRUNCATION_SUFFIX}`;
+}
+
+/**
+ * Build a structured failure record for downstream observers (audit, telemetry,
+ * outer middleware). The model-facing `output` string is intentionally lossy
+ * (sanitized + truncated); this metadata preserves the raw error fields needed
+ * to diagnose the failure or drive recovery — sanitized for secrets but not
+ * truncated, and JSON-serializable.
+ */
+function buildStructuredFailure(error: unknown, secretPatterns: readonly RegExp[]): JsonObject {
+  const out: { -readonly [K in keyof JsonObject]: JsonObject[K] } = {};
+  if (isKoiError(error)) {
+    out.code = error.code;
+    out.retryable = error.retryable;
+    out.originalMessage = sanitizeSecrets(error.message, secretPatterns);
+    if (error.context !== undefined) out.context = error.context;
+    if (error.retryAfterMs !== undefined) out.retryAfterMs = error.retryAfterMs;
+    if (error.cause !== undefined) {
+      const causeMessage = extractMessage(error.cause);
+      if (causeMessage.length > 0) out.cause = sanitizeSecrets(causeMessage, secretPatterns);
+    }
+    return out;
+  }
+  if (error instanceof Error) {
+    out.originalMessage = sanitizeSecrets(error.message, secretPatterns);
+    if (typeof error.stack === "string" && error.stack.length > 0) {
+      out.stack = sanitizeSecrets(error.stack, secretPatterns);
+    }
+    if (error.cause !== undefined) {
+      const causeMessage = extractMessage(error.cause);
+      if (causeMessage.length > 0) out.cause = sanitizeSecrets(causeMessage, secretPatterns);
+    }
+    return out;
+  }
+  out.originalMessage = sanitizeSecrets(extractMessage(error), secretPatterns);
+  return out;
+}
+
+function extractMessage(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.message;
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object" && "message" in value) {
+    const m = (value as { message?: unknown }).message;
+    if (typeof m === "string") return m;
+  }
+  try {
+    return String(value);
+  } catch {
+    return "";
+  }
 }
 
 export interface ToolErrorFormatterHandle {
@@ -100,12 +168,20 @@ export function createToolErrorFormatterMiddleware(
       try {
         return await next(request);
       } catch (e: unknown) {
+        // Cancellation must propagate. Converting an AbortError into a
+        // ToolResponse would cause the turn runner to continue with another
+        // model call after the user already canceled the turn.
+        if (request.signal?.aborted === true || isAbortError(e)) {
+          throw e;
+        }
         const customMessage = await tryCustomFormatter(e, request.toolId, request.input);
         const rawMessage = customMessage ?? defaultFormat(e, request.toolId);
         const message = postProcess(rawMessage);
-        const errorMeta: JsonObject = isKoiError(e)
-          ? { error: true, toolId: request.toolId, code: e.code, retryable: e.retryable }
-          : { error: true, toolId: request.toolId };
+        const errorMeta: JsonObject = {
+          error: true,
+          toolId: request.toolId,
+          ...buildStructuredFailure(e, secretPatterns),
+        };
 
         return {
           output: message,

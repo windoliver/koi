@@ -72,6 +72,12 @@ The bundle factory wires a `promote_tools` Tool that calls `middleware.promoteBy
 
 Tools are only promoted if they exist in the input descriptor list. Unknown names are silently skipped. The companion tool returns the list of names actually promoted.
 
+### Per-session state
+
+Promotion state is keyed by `SessionId` so concurrent or interleaved sessions sharing one middleware instance cannot corrupt each other. Per-session entries are populated lazily on first `wrapModelCall` (and via `onSessionStart`) and torn down on `onSessionEnd`.
+
+The `promote_tools` companion tool's `execute()` has no `SessionId` in scope (Tool.execute receives only `args` and an abort signal), so it targets the session whose `wrapModelCall` was most recently invoked. This matches the engine's serial per-session execution model. Callers needing explicit session targeting (custom dispatchers, multi-tenant runtimes) should use `middleware.promoteByNameForSession(sid, names)` instead of relying on the companion tool.
+
 ### Phase / priority
 
 | Field | Value | Reason |
@@ -154,5 +160,5 @@ The companion tool itself is always full-descriptor — even above the threshold
 
 - **Tool selection / ranking** — that belongs to `@koi/middleware-tool-selector`. Disclosure is mechanical (token reduction), not semantic (relevance).
 - **ForgeStore-backed promotion** — v1 had a `ForgeStore` path that was dead code (`brickIdLookup` always returned `undefined`). Promotion is purely list-internal. If a tool is not in the request's descriptor list, it cannot be promoted.
-- **Cache eviction** — promoted state is per-runtime; the Set lives until `clearCache()` or session end. Fine for a few hundred entries; not designed as a long-lived cache.
+- **Cache eviction** — promoted state is per-session; entries are torn down on `onSessionEnd`. Fine for a few hundred entries per session; not designed as a long-lived cache.
 - **Token estimation** — no budget-aware logic. If you need that, layer a cost middleware around this one.
