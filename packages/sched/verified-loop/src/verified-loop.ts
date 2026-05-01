@@ -178,6 +178,21 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
       `VerifiedLoopConfig.maxIterations must be a positive integer (got ${String(maxIterations)})`,
     );
   }
+  // Both timeouts feed AbortSignal.timeout(); negative or NaN values throw
+  // TypeError at run time mid-loop, which corrupts the iteration record
+  // mid-flight. Reject upfront with a structured error so the operator
+  // sees a deterministic config failure instead of a stack trace from a
+  // half-complete iteration.
+  if (!Number.isInteger(iterationTimeoutMs) || iterationTimeoutMs < 1) {
+    throw new Error(
+      `VerifiedLoopConfig.iterationTimeoutMs must be a positive integer (got ${String(iterationTimeoutMs)})`,
+    );
+  }
+  if (!Number.isInteger(gateTimeoutMs) || gateTimeoutMs < 1) {
+    throw new Error(
+      `VerifiedLoopConfig.gateTimeoutMs must be a positive integer (got ${String(gateTimeoutMs)})`,
+    );
+  }
 
   // Single-use enforcement. Sharing one AbortController across multiple
   // run() calls would mean: a stop() on call N silently disables call N+1

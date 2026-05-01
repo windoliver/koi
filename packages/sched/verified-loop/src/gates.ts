@@ -110,28 +110,27 @@ export function createTestGate(
       // stream) cannot retroactively mark a successful run as failed.
       exited = true;
       ctx.signal.removeEventListener("abort", onAbort);
-      // The child has exited, but a forked descendant may still be
-      // holding stderr open. Bound the post-exit drain wait so we never
-      // hang the loop past timeoutMs — once the child's own writes have
-      // flushed, descendant chatter is not worth waiting for.
-      // Use let — justified: race outcome.
-      let drainTimedOut = false;
+      // The leader has exited but forked descendants may still be running
+      // (e.g., backgrounded test workers, build daemons). Reaping them is
+      // a quiescence requirement: the next iteration would otherwise
+      // start while leftover children from this gate are still mutating
+      // the workspace or external systems. SIGKILL the whole group
+      // immediately — while the leader's slot is fresh in the kernel
+      // tables and any descendant still alive keeps the PGID owned by
+      // this group. A delayed kill (post-drain) was tried and rejected:
+      // by then the group could be empty and the PGID re-allocatable.
+      killGroup("SIGKILL");
+      // Bound the stderr drain wait. With descendants killed, the pipe
+      // should close almost immediately, but a kernel that has not yet
+      // delivered SIGKILL can hold it briefly.
       const drainGrace = new Promise<string>((resolve) => {
         setTimeout(() => {
-          drainTimedOut = true;
-          resolve("[stderr drain exceeded grace; possibly held by descendant]");
+          resolve("[stderr drain exceeded grace]");
         }, 1_000).unref?.();
       });
       const stderr = await Promise.race([stderrPromise, drainGrace]);
       clearTimeout(timer);
       if (killTimer !== undefined) clearTimeout(killTimer);
-      // Intentionally NOT calling killGroup() here even on drainTimedOut:
-      // the leader exited before this point, so the kernel can reuse the
-      // numeric PGID for an unrelated process group on a busy host. A
-      // post-exit group kill would risk SIGKILL'ing a stranger. Accept
-      // the placeholder stderr and let the descendant linger — it can no
-      // longer affect our verification result.
-      void drainTimedOut;
 
       // Cancellation is a verification failure regardless of exit code. A
       // child that traps SIGTERM and exits 0 (or simply finishes during the

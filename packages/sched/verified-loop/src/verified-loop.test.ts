@@ -106,6 +106,18 @@ describe("createVerifiedLoop", () => {
       }),
     ).toThrow("iterationPrompt");
   });
+
+  test("throws on negative iterationTimeoutMs", () => {
+    expect(() => createVerifiedLoop(makeConfig({ iterationTimeoutMs: -1 }))).toThrow(
+      "iterationTimeoutMs must be a positive integer",
+    );
+  });
+
+  test("throws on NaN gateTimeoutMs", () => {
+    expect(() => createVerifiedLoop(makeConfig({ gateTimeoutMs: Number.NaN }))).toThrow(
+      "gateTimeoutMs must be a positive integer",
+    );
+  });
 });
 
 describe("VerifiedLoop.run", () => {

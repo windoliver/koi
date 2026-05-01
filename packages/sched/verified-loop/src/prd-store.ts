@@ -180,8 +180,15 @@ async function writePRDIfUnchanged(
       } finally {
         await dirHandle.close();
       }
-    } catch {
-      // Directory fsync unsupported on this fs — accept the weaker guarantee.
+    } catch (e: unknown) {
+      // Only swallow "filesystem does not support directory fsync" errors
+      // (FUSE, some network mounts, certain object-store gateways). Real
+      // I/O failures (EIO, ENOSPC, EBADF) must propagate so the caller
+      // does not falsely believe the write was crash-durable.
+      const code = (e as { readonly code?: unknown }).code;
+      const unsupported =
+        code === "EINVAL" || code === "ENOTSUP" || code === "ENOSYS" || code === "EPERM";
+      if (!unsupported) throw e;
     }
     return { ok: true, value: undefined };
   } catch (e: unknown) {
