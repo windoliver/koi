@@ -769,18 +769,24 @@ const SESSION_META_VERSION = 1 as const;
  * mutable file at `manifestPath` — an attacker (or accidental edit)
  * can flip `ace.enabled` or remove `audit` after the session was
  * created, but the snapshot preserves the original contract.
+ *
+ * Both booleans are required so `readSessionMetaResult` can detect
+ * field-stripping tampering. A sidecar with `snapshot: {}` is treated
+ * as corrupt rather than falling back to re-parsing the mutable
+ * manifest.
  */
 export interface SessionProvenanceSnapshot {
-  readonly aceEnabled?: boolean;
-  readonly auditDeclared?: boolean;
+  readonly aceEnabled: boolean;
+  readonly auditDeclared: boolean;
 }
 
 export async function writeSessionMeta(
   sessionsDir: string,
   sid: string,
   meta: {
-    readonly manifestPath?: string;
-    readonly snapshot?: SessionProvenanceSnapshot;
+    /** Absolute path to the governing manifest, or `null` when the session was launched without one. */
+    readonly manifestPath: string | null;
+    readonly snapshot: SessionProvenanceSnapshot;
   },
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: string }> {
   try {
@@ -808,7 +814,7 @@ export type SessionMetaReadResult =
   | { readonly kind: "missing" }
   | {
       readonly kind: "ok";
-      readonly manifestPath: string;
+      readonly manifestPath: string | undefined;
       readonly snapshot?: SessionProvenanceSnapshot;
     }
   | { readonly kind: "corrupt"; readonly error: string };
@@ -827,33 +833,39 @@ export async function readSessionMetaResult(
       return { kind: "corrupt", error: "sidecar root is not a JSON object" };
     }
     const meta = parsed as Record<string, unknown>;
-    if (typeof meta.manifestPath !== "string") {
-      // A present sidecar without a valid manifestPath is treated as
-      // tampered/corrupt: writeSessionMeta() always emits the field
-      // when a manifest governed the session, so its absence cannot
-      // be distinguished from removal-attack on a manifest-governed
-      // session. Failing closed catches the attack; legacy sessions
-      // never wrote a sidecar at all (kind: "missing").
-      return { kind: "corrupt", error: "manifestPath field is missing or not a string" };
+    // manifestPath may be a string (manifest-governed session) or null
+    // (no-manifest session — explicitly recorded so resume can
+    // distinguish it from a missing/tampered sidecar). Anything else
+    // is corruption.
+    let manifestPathValue: string | undefined;
+    if (meta.manifestPath === null) {
+      manifestPathValue = undefined;
+    } else if (typeof meta.manifestPath === "string") {
+      manifestPathValue = meta.manifestPath;
+    } else {
+      return { kind: "corrupt", error: "manifestPath field is missing or invalid" };
     }
     const snap = meta.snapshot;
-    if (snap !== undefined && (snap === null || typeof snap !== "object")) {
-      return { kind: "corrupt", error: "snapshot field is present but not an object" };
+    let snapshot: SessionProvenanceSnapshot | undefined;
+    if (snap !== undefined) {
+      if (snap === null || typeof snap !== "object") {
+        return { kind: "corrupt", error: "snapshot field is present but not an object" };
+      }
+      const snapObj = snap as Record<string, unknown>;
+      if (typeof snapObj.aceEnabled !== "boolean" || typeof snapObj.auditDeclared !== "boolean") {
+        return {
+          kind: "corrupt",
+          error: "snapshot is missing required aceEnabled/auditDeclared booleans",
+        };
+      }
+      snapshot = {
+        aceEnabled: snapObj.aceEnabled,
+        auditDeclared: snapObj.auditDeclared,
+      };
     }
-    const snapshot: SessionProvenanceSnapshot | undefined =
-      snap !== undefined
-        ? {
-            ...(typeof (snap as Record<string, unknown>).aceEnabled === "boolean"
-              ? { aceEnabled: (snap as Record<string, unknown>).aceEnabled as boolean }
-              : {}),
-            ...(typeof (snap as Record<string, unknown>).auditDeclared === "boolean"
-              ? { auditDeclared: (snap as Record<string, unknown>).auditDeclared as boolean }
-              : {}),
-          }
-        : undefined;
     return snapshot !== undefined
-      ? { kind: "ok", manifestPath: meta.manifestPath, snapshot }
-      : { kind: "ok", manifestPath: meta.manifestPath };
+      ? { kind: "ok", manifestPath: manifestPathValue, snapshot }
+      : { kind: "ok", manifestPath: manifestPathValue };
   } catch (err) {
     return { kind: "corrupt", error: err instanceof Error ? err.message : String(err) };
   }

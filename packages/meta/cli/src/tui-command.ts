@@ -1489,9 +1489,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // When ACE is activated, the sidecar is the only signal a future
   // koi start --resume has to refuse the unsupported host transition;
   // missing it would silently downgrade. Fail closed in that case.
-  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
+  if (flags.resume === undefined) {
+    // Always write the sidecar — even for manifest-free sessions —
+    // so resume can distinguish a legitimate no-manifest session
+    // from a tampered/deleted sidecar. manifestPath is null when
+    // no manifest governed this session.
     const writeResult = await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), {
-      manifestPath: resolvedManifestPath,
+      manifestPath: resolvedManifestPath ?? null,
       snapshot: {
         aceEnabled: resolvedAceConfig !== undefined,
         auditDeclared: manifestAudit !== undefined,
@@ -1546,6 +1550,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         );
         process.exit(1);
       }
+      // Manifest-free original session — the snapshot already proved
+      // it didn't enable ACE/audit. Skip manifest reload + audit/scope
+      // checks below by not entering the resumeAuditResult block.
+      if (resumeMeta.manifestPath === undefined) {
+        // fall through to the next outer block; nothing else to verify
+      }
+    }
+    if (resumeMeta.kind === "ok" && resumeMeta.manifestPath !== undefined) {
       const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
         allowOAuthSchemes: true,
         skipAuditValidation: false,
@@ -5574,6 +5586,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             const aceFromSnapshot = pickerMeta.snapshot?.aceEnabled === true;
             const aceFromManifest = await (async (): Promise<boolean> => {
               if (aceFromSnapshot) return true;
+              if (pickerMeta.manifestPath === undefined) return false;
               const m = await loadManifestConfig(pickerMeta.manifestPath, {
                 skipAuditValidation: true,
               });

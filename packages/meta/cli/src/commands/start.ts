@@ -721,11 +721,15 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
 
   // Persist manifest provenance so future resumes can enforce audit intent
   // against the original session's manifest, not the cwd at resume time.
-  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
-    // koi start does not wire ACE, so a sidecar-write failure here cannot
-    // silently downgrade an ACE-enabled session — the fresh-load rejection
-    // already barred that. Best-effort persistence is appropriate.
-    await writeSessionMeta(SESSIONS_DIR, String(sid), { manifestPath: resolvedManifestPath });
+  if (flags.resume === undefined) {
+    // Always write the sidecar — even for manifest-free sessions —
+    // so resume can distinguish a legitimate no-manifest session
+    // from a tampered/deleted sidecar. koi start rejects ace + audit
+    // at fresh-load, so the snapshot is always { false, false } here.
+    await writeSessionMeta(SESSIONS_DIR, String(sid), {
+      manifestPath: resolvedManifestPath ?? null,
+      snapshot: { aceEnabled: false, auditDeclared: false },
+    });
   }
 
   // Resume-path audit check using stored session provenance.
@@ -764,6 +768,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             "audit sinks — use koi tui to resume this session.",
         );
       }
+      // Manifest-free original session — snapshot already proves no
+      // ACE/audit; skip the manifest reload + re-derivation below.
+      if (resumeMeta.manifestPath === undefined) {
+        // Fall through to runtime assembly with no further checks.
+      } else {
       const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
         skipAuditValidation: true,
       });
@@ -795,6 +804,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             "koi start does not wire ACE — use koi tui to resume this session, " +
             "or set ace.enabled: false in the manifest.",
         );
+      }
       }
     }
   }
