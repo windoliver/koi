@@ -164,6 +164,20 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
   const iterationTimeoutMs = config.iterationTimeoutMs ?? DEFAULT_ITERATION_TIMEOUT_MS;
   const gateTimeoutMs = config.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
   const maxConsecutiveFailures = config.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_FAILURES;
+  // Validate destructive numeric config upfront. A non-integer, NaN, or
+  // < 1 value would let the FIRST failed verification flip skipped:true
+  // into the PRD source of truth — silently dropping work that an
+  // operator may not notice for a long time. Reject at construction.
+  if (!Number.isInteger(maxConsecutiveFailures) || maxConsecutiveFailures < 1) {
+    throw new Error(
+      `VerifiedLoopConfig.maxConsecutiveFailures must be a positive integer (got ${String(maxConsecutiveFailures)})`,
+    );
+  }
+  if (!Number.isInteger(maxIterations) || maxIterations < 1) {
+    throw new Error(
+      `VerifiedLoopConfig.maxIterations must be a positive integer (got ${String(maxIterations)})`,
+    );
+  }
 
   // Single-use enforcement. Sharing one AbortController across multiple
   // run() calls would mean: a stop() on call N silently disables call N+1
@@ -321,16 +335,29 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           abortController.signal,
           AbortSignal.timeout(gateTimeoutMs),
         ]);
-        const gatePromise = config.verify({
-          iteration: i,
-          currentItem: current,
-          workingDir,
-          iterationRecords: [...iterationRecords],
-          learnings,
-          remainingItems,
-          completedItems,
-          signal: gateSignal,
-        });
+        // Catch synchronous throws while building the verifier promise
+        // (missing dep, bad context, local validation) so they degrade
+        // to a failed gate result instead of crashing the run. Don't
+        // use Promise.resolve().then(...) here — that adds a microtask
+        // delay that breaks the immediate-abort path in verify().
+        // Use let — justified: try/catch must reassign across boundaries.
+        let gatePromise: Promise<VerificationResult>;
+        try {
+          gatePromise = Promise.resolve(
+            config.verify({
+              iteration: i,
+              currentItem: current,
+              workingDir,
+              iterationRecords: [...iterationRecords],
+              learnings,
+              remainingItems,
+              completedItems,
+              signal: gateSignal,
+            }),
+          );
+        } catch (e: unknown) {
+          gatePromise = Promise.reject(e);
+        }
         try {
           const timeoutPromise = new Promise<never>((_, reject) => {
             gateSignal.addEventListener("abort", () => reject(new Error("Gate timed out")), {

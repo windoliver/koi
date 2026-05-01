@@ -989,6 +989,50 @@ describe("VerifiedLoop.run", () => {
     expect(result.iterationRecords[0]?.gateResult.passed).toBe(false);
   }, 5_000);
 
+  test("synchronous verify() throw degrades to a failed gate, not a fatal run", async () => {
+    // Regression: config.verify(...) was called outside the try block, so
+    // a sync throw (missing dep, bad context, local validation) crashed
+    // the whole loop with the current item left pending and no failure
+    // budget accounting. Now it degrades to a failed gate, just like an
+    // async rejection.
+    await writePrd({
+      items: [
+        { id: "a", description: "Task A", done: false },
+        { id: "b", description: "Task B", done: false },
+      ],
+    });
+    let calls = 0;
+    const loop = createVerifiedLoop(
+      makeConfig({
+        maxConsecutiveFailures: 5,
+        verify: ((_ctx: GateContext) => {
+          calls++;
+          if (calls === 1) throw new Error("verify built incorrectly");
+          return Promise.resolve({ passed: true });
+        }) as VerificationFn,
+      }),
+    );
+    const result = await loop.run();
+    expect(result.iterationRecords[0]?.gateResult.passed).toBe(false);
+    expect(result.iterationRecords[0]?.gateResult.details).toContain("verify built incorrectly");
+    expect(result.completed).toEqual(["a", "b"]);
+  });
+
+  test("createVerifiedLoop rejects maxConsecutiveFailures < 1", () => {
+    expect(() => createVerifiedLoop({ ...makeConfig(), maxConsecutiveFailures: 0 })).toThrow(
+      /maxConsecutiveFailures/,
+    );
+    expect(() => createVerifiedLoop({ ...makeConfig(), maxConsecutiveFailures: -3 })).toThrow(
+      /maxConsecutiveFailures/,
+    );
+    expect(() => createVerifiedLoop({ ...makeConfig(), maxConsecutiveFailures: 1.5 })).toThrow(
+      /maxConsecutiveFailures/,
+    );
+    expect(() =>
+      createVerifiedLoop({ ...makeConfig(), maxConsecutiveFailures: Number.NaN }),
+    ).toThrow(/maxConsecutiveFailures/);
+  });
+
   test("rejects a second run() on the same instance (single-use contract)", async () => {
     // Regression: createVerifiedLoop returned an object with reusable
     // run/stop methods, but state (especially abortController) was
