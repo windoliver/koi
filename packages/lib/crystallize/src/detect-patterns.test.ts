@@ -245,6 +245,79 @@ describe("filterSubsumed", () => {
     expect(kept.map((c) => c.ngram.key).sort()).toEqual(["a|b", "a|b|c"]);
   });
 
+  test("does not subsume when longer has zero outcome evidence and shorter is observed-healthy", () => {
+    // Longer has withOutcome=0 (never executed, no evidence). Shorter has
+    // 3 successful occurrences. A naive successRate fallback to 1.0 for
+    // no-evidence would let the longer dominate; reliability dominance
+    // must require the longer to have at least as much evidence.
+    const sharedLocs: TurnLocation[] = [0, 1, 2].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
+    const sharedWindows = new Map<string, ReadonlySet<number>>(
+      sharedLocs.map((loc) => [locKey(loc), new Set([0])]),
+    );
+    const observed: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }], key: "a|b" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 5,
+      windowsByTurn: sharedWindows,
+    };
+    const noEvidence: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }, { toolId: "c" }], key: "a|b|c" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b-then-c",
+      outcomeStats: { successes: 0, withOutcome: 0 },
+      score: 5,
+      windowsByTurn: sharedWindows,
+    };
+    const kept = filterSubsumed([observed, noEvidence]);
+    expect(kept.map((c) => c.ngram.key).sort()).toEqual(["a|b", "a|b|c"]);
+  });
+
+  test("does not subsume when longer has a strictly worse final score than shorter", () => {
+    // Longer covers shorter on shape + windows + reliability, but its
+    // aggregate score is lower (e.g. older detectedAt → recency decay).
+    // Final-score dominance must keep the higher-scoring shorter alive.
+    const sharedLocs: TurnLocation[] = [0, 1, 2].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
+    const sharedWindows = new Map<string, ReadonlySet<number>>(
+      sharedLocs.map((loc) => [locKey(loc), new Set([0])]),
+    );
+    const freshShort: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }], key: "a|b" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 10,
+      windowsByTurn: sharedWindows,
+    };
+    const staleLong: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }, { toolId: "c" }], key: "a|b|c" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b-then-c",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 5,
+      windowsByTurn: sharedWindows,
+    };
+    const kept = filterSubsumed([freshShort, staleLong]);
+    expect(kept.map((c) => c.ngram.key).sort()).toEqual(["a|b", "a|b|c"]);
+  });
+
   test("does not subsume across pipe-key boundaries (regression: substring vs subsequence)", () => {
     // Pipe-joined keys: "b|c" vs "a|b|cd". Naive substring match would falsely
     // claim "b|c" is contained in "a|b|cd"; tokenised subsequence comparison
@@ -551,6 +624,44 @@ describe("detectPatterns", () => {
     const candidates = detectPatterns(traces, undefined, clock);
     expect(candidates).toHaveLength(1);
     expect(candidates[0]?.ngram.key).toBe("a|b");
+  });
+
+  test("ignores non-finite firstSeenTimes values (NaN / Infinity) and falls back to now", () => {
+    // Persisted state can be corrupted; NaN/Infinity must not poison
+    // detectedAt or leak into score (which would yield NaN scores and
+    // unstable sort ordering).
+    const traces = [
+      createTrace(0, ["a", "b"]),
+      createTrace(1, ["a", "b"]),
+      createTrace(2, ["a", "b"]),
+    ];
+    const firstSeenTimes = new Map<string, number>([["a|b", Number.NaN]]);
+    const candidates = detectPatterns(
+      traces,
+      { minNgramSize: 2, maxNgramSize: 2, firstSeenTimes },
+      () => 9999,
+    );
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.detectedAt).toBe(9999);
+    expect(Number.isFinite(candidates[0]?.score ?? 0)).toBe(true);
+  });
+
+  test("ignores firstSeenTimes timestamps strictly in the future and falls back to now", () => {
+    // A persisted timestamp from a clock-skewed run could be ahead of the
+    // analysis clock. Treating it as valid would compute negative ageMs
+    // and inflate recency boost; clamp to `now` instead.
+    const traces = [
+      createTrace(0, ["a", "b"]),
+      createTrace(1, ["a", "b"]),
+      createTrace(2, ["a", "b"]),
+    ];
+    const firstSeenTimes = new Map<string, number>([["a|b", 999_999]]);
+    const candidates = detectPatterns(
+      traces,
+      { minNgramSize: 2, maxNgramSize: 2, firstSeenTimes },
+      () => 1000,
+    );
+    expect(candidates[0]?.detectedAt).toBe(1000);
   });
 
   test("uses firstSeenTimes for detectedAt when key was previously observed", () => {

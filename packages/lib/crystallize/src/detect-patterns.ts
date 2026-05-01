@@ -104,29 +104,47 @@ function coversEveryWindow(
   return true;
 }
 
-function successRateOf(c: CrystallizationCandidate): number {
-  // Mirrors `computeSuccessRate`: no signal-bearing occurrences → 1.0
-  // (neutral default), so reliability dominance never falsely punishes a
-  // pattern with no captured outcomes.
-  return c.outcomeStats.withOutcome === 0
-    ? 1.0
-    : c.outcomeStats.successes / c.outcomeStats.withOutcome;
+/**
+ * Reliability dominance for subsumption. The longer pattern must (a) have
+ * at least as much outcome evidence as the shorter and (b) be at least as
+ * reliable on that evidence. A longer pattern with strictly less evidence
+ * never dominates — otherwise a never-executed longer composite would
+ * silently erase a healthy prefix that has been observed succeeding many
+ * times. When neither side has evidence, dominance trivially holds (both
+ * are reliability-unknown and there is nothing to lose).
+ */
+function reliabilityDominates(
+  longer: CrystallizationCandidate,
+  shorter: CrystallizationCandidate,
+): boolean {
+  const lw = longer.outcomeStats.withOutcome;
+  const sw = shorter.outcomeStats.withOutcome;
+  if (lw < sw) return false;
+  if (sw === 0) return true;
+  // sw > 0 here, so divisions are well defined.
+  const longerRate = longer.outcomeStats.successes / lw;
+  const shorterRate = shorter.outcomeStats.successes / sw;
+  return longerRate >= shorterRate;
 }
 
 /**
- * Drop candidates wholly subsumed by a longer candidate. Subsumption now
- * requires three independent conditions:
+ * Drop candidates wholly subsumed by a longer candidate. Subsumption is a
+ * blocking decision — once removed, the shorter never resurfaces — so the
+ * longer must dominate on every axis the scorer cares about:
+ *
  *  - **Shape**: longer contains shorter as a contiguous tool-id subsequence.
  *  - **Occurrence coverage**: every concrete window of the shorter (turn +
  *    start offset) is wholly contained inside some window of the longer in
  *    the same turn. Pure turn-level coverage is unsafe — a turn can match
  *    a shorter pattern multiple times while matching the longer pattern
  *    only once.
- *  - **Reliability dominance**: longer's `successRate` is at least the
- *    shorter's. Aggregate `score` ties are not enough: a longer composite
- *    that fails 50% of the time can score-tie a healthy 100%-success prefix
- *    once complexity weight is folded in, and silently bury the safer
- *    pattern.
+ *  - **Reliability dominance**: longer has at least as much outcome
+ *    evidence and at least as good a success rate. A longer pattern with
+ *    no evidence cannot dominate a shorter that has been observed
+ *    succeeding.
+ *  - **Final-score dominance**: longer's aggregate `score` is at least the
+ *    shorter's. Without this, an older/staler longer pattern could erase
+ *    a fresher shorter prefix that the scorer is actively prioritising.
  */
 export function filterSubsumed(
   candidates: readonly CrystallizationCandidate[],
@@ -138,9 +156,27 @@ export function filterSubsumed(
         other.ngram.steps.length > candidate.ngram.steps.length &&
         containsContiguous(other.ngram.steps, candidate.ngram.steps) &&
         coversEveryWindow(candidate, other) &&
-        successRateOf(other) >= successRateOf(candidate),
+        reliabilityDominates(other, candidate) &&
+        (other.score ?? 0) >= (candidate.score ?? 0),
     );
   });
+}
+
+/**
+ * `firstSeenTimes` is persisted state from prior analysis cycles, so its
+ * values may be corrupted (NaN, Infinity, future dates). Treat any non-
+ * finite value or value strictly greater than `now` as missing and fall
+ * back to `now` — better to lose recency-decay precision than to leak a
+ * NaN through the scorer and break sort determinism.
+ */
+function resolveDetectedAt(
+  firstSeenTimes: ReadonlyMap<string, number> | undefined,
+  key: string,
+  now: number,
+): number {
+  const stored = firstSeenTimes?.get(key);
+  if (stored === undefined || !Number.isFinite(stored) || stored > now) return now;
+  return stored;
 }
 
 function buildCandidates(
@@ -157,12 +193,16 @@ function buildCandidates(
       ngram: entry.ngram,
       occurrences: entry.locations.length,
       locations: entry.locations,
-      detectedAt: firstSeenTimes?.get(entry.ngram.key) ?? now,
+      detectedAt: resolveDetectedAt(firstSeenTimes, entry.ngram.key, now),
       suggestedName: computeSuggestedName(entry.ngram),
       outcomeStats: entry.outcomeStats,
       windowsByTurn: entry.windowsByTurn,
     };
-    raw.push({ ...base, score: computeCrystallizeScore(base, now) });
+    const score = computeCrystallizeScore(base, now);
+    // Defence in depth: if the scorer ever returns a non-finite value
+    // (e.g. config corruption upstream), coerce to 0 so sort ordering
+    // remains a total order and bad data does not contaminate output.
+    raw.push({ ...base, score: Number.isFinite(score) ? score : 0 });
   }
 
   // Sort by score desc; occurrences and length break ties so that older,
