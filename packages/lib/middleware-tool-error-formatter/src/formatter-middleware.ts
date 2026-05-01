@@ -211,6 +211,33 @@ function isGuardrailError(error: unknown): boolean {
   return false;
 }
 
+/**
+ * True if the error is flagged as an INTERNAL runtime/middleware invariant
+ * failure (engine-contract violation, session-admission failure, broken
+ * middleware wiring). These must NOT be downgraded into a recoverable
+ * `ToolResponse` — the model retrying the tool is not the right recovery
+ * path; the operator/runtime must see the failure and stop or repair.
+ *
+ * Inner middleware signals this via `internal: true` directly on the
+ * thrown Error, or `context.internal === true` on a KoiError. The
+ * KoiError `code` field alone is NOT a propagation signal — `INTERNAL`
+ * is also a legitimate generic error code for tool/integration faults
+ * that the model should see and react to. Explicit marker required.
+ */
+function isInternalRuntimeError(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  if ((error as { internal?: unknown }).internal === true) return true;
+  const ctx = (error as { context?: unknown }).context;
+  if (
+    ctx !== null &&
+    typeof ctx === "object" &&
+    (ctx as { internal?: unknown }).internal === true
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function isPostCommitFailure(error: unknown): boolean {
   if (error === null || typeof error !== "object") return false;
   if ((error as { committed?: unknown }).committed === true) return true;
@@ -366,6 +393,14 @@ export function createToolErrorFormatterMiddleware(
         // ToolResponse would cause the turn runner to continue with another
         // model call after the user already canceled the turn.
         if (request.signal?.aborted === true || isAbortError(e)) {
+          throw e;
+        }
+        // Internal runtime/middleware invariant failures must propagate.
+        // The model cannot recover from a broken middleware contract; only
+        // the operator/runtime can. Without this, an invariant failure
+        // would surface as a recoverable-looking ToolResponse and the loop
+        // would continue calling tools while the runtime is in a bad state.
+        if (isInternalRuntimeError(e)) {
           throw e;
         }
         // Guardrail-flagged errors propagate regardless of priority ordering.

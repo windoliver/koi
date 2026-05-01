@@ -555,6 +555,40 @@ describe("createToolErrorFormatterMiddleware", () => {
     });
   });
 
+  describe("internal runtime error propagation", () => {
+    test("error with internal:true is re-thrown (operator must see runtime invariant failure)", async () => {
+      const wrap = getWrapToolCall();
+      const err = Object.assign(new Error("session admission failed"), { internal: true });
+      const failing = createFailingToolHandler(err);
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBe(err);
+    });
+
+    test("KoiError with context.internal:true is re-thrown", async () => {
+      const wrap = getWrapToolCall();
+      const err = {
+        name: "KoiRuntimeError",
+        code: "EXTERNAL",
+        message: "middleware wiring fault",
+        retryable: false,
+        context: { internal: true },
+      };
+      const failing = createFailingToolHandler(err);
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBe(err);
+    });
+  });
+
   describe("recursion depth safety", () => {
     test("deeply nested context does NOT crash the formatter (depth-bounded sanitize)", async () => {
       // Regression: a tool that throws a KoiError with extremely deep
