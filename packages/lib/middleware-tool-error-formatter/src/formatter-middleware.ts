@@ -113,6 +113,33 @@ function isAbortError(error: unknown): boolean {
   return false;
 }
 
+/**
+ * True if the error is flagged as occurring AFTER the tool's side effects
+ * were committed (e.g., a post-processing or audit-write failure). Returning
+ * a recoverable-looking ToolResponse for such errors would invite the model
+ * to retry a non-idempotent tool call and duplicate writes/payments. We
+ * propagate the throw so the turn runner sees an unrecoverable failure
+ * instead of a retryable tool error string.
+ *
+ * Inner middleware/tool handlers signal this by setting `committed: true`
+ * directly on the thrown Error, or `context.committed === true` on a
+ * KoiError. No marker = treat as a normal pre-commit failure (current
+ * behavior preserved for callers that don't opt in).
+ */
+function isPostCommitFailure(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  if ((error as { committed?: unknown }).committed === true) return true;
+  const ctx = (error as { context?: unknown }).context;
+  if (
+    ctx !== null &&
+    typeof ctx === "object" &&
+    (ctx as { committed?: unknown }).committed === true
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function truncateMessage(message: string, maxLength: number): string {
   if (message.length <= maxLength) return message;
   const cutoff = maxLength - TRUNCATION_SUFFIX.length;
@@ -243,6 +270,13 @@ export function createToolErrorFormatterMiddleware(
         // ToolResponse would cause the turn runner to continue with another
         // model call after the user already canceled the turn.
         if (request.signal?.aborted === true || isAbortError(e)) {
+          throw e;
+        }
+        // Post-commit failures must propagate. The tool's side effects have
+        // already happened; surfacing this as a retryable-looking
+        // ToolResponse would cause the model to re-invoke a non-idempotent
+        // tool and duplicate writes/payments/state changes.
+        if (isPostCommitFailure(e)) {
           throw e;
         }
         // Hard-stop guardrail errors (rate-limit, permission denial, ...)

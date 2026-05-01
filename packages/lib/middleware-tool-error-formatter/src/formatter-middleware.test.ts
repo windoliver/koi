@@ -517,6 +517,57 @@ describe("createToolErrorFormatterMiddleware", () => {
     });
   });
 
+  describe("post-commit failure propagation", () => {
+    test("error with committed:true is re-thrown (no retryable-looking ToolResponse)", async () => {
+      // Regression: the tool already executed and side effects landed.
+      // Surfacing a ToolResponse here would invite the model to retry a
+      // non-idempotent tool and duplicate the side effect.
+      const wrap = getWrapToolCall();
+      const err = Object.assign(new Error("audit write failed after commit"), {
+        committed: true,
+      });
+      const failing = createFailingToolHandler(err);
+
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBe(err);
+    });
+
+    test("KoiError with context.committed:true is re-thrown", async () => {
+      const wrap = getWrapToolCall();
+      const err = {
+        name: "KoiRuntimeError",
+        code: "EXTERNAL",
+        message: "post-commit logging failed",
+        retryable: false,
+        context: { committed: true },
+      };
+      const failing = createFailingToolHandler(err);
+
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBe(err);
+    });
+
+    test("error without committed flag is formatted as ordinary tool failure", async () => {
+      const wrap = getWrapToolCall();
+      const err = new Error("network blip");
+      const failing = createFailingToolHandler(err);
+
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+      expect(response.metadata?.error).toBe(true);
+      expect(typeof response.output).toBe("string");
+    });
+  });
+
   describe("guardrail passthrough", () => {
     test("default has empty passthroughCodes — tool-originated errors are formatted", async () => {
       // Tool wrapping a SaaS SDK throws RATE_LIMIT — this is a tool failure,

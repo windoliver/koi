@@ -508,7 +508,40 @@ describe("createToolDisclosureMiddleware", () => {
       expect(nextCalled).toBe(true);
     });
 
-    test("below threshold: validation guard does NOT fire (no disclosure happened)", async () => {
+    test("below threshold: stale tool ID is rejected when not in latest advertised set", async () => {
+      // Regression: a session that drops below threshold must still block calls
+      // to tools the model never saw in the latest advertised set, even though
+      // the tool may be registered elsewhere in the engine.
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const sid: SessionId = sessionId("shrink-stale");
+      const ctxS = createMockTurnContext({ session: { sessionId: sid } });
+
+      // Turn 1: above-threshold disclosure (tool-0..tool-9 known)
+      await mw.wrapModelCall?.(
+        ctxS,
+        { messages: [], tools: descriptors(10) },
+        captureNext().handler,
+      );
+
+      // Turn 2: shrinks to 3 tools (tool-0, tool-1, tool-2)
+      await mw.wrapModelCall?.(
+        ctxS,
+        { messages: [], tools: descriptors(3) },
+        captureNext().handler,
+      );
+
+      // Direct call to tool-9 must be rejected — not in latest advertised set
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      const noop = async (): Promise<ToolResponse> => ({ output: "ok" });
+      const response = await wrap(ctxS, { toolId: "tool-9", input: {} }, noop);
+      const out = response.output as { ok: boolean; error?: { code: string; message: string } };
+      expect(out.ok).toBe(false);
+      expect(out.error?.code).toBe("VALIDATION");
+      expect(out.error?.message).toContain("not in the currently advertised tool set");
+    });
+
+    test("below threshold: tool in latest advertised set passes through (implicit promotion)", async () => {
       const mw = createToolDisclosureMiddleware({ threshold: 50 });
       const tools = descriptors(10);
       await mw.wrapModelCall?.(ctx, { messages: [], tools }, captureNext().handler);
