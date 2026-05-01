@@ -555,6 +555,41 @@ describe("createToolErrorFormatterMiddleware", () => {
     });
   });
 
+  describe("recursion depth safety", () => {
+    test("deeply nested context does NOT crash the formatter (depth-bounded sanitize)", async () => {
+      // Regression: a tool that throws a KoiError with extremely deep
+      // context must not stack-overflow the sanitizer and abort the turn.
+      const wrap = getWrapToolCall();
+      // Build a 5000-deep nested object
+      const root: { next?: unknown; leak?: string } = {};
+      let cursor: { next?: unknown; leak?: string } = root;
+      for (let i = 0; i < 5000; i++) {
+        const child: { next?: unknown; leak?: string } = {};
+        cursor.next = child;
+        cursor = child;
+      }
+      cursor.leak = "sk-shouldbe-redactedifreached12345";
+
+      const err = {
+        name: "KoiRuntimeError",
+        code: "EXTERNAL",
+        message: "deep payload",
+        retryable: false,
+        context: root as unknown as Record<string, unknown>,
+      };
+      const failing = createFailingToolHandler(err);
+
+      // Must return a ToolResponse (not throw) and include error metadata
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+      expect(response.metadata?.error).toBe(true);
+      // Serialization must succeed
+      expect(() => JSON.stringify(response.metadata)).not.toThrow();
+      // Truncation marker present somewhere in the serialized form
+      const serialized = JSON.stringify(response.metadata);
+      expect(serialized).toContain("[TruncatedDepth]");
+    });
+  });
+
   describe("metadata JSON-safety", () => {
     test("ToolResponse.metadata survives JSON.stringify with bigint/Date/function context", async () => {
       // Regression: KoiError.context with non-JSON-safe values (bigint, Date,

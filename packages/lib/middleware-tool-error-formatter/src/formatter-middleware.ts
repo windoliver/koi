@@ -90,15 +90,28 @@ const CYCLE_MARKER = "[Circular]";
  * to the string `"[Circular]"` so the formatter never recurses infinitely on
  * cyclic error payloads.
  */
+/**
+ * Maximum traversal depth for context sanitization. Tools may surface
+ * arbitrary upstream payloads as `KoiError.context`; an extremely deep
+ * nesting would overflow the call stack and turn a handled tool error
+ * into a turn-level crash. Past this depth the marker `[TruncatedDepth]`
+ * is substituted in place of further recursion.
+ */
+const MAX_SANITIZE_DEPTH = 64;
+
+const DEPTH_TRUNCATED_MARKER = "[TruncatedDepth]";
+
 function sanitizeJsonValue(value: unknown, patterns: readonly RegExp[]): unknown {
-  return sanitizeJsonValueInner(value, patterns, new WeakSet<object>());
+  return sanitizeJsonValueInner(value, patterns, new WeakSet<object>(), 0);
 }
 
 function sanitizeJsonValueInner(
   value: unknown,
   patterns: readonly RegExp[],
   seen: WeakSet<object>,
+  depth: number,
 ): unknown {
+  if (depth >= MAX_SANITIZE_DEPTH) return DEPTH_TRUNCATED_MARKER;
   if (typeof value === "string") return sanitizeSecrets(value, patterns);
   // JSON-safe primitives pass through unchanged.
   if (value === null) return null;
@@ -121,14 +134,14 @@ function sanitizeJsonValueInner(
   if (Array.isArray(value)) {
     if (seen.has(value)) return CYCLE_MARKER;
     seen.add(value);
-    return value.map((v) => sanitizeJsonValueInner(v, patterns, seen));
+    return value.map((v) => sanitizeJsonValueInner(v, patterns, seen, depth + 1));
   }
   if (typeof value === "object") {
     if (seen.has(value)) return CYCLE_MARKER;
     seen.add(value);
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = sanitizeJsonValueInner(v, patterns, seen);
+      out[k] = sanitizeJsonValueInner(v, patterns, seen, depth + 1);
     }
     return out;
   }
@@ -390,10 +403,21 @@ export function createToolErrorFormatterMiddleware(
         const customMessage = await tryCustomFormatter(e, request.toolId, request.input);
         const rawMessage = customMessage ?? defaultFormat(e, request.toolId);
         const message = postProcess(rawMessage);
+        // Structured-failure construction sanitizes potentially-arbitrary
+        // payloads (KoiError.context, stack, cause). A malformed tool throw
+        // could in theory cause sanitization itself to throw or stack-overflow
+        // — degrade to a minimal metadata block rather than letting the
+        // formatter (a safety boundary) escape its catch and abort the turn.
+        let structured: JsonObject;
+        try {
+          structured = buildStructuredFailure(e, secretPatterns);
+        } catch {
+          structured = { originalMessage: "[formatter: structured-failure construction failed]" };
+        }
         const errorMeta: JsonObject = {
           error: true,
           toolId: request.toolId,
-          ...buildStructuredFailure(e, secretPatterns),
+          ...structured,
         };
 
         return {
