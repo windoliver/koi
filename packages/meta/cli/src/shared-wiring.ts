@@ -774,6 +774,15 @@ export interface SessionAceProvenance {
   readonly maxInjectedTokens: number | undefined;
   readonly minScore: number | undefined;
   readonly lambda: number | undefined;
+  /**
+   * UUID of the SQLite store at session creation time. On resume, the
+   * store at the persisted path must report the same UUID — otherwise it
+   * was deleted, replaced, swapped, or auto-recreated and the resume must
+   * fail closed (round 7 finding). Undefined for sessions that ran with
+   * no SQLite store (in-memory or :memory:, both of which now refuse
+   * resume entirely — round 6).
+   */
+  readonly storeId?: string;
 }
 
 export interface SessionMeta {
@@ -876,6 +885,7 @@ export async function readSessionMeta(
   if (ace !== null && typeof ace === "object") {
     const a = ace as Record<string, unknown>;
     if (typeof a.enabled === "boolean") {
+      const storeId = typeof a.storeId === "string" ? a.storeId : undefined;
       out.ace = {
         enabled: a.enabled,
         playbookPath: typeof a.playbookPath === "string" ? a.playbookPath : undefined,
@@ -883,6 +893,7 @@ export async function readSessionMeta(
           typeof a.maxInjectedTokens === "number" ? a.maxInjectedTokens : undefined,
         minScore: typeof a.minScore === "number" ? a.minScore : undefined,
         lambda: typeof a.lambda === "number" ? a.lambda : undefined,
+        ...(storeId !== undefined ? { storeId } : {}),
       };
     }
   }

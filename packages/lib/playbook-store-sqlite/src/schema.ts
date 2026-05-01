@@ -57,7 +57,7 @@ import type { Database } from "bun:sqlite";
  *     .last_reflected_step_index, snapshot.lastReflectedStepIndex)
  *     across all known versions.
  */
-const CURRENT_SCHEMA_VERSION = 6;
+const CURRENT_SCHEMA_VERSION = 7;
 
 export function applyPragmas(db: Database, durability: "process" | "os"): void {
   db.run("PRAGMA journal_mode = WAL");
@@ -238,9 +238,43 @@ export function applySchema(db: Database): void {
   migrateSessionsToV4(db);
   migrateSessionTimestampsToV5(db);
   migrateWatermarksToV6(db);
+  migrateStoreIdentityToV7(db);
   if (fromVersion < CURRENT_SCHEMA_VERSION) {
     db.run(`PRAGMA user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
   }
+}
+
+/**
+ * v7: per-database identity. Singleton row in `store_identity` keyed by
+ * boolean `singleton = 1`. Generated on first creation; immutable thereafter.
+ * Resume guards persist this UUID in the session sidecar so a deleted/
+ * replaced/swapped database file at the same playbook_path is detected
+ * (round 7 finding). Without it, `createSqlitePlaybookStore({ create: true })`
+ * would silently fabricate a fresh store on resume.
+ */
+function migrateStoreIdentityToV7(db: Database): void {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS store_identity (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      uuid      TEXT    NOT NULL
+    )
+  `);
+  // Insert a UUID exactly once. Subsequent runs see the row already present
+  // and INSERT OR IGNORE is a no-op (preserves the original identity).
+  const existing = db.query("SELECT uuid FROM store_identity WHERE singleton = 1").get();
+  if (existing === null) {
+    db.run("INSERT INTO store_identity (singleton, uuid) VALUES (1, ?)", [crypto.randomUUID()]);
+  }
+}
+
+export function readStoreIdentity(db: Database): string {
+  const row = db.query("SELECT uuid FROM store_identity WHERE singleton = 1").get() as {
+    readonly uuid: string;
+  } | null;
+  if (row === null) {
+    throw new Error("playbook-store-sqlite: store_identity row missing — schema not initialized");
+  }
+  return row.uuid;
 }
 
 interface LegacyEvalRow {

@@ -1104,6 +1104,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestNetwork: import("./manifest.js").ManifestNetworkConfig | undefined;
   let manifestCredentials: import("./manifest.js").ManifestCredentialsConfig | undefined;
   let manifestAceConfig: import("./manifest.js").ManifestAceConfig | undefined;
+  // Captured at resume from the session sidecar; used to verify the SQLite
+  // storeId matches the original (round 7 finding). Lives here so it's in
+  // scope when the ACE middleware block opens the store further below.
+  let resumedAceProvenance: import("./shared-wiring.js").SessionAceProvenance | undefined;
   let manifestLoadPath: string | undefined; // tracks which path was loaded, for TOCTOU revalidation
   // Mirror start.ts: when resuming without an explicit --manifest, bypass
   // auto-discovery so the cwd manifest cannot silently override the model,
@@ -1473,19 +1477,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Also persist a frozen ACE snapshot — at resume we must compare against
   // THIS, not a re-read of the manifest file (the operator may have edited
   // the manifest between session start and resume; round 4 finding).
-  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
-    const meta: import("./shared-wiring.js").SessionMeta = { manifestPath: resolvedManifestPath };
-    if (manifestAceConfig !== undefined) {
-      (meta as { ace?: import("./shared-wiring.js").SessionAceProvenance }).ace = {
-        enabled: manifestAceConfig.enabled,
-        playbookPath: manifestAceConfig.playbookPath,
-        maxInjectedTokens: manifestAceConfig.maxInjectedTokens,
-        minScore: manifestAceConfig.minScore,
-        lambda: manifestAceConfig.lambda,
-      };
-    }
-    await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), meta);
-  }
+  // Sidecar write deferred to after ACE store creation (below) so the
+  // SQLite storeId can be persisted alongside the manifest snapshot —
+  // round 7 requires storeId in the sidecar to detect file replacement
+  // on resume.
 
   // Resume-path audit intent enforcement using stored session provenance.
   // The check mirrors the new-session path but is keyed on the manifest that
@@ -1608,6 +1603,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // is still validated.
     if (resumeMeta.ace?.enabled === true) {
       const originalAce = resumeMeta.ace;
+      resumedAceProvenance = originalAce;
       // Round 5+6 findings: non-durable ACE stores cannot survive process
       // restart. `playbookPath === undefined` builds the in-memory backend;
       // the explicit `:memory:` sentinel uses an in-RAM SQLite database.
@@ -2204,6 +2200,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // ---------------------------------------------------------------------------
   let aceMiddleware: import("@koi/core").KoiMiddleware | undefined;
   let aceCloseHook: (() => void) | undefined;
+  let aceStoreId: string | undefined;
   if (manifestAceConfig?.enabled === true) {
     const { createAceMiddleware, createInMemoryPlaybookStore, createInMemoryTrajectoryStore } =
       await import("@koi/middleware-ace");
@@ -2211,10 +2208,44 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     let trajectoryStore: import("@koi/ace-types").TrajectoryStore;
     if (manifestAceConfig.playbookPath !== undefined) {
       const { createSqlitePlaybookStore } = await import("@koi/playbook-store-sqlite");
+      // On --resume, refuse to auto-create a missing/replaced store: round 7
+      // requires the persisted SQLite identity (storeId) to match the sidecar.
+      // If the file is absent or the storeId differs, the prior learned state
+      // is gone and we'd silently resume against a fresh empty database.
+      if (flags.resume !== undefined) {
+        const { existsSync } = await import("node:fs");
+        if (
+          manifestAceConfig.playbookPath !== ":memory:" &&
+          !existsSync(manifestAceConfig.playbookPath)
+        ) {
+          process.stderr.write(
+            `koi tui: ace: refusing to resume — playbook_path ${JSON.stringify(manifestAceConfig.playbookPath)} ` +
+              "does not exist (database was deleted or moved between runs). " +
+              "Restore the file, or start a new session.\n",
+          );
+          process.exit(1);
+        }
+      }
       const sqliteStore = createSqlitePlaybookStore({ path: manifestAceConfig.playbookPath });
       playbookStore = sqliteStore.playbooks;
       trajectoryStore = sqliteStore.trajectories;
       aceCloseHook = (): void => sqliteStore.close();
+      aceStoreId = sqliteStore.storeId;
+      // On resume, verify the store identity matches the sidecar snapshot:
+      // a deleted+recreated or swapped database at the same path would
+      // otherwise be silently treated as the original (round 7 finding).
+      if (flags.resume !== undefined && resumedAceProvenance?.storeId !== undefined) {
+        if (resumedAceProvenance.storeId !== aceStoreId) {
+          sqliteStore.close();
+          process.stderr.write(
+            "koi tui: ace: refusing to resume — playbook_path points to a different database " +
+              `than the original session (storeId mismatch: original=${resumedAceProvenance.storeId}, ` +
+              `current=${aceStoreId}). The file was replaced, swapped, or recreated. ` +
+              "Restore the original database, or start a new session.\n",
+          );
+          process.exit(1);
+        }
+      }
       process.stderr.write(
         `koi tui: ace: enabled (sqlite ${manifestAceConfig.playbookPath}; survives process exit).\n`,
       );
@@ -2238,6 +2269,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Cleanly close the SQLite store on process exit so WAL files flush.
   if (aceCloseHook !== undefined) {
     process.on("exit", aceCloseHook);
+  }
+
+  // Persist session provenance (deferred from earlier so storeId is known).
+  // On --resume the sidecar already exists and contains the original
+  // storeId — do not rewrite it; the original must remain authoritative.
+  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
+    const meta: import("./shared-wiring.js").SessionMeta = { manifestPath: resolvedManifestPath };
+    if (manifestAceConfig !== undefined) {
+      (meta as { ace?: import("./shared-wiring.js").SessionAceProvenance }).ace = {
+        enabled: manifestAceConfig.enabled,
+        playbookPath: manifestAceConfig.playbookPath,
+        maxInjectedTokens: manifestAceConfig.maxInjectedTokens,
+        minScore: manifestAceConfig.minScore,
+        lambda: manifestAceConfig.lambda,
+        ...(aceStoreId !== undefined ? { storeId: aceStoreId } : {}),
+      };
+    }
+    await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), meta);
   }
 
   const runtimeReady = createKoiRuntime({

@@ -527,7 +527,7 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
     const userVersion = after.query("PRAGMA user_version").get() as { user_version: number };
     after.close();
 
-    expect(userVersion.user_version).toBe(6);
+    expect(userVersion.user_version).toBe(7);
     expect(rows.length).toBe(1);
     expect(rows[0]?.id).toBe("e-new");
     expect(rows[0]?.verdict).toBe("promote");
@@ -681,7 +681,7 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
       .all() as readonly { session_id: string; seq: number }[];
     const userVersion = after.query("PRAGMA user_version").get() as { user_version: number };
     after.close();
-    expect(userVersion.user_version).toBe(6);
+    expect(userVersion.user_version).toBe(7);
     expect(seqRows.map((r) => `${r.session_id}:${String(r.seq)}`)).toEqual([
       "s1:1",
       "s1:2",

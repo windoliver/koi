@@ -24,7 +24,7 @@ import type {
 } from "@koi/ace-types";
 import type { JsonObject } from "@koi/core/common";
 
-import { applyPragmas, applySchema } from "./schema.js";
+import { applyPragmas, applySchema, readStoreIdentity } from "./schema.js";
 
 /**
  * Canonical JSON: stringify with deterministically-sorted object keys at every
@@ -119,6 +119,13 @@ export interface SqlitePlaybookStore {
   >;
   readonly trajectories: TrajectoryStore;
   readonly proposals: PlaybookProposalStore;
+  /**
+   * Per-database identity (UUID v4). Generated once when the SQLite file is
+   * first initialized and immutable thereafter. Resume guards persist this
+   * in the session sidecar so a deleted/replaced/swapped database at the
+   * same playbook_path is detected — round 7 finding.
+   */
+  readonly storeId: string;
   readonly close: () => void;
 }
 
@@ -153,6 +160,7 @@ export function createSqlitePlaybookStore(config: SqlitePlaybookStoreConfig): Sq
     structuredPlaybooks: createStructuredPlaybookStore(db),
     trajectories: createTrajectoryStore(db),
     proposals: createProposalStore(db),
+    storeId: readStoreIdentity(db),
     close: () => {
       try {
         db.close();
