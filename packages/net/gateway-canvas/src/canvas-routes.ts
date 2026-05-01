@@ -15,12 +15,12 @@
 
 import {
   type DispatchDeps,
-  type SurfaceMethodHandler,
   dispatchRequest,
+  type SurfaceMethodHandler,
 } from "./canvas-dispatch.js";
 import {
-  type HandshakeBudget,
   authFailureResponse,
+  type HandshakeBudget,
   isRecord,
   requireAuth,
   safeStoreCall,

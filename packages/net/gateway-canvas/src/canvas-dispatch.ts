@@ -3,8 +3,8 @@
  * + factory in canvas-routes.ts so each file fits the soft size limit.
  */
 
-import { isValidSurfaceId } from "./canvas-shared.js";
 import type { HandshakeBudget } from "./canvas-shared.js";
+import { isValidSurfaceId } from "./canvas-shared.js";
 import { handleSseSubscribe } from "./canvas-sse-route.js";
 import { jsonResponse, matchPath } from "./http-helpers.js";
 import type {

@@ -4,18 +4,18 @@
  * for `createCanvasServer` to wire.
  */
 
-import { surfaceEtag } from "./canvas-store.js";
-import { jsonResponse } from "./http-helpers.js";
 import {
+  authFailureResponse,
   HANDSHAKE_BYTES_CAP_PER_SERVER,
   type HandshakeBudget,
-  authFailureResponse,
   requireAuth,
   safeStoreCall,
   sseKey,
   textEncoder,
   transientStoreFailureResponse,
 } from "./canvas-shared.js";
+import { surfaceEtag } from "./canvas-store.js";
+import { jsonResponse } from "./http-helpers.js";
 import type {
   CanvasAuthenticator,
   CanvasRouteConfig,

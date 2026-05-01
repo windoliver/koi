@@ -82,7 +82,11 @@ interface StoreState {
   generationCounter: number;
 }
 
-function storeGet(state: StoreState, id: string, ownerId: string | undefined): Result<SurfaceEntry> {
+function storeGet(
+  state: StoreState,
+  id: string,
+  ownerId: string | undefined,
+): Result<SurfaceEntry> {
   const entry = state.map.get(keyOf(id, ownerId));
   if (entry === undefined) {
     return { ok: false, error: notFound(id, `Surface not found: ${id}`) };
@@ -234,9 +238,10 @@ export function createInMemorySurfaceStore(
     map: new Map(),
     perTenantCount: new Map(),
     // 128 bits of randomness — collision probability is negligible.
-    instanceEpoch: computeStringHash(
-      `${Date.now()}-${Math.random()}-${Math.random()}`,
-    ).slice(0, 16),
+    instanceEpoch: computeStringHash(`${Date.now()}-${Math.random()}-${Math.random()}`).slice(
+      0,
+      16,
+    ),
     generationCounter: 0,
   };
   return {
