@@ -53,6 +53,28 @@ describe("readPRD", () => {
     }
   });
 
+  test("returns INTERNAL (not NOT_FOUND) for non-ENOENT read failures", async () => {
+    // Regression: previously any read failure was collapsed to NOT_FOUND,
+    // hiding real storage faults (permission denied, transient EIO) from
+    // operators trying to distinguish "missing file" from "storage is
+    // sick". chmod the PRD to mode 0 so exists() still passes but text()
+    // fails with EACCES — must surface as INTERNAL.
+    if (process.getuid?.() === 0) return; // root bypasses chmod; skip
+    await Bun.write(prdPath, JSON.stringify({ items: [] }));
+    const fs = await import("node:fs/promises");
+    await fs.chmod(prdPath, 0o000);
+    try {
+      const result = await readPRD(prdPath);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("INTERNAL");
+        expect(result.error.message).toContain(prdPath);
+      }
+    } finally {
+      await fs.chmod(prdPath, 0o644);
+    }
+  });
+
   test("returns VALIDATION for malformed JSON", async () => {
     await Bun.write(prdPath, "{ not valid json }}}");
     const result = await readPRD(prdPath);

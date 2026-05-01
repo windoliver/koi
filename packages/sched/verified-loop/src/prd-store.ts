@@ -19,7 +19,8 @@
 
 import { rename } from "node:fs/promises";
 import type { KoiError, Result } from "@koi/core";
-import { conflict, notFound, validation } from "@koi/core";
+import { conflict, internal, notFound, validation } from "@koi/core";
+import { extractMessage } from "@koi/errors";
 import type { PRDFile, PRDItem } from "./types.js";
 
 /** Read and parse a PRD JSON file. */
@@ -47,8 +48,22 @@ async function readPRDWithSnapshot(
   let raw: string;
   try {
     raw = await file.text();
-  } catch (_e: unknown) {
-    return { ok: false, error: notFound(path, `Failed to read PRD file: ${path}`) };
+  } catch (e: unknown) {
+    // The exists() check above already passed, so a failure here is a
+    // real I/O fault (permission denied, transient EIO, path-type
+    // mismatch, race-deletion) — not a missing file. Surfacing it as
+    // NOT_FOUND would mask storage-health problems and break recovery
+    // logic that distinguishes "no PRD yet" from "storage is sick".
+    // ENOENT can still race in between exists() and text(); classify
+    // that narrow case as NOT_FOUND to preserve the original semantics.
+    const code = (e as { readonly code?: unknown }).code;
+    if (code === "ENOENT") {
+      return { ok: false, error: notFound(path, `PRD file not found: ${path}`) };
+    }
+    return {
+      ok: false,
+      error: internal(`Failed to read PRD file at ${path}: ${extractMessage(e)}`, e),
+    };
   }
 
   let parsed: unknown;
