@@ -199,6 +199,21 @@ function dispatchNotice(store: TuiStore, _tag: string, text: string): void {
  * largest public windows (Anthropic's 1M) with headroom; anything larger
  * is almost certainly a metadata bug.
  */
+/**
+ * Issue #2088 — predicate for the ACE host-activation spawn gate.
+ *
+ * ACE refuses to activate while the spawn stack is active because spawned
+ * child agents could read the playbook store, and partitioning is future
+ * work (per docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md).
+ *
+ * Default `manifestStacks` is `undefined` (= all stacks active = spawn
+ * active). Opting in requires an explicit `manifest.stacks` list that
+ * excludes "spawn".
+ */
+export function isSpawnStackActive(stacks: readonly string[] | undefined): boolean {
+  return stacks === undefined || stacks.includes("spawn");
+}
+
 export function clampContextLength(raw: number | undefined): number | undefined {
   if (raw === undefined) return undefined;
   if (!Number.isFinite(raw) || !Number.isInteger(raw)) return undefined;
@@ -1162,8 +1177,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // extraMiddleware.
     manifestAceConfig = manifestResult.value.ace;
     if (manifestAceConfig?.enabled === true) {
-      const spawnStackActive = manifestStacks === undefined || manifestStacks.includes("spawn");
-      if (spawnStackActive) {
+      if (isSpawnStackActive(manifestStacks)) {
         process.stderr.write(
           "koi tui: ace: refusing to activate while spawn stack is active. " +
             "Set manifest.stacks to a list that excludes 'spawn' (per design " +

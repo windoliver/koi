@@ -87,12 +87,12 @@ constraint, see #1715 design notes).
 
 ---
 
-## Manifest Schema (declarative; activation lands in a follow-up PR)
+## Manifest Schema
 
 Issue [#2088](https://github.com/windoliver/koi/issues/2088) introduces an opt-in
-`ace:` block in `koi.yaml`. The schema is shipped now (parser + validation +
-`koi start` rejection) so users can stage their config; the TUI host wiring
-that actually instantiates the middleware is tracked as the activation PR.
+`ace:` block in `koi.yaml`. Activation is **TUI-host only** — `koi start`
+continues to reject `ace.enabled: true` (single-shot prompts have no
+session loop to record into).
 
 ```yaml
 ace:
@@ -100,57 +100,58 @@ ace:
   max_injected_tokens: 800 # >0; maps to AceConfig.maxInjectedTokens
   min_score: 0.05          # in [0, 1]; maps to AceConfig.minScore
   lambda: 0.05             # >0; maps to AceConfig.lambda
+  playbook_path: ./.koi/ace.db  # optional; absolute, manifest-relative, or ":memory:"
 ```
 
 ### Validation
 
 - Unknown keys are rejected at manifest load (typo guard).
-- `playbook_path` is rejected with a pointer to the future
-  `@koi/playbook-store-sqlite` issue. Schema additions for persistence land
-  atomically with their consumer.
 - Numeric ranges are checked at parse time so misconfiguration fails at
   startup, not at the first model call.
+- `playbook_path` is resolved at parse time: absolute paths and the
+  `:memory:` sentinel pass through verbatim; relative paths are anchored
+  against the manifest's directory (NOT the process cwd).
 - `enabled: false` (and `ace: {}`) is a valid declarative no-op.
+
+## Enabling in TUI
+
+Set `ace.enabled: true` in your `koi.yaml` and run `koi tui --manifest koi.yaml`.
+The TUI builds an `AceConfig` from the manifest fields and wires the ACE
+middleware into the runtime via `extraMiddleware`.
+
+### Activation gates
+
+1. **Spawn-stack-excluded gate** — ACE refuses to activate while the `spawn`
+   stack is active because spawned children would read the same playbook
+   store (per-agent partitioning is future work). The default
+   `manifest.stacks` is `undefined`, which means *all* stacks active including
+   `spawn` — so opting in requires an explicit `manifest.stacks` list that
+   excludes `"spawn"`. The predicate is exported as `isSpawnStackActive` from
+   `@koi/cli` for testing. Refusal exits with status 1 and a message naming
+   the design-doc reference.
+
+2. **Resume-without-manifest auto-handling** — bare `--resume` (no
+   `--manifest`) sets `skipManifestDiscovery`, which bypasses manifest loading
+   entirely. The whole `ace:` parse + activation branch never runs, so
+   resumed sessions inherit no ACE state from the cwd manifest. This mirrors
+   the `audit` resume-handling precedent.
+
+### Store selection
+
+| `playbook_path` | Store | Lifetime |
+|----------------|-------|----------|
+| unset          | in-memory | lost on process exit; survives `/clear` and `/new` |
+| `:memory:`     | sqlite (RAM) | lost on process exit |
+| filesystem path | `@koi/playbook-store-sqlite` (WAL, foreign keys) | persists across processes |
+
+When a SQLite store is constructed, the TUI registers a `process.on("exit")`
+hook that calls `store.close()` so WAL is checkpointed cleanly.
 
 ### Host scope
 
-Both `koi start` and `koi tui` currently reject `manifest.ace.enabled: true`
-at fresh manifest load (matches the existing `backgroundSubprocesses` and
-`audit` rejection precedent in `commands/start.ts`). The schema is shipped
-but neither host activates the middleware in this build.
-
-**Resume-path note (intentional limitation):** the rejection runs only on
-fresh manifest load, not on `--resume` paths. A session created before
-this PR landed (with `ace.enabled: true` in its original manifest) will
-resume successfully because (a) the manifest field was silently ignored
-in older builds, so the session has no ACE state to honor, and (b) the
-broader resume-provenance pattern (`readSessionMeta()` returning `{}` for
-missing/malformed sidecars; manifest-parse-failure short-circuiting)
-applies to every manifest-governed feature, not just ACE. Hardening the
-resume path is the activation PR's responsibility — by the time real ACE
-wiring lands, the fresh-load rejection will have been replaced and resume
-becomes a real concern.
-
-### Activation PR (follow-up)
-
-The activation PR will add `manifestAce` to `KoiRuntimeConfig`, build an
-`AceConfig` from the manifest fields, and wire it into `createRuntime({ ace })`
-under the following gates:
-
-1. **`spawn` preset stack must NOT be active** (no per-agent partitioning yet —
-   would contaminate child agents). Operators who want to dogfood ACE set
-   `manifest.stacks` to a list that excludes `spawn`.
-2. **Manifest provenance must be present on resume** (mirrors the existing
-   `audit` resume-handling pattern: when `readSessionMeta()` returns no
-   `manifestPath`, ACE is treated as off for the resumed session).
-
-Known limitations of the activation design (documented for the activation PR):
-
-- In-memory store survives `/clear` and `/new` within one TUI process —
-  use process restart to reset. Tracked for the follow-up sqlite-store work
-  alongside per-session `clear()` semantics.
-- Cross-process persistence requires `@koi/playbook-store-sqlite` (not yet
-  shipped).
+`koi start` continues to reject `ace.enabled: true` at fresh manifest load —
+single-shot prompts cannot run the consolidation/injection loop. Resume
+paths in `start` likewise inherit `skipManifestDiscovery` semantics.
 
 The full design analysis lives in
 `docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md` (10 review rounds
@@ -162,7 +163,6 @@ of refinement).
 
 | Phase | Adds |
 |-------|------|
-| TUI activation (issue #2088) | `manifestAce` in `KoiRuntimeConfig` + spawn-gate + resume-provenance gate; in-memory dogfood loop |
 | Middleware integration | `KoiMiddleware` with `wrapModelCall` (inject) + `wrapToolCall` (record) + `onSessionEnd` (consolidate) |
 | LLM pipeline | `reflector` + `curator` + `StructuredPlaybook` operations (`add` / `merge` / `prune`) with bullet credit assignment |
 | Promotion gate | Proposal → evaluation → commit/rollback flow; `PlaybookProposalStore` lineage |
