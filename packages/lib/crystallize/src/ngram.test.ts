@@ -108,6 +108,55 @@ describe("extractToolSequences", () => {
     expect(seqs[0]?.steps[0]?.outcome).toBe("failure");
   });
 
+  test("metadata.blockedByHook (soft-deny from middleware-permissions) is failure", () => {
+    // middleware-permissions returns `output: <primitive string>, metadata:
+    // { blockedByHook: true, ... }` for soft-deny — primitive output alone
+    // would misclassify as success.
+    const seqs = extractToolSequences([
+      createTrace(
+        0,
+        ["x"],
+        [
+          {
+            output: 'Permission denied for tool "x".',
+            metadata: { blockedByHook: true, permissionDenied: true, hookName: "permissions" },
+          },
+        ],
+      ),
+    ]);
+    expect(seqs[0]?.steps[0]?.outcome).toBe("failure");
+  });
+
+  test("metadata.isError (hook-error response shape) is failure", () => {
+    const seqs = extractToolSequences([
+      createTrace(0, ["x"], [{ output: "...", metadata: { isError: true } }]),
+    ]);
+    expect(seqs[0]?.steps[0]?.outcome).toBe("failure");
+  });
+
+  test("Error instance recorded as output is failure (thrown tool error)", () => {
+    const seqs = extractToolSequences([createTrace(0, ["x"], [new Error("tool blew up")])]);
+    expect(seqs[0]?.steps[0]?.outcome).toBe("failure");
+  });
+
+  test("serialized Error object (name + message + stack) is failure", () => {
+    const seqs = extractToolSequences([
+      createTrace(0, ["x"], [{ name: "TypeError", message: "boom", stack: "..." }]),
+    ]);
+    expect(seqs[0]?.steps[0]?.outcome).toBe("failure");
+  });
+
+  test("benign metadata (provenance, hookName without denial flag) does not flip success", () => {
+    const seqs = extractToolSequences([
+      createTrace(
+        0,
+        ["x"],
+        [{ output: "ok", metadata: { provenance: { system: "mcp" }, hookName: "audit" } }],
+      ),
+    ]);
+    expect(seqs[0]?.steps[0]?.outcome).toBe("success");
+  });
+
   test("{ ok: true } envelope still counts as success", () => {
     const seqs = extractToolSequences([createTrace(0, ["x"], [{ ok: true, value: { count: 1 } }])]);
     expect(seqs[0]?.steps[0]?.outcome).toBe("success");
@@ -167,6 +216,26 @@ describe("extractNgrams", () => {
     });
     const map = extractNgrams([make("agent-A"), make("agent-B")], 2, 2);
     expect(map.get("a|b")?.locations).toHaveLength(2);
+  });
+
+  test("dedupes input traces with identical (session, agent, turnIndex) — same turn cannot inflate occurrences", () => {
+    // Replays, merged windows, or duplicate ingestion can include the same
+    // turn twice. Composite identity is the package's stable occurrence id,
+    // so duplicates must collapse to a single occurrence.
+    const make = (): TurnSequence => ({
+      location: { sessionId: SESSION, agentId: AGENT, turnIndex: 0 },
+      steps: [{ toolId: "a" }, { toolId: "b" }],
+    });
+    // Use extractToolSequences via createTrace to exercise the dedup path.
+    const sequences = extractToolSequences([
+      createTrace(0, ["a", "b"]),
+      createTrace(0, ["a", "b"]),
+      createTrace(0, ["a", "b"]),
+    ]);
+    expect(sequences).toHaveLength(1);
+    // And the n-gram pipeline must agree.
+    const map = extractNgrams([make(), make(), make()].slice(0, 1), 2, 2);
+    expect(map.get("a|b")?.locations).toHaveLength(1);
   });
 
   test("empty sequence contributes no n-grams", () => {

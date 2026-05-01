@@ -36,6 +36,41 @@ function isNonEmptyError(value: unknown): boolean {
 }
 
 /**
+ * True when the response carries any of the canonical denial / error markers
+ * that downstream observers (`@koi/event-trace`, `@koi/middleware-report`,
+ * `@koi/session-transcript`) honour. Soft-deny responses from
+ * `middleware-permissions` set `metadata.blockedByHook = true` (and
+ * `permissionDenied` for #1650). Hook-side errors set `metadata.isError =
+ * true`. Without this check a denied tool with a primitive `output` string
+ * would be misclassified as success and produce false-positive forge
+ * candidates for blocked workflows.
+ */
+function hasDenialMetadata(metadata: unknown): boolean {
+  if (metadata === null || typeof metadata !== "object") return false;
+  const m = metadata as {
+    readonly blockedByHook?: unknown;
+    readonly permissionDenied?: unknown;
+    readonly isError?: unknown;
+  };
+  return m.blockedByHook === true || m.permissionDenied === true || m.isError === true;
+}
+
+/** True when `value` looks like a thrown JavaScript error preserved into the trace. */
+function isErrorLike(value: unknown): boolean {
+  if (value instanceof Error) return true;
+  if (value === null || typeof value !== "object") return false;
+  const v = value as {
+    readonly name?: unknown;
+    readonly message?: unknown;
+    readonly stack?: unknown;
+  };
+  // Plain serialized Error: has `message` plus typically `name` or `stack`.
+  return (
+    typeof v.message === "string" && (typeof v.name === "string" || typeof v.stack === "string")
+  );
+}
+
+/**
  * Infer outcome from a tool call's output. Aligns with the broader repo
  * failure taxonomy so denied, blocked, validation, or generic-error
  * payloads cannot be misclassified as healthy:
@@ -56,6 +91,7 @@ function isNonEmptyError(value: unknown): boolean {
  */
 function inferOutcome(output: unknown): "success" | "failure" | "validation" | undefined {
   if (output === undefined) return undefined;
+  if (isErrorLike(output)) return "failure";
   if (output === null || typeof output !== "object") return "success";
 
   const obj = output as {
@@ -63,6 +99,7 @@ function inferOutcome(output: unknown): "success" | "failure" | "validation" | u
     readonly code?: unknown;
     readonly ok?: unknown;
     readonly error?: unknown;
+    readonly metadata?: unknown;
   };
 
   if (obj.kind === "error" || obj.kind === "denied" || obj.kind === "forge_tool_quarantined") {
@@ -73,6 +110,10 @@ function inferOutcome(output: unknown): "success" | "failure" | "validation" | u
   }
   if (obj.ok === false) return "failure";
   if (isNonEmptyError(obj.error)) return "failure";
+  // Soft-deny / hook-blocked responses have a primitive output string and
+  // surface failure only via metadata flags. Inspect last so non-denied
+  // responses with unrelated metadata fields aren't misclassified.
+  if (hasDenialMetadata(obj.metadata)) return "failure";
   return "success";
 }
 
@@ -97,17 +138,37 @@ export interface TurnSequence {
   readonly steps: readonly ToolStep[];
 }
 
+function traceLocationKey(trace: TurnTrace): string {
+  return JSON.stringify([trace.sessionId, trace.agentId, trace.turnIndex]);
+}
+
 /**
  * Project each `TurnTrace` to an ordered sequence of `ToolStep`s alongside
  * its composite identity. Mixing traces from multiple sessions or agents is
  * supported because the identity carries enough information to keep their
  * occurrences disjoint.
+ *
+ * Traces with the same composite location `(sessionId, agentId, turnIndex)`
+ * are treated as duplicates of one occurrence and deduplicated to the first
+ * one seen. Replayed snapshots, merged trace windows, and persisted-state
+ * round-trips can all surface the same turn twice; without this dedup the
+ * extractor would inflate `occurrences` and cross `minOccurrences`
+ * spuriously, since the package's stable occurrence identity is precisely
+ * that composite tuple.
  */
 export function extractToolSequences(traces: readonly TurnTrace[]): readonly TurnSequence[] {
-  return traces.map((trace) => ({
-    location: { sessionId: trace.sessionId, agentId: trace.agentId, turnIndex: trace.turnIndex },
-    steps: projectTurn(trace),
-  }));
+  const seen = new Set<string>();
+  const out: TurnSequence[] = [];
+  for (const trace of traces) {
+    const key = traceLocationKey(trace);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      location: { sessionId: trace.sessionId, agentId: trace.agentId, turnIndex: trace.turnIndex },
+      steps: projectTurn(trace),
+    });
+  }
+  return out;
 }
 
 /**
