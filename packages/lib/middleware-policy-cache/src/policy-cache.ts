@@ -276,6 +276,15 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
     return n;
   };
 
+  // Per-context size for capability reporting — only the current agent's
+  // bucket plus the global bucket. Reporting the process-wide size would
+  // leak other tenants' policy counts into this turn's prompt context and
+  // make injection non-deterministic across agents sharing one handle.
+  const sizeFor = (ctx: TurnContext): number => {
+    const agent = agentCaches.get(ctx.session.agentId);
+    return globalCache.size + (agent?.size ?? 0);
+  };
+
   const middleware: KoiMiddleware = {
     name: NAME,
     priority: PRIORITY,
@@ -312,8 +321,8 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       }
     },
 
-    describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
-      const n = sizeOf();
+    describeCapabilities(ctx: TurnContext): CapabilityFragment | undefined {
+      const n = sizeFor(ctx);
       if (n === 0) return undefined;
       return {
         label: NAME,

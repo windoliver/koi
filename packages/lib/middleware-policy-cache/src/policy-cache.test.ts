@@ -569,6 +569,27 @@ describe("createPolicyCacheMiddleware: capability fragment", () => {
     const frag = handle.middleware.describeCapabilities(CTX);
     expect(frag?.description).toContain("2 tools");
   });
+
+  test("does NOT leak other agents' policy counts to the current turn", () => {
+    const handle = createPolicyCacheMiddleware();
+    // Agent A has 1 policy.
+    handle.register(makeAgentPolicy("agent-A", "search", "brick-A"));
+    // Agent B has 5 policies — must not show up in agent A's prompt.
+    for (let i = 0; i < 5; i++) {
+      handle.register(makeAgentPolicy("agent-B", `tool${i}`, `brick-B-${i}`));
+    }
+    // Plus 1 global policy that BOTH agents legitimately share.
+    handle.register(makeGlobalPolicy("shared", "brick-G"));
+
+    const fragA = handle.middleware.describeCapabilities(ctxFor("agent-A"));
+    expect(fragA?.description).toContain("2 tools"); // 1 agent-A + 1 global
+
+    const fragB = handle.middleware.describeCapabilities(ctxFor("agent-B"));
+    expect(fragB?.description).toContain("6 tools"); // 5 agent-B + 1 global
+
+    const fragOther = handle.middleware.describeCapabilities(ctxFor("agent-OTHER"));
+    expect(fragOther?.description).toContain("1 tool"); // global only, no leak
+  });
 });
 
 describe("createPolicyCacheMiddleware: LRU eviction (recency-aware, per-owner)", () => {

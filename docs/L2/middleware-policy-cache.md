@@ -130,8 +130,10 @@ Lower priority = outer onion = runs first. Policy-cache wraps permissions delibe
 
 `describeCapabilities` returns:
 
-- `undefined` when the cache is empty (no model context cost)
+- `undefined` when the current context has no entries reachable (no model context cost)
 - `{ label: "policy-cache", description: "<N> tools in policy mode (deterministic interception)" }` otherwise
+
+The reported count is **scoped to the current `TurnContext`**: only the current agent's bucket plus the global bucket are visible. A handle shared across agents will report different counts for different turns — agent A's prompt never sees agent B's policy count. Reporting the process-wide size would be a cross-tenant information leak (it tells the model how many policies *somebody else* has registered).
 
 The fragment exists so the model knows *that* a deterministic policy layer is active without leaking which tools are governed — that's an implementation detail and could change between turns.
 
@@ -181,3 +183,11 @@ const middleware = handle.middleware;
 - **TTL or time-based expiry.** Bricks have lifecycle events; we trust the notifier.
 - **Cross-session persistence.** The cache lives for the lifetime of the handle. Promotion state is durable in the brick store; we re-hydrate via `register` at startup.
 - **Caching `next(req)` outputs.** That's `@koi/middleware-call-dedup`'s job. Policy-cache short-circuits *before* the tool runs (on `block`) or simply lets it run (on `allow`).
+
+## Runtime composition (deferred)
+
+This package is a building block — it is wired as a `@koi/runtime` dependency for golden-query coverage but **not yet composed into the default `createRuntime` middleware stack**. Composition is gated on the upstream pieces named in the issue's execution rule:
+
+> Policy cache must depend on already-verified middleware inputs. Do not wire this before Forge verification and self-healing harness slices are stable.
+
+The forge slices exist (`@koi/forge-tools`, `@koi/forge-demand`, `@koi/forge-integrity`, `@koi/harness`, `@koi/verified-loop`), but the connector that listens for `StoreChangeKind: "promoted"` events and feeds `register()` does not. That connector — and the corresponding `policyCache` config field on `RuntimeConfig` — is the natural follow-up issue. Until it lands, hosts can opt in manually by calling `createPolicyCacheMiddleware()` and passing the result through `RuntimeConfig.middleware`.
