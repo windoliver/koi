@@ -376,14 +376,14 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       const snapshot = canonicalJson(normalized);
       const existing = selectVersion.get(pb.id, pb.version) as { readonly snapshot: string } | null;
       if (existing !== null) {
-        // Self-heal path: if lineage is intact but the head row is missing
-        // or points at a different version (manual repair, partial-failure
-        // crash), rebuild the head row directly from the STORED snapshot —
-        // not from the caller-normalized payload. The stored snapshot is
-        // authoritative; recomputing from caller payload would re-normalize
-        // watermarks against a missing head and produce a downgraded row,
-        // tripping the idempotency comparison and blocking recovery.
-        if (current === null || current.version !== pb.version) {
+        // Self-heal ONLY when the head row is missing entirely. Rebuilding
+        // from a stray higher lineage row would silently fast-forward the
+        // visible head past its current monotonic position, which is exactly
+        // the corruption this store guards against. If a head exists at a
+        // different version, the lineage row at pb.version is either an
+        // older legitimate snapshot (idempotency check below applies) or a
+        // stray from corruption — do not promote it back to head.
+        if (current === null) {
           const stored = JSON.parse(existing.snapshot) as StructuredPlaybook;
           upsertCurrent.run(
             stored.id,
@@ -400,8 +400,8 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
           );
           return;
         }
-        // Head present at this version — caller payload must be
-        // semantically equal to the stored snapshot (modulo
+        // Head exists. The caller payload at the same lineage version must
+        // be semantically equal to the stored snapshot (modulo
         // provenance.committedAt which is normalized server-side).
         if (!jsonEqual(stripProvenanceTime(existing.snapshot), stripProvenanceTime(snapshot))) {
           throw new Error(

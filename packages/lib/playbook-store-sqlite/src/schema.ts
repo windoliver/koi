@@ -602,13 +602,33 @@ function migrateProposalsToV3(db: Database): void {
 
 function proposalsLineageFkSatisfied(db: Database): boolean {
   const fks = db.query("PRAGMA foreign_key_list(playbook_proposals)").all() as readonly {
+    readonly id: number;
     readonly table: string;
     readonly from: string;
     readonly to: string;
   }[];
-  // Composite FKs appear as multiple rows with the same `id`; we only need
-  // to confirm both columns target structured_playbook_versions.
-  const targets = fks.filter((fk) => fk.table === "structured_playbook_versions");
-  const fromCols = new Set(targets.map((fk) => fk.from));
-  return fromCols.has("playbook_id") && fromCols.has("base_version");
+  // SQLite emits one row per column of a composite FK, sharing the same
+  // `id`. Group by id so we don't accidentally accept a "playbook_id ->
+  // version" + "base_version -> playbook_id" drift where each column
+  // appears but the per-FK column pairing is wrong.
+  const byId = new Map<number, Map<string, string>>();
+  for (const fk of fks) {
+    if (fk.table !== "structured_playbook_versions") continue;
+    let cols = byId.get(fk.id);
+    if (cols === undefined) {
+      cols = new Map();
+      byId.set(fk.id, cols);
+    }
+    cols.set(fk.from, fk.to);
+  }
+  for (const cols of byId.values()) {
+    if (
+      cols.size === 2 &&
+      cols.get("playbook_id") === "playbook_id" &&
+      cols.get("base_version") === "version"
+    ) {
+      return true;
+    }
+  }
+  return false;
 }

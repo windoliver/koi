@@ -680,6 +680,48 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
     ).toBe(true);
   });
 
+  test("v3 detects FK with swapped target columns and rebuilds", async () => {
+    // Regression: the v3 satisfaction check must verify the full composite
+    // FK shape (playbook_id → playbook_id, base_version → version), not
+    // just that both columns appear somewhere in some FK row. A drifted
+    // schema with swapped target columns is broken and must be rebuilt.
+    const seed = new Database(dbPath, { create: true });
+    seed.run("PRAGMA user_version = 0");
+    seed.run(`
+      CREATE TABLE structured_playbook_versions (
+        playbook_id TEXT NOT NULL, version INTEGER NOT NULL,
+        snapshot TEXT NOT NULL, committed_at INTEGER NOT NULL,
+        PRIMARY KEY (playbook_id, version)
+      )
+    `);
+    // Drifted FK: playbook_id → version (wrong), base_version → playbook_id (wrong).
+    seed.run(`
+      CREATE TABLE playbook_proposals (
+        id TEXT PRIMARY KEY, playbook_id TEXT NOT NULL, base_version INTEGER NOT NULL,
+        operations TEXT NOT NULL, source_trajectory_range TEXT NOT NULL,
+        reflection TEXT NOT NULL, created_at INTEGER NOT NULL,
+        FOREIGN KEY (playbook_id, base_version)
+          REFERENCES structured_playbook_versions(version, playbook_id)
+      )
+    `);
+    seed.close();
+
+    const migrated = createSqlitePlaybookStore({ path: dbPath });
+    migrated.close();
+
+    const after = new Database(dbPath, { readonly: true });
+    const fks = after.query("PRAGMA foreign_key_list(playbook_proposals)").all() as readonly {
+      table: string;
+      from: string;
+      to: string;
+    }[];
+    after.close();
+    // After rebuild the FK must have the correct shape.
+    const correctFk = fks.filter((fk) => fk.table === "structured_playbook_versions");
+    expect(correctFk.find((fk) => fk.from === "playbook_id")?.to).toBe("playbook_id");
+    expect(correctFk.find((fk) => fk.from === "base_version")?.to).toBe("version");
+  });
+
   test("v3 quarantines evaluations attached to orphaned proposals (no audit loss)", async () => {
     // Seed a v0 DB with a proposal whose anchor (pb-X, 1) does NOT exist in
     // structured_playbook_versions, plus an evaluation attached to it. After
@@ -804,6 +846,39 @@ describe("createSqlitePlaybookStore — head-row self-heal", () => {
     // not silently rebuild head as v1 and hide v2.
     await expect(repaired.structuredPlaybooks.save(v1)).rejects.toThrow();
     repaired.close();
+  });
+
+  test("stray higher lineage row cannot fast-forward head past its monotonic position", async () => {
+    // Regression: head at v2 (healthy), but a stray v10 row exists in
+    // lineage from corruption/manual repair. A caller retrying v10 must
+    // NOT promote that lineage row back into the visible head — self-heal
+    // is restricted to the missing-head case. Either the stray content
+    // differs from the caller payload (rejected as "different content")
+    // or matches it (treated as no-op for the lineage row).
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, title: "v1" }));
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 2, title: "v2" }));
+    store.close();
+
+    // Inject a stray v10 lineage row with content "rogue".
+    const corrupt = new Database(dbPath);
+    const rogueSnapshot = JSON.stringify(spb({ id: "s1", version: 10, title: "rogue" }));
+    corrupt.run(
+      "INSERT INTO structured_playbook_versions (playbook_id, version, snapshot, committed_at) VALUES (?, ?, ?, ?)",
+      ["s1", 10, rogueSnapshot, 0],
+    );
+    corrupt.close();
+
+    const reopened = createSqlitePlaybookStore({ path: dbPath });
+    // Caller retries v10 with DIFFERENT content — must be rejected, not
+    // silently fast-forwarded.
+    await expect(
+      reopened.structuredPlaybooks.save(spb({ id: "s1", version: 10, title: "different" })),
+    ).rejects.toThrow(/different content/);
+    // Head still at v2.
+    expect((await reopened.structuredPlaybooks.get("s1"))?.version).toBe(2);
+    expect((await reopened.structuredPlaybooks.get("s1"))?.title).toBe("v2");
+    reopened.close();
   });
 
   test("self-heal rebuilds head from stored snapshot after watermark was clamped", async () => {
