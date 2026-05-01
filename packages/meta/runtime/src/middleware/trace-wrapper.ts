@@ -38,6 +38,19 @@ import type {
   TrajectoryDocumentStore,
   TurnContext,
 } from "@koi/core";
+import { createRedactor } from "@koi/redaction";
+
+// Defense-in-depth: redact secrets from middleware-span error text. The
+// formatter middleware sanitizes errors before they reach the model, but
+// trace-wrapper captures error.message at every middleware boundary in the
+// chain — observe-phase wrappers see the raw throw before any resolve-phase
+// sanitizer runs. Apply secret redaction here so persisted ATIF trajectories
+// and audit sinks reading them cannot leak credentials. Built once per module.
+const errorRedactor = createRedactor();
+function redactErrorText(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return errorRedactor.redactString(raw).text;
+}
 
 export interface TraceWrapperConfig {
   /** Trajectory store to write middleware span steps. */
@@ -172,7 +185,7 @@ export function wrapMiddlewareWithTrace(
             });
             return response;
           } catch (error: unknown) {
-            const errorText = error instanceof Error ? error.message : String(error);
+            const errorText = redactErrorText(error);
             recordStep({
               timestamp: clock(),
               source: "system",
@@ -291,7 +304,7 @@ export function wrapMiddlewareWithTrace(
             });
             return response;
           } catch (error: unknown) {
-            const errorText = error instanceof Error ? error.message : String(error);
+            const errorText = redactErrorText(error);
             recordStep({
               timestamp: clock(),
               source: "system",
@@ -424,7 +437,7 @@ export function wrapMiddlewareWithTrace(
             });
             return result;
           } catch (error: unknown) {
-            const errorText = error instanceof Error ? error.message : String(error);
+            const errorText = redactErrorText(error);
             recordStep({
               timestamp: clock(),
               source: "system",
@@ -654,7 +667,7 @@ async function* wrapStreamForTrace(
     onComplete("success", undefined, responseText.length > 0 ? responseText : undefined);
   } catch (error: unknown) {
     recorded = true;
-    const message = error instanceof Error ? error.message : String(error);
+    const message = redactErrorText(error);
     const isAbort = error instanceof DOMException && error.name === "AbortError";
     const responseText = textParts.join("").slice(0, TEXT_CAP);
     onComplete(

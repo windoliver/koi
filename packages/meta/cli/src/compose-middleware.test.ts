@@ -109,6 +109,7 @@ describe("composeRuntimeMiddleware — skill injector ordering", () => {
   const hook = stub("hook");
   const permissions = stub("permissions");
   const exfiltrationGuard = stub("exfiltration-guard");
+  const toolErrorFormatter = stub("tool-error-formatter");
 
   test("skillInjector slot appears after permissions (post-permissions zone)", () => {
     // Regression for #1986: root agent skill injector must not check request.tools
@@ -119,6 +120,7 @@ describe("composeRuntimeMiddleware — skill injector ordering", () => {
       hook,
       permissions,
       exfiltrationGuard,
+      toolErrorFormatter,
       skillInjector,
     });
     expect(result.indexOf(skillInjector)).toBeGreaterThan(result.indexOf(permissions));
@@ -131,6 +133,7 @@ describe("composeRuntimeMiddleware — skill injector ordering", () => {
       hook,
       permissions,
       exfiltrationGuard,
+      toolErrorFormatter,
       skillInjector,
       systemPrompt,
     });
@@ -138,7 +141,12 @@ describe("composeRuntimeMiddleware — skill injector ordering", () => {
   });
 
   test("omits skillInjector when not provided", () => {
-    const result = composeRuntimeMiddleware({ hook, permissions, exfiltrationGuard });
+    const result = composeRuntimeMiddleware({
+      hook,
+      permissions,
+      exfiltrationGuard,
+      toolErrorFormatter,
+    });
     expect(result.some((mw) => mw.name === "skill-injector")).toBe(false);
   });
 });

@@ -34,6 +34,7 @@
     { "path": "../../lib/playbook-store-sqlite" },
     { "path": "../../lib/middleware-otel" },
     { "path": "../../lib/middleware-task-anchor" },
+    { "path": "../../lib/middleware-tool-error-formatter" },
     { "path": "../runtime" },
     { "path": "../../security/governance-approval-tiers" },
     { "path": "../../security/governance-security" },

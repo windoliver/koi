@@ -324,6 +324,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/redaction": "workspace:*",
       },
     },
     "packages/lib/execution-context": {
@@ -646,6 +647,27 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-tool-disclosure": {
+      "name": "@koi/middleware-tool-disclosure",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-tool-error-formatter": {
+      "name": "@koi/middleware-tool-error-formatter",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
       },
     },
     "packages/lib/middleware-tool-recovery": {
@@ -1038,6 +1060,7 @@
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
+        "@koi/middleware-tool-error-formatter": "workspace:*",
         "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -1190,6 +1213,8 @@
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-strict-agentic": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
+        "@koi/middleware-tool-disclosure": "workspace:*",
+        "@koi/middleware-tool-error-formatter": "workspace:*",
         "@koi/middleware-turn-ack": "workspace:*",
         "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
@@ -1202,6 +1227,7 @@
         "@koi/playbook-store-sqlite": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
+        "@koi/redaction": "workspace:*",
         "@koi/replay": "workspace:*",
         "@koi/rules-loader": "workspace:*",
         "@koi/sandbox-docker": "workspace:*",
@@ -2216,6 +2242,10 @@
     "@koi/middleware-task-anchor": ["@koi/middleware-task-anchor@workspace:packages/lib/middleware-task-anchor"],
 
     "@koi/middleware-tool-audit": ["@koi/middleware-tool-audit@workspace:packages/lib/middleware-tool-audit"],
+
+    "@koi/middleware-tool-disclosure": ["@koi/middleware-tool-disclosure@workspace:packages/lib/middleware-tool-disclosure"],
+
+    "@koi/middleware-tool-error-formatter": ["@koi/middleware-tool-error-formatter@workspace:packages/lib/middleware-tool-error-formatter"],
 
     "@koi/middleware-tool-recovery": ["@koi/middleware-tool-recovery@workspace:packages/lib/middleware-tool-recovery"],
 

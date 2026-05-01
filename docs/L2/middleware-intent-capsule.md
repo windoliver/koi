@@ -637,3 +637,5 @@ L2  @koi/middleware-intent-capsule ◄──────────────
 - [OWASP Top 10 for LLM Applications — ASI01](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
 - Issue [#81](https://github.com/windoliver/koi/issues/81) — implementation tracking
 - Issue [#508](https://github.com/windoliver/koi/issues/508) — DRY violation fixed by `@koi/crypto-utils`
+
+> **Buffer/Uint8Array cast (PR #2099):** `createCapsuleEntry()` wraps `crypto.sign()` and `publicKey.export()` results in explicit `new Uint8Array(...)` casts so DTS builds succeed under `@types/node` 25 strictness (Buffer is no longer assignable to ArrayBufferView directly). Pure type-narrowing — runtime behavior unchanged.

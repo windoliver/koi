@@ -1238,10 +1238,12 @@ describe("composeRuntimeMiddleware — zone B inside security guard", () => {
     const systemPromptMw = stubMiddleware("system-prompt");
     const sessionTranscriptMw = stubMiddleware("session-transcript");
 
+    const toolErrorFormatterMw = stubMiddleware("tool-error-formatter");
     const chain = composeRuntimeMiddleware({
       hook: hookMw,
       permissions: permissionsMw,
       exfiltrationGuard: exfiltrationGuardMw,
+      toolErrorFormatter: toolErrorFormatterMw,
       presetExtras: [preset1, preset2],
       manifestMiddleware: [manifest1, manifest2],
       systemPrompt: systemPromptMw,
@@ -1256,6 +1258,7 @@ describe("composeRuntimeMiddleware — zone B inside security guard", () => {
       "hooks",
       "permissions",
       "exfiltration-guard",
+      "tool-error-formatter",
       // Zone B — user-declared middleware, runs INSIDE the guard
       "manifest-1",
       "manifest-2",
@@ -1275,6 +1278,7 @@ describe("composeRuntimeMiddleware — zone B inside security guard", () => {
       hook: hookMw,
       permissions: permissionsMw,
       exfiltrationGuard: exfiltrationGuardMw,
+      toolErrorFormatter: stubMiddleware("tool-error-formatter"),
       manifestMiddleware: [attacker],
     });
 
@@ -1295,8 +1299,14 @@ describe("composeRuntimeMiddleware — zone B inside security guard", () => {
       hook: stubMiddleware("hooks"),
       permissions: stubMiddleware("permissions"),
       exfiltrationGuard: stubMiddleware("exfiltration-guard"),
+      toolErrorFormatter: stubMiddleware("tool-error-formatter"),
     });
-    expect(chain.map((mw) => mw.name)).toEqual(["hooks", "permissions", "exfiltration-guard"]);
+    expect(chain.map((mw) => mw.name)).toEqual([
+      "hooks",
+      "permissions",
+      "exfiltration-guard",
+      "tool-error-formatter",
+    ]);
   });
 
   test("plan slot sits INSIDE permissions so its tool-visibility gate sees filtered tools", () => {
@@ -1308,6 +1318,7 @@ describe("composeRuntimeMiddleware — zone B inside security guard", () => {
       hook: stubMiddleware("hooks"),
       permissions: stubMiddleware("permissions"),
       exfiltrationGuard: stubMiddleware("exfiltration-guard"),
+      toolErrorFormatter: stubMiddleware("tool-error-formatter"),
       plan: stubMiddleware("plan"),
     });
     const names = chain.map((mw) => mw.name);

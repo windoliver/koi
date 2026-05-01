@@ -730,6 +730,178 @@ describe("Golden: @koi/middleware-task-anchor", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-tool-error-formatter
+// Standalone tests that exercise the exported middleware surface from
+// @koi/runtime's consumer boundary, plus a trajectory fixture assertion.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-tool-error-formatter", () => {
+  test("createToolErrorFormatterMiddleware returns a middleware with the expected name and priority", async () => {
+    const { createToolErrorFormatterMiddleware } = await import(
+      "@koi/middleware-tool-error-formatter"
+    );
+    const handle = createToolErrorFormatterMiddleware();
+    expect(handle.middleware.name).toBe("tool-error-formatter");
+    expect(handle.middleware.priority).toBe(170);
+    expect(typeof handle.middleware.wrapToolCall).toBe("function");
+  });
+
+  test("wrapToolCall converts a thrown tool error into a ToolResponse instead of propagating", async () => {
+    const { createToolErrorFormatterMiddleware } = await import(
+      "@koi/middleware-tool-error-formatter"
+    );
+    const handle = createToolErrorFormatterMiddleware();
+    const ctx = {
+      session: {
+        agentId: "tef-golden",
+        sessionId: sessionId("tef-golden"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      },
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    } satisfies TurnContext;
+
+    const failingHandler = async (
+      _req: import("@koi/core").ToolRequest,
+    ): Promise<import("@koi/core").ToolResponse> => {
+      throw new Error("upstream timed out");
+    };
+
+    const response = await handle.middleware.wrapToolCall?.(
+      ctx,
+      {
+        toolId: "fragile_lookup",
+        input: { id: "abc-123" } as JsonObject,
+      } satisfies import("@koi/core").ToolRequest,
+      failingHandler,
+    );
+    expect(response).toBeDefined();
+    expect(typeof response?.output).toBe("string");
+    expect(String(response?.output)).toContain("upstream timed out");
+  });
+
+  test("trajectory fixture contains tool-error-formatter middleware spans and a tool step", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/tool-error-formatter.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly outcome?: string;
+        readonly extra?: Record<string, unknown>;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("tool-error-formatter");
+
+    const tefSpans = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" && s.extra?.middlewareName === "tool-error-formatter",
+    );
+    expect(tefSpans.length).toBeGreaterThanOrEqual(1);
+
+    // The trajectory must contain BOTH a tool step (model invoked the failing
+    // tool, formatter surfaced the throw as a result) AND a second agent step
+    // proving the formatted ToolResponse reached a follow-up model call —
+    // without that second model call the formatter is unobservable.
+    const toolSteps = doc.steps.filter(
+      (s) =>
+        s.source === "tool" &&
+        Array.isArray(s.tool_calls) &&
+        s.tool_calls.some((tc) => tc.function_name === "fragile_lookup"),
+    );
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-tool-disclosure
+// Standalone tests + trajectory fixture assertions.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-tool-disclosure", () => {
+  test("createToolDisclosureBundle exposes middleware + companion tool provider", async () => {
+    const { createToolDisclosureBundle, PROMOTE_TOOL_NAME } = await import(
+      "@koi/middleware-tool-disclosure"
+    );
+    const bundle = createToolDisclosureBundle({ threshold: 2 });
+    expect(bundle.middleware.name).toBe("tool-disclosure");
+    expect(bundle.providers.length).toBe(1);
+    expect(PROMOTE_TOOL_NAME).toBe("promote_tools");
+  });
+
+  test("createPromoteToolDescriptor returns a descriptor with the expected shape", async () => {
+    const { createPromoteToolDescriptor, PROMOTE_TOOL_NAME } = await import(
+      "@koi/middleware-tool-disclosure"
+    );
+    const descriptor = createPromoteToolDescriptor();
+    expect(descriptor.name).toBe(PROMOTE_TOOL_NAME);
+    expect(typeof descriptor.description).toBe("string");
+    expect(descriptor.inputSchema).toBeDefined();
+    const schema = descriptor.inputSchema as {
+      properties?: { names?: { type?: string; items?: { type?: string } } };
+      required?: readonly string[];
+    };
+    expect(schema.properties?.names?.type).toBe("array");
+    expect(schema.required).toContain("names");
+  });
+
+  test("trajectory fixture proves promote_tools→add_numbers disclosure flow", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/tool-disclosure.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly message?: string;
+        readonly extra?: Record<string, unknown>;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("tool-disclosure");
+
+    // Disclosure middleware spans fire on every model+tool call.
+    const tdSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "tool-disclosure",
+    );
+    expect(tdSpans.length).toBeGreaterThanOrEqual(2);
+
+    // promote_tools is intercepted by the middleware (it short-circuits at
+    // wrapToolCall and never reaches tool execution), so the call is observable
+    // as a middleware span whose message is `promote_tools(...)` — assert at
+    // least one such span exists.
+    const promoteSpans = tdSpans.filter(
+      (s) => typeof s.message === "string" && s.message.startsWith("promote_tools("),
+    );
+    expect(promoteSpans.length).toBeGreaterThanOrEqual(1);
+
+    // add_numbers must execute as an actual tool step after promotion: this
+    // proves the disclosure middleware promoted the summary descriptor to
+    // full schema and let the call through.
+    const addNumbersSteps = doc.steps.filter(
+      (s) =>
+        s.source === "tool" &&
+        Array.isArray(s.tool_calls) &&
+        s.tool_calls.some((tc) => tc.function_name === "add_numbers"),
+    );
+    expect(addNumbersSteps.length).toBeGreaterThanOrEqual(1);
+
+    // At least three model agent steps: initial (sees summary), post-promote
+    // (sees full schema, calls add_numbers), final (reports result).
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/middleware-planning (write_plan tool injection + MW span)
 // ---------------------------------------------------------------------------
 
