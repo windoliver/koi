@@ -1501,9 +1501,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         auditDeclared: manifestAudit !== undefined,
       },
     });
-    if (!writeResult.ok && resolvedAceConfig !== undefined) {
+    if (!writeResult.ok && (resolvedAceConfig !== undefined || manifestAudit !== undefined)) {
       process.stderr.write(
-        `koi tui: ace: refusing to start because session provenance sidecar could not be written: ${writeResult.error}. ACE-enabled sessions require a recoverable sidecar so future resumes can enforce host-safety constraints. Fix the filesystem (writable sessions directory) and retry, or remove ace.enabled: true from the manifest.\n`,
+        `koi tui: refusing to start because session provenance sidecar could not be written: ${writeResult.error}. ACE-enabled or audit-declared sessions require a recoverable sidecar so future resumes can enforce host-safety constraints. Fix the filesystem (writable sessions directory) and retry.\n`,
       );
       process.exit(1);
     }
@@ -5072,13 +5072,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                   auditDeclared: manifestAudit !== undefined,
                 },
               });
-              if (!writeResult.ok && resolvedAceConfig !== undefined) {
+              if (
+                !writeResult.ok &&
+                (resolvedAceConfig !== undefined || manifestAudit !== undefined)
+              ) {
                 lastResetFailed = true;
                 store.dispatch({
                   kind: "add_error",
                   code: "NEW_SESSION_FAILED",
                   message:
-                    `New session failed: ace-enabled session requires a recoverable provenance sidecar but the write failed: ${writeResult.error}. Restart koi tui to recover.`,
+                    `New session failed: ACE-enabled or audit-declared session requires a recoverable provenance sidecar but the write failed: ${writeResult.error}. Restart koi tui to recover.`,
                 });
                 return;
               }
@@ -5561,7 +5564,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // resumed transcript would then run against a fresh or
           // contaminated PlaybookStore. Block such loads until
           // sqlite-backed playbook persistence (#2087) lands.
-          const pickerMeta = await readSessionMetaResult(SESSIONS_DIR, selectedId);
+          // Use the normalized targetSid for sidecar lookup so
+          // agent:<pid>:<uuid> ids resolve to the same on-disk file
+          // as resumeSessionFromJsonl below. Reading by the raw
+          // selectedId would miss the sidecar and silently fall
+          // through the legacy permissive branch.
+          const pickerMeta = await readSessionMetaResult(SESSIONS_DIR, String(targetSid));
           if (pickerMeta.kind === "corrupt") {
             if (myPickerGeneration === pickerGeneration) {
               store.dispatch({
