@@ -335,61 +335,70 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           abortController.signal,
           AbortSignal.timeout(gateTimeoutMs),
         ]);
-        // Catch synchronous throws while building the verifier promise
-        // (missing dep, bad context, local validation) so they degrade
-        // to a failed gate result instead of crashing the run. Don't
-        // use Promise.resolve().then(...) here — that adds a microtask
-        // delay that breaks the immediate-abort path in verify().
-        // Use let — justified: try/catch must reassign across boundaries.
-        let gatePromise: Promise<VerificationResult>;
-        try {
-          gatePromise = Promise.resolve(
-            config.verify({
-              iteration: i,
-              currentItem: current,
-              workingDir,
-              iterationRecords: [...iterationRecords],
-              learnings,
-              remainingItems,
-              completedItems,
-              signal: gateSignal,
-            }),
-          );
-        } catch (e: unknown) {
-          gatePromise = Promise.reject(e);
-        }
-        try {
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            gateSignal.addEventListener("abort", () => reject(new Error("Gate timed out")), {
-              once: true,
-            });
-          });
-          gateResult = await Promise.race([gatePromise, timeoutPromise]);
-        } catch (e: unknown) {
-          // Gate timed out or aborted. The gate's promise is still in
-          // flight unless it cooperatively settles after seeing
-          // gateSignal abort. Wait for quiescence with a bounded grace
-          // budget; if the gate refuses to settle, fail the run fatally
-          // — continuing while a verification call is still mutating
-          // external systems would produce overlapping work.
-          gateResult = { passed: false, details: `Gate error: ${extractMessage(e)}` };
-          // Use let — justified: race outcome flag.
-          let gateStuck = false;
-          const settled = gatePromise.then(
-            () => undefined,
-            () => undefined,
-          );
-          const grace = new Promise<void>((resolve) => {
-            setTimeout(() => {
-              gateStuck = true;
-              resolve();
-            }, GATE_QUIESCE_TIMEOUT_MS).unref?.();
-          });
-          await Promise.race([settled, grace]);
-          if (gateStuck) {
-            throw new RunnerStuckError(
-              `VerifiedLoop: gate did not quiesce within ${GATE_QUIESCE_TIMEOUT_MS}ms after timeout/abort; aborting run to avoid overlapping verification work`,
+        // Fail-fast if the loop has already been aborted before we
+        // even invoke the gate. Otherwise verify() may run, resolve
+        // {passed:true}, and slip past the abort race below (the
+        // timeoutPromise listener is attached AFTER verify is called
+        // — a synchronously-resolving gate would never observe it).
+        if (gateSignal.aborted) {
+          gateResult = { passed: false, details: "Gate aborted before start" };
+        } else {
+          // Catch synchronous throws while building the verifier promise
+          // (missing dep, bad context, local validation) so they degrade
+          // to a failed gate result instead of crashing the run. Don't
+          // use Promise.resolve().then(...) here — that adds a microtask
+          // delay that breaks the immediate-abort path in verify().
+          // Use let — justified: try/catch must reassign across boundaries.
+          let gatePromise: Promise<VerificationResult>;
+          try {
+            gatePromise = Promise.resolve(
+              config.verify({
+                iteration: i,
+                currentItem: current,
+                workingDir,
+                iterationRecords: [...iterationRecords],
+                learnings,
+                remainingItems,
+                completedItems,
+                signal: gateSignal,
+              }),
             );
+          } catch (e: unknown) {
+            gatePromise = Promise.reject(e);
+          }
+          try {
+            const timeoutPromise = new Promise<never>((_, reject) => {
+              gateSignal.addEventListener("abort", () => reject(new Error("Gate timed out")), {
+                once: true,
+              });
+            });
+            gateResult = await Promise.race([gatePromise, timeoutPromise]);
+          } catch (e: unknown) {
+            // Gate timed out or aborted. The gate's promise is still in
+            // flight unless it cooperatively settles after seeing
+            // gateSignal abort. Wait for quiescence with a bounded grace
+            // budget; if the gate refuses to settle, fail the run fatally
+            // — continuing while a verification call is still mutating
+            // external systems would produce overlapping work.
+            gateResult = { passed: false, details: `Gate error: ${extractMessage(e)}` };
+            // Use let — justified: race outcome flag.
+            let gateStuck = false;
+            const settled = gatePromise.then(
+              () => undefined,
+              () => undefined,
+            );
+            const grace = new Promise<void>((resolve) => {
+              setTimeout(() => {
+                gateStuck = true;
+                resolve();
+              }, GATE_QUIESCE_TIMEOUT_MS).unref?.();
+            });
+            await Promise.race([settled, grace]);
+            if (gateStuck) {
+              throw new RunnerStuckError(
+                `VerifiedLoop: gate did not quiesce within ${GATE_QUIESCE_TIMEOUT_MS}ms after timeout/abort; aborting run to avoid overlapping verification work`,
+              );
+            }
           }
         }
       }
