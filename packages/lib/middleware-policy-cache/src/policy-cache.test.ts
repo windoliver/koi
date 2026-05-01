@@ -952,6 +952,23 @@ describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
     // …but global is its own bucket and continues to work.
     expect(handle.register(makeGlobalPolicy("t", "b-g")).ok).toBe(true);
   });
+
+  test("re-homing a brick across many agents does NOT leak empty buckets", () => {
+    // Round 10 review caught that moving the same brickId to a new agent
+    // bucket left the prior agent's bucket empty-but-present, eventually
+    // exhausting `maxAgentBuckets` even though only one live policy existed.
+    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 5 });
+    // Re-home one brick across 100 distinct agents — only the latest
+    // agent's bucket should remain.
+    for (let i = 0; i < 100; i++) {
+      const result = handle.register(makeAgentPolicy(`agent-${String(i)}`, "t", "brick-roving"));
+      expect(result.ok).toBe(true);
+    }
+    expect(handle.size()).toBe(1);
+    // A fresh new-agent registration must still succeed: prior buckets
+    // were GC'd, so the cap was not silently exhausted.
+    expect(handle.register(makeAgentPolicy("agent-fresh", "u", "brick-fresh")).ok).toBe(true);
+  });
 });
 
 describe("createPolicyCacheMiddleware: input-mutation defense", () => {

@@ -218,14 +218,30 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
     const { key: bucket, map: bucketMap } = slot;
 
     // Stale forward entry: this brickId previously lived under a different
-    // bucket/toolId — drop it from there before re-inserting here.
+    // bucket/toolId — drop it from there before re-inserting here. If that
+    // empties the prior agent bucket, GC it: empty buckets still count
+    // against `maxAgentBuckets`, so leaking them turns cross-agent
+    // re-registration into a slow-burn DoS on the control plane.
     const prior = brickIndex.get(entry.brickId);
     if (prior !== undefined && (prior.bucket !== bucket || prior.toolId !== entry.toolId)) {
-      const priorMap =
-        prior.bucket === "global"
-          ? globalCache
-          : agentCaches.get(prior.bucket.slice("agent:".length));
-      priorMap?.delete(prior.toolId);
+      if (prior.bucket === "global") {
+        globalCache.delete(prior.toolId);
+      } else {
+        const priorAgentId = prior.bucket.slice("agent:".length);
+        const priorMap = agentCaches.get(priorAgentId);
+        if (priorMap !== undefined) {
+          priorMap.delete(prior.toolId);
+          // GC empty agent bucket — but never the bucket we're about to insert
+          // into, which would force a fresh allocation and double-charge the
+          // bucket cap.
+          if (
+            priorMap.size === 0 &&
+            priorAgentId !== (entry.scope === "agent" ? entry.agentId : "")
+          ) {
+            agentCaches.delete(priorAgentId);
+          }
+        }
+      }
     }
 
     // Stale reverse entry: another brickId already occupies this (bucket, toolId).
