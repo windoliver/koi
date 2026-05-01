@@ -56,8 +56,26 @@ export {
   reconnectExhaustedError,
   sessionExpiredError,
 } from "./errors.js";
+// Installer + registry discovery (issue #1646)
+export type {
+  InstallerDeps,
+  InstallOptions,
+  UninstallOptions,
+} from "./installer.js";
+export {
+  installMcpServer,
+  pickPackageForInstall,
+  uninstallMcpServer,
+} from "./installer.js";
 // .mcp.json loader
 export { loadMcpJsonFile, loadMcpJsonString } from "./mcp-json.js";
+// .mcp.json writer
+export type { AddServerOptions } from "./mcp-json-write.js";
+export {
+  addServerToMcpJson,
+  removeServerFromMcpJson,
+  saveMcpJsonFile,
+} from "./mcp-json-write.js";
 export { discoverAuthServer } from "./oauth/discovery.js";
 export type { PkceChallenge } from "./oauth/pkce.js";
 export { createPkceChallenge } from "./oauth/pkce.js";
@@ -72,6 +90,31 @@ export type {
   OAuthRuntime,
   OAuthTokens,
 } from "./oauth/types.js";
+export type {
+  CachedSearchResult,
+  RegistryCache,
+  RegistryCacheOptions,
+} from "./registry/cache.js";
+export {
+  createRegistryCache,
+  DEFAULT_REGISTRY_CACHE_TTL_MS,
+  defaultRegistryCacheDir,
+} from "./registry/cache.js";
+export type {
+  RegistryClient,
+  RegistryClientOptions,
+  SearchOptions,
+  SearchResult,
+} from "./registry/client.js";
+export { createRegistryClient, DEFAULT_REGISTRY_BASE_URL } from "./registry/client.js";
+export type {
+  RegistryPackage,
+  RegistryRemote,
+  RegistryRepository,
+  RegistryServer,
+  RegistryTransportRef,
+} from "./registry/schema.js";
+export { registrySearchResponseSchema, registryServerSchema } from "./registry/schema.js";
 // Resolver
 export type { McpResolver, McpResolverOptions, McpServerFailure } from "./resolver.js";
 export { createMcpResolver } from "./resolver.js";

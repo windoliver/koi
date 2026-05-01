@@ -18,6 +18,7 @@ import { isMcpFlags } from "../args.js";
 import { createOAuthAwareMcpConnection } from "../mcp-connection-factory.js";
 import { ExitCode } from "../types.js";
 import { createCliOAuthRuntime } from "./mcp-oauth-runtime.js";
+import { runInfo, runInstall, runSearch, runUninstall } from "./mcp-registry.js";
 
 // ---------------------------------------------------------------------------
 // Command entry point
@@ -39,8 +40,18 @@ export async function run(flags: CliFlags): Promise<ExitCode> {
       return runLogout(flags);
     case "debug":
       return runDebug(flags);
+    case "search":
+      return runSearch(flags);
+    case "info":
+      return runInfo(flags);
+    case "install":
+      return runInstall(flags);
+    case "uninstall":
+      return runUninstall(flags);
     case undefined:
-      process.stderr.write(`error: koi mcp requires a subcommand (list, auth, logout, debug)\n`);
+      process.stderr.write(
+        `error: koi mcp requires a subcommand (list, auth, logout, debug, search, info, install, uninstall)\n`,
+      );
       return ExitCode.FAILURE;
   }
 }
