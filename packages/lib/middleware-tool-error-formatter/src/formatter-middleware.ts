@@ -29,6 +29,25 @@ const DEFAULT_MAX_MESSAGE_LENGTH = 1000;
 
 const TRUNCATION_SUFFIX = "... (truncated)";
 
+/**
+ * Recursively sanitize string values inside a JSON-shaped value. Used to
+ * scrub secrets from `KoiError.context` and similar structured fields before
+ * we hand them to downstream observers — tools sometimes embed auth tokens,
+ * cookies, or request bodies in `context` and we treat that as untrusted.
+ */
+function sanitizeJsonValue(value: unknown, patterns: readonly RegExp[]): unknown {
+  if (typeof value === "string") return sanitizeSecrets(value, patterns);
+  if (Array.isArray(value)) return value.map((v) => sanitizeJsonValue(v, patterns));
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = sanitizeJsonValue(v, patterns);
+    }
+    return out;
+  }
+  return value;
+}
+
 function sanitizeSecrets(message: string, patterns: readonly RegExp[]): string {
   // Reduce over patterns; rebuild each regex to reset lastIndex for global flags.
   let result = message;
@@ -75,7 +94,9 @@ function buildStructuredFailure(error: unknown, secretPatterns: readonly RegExp[
     out.code = error.code;
     out.retryable = error.retryable;
     out.originalMessage = sanitizeSecrets(error.message, secretPatterns);
-    if (error.context !== undefined) out.context = error.context;
+    if (error.context !== undefined) {
+      out.context = sanitizeJsonValue(error.context, secretPatterns) as JsonObject;
+    }
     if (error.retryAfterMs !== undefined) out.retryAfterMs = error.retryAfterMs;
     if (error.cause !== undefined) {
       const causeMessage = extractMessage(error.cause);

@@ -297,6 +297,35 @@ describe("createToolErrorFormatterMiddleware", () => {
       expect(response.metadata?.originalMessage).toBe("rate limited");
     });
 
+    test("KoiError context is recursively sanitized for secrets", async () => {
+      const wrap = getWrapToolCall();
+      const koiError: KoiError = {
+        code: "EXTERNAL",
+        message: "auth failed",
+        retryable: false,
+        context: {
+          headers: { authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" },
+          tokens: ["sk-abc123def456ghi789jklmnopqrst", "safe-value"],
+          nested: { apiKey: "sk-secretsecretsecretsecretSecret" },
+          numeric: 42,
+        },
+      };
+      const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
+
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+
+      const ctx = response.metadata?.context as Record<string, unknown>;
+      expect(ctx).toBeDefined();
+      const headers = ctx.headers as Record<string, unknown>;
+      expect(headers.authorization).toBe("[REDACTED]");
+      const tokens = ctx.tokens as readonly string[];
+      expect(tokens[0]).toBe("[REDACTED]");
+      expect(tokens[1]).toBe("safe-value");
+      const nested = ctx.nested as Record<string, unknown>;
+      expect(nested.apiKey).toBe("[REDACTED]");
+      expect(ctx.numeric).toBe(42); // non-strings preserved
+    });
+
     test("KoiError cause is captured (sanitized)", async () => {
       const wrap = getWrapToolCall();
       const koiError: KoiError = {

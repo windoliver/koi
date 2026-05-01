@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import type { Agent, JsonObject } from "@koi/core";
+import type { Agent, JsonObject, ToolRequest, ToolResponse, TurnContext } from "@koi/core";
 import { isAttachResult } from "@koi/core";
+import { createMockTurnContext } from "@koi/test";
 import { createToolDisclosureBundle } from "./disclosure-bundle.js";
 import { PROMOTE_TOOL_NAME } from "./tool-disclosure-middleware.js";
 
 const fakeAgent = {} as Agent;
+const ctx: TurnContext = createMockTurnContext();
 
 async function attachComponents(
   bundle: ReturnType<typeof createToolDisclosureBundle>,
@@ -13,6 +15,18 @@ async function attachComponents(
   if (!provider) throw new Error("provider missing");
   const result = await provider.attach(fakeAgent);
   return isAttachResult(result) ? result.components : result;
+}
+
+async function callPromoteViaMiddleware(
+  bundle: ReturnType<typeof createToolDisclosureBundle>,
+  input: JsonObject,
+): Promise<ToolResponse> {
+  const wrap = bundle.middleware.wrapToolCall;
+  if (!wrap) throw new Error("wrapToolCall missing");
+  const request: ToolRequest = { toolId: PROMOTE_TOOL_NAME, input };
+  return wrap(ctx, request, async (_req): Promise<ToolResponse> => {
+    throw new Error("next() should not be called for promote_tools");
+  });
 }
 
 describe("createToolDisclosureBundle", () => {
@@ -31,65 +45,63 @@ describe("createToolDisclosureBundle", () => {
 
   test("middleware advertises companion tool after bundle creation", () => {
     const bundle = createToolDisclosureBundle();
-    const fragment = bundle.middleware.describeCapabilities?.(
-      // biome-ignore lint/suspicious/noExplicitAny: context is unused by this hook
-      {} as any,
-    );
+    const fragment = bundle.middleware.describeCapabilities?.(ctx);
     expect(fragment?.label).toBe("tool-disclosure");
   });
 
-  describe("promote_tools execute", () => {
-    async function getTool(): Promise<{
-      readonly execute: (args: JsonObject) => Promise<unknown>;
-    }> {
+  describe("Tool.execute fallback (middleware not registered)", () => {
+    test("returns INTERNAL error explaining middleware is required", async () => {
       const bundle = createToolDisclosureBundle();
       const components = await attachComponents(bundle);
       const tool = components.get(`tool:${PROMOTE_TOOL_NAME}`) as {
         readonly execute: (args: JsonObject) => Promise<unknown>;
       };
-      return tool;
-    }
-
-    test("rejects non-array names", async () => {
-      const tool = await getTool();
-      const result = (await tool.execute({ names: "not-array" })) as {
+      const result = (await tool.execute({ names: ["foo"] })) as {
         readonly ok: boolean;
-        readonly error?: { readonly code: string };
+        readonly error?: { readonly code: string; readonly message: string };
       };
       expect(result.ok).toBe(false);
-      expect(result.error?.code).toBe("VALIDATION");
+      expect(result.error?.code).toBe("INTERNAL");
+      expect(result.error?.message).toContain("middleware");
+    });
+  });
+
+  describe("middleware wrapToolCall handles promote_tools (the real path)", () => {
+    test("rejects non-array names with VALIDATION error", async () => {
+      const bundle = createToolDisclosureBundle();
+      const response = await callPromoteViaMiddleware(bundle, { names: "not-array" });
+      const out = response.output as { ok: boolean; error?: { code: string } };
+      expect(out.ok).toBe(false);
+      expect(out.error?.code).toBe("VALIDATION");
     });
 
-    test("rejects empty names array", async () => {
-      const tool = await getTool();
-      const result = (await tool.execute({ names: [] })) as {
-        readonly ok: boolean;
-        readonly error?: { readonly code: string };
-      };
-      expect(result.ok).toBe(false);
-      expect(result.error?.code).toBe("VALIDATION");
+    test("rejects empty names array with VALIDATION error", async () => {
+      const bundle = createToolDisclosureBundle();
+      const response = await callPromoteViaMiddleware(bundle, { names: [] });
+      const out = response.output as { ok: boolean; error?: { code: string } };
+      expect(out.ok).toBe(false);
+      expect(out.error?.code).toBe("VALIDATION");
     });
 
     test("rejects names with no string entries", async () => {
-      const tool = await getTool();
-      const result = (await tool.execute({ names: [1, 2, 3] })) as {
-        readonly ok: boolean;
-        readonly error?: { readonly code: string };
-      };
-      expect(result.ok).toBe(false);
-      expect(result.error?.code).toBe("VALIDATION");
+      const bundle = createToolDisclosureBundle();
+      const response = await callPromoteViaMiddleware(bundle, { names: [1, 2, 3] });
+      const out = response.output as { ok: boolean; error?: { code: string } };
+      expect(out.ok).toBe(false);
+      expect(out.error?.code).toBe("VALIDATION");
     });
 
-    test("promotes 0 tools when middleware has no known names yet", async () => {
-      const tool = await getTool();
-      const result = (await tool.execute({ names: ["foo"] })) as {
-        readonly ok: boolean;
-        readonly promoted: readonly string[];
-        readonly message: string;
+    test("returns ok with empty promoted list when no known names yet", async () => {
+      const bundle = createToolDisclosureBundle();
+      const response = await callPromoteViaMiddleware(bundle, { names: ["foo"] });
+      const out = response.output as {
+        ok: boolean;
+        promoted: readonly string[];
+        message: string;
       };
-      expect(result.ok).toBe(true);
-      expect(result.promoted).toEqual([]);
-      expect(result.message).toContain("No tools were promoted");
+      expect(out.ok).toBe(true);
+      expect(out.promoted).toEqual([]);
+      expect(out.message).toContain("No tools were promoted");
     });
   });
 });

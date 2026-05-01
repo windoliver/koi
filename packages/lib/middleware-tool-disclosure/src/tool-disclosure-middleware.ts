@@ -9,15 +9,15 @@
  * Promotion state is keyed by SessionId so concurrent or interleaved sessions
  * sharing one middleware instance cannot corrupt each other's promoted set.
  * Per-session entries are populated on `onSessionStart` and torn down on
- * `onSessionEnd`. The companion tool (registered via the bundle factory)
- * targets the session whose model call most recently passed through
- * `wrapModelCall`; this matches the engine's serial per-session execution
- * model. Truly concurrent multi-session use of one middleware instance is not
- * supported — instantiate one middleware per runtime.
+ * `onSessionEnd`. Promotion requests from the model arrive through
+ * `wrapToolCall` and are routed by `ctx.session.sessionId` — there is no
+ * implicit "active session" routing, so interleaved tool calls from two
+ * sessions on one middleware instance never cross-write each other's state.
  */
 
 import type {
   CapabilityFragment,
+  JsonObject,
   KoiMiddleware,
   ModelHandler,
   ModelRequest,
@@ -25,6 +25,9 @@ import type {
   SessionContext,
   SessionId,
   ToolDescriptor,
+  ToolHandler,
+  ToolRequest,
+  ToolResponse,
   TurnContext,
 } from "@koi/core";
 
@@ -45,16 +48,9 @@ export interface ToolDisclosureConfig {
 
 export interface ToolDisclosureMiddleware extends KoiMiddleware {
   /**
-   * Promote tools by name within the most recently active session. Adds names
-   * to the session's promoted set if they exist in the latest input descriptor
-   * list. Returns the names actually promoted. Used by the `promote_tools`
-   * companion tool, which has no SessionId in scope.
-   */
-  readonly promoteByName: (names: readonly string[]) => readonly string[];
-  /**
-   * Promote tools by name for an explicit session. Use this when you have a
-   * SessionId in hand (e.g., from a custom dispatcher). Returns the names
-   * actually promoted; an empty array if the session is unknown.
+   * Promote tools by name for an explicit session. Returns the names actually
+   * promoted; an empty array if the session is unknown or names are not in
+   * the session's most recent input descriptor list.
    */
   readonly promoteByNameForSession: (
     sessionId: SessionId,
@@ -75,6 +71,13 @@ interface SessionState {
   knownNames: ReadonlySet<string>;
 }
 
+interface PromoteResult extends JsonObject {
+  readonly ok: boolean;
+  readonly promoted?: readonly string[];
+  readonly message?: string;
+  readonly error?: { readonly code: string; readonly message: string };
+}
+
 function summarize(tool: ToolDescriptor): ToolDescriptor {
   return {
     name: tool.name,
@@ -82,6 +85,46 @@ function summarize(tool: ToolDescriptor): ToolDescriptor {
     inputSchema: {},
     ...(tool.tags !== undefined && tool.tags.length > 0 ? { tags: tool.tags } : {}),
   };
+}
+
+function validatePromoteInput(
+  input: JsonObject,
+):
+  | { readonly ok: true; readonly names: readonly string[] }
+  | { readonly ok: false; readonly response: ToolResponse } {
+  const names = input.names;
+  if (!Array.isArray(names)) {
+    return {
+      ok: false,
+      response: {
+        output: {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `${PROMOTE_TOOL_NAME} requires a 'names' array of tool name strings`,
+          },
+        } satisfies PromoteResult,
+      },
+    };
+  }
+  const stringNames: readonly string[] = names.filter(
+    (n: unknown): n is string => typeof n === "string",
+  );
+  if (stringNames.length === 0) {
+    return {
+      ok: false,
+      response: {
+        output: {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `${PROMOTE_TOOL_NAME} requires at least one tool name string`,
+          },
+        } satisfies PromoteResult,
+      },
+    };
+  }
+  return { ok: true, names: stringNames };
 }
 
 export function createToolDisclosureMiddleware(
@@ -92,11 +135,6 @@ export function createToolDisclosureMiddleware(
   // Per-session state map. Populated on session start, torn down on session end.
   // let justified: mutable map keyed by SessionId.
   const sessions = new Map<SessionId, SessionState>();
-
-  // Most recently active session — used by the companion tool's promoteByName,
-  // which has no SessionId in its execute() scope. Updated by wrapModelCall.
-  // let justified: mutable ref tracking last-touched session.
-  let activeSessionId: SessionId | undefined;
 
   // let justified: mutable flag — set once by notifyCompanionRegistered().
   let companionToolRegistered = false;
@@ -153,7 +191,6 @@ export function createToolDisclosureMiddleware(
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
       sessions.delete(ctx.sessionId);
-      if (activeSessionId === ctx.sessionId) activeSessionId = undefined;
     },
 
     wrapModelCall(
@@ -161,7 +198,6 @@ export function createToolDisclosureMiddleware(
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      activeSessionId = ctx.session.sessionId;
       if (request.tools === undefined || request.tools.length <= threshold) {
         return next(request);
       }
@@ -170,9 +206,37 @@ export function createToolDisclosureMiddleware(
       return next({ ...request, tools: disclosed });
     },
 
+    /**
+     * Intercept `promote_tools` calls and route them by `ctx.session.sessionId`.
+     * Other tool calls pass straight through. This is what gives the companion
+     * tool session-correct routing without needing a SessionId in `Tool.execute`.
+     */
+    async wrapToolCall(
+      ctx: TurnContext,
+      request: ToolRequest,
+      next: ToolHandler,
+    ): Promise<ToolResponse> {
+      if (request.toolId !== PROMOTE_TOOL_NAME) {
+        return next(request);
+      }
+      const validated = validatePromoteInput(request.input);
+      if (!validated.ok) return validated.response;
+
+      const promoted = promoteForSession(ctx.session.sessionId, validated.names);
+      const result: PromoteResult = {
+        ok: true,
+        promoted,
+        message:
+          promoted.length > 0
+            ? `Promoted ${promoted.length} tool(s): ${promoted.join(", ")}. Full schemas are now available.`
+            : "No tools were promoted. Check the tool names and try again.",
+      };
+      return { output: result };
+    },
+
     describeCapabilities(ctx: TurnContext): CapabilityFragment | undefined {
       if (!companionToolRegistered) return undefined;
-      const sid: SessionId | undefined = ctx?.session?.sessionId ?? activeSessionId;
+      const sid: SessionId | undefined = ctx?.session?.sessionId;
       const state = sid !== undefined ? sessions.get(sid) : undefined;
       const count = state?.promoted.size ?? 0;
       return {
@@ -181,18 +245,12 @@ export function createToolDisclosureMiddleware(
       };
     },
 
-    promoteByName(names: readonly string[]): readonly string[] {
-      if (activeSessionId === undefined) return [];
-      return promoteForSession(activeSessionId, names);
-    },
-
     promoteByNameForSession(sid: SessionId, names: readonly string[]): readonly string[] {
       return promoteForSession(sid, names);
     },
 
     clearCache(): void {
       sessions.clear();
-      activeSessionId = undefined;
     },
 
     notifyCompanionRegistered(): void {

@@ -2,6 +2,11 @@
  * Disclosure bundle — packages disclosure middleware + the `promote_tools`
  * companion tool. The bundle wires them so the model can call promote_tools
  * to lift tools from summary to full-schema state.
+ *
+ * The actual promotion logic lives in the middleware's `wrapToolCall`, which
+ * has access to `TurnContext.session.sessionId` and routes the call to the
+ * correct session. The Tool registered here is a fallback that returns an
+ * error if reached — which only happens if the middleware was not registered.
  */
 
 import type { JsonObject, MiddlewareBundle, Tool, ToolDescriptor } from "@koi/core";
@@ -22,49 +27,23 @@ export interface ToolDisclosureBundle extends MiddlewareBundle {
 
 interface PromoteResult {
   readonly ok: boolean;
-  readonly promoted?: readonly string[];
-  readonly message?: string;
   readonly error?: { readonly code: string; readonly message: string };
 }
 
-function createPromoteToolsTool(middleware: ToolDisclosureMiddleware): Tool {
+function createPromoteToolsTool(): Tool {
   const descriptor: ToolDescriptor = createPromoteToolDescriptor();
 
   return {
     descriptor,
     origin: "primordial",
     policy: DEFAULT_UNSANDBOXED_POLICY,
-    async execute(args: JsonObject): Promise<PromoteResult> {
-      const names = args.names;
-      if (!Array.isArray(names)) {
-        return {
-          ok: false,
-          error: {
-            code: "VALIDATION",
-            message: `${PROMOTE_TOOL_NAME} requires a 'names' array of tool name strings`,
-          },
-        };
-      }
-      const stringNames: readonly string[] = names.filter(
-        (n: unknown): n is string => typeof n === "string",
-      );
-      if (stringNames.length === 0) {
-        return {
-          ok: false,
-          error: {
-            code: "VALIDATION",
-            message: `${PROMOTE_TOOL_NAME} requires at least one tool name string`,
-          },
-        };
-      }
-      const promoted = middleware.promoteByName(stringNames);
+    async execute(_args: JsonObject): Promise<PromoteResult> {
       return {
-        ok: true,
-        promoted,
-        message:
-          promoted.length > 0
-            ? `Promoted ${promoted.length} tool(s): ${promoted.join(", ")}. Full schemas are now available.`
-            : "No tools were promoted. Check the tool names and try again.",
+        ok: false,
+        error: {
+          code: "INTERNAL",
+          message: `${PROMOTE_TOOL_NAME} requires the tool-disclosure middleware to be registered. The middleware intercepts this call and routes promotion to the correct session — without it, this fallback tool cannot determine which session is asking.`,
+        },
       };
     },
   };
@@ -81,7 +60,7 @@ export function createToolDisclosureBundle(config?: ToolDisclosureConfig): ToolD
   const provider = createSingleToolProvider({
     name: "tool-disclosure",
     toolName: PROMOTE_TOOL_NAME,
-    createTool: () => createPromoteToolsTool(middleware),
+    createTool: () => createPromoteToolsTool(),
   });
 
   return { middleware, providers: [provider] };

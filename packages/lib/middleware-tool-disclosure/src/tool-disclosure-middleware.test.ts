@@ -5,6 +5,7 @@ import type {
   ModelResponse,
   SessionId,
   ToolDescriptor,
+  ToolResponse,
   TurnContext,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
@@ -163,7 +164,7 @@ describe("createToolDisclosureMiddleware", () => {
       const first = captureNext();
       await callWrap(mw, { messages: [], tools }, first.handler);
 
-      const promotedNames = mw.promoteByName(["tool-3", "tool-7"]);
+      const promotedNames = mw.promoteByNameForSession(ctx.session.sessionId, ["tool-3", "tool-7"]);
       expect(promotedNames).toEqual(["tool-3", "tool-7"]);
 
       const second = captureNext();
@@ -182,13 +183,16 @@ describe("createToolDisclosureMiddleware", () => {
       const next = captureNext();
       await callWrap(mw, { messages: [], tools }, next.handler);
 
-      const promoted = mw.promoteByName(["tool-1", "does-not-exist"]);
+      const promoted = mw.promoteByNameForSession(ctx.session.sessionId, [
+        "tool-1",
+        "does-not-exist",
+      ]);
       expect(promoted).toEqual(["tool-1"]);
     });
 
     test("promotion before any model call yields empty result (no known names)", () => {
       const mw = createToolDisclosureMiddleware({ threshold: 5 });
-      const promoted = mw.promoteByName(["tool-0"]);
+      const promoted = mw.promoteByNameForSession(ctx.session.sessionId, ["tool-0"]);
       expect(promoted).toEqual([]);
     });
 
@@ -197,7 +201,7 @@ describe("createToolDisclosureMiddleware", () => {
       const tools = descriptors(10);
       const first = captureNext();
       await callWrap(mw, { messages: [], tools }, first.handler);
-      mw.promoteByName(["tool-2"]);
+      mw.promoteByNameForSession(ctx.session.sessionId, ["tool-2"]);
 
       mw.clearCache();
 
@@ -231,7 +235,7 @@ describe("createToolDisclosureMiddleware", () => {
       const next = captureNext();
       await callWrap(mw, { messages: [], tools }, next.handler);
 
-      mw.promoteByName(["tool-1", "tool-2"]);
+      mw.promoteByNameForSession(ctx.session.sessionId, ["tool-1", "tool-2"]);
       const result = mw.describeCapabilities?.(ctx);
       expect(result?.description).toContain("2 tools promoted");
     });
@@ -250,8 +254,8 @@ describe("createToolDisclosureMiddleware", () => {
       await mw.wrapModelCall?.(ctxA, { messages: [], tools }, captureNext().handler);
       await mw.wrapModelCall?.(ctxB, { messages: [], tools }, captureNext().handler);
 
-      // Promote in B (active session was B since it was last)
-      mw.promoteByName(["tool-1"]);
+      // Promote in B explicitly
+      mw.promoteByNameForSession(sidB, ["tool-1"]);
 
       // A should NOT see tool-1 promoted on its next call
       const seenA = captureNext();
@@ -274,7 +278,7 @@ describe("createToolDisclosureMiddleware", () => {
 
       await mw.onSessionStart?.(ctxOne.session);
       await mw.wrapModelCall?.(ctxOne, { messages: [], tools }, captureNext().handler);
-      mw.promoteByName(["tool-3"]);
+      mw.promoteByNameForSession(sid, ["tool-3"]);
 
       await mw.onSessionEnd?.(ctxOne.session);
 
@@ -310,6 +314,39 @@ describe("createToolDisclosureMiddleware", () => {
       await mw.wrapModelCall?.(ctxB, { messages: [], tools }, seenB.handler);
       const t2B = (seenB.seen.request?.tools ?? []).find((t) => t.name === "tool-2");
       expect(t2B && isSummary(t2B)).toBe(true);
+    });
+
+    test("wrapToolCall routes promote_tools by ctx.session.sessionId", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const tools = descriptors(10);
+      const sidA: SessionId = sessionId("a");
+      const sidB: SessionId = sessionId("b");
+      const ctxA = createMockTurnContext({ session: { sessionId: sidA } });
+      const ctxB = createMockTurnContext({ session: { sessionId: sidB } });
+
+      // Both sessions disclose tools first
+      await mw.wrapModelCall?.(ctxA, { messages: [], tools }, captureNext().handler);
+      await mw.wrapModelCall?.(ctxB, { messages: [], tools }, captureNext().handler);
+
+      // promote_tools call from session A — must NOT promote into B
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      const noopNext = async (): Promise<ToolResponse> => {
+        throw new Error("next should not run for promote_tools");
+      };
+      await wrap(ctxA, { toolId: PROMOTE_TOOL_NAME, input: { names: ["tool-1"] } }, noopNext);
+
+      // A sees tool-1 promoted
+      const seenA = captureNext();
+      await mw.wrapModelCall?.(ctxA, { messages: [], tools }, seenA.handler);
+      const t1A = (seenA.seen.request?.tools ?? []).find((t) => t.name === "tool-1");
+      expect(t1A && isSummary(t1A)).toBe(false);
+
+      // B does NOT
+      const seenB = captureNext();
+      await mw.wrapModelCall?.(ctxB, { messages: [], tools }, seenB.handler);
+      const t1B = (seenB.seen.request?.tools ?? []).find((t) => t.name === "tool-1");
+      expect(t1B && isSummary(t1B)).toBe(true);
     });
 
     test("promoteByNameForSession returns empty for unknown session", () => {
