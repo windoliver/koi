@@ -289,9 +289,22 @@ export const executionStack: PresetStack = {
     // remain unchanged; capability matching + priority-ordered fallback
     // happens transparently inside `sandboxAdapter.create()`.
     const routerResult = await createDefaultSandboxRouter({ enableDocker: true });
+    // Preserve the EXECUTION_EXPORTS.sandboxActive contract: it has historically
+    // meant "the OS sandbox (sandbox-exec on macOS, bwrap on Linux) is wired
+    // and confining bash". Now that the router may pick docker on hosts where
+    // sandbox-os failed to probe, computing sandboxActive from router.describe()
+    // keeps the flag honest — it's true only when sandbox-os is in the chain.
+    const osSandboxActive = routerResult.ok
+      ? routerResult.value.describe().some((b) => b.name === "@koi/sandbox-os")
+      : false;
     const sandboxAdapter = routerResult.ok
       ? createRouterAdapterShim({
           router: routerResult.value,
+          // Bash tool only invokes instance.exec — never readFile/writeFile/
+          // spawn — so advertise only `exec`. This prevents the shim from
+          // lying about capabilities a low-priority backend (e.g., sandbox-os
+          // for copy-files) cannot uphold.
+          capabilitiesOverride: { supports: new Set(["exec"]), priority: 0 },
           onDecision: (decision) => {
             // Surface the routing decision to the audit/debug channel via
             // stderr so TUI users can see fallback when it happens. This
@@ -588,7 +601,7 @@ export const executionStack: PresetStack = {
       ],
       exports: {
         [EXECUTION_EXPORTS.bashHandle]: bashHandle,
-        [EXECUTION_EXPORTS.sandboxActive]: routerResult.ok,
+        [EXECUTION_EXPORTS.sandboxActive]: osSandboxActive,
         [EXECUTION_EXPORTS.getBgSignal]: () => bgController.signal,
         [EXECUTION_EXPORTS.hasLiveProcesses]: () => liveSubprocessCount > 0,
         [EXECUTION_EXPORTS.getTaskBoard]: () => taskBoard,

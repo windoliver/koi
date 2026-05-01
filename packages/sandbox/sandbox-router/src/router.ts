@@ -27,12 +27,15 @@ export interface SandboxRouter {
   readonly shutdown: () => Promise<void>;
 }
 
-// AdapterRecord — internal router bookkeeping. `state` and `consecutiveFailures`
-// are intentionally mutable (the router updates them as adapters succeed/fail).
+// AdapterRecord — internal router bookkeeping. `state`, `consecutiveFailures`,
+// and `init` are intentionally mutable (the router updates them as adapters
+// succeed/fail). `init` is per-adapter so a hung init on one record never
+// starves creates that target a different ready record.
 interface AdapterRecord {
   readonly adapter: SandboxAdapter;
   state: BackendDescriptor["state"];
   consecutiveFailures: number;
+  init: Promise<void> | undefined;
 }
 
 const DEFAULT_DEGRADED_THRESHOLD = 3;
@@ -81,29 +84,28 @@ function buildRecords(adapters: readonly SandboxAdapter[]): AdapterRecord[] {
     adapter,
     state: "created" as BackendDescriptor["state"],
     consecutiveFailures: 0,
+    init: undefined,
   }));
 }
 
-function startInits(records: readonly AdapterRecord[]): readonly Promise<void>[] {
-  const pending: Promise<void>[] = [];
+function startInits(records: readonly AdapterRecord[]): void {
   for (const rec of records) {
     const init = rec.adapter.init;
     if (init === undefined) {
       rec.state = "ready";
       continue;
     }
-    pending.push(
-      (async () => {
-        try {
-          await init();
-          if (rec.state === "created") rec.state = "ready";
-        } catch {
-          rec.state = "terminated";
-        }
-      })(),
-    );
+    rec.init = (async () => {
+      try {
+        await init();
+        if (rec.state === "created") rec.state = "ready";
+      } catch {
+        rec.state = "terminated";
+      } finally {
+        rec.init = undefined;
+      }
+    })();
   }
-  return pending;
 }
 
 function noMatchError(
@@ -133,6 +135,9 @@ async function tryAdapters(
   const attempts: SelectionAttempt[] = [];
   const errors: KoiError[] = [];
   for (const rec of sorted) {
+    // teardownAdapters marks every record terminated before awaiting
+    // adapter.shutdown(); skip any record a concurrent shutdown closed.
+    if (rec.state === "terminated") continue;
     const stateAtAttempt = rec.state;
     try {
       const instance = await rec.adapter.create(profile);
@@ -167,41 +172,90 @@ async function tryAdapters(
   return { ok: false, error };
 }
 
+function isLive(rec: AdapterRecord): boolean {
+  return rec.state !== "terminated";
+}
+
+async function settlePendingForRecords(records: readonly AdapterRecord[]): Promise<void> {
+  const inits = records.map((r) => r.init).filter((p): p is Promise<void> => p !== undefined);
+  if (inits.length > 0) await Promise.allSettled(inits);
+}
+
 async function selectAndCreate(
   records: readonly AdapterRecord[],
-  pending: readonly Promise<void>[],
   profile: SandboxProfile,
   threshold: number,
+  isClosing: () => boolean,
 ): Promise<
   Result<{ readonly instance: SandboxInstance; readonly decision: SelectionDecision }, KoiError>
 > {
-  await Promise.allSettled(pending);
-  const liveAdapters = records.filter((r) => r.state !== "terminated").map((r) => r.adapter);
+  if (isClosing()) {
+    return {
+      ok: false,
+      error: {
+        code: "UNAVAILABLE",
+        message: "sandbox-router: shutdown in progress, no new sandboxes can be created",
+        retryable: false,
+        context: { reason: "router-shutting-down" },
+      },
+    };
+  }
   const requirements: CapabilityRequirements = profile.required ?? { required: EMPTY_REQUIRED };
-  const matchResult = matchAdapters(liveAdapters, requirements);
+
+  // Try any non-terminated candidate (ready, created, degraded) first — we
+  // must not starve a successful adapter on a sibling's hung init. Degraded
+  // adapters are kept in the candidate set so the priority-sort logic can
+  // re-promote them on a successful create (the test contract enforces this).
+  const liveAdapters = records.filter(isLive).map((r) => r.adapter) as readonly SandboxAdapter[];
+  const firstPass = matchAdapters(liveAdapters, requirements);
+  if (firstPass.matched.length > 0) {
+    const matchedRecords = firstPass.matched
+      .map((adapter) => records.find((r) => r.adapter === adapter))
+      .filter((r): r is AdapterRecord => r !== undefined);
+    return tryAdapters(sortRecords(matchedRecords), firstPass, profile, threshold);
+  }
+
+  // No live candidate matched — only now wait for any still-initializing
+  // records to finish in case one of them comes online satisfying the match.
+  await settlePendingForRecords(records);
+  if (isClosing()) {
+    return {
+      ok: false,
+      error: {
+        code: "UNAVAILABLE",
+        message: "sandbox-router: shutdown in progress, no new sandboxes can be created",
+        retryable: false,
+        context: { reason: "router-shutting-down" },
+      },
+    };
+  }
+  const liveAfterInit = records.filter(isLive).map((r) => r.adapter);
+  const matchResult = matchAdapters(liveAfterInit, requirements);
   if (matchResult.matched.length === 0) {
     return { ok: false, error: noMatchError(requirements, matchResult) };
   }
   const matchedRecords = matchResult.matched
     .map((adapter) => records.find((r) => r.adapter === adapter))
     .filter((r): r is AdapterRecord => r !== undefined);
-  const sorted = sortRecords(matchedRecords);
-  return tryAdapters(sorted, matchResult, profile, threshold);
+  return tryAdapters(sortRecords(matchedRecords), matchResult, profile, threshold);
 }
 
 async function teardownAdapters(records: readonly AdapterRecord[]): Promise<void> {
+  // Mark every record terminated FIRST so any in-flight create() that re-reads
+  // state observes the closed router before invoking adapter.create().
+  for (const rec of records) rec.state = "terminated";
+  // Settle any in-flight init promises before invoking shutdown — otherwise
+  // an adapter could observe shutdown() called before init() completes.
+  await settlePendingForRecords(records);
   await Promise.all(
     records.map(async (rec) => {
-      if (rec.state === "terminated") return;
       const down = rec.adapter.shutdown;
-      if (down !== undefined) {
-        try {
-          await down();
-        } catch {
-          // Shutdown failures still mark the adapter terminated.
-        }
+      if (down === undefined) return;
+      try {
+        await down();
+      } catch {
+        // Shutdown failures still leave the record terminated.
       }
-      rec.state = "terminated";
     }),
   );
 }
@@ -209,14 +263,18 @@ async function teardownAdapters(records: readonly AdapterRecord[]): Promise<void
 export function createSandboxRouter(config: RouterConfig): SandboxRouter {
   const threshold = config.degradedThreshold ?? DEFAULT_DEGRADED_THRESHOLD;
   const records = buildRecords(config.adapters);
-  const pending = startInits(records);
+  startInits(records);
+  // let — closing flag is set the moment shutdown() is called so concurrent
+  // create() requests fail fast instead of racing teardown.
+  let closing = false;
   // let — assigned once on first shutdown call to provide idempotent deduplication
   let shutdownPromise: Promise<void> | undefined;
   return {
-    create: (profile) => selectAndCreate(records, pending, profile, threshold),
+    create: (profile) => selectAndCreate(records, profile, threshold, () => closing),
     describe: () => records.map(describeRecord),
     shutdown: () => {
       if (shutdownPromise === undefined) {
+        closing = true;
         shutdownPromise = teardownAdapters(records);
       }
       return shutdownPromise;

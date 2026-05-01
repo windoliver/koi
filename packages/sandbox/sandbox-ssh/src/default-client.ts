@@ -12,13 +12,23 @@
 
 import { readFile as fsReadFile } from "node:fs/promises";
 import { Client } from "ssh2";
-import type { SshClient, SshClientFactory, SshExecResult, SshTarget } from "./types.js";
+import type {
+  SshClient,
+  SshClientFactory,
+  SshExecOptions,
+  SshExecResult,
+  SshTarget,
+} from "./types.js";
 
 async function loadPrivateKey(keyPath: string): Promise<Buffer> {
   return fsReadFile(keyPath);
 }
 
-function execOnce(client: Client, command: string): Promise<SshExecResult> {
+function execOnce(
+  client: Client,
+  command: string,
+  options?: SshExecOptions,
+): Promise<SshExecResult> {
   return new Promise((resolve, reject) => {
     client.exec(command, (err, stream) => {
       if (err !== undefined && err !== null) {
@@ -32,17 +42,81 @@ function execOnce(client: Client, command: string): Promise<SshExecResult> {
       // resolving with 0 would silently mask a transport failure.
       let exitCode: number | undefined;
       let exitSignal: string | undefined;
+      let timedOut = false;
+      let aborted = false;
+      // let — assigned once; cleared on settle to allow GC.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = (): void => {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+        if (options?.signal !== undefined) {
+          options.signal.removeEventListener("abort", onAbort);
+        }
+      };
+      const killChannel = (): void => {
+        try {
+          stream.signal("KILL");
+        } catch {
+          // Best-effort: some servers don't honour signal requests. Fall back
+          // to closing the stream directly.
+        }
+        try {
+          stream.close();
+        } catch {
+          // Already closed.
+        }
+      };
+      const onAbort = (): void => {
+        aborted = true;
+        killChannel();
+      };
+
+      if (options?.timeoutMs !== undefined && options.timeoutMs > 0) {
+        timer = setTimeout(() => {
+          timedOut = true;
+          killChannel();
+        }, options.timeoutMs);
+      }
+      if (options?.signal !== undefined) {
+        if (options.signal.aborted) {
+          aborted = true;
+          killChannel();
+        } else {
+          options.signal.addEventListener("abort", onAbort, { once: true });
+        }
+      }
+
       stream.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8");
+        const s = chunk.toString("utf8");
+        stdout += s;
+        options?.onStdout?.(s);
       });
       stream.stderr.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8");
+        const s = chunk.toString("utf8");
+        stderr += s;
+        options?.onStderr?.(s);
       });
       stream.on("exit", (code: number | null, signal?: string) => {
         exitCode = code ?? -1;
         if (signal !== undefined) exitSignal = signal;
       });
       stream.on("close", () => {
+        cleanup();
+        if (timedOut || aborted) {
+          // Surface timeout/abort as a non-zero result with telemetry rather
+          // than rejecting — callers (e.g., bash-tool) need the partial
+          // stdout/stderr captured up to the kill point.
+          resolve({
+            exitCode: exitCode ?? 124, // POSIX timeout convention
+            stdout,
+            stderr,
+            timedOut,
+            aborted,
+          });
+          return;
+        }
         if (exitCode === undefined) {
           reject(
             new Error(
@@ -55,7 +129,10 @@ function execOnce(client: Client, command: string): Promise<SshExecResult> {
         }
         resolve({ exitCode, stdout, stderr });
       });
-      stream.on("error", reject);
+      stream.on("error", (e: Error) => {
+        cleanup();
+        reject(e);
+      });
     });
   });
 }
@@ -132,7 +209,7 @@ async function connect(target: SshTarget): Promise<SshClient> {
   });
 
   return {
-    exec: (command: string) => execOnce(client, command),
+    exec: (command: string, options?: SshExecOptions) => execOnce(client, command, options),
     readFile: (path: string) => sftpReadFile(client, path),
     writeFile: (path: string, data: Uint8Array) => sftpWriteFile(client, path, data),
     end: () => endClient(client),

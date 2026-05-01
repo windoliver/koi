@@ -12,11 +12,27 @@ export interface SshExecResult {
   readonly exitCode: number;
   readonly stdout: string;
   readonly stderr: string;
+  /** True when the wrapper killed the channel due to timeout/abort. */
+  readonly timedOut?: boolean;
+  /** True when the caller's AbortSignal fired and the wrapper killed the channel. */
+  readonly aborted?: boolean;
+}
+
+/**
+ * Options passed through from the SandboxAdapter exec call so the underlying
+ * channel honors timeouts, abort signals, and streaming chunk callbacks.
+ * All fields optional — sync/buffered behaviour is the default.
+ */
+export interface SshExecOptions {
+  readonly timeoutMs?: number;
+  readonly signal?: AbortSignal;
+  readonly onStdout?: (chunk: string) => void;
+  readonly onStderr?: (chunk: string) => void;
 }
 
 export interface SshClient {
   /** Run a fully-quoted POSIX shell command line; buffer stdout+stderr. */
-  readonly exec: (command: string) => Promise<SshExecResult>;
+  readonly exec: (command: string, options?: SshExecOptions) => Promise<SshExecResult>;
   /** Read a remote file via SFTP. */
   readonly readFile: (path: string) => Promise<Uint8Array>;
   /** Write a remote file via SFTP. */

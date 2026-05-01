@@ -29,7 +29,16 @@ export function createSshInstance(client: SshClient): SandboxInstance {
       }
       const start = Date.now();
       const line = composeCommandLine(command, args);
-      const result = await client.exec(line);
+      // Forward the full SandboxExecOptions surface (timeout, signal, streaming
+      // callbacks) into the SshClient so remote commands honour the L0
+      // contract — without this, a hung remote command outlives both the
+      // foreground timeout and shutdown abort.
+      const result = await client.exec(line, {
+        ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+        ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
+        ...(opts?.onStdout !== undefined ? { onStdout: opts.onStdout } : {}),
+        ...(opts?.onStderr !== undefined ? { onStderr: opts.onStderr } : {}),
+      });
       const max = opts?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
       const stdout = truncate(result.stdout, max);
       const stderr = truncate(result.stderr, max);
@@ -40,7 +49,7 @@ export function createSshInstance(client: SshClient): SandboxInstance {
         stdout,
         stderr,
         durationMs: Date.now() - start,
-        timedOut: false,
+        timedOut: result.timedOut ?? false,
         oomKilled: false,
         truncated,
       };
@@ -57,6 +66,15 @@ export function createSshInstance(client: SshClient): SandboxInstance {
       if (destroyed) return;
       destroyed = true;
       await client.end();
+    },
+    async detach(): Promise<void> {
+      // SSH "detach" semantics: stop using this wrapper without closing the
+      // underlying client. The pool entry that owns the client (if any)
+      // continues to hold it; a future findOrCreate(scope, ...) will return
+      // a fresh wrapper around the same connection. From this instance's
+      // POV, detach == destroy-without-end: refuse further ops.
+      if (destroyed) return;
+      destroyed = true;
     },
   };
 }

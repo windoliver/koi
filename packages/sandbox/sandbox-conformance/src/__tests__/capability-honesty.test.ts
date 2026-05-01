@@ -33,6 +33,7 @@ function fakeInstance(): SandboxInstance {
     readFile: async () => new Uint8Array(),
     writeFile: async () => {},
     destroy: async () => {},
+    detach: async () => {},
   };
 }
 
