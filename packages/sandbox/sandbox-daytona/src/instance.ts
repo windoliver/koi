@@ -223,22 +223,37 @@ export function createDaytonaInstance(
         const stderr = budget.resolveStderr(result.stderr);
         const truncated = budget.truncated || result.truncated === true;
 
+        const timedOut = result.exitCode === 124;
+        const oomKilled = result.exitCode === 137;
+
         const baseResult = {
           stdout,
           stderr,
           durationMs,
-          timedOut: false,
-          oomKilled: false,
           ...(truncated ? { truncated: true as const } : {}),
         };
         const abortedNow: boolean = options?.signal?.aborted ?? false;
         if (abortedNow) {
-          return { exitCode: 130, ...baseResult };
+          return { exitCode: 130, timedOut: false, oomKilled: false, ...baseResult };
         }
-        return { exitCode: result.exitCode, ...baseResult };
+        return { exitCode: result.exitCode, timedOut, oomKilled, ...baseResult };
       } catch (e: unknown) {
         const durationMs = performance.now() - start;
         const message = e instanceof Error ? e.message : String(e);
+        const abortedNow: boolean = options?.signal?.aborted ?? false;
+        const looksLikeAbort =
+          e instanceof Error &&
+          (e.name === "AbortError" || /aborted|cancel(led)?/i.test(e.message));
+        if (abortedNow || looksLikeAbort) {
+          return {
+            exitCode: 130,
+            stdout: "",
+            stderr: "",
+            durationMs,
+            timedOut: false,
+            oomKilled: false,
+          };
+        }
         const timedOut = /timeout|timed out/i.test(message);
         return {
           exitCode: 1,

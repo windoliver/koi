@@ -99,6 +99,57 @@ describe("createE2bInstance", () => {
     expect(base.runCalls).toHaveLength(0);
   });
 
+  test("exec returns 130 when SDK rejects on abort (not generic exit 1)", async () => {
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        supportsAbort: true,
+        run: async (
+          _cmd: string,
+          opts?: import("./types.js").E2bRunOpts,
+        ): Promise<import("./types.js").E2bRunResult> => {
+          await new Promise<void>((resolve) => {
+            opts?.signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          const err = new Error("operation aborted");
+          err.name = "AbortError";
+          throw err;
+        },
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    const ac = new AbortController();
+    queueMicrotask(() => ac.abort());
+    const result = await instance.exec("ls", [], { signal: ac.signal });
+    expect(result.exitCode).toBe(130);
+    expect(result.timedOut).toBe(false);
+  });
+
+  test("exec maps exit 124 to timedOut and 137 to oomKilled (Docker-aligned)", async () => {
+    const base = createFakeSandbox();
+    function makeSdk(code: number): typeof base {
+      return {
+        ...base,
+        commands: {
+          ...base.commands,
+          run: async (): Promise<import("./types.js").E2bRunResult> => ({
+            exitCode: code,
+            stdout: "",
+            stderr: "",
+          }),
+        },
+      };
+    }
+    const t = await createE2bInstance(makeSdk(124)).exec("ls", []);
+    const o = await createE2bInstance(makeSdk(137)).exec("ls", []);
+    expect(t.timedOut).toBe(true);
+    expect(t.oomKilled).toBe(false);
+    expect(o.timedOut).toBe(false);
+    expect(o.oomKilled).toBe(true);
+  });
+
   test("exec rejects fail-closed when signal provided but SDK has no supportsAbort", async () => {
     const sdk = createFakeSandbox();
     const instance = createE2bInstance(sdk);

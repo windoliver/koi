@@ -83,6 +83,56 @@ describe("createDaytonaInstance", () => {
     }
   });
 
+  test("exec returns 130 when SDK rejects on abort (not generic exit 1)", async () => {
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        supportsAbort: true,
+        run: async (
+          _cmd: string,
+          opts?: import("./types.js").DaytonaRunOpts,
+        ): Promise<import("./types.js").DaytonaRunResult> => {
+          await new Promise<void>((resolve) => {
+            opts?.signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          const err = new Error("operation aborted");
+          err.name = "AbortError";
+          throw err;
+        },
+      },
+    };
+    const instance = createDaytonaInstance(sdk);
+    const ac = new AbortController();
+    queueMicrotask(() => ac.abort());
+    const result = await instance.exec("ls", [], { signal: ac.signal });
+    expect(result.exitCode).toBe(130);
+  });
+
+  test("exec maps exit 124 to timedOut and 137 to oomKilled", async () => {
+    const base = createFakeSandbox();
+    function makeSdk(code: number): typeof base {
+      return {
+        ...base,
+        commands: {
+          ...base.commands,
+          run: async (): Promise<import("./types.js").DaytonaRunResult> => ({
+            exitCode: code,
+            stdout: "",
+            stderr: "",
+          }),
+        },
+      };
+    }
+    const t = await createDaytonaInstance(makeSdk(124)).exec("ls", []);
+    const o = await createDaytonaInstance(makeSdk(137)).exec("ls", []);
+    expect(t.timedOut).toBe(true);
+    expect(t.oomKilled).toBe(false);
+    expect(o.timedOut).toBe(false);
+    expect(o.oomKilled).toBe(true);
+  });
+
   test("exec rejects fail-closed when signal provided but SDK has no supportsAbort", async () => {
     const sdk = createFakeSandbox();
     const instance = createDaytonaInstance(sdk);
