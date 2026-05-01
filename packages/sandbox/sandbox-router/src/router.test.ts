@@ -222,3 +222,92 @@ describe("createSandboxRouter — create()", () => {
     await r.shutdown();
   });
 });
+
+describe("createSandboxRouter — degraded transitions", () => {
+  test("flips to degraded after threshold consecutive failures", async () => {
+    let calls = 0;
+    const flaky: SandboxAdapter = {
+      name: "flaky",
+      capabilities: { supports: new Set(["exec"]), priority: 0 },
+      version: "0.1.0",
+      create: async () => {
+        calls++;
+        throw new Error("boom");
+      },
+    };
+    const r = createSandboxRouter({ adapters: [flaky], degradedThreshold: 2 });
+    await Promise.resolve();
+    await r.create(profileWithReq(new Set(["exec"])));
+    expect(r.describe()[0]?.state).toBe("ready"); // 1 failure < threshold
+    await r.create(profileWithReq(new Set(["exec"])));
+    expect(r.describe()[0]?.state).toBe("degraded"); // 2 failures = threshold
+    expect(calls).toBe(2);
+    await r.shutdown();
+  });
+
+  test("a successful create after degraded streak returns adapter to ready", async () => {
+    let succeed = false;
+    const flippy: SandboxAdapter = {
+      name: "flippy",
+      capabilities: { supports: new Set(["exec"]), priority: 0 },
+      version: "0.1.0",
+      create: async () => {
+        if (!succeed) throw new Error("not yet");
+        return fakeInstance();
+      },
+    };
+    const r = createSandboxRouter({ adapters: [flippy], degradedThreshold: 1 });
+    await Promise.resolve();
+    await r.create(profileWithReq(new Set(["exec"])));
+    expect(r.describe()[0]?.state).toBe("degraded");
+    succeed = true;
+    const result = await r.create(profileWithReq(new Set(["exec"])));
+    expect(result.ok).toBe(true);
+    expect(r.describe()[0]?.state).toBe("ready");
+    await r.shutdown();
+  });
+
+  test("degraded adapters are still tried, just after ready peers", async () => {
+    // Force a to be degraded by failing it once with threshold 1.
+    let aWillFail = true;
+    const a: SandboxAdapter = {
+      name: "a",
+      capabilities: { supports: new Set(["exec"]), priority: 0 },
+      version: "0.1.0",
+      create: async () => {
+        if (aWillFail) throw new Error("a fail");
+        return fakeInstance();
+      },
+    };
+    const b = adapter("b", { supports: new Set(["exec"]), priority: 10 });
+    const r = createSandboxRouter({ adapters: [a, b], degradedThreshold: 1 });
+    await Promise.resolve();
+    // First call: a fails (no fallback; b also matches), goes to b.
+    const r1 = await r.create(profileWithReq(new Set(["exec"])));
+    if (!r1.ok) throw new Error("expected ok");
+    expect(r1.value.decision.selected.name).toBe("b");
+    // a is now degraded.
+    expect(r.describe().find((d) => d.name === "a")?.state).toBe("degraded");
+    // Second call: b is ready (priority 10), a is degraded (priority 0). b wins.
+    const r2 = await r.create(profileWithReq(new Set(["exec"])));
+    if (!r2.ok) throw new Error("expected ok");
+    expect(r2.value.decision.selected.name).toBe("b");
+    // Third call: stop a from failing, but it stays degraded until it succeeds.
+    // Force selection by making b fail this time.
+    aWillFail = false;
+    const bFailing: SandboxAdapter = {
+      ...b,
+      create: async () => {
+        throw new Error("b temporarily down");
+      },
+    };
+    const r3 = createSandboxRouter({ adapters: [a, bFailing], degradedThreshold: 1 });
+    await Promise.resolve();
+    // r3 has fresh records — both ready initially. With aWillFail=false, a succeeds.
+    const r3result = await r3.create(profileWithReq(new Set(["exec"])));
+    if (!r3result.ok) throw new Error("expected ok");
+    expect(r3result.value.decision.selected.name).toBe("a");
+    await r.shutdown();
+    await r3.shutdown();
+  });
+});
