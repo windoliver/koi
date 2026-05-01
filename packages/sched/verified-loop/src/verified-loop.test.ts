@@ -507,6 +507,11 @@ describe("VerifiedLoop.run", () => {
                   new Promise((resolve) => {
                     setTimeout(() => resolve({ done: true, value: undefined }), 5_000);
                   }),
+                // Cooperative cancellation: required by the contract so a
+                // timed-out runner can be confirmed stopped before the loop
+                // advances. Without this, the loop fails with
+                // RunnerStuckError.
+                return: async () => ({ done: true, value: undefined }),
               }),
             };
           }
@@ -703,6 +708,8 @@ describe("VerifiedLoop.run", () => {
               new Promise((resolve) => {
                 setTimeout(() => resolve({ done: true, value: undefined }), 5_000);
               }),
+            // Cooperative cancellation required by the contract.
+            return: async () => ({ done: true, value: undefined }),
           }),
         }),
         verify: passGate(),
@@ -943,6 +950,40 @@ describe("VerifiedLoop.run", () => {
     expect(verifyCalled).toBe(false);
     expect(result.completed).toEqual([]);
     expect(result.iterationRecords[0]?.gateResult.passed).toBe(false);
+  }, 5_000);
+
+  test("aborts the run fatally when iterator has no return() and is cancelled", async () => {
+    // Regression: runIteration is consumer-injected and only typed as
+    // AsyncIterable; iterator.return() is optional. Without return(), we
+    // have no way to signal a timed-out runner to stop, and can't prove
+    // its side effects have finished. Continuing the loop in that state
+    // would let the previous runner keep mutating the workspace behind
+    // the next iteration. Treat missing return() on early exit as fatal.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+
+    const noReturnRunner: RunIterationFn = (input: EngineInput): AsyncIterable<EngineEvent> => {
+      void input;
+      return {
+        [Symbol.asyncIterator]: () => ({
+          next: () => new Promise(() => {}),
+          // Deliberately omit return — iterator protocol allows it.
+        }),
+      };
+    };
+
+    const loop = createVerifiedLoop(
+      makeConfig({ runIteration: noReturnRunner, iterationTimeoutMs: 100 }),
+    );
+    let threw = false;
+    let message: string | undefined;
+    try {
+      await loop.run();
+    } catch (e: unknown) {
+      threw = true;
+      message = e instanceof Error ? e.message : String(e);
+    }
+    expect(threw).toBe(true);
+    expect(message).toContain("no return() method");
   }, 5_000);
 
   test("aborts the run fatally when iterator.return() rejects during cleanup", async () => {

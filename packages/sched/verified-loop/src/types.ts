@@ -12,7 +12,16 @@ import type { EngineEvent, EngineInput, KoiError, Result } from "@koi/core";
 // Core callback types
 // ---------------------------------------------------------------------------
 
-/** Injected by consumer — runs one agent iteration and yields engine events. */
+/**
+ * Injected by consumer — runs one agent iteration and yields engine events.
+ *
+ * The returned iterator MUST implement `return()` so the loop can confirm
+ * cancellation when iterationTimeoutMs fires or `loop.stop()` is called.
+ * Without it, the loop has no way to prove the runner stopped and will
+ * fail the run with RunnerStuckError rather than risk overlapping
+ * iterations behind a still-mutating runner. Async generators
+ * (`async function*`) satisfy this requirement automatically.
+ */
 export type RunIterationFn = (input: EngineInput) => AsyncIterable<EngineEvent>;
 
 /** External verification gate — returns pass/fail after each iteration. */

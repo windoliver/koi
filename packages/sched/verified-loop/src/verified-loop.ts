@@ -81,6 +81,16 @@ async function drainWithAbort(
   let stuckCleanup = false;
   let cleanupError: unknown;
   const returnFn = iterator.return;
+  if (exitedEarly && returnFn === undefined) {
+    // No return() implementation — we have no way to signal the runner to
+    // stop, and we cannot prove its work has finished. Continuing the
+    // loop while a non-cooperative runner may still be mutating the
+    // workspace produces overlapping iterations and side effects.
+    // Require runners to implement return() for cancellable iteration.
+    throw new RunnerStuckError(
+      "VerifiedLoop: runner async iterator has no return() method — cannot confirm cancellation; aborting run to avoid overlapping iterations",
+    );
+  }
   if (exitedEarly && returnFn !== undefined) {
     // Use let — justified: race outcome flag.
     let timedOut = false;
