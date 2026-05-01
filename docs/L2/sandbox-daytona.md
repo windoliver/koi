@@ -79,7 +79,7 @@ The hosted backend has no provider-side hook for filesystem allow/deny lists, ne
 
 `SandboxExecOptions.stdin`, `maxOutputBytes`, and `signal` each gate on a matching SDK capability flag (`commands.supportsStdin` / `supportsMaxOutputBytes` / `supportsAbort`). Without the flag, callers that supply the corresponding field see a fail-closed error.
 
-A 1 MB default cap is always forwarded when `supportsMaxOutputBytes=true`, and returned `stdout` / `stderr` are truncated locally to the cap with `truncated=true` so memory is bounded regardless of SDK behaviour.
+A 1 MB default cap is always forwarded when `supportsMaxOutputBytes=true`. The cap is a **single budget across stdout + stderr** and is enforced by accumulating SDK chunks into byte buffers (memory-bounded) with byte-accurate UTF-8 truncation. `truncated=true` is set when any byte is dropped.
 
 `readFile` requires `sdk.files.readBytes` for binary-safe reads. `writeFile` rejects non-UTF-8 bytes when the SDK is text-only.
 

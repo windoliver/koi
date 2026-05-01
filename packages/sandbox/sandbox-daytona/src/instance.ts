@@ -12,19 +12,90 @@ function joinCommand(command: string, args: readonly string[]): string {
   return [command, ...args].map(quoteArg).join(" ");
 }
 
-function truncateOutput(
-  stdout: string,
-  stderr: string,
-  cap: number,
-  sdkTruncated: boolean | undefined,
-): { stdout: string; stderr: string; truncated: boolean } {
-  const encoder = new TextEncoder();
-  const stdoutOver = encoder.encode(stdout).byteLength > cap;
-  const stderrOver = encoder.encode(stderr).byteLength > cap;
+function sliceByBytes(s: string, maxBytes: number): { text: string; truncated: boolean } {
+  const bytes = new TextEncoder().encode(s);
+  if (bytes.byteLength <= maxBytes) return { text: s, truncated: false };
   return {
-    stdout: stdoutOver ? stdout.slice(0, cap) : stdout,
-    stderr: stderrOver ? stderr.slice(0, cap) : stderr,
-    truncated: sdkTruncated === true || stdoutOver || stderrOver,
+    text: new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, maxBytes)),
+    truncated: true,
+  };
+}
+
+interface OutputBudget {
+  remaining: number;
+  truncated: boolean;
+  appendStdout: (data: string) => void;
+  appendStderr: (data: string) => void;
+  resolveStdout: (sdkFallback: string) => string;
+  resolveStderr: (sdkFallback: string) => string;
+}
+
+function createOutputBudget(cap: number): OutputBudget {
+  const encoder = new TextEncoder();
+  const stdoutChunks: Uint8Array[] = [];
+  const stderrChunks: Uint8Array[] = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  const state = { remaining: cap, truncated: false };
+
+  function append(target: "stdout" | "stderr", data: string): void {
+    if (state.remaining <= 0) {
+      state.truncated = true;
+      return;
+    }
+    const bytes = encoder.encode(data);
+    const take = Math.min(bytes.byteLength, state.remaining);
+    const chunk = bytes.slice(0, take);
+    if (target === "stdout") {
+      stdoutChunks.push(chunk);
+      stdoutBytes += take;
+    } else {
+      stderrChunks.push(chunk);
+      stderrBytes += take;
+    }
+    state.remaining -= take;
+    if (take < bytes.byteLength) state.truncated = true;
+  }
+
+  function resolve(target: "stdout" | "stderr", sdkFallback: string): string {
+    const chunks = target === "stdout" ? stdoutChunks : stderrChunks;
+    const used = target === "stdout" ? stdoutBytes : stderrBytes;
+    if (used > 0) {
+      const merged = new Uint8Array(used);
+      let offset = 0;
+      for (const c of chunks) {
+        merged.set(c, offset);
+        offset += c.byteLength;
+      }
+      return new TextDecoder("utf-8", { fatal: false }).decode(merged);
+    }
+    if (state.remaining <= 0) {
+      state.truncated = true;
+      return "";
+    }
+    const sliced = sliceByBytes(sdkFallback, state.remaining);
+    state.remaining -= encoder.encode(sliced.text).byteLength;
+    if (sliced.truncated) state.truncated = true;
+    return sliced.text;
+  }
+
+  return {
+    get remaining() {
+      return state.remaining;
+    },
+    set remaining(v: number) {
+      state.remaining = v;
+    },
+    get truncated() {
+      return state.truncated;
+    },
+    set truncated(v: boolean) {
+      state.truncated = v;
+    },
+    appendStdout: (d) => append("stdout", d),
+    appendStderr: (d) => append("stderr", d),
+    resolveStdout: (s) => resolve("stdout", s),
+    resolveStderr: (s) => resolve("stderr", s),
   };
 }
 
@@ -89,13 +160,23 @@ export function createDaytonaInstance(
           : undefined;
       const mergedTimeout = options?.timeoutMs ?? defaults.timeoutMs;
       const cap = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+      const budget = createOutputBudget(cap);
+
+      const wrappedStdout = (data: string): void => {
+        budget.appendStdout(data);
+        options?.onStdout?.(data);
+      };
+      const wrappedStderr = (data: string): void => {
+        budget.appendStderr(data);
+        options?.onStderr?.(data);
+      };
 
       const sdkOpts: DaytonaRunOpts = {
         ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}),
         ...(mergedEnv !== undefined ? { envs: mergedEnv } : {}),
         ...(mergedTimeout !== undefined ? { timeoutMs: mergedTimeout } : {}),
-        ...(options?.onStdout !== undefined ? { onStdout: options.onStdout } : {}),
-        ...(options?.onStderr !== undefined ? { onStderr: options.onStderr } : {}),
+        onStdout: wrappedStdout,
+        onStderr: wrappedStderr,
         ...(options?.signal !== undefined ? { signal: options.signal } : {}),
         ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
         ...(sdk.commands.supportsMaxOutputBytes === true ? { maxOutputBytes: cap } : {}),
@@ -104,28 +185,23 @@ export function createDaytonaInstance(
       try {
         const result = await sdk.commands.run(cmd, sdkOpts);
         const durationMs = performance.now() - start;
-        const capped = truncateOutput(result.stdout, result.stderr, cap, result.truncated);
 
-        if (options?.signal?.aborted === true) {
-          return {
-            exitCode: 130,
-            stdout: capped.stdout,
-            stderr: capped.stderr,
-            durationMs,
-            timedOut: false,
-            oomKilled: false,
-            ...(capped.truncated ? { truncated: true } : {}),
-          };
-        }
-        return {
-          exitCode: result.exitCode,
-          stdout: capped.stdout,
-          stderr: capped.stderr,
+        const stdout = budget.resolveStdout(result.stdout);
+        const stderr = budget.resolveStderr(result.stderr);
+        const truncated = budget.truncated || result.truncated === true;
+
+        const baseResult = {
+          stdout,
+          stderr,
           durationMs,
           timedOut: false,
           oomKilled: false,
-          ...(capped.truncated ? { truncated: true } : {}),
+          ...(truncated ? { truncated: true as const } : {}),
         };
+        if (options?.signal?.aborted === true) {
+          return { exitCode: 130, ...baseResult };
+        }
+        return { exitCode: result.exitCode, ...baseResult };
       } catch (e: unknown) {
         const durationMs = performance.now() - start;
         const message = e instanceof Error ? e.message : String(e);

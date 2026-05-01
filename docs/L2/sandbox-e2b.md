@@ -80,7 +80,7 @@ Errors include the unsupported field list so callers know exactly what policy wa
 
 `SandboxExecOptions.stdin`, `maxOutputBytes`, and `signal` each gate on a matching SDK capability flag (`commands.supportsStdin` / `supportsMaxOutputBytes` / `supportsAbort`). When a flag is absent and the caller supplied that field, the adapter throws fail-closed — the alternative would be silently dropping stdin (commands hang), letting output grow unbounded, or returning before the remote process has actually been killed (duplicate side effects on retry).
 
-A 1 MB default cap (mirroring `SandboxExecOptions`) is forwarded whenever `supportsMaxOutputBytes=true`, even if the caller doesn't ask for one. Returned `stdout` / `stderr` are also truncated locally to the cap so memory is bounded regardless of SDK behaviour, with `truncated=true` set when slicing kicks in.
+A 1 MB default cap (mirroring `SandboxExecOptions`) is forwarded whenever `supportsMaxOutputBytes=true`. The cap applies as a **single budget across stdout + stderr** (not per stream), and the adapter accumulates streamed chunks into byte buffers so memory is bounded even when the SDK ignores its server-side cap. Truncation is byte-accurate (UTF-8 boundary aware), so multibyte content can never exceed the requested byte budget. `truncated=true` is set whenever any byte was dropped.
 
 `readFile` requires `sdk.files.readBytes` for binary-safe reads. `writeFile` accepts UTF-8 payloads on text-only SDKs and rejects non-UTF-8 input fail-closed.
 

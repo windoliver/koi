@@ -160,6 +160,30 @@ describe("createDaytonaInstance", () => {
     expect(base.runCalls[0]?.opts?.maxOutputBytes).toBe(1_000_000);
   });
 
+  test("exec enforces a combined byte budget across stdout and stderr", async () => {
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        supportsMaxOutputBytes: true,
+        run: async (
+          _cmd: string,
+          opts?: import("./types.js").DaytonaRunOpts,
+        ): Promise<import("./types.js").DaytonaRunResult> => {
+          opts?.onStdout?.("a".repeat(800));
+          opts?.onStderr?.("b".repeat(800));
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+    };
+    const instance = createDaytonaInstance(sdk);
+    const result = await instance.exec("ls", [], { maxOutputBytes: 1024 });
+    expect(result.stdout.length).toBe(800);
+    expect(result.stderr.length).toBe(224);
+    expect(result.truncated).toBe(true);
+  });
+
   test("exec truncates oversized SDK output locally and reports truncated=true", async () => {
     const big = "a".repeat(1_500_000);
     const base = createFakeSandbox();

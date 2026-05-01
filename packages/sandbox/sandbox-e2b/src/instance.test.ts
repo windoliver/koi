@@ -29,14 +29,34 @@ describe("createE2bInstance", () => {
     expect(call?.opts?.timeoutMs).toBe(5000);
   });
 
-  test("exec passes streaming callbacks through", async () => {
-    const sdk = createFakeSandbox();
+  test("exec invokes caller streaming callbacks for SDK chunks", async () => {
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        run: async (
+          _cmd: string,
+          opts?: import("./types.js").E2bRunOpts,
+        ): Promise<import("./types.js").E2bRunResult> => {
+          opts?.onStdout?.("hello ");
+          opts?.onStdout?.("world");
+          opts?.onStderr?.("warn");
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+    };
     const instance = createE2bInstance(sdk);
-    const onStdout = (): void => undefined;
-    const onStderr = (): void => undefined;
-    await instance.exec("ls", [], { onStdout, onStderr });
-    expect(sdk.runCalls[0]?.opts?.onStdout).toBe(onStdout);
-    expect(sdk.runCalls[0]?.opts?.onStderr).toBe(onStderr);
+    const result = await instance.exec("ls", [], {
+      onStdout: (d) => stdoutChunks.push(d),
+      onStderr: (d) => stderrChunks.push(d),
+    });
+    expect(stdoutChunks).toEqual(["hello ", "world"]);
+    expect(stderrChunks).toEqual(["warn"]);
+    expect(result.stdout).toBe("hello world");
+    expect(result.stderr).toBe("warn");
   });
 
   test("exec returns exitCode 130 when SDK observes the abort", async () => {
@@ -186,6 +206,53 @@ describe("createE2bInstance", () => {
     await instance.exec("ls", []);
     // Caller didn't ask — we still forward 1MB so noisy commands don't blow up bandwidth.
     expect(base.runCalls[0]?.opts?.maxOutputBytes).toBe(1_000_000);
+  });
+
+  test("exec enforces a combined byte budget across stdout and stderr", async () => {
+    // Caller asks for 1024 bytes total; SDK emits 800 to stdout then 800 to stderr.
+    // Combined cap means stderr must be truncated to fit the remaining 224 bytes.
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        supportsMaxOutputBytes: true,
+        run: async (
+          _cmd: string,
+          opts?: import("./types.js").E2bRunOpts,
+        ): Promise<import("./types.js").E2bRunResult> => {
+          opts?.onStdout?.("a".repeat(800));
+          opts?.onStderr?.("b".repeat(800));
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    const result = await instance.exec("ls", [], { maxOutputBytes: 1024 });
+    expect(result.stdout.length).toBe(800);
+    expect(result.stderr.length).toBe(224);
+    expect(result.truncated).toBe(true);
+  });
+
+  test("exec truncates multibyte UTF-8 output at the byte boundary", async () => {
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        supportsMaxOutputBytes: true,
+        run: async (): Promise<import("./types.js").E2bRunResult> => ({
+          exitCode: 0,
+          stdout: "🌊🌊🌊🌊",
+          stderr: "",
+        }),
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    const result = await instance.exec("ls", [], { maxOutputBytes: 7 });
+    // Byte length must be <= cap (might be less if a multibyte boundary forced a smaller cut)
+    expect(new TextEncoder().encode(result.stdout).byteLength).toBeLessThanOrEqual(7);
+    expect(result.truncated).toBe(true);
   });
 
   test("exec truncates oversized SDK output locally and reports truncated=true", async () => {
