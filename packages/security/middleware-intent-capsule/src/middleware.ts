@@ -48,34 +48,8 @@ export function createIntentCapsuleMiddleware(config: IntentCapsuleConfig): KoiM
 
     async onSessionStart(ctx: SessionContext): Promise<void> {
       evictStaleSessions(sessions, resolved.maxTtlMs);
-
-      const mandatePayload = canonicalizeMandatePayload({
-        agentId: ctx.agentId,
-        sessionId: ctx.sessionId as string,
-        systemPrompt: resolved.systemPrompt,
-        objectives: resolved.objectives,
-      });
-
-      const mandateHash = computeStringHash(mandatePayload);
-      const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-      const signature = sign(null, Buffer.from(mandateHash), privateKey).toString("base64");
-      const publicKeyB64 = Buffer.from(publicKey.export({ format: "der", type: "spki" })).toString(
-        "base64",
-      );
-      const now = Date.now();
-
-      const capsule: IntentCapsule = {
-        id: capsuleId(`${ctx.agentId}:${ctx.sessionId as string}:${now}`),
-        agentId: toAgentId(ctx.agentId),
-        sessionId: ctx.sessionId,
-        mandateHash,
-        signature,
-        publicKey: publicKeyB64,
-        createdAt: now,
-        version: 1,
-      };
-
-      sessions.set(ctx.sessionId as string, { capsule, createdAt: now });
+      const entry = createCapsuleEntry(ctx, resolved);
+      sessions.set(ctx.sessionId as string, entry);
     },
 
     async wrapModelCall(
@@ -111,6 +85,36 @@ export function createIntentCapsuleMiddleware(config: IntentCapsuleConfig): KoiM
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
+
+function createCapsuleEntry(
+  ctx: SessionContext,
+  resolved: Required<IntentCapsuleConfig>,
+): CapsuleEntry {
+  const mandatePayload = canonicalizeMandatePayload({
+    agentId: ctx.agentId,
+    sessionId: ctx.sessionId as string,
+    systemPrompt: resolved.systemPrompt,
+    objectives: resolved.objectives,
+  });
+  const mandateHash = computeStringHash(mandatePayload);
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const signature = sign(null, Buffer.from(mandateHash), privateKey).toString("base64");
+  const publicKeyB64 = Buffer.from(publicKey.export({ format: "der", type: "spki" })).toString(
+    "base64",
+  );
+  const now = Date.now();
+  const capsule: IntentCapsule = {
+    id: capsuleId(`${ctx.agentId}:${ctx.sessionId as string}:${now}`),
+    agentId: toAgentId(ctx.agentId),
+    sessionId: ctx.sessionId,
+    mandateHash,
+    signature,
+    publicKey: publicKeyB64,
+    createdAt: now,
+    version: 1,
+  };
+  return { capsule, createdAt: now };
+}
 
 async function verifyCapsule(
   ctx: TurnContext,
