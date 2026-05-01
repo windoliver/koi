@@ -266,6 +266,16 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/crystallize": {
+      "name": "@koi/crystallize",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
+      },
+    },
     "packages/lib/debug": {
       "name": "@koi/debug",
       "version": "0.0.0",
@@ -1000,6 +1010,7 @@
         "@koi/memory": "workspace:*",
         "@koi/memory-fs": "workspace:*",
         "@koi/memory-tools": "workspace:*",
+        "@koi/middleware-ace": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
         "@koi/middleware-call-dedup": "workspace:*",
         "@koi/middleware-call-limits": "workspace:*",
@@ -1155,6 +1166,7 @@
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
         "@koi/middleware-feedback-loop": "workspace:*",
+        "@koi/middleware-intent-capsule": "workspace:*",
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-output-verifier": "workspace:*",
@@ -1429,6 +1441,14 @@
         "@koi/scheduler": "workspace:*",
       },
     },
+    "packages/sched/verified-loop": {
+      "name": "@koi/verified-loop",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/security/audit-sink-ndjson": {
       "name": "@koi/audit-sink-ndjson",
       "version": "0.0.0",
@@ -1520,6 +1540,15 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/redaction": "workspace:*",
+      },
+    },
+    "packages/security/middleware-intent-capsule": {
+      "name": "@koi/middleware-intent-capsule",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
       },
     },
     "packages/security/middleware-permissions": {
@@ -2025,6 +2054,8 @@
 
     "@koi/cost-aggregator": ["@koi/cost-aggregator@workspace:packages/lib/cost-aggregator"],
 
+    "@koi/crystallize": ["@koi/crystallize@workspace:packages/lib/crystallize"],
+
     "@koi/daemon": ["@koi/daemon@workspace:packages/net/daemon"],
 
     "@koi/debug": ["@koi/debug@workspace:packages/lib/debug"],
@@ -2144,6 +2175,8 @@
     "@koi/middleware-extraction": ["@koi/middleware-extraction@workspace:packages/mm/middleware-extraction"],
 
     "@koi/middleware-feedback-loop": ["@koi/middleware-feedback-loop@workspace:packages/lib/middleware-feedback-loop"],
+
+    "@koi/middleware-intent-capsule": ["@koi/middleware-intent-capsule@workspace:packages/security/middleware-intent-capsule"],
 
     "@koi/middleware-memory-recall": ["@koi/middleware-memory-recall@workspace:packages/mm/middleware-memory-recall"],
 
@@ -2278,6 +2311,8 @@
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
 
     "@koi/variant-selection": ["@koi/variant-selection@workspace:packages/lib/variant-selection"],
+
+    "@koi/verified-loop": ["@koi/verified-loop@workspace:packages/sched/verified-loop"],
 
     "@koi/violation-store-sqlite": ["@koi/violation-store-sqlite@workspace:packages/security/violation-store-sqlite"],
 
