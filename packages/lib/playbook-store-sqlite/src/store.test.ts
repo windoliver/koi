@@ -280,6 +280,20 @@ describe("createSqlitePlaybookStore — structured playbooks + lineage", () => {
     store.close();
   });
 
+  test("remove rejects when dependent proposals exist (clear domain error, not raw FK)", async () => {
+    // Regression: ON DELETE RESTRICT FK from playbook_proposals would
+    // surface a generic SQLITE_CONSTRAINT_FOREIGNKEY. Surface a
+    // domain-typed error explaining the dependency instead.
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(spb({ id: "pb-A", version: 1 }));
+    await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
+    await expect(store.structuredPlaybooks.remove("pb-A")).rejects.toThrow(/dependent proposal/);
+    // Playbook + lineage still readable after rejected remove.
+    expect((await store.structuredPlaybooks.get("pb-A"))?.version).toBe(1);
+    expect((await store.structuredPlaybooks.getVersion("pb-A", 1))?.id).toBe("pb-A");
+    store.close();
+  });
+
   test("remove is destructive (head + lineage cleared, matches in-memory baseline)", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
     await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, title: "v1" }));
@@ -1142,5 +1156,23 @@ describe("createSqlitePlaybookStore — crash safety", () => {
     expect((await r.trajectories.getSession("sess")).length).toBe(1);
     expect((await r.proposals.getProposal("p-1"))?.playbookId).toBe("pb1");
     r.close();
+  });
+
+  test("concurrent writers from two handles do not fail with SQLITE_BUSY", async () => {
+    // Regression: SQLite's default busy_timeout is 0. Without the pragma,
+    // a second writer touching the file during another writer's transaction
+    // fails immediately. With our pragma, it should wait and succeed.
+    const a = createSqlitePlaybookStore({ path: dbPath });
+    const b = createSqlitePlaybookStore({ path: dbPath });
+    // Two simultaneous saves on different ids — no contention on rows, but
+    // they contend on the WAL write lock. Without busy_timeout one of these
+    // would race-fail; both should succeed.
+    await Promise.all([
+      a.playbooks.save(pb({ id: "p-a", strategy: "a" })),
+      b.playbooks.save(pb({ id: "p-b", strategy: "b" })),
+    ]);
+    expect((await a.playbooks.list()).map((p) => p.id).sort()).toEqual(["p-a", "p-b"]);
+    a.close();
+    b.close();
   });
 });

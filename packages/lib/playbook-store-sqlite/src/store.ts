@@ -315,6 +315,9 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
   const deleteLineage = db.prepare(
     "DELETE FROM structured_playbook_versions WHERE playbook_id = ?",
   );
+  const countDependentProposals = db.query(
+    "SELECT COUNT(*) AS n FROM playbook_proposals WHERE playbook_id = ?",
+  );
 
   const save = async (pb: StructuredPlaybook): Promise<void> => {
     // .immediate() acquires the SQLite RESERVED lock at BEGIN, so concurrent
@@ -439,9 +442,21 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
     remove: async (id) => {
       // Hard-delete: drop both the head row and all lineage rows in one
       // transaction. Matches the in-memory baseline contract (`data.delete`)
-      // — callers expect remove() to actually remove. Rollback before
-      // remove() must be performed explicitly via `getVersion()`+`save()`.
+      // — callers expect remove() to actually remove.
+      //
+      // Dependent proposals block deletion: playbook_proposals has an
+      // ON DELETE RESTRICT composite FK to structured_playbook_versions,
+      // so removing a playbook with outstanding proposals would fail at
+      // the SQL layer with a generic FK error. Detect and surface a
+      // domain-typed error instead, so callers know to clean up the
+      // proposal/evaluation flow first.
       const result = db.transaction(() => {
+        const dep = countDependentProposals.get(id) as { readonly n: number } | null;
+        if (dep !== null && dep.n > 0) {
+          throw new Error(
+            `cannot remove structured playbook ${id}: ${String(dep.n)} dependent proposal(s) exist; remove proposals/evaluations first`,
+          );
+        }
         const r = deleteCurrent.run(id);
         deleteLineage.run(id);
         return r.changes > 0;

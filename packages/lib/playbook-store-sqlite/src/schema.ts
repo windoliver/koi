@@ -31,6 +31,14 @@ export function applyPragmas(db: Database, durability: "process" | "os"): void {
   db.run("PRAGMA foreign_keys = ON");
   db.run("PRAGMA wal_autocheckpoint = 1000");
   db.run(`PRAGMA synchronous = ${durability === "os" ? "FULL" : "NORMAL"}`);
+  // SQLite's default busy_timeout is 0 — concurrent writers fail with
+  // SQLITE_BUSY instead of waiting. Append + .immediate() transactions
+  // (and the schema migrations) assume peer writers serialize cleanly, so
+  // a non-trivial timeout is essential for the local-file workload this
+  // store targets. 5s is conservative for an interactive agent; long
+  // enough to absorb migration spikes, short enough that a genuinely
+  // wedged DB still surfaces an error.
+  db.run("PRAGMA busy_timeout = 5000");
 }
 
 export function applySchema(db: Database): void {
