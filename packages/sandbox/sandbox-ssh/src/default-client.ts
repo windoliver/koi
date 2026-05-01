@@ -91,16 +91,33 @@ function execOnce(
       stream.on("data", (chunk: Buffer) => {
         const s = chunk.toString("utf8");
         stdout += s;
-        options?.onStdout?.(s);
+        // Streaming-callback exceptions must not bypass cleanup nor leak past
+        // the promise — observers are advisory.
+        try {
+          options?.onStdout?.(s);
+        } catch {
+          // Swallow — observer failures cannot retroactively unmake the data.
+        }
       });
       stream.stderr.on("data", (chunk: Buffer) => {
         const s = chunk.toString("utf8");
         stderr += s;
-        options?.onStderr?.(s);
+        try {
+          options?.onStderr?.(s);
+        } catch {
+          // Swallow.
+        }
       });
       stream.on("exit", (code: number | null, signal?: string) => {
         exitCode = code ?? -1;
         if (signal !== undefined) exitSignal = signal;
+        // Cancel the timeout the moment the remote signals exit; otherwise
+        // the timer may fire AFTER a clean exit if "close" is delayed,
+        // producing the contradiction { exitCode: 0, timedOut: true }.
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
       });
       stream.on("close", () => {
         cleanup();

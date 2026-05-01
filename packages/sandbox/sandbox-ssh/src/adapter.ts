@@ -36,6 +36,33 @@ const SANDBOX_SSH_CAPABILITIES: AdapterCapabilities = {
  * the SSH user's permissions, not the adapter — declaring it here would lie
  * about a guarantee we can't enforce.
  */
+/**
+ * Wrap a pooled SshClient as a SandboxInstance whose `destroy` evicts the
+ * pool entry AND closes the connection. ALL wrappers returned from
+ * `findOrCreate(scope, ...)` go through this — including the second-and-later
+ * findOrCreate-with-same-scope path. Without this, a sibling wrapper could
+ * call `client.end()` on the pooled connection while leaving the pool entry
+ * pointing at a now-closed client; the next findOrCreate would hand out a
+ * stale-client wrapper that fails on every operation.
+ */
+function wrapPooled(
+  client: SshClient,
+  scope: string,
+  pool: Map<string, SshClient>,
+): SandboxInstance {
+  const instance = createSshInstance(client);
+  const originalDestroy = instance.destroy;
+  return {
+    ...instance,
+    destroy: async () => {
+      // Only delete if the pool entry still points to OUR client — concurrent
+      // findOrCreate may have already replaced it.
+      if (pool.get(scope) === client) pool.delete(scope);
+      await originalDestroy.call(instance);
+    },
+  };
+}
+
 export function createSshAdapter(config: SshAdapterConfig): SandboxAdapter {
   const pool: Map<string, SshClient> = new Map();
 
@@ -78,25 +105,13 @@ export function createSshAdapter(config: SshAdapterConfig): SandboxAdapter {
     },
     async findOrCreate(scope: string, profile: SandboxProfile): Promise<SandboxInstance> {
       const existing = pool.get(scope);
-      if (existing !== undefined) {
-        return createSshInstance(existing);
-      }
+      if (existing !== undefined) return wrapPooled(existing, scope, pool);
       const r = await connectFromProfile(profile);
       if (!r.ok) {
         throw new Error(r.error.message, { cause: r.error });
       }
       pool.set(scope, r.value);
-      // The pool retains the connection; instance.destroy will close it AND
-      // remove the pool entry to avoid handing out a closed client next time.
-      const instance = createSshInstance(r.value);
-      const originalDestroy = instance.destroy;
-      return {
-        ...instance,
-        destroy: async () => {
-          pool.delete(scope);
-          await originalDestroy.call(instance);
-        },
-      };
+      return wrapPooled(r.value, scope, pool);
     },
   };
 }

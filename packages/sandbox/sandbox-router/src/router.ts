@@ -141,6 +141,25 @@ async function tryAdapters(
     const stateAtAttempt = rec.state;
     try {
       const instance = await rec.adapter.create(profile);
+      // RECHECK state — adapter.create() may have resolved AFTER a concurrent
+      // shutdown marked this record terminated. Read through a typed alias so
+      // TS doesn't keep the narrowing from the pre-await guard above.
+      const recAfter = rec as { readonly state: BackendDescriptor["state"] };
+      if (recAfter.state === "terminated") {
+        try {
+          await instance.destroy();
+        } catch {
+          // Destroy failures during teardown race are non-fatal.
+        }
+        const error: KoiError = {
+          code: "UNAVAILABLE",
+          message: "sandbox-router: shutdown raced create() — instance discarded",
+          retryable: false,
+          context: { reason: "router-shutting-down" },
+        };
+        attempts.push({ adapter: rec.adapter.name, state: stateAtAttempt, ok: false, error });
+        return { ok: false, error };
+      }
       rec.consecutiveFailures = 0;
       if (rec.state === "degraded") rec.state = "ready";
       attempts.push({ adapter: rec.adapter.name, state: stateAtAttempt, ok: true });
