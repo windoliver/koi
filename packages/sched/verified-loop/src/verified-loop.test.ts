@@ -1391,6 +1391,54 @@ describe("VerifiedLoop.run", () => {
     }
   });
 
+  test("refuses to commit when lock is stolen mid-iteration", async () => {
+    // Regression: a coordinator whose lock was stale-broken between
+    // iterations could still call markDoneMany / bumpFailureCount for
+    // the rest of its current iteration — split-brain mutation. The
+    // pre-write ownership check now refuses every PRD mutation if the
+    // lock is no longer ours.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+    const lockPath = `${prdPath}.lock`;
+    const loop = createVerifiedLoop(
+      makeConfig({
+        verify: async (_ctx) => {
+          // Steal the lock during verify(): unlink and recreate with a
+          // different owner token.
+          await Bun.file(lockPath)
+            .delete()
+            .catch(() => undefined);
+          await Bun.write(
+            lockPath,
+            JSON.stringify({
+              pid: process.pid,
+              host: "thief",
+              owner: "thief-token",
+              acquiredAt: new Date().toISOString(),
+              heartbeatAt: new Date().toISOString(),
+            }),
+          );
+          return { passed: true };
+        },
+      }),
+    );
+    let threw: Error | undefined;
+    try {
+      await loop.run();
+    } catch (e: unknown) {
+      threw = e as Error;
+    }
+    expect(threw).toBeDefined();
+    expect(threw?.message).toContain("no longer owned by this coordinator");
+    // PRD must NOT show "a" as done — the stolen-lock coordinator
+    // must not have committed.
+    const after = JSON.parse(await Bun.file(prdPath).text()) as PRDFile;
+    expect(after.items[0]?.done).toBe(false);
+    // Cleanup the thief lock.
+    await Bun.file(lockPath)
+      .delete()
+      .catch(() => undefined);
+  });
+
   test("breaks a lock with a stale heartbeat", async () => {
     // Regression: a crashed coordinator leaves its lock file behind
     // with a heartbeat that no live owner is updating. After

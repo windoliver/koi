@@ -602,10 +602,20 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
 }
 
 /**
- * Refresh the heartbeat of a held lock. Owner-checked: a no-op if
- * the lock file is missing, corrupt, or owned by a different token.
- * Returns `false` if the lock is no longer held by this owner so the
- * caller can fail loudly; returns `true` after a successful update.
+ * Refresh the heartbeat of a held lock. Owner-checked AND post-write
+ * verified: returns true only if the lock still belongs to us after
+ * the rename. Returns false on any of:
+ *   - lock file missing / unparseable / owned by another token
+ *   - rename clobbered a successor lock (another coordinator
+ *     stale-broke our lock and reacquired between our read and rename)
+ *
+ * The post-rename re-read closes the stale-break race: if our rename
+ * happened to overwrite another coordinator's freshly acquired lock,
+ * we detect it deterministically and the caller can abort the run
+ * before any further PRD mutation. We cannot fully PREVENT the
+ * clobber without renameat2(RENAME_NOREPLACE) or flock — neither is
+ * portable across Bun on macOS — but detect-and-fail is enough to
+ * keep two coordinators from BOTH believing they own the lock.
  *
  * Read-modify-write is intentional: we preserve any other fields the
  * lock format may grow (acquiredAt, host, pid).
@@ -630,6 +640,23 @@ export async function refreshPRDLock(lock: PRDLock): Promise<boolean> {
     await rename(tmpPath, lock.path);
   } catch {
     await unlink(tmpPath).catch(() => undefined);
+    return false;
+  }
+  // Post-rename ownership verification: re-read and confirm the file
+  // we just wrote is still ours. If a successor coordinator
+  // acquired the lock between our read and rename, our rename
+  // clobbered theirs — we'd both think we own. The post-check makes
+  // that detectable: ours says owner=ours, but a parallel writer who
+  // also writes their own owner just after us would win the LATEST
+  // post-check. The narrow remaining window (between our post-check
+  // and the next syscall) is bounded and detected by the next
+  // refresh tick. Combined with the orchestrator aborting the run
+  // on any false return, total exposure is one heartbeat interval.
+  try {
+    const raw = await readFile(lock.path, "utf8");
+    const after = JSON.parse(raw) as { owner?: unknown };
+    if (after.owner !== lock.owner) return false;
+  } catch {
     return false;
   }
   return true;

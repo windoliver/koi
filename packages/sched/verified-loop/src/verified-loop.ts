@@ -267,10 +267,22 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
       // ensures heartbeat freshness regardless of iteration length.
       // unref() so a lingering interval cannot keep the event loop
       // alive past loop completion.
-      const heartbeatTimer = setInterval(() => {
-        // Fire-and-forget: refresh failures are surfaced by the
-        // per-iteration check in runOnce, which throws fatally.
-        refreshPRDLock(lock).catch(() => undefined);
+      //
+      // Heartbeat failure is FATAL: abort the abortController so the
+      // current iteration tears down ASAP, and pre-write ownership
+      // checks in runOnce refuse to mutate the PRD without a held
+      // lock. Without this, a stale-broken coordinator could keep
+      // calling markDoneMany / bumpFailureCount for the rest of its
+      // current iteration before noticing it lost the lock.
+      const heartbeatTimer = setInterval(async () => {
+        const refreshed = await refreshPRDLock(lock).catch(() => false);
+        if (!refreshed) {
+          ac.abort(
+            new Error(
+              `VerifiedLoop: lost PRD lock at ${lock.path} (heartbeat refresh failed; another coordinator may have stale-broken our lock)`,
+            ),
+          );
+        }
       }, HEARTBEAT_REFRESH_INTERVAL_MS);
       heartbeatTimer.unref?.();
       try {
@@ -530,6 +542,16 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           // that would re-execute non-idempotent side effects. NOT_FOUND /
           // VALIDATION / IO errors remain fatal.
           // Use let — justified: retry counter for stale-snapshot CAS races.
+          // Pre-write ownership check: refuse to mutate the PRD if
+          // we have already lost the lock. Without this, a stolen
+          // lock could still commit completion state for the rest of
+          // the current iteration before the next iteration's check.
+          const ownsBeforeDone = await refreshPRDLock(lock);
+          if (!ownsBeforeDone) {
+            throw new Error(
+              `VerifiedLoop: refusing to commit completion for [${toComplete.join(", ")}] — PRD lock at ${lock.path} no longer owned by this coordinator`,
+            );
+          }
           let doneAttempts = 0;
           while (true) {
             doneAttempts++;
@@ -583,6 +605,15 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
         // remain fatal — without a working skip budget on disk, a
         // permanently failing item could be retried indefinitely.
         // Use let — justified: retry counter for stale-snapshot CAS races.
+        // Pre-write ownership check (mirrors the markDoneMany path
+        // above): a stolen lock must not be allowed to silently bump
+        // the failure count of an item another coordinator owns.
+        const ownsBeforeBump = await refreshPRDLock(lock);
+        if (!ownsBeforeBump) {
+          throw new Error(
+            `VerifiedLoop: refusing to bump failure count for "${current.id}" — PRD lock at ${lock.path} no longer owned by this coordinator`,
+          );
+        }
         let bumpAttempts = 0;
         while (true) {
           bumpAttempts++;
