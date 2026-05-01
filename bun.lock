@@ -819,6 +819,14 @@
       "name": "@koi/shutdown",
       "version": "0.0.0",
     },
+    "packages/lib/skill-distiller": {
+      "name": "@koi/skill-distiller",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
     "packages/lib/skill-tool": {
       "name": "@koi/skill-tool",
       "version": "0.0.0",
@@ -2308,6 +2316,8 @@
     "@koi/settings": ["@koi/settings@workspace:packages/lib/settings"],
 
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
+
+    "@koi/skill-distiller": ["@koi/skill-distiller@workspace:packages/lib/skill-distiller"],
 
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/security/skill-scanner"],
 
