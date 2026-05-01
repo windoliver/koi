@@ -1,14 +1,20 @@
 /**
  * File-based PRD (Product Requirements Document) store.
  *
- * Reads, queries, and updates PRD items with atomic write-temp-rename plus
- * an optimistic concurrency check: every mutator re-reads the file just
- * before rename and aborts with CONFLICT if the bytes changed since the
- * snapshot used to build the new state. This narrows the lost-update
- * window for crash recovery and accidental dual coordinators — but
- * file-locking still belongs at the deployment layer for true
- * multi-writer scenarios. Single-coordinator deployments see no behavior
- * change.
+ * Reads, queries, and updates PRD items with atomic write-temp-rename.
+ * Each mutator re-reads the file just before rename and surfaces CONFLICT
+ * if the bytes changed since the snapshot it built from. This is a
+ * BEST-EFFORT detector — there is still a TOCTOU window between the
+ * pre-rename re-read and the rename itself, so concurrent writers CAN
+ * still lose updates. The check catches the common case (a writer that
+ * landed during the in-memory mutation step) but is not a substitute for
+ * file locking.
+ *
+ * The package contract is single-coordinator. Multi-writer deployments
+ * MUST add their own exclusion (file locking, distributed lease, single-
+ * writer queue) at the deployment layer. The CAS check exists to surface
+ * accidental dual coordinators loudly when it can, not to make multi-
+ * writer access safe.
  */
 
 import { rename } from "node:fs/promises";

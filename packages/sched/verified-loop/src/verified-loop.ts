@@ -247,17 +247,22 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
 
         // Use let — justified: mutable gate result.
         let gateResult: VerificationResult;
-        if (iterSignal.aborted) {
-          // The iteration was aborted or timed out. Skip verify entirely:
-          // a stale workspace can satisfy a file gate (passed:true) and
-          // falsely mark the item done despite the runner being cut short.
-          // Whether this counts against the per-item failure budget is
-          // decided below by the `cancelled` check (loop-level abort = no).
+        if (iterSignal.aborted || iterError !== undefined) {
+          // The iteration was aborted, timed out, or the runner threw.
+          // Skip verify entirely: a stale workspace can satisfy a file gate
+          // (passed:true) and falsely mark the item done despite the runner
+          // never completing successfully. Runner crashes/exceptions are
+          // just as untrusted as cancellation. Whether this counts against
+          // the per-item failure budget is decided below by `cancelled`
+          // (loop-level abort = no, runner crash = yes).
+          const reason = iterSignal.aborted
+            ? "Iteration aborted/timed out"
+            : "Iteration runner threw";
           gateResult = {
             passed: false,
             details: iterError
-              ? `Iteration aborted/timed out before verification could run: ${iterError}`
-              : "Iteration aborted/timed out before verification could run",
+              ? `${reason} before verification could run: ${iterError}`
+              : `${reason} before verification could run`,
           };
         } else {
           const gateSignal = AbortSignal.any([
@@ -324,25 +329,45 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
             }
           }
         } else if (!cancelled) {
-          // Persist the consecutive-failure count to disk in the same atomic
-          // write that may also flip skipped:true. Survives crash/restart.
-          const bumpResult = await bumpFailureCount(prdPath, current.id, maxConsecutiveFailures);
-          if (!bumpResult.ok) {
-            // CONFLICT = the item was completed out-of-band (concurrent run,
-            // hand edit) between selection and failure persistence. The store
-            // refuses to write done:true + skipped:true; the loop just moves on
-            // to the next pending item. NOT_FOUND / VALIDATION (corrupt PRD) /
-            // IO errors remain fatal — without a working skip budget on disk,
-            // a permanently failing item could be retried indefinitely across
-            // runs.
+          // Persist the consecutive-failure count to disk. May be retried
+          // once on a stale-snapshot CONFLICT (concurrent unrelated edit);
+          // a CONFLICT that resolves to "item is now done" is treated as
+          // out-of-band completion and the bump is skipped. Other errors
+          // remain fatal — without a working skip budget on disk, a
+          // permanently failing item could be retried indefinitely.
+          // Use let — justified: retry counter for stale-snapshot CAS races.
+          let bumpAttempts = 0;
+          while (true) {
+            bumpAttempts++;
+            const bumpResult = await bumpFailureCount(prdPath, current.id, maxConsecutiveFailures);
+            if (bumpResult.ok) break;
             if (bumpResult.error.code !== "CONFLICT") {
               throw new Error(
                 `VerifiedLoop: failed to persist failure count for "${current.id}" (${bumpResult.error.code}): ${bumpResult.error.message}`,
               );
             }
-            console.warn(
-              `[verified-loop] Skipping failure-count bump for "${current.id}" (already completed): ${bumpResult.error.message}`,
-            );
+            // CONFLICT — distinguish "item became done out-of-band" from
+            // "generic stale snapshot due to concurrent edit". Re-read.
+            const recheck = await readPRD(prdPath);
+            if (!recheck.ok) {
+              throw new Error(
+                `VerifiedLoop: PRD became unreadable after CONFLICT for "${current.id}" (${recheck.error.code}): ${recheck.error.message}`,
+              );
+            }
+            const item = recheck.value.items.find((it) => it.id === current.id);
+            if (item?.done === true) {
+              console.warn(
+                `[verified-loop] Skipping failure-count bump for "${current.id}" (already completed): ${bumpResult.error.message}`,
+              );
+              break;
+            }
+            // Generic stale-snapshot conflict (another writer touched
+            // unrelated rows). Retry once with fresh state.
+            if (bumpAttempts >= 2) {
+              throw new Error(
+                `VerifiedLoop: failed to persist failure count for "${current.id}" after retry (concurrent writers contending on PRD): ${bumpResult.error.message}`,
+              );
+            }
           }
         }
 

@@ -167,6 +167,10 @@ describe("VerifiedLoop.run", () => {
   });
 
   test("handles iteration error and continues", async () => {
+    // Updated for the runner-failure-skips-verify rule: a runner crash on
+    // iteration 1 no longer falsely passes the gate against stale state,
+    // so item "a" stays pending. Iteration 2 retries it successfully,
+    // iteration 3 completes "b". The error is recorded on iteration 1.
     await writePrd({
       items: [
         { id: "a", description: "Task A", done: false },
@@ -178,7 +182,9 @@ describe("VerifiedLoop.run", () => {
     const result = await loop.run();
 
     expect(result.iterationRecords[0]?.error).toBe("Iteration failed");
-    expect(result.iterations).toBe(2);
+    expect(result.iterationRecords[0]?.gateResult.passed).toBe(false);
+    expect(result.iterations).toBe(3);
+    expect(result.completed).toEqual(["a", "b"]);
   });
 
   test("handles gate error and continues", async () => {
@@ -870,6 +876,35 @@ describe("VerifiedLoop.run", () => {
     const result = await loop.run();
     expect(returnCalled).toBe(false);
     expect(result.completed).toEqual(["a"]);
+  });
+
+  test("does not commit work when the runner throws synchronously", async () => {
+    // Regression: a runner that crashes (synchronous throw, adapter
+    // exception, early stream failure) recorded iterError but the
+    // orchestrator still ran verify() and could mark the item done if
+    // the gate passed against stale workspace state. Runner failure must
+    // be treated as untrusted iteration result — skip verify, force
+    // passed:false. Counts against the per-item failure budget (this is
+    // a real failure, not operator-stop).
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+
+    let verifyCalled = false;
+    const loop = createVerifiedLoop(
+      makeConfig({
+        runIteration: throwingRunner(1),
+        verify: async () => {
+          verifyCalled = true;
+          return { passed: true };
+        },
+        // Cap the loop so a permanently-failing item doesn't loop forever.
+        maxIterations: 1,
+      }),
+    );
+    const result = await loop.run();
+    expect(verifyCalled).toBe(false);
+    expect(result.completed).toEqual([]);
+    expect(result.iterationRecords[0]?.gateResult.passed).toBe(false);
+    expect(result.iterationRecords[0]?.error).toBe("Iteration failed");
   });
 
   test("does not commit work when an iteration is aborted/timed out", async () => {
