@@ -6,6 +6,11 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/governance-scope` ambient URLPattern type (#1388-related)**: pure
+  type-system fix in the L2 package; CLI integration is unchanged. The
+  CLI now compiles cleanly when the governance-scope package's URLPattern
+  global is declared in its own ambient .d.ts file.
+
 - **`@koi/governance-scope` wired (#1882 gov-15)**: CLI manifest gains `network:`
   and `credentials:` blocks. The TUI command translates these into compiled scope
   objects (`compileScopedFs`, `createScopedFetcher`, `createScopedCredentials`)

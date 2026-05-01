@@ -81,3 +81,11 @@ compiled scope objects before passing them to tool/provider factories.
   (no network activity for denied requests).
 - `createScopedFs` always rejects on path-resolution error rather than
   falling back to the underlying backend.
+
+## Type declarations
+
+- `src/url-pattern.d.ts` provides an ambient declaration for the
+  `URLPattern` global. The type is not yet in the TypeScript ES2025
+  lib or `bun-types`, but the runtime provides it. The declaration
+  is package-local because each L2 tsconfig has `rootDir: src` +
+  `composite: true`.
