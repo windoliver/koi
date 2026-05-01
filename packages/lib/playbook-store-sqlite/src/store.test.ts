@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -284,6 +285,352 @@ describe("createSqlitePlaybookStore — proposals", () => {
     await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
     const got = await store.proposals.getProposal("p-1");
     expect(got?.reflection.rootCause).toBe("missed precondition");
+  });
+});
+
+describe("createSqlitePlaybookStore — legacy encoding compatibility", () => {
+  test("idempotent retry against row written with non-canonical JSON encoding", async () => {
+    // Seed a structured_playbook_versions row with reversed-key non-canonical
+    // JSON, simulating a database written before this package canonicalized.
+    const seedDb = new Database(dbPath, { create: true });
+    seedDb.run(`
+      CREATE TABLE IF NOT EXISTS structured_playbooks (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, sections TEXT NOT NULL,
+        tags TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        session_count INTEGER NOT NULL, last_reflected_step_index INTEGER,
+        version INTEGER NOT NULL, provenance TEXT
+      )
+    `);
+    seedDb.run(`
+      CREATE TABLE IF NOT EXISTS structured_playbook_versions (
+        playbook_id TEXT NOT NULL, version INTEGER NOT NULL,
+        snapshot TEXT NOT NULL, committed_at INTEGER NOT NULL,
+        PRIMARY KEY (playbook_id, version)
+      )
+    `);
+    const pb1 = spb({ id: "s1", version: 1 });
+    // Plain JSON.stringify (no key sort) — legacy encoding.
+    const legacySnapshot = JSON.stringify({
+      version: pb1.version,
+      title: pb1.title,
+      id: pb1.id,
+      sections: pb1.sections,
+      tags: pb1.tags,
+      source: pb1.source,
+      createdAt: pb1.createdAt,
+      updatedAt: pb1.updatedAt,
+      sessionCount: pb1.sessionCount,
+    });
+    seedDb.run(
+      "INSERT INTO structured_playbook_versions (playbook_id, version, snapshot, committed_at) VALUES (?, ?, ?, ?)",
+      [pb1.id, pb1.version, legacySnapshot, 1234],
+    );
+    seedDb.run(
+      "INSERT INTO structured_playbooks (id, title, sections, tags, source, created_at, updated_at, session_count, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        pb1.id,
+        pb1.title,
+        JSON.stringify(pb1.sections),
+        JSON.stringify(pb1.tags),
+        pb1.source,
+        pb1.createdAt,
+        pb1.updatedAt,
+        pb1.sessionCount,
+        pb1.version,
+      ],
+    );
+    seedDb.close();
+
+    // Idempotent retry under the new (canonical) encoding must succeed.
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(pb1);
+    expect((await store.structuredPlaybooks.get("s1"))?.version).toBe(1);
+    store.close();
+  });
+});
+
+describe("createSqlitePlaybookStore — head-row self-heal", () => {
+  test("retry rebuilds missing head row when lineage is intact", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    const base = spb({ id: "s1", version: 1, title: "v1" });
+    await store.structuredPlaybooks.save(base);
+    expect((await store.structuredPlaybooks.get("s1"))?.title).toBe("v1");
+    store.close();
+
+    // Simulate corruption: drop the head row but keep lineage.
+    const corrupt = new Database(dbPath);
+    corrupt.run("DELETE FROM structured_playbooks WHERE id = ?", ["s1"]);
+    corrupt.close();
+
+    const repaired = createSqlitePlaybookStore({ path: dbPath });
+    expect(await repaired.structuredPlaybooks.get("s1")).toBeUndefined();
+    // Idempotent retry must rebuild the head row, not silently succeed.
+    await repaired.structuredPlaybooks.save(base);
+    expect((await repaired.structuredPlaybooks.get("s1"))?.title).toBe("v1");
+    repaired.close();
+  });
+});
+
+describe("createSqlitePlaybookStore — provenance/lineage time normalization", () => {
+  test("provenance.committedAt is overwritten with server commit time", async () => {
+    const before = Date.now();
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    const stale = {
+      sourceTrajectoryRange: trajRange,
+      proposalId: "p-1",
+      evaluationId: "e-1",
+      committedAt: 1, // Caller-supplied stale value
+    };
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, provenance: stale }));
+    const got = await store.structuredPlaybooks.get("s1");
+    expect(got?.provenance?.committedAt).toBeGreaterThanOrEqual(before);
+    expect(got?.provenance?.proposalId).toBe("p-1");
+    store.close();
+  });
+
+  test("idempotent retry succeeds even though provenance.committedAt differs", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    const prov = {
+      sourceTrajectoryRange: trajRange,
+      proposalId: "p-1",
+      evaluationId: "e-1",
+      committedAt: 0,
+    };
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, provenance: prov }));
+    // Retry with the same payload — server will normalize to a new committedAt
+    // but the call must still be idempotent on the substantive content.
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, provenance: prov }));
+    expect((await store.structuredPlaybooks.get("s1"))?.version).toBe(1);
+    store.close();
+  });
+});
+
+describe("createSqlitePlaybookStore — server-stamped lineage time", () => {
+  test("committed_at reflects commit time, not caller's updatedAt", async () => {
+    const before = Date.now();
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    // Save with a deliberately stale updatedAt (e.g., a rollback re-using an
+    // old snapshot). Lineage commit time must NOT be backdated to that value.
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, updatedAt: 0 }));
+    store.close();
+
+    const reader = new Database(dbPath, { readonly: true });
+    const row = reader
+      .query(
+        "SELECT committed_at FROM structured_playbook_versions WHERE playbook_id = ? AND version = ?",
+      )
+      .get("s1", 1) as { readonly committed_at: number } | null;
+    reader.close();
+    expect(row).not.toBeNull();
+    expect(row?.committed_at).toBeGreaterThanOrEqual(before);
+    expect(row?.committed_at).toBeLessThanOrEqual(Date.now());
+  });
+});
+
+describe("createSqlitePlaybookStore — stale-replay protection", () => {
+  test("rejects replay of old identical version after head has advanced", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    const v3 = spb({ id: "s1", version: 3 });
+    await store.structuredPlaybooks.save(v3);
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 5, title: "v5" }));
+    // Stale worker retries the v3 payload byte-identical: must throw, not
+    // silently succeed. The race-loser needs to know head has advanced.
+    await expect(store.structuredPlaybooks.save(v3)).rejects.toThrow();
+    expect((await store.structuredPlaybooks.get("s1"))?.version).toBe(5);
+    store.close();
+  });
+});
+
+describe("createSqlitePlaybookStore — watermark monotonicity", () => {
+  test("save clamps lastReflectedStepIndex to max(current, incoming)", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, lastReflectedStepIndex: 50 }));
+    // Rollback re-saves an older snapshot whose watermark was 10.
+    // Store must NOT regress to 10; head watermark stays at 50.
+    await store.structuredPlaybooks.save(
+      spb({ id: "s1", version: 2, title: "rollback", lastReflectedStepIndex: 10 }),
+    );
+    expect((await store.structuredPlaybooks.get("s1"))?.lastReflectedStepIndex).toBe(50);
+  });
+
+  test("save advances watermark when incoming is higher", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, lastReflectedStepIndex: 10 }));
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 2, lastReflectedStepIndex: 25 }));
+    expect((await store.structuredPlaybooks.get("s1"))?.lastReflectedStepIndex).toBe(25);
+  });
+});
+
+describe("createSqlitePlaybookStore — rollback workflow", () => {
+  test("rollback by re-committing prior snapshot as new head version", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, title: "v1" }));
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 2, title: "v2-bad" }));
+    expect((await store.structuredPlaybooks.get("s1"))?.title).toBe("v2-bad");
+
+    // Recover v1's content and re-commit as a NEW monotonic version.
+    const v1 = await store.structuredPlaybooks.getVersion("s1", 1);
+    expect(v1?.title).toBe("v1");
+    const head = await store.structuredPlaybooks.get("s1");
+    await store.structuredPlaybooks.save({
+      ...(v1 as NonNullable<typeof v1>),
+      version: (head?.version ?? 1) + 1,
+    });
+
+    expect((await store.structuredPlaybooks.get("s1"))?.title).toBe("v1");
+    expect((await store.structuredPlaybooks.get("s1"))?.version).toBe(3);
+    // Original v2 row is preserved in lineage — rollback is reversible.
+    expect((await store.structuredPlaybooks.getVersion("s1", 2))?.title).toBe("v2-bad");
+    store.close();
+  });
+});
+
+describe("createSqlitePlaybookStore — canonical JSON idempotency", () => {
+  test("recordProposal accepts retry with key-reordered payload", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    const original = makeProposal("p-1", "pb-A");
+    await store.proposals.recordProposal(original);
+
+    // Same content, different object key insertion order across all nested fields.
+    const reordered: PlaybookProposal = {
+      createdAt: original.createdAt,
+      reflection: {
+        bulletTags: original.reflection.bulletTags,
+        keyInsight: original.reflection.keyInsight,
+        rootCause: original.reflection.rootCause,
+      },
+      sourceTrajectoryRange: {
+        toStepIndex: original.sourceTrajectoryRange.toStepIndex,
+        sessionId: original.sourceTrajectoryRange.sessionId,
+        fromStepIndex: original.sourceTrajectoryRange.fromStepIndex,
+      },
+      operations: original.operations,
+      baseVersion: original.baseVersion,
+      playbookId: original.playbookId,
+      id: original.id,
+    };
+    await store.proposals.recordProposal(reordered);
+    expect((await store.proposals.listProposals("pb-A")).length).toBe(1);
+    store.close();
+  });
+});
+
+describe("createSqlitePlaybookStore — append-only invariants", () => {
+  test("structured save rejects out-of-order regression", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 3, title: "v3" }));
+    await expect(
+      store.structuredPlaybooks.save(spb({ id: "s1", version: 2, title: "v2" })),
+    ).rejects.toThrow();
+    expect((await store.structuredPlaybooks.get("s1"))?.version).toBe(3);
+    expect((await store.structuredPlaybooks.get("s1"))?.title).toBe("v3");
+    store.close();
+  });
+
+  test("trajectory append rejects duplicate with different content", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.trajectories.append("s1", [makeEntry(0, "x")]);
+    await expect(
+      store.trajectories.append("s1", [{ ...makeEntry(0, "x"), durationMs: 999 }]),
+    ).rejects.toThrow();
+    const back = await store.trajectories.getSession("s1");
+    expect(back.length).toBe(1);
+    expect(back[0]?.durationMs).toBe(12);
+    store.close();
+  });
+
+  test("trajectory append enriches null metadata + bulletIds and persists tail", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.trajectories.append("s1", [makeEntry(0, "x")]);
+    // Replay overlaps existing row with metadata enrichment + adds a tail entry.
+    await store.trajectories.append("s1", [
+      { ...makeEntry(0, "x"), metadata: { enriched: true }, bulletIds: ["b9"] },
+      makeEntry(1, "y"),
+    ]);
+    const back = await store.trajectories.getSession("s1");
+    expect(back.length).toBe(2);
+    expect(back[0]?.metadata).toEqual({ enriched: true });
+    expect(back[0]?.bulletIds).toEqual(["b9"]);
+    expect(back[1]?.identifier).toBe("y");
+    store.close();
+  });
+
+  test("concurrent enrichment from two handles cannot silently overwrite", async () => {
+    const a = createSqlitePlaybookStore({ path: dbPath });
+    const b = createSqlitePlaybookStore({ path: dbPath });
+    await a.trajectories.append("s1", [makeEntry(0, "x")]);
+    // Both handles see the row with NULL metadata. Writer A enriches first.
+    await a.trajectories.append("s1", [{ ...makeEntry(0, "x"), metadata: { src: "a" } }]);
+    // Writer B's stale read would have allowed it to write {src:"b"}; the
+    // serialized .immediate() lock + guarded UPDATE must reject the conflict
+    // rather than silently overwriting A's enrichment.
+    await expect(
+      b.trajectories.append("s1", [{ ...makeEntry(0, "x"), metadata: { src: "b" } }]),
+    ).rejects.toThrow();
+    const back = await a.trajectories.getSession("s1");
+    expect(back[0]?.metadata).toEqual({ src: "a" });
+    a.close();
+    b.close();
+  });
+
+  test("trajectory enrichment cannot overwrite an already-set metadata field", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.trajectories.append("s1", [{ ...makeEntry(0, "x"), metadata: { v: 1 } }]);
+    await expect(
+      store.trajectories.append("s1", [{ ...makeEntry(0, "x"), metadata: { v: 2 } }]),
+    ).rejects.toThrow();
+    store.close();
+  });
+
+  test("trajectory append accepts byte-identical retry without losing tail", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.trajectories.append("s1", [makeEntry(0, "x"), makeEntry(1, "y")]);
+    // Replay overlaps prefix [0,x] then adds new tail [2,z]
+    await store.trajectories.append("s1", [
+      makeEntry(0, "x"),
+      makeEntry(1, "y"),
+      makeEntry(2, "z"),
+    ]);
+    const back = await store.trajectories.getSession("s1");
+    expect(back.map((e) => e.identifier)).toEqual(["x", "y", "z"]);
+    store.close();
+  });
+
+  test("recordProposal rejects duplicate id with different content", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
+    await expect(
+      store.proposals.recordProposal({
+        ...makeProposal("p-1", "pb-A"),
+        baseVersion: 999,
+      }),
+    ).rejects.toThrow();
+    expect((await store.proposals.getProposal("p-1"))?.baseVersion).toBe(1);
+    store.close();
+  });
+
+  test("recordProposal accepts byte-identical idempotent retry", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    const p = makeProposal("p-1", "pb-A");
+    await store.proposals.recordProposal(p);
+    await store.proposals.recordProposal(p);
+    expect((await store.proposals.listProposals("pb-A")).length).toBe(1);
+    store.close();
+  });
+
+  test("recordEvaluation rejects duplicate id with different verdict", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
+    await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
+    await expect(
+      store.proposals.recordEvaluation({
+        ...makeEvaluation("e-1", "p-1"),
+        verdict: "reject",
+      }),
+    ).rejects.toThrow();
+    store.close();
   });
 });
 

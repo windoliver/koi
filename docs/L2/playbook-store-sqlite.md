@@ -174,7 +174,42 @@ Every `save()` on a structured playbook writes a row to `structured_playbook_ver
 
 Flat `Playbook` records also carry a `version` column for parity with the type, but lineage is only preserved for `StructuredPlaybook` because that is what the AGP promotion gate operates on.
 
-`save()` rejects (throws `Error`) when an attempted commit would overwrite an existing `(id, version)` pair with different content — versions are immutable once committed.
+`save()` rejects (throws `Error`) when:
+
+- an attempted commit would overwrite an existing `(id, version)` pair with different content — versions are immutable once committed
+- an attempted commit's `version` is below the current head version — the head pointer never moves backwards
+
+### Rollback workflow
+
+Rollback is a forward-only operation. To restore an older snapshot, read it via `getVersion(id, oldVersion)` and re-commit it as a **new monotonic version** (`headVersion + 1`). The lineage table preserves both the original commit at `oldVersion` and the rollback commit at the new head. This keeps the audit trail intact and makes the rollback itself reversible.
+
+The store enforces two invariants on rollback automatically so callers can't corrupt lineage:
+
+- `lastReflectedStepIndex` is **clamped to `max(current, incoming)`** — a rollback never moves the reflection watermark backwards, so already-processed trajectory windows are not reopened.
+- `provenance.committedAt` is **overwritten with the server commit time** for the new version. Other provenance fields (`proposalId`, `evaluationId`, `sourceTrajectoryRange`) are persisted as-is and are the **caller's responsibility** to rewrite — a rollback should pass fresh provenance identifiers (or `undefined`) so the new head doesn't appear to have been produced by the original proposal.
+
+```typescript
+const old = await store.structuredPlaybooks.getVersion("pb-1", 3);
+if (old !== undefined) {
+  const head = await store.structuredPlaybooks.get("pb-1");
+  await store.structuredPlaybooks.save({
+    ...old,
+    version: (head?.version ?? old.version) + 1,
+    updatedAt: Date.now(),
+    // Rewrite provenance with fresh identifiers for the rollback commit:
+    provenance: {
+      sourceTrajectoryRange: rollbackRange,
+      proposalId: rollbackProposalId,
+      evaluationId: rollbackEvalId,
+      committedAt: 0, // overwritten server-side
+    },
+  });
+}
+```
+
+### Idempotency & key ordering
+
+All stored JSON columns are written through a canonicalizing serializer (object keys sorted at every depth; array order preserved). Idempotent retries therefore succeed even when a re-built payload reorders its keys, as long as the semantic content matches.
 
 ---
 
