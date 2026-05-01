@@ -125,11 +125,13 @@ export function createTestGate(
       const stderr = await Promise.race([stderrPromise, drainGrace]);
       clearTimeout(timer);
       if (killTimer !== undefined) clearTimeout(killTimer);
-      if (drainTimedOut) {
-        // Best-effort: kill any lingering process group so the held-open
-        // stream is released. The exit code is already known.
-        killGroup("SIGKILL");
-      }
+      // Intentionally NOT calling killGroup() here even on drainTimedOut:
+      // the leader exited before this point, so the kernel can reuse the
+      // numeric PGID for an unrelated process group on a busy host. A
+      // post-exit group kill would risk SIGKILL'ing a stranger. Accept
+      // the placeholder stderr and let the descendant linger — it can no
+      // longer affect our verification result.
+      void drainTimedOut;
 
       // Cancellation is a verification failure regardless of exit code. A
       // child that traps SIGTERM and exits 0 (or simply finishes during the

@@ -17,7 +17,8 @@
  * writer access safe.
  */
 
-import { rename } from "node:fs/promises";
+import { open, rename } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { conflict, internal, notFound, validation } from "@koi/core";
 import { extractMessage } from "@koi/errors";
@@ -134,7 +135,19 @@ async function writePRDIfUnchanged(
   // Random suffix so two concurrent writers don't collide on the same
   // `${path}.tmp` and produce ENOENT instead of a clean CONFLICT.
   const tmpPath = `${path}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
-  await Bun.write(tmpPath, JSON.stringify(newPrd, null, 2));
+  // Crash-durable write: open + write + fsync + close on the tmp file
+  // BEFORE rename. Bun.write() returns once the data is in the page
+  // cache, not when it's on disk — a host crash between markDoneMany()
+  // returning success and the kernel flushing would silently lose
+  // committed completion state. fsync the data, then rename, then
+  // fsync the parent directory to make the rename itself durable.
+  const tmpHandle = await open(tmpPath, "w");
+  try {
+    await tmpHandle.writeFile(JSON.stringify(newPrd, null, 2));
+    await tmpHandle.sync();
+  } finally {
+    await tmpHandle.close();
+  }
   try {
     const file = Bun.file(path);
     const exists = await file.exists();
@@ -155,6 +168,21 @@ async function writePRDIfUnchanged(
       };
     }
     await rename(tmpPath, path);
+    // fsync the parent directory so the rename's directory-entry update
+    // is also durable. Without this, a crash after rename can leave the
+    // file pointing at the OLD inode on next mount even though the
+    // new bytes are safely on disk. Best-effort: some filesystems
+    // (network mounts, certain FUSE) don't support directory fsync.
+    try {
+      const dirHandle = await open(dirname(path), "r");
+      try {
+        await dirHandle.sync();
+      } finally {
+        await dirHandle.close();
+      }
+    } catch {
+      // Directory fsync unsupported on this fs — accept the weaker guarantee.
+    }
     return { ok: true, value: undefined };
   } catch (e: unknown) {
     // Best-effort tmp cleanup on any error path so we never leak tmps.
