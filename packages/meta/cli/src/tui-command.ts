@@ -1608,17 +1608,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // is still validated.
     if (resumeMeta.ace?.enabled === true) {
       const originalAce = resumeMeta.ace;
-      // Round 5 finding: an ACE-enabled session with no playbook_path used
-      // an in-memory store. That state cannot survive process restart;
-      // resuming would build a fresh empty store under the same session id
-      // and silently diverge. Refuse such resumes — operators must opt
-      // into either a persistent playbook_path or starting a new session.
-      if (originalAce.playbookPath === undefined) {
+      // Round 5+6 findings: non-durable ACE stores cannot survive process
+      // restart. `playbookPath === undefined` builds the in-memory backend;
+      // the explicit `:memory:` sentinel uses an in-RAM SQLite database.
+      // Either way a resumed session comes back with an empty playbook set
+      // under the same session id and silently diverges from the pre-
+      // restart run. Refuse both — operators must use a filesystem path
+      // for cross-restart persistence or start a new session.
+      const isNonDurable =
+        originalAce.playbookPath === undefined || originalAce.playbookPath === ":memory:";
+      if (isNonDurable) {
+        const reason =
+          originalAce.playbookPath === undefined
+            ? "no playbook_path (in-memory backend)"
+            : '":memory:" sentinel';
         process.stderr.write(
-          "koi tui: original session ran with ace.enabled: true but no playbook_path " +
-            "(in-memory store) — refusing to resume because the in-memory state did not " +
-            "survive process exit. Set ace.playbook_path for cross-restart persistence, " +
-            "or start a new session.\n",
+          "koi tui: original session ran with ace.enabled: true but a non-durable store " +
+            `(${reason}) — refusing to resume because the prior state did not survive ` +
+            "process exit. Set ace.playbook_path to a filesystem path for cross-restart " +
+            "persistence, or start a new session.\n",
         );
         process.exit(1);
       }

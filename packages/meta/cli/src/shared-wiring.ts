@@ -753,7 +753,14 @@ export async function resumeSessionFromJsonl(
 // cwd-based re-discovery (which is ambiguous when launched from a different dir).
 // ---------------------------------------------------------------------------
 
-const SESSION_META_VERSION = 1 as const;
+/**
+ * Bumped to 2 in the ACE-aware build (issue #2088 / round 6 review). v2
+ * sidecars always include an `ace` block (set to {enabled: false, ...}
+ * when the session ran without ACE) so a missing block on a v2 sidecar
+ * is treated as malformed, not as "no ACE recorded". v1 sidecars from
+ * older builds are honored as legacy and skip the ACE check entirely.
+ */
+const SESSION_META_VERSION = 2 as const;
 
 /**
  * Immutable ACE provenance snapshot persisted into the session sidecar at
@@ -770,6 +777,12 @@ export interface SessionAceProvenance {
 }
 
 export interface SessionMeta {
+  /**
+   * Sidecar schema version. v1 = pre-ACE-aware build. v2+ = ace block
+   * always present (with enabled:false when session ran without ACE), so
+   * a v2 sidecar missing its ace block is malformed, not "no ACE state".
+   */
+  readonly version?: number;
   readonly manifestPath?: string;
   readonly ace?: SessionAceProvenance;
 }
@@ -787,7 +800,24 @@ export async function writeSessionMeta(
 ): Promise<void> {
   try {
     const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
-    await Bun.write(path, JSON.stringify({ version: SESSION_META_VERSION, ...meta }));
+    // v2 invariant: ace block is ALWAYS present, set to enabled:false when
+    // the session ran without ACE. A v2 sidecar missing its ace block is
+    // malformed (truncated/corrupted), not "no ACE recorded" — round 6.
+    const aceBlock: SessionAceProvenance = meta.ace ?? {
+      enabled: false,
+      playbookPath: undefined,
+      maxInjectedTokens: undefined,
+      minScore: undefined,
+      lambda: undefined,
+    };
+    await Bun.write(
+      path,
+      JSON.stringify({
+        version: SESSION_META_VERSION,
+        ...(meta.manifestPath !== undefined ? { manifestPath: meta.manifestPath } : {}),
+        ace: aceBlock,
+      }),
+    );
   } catch {
     // Non-fatal: directory may not exist yet on the very first run.
   }
@@ -838,7 +868,9 @@ export async function readSessionMeta(
     return { kind: "malformed", reason: "expected JSON object" };
   }
   const meta = parsed as Record<string, unknown>;
-  const out: { manifestPath?: string; ace?: SessionAceProvenance } = {};
+  const version = typeof meta.version === "number" ? meta.version : undefined;
+  const out: { version?: number; manifestPath?: string; ace?: SessionAceProvenance } = {};
+  if (version !== undefined) out.version = version;
   if (typeof meta.manifestPath === "string") out.manifestPath = meta.manifestPath;
   const ace = meta.ace;
   if (ace !== null && typeof ace === "object") {
@@ -853,6 +885,12 @@ export async function readSessionMeta(
         lambda: typeof a.lambda === "number" ? a.lambda : undefined,
       };
     }
+  }
+  // v2 invariant: ace block must be present and parseable. A v2 sidecar
+  // without it is treated as malformed so the resume guard fails closed
+  // instead of silently skipping (round 6 finding).
+  if (out.version !== undefined && out.version >= 2 && out.ace === undefined) {
+    return { kind: "malformed", reason: "v2 sidecar missing ace provenance block" };
   }
   return { kind: "ok", meta: out };
 }
