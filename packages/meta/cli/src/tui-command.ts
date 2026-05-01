@@ -2477,6 +2477,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Activates model-response validation + tool-health tracking with an
     // empty config (observe-only, no validators, no quarantine thresholds).
     ...(process.env.KOI_FEEDBACK_LOOP_ENABLED === "true" ? { feedbackLoop: {} } : {}),
+    // KOI_INTENT_CAPSULE=<systemPrompt> opts into @koi/middleware-intent-capsule.
+    // Cryptographically binds the agent's mandate at session start with Ed25519;
+    // verifies hash on every model call. Throws PERMISSION on tamper. (gov-16 #1883)
+    ...(process.env.KOI_INTENT_CAPSULE !== undefined && process.env.KOI_INTENT_CAPSULE !== ""
+      ? { intentCapsule: { systemPrompt: process.env.KOI_INTENT_CAPSULE } }
+      : {}),
     extraMiddleware: [securityBridge.middleware],
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
