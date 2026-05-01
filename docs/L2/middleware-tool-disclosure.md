@@ -76,6 +76,13 @@ Tools are only promoted if they exist in the input descriptor list. Unknown name
 
 Above the threshold, undisclosed tools are advertised with `inputSchema: {}`. The engine's argument validator runs against the *advertised* schema, which means an empty schema accepts arbitrary args. To prevent malformed args from reaching the real tool implementation, `wrapToolCall` rejects direct calls to known-but-not-promoted tools with a `VALIDATION` error that tells the model to promote the tool first.
 
+**Two-step authorization (no same-turn execution after promotion).** Promotion alone does NOT authorize execution. The middleware tracks two separate sets per session:
+
+- `promoted` — tools the model has asked to lift out of summary level
+- `executable` — tools the model is currently allowed to call
+
+`executable` is rebuilt from `promoted` only at the next `wrapModelCall`. So a model that emits `promote_tools(["x"])` and `x({...})` in the same parallel-tool batch is rejected on the second call: x is now promoted, but its full schema has not yet been re-advertised — the args the model picked were chosen against the empty summary schema and cannot be trusted. The model must wait for the next round-trip.
+
 Trace of a successful flow:
 
 ```

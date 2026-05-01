@@ -101,6 +101,13 @@ interface SessionState {
   // wrapToolCall whose ctx.turnId differs from this is operating against a
   // stale advertisement (engine race or out-of-order callback) — reject.
   lastTurnId: TurnId | undefined;
+  // Tools that are executable RIGHT NOW. Populated from `promoted` at every
+  // wrapModelCall, so a tool just promoted via the companion (mid-turn) is
+  // NOT yet executable — the model must observe the full schema in a
+  // subsequent advertisement before its calls are allowed. Without this,
+  // the model could call promote_tools(["x"]) and x({...}) in the same
+  // parallel-tool batch and execute against an empty schema {}.
+  executable: ReadonlySet<string>;
 }
 
 /**
@@ -200,6 +207,7 @@ export function createToolDisclosureMiddleware(
         lastFingerprints: new Map<string, string>(),
         everAdvertised: false,
         lastTurnId: undefined,
+        executable: new Set<string>(),
       };
       sessions.set(sid, state);
     }
@@ -212,6 +220,7 @@ export function createToolDisclosureMiddleware(
     if (state.promoted.size > 0) state.promoted = new Map<string, string>();
     if (state.knownNames.size > 0) state.knownNames = new Set();
     if (state.lastFingerprints.size > 0) state.lastFingerprints = new Map<string, string>();
+    if (state.executable.size > 0) state.executable = new Set();
   }
 
   function disclose(
@@ -246,6 +255,15 @@ export function createToolDisclosureMiddleware(
     state.knownNames = names;
     state.lastFingerprints = currentFingerprints;
     state.everAdvertised = true;
+    // Snapshot the currently-promoted set as the executable set for this
+    // turn. Tools promoted later (mid-turn via promote_tools) won't appear
+    // here until the NEXT wrapModelCall — so same-turn execution against
+    // the still-summary schema {} is rejected.
+    const executable = new Set<string>();
+    for (const name of state.promoted.keys()) {
+      if (names.has(name)) executable.add(name);
+    }
+    state.executable = executable;
     return result;
   }
 
@@ -319,6 +337,10 @@ export function createToolDisclosureMiddleware(
         state.promoted = newPromoted;
         state.lastFingerprints = fingerprints;
         state.everAdvertised = true;
+        // Below-threshold: every advertised tool is implicitly promoted AND
+        // immediately executable — the model is seeing the full schema in
+        // this same advertisement.
+        state.executable = new Set(names);
         recordAdvertisement(state, ctx.turnId);
         return next(request);
       }
@@ -411,14 +433,15 @@ export function createToolDisclosureMiddleware(
             metadata: { error: true, toolId: request.toolId, code: "VALIDATION" },
           };
         }
-        if (!state.promoted.has(request.toolId)) {
+        if (!state.executable.has(request.toolId)) {
+          const justPromoted = state.promoted.has(request.toolId);
+          const message = justPromoted
+            ? `Tool '${request.toolId}' was promoted this turn but its full schema has not yet been re-advertised. Wait for the next model round-trip — the tool will be executable then.`
+            : `Tool '${request.toolId}' is at summary level — call ${promoteToolName}(["${request.toolId}"]) first to load its full schema, then retry.`;
           return {
             output: {
               ok: false,
-              error: {
-                code: "VALIDATION",
-                message: `Tool '${request.toolId}' is at summary level — call ${promoteToolName}(["${request.toolId}"]) first to load its full schema, then retry.`,
-              },
+              error: { code: "VALIDATION", message },
             },
             metadata: { error: true, toolId: request.toolId, code: "VALIDATION" },
           };

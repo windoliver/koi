@@ -374,13 +374,18 @@ describe("createToolDisclosureMiddleware", () => {
       expect(response.metadata?.error).toBe(true);
     });
 
-    test("after promotion, direct calls are allowed (next is invoked)", async () => {
+    test("after promotion AND re-advertisement, direct calls are allowed (next is invoked)", async () => {
       const mw = createToolDisclosureMiddleware({ threshold: 5 });
       const tools = descriptors(10);
       const sid: SessionId = sessionId("session-y");
-      const ctxY = createMockTurnContext({ session: { sessionId: sid } });
+      const ctxY = createMockTurnContext({ session: { sessionId: sid }, turnIndex: 0 });
       await mw.wrapModelCall?.(ctxY, { messages: [], tools }, captureNext().handler);
       mw.promoteByNameForSession(sid, ["tool-1"]);
+      // Re-advertisement is required — promotion alone is not execution
+      // authorization. The next model round-trip refreshes the executable
+      // set from the promoted set.
+      const ctxY1 = createMockTurnContext({ session: { sessionId: sid }, turnIndex: 1 });
+      await mw.wrapModelCall?.(ctxY1, { messages: [], tools }, captureNext().handler);
 
       const wrap = mw.wrapToolCall;
       if (!wrap) throw new Error("wrapToolCall missing");
@@ -389,8 +394,47 @@ describe("createToolDisclosureMiddleware", () => {
         nextCalled = true;
         return { output: "ok" };
       };
-      await wrap(ctxY, { toolId: "tool-1", input: {} }, noop);
+      await wrap(ctxY1, { toolId: "tool-1", input: {} }, noop);
       expect(nextCalled).toBe(true);
+    });
+
+    test("same-turn promote_tools does NOT immediately authorize execution", async () => {
+      // Regression: model emits promote_tools(["x"]) and x({...}) in the
+      // same parallel-tool batch. The second call must be rejected — its
+      // schema was {} when the model picked args, so executing now would
+      // bypass schema validation.
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      mw.notifyCompanionRegistered();
+      const tools: readonly ToolDescriptor[] = [...descriptors(10), createPromoteToolDescriptor()];
+      const sid: SessionId = sessionId("same-turn");
+      const ctxS = createMockTurnContext({ session: { sessionId: sid } });
+      await mw.wrapModelCall?.(ctxS, { messages: [], tools }, captureNext().handler);
+
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+
+      // First, the companion call promotes tool-7
+      const promoteResp = await wrap(
+        ctxS,
+        { toolId: PROMOTE_TOOL_NAME, input: { names: ["tool-7"] } },
+        async (): Promise<ToolResponse> => {
+          throw new Error("companion should be intercepted");
+        },
+      );
+      const promoteOut = promoteResp.output as { ok: boolean };
+      expect(promoteOut.ok).toBe(true);
+
+      // Then the same-turn call to tool-7 must be rejected — full schema
+      // not yet re-advertised.
+      const noop = async (): Promise<ToolResponse> => ({ output: "ok" });
+      const callResp = await wrap(ctxS, { toolId: "tool-7", input: {} }, noop);
+      const callOut = callResp.output as {
+        ok: boolean;
+        error?: { code: string; message: string };
+      };
+      expect(callOut.ok).toBe(false);
+      expect(callOut.error?.code).toBe("VALIDATION");
+      expect(callOut.error?.message).toContain("not yet been re-advertised");
     });
 
     test("unknown tool names pass through when disclosure is NOT active", async () => {
@@ -559,13 +603,16 @@ describe("createToolDisclosureMiddleware", () => {
       // notifyCompanionRegistered() intentionally NOT called — we are
       // simulating standalone use where the bundle is absent.
       const sid: SessionId = sessionId("collision");
-      const ctxK = createMockTurnContext({ session: { sessionId: sid } });
 
       // First disclose a 10-tool set so promote_tools is implicitly known
       // and then promote it as a regular tool.
       const tools: readonly ToolDescriptor[] = [...descriptors(9), descriptor(PROMOTE_TOOL_NAME)];
-      await mw.wrapModelCall?.(ctxK, { messages: [], tools }, captureNext().handler);
+      const ctxK0 = createMockTurnContext({ session: { sessionId: sid }, turnIndex: 0 });
+      const ctxK1 = createMockTurnContext({ session: { sessionId: sid }, turnIndex: 1 });
+      await mw.wrapModelCall?.(ctxK0, { messages: [], tools }, captureNext().handler);
       mw.promoteByNameForSession(sid, [PROMOTE_TOOL_NAME]);
+      // Re-advertise so promote_tools enters the executable set
+      await mw.wrapModelCall?.(ctxK1, { messages: [], tools }, captureNext().handler);
 
       const wrap = mw.wrapToolCall;
       if (!wrap) throw new Error("wrapToolCall missing");
@@ -575,7 +622,7 @@ describe("createToolDisclosureMiddleware", () => {
         return { output: "user-tool-ran" };
       };
       const response = await wrap(
-        ctxK,
+        ctxK1,
         { toolId: PROMOTE_TOOL_NAME, input: { foo: "bar" } },
         realHandler,
       );
