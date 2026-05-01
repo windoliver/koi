@@ -13,7 +13,9 @@ import {
   bumpFailureCount,
   markDoneMany,
   nextItem,
+  type PRDLock,
   readPRD,
+  refreshPRDLock,
   releasePRDLock,
 } from "./prd-store.js";
 import type {
@@ -252,7 +254,7 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
         }
       }
       try {
-        return await runOnce(ac);
+        return await runOnce(ac, lock);
       } finally {
         runState = "completed";
         await releasePRDLock(lock);
@@ -269,7 +271,10 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
 
   // The actual run loop, factored out so the lifecycle guard above stays
   // readable and the abort controller is scoped to each invocation.
-  async function runOnce(abortController: AbortController): Promise<VerifiedLoopResult> {
+  async function runOnce(
+    abortController: AbortController,
+    lock: PRDLock,
+  ): Promise<VerifiedLoopResult> {
     const startTime = performance.now();
     const iterationRecords: IterationRecord[] = [];
 
@@ -302,6 +307,19 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
       i++
     ) {
       const iterStart = performance.now();
+
+      // Refresh the lock heartbeat at the top of every iteration so a
+      // long-running loop does not look stale to a recovering peer.
+      // refresh returns false only if the lock has been broken or
+      // taken over by someone else — in that case we MUST stop
+      // immediately rather than continue mutating the PRD without
+      // exclusivity.
+      const refreshed = await refreshPRDLock(lock);
+      if (!refreshed) {
+        throw new Error(
+          `VerifiedLoop: lost PRD lock at ${lock.path} mid-run (lockfile missing, corrupt, or owned by another coordinator)`,
+        );
+      }
 
       const currentPrd = await readPRD(prdPath);
       if (!currentPrd.ok) {
@@ -367,10 +385,15 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
             : `${reason} before verification could run`,
         };
       } else {
-        const gateSignal = AbortSignal.any([
-          abortController.signal,
-          AbortSignal.timeout(gateTimeoutMs),
-        ]);
+        // Hold the timeout signal separately from the composed gateSignal
+        // so we can distinguish "gate timed out" from "operator stopped
+        // the loop during verify". The latter is allowed to commit if the
+        // verifier returns passed:true (the gate did its work; the user
+        // just asked the loop to wind down). The former must NEVER commit
+        // because the verifier ran past its budget and any returned
+        // passed:true is racing the timeout.
+        const gateTimeoutSignal = AbortSignal.timeout(gateTimeoutMs);
+        const gateSignal = AbortSignal.any([abortController.signal, gateTimeoutSignal]);
         // Fail-fast if the loop has already been aborted before we
         // even invoke the gate. Otherwise verify() may run, resolve
         // {passed:true}, and slip past the abort race below (the
@@ -409,6 +432,21 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
               });
             });
             gateResult = await Promise.race([gatePromise, timeoutPromise]);
+            // Defense-in-depth: a cooperative verifier that listens for
+            // ctx.signal can resolve {passed:true} during its abort
+            // handler and beat the timeoutPromise rejection in the race.
+            // After winning, that result would flow into markDoneMany
+            // even though the gate timed out. Force passed:false when
+            // the local timeout fired regardless of who won the race.
+            // (We do NOT do this for abortController.signal — operator
+            // stop during verify is an intentional shutdown and a
+            // verifier returning passed:true is allowed to commit.)
+            if (gateTimeoutSignal.aborted && gateResult.passed) {
+              gateResult = {
+                passed: false,
+                details: `Gate timed out (${gateTimeoutMs}ms); refusing to honor late passed:true result`,
+              };
+            }
           } catch (e: unknown) {
             // Gate timed out or aborted. The gate's promise is still in
             // flight unless it cooperatively settles after seeing

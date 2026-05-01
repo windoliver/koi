@@ -453,11 +453,13 @@ export async function markDoneMany(
 }
 
 /**
- * Handle returned by acquirePRDLock; pass to releasePRDLock to release.
- * Carries an unguessable owner token so releasePRDLock can verify this
- * process still owns the lock before unlinking — preventing one
- * coordinator from accidentally deleting another's live lock if a
- * stale-break ever races a normal exit.
+ * Handle returned by acquirePRDLock; pass to releasePRDLock to release
+ * or to refreshPRDLock to extend the heartbeat.
+ *
+ * Carries an unguessable owner token so releasePRDLock / refreshPRDLock
+ * can verify this process still owns the lock before mutating it —
+ * preventing one coordinator from accidentally deleting another's live
+ * lock if a stale-break ever races a normal exit.
  */
 export interface PRDLock {
   readonly path: string;
@@ -465,13 +467,30 @@ export interface PRDLock {
 }
 
 /**
+ * A lock is considered stale when its heartbeat is older than this
+ * threshold. Must be greater than the longest expected pause between
+ * heartbeats (the orchestrator refreshes per iteration; default
+ * iteration timeout is 10 min, so we allow 15 min slack).
+ */
+const HEARTBEAT_STALE_MS = 15 * 60_000;
+
+/**
  * Acquire an advisory lock on the PRD path. Creates `<prdPath>.lock`
  * with O_EXCL containing the holder's PID, host, owner token, and
- * acquisition time. Returns CONFLICT if a *live* coordinator already
- * holds it. A lock is broken ONLY when the holder PID is provably
- * dead (ESRCH) or the lock contents are unparseable — never on age
- * alone, since healthy long-running iterations would otherwise lose
- * exclusivity (default iteration timeout is 10 min, gate is 2 min).
+ * heartbeat timestamp. Returns CONFLICT if a *live* coordinator
+ * already holds it.
+ *
+ * Stale detection is heartbeat-based, not PID-based: a lock is broken
+ * when heartbeat age exceeds HEARTBEAT_STALE_MS. PID liveness alone is
+ * unreliable for crash recovery because the dead coordinator's PID can
+ * be reused by an unrelated process before the next run, making a
+ * stale lock indistinguishable from a live one. Heartbeat freshness
+ * cannot be forged by PID reuse: only the owning run() invocation
+ * (which holds refreshPRDLock via the owner token) can update it.
+ *
+ * The orchestrator must call refreshPRDLock at least every
+ * HEARTBEAT_STALE_MS ms during a long run; the default cadence is
+ * once per iteration.
  *
  * Lock is process-local: it does NOT survive across hosts. For
  * cross-host exclusion the deployment must front this with a
@@ -487,11 +506,13 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
     try {
       const handle = await open(lockPath, "wx");
       try {
+        const now = new Date().toISOString();
         const payload = JSON.stringify({
           pid: process.pid,
           host: process.env.HOSTNAME ?? "unknown",
           owner,
-          acquiredAt: new Date().toISOString(),
+          acquiredAt: now,
+          heartbeatAt: now,
         });
         await handle.writeFile(payload);
         await handle.sync();
@@ -507,21 +528,33 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
           error: internal(`Failed to acquire PRD lock at ${lockPath}: ${extractMessage(e)}`, e),
         };
       }
-      // Lock exists. Break ONLY if the holder PID is dead or the lock
-      // file is unparseable. Age alone is never sufficient — a normal
-      // run can hold the lock for many minutes.
+      // Lock exists. Break it when:
+      //   - lock file is unparseable, OR
+      //   - heartbeat is older than HEARTBEAT_STALE_MS, OR
+      //   - holder PID is provably dead (ESRCH).
+      // Heartbeat freshness is the primary source of truth — only the
+      // legitimate owner can update heartbeatAt (refreshPRDLock checks
+      // the owner token), so PID reuse cannot forge it. The PID-dead
+      // path exists as a fast-recovery hint: if we can prove the
+      // holder is gone, we don't need to wait for heartbeat staleness.
       // Use let — justified: assigned across try/catch.
       let stale = false;
       try {
         const raw = await readFile(lockPath, "utf8");
-        const meta = JSON.parse(raw) as { pid?: unknown };
-        if (typeof meta.pid !== "number") {
+        const meta = JSON.parse(raw) as { heartbeatAt?: unknown; pid?: unknown };
+        const heartbeatMs =
+          typeof meta.heartbeatAt === "string" ? Date.parse(meta.heartbeatAt) : Number.NaN;
+        if (!Number.isFinite(heartbeatMs)) {
           stale = true;
         } else {
-          // process.kill(pid, 0) probes for liveness without signaling.
-          // ESRCH = no such process; EPERM = process exists but we
-          // cannot signal it (different uid). EPERM means alive — do
-          // NOT break the lock in that case.
+          const ageMs = Date.now() - heartbeatMs;
+          if (ageMs > HEARTBEAT_STALE_MS) stale = true;
+        }
+        // Fast-path: if PID is provably dead, break immediately even
+        // if the heartbeat is fresh (the holder couldn't have updated
+        // it). EPERM means the process exists under a different uid —
+        // do NOT treat as dead. ESRCH = no such process.
+        if (!stale && typeof meta.pid === "number") {
           try {
             process.kill(meta.pid, 0);
           } catch (probeErr: unknown) {
@@ -550,6 +583,40 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
     ok: false,
     error: internal(`Failed to acquire PRD lock at ${lockPath} after breaking stale holder`),
   };
+}
+
+/**
+ * Refresh the heartbeat of a held lock. Owner-checked: a no-op if
+ * the lock file is missing, corrupt, or owned by a different token.
+ * Returns `false` if the lock is no longer held by this owner so the
+ * caller can fail loudly; returns `true` after a successful update.
+ *
+ * Read-modify-write is intentional: we preserve any other fields the
+ * lock format may grow (acquiredAt, host, pid).
+ */
+export async function refreshPRDLock(lock: PRDLock): Promise<boolean> {
+  // Use let — justified: assigned across try/catch.
+  let meta: Record<string, unknown>;
+  try {
+    const raw = await readFile(lock.path, "utf8");
+    meta = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  if (meta.owner !== lock.owner) return false;
+  meta.heartbeatAt = new Date().toISOString();
+  // Atomic-ish update: write to tmp + rename. We do not fsync here
+  // because heartbeat loss across a crash is harmless — the next
+  // owner just sees a slightly older heartbeatAt and waits longer.
+  const tmpPath = `${lock.path}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  try {
+    await Bun.write(tmpPath, JSON.stringify(meta));
+    await rename(tmpPath, lock.path);
+  } catch {
+    await unlink(tmpPath).catch(() => undefined);
+    return false;
+  }
+  return true;
 }
 
 /**

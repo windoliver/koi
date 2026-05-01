@@ -1256,7 +1256,13 @@ describe("VerifiedLoop.run", () => {
     // own PID (which IS alive) and a fresh acquiredAt timestamp.
     await Bun.write(
       lockPath,
-      JSON.stringify({ pid: process.pid, host: "test", acquiredAt: new Date().toISOString() }),
+      JSON.stringify({
+        pid: process.pid,
+        host: "test",
+        owner: "external",
+        acquiredAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+      }),
     );
     try {
       const loop = createVerifiedLoop(makeConfig());
@@ -1284,7 +1290,9 @@ describe("VerifiedLoop.run", () => {
     // liveness matters.
     await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
     const lockPath = `${prdPath}.lock`;
-    // Lock held by THIS live process, but timestamped 1 hour ago.
+    // Lock held by an external owner, acquired 1 hour ago, BUT
+    // heartbeat is fresh (within the staleness window). The lock must
+    // remain held — heartbeat freshness is the source of truth.
     await Bun.write(
       lockPath,
       JSON.stringify({
@@ -1292,6 +1300,7 @@ describe("VerifiedLoop.run", () => {
         host: "test",
         owner: "external-owner",
         acquiredAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        heartbeatAt: new Date().toISOString(),
       }),
     );
     try {
@@ -1329,6 +1338,7 @@ describe("VerifiedLoop.run", () => {
         host: "test",
         owner: "external-owner-token",
         acquiredAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
       }),
     );
     try {
@@ -1351,21 +1361,23 @@ describe("VerifiedLoop.run", () => {
     }
   });
 
-  test("breaks a stale lock from a dead PID", async () => {
-    // Regression: a crashed coordinator leaves its lock file behind. A
-    // restart must be able to take over rather than getting stuck.
+  test("breaks a lock with a stale heartbeat", async () => {
+    // Regression: a crashed coordinator leaves its lock file behind
+    // with a heartbeat that no live owner is updating. After
+    // HEARTBEAT_STALE_MS (15 min) the next runner must be able to
+    // take over. Heartbeat-based stale detection is preferred over
+    // PID-based because PID can be reused after crash.
     await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
     const lockPath = `${prdPath}.lock`;
-    // PID 1 is reserved (init) but unreachable from a normal user;
-    // process.kill(1, 0) throws EPERM on macOS / Linux for non-root.
-    // Use a recycled-impossible PID instead: a very large number that
-    // is essentially never allocated.
+    // Heartbeat from 1 hour ago — well past the 15-min staleness threshold.
     await Bun.write(
       lockPath,
       JSON.stringify({
-        pid: 2147483646,
+        pid: process.pid,
         host: "test",
-        acquiredAt: new Date().toISOString(),
+        owner: "dead-owner",
+        acquiredAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        heartbeatAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
       }),
     );
     const loop = createVerifiedLoop(makeConfig());
