@@ -1573,13 +1573,31 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }
         }
       }
-      // Issue #2088 — note: a resume-time ACE rejection was deliberately
-      // NOT added here. See the matching comment in commands/start.ts —
-      // this build does not actually wire ACE, so a resumed session with
-      // ace.enabled: true behaves identically to any other session. The
-      // activation PR is the natural place to add comprehensive resume-
-      // time rejection alongside hardened sidecar validation (the
-      // readSessionMeta() {}-on-malformed gap is broader than ACE).
+      // Issue #2088 — ACE resume safety. When the original session ran
+      // with ace.enabled: true, silently resuming without ACE (bare
+      // --resume → skipManifestDiscovery → manifestAceConfig undefined)
+      // OR with a different playbook_path (--resume --manifest other.yaml)
+      // would either drop ACE state on the floor or attach the resumed
+      // run to the wrong playbook DB. Refuse both; the operator must
+      // re-specify the matching --manifest to continue.
+      if (resumeAuditResult.ok && resumeAuditResult.value.ace?.enabled === true) {
+        const originalAce = resumeAuditResult.value.ace;
+        const currentMatches =
+          manifestAceConfig?.enabled === true &&
+          manifestAceConfig.playbookPath === originalAce.playbookPath;
+        if (!currentMatches) {
+          process.stderr.write(
+            "koi tui: original session ran with ace.enabled: true" +
+              (originalAce.playbookPath !== undefined
+                ? ` and playbook_path: ${JSON.stringify(originalAce.playbookPath)}`
+                : "") +
+              " — refusing to resume without the matching ACE config. " +
+              "Pass --manifest <path> pointing to the original manifest (or one with matching ace config), " +
+              "or start a new session.\n",
+          );
+          process.exit(1);
+        }
+      }
     }
   }
 

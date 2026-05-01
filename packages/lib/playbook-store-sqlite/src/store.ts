@@ -7,6 +7,7 @@
 
 import { Database } from "bun:sqlite";
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { uptime as osUptime } from "node:os";
 import { dirname } from "node:path";
 
 import type {
@@ -177,9 +178,30 @@ const noopRelease = (): void => {};
  * also atomic: unlink → re-attempt exclusive create. If another live
  * process owns the lock, throw with an actionable error.
  */
+interface LockMetadata {
+  readonly pid: number;
+  /**
+   * Approximate host boot time as `Date.now() - os.uptime()*1000`. Used to
+   * detect locks left over from a previous boot: if the host has rebooted,
+   * any lock from before the reboot is unconditionally stale, regardless
+   * of whether the OS later reused the recorded PID for an unrelated
+   * process. Tolerance is wide (5 seconds) because uptime granularity and
+   * NTP corrections can shift the inferred boot epoch by small amounts.
+   */
+  readonly bootEpochMs: number;
+}
+
+function currentBootEpochMs(): number {
+  return Date.now() - Math.round(osUptime() * 1000);
+}
+
+function bootEpochsMatch(a: number, b: number): boolean {
+  return Math.abs(a - b) < 5_000;
+}
+
 function acquireWriterLock(dbPath: string): () => void {
   const lockPath = `${dbPath}.lock`;
-  const myPid = process.pid;
+  const meta: LockMetadata = { pid: process.pid, bootEpochMs: currentBootEpochMs() };
   // In-process refcount: multiple handles in one process share the lock
   // (same fate, single-threaded). Only unlink when the LAST handle closes,
   // otherwise an early close would drop the lock while another in-process
@@ -188,21 +210,21 @@ function acquireWriterLock(dbPath: string): () => void {
   const existing = INPROC_LOCKS.get(lockPath);
   if (existing !== undefined) {
     existing.refcount += 1;
-    return makeReleaser(lockPath, myPid);
+    return makeReleaser(lockPath, meta);
   }
   const fd = openLockExclusive(lockPath, dbPath, /* allowReclaim= */ true);
   try {
-    writeSync(fd, String(myPid));
+    writeSync(fd, JSON.stringify(meta));
   } finally {
     closeSync(fd);
   }
   INPROC_LOCKS.set(lockPath, { refcount: 1 });
-  return makeReleaser(lockPath, myPid);
+  return makeReleaser(lockPath, meta);
 }
 
 const INPROC_LOCKS = new Map<string, { refcount: number }>();
 
-function makeReleaser(lockPath: string, myPid: number): () => void {
+function makeReleaser(lockPath: string, owned: LockMetadata): () => void {
   let released = false;
   return (): void => {
     if (released) return;
@@ -213,14 +235,42 @@ function makeReleaser(lockPath: string, myPid: number): () => void {
     if (entry.refcount > 0) return;
     INPROC_LOCKS.delete(lockPath);
     try {
-      const raw = readFileSync(lockPath, "utf8").trim();
-      if (Number.parseInt(raw, 10) === myPid) {
+      const parsed = parseLockMetadata(readFileSync(lockPath, "utf8"));
+      if (parsed?.pid === owned.pid && bootEpochsMatch(parsed.bootEpochMs, owned.bootEpochMs)) {
         unlinkSync(lockPath);
       }
     } catch {
       // Lock file already gone or unreadable; nothing to do.
     }
   };
+}
+
+function parseLockMetadata(raw: string): LockMetadata | undefined {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return undefined;
+  // New format: JSON {pid, bootEpochMs}.
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as Partial<LockMetadata>;
+      if (
+        typeof parsed.pid === "number" &&
+        Number.isFinite(parsed.pid) &&
+        typeof parsed.bootEpochMs === "number" &&
+        Number.isFinite(parsed.bootEpochMs)
+      ) {
+        return { pid: parsed.pid, bootEpochMs: parsed.bootEpochMs };
+      }
+    } catch {
+      // Fall through.
+    }
+    return undefined;
+  }
+  // Legacy format: bare integer PID. Treat boot epoch as "unknown" so the
+  // boot-mismatch reclaim path doesn't fire (we can't tell). PID-aliveness
+  // alone gates reclaim, matching pre-bootEpoch behavior.
+  const pid = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(pid) || pid <= 0) return undefined;
+  return { pid, bootEpochMs: Number.NaN };
 }
 
 function openLockExclusive(lockPath: string, dbPath: string, allowReclaim: boolean): number {
@@ -232,26 +282,27 @@ function openLockExclusive(lockPath: string, dbPath: string, allowReclaim: boole
     if (code !== "EEXIST" || !allowReclaim) {
       throw err;
     }
-    // Lock exists. Reclaim only if its PID is dead. Anything else (live
-    // PID, malformed/unreadable) is treated as a live writer to avoid
-    // ever evicting a real owner — operators can remove a corrupt lock
-    // by hand if needed.
-    let heldPid = Number.NaN;
+    // Lock exists. Reclaim only when we can prove it's stale — PID dead OR
+    // host rebooted since the lock was written (PID-reuse-after-reboot
+    // can't fool us because the boot epoch differs). Same-PID re-open
+    // within one process is allowed (handles share fate). Anything else
+    // is treated as a live writer to avoid ever evicting a real owner.
+    let parsed: LockMetadata | undefined;
     try {
-      heldPid = Number.parseInt(readFileSync(lockPath, "utf8").trim(), 10);
+      parsed = parseLockMetadata(readFileSync(lockPath, "utf8"));
     } catch {
       // Unreadable lock — treat as live to fail closed.
     }
-    // Same-PID re-open: an existing lock held by *this* process is not a
-    // foreign writer. Two handles in one process share fate (one ACE
-    // middleware per session, single-threaded JS) — allow it and write
-    // back our PID to keep the lock owned. Returns a no-op fd via a temp
-    // sentinel; we still hold the lock until close().
-    if (heldPid === process.pid) {
+    if (parsed?.pid === process.pid) {
       // Open for write so subsequent writeSync overwrites the same PID.
       return openSync(lockPath, "w");
     }
-    if (Number.isFinite(heldPid) && heldPid > 0 && !isProcessAlive(heldPid)) {
+    const bootMismatched =
+      parsed !== undefined &&
+      Number.isFinite(parsed.bootEpochMs) &&
+      !bootEpochsMatch(parsed.bootEpochMs, currentBootEpochMs());
+    const pidDead = parsed !== undefined && !isProcessAlive(parsed.pid);
+    if (parsed !== undefined && (bootMismatched || pidDead)) {
       try {
         unlinkSync(lockPath);
       } catch {
@@ -265,7 +316,7 @@ function openLockExclusive(lockPath: string, dbPath: string, allowReclaim: boole
     }
     throw new Error(
       `playbook-store-sqlite: refusing to open ${dbPath} — another process` +
-        (Number.isFinite(heldPid) ? ` (pid ${heldPid})` : "") +
+        (parsed !== undefined ? ` (pid ${parsed.pid})` : "") +
         " holds the writer lock. Concurrent ACE writers against one SQLite file are not supported. " +
         `Stop the other process or remove ${lockPath} if it is stale.`,
     );

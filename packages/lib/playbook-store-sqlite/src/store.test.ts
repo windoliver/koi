@@ -1581,23 +1581,51 @@ describe("createSqlitePlaybookStore — writer lock", () => {
   // baseline at session start and the second to finish would hit the
   // version-CAS rejection at session end. The store refuses up front instead.
 
-  test("refuses to open when another live process holds the lock", () => {
-    // Foreign-PID lock: use PID 1 (init), guaranteed to exist on macOS/Linux.
+  test("refuses to open when another live process holds the lock", async () => {
+    // Foreign-PID lock with matching boot epoch (= same host boot, can't be
+    // reclaimed via the boot-mismatch path; PID 1 is alive, can't be reclaimed
+    // via the dead-PID path either). Must refuse.
+    const { uptime } = await import("node:os");
+    const bootEpochMs = Date.now() - Math.round(uptime() * 1000);
+    writeFileSync(`${dbPath}.lock`, JSON.stringify({ pid: 1, bootEpochMs }));
+    expect(() => createSqlitePlaybookStore({ path: dbPath })).toThrow(/writer lock/);
+  });
+
+  test("reclaims a stale lock whose PID is no longer alive", async () => {
+    const { uptime } = await import("node:os");
+    const bootEpochMs = Date.now() - Math.round(uptime() * 1000);
+    writeFileSync(`${dbPath}.lock`, JSON.stringify({ pid: 2_147_483_647, bootEpochMs }));
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    const meta = JSON.parse(readFileSync(`${dbPath}.lock`, "utf8")) as { pid: number };
+    expect(meta.pid).toBe(process.pid);
+    store.close();
+  });
+
+  test("reclaims a lock from a previous boot even if PID happens to be alive", () => {
+    // Crash recovery scenario: lock from previous host boot, PID was reused
+    // by an unrelated process. Without bootEpoch, the PID-aliveness probe
+    // would falsely treat the foreign live process as the lock owner and
+    // refuse forever. The boot-epoch mismatch reclaims it.
+    writeFileSync(
+      `${dbPath}.lock`,
+      JSON.stringify({ pid: 1, bootEpochMs: 1 }), // ancient boot epoch
+    );
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    const meta = JSON.parse(readFileSync(`${dbPath}.lock`, "utf8")) as { pid: number };
+    expect(meta.pid).toBe(process.pid);
+    store.close();
+  });
+
+  test("legacy bare-PID lockfile is honored when PID is alive", () => {
+    // Backwards compatibility: locks written by a pre-bootEpoch build.
     writeFileSync(`${dbPath}.lock`, "1");
     expect(() => createSqlitePlaybookStore({ path: dbPath })).toThrow(/writer lock/);
   });
 
-  test("reclaims a stale lock whose PID is no longer alive", () => {
-    // Use a PID extremely unlikely to be live: 2^31-1.
-    writeFileSync(`${dbPath}.lock`, "2147483647");
-    const store = createSqlitePlaybookStore({ path: dbPath });
-    expect(readFileSync(`${dbPath}.lock`, "utf8")).toBe(String(process.pid));
-    store.close();
-  });
-
   test("removes the lock file on close", () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
-    expect(readFileSync(`${dbPath}.lock`, "utf8")).toBe(String(process.pid));
+    const meta = JSON.parse(readFileSync(`${dbPath}.lock`, "utf8")) as { pid: number };
+    expect(meta.pid).toBe(process.pid);
     store.close();
     expect(() => readFileSync(`${dbPath}.lock`, "utf8")).toThrow(/ENOENT/);
   });
