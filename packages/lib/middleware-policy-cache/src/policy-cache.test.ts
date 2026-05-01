@@ -760,6 +760,64 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
       context: { source: "policy-cache", brickId: "brick-1", scope: "agent" },
     });
     expect(sink[0]?.decision).toMatchObject({ effect: "deny", disposition: "hard" });
+    // Trust boundary: dispatched reason is the fixed redacted string, NEVER
+    // the executor's reason. event-trace persists permission-decision reasons
+    // to long-lived trajectory storage, so forwarding executor text would
+    // leak rule internals or input fragments.
+    expect((sink[0]?.decision as { reason: string }).reason).toBe("policy-cache: tool denied");
+  });
+
+  test("synthetic deny reason is redacted even when executor returns sensitive text", async () => {
+    const handle = createPolicyCacheMiddleware();
+    const leaky: PolicyEntry = {
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "rm",
+      brickId: "brick-1",
+      verified: true,
+      execute: () => ({
+        action: "block",
+        reason: "internal-rule-id-42 fired on path=/secret/credentials.json",
+      }),
+    };
+    handle.register(leaky);
+    const sink: Array<{ query: unknown; decision: unknown }> = [];
+    const ctx = ctxWithDispatch("agent-A", sink);
+    const next = mock(async () => makeResp());
+    await handle.middleware.wrapToolCall?.(ctx, makeReq("rm"), next as ToolHandler);
+    const reason = (sink[0]?.decision as { reason: string }).reason;
+    expect(reason).not.toContain("internal-rule-id-42");
+    expect(reason).not.toContain("/secret/credentials.json");
+    expect(reason).toBe("policy-cache: tool denied");
+  });
+
+  test("async observer rejection is contained (no unhandled rejection)", async () => {
+    const handle = createPolicyCacheMiddleware();
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const ctx: TurnContext = {
+      session: { agentId: "agent-A", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "t" as never,
+      messages: [],
+      metadata: {},
+      // Returns a rejecting promise — the middleware MUST swallow it.
+      dispatchPermissionDecision: () => Promise.reject(new Error("async sink down")),
+    } as unknown as TurnContext;
+    const next = mock(async () => makeResp());
+    const unhandled: unknown[] = [];
+    const handler = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", handler);
+    try {
+      const resp = await handle.middleware.wrapToolCall?.(ctx, makeReq("rm"), next as ToolHandler);
+      expect(resp?.metadata).toMatchObject({ policyDenied: true });
+      // Yield a tick so any rejection has a chance to surface.
+      await new Promise<void>((r) => setTimeout(r, 5));
+      expect(unhandled).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", handler);
+    }
   });
 
   test("quarantined entry still dispatches synthetic deny", async () => {
@@ -827,46 +885,72 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
 });
 
 describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
-  test("evicts LRU agent bucket when maxAgentBuckets exceeded", () => {
+  test("rejects new-agent registration when maxAgentBuckets is reached (fail-closed)", () => {
     const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 3 });
-    handle.register(makeAgentPolicy("agent-1", "t", "b1"));
-    handle.register(makeAgentPolicy("agent-2", "t", "b2"));
-    handle.register(makeAgentPolicy("agent-3", "t", "b3"));
+    expect(handle.register(makeAgentPolicy("agent-1", "t", "b1")).ok).toBe(true);
+    expect(handle.register(makeAgentPolicy("agent-2", "t", "b2")).ok).toBe(true);
+    expect(handle.register(makeAgentPolicy("agent-3", "t", "b3")).ok).toBe(true);
     expect(handle.size()).toBe(3);
-    // Registering a 4th agent evicts agent-1's entire bucket.
-    handle.register(makeAgentPolicy("agent-4", "t", "b4"));
+
+    const result = handle.register(makeAgentPolicy("agent-4", "t", "b4"));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      // Marked retryable so forge can shed load or evict explicitly first.
+      expect(result.error.retryable).toBe(true);
+      expect(result.error.context?.maxAgentBuckets).toBe(3);
+    }
     expect(handle.size()).toBe(3);
   });
 
-  test("agent-bucket recency is bumped on lookup hit, protecting from eviction", async () => {
-    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 3 });
-    handle.register(makeAgentPolicy("agent-1", "t", "b1", "block"));
-    handle.register(makeAgentPolicy("agent-2", "t", "b2"));
-    handle.register(makeAgentPolicy("agent-3", "t", "b3"));
-    // Hit agent-1 — it becomes most recently used at the bucket level.
-    const next = mock(async () => makeResp());
-    await handle.middleware.wrapToolCall?.(ctxFor("agent-1"), makeReq("t"), next as ToolHandler);
-    // Adding a 4th agent should now evict agent-2 (oldest), not agent-1.
-    handle.register(makeAgentPolicy("agent-4", "t", "b4"));
-    expect(handle.size()).toBe(3);
-    // agent-1's deny is still cached: a call for agent-1 must still be blocked.
-    const next2 = mock(async () => makeResp());
-    const resp = await handle.middleware.wrapToolCall?.(
-      ctxFor("agent-1"),
-      makeReq("t"),
-      next2 as ToolHandler,
+  test("does NOT silently drop another agent's verified deny under bucket pressure", async () => {
+    // Auth-downgrade regression: round 9 review caught that LRU eviction of
+    // entire agent buckets converted other agents' verified denies into
+    // cache misses (and thus fall-throughs to the unwrapped tool path).
+    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 2 });
+    expect(handle.register(makeAgentPolicy("victim", "fs.delete", "b-victim", "block")).ok).toBe(
+      true,
     );
-    expect(next2).not.toHaveBeenCalled();
+    expect(handle.register(makeAgentPolicy("noisy-1", "t", "b-n1")).ok).toBe(true);
+    // Pressure: a third agent tries to register. Must fail-closed, NOT evict.
+    expect(handle.register(makeAgentPolicy("noisy-2", "t", "b-n2")).ok).toBe(false);
+
+    // Victim's deny is still enforced.
+    const next = mock(async () => makeResp());
+    const resp = await handle.middleware.wrapToolCall?.(
+      ctxFor("victim"),
+      makeReq("fs.delete"),
+      next as ToolHandler,
+    );
+    expect(next).not.toHaveBeenCalled();
     expect(resp?.metadata).toMatchObject({ policyDenied: true });
   });
 
-  test("many distinct agents do not grow retained state without bound", () => {
-    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 5, maxEntries: 2 });
-    for (let i = 0; i < 1000; i++) {
-      handle.register(makeAgentPolicy(`agent-${String(i)}`, "t", `b${String(i)}`));
-    }
-    // 5 buckets × 2 entries each = 10 max.
-    expect(handle.size()).toBeLessThanOrEqual(10);
+  test("re-using an existing agent bucket succeeds even at bucket cap", () => {
+    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 2 });
+    handle.register(makeAgentPolicy("a1", "t1", "b1"));
+    handle.register(makeAgentPolicy("a2", "t1", "b2"));
+    // Adding more entries to an existing bucket is fine — the cap is on
+    // distinct buckets, not total entries.
+    expect(handle.register(makeAgentPolicy("a1", "t2", "b3")).ok).toBe(true);
+    expect(handle.size()).toBe(3);
+  });
+
+  test("explicit evict frees a bucket slot so new registrations succeed", () => {
+    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 2 });
+    handle.register(makeAgentPolicy("a1", "t", "b1"));
+    handle.register(makeAgentPolicy("a2", "t", "b2"));
+    expect(handle.register(makeAgentPolicy("a3", "t", "b3")).ok).toBe(false);
+    handle.evict("b1");
+    expect(handle.register(makeAgentPolicy("a3", "t", "b3")).ok).toBe(true);
+  });
+
+  test("global registrations are not constrained by agent-bucket cap", () => {
+    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 0 });
+    // 0 agent buckets allowed → agent registration fails…
+    expect(handle.register(makeAgentPolicy("a1", "t", "b1")).ok).toBe(false);
+    // …but global is its own bucket and continues to work.
+    expect(handle.register(makeGlobalPolicy("t", "b-g")).ok).toBe(true);
   });
 });
 

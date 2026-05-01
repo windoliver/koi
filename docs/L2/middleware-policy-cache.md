@@ -105,7 +105,7 @@ At lookup time the middleware reads `ctx.session.agentId` and probes scopes in p
 
 1. **Real LRU, not FIFO.** `wrapToolCall` touches each lookup hit (delete + re-set) so the oldest entry in insertion order is always the least-recently-used. A frequently-hit deny policy registered early in the session survives churn from later promotions.
 2. **Per-owner partitioning.** `maxEntries` applies *per agent* and once *globally*, not as a single shared budget. A noisy agent registering many policies can only evict its own entries — never another agent's deny. Without this, one tenant could register `maxEntries` allow-policies and silently knock another tenant's verified deny out of the cache, reopening the tool. Per-owner quotas turn capacity pressure from a cross-tenant attack vector into a self-limiting noise problem.
-3. **Process-wide bucket cap.** `maxAgentBuckets` (default `1000`) bounds the number of distinct agent buckets retained. When exceeded, the least-recently-used agent bucket is evicted in full (and any quarantine state cleared with it). Bucket recency is bumped both on `register` and on cache-hit lookups, so an agent with active policy enforcement is never the LRU victim. Without this, a long-lived shared handle would retain `maxEntries` entries per distinct `agentId` with no total cap — a DoS vector dressed up as promotion volume.
+3. **Process-wide bucket cap is fail-closed (rejection, not eviction).** `maxAgentBuckets` (default `1000`) bounds the number of distinct agent buckets retained. When the cap is reached and a *new* agent tries to register, `register()` returns `{ ok: false, error: { code: "VALIDATION", retryable: true, ... } }` — it does **not** evict any existing agent's bucket. Silently dropping another agent's bucket would convert that agent's verified denies into cache misses, which fall through to the unwrapped tool path: a cross-tenant authorization downgrade dressed up as capacity pressure. Existing agents continue to register more entries normally (the cap is on distinct buckets, not total entries), and operators can free a slot via `evict()` or by waiting for a `StoreChangeNotifier` `removed`/`quarantined` event. Forge treats the rejection as retryable and sheds load.
 
 The brick-id reverse index is global (one brickId → one bucket), so eviction and external invalidation remain O(1).
 
@@ -124,10 +124,12 @@ Policy-cache short-circuits before `middleware-permissions` runs, so a naive imp
   resource: `tool:${request.toolId}`,
   context: { source: "policy-cache", brickId, scope },
 }
-// → { effect: "deny", reason, disposition: "hard" }
+// → { effect: "deny", reason: "policy-cache: tool denied", disposition: "hard" }
 ```
 
-The dispatch is fire-and-forget and isolated in its own `try/catch`: a faulty observer cannot change enforcement. When the runtime does not inject `dispatchPermissionDecision` the call is a silent no-op (no throw).
+> **Trust boundary: dispatched `reason` is a fixed redacted constant.** The executor's free-form `reason` is **NEVER** forwarded into the permission-decision channel — `event-trace` and friends persist permission-decision reasons to long-lived trajectory storage, and the executor reason can carry rule internals or input fragments. The dispatched reason is always the literal `"policy-cache: tool denied"`. Operators wanting per-rule attribution wire `onExecutorError` (for the executor-throw path) or correlate via `brickId` in their own logs.
+
+The dispatch is fire-and-forget. Both sync throws and async promise rejections from the observer are contained: the call is wrapped in `try/catch` (sync) and any returned promise is guarded with `Promise.resolve(...).catch(() => {})` (async), mirroring `middleware-permissions`. A faulty observer cannot change enforcement and cannot leak as an unhandled rejection. When the runtime does not inject `dispatchPermissionDecision` the call is a silent no-op (no throw).
 
 ## Lifecycle: `dispose()`
 

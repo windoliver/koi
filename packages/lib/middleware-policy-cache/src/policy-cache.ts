@@ -120,7 +120,12 @@ export interface PolicyCacheHandle {
 const DEFAULT_MAX_ENTRIES = 100;
 const DEFAULT_MAX_AGENT_BUCKETS = 1000;
 const NAME = "policy-cache";
-const QUARANTINE_REASON = "policy-cache: executor faulted; entry quarantined";
+// Fixed deny reason used for both the synthetic permission decision and any
+// caller that needs to format an audit string. Executor-supplied `reason`
+// strings are NEVER forwarded across this boundary — they may carry rule
+// internals or input fragments, and `event-trace` persists permission-decision
+// reasons to long-lived trajectory storage.
+const SYNTHETIC_DENY_REASON = "policy-cache: tool denied";
 // permissions runs at priority 100; lower = outer onion = runs first.
 const PRIORITY = 50;
 const PHASE = "intercept" as const;
@@ -145,7 +150,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
   // Brick IDs whose compiled executor threw. Quarantined entries stay in the
   // cache and always return a canonical block response — they do NOT fall
   // through to next-best scope. Cleared on re-register or external eviction.
-  const quarantined = new Set<string>(); // brickIds (reason fixed by `QUARANTINE_REASON`)
+  const quarantined = new Set<string>(); // brickIds
 
   // Touch an agent bucket: bump its recency in `agentCaches` insertion order so
   // overflow eviction picks the LRU bucket.
@@ -154,36 +159,33 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
     agentCaches.set(agentId, m);
   };
 
-  const getAgentCache = (agentId: string): Map<string, PolicyEntry> => {
+  // Returns existing bucket or null when the cap is reached and the caller
+  // must refuse the registration. Returning null is the fail-closed posture:
+  // silently evicting another agent's bucket would convert that agent's
+  // verified denies into cache misses, which would then fall through to the
+  // normal tool path — a cross-tenant authorization downgrade dressed up as
+  // capacity pressure. Refusing the new registration keeps every existing
+  // deny enforced and surfaces the cap explicitly to the caller (forge),
+  // which can shed load, evict explicitly, or shard.
+  const getOrCreateAgentCache = (agentId: string): Map<string, PolicyEntry> | null => {
     const existing = agentCaches.get(agentId);
     if (existing !== undefined) {
       touchAgentBucket(agentId, existing);
       return existing;
     }
-    // Process-wide bound: evict the LRU agent bucket before allocating a new
-    // one. Without this, retained state grows linearly with distinct agentIds
-    // — a DoS vector for hosts that share one handle across many agents.
     if (agentCaches.size >= maxAgentBuckets) {
-      const lruAgentId = agentCaches.keys().next().value;
-      if (lruAgentId !== undefined) {
-        const lruMap = agentCaches.get(lruAgentId);
-        if (lruMap !== undefined) {
-          for (const e of lruMap.values()) {
-            brickIndex.delete(e.brickId);
-            quarantined.delete(e.brickId);
-          }
-        }
-        agentCaches.delete(lruAgentId);
-      }
+      return null;
     }
     const m = new Map<string, PolicyEntry>();
     agentCaches.set(agentId, m);
     return m;
   };
 
-  const bucketFor = (entry: PolicyEntry): { key: string; map: Map<string, PolicyEntry> } => {
+  const bucketFor = (entry: PolicyEntry): { key: string; map: Map<string, PolicyEntry> } | null => {
     if (entry.scope === "agent") {
-      return { key: `agent:${entry.agentId}`, map: getAgentCache(entry.agentId) };
+      const map = getOrCreateAgentCache(entry.agentId);
+      if (map === null) return null;
+      return { key: `agent:${entry.agentId}`, map };
     }
     return { key: "global", map: globalCache };
   };
@@ -199,7 +201,21 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       return { ok: false, error };
     }
 
-    const { key: bucket, map: bucketMap } = bucketFor(entry);
+    const slot = bucketFor(entry);
+    if (slot === null) {
+      // Process-wide agent-bucket cap reached. Fail-closed: refuse the new
+      // registration rather than evicting an existing agent's bucket, which
+      // could drop verified denies for that agent and silently reopen tools.
+      // Marked retryable so forge can shed load or evict explicitly first.
+      const error: KoiError = {
+        code: "VALIDATION",
+        message: `policy-cache: agent-bucket cap reached (${String(maxAgentBuckets)}); refusing registration for ${entry.brickId}`,
+        retryable: true,
+        context: { brickId: entry.brickId, toolId: entry.toolId, maxAgentBuckets },
+      };
+      return { ok: false, error };
+    }
+    const { key: bucket, map: bucketMap } = slot;
 
     // Stale forward entry: this brickId previously lived under a different
     // bucket/toolId — drop it from there before re-inserting here.
@@ -314,12 +330,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
   // middleware-permissions denials. Fire-and-forget — the host injects this
   // callback only when an observer is wired, and a throwing observer must
   // not change enforcement behavior.
-  const dispatchSyntheticDeny = (
-    ctx: TurnContext,
-    entry: PolicyEntry,
-    toolId: string,
-    reason: string,
-  ): void => {
+  const dispatchSyntheticDeny = (ctx: TurnContext, entry: PolicyEntry, toolId: string): void => {
     const dispatch = ctx.dispatchPermissionDecision;
     if (dispatch === undefined) return;
     try {
@@ -329,17 +340,30 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         brickId: entry.brickId,
         scope: entry.scope,
       };
-      void dispatch(
+      // Reason is the fixed `SYNTHETIC_DENY_REASON` constant — NEVER the
+      // executor-supplied reason. The deny path through `event-trace` and
+      // friends persists `reason` to long-lived trajectory storage; sending
+      // raw executor text would defeat the same trust boundary the
+      // canonical block response already enforces in `metadata`.
+      const result: void | Promise<void> = dispatch(
         {
           principal,
           action: "tool.call",
           resource: `tool:${toolId}`,
           context: ctxField,
         },
-        { effect: "deny", reason, disposition: "hard" },
+        { effect: "deny", reason: SYNTHETIC_DENY_REASON, disposition: "hard" },
       );
+      // Async observers must also not destabilize enforcement. Wrap any
+      // returned promise so a rejection cannot escape as an unhandled
+      // rejection — mirrors the pattern in `middleware-permissions`.
+      if (result !== undefined) {
+        void Promise.resolve(result).catch(() => {
+          // Swallow async observer failures; observability cannot break enforcement.
+        });
+      }
     } catch {
-      // Swallow dispatch failures; observability cannot break enforcement.
+      // Swallow sync dispatch failures; observability cannot break enforcement.
     }
   };
 
@@ -376,7 +400,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       // even after their executor faults. Cleared by re-register or
       // external eviction (StoreChangeNotifier `removed` / `quarantined`).
       if (quarantined.has(entry.brickId)) {
-        dispatchSyntheticDeny(ctx, entry, request.toolId, QUARANTINE_REASON);
+        dispatchSyntheticDeny(ctx, entry, request.toolId);
         return blockResponse(request.toolId);
       }
 
@@ -386,7 +410,8 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         // real tool will see when we forward via `next(request)`.
         const decision = entry.execute(cloneInput(request.input));
         if (decision.action === "allow") return next(request);
-        dispatchSyntheticDeny(ctx, entry, request.toolId, decision.reason);
+        // `decision.reason` is intentionally NOT forwarded — see SYNTHETIC_DENY_REASON.
+        dispatchSyntheticDeny(ctx, entry, request.toolId);
         return blockResponse(request.toolId);
       } catch (cause) {
         quarantined.add(entry.brickId);
@@ -400,7 +425,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         } catch {
           // Swallow callback failures; observability cannot break enforcement.
         }
-        dispatchSyntheticDeny(ctx, entry, request.toolId, QUARANTINE_REASON);
+        dispatchSyntheticDeny(ctx, entry, request.toolId);
         return blockResponse(request.toolId);
       }
     },
