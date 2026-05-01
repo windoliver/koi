@@ -44,8 +44,20 @@ import type { Database } from "bun:sqlite";
  *     Migration backfills last_activity_at from MAX(trajectory_entries
  *     .timestamp) per session, falling back to current epoch ms for
  *     empty sessions.
+ *
+ * v6: structured_playbook_watermarks(playbook_id PRIMARY KEY,
+ *     max_step_index INTEGER NOT NULL) is the recoverable monotonic
+ *     home for lastReflectedStepIndex. Without this, a same-version
+ *     idempotent retry that promoted the watermark in the head row
+ *     would lose that progress on head-row recovery (the lineage
+ *     snapshot is immutable and stores the older value). Now the
+ *     watermark survives head loss: save() always upserts max-step
+ *     into this table and recovery reads from it.
+ *     Migration backfills from MAX(structured_playbooks
+ *     .last_reflected_step_index, snapshot.lastReflectedStepIndex)
+ *     across all known versions.
  */
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 6;
 
 export function applyPragmas(db: Database, durability: "process" | "os"): void {
   db.run("PRAGMA journal_mode = WAL");
@@ -153,6 +165,19 @@ export function applySchema(db: Database): void {
     )
   `);
 
+  // Recoverable monotonic watermark per playbook. Lives outside both the
+  // mutable head row (which can be lost in partial corruption) and the
+  // immutable lineage snapshots (which can't be rewritten on a retry that
+  // observed more reflection progress than the original commit). save()
+  // upserts max-of-existing on every write; recovery reads from here as
+  // the recovery floor instead of falling back to a stale lineage value.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS structured_playbook_watermarks (
+      playbook_id    TEXT    PRIMARY KEY,
+      max_step_index INTEGER NOT NULL
+    )
+  `);
+
   // Composite FK (playbook_id, base_version) -> structured_playbook_versions
   // anchors every proposal to a real committed playbook snapshot. Without
   // this, downstream promotion/rollback couldn't prove what snapshot was
@@ -212,6 +237,7 @@ export function applySchema(db: Database): void {
   migrateProposalsToV3(db);
   migrateSessionsToV4(db);
   migrateSessionTimestampsToV5(db);
+  migrateWatermarksToV6(db);
   if (fromVersion < CURRENT_SCHEMA_VERSION) {
     db.run(`PRAGMA user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
   }
@@ -742,6 +768,67 @@ function migrateSessionsToV4(db: Database): void {
  *
  * No-op when every row already has a non-zero last_activity_at.
  */
+/**
+ * Backfill structured_playbook_watermarks from existing data: take the max
+ * of (mutable head row's last_reflected_step_index, max across all lineage
+ * snapshots' lastReflectedStepIndex) per playbook. After this, the
+ * watermarks table is the recovery-floor source of truth.
+ *
+ * No-op when the watermarks table already has rows for every known playbook.
+ */
+function migrateWatermarksToV6(db: Database): void {
+  const tableInfo = db
+    .query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='structured_playbook_watermarks'",
+    )
+    .get() as { readonly name: string } | null;
+  if (tableInfo === null) return;
+  const lineageExists = db
+    .query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='structured_playbook_versions'",
+    )
+    .get() as { readonly name: string } | null;
+  if (lineageExists === null) return;
+  const lineageRows = db
+    .query("SELECT playbook_id, snapshot FROM structured_playbook_versions")
+    .all() as readonly { readonly playbook_id: string; readonly snapshot: string }[];
+  const headRows = db
+    .query("SELECT id, last_reflected_step_index FROM structured_playbooks")
+    .all() as readonly {
+    readonly id: string;
+    readonly last_reflected_step_index: number | null;
+  }[];
+  const watermarks = new Map<string, number>();
+  for (const row of headRows) {
+    if (row.last_reflected_step_index !== null) {
+      watermarks.set(row.id, row.last_reflected_step_index);
+    }
+  }
+  for (const row of lineageRows) {
+    try {
+      const parsed = JSON.parse(row.snapshot) as { lastReflectedStepIndex?: number };
+      const v = parsed.lastReflectedStepIndex;
+      if (typeof v === "number") {
+        const existing = watermarks.get(row.playbook_id);
+        watermarks.set(row.playbook_id, existing === undefined ? v : Math.max(existing, v));
+      }
+    } catch {
+      // Skip malformed snapshots — backfill is best-effort.
+    }
+  }
+  if (watermarks.size === 0) return;
+  db.transaction(() => {
+    const upsert = db.prepare(
+      `INSERT INTO structured_playbook_watermarks(playbook_id, max_step_index) VALUES (?, ?)
+       ON CONFLICT(playbook_id) DO UPDATE SET max_step_index =
+         MAX(max_step_index, excluded.max_step_index)`,
+    );
+    for (const [pid, mw] of watermarks) {
+      upsert.run(pid, mw);
+    }
+  }).immediate();
+}
+
 function migrateSessionTimestampsToV5(db: Database): void {
   const tableInfo = db
     .query("SELECT name FROM sqlite_master WHERE type='table' AND name='trajectory_sessions'")

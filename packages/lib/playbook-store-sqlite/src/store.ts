@@ -314,12 +314,18 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
   );
   const selectById = db.query("SELECT * FROM structured_playbooks WHERE id = ?");
   const selectAll = db.query("SELECT * FROM structured_playbooks");
-  const selectWatermark = db.query(
-    "SELECT last_reflected_step_index FROM structured_playbooks WHERE id = ?",
+  // Watermark lives in its own table so it survives both head-row loss
+  // (the head can be deleted/missing) and lineage immutability (lineage
+  // snapshots cannot be rewritten on a same-version retry that observed
+  // newer reflection progress).
+  const selectWatermarkTable = db.query(
+    "SELECT max_step_index FROM structured_playbook_watermarks WHERE playbook_id = ?",
   );
-  // Watermark fallback when the head row is missing: read the latest
-  // committed lineage snapshot and extract its lastReflectedStepIndex so a
-  // forward save still clamps against the persisted watermark.
+  const upsertWatermark = db.prepare(
+    `INSERT INTO structured_playbook_watermarks(playbook_id, max_step_index) VALUES (?, ?)
+     ON CONFLICT(playbook_id) DO UPDATE SET max_step_index =
+       MAX(max_step_index, excluded.max_step_index)`,
+  );
   const selectLatestLineageSnapshot = db.query(
     "SELECT snapshot FROM structured_playbook_versions WHERE playbook_id = ? ORDER BY version DESC LIMIT 1",
   );
@@ -327,8 +333,8 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
   const deleteLineage = db.prepare(
     "DELETE FROM structured_playbook_versions WHERE playbook_id = ?",
   );
-  const countDependentProposals = db.query(
-    "SELECT COUNT(*) AS n FROM playbook_proposals WHERE playbook_id = ?",
+  const deleteWatermark = db.prepare(
+    "DELETE FROM structured_playbook_watermarks WHERE playbook_id = ?",
   );
 
   const save = async (pb: StructuredPlaybook): Promise<void> => {
@@ -368,16 +374,18 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       // its `lastReflectedStepIndex` was captured before later reflection
       // ran. Clamping to max(current, incoming) prevents reopening already-
       // processed trajectory windows after a rollback.
-      const currentWatermarkRow = selectWatermark.get(pb.id) as {
-        readonly last_reflected_step_index: number | null;
+      //
+      // Source of truth is structured_playbook_watermarks — a separate
+      // table that survives both head-row loss AND lineage immutability.
+      // Fall back to lineage snapshot only if the watermarks table has no
+      // row yet (e.g. fresh playbook on a freshly-migrated v6 DB before
+      // any save has populated the table for this id).
+      const watermarkRow = selectWatermarkTable.get(pb.id) as {
+        readonly max_step_index: number;
       } | null;
-      // When the head row is missing, fall back to the latest lineage
-      // snapshot's watermark. Otherwise a forward save after head loss
-      // would clamp against null and silently downgrade the watermark,
-      // reopening already-reflected trajectory windows.
       let currentWatermark: number | null;
-      if (currentWatermarkRow !== null) {
-        currentWatermark = currentWatermarkRow.last_reflected_step_index;
+      if (watermarkRow !== null) {
+        currentWatermark = watermarkRow.max_step_index;
       } else {
         const latestRow = selectLatestLineageSnapshot.get(pb.id) as {
           readonly snapshot: string;
@@ -445,14 +453,14 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
               : incomingWatermark === null
                 ? storedWatermark
                 : Math.max(storedWatermark, incomingWatermark);
-          // Promoted watermark is written ONLY to the mutable head row.
-          // structured_playbook_versions.snapshot is append-only audit
-          // state - mutating it would let a later proposal/rollback
-          // anchored to base_version=N observe a different snapshot than
-          // the one originally committed at that version. On head loss,
-          // the lineage snapshot's stored watermark becomes the recovery
-          // floor; callers who need the promoted value to survive head
-          // loss must re-run the retry against the rebuilt head.
+          // Promoted watermark is written to the mutable head row AND to
+          // the dedicated structured_playbook_watermarks recovery table.
+          // structured_playbook_versions.snapshot remains append-only —
+          // mutating it would let a later proposal/rollback anchored to
+          // base_version=N observe a different snapshot than the one
+          // originally committed. The watermarks table is the recovery-
+          // floor source of truth, so the promoted value survives head
+          // loss without rewriting historical lineage.
           upsertCurrent.run(
             stored.id,
             stored.title,
@@ -466,6 +474,9 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
             stored.version,
             stored.provenance !== undefined ? canonicalJson(stored.provenance) : null,
           );
+          if (promotedWatermark !== null) {
+            upsertWatermark.run(stored.id, promotedWatermark);
+          }
         }
         return;
       }
@@ -483,6 +494,12 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
         normalizedProvenance !== undefined ? canonicalJson(normalizedProvenance) : null,
       );
       insertVersion.run(pb.id, pb.version, snapshot, committedAt);
+      // Persist the monotonic watermark to its dedicated recovery table.
+      // ON CONFLICT MAX makes this safe under retry: a stale retrier with
+      // a lower watermark can't downgrade what's already recorded.
+      if (monotonicWatermark !== null) {
+        upsertWatermark.run(pb.id, monotonicWatermark);
+      }
     }).immediate();
   };
 
@@ -499,37 +516,38 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       return filterByTags(rows, options?.tags);
     },
     remove: async (id) => {
-      // Hard-delete: drop both the head row and all lineage rows in one
-      // transaction. Matches the in-memory baseline contract (`data.delete`)
-      // — callers expect remove() to actually remove.
+      // Hard-delete: drop the head row, lineage rows, dependent proposals,
+      // and dependent evaluations in one transaction. Matches the in-memory
+      // baseline contract (`data.delete`) — callers expect remove() to
+      // actually remove. Without the cascade, the first proposal recorded
+      // for a playbook would permanently block remove() through the
+      // supported API surface (proposals/evaluations have no public delete).
       //
-      // Dependent proposals block deletion: playbook_proposals has an
-      // ON DELETE RESTRICT composite FK to structured_playbook_versions,
-      // so removing a playbook with outstanding proposals would fail at
-      // the SQL layer with a generic FK error. Detect and surface a
-      // domain-typed error instead, so callers know to clean up the
-      // proposal/evaluation flow first.
+      // Cascade order respects FK dependencies:
+      //   evaluations → proposals → structured_playbooks + lineage
       //
       // .immediate() acquires the RESERVED write lock at BEGIN so the
-      // dependency count + delete sequence is serialized against
-      // concurrent proposal inserts on a shared file. Without this, a
-      // peer writer could insert a proposal between our COUNT(*) returning
-      // 0 and the DELETE, surfacing the raw FK constraint error.
+      // delete sequence is serialized against concurrent proposal inserts
+      // on a shared file.
       try {
         const result = db
           .transaction(() => {
-            const dep = countDependentProposals.get(id) as { readonly n: number } | null;
-            if (dep !== null && dep.n > 0) {
-              throw new Error(
-                `cannot remove structured playbook ${id}: ${String(dep.n)} dependent proposal(s) exist; remove proposals/evaluations first`,
-              );
-            }
+            // Delete evaluations whose proposals belong to this playbook.
+            db.run(
+              `DELETE FROM playbook_evaluations
+               WHERE proposal_id IN (
+                 SELECT id FROM playbook_proposals WHERE playbook_id = ?
+               )`,
+              [id],
+            );
+            db.run("DELETE FROM playbook_proposals WHERE playbook_id = ?", [id]);
             // Return true if EITHER head OR lineage was removed. Returning
             // false when only lineage rows existed (head missing, lineage
             // intact) would hide an irreversible destructive change behind
             // a "not found" result.
             const headDeleted = deleteCurrent.run(id);
             const lineageDeleted = deleteLineage.run(id);
+            deleteWatermark.run(id);
             return headDeleted.changes > 0 || lineageDeleted.changes > 0;
           })
           .immediate();

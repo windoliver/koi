@@ -280,17 +280,20 @@ describe("createSqlitePlaybookStore — structured playbooks + lineage", () => {
     store.close();
   });
 
-  test("remove rejects when dependent proposals exist (clear domain error, not raw FK)", async () => {
-    // Regression: ON DELETE RESTRICT FK from playbook_proposals would
-    // surface a generic SQLITE_CONSTRAINT_FOREIGNKEY. Surface a
-    // domain-typed error explaining the dependency instead.
+  test("remove cascades through dependent proposals + evaluations", async () => {
+    // remove() must remove. Refusing because of dependent proposals
+    // would create a permanent dead-end (proposals/evaluations have no
+    // public delete API), so the cascade deletes evaluations →
+    // proposals → head + lineage in one transaction.
     const store = createSqlitePlaybookStore({ path: dbPath });
     await store.structuredPlaybooks.save(spb({ id: "pb-A", version: 1 }));
     await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
-    await expect(store.structuredPlaybooks.remove("pb-A")).rejects.toThrow(/dependent proposal/);
-    // Playbook + lineage still readable after rejected remove.
-    expect((await store.structuredPlaybooks.get("pb-A"))?.version).toBe(1);
-    expect((await store.structuredPlaybooks.getVersion("pb-A", 1))?.id).toBe("pb-A");
+    await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
+    expect(await store.structuredPlaybooks.remove("pb-A")).toBe(true);
+    expect(await store.structuredPlaybooks.get("pb-A")).toBeUndefined();
+    expect(await store.structuredPlaybooks.getVersion("pb-A", 1)).toBeUndefined();
+    expect(await store.proposals.getProposal("p-1")).toBeUndefined();
+    expect(await store.proposals.listProposals("pb-A")).toEqual([]);
     store.close();
   });
 
@@ -526,7 +529,7 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
     const userVersion = after.query("PRAGMA user_version").get() as { user_version: number };
     after.close();
 
-    expect(userVersion.user_version).toBe(5);
+    expect(userVersion.user_version).toBe(6);
     expect(rows.length).toBe(1);
     expect(rows[0]?.id).toBe("e-new");
     expect(rows[0]?.verdict).toBe("promote");
@@ -677,7 +680,7 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
       .all() as readonly { session_id: string; seq: number }[];
     const userVersion = after.query("PRAGMA user_version").get() as { user_version: number };
     after.close();
-    expect(userVersion.user_version).toBe(5);
+    expect(userVersion.user_version).toBe(6);
     expect(seqRows.map((r) => `${r.session_id}:${String(r.seq)}`)).toEqual([
       "s1:1",
       "s1:2",
@@ -1130,6 +1133,32 @@ describe("createSqlitePlaybookStore — head-row self-heal", () => {
     );
     expect((await store.structuredPlaybooks.get("s1"))?.lastReflectedStepIndex).toBe(100);
     store.close();
+  });
+
+  test("promoted watermark survives head row loss via watermarks table", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    // Initial save at v1 with watermark 20.
+    await store.structuredPlaybooks.save(
+      spb({ id: "s1", version: 1, lastReflectedStepIndex: 20, title: "v1" }),
+    );
+    // Idempotent retry promotes watermark to 100 (lineage snapshot still
+    // records 20 because lineage is immutable).
+    await store.structuredPlaybooks.save(
+      spb({ id: "s1", version: 1, lastReflectedStepIndex: 100, title: "v1" }),
+    );
+    expect((await store.structuredPlaybooks.get("s1"))?.lastReflectedStepIndex).toBe(100);
+    store.close();
+    // Simulate partial corruption: head row missing, lineage intact.
+    const surgery = new Database(dbPath);
+    surgery.run("DELETE FROM structured_playbooks WHERE id = 's1'");
+    surgery.close();
+    const repaired = createSqlitePlaybookStore({ path: dbPath });
+    // A forward save at v2 with NO watermark must clamp against the
+    // PROMOTED value (100) from the watermarks table — not the stale
+    // value (20) from the lineage snapshot.
+    await repaired.structuredPlaybooks.save(spb({ id: "s1", version: 2, title: "v2" }));
+    expect((await repaired.structuredPlaybooks.get("s1"))?.lastReflectedStepIndex).toBe(100);
+    repaired.close();
   });
 
   test("self-heal rebuilds head from stored snapshot after watermark was clamped", async () => {
