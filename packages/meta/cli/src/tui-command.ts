@@ -5059,9 +5059,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // they enforce against startup-created sessions. Without
             // this write, post-/new sessions fall into the missing-
             // sidecar bypass path on resume.
-            if (resolvedManifestPath !== undefined) {
+            // Always write the rotated session's sidecar — including
+            // for manifest-free sessions — so post-/new sessions remain
+            // resumable under the unconditional sidecar requirement.
+            {
               const writeResult = await writeSessionMeta(SESSIONS_DIR, newSid as string, {
-                manifestPath: resolvedManifestPath,
+                manifestPath: resolvedManifestPath ?? null,
                 snapshot: {
                   aceEnabled: resolvedAceConfig !== undefined,
                   auditDeclared: manifestAudit !== undefined,

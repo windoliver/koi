@@ -815,7 +815,7 @@ export type SessionMetaReadResult =
   | {
       readonly kind: "ok";
       readonly manifestPath: string | undefined;
-      readonly snapshot?: SessionProvenanceSnapshot;
+      readonly snapshot: SessionProvenanceSnapshot;
     }
   | { readonly kind: "corrupt"; readonly error: string };
 
@@ -845,27 +845,27 @@ export async function readSessionMetaResult(
     } else {
       return { kind: "corrupt", error: "manifestPath field is missing or invalid" };
     }
+    // snapshot is required for sidecars written by this version. A
+    // sidecar without snapshot is either pre-snapshot legacy (rare —
+    // this version always writes one) or tampered. Either way the
+    // safe answer is to refuse the resume; legitimate operators can
+    // restart the session.
     const snap = meta.snapshot;
-    let snapshot: SessionProvenanceSnapshot | undefined;
-    if (snap !== undefined) {
-      if (snap === null || typeof snap !== "object") {
-        return { kind: "corrupt", error: "snapshot field is present but not an object" };
-      }
-      const snapObj = snap as Record<string, unknown>;
-      if (typeof snapObj.aceEnabled !== "boolean" || typeof snapObj.auditDeclared !== "boolean") {
-        return {
-          kind: "corrupt",
-          error: "snapshot is missing required aceEnabled/auditDeclared booleans",
-        };
-      }
-      snapshot = {
-        aceEnabled: snapObj.aceEnabled,
-        auditDeclared: snapObj.auditDeclared,
+    if (snap === undefined || snap === null || typeof snap !== "object") {
+      return { kind: "corrupt", error: "snapshot field is missing or not an object" };
+    }
+    const snapObj = snap as Record<string, unknown>;
+    if (typeof snapObj.aceEnabled !== "boolean" || typeof snapObj.auditDeclared !== "boolean") {
+      return {
+        kind: "corrupt",
+        error: "snapshot is missing required aceEnabled/auditDeclared booleans",
       };
     }
-    return snapshot !== undefined
-      ? { kind: "ok", manifestPath: manifestPathValue, snapshot }
-      : { kind: "ok", manifestPath: manifestPathValue };
+    const snapshot: SessionProvenanceSnapshot = {
+      aceEnabled: snapObj.aceEnabled,
+      auditDeclared: snapObj.auditDeclared,
+    };
+    return { kind: "ok", manifestPath: manifestPathValue, snapshot };
   } catch (err) {
     return { kind: "corrupt", error: err instanceof Error ? err.message : String(err) };
   }
