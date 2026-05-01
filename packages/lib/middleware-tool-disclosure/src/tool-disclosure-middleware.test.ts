@@ -66,7 +66,7 @@ describe("createToolDisclosureMiddleware", () => {
   test("has correct name, priority, phase", () => {
     const mw = createToolDisclosureMiddleware();
     expect(mw.name).toBe("tool-disclosure");
-    expect(mw.priority).toBe(50);
+    expect(mw.priority).toBe(800);
     expect(mw.phase).toBe("intercept");
   });
 

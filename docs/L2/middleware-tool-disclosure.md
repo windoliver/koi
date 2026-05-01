@@ -109,8 +109,18 @@ The `promote_tools` companion tool's `execute()` has no `SessionId` in scope (To
 
 | Field | Value | Reason |
 |-------|-------|--------|
-| `phase` | `"intercept"` | Mutates the request before downstream middleware sees it |
-| `priority` | `50` | Run early — other middleware should see disclosed tools, not full ones |
+| `phase` | `"intercept"` | Mutates the request before the model adapter sees it |
+| `priority` | `800` | Innermost tool-list mutator — disclosure's authorization snapshot reflects the FINAL list the adapter sees, after permission filters / tool selectors / skills runtime have already narrowed it |
+
+### Composition contract
+
+Disclosure must run **after** every tool-list mutator (selectors, permission filters, skill loaders) so its `knownNames`/`promoted`/`lastFingerprints` snapshots reflect what the model actually sees. With priority `800`, all common L2 middleware (≤300) run outside us and finish their mutations before our snapshot.
+
+If you wire a peer middleware that mutates `request.tools` at priority **>800**, disclosure cannot see those mutations — it will still authorize against its pre-peer snapshot. Either lower that peer's priority below 800, or accept that disclosure's guard reflects a stale advertised set.
+
+### Same-turn descriptor swap (limitation)
+
+Disclosure fingerprints descriptors at advertisement time and rejects same-name swaps on the **next** model call. If the registry swaps a same-name tool **between** advertisement and tool execution **within the same turn**, disclosure cannot detect it — `wrapToolCall` does not have access to the live `ToolDescriptor`, only the `toolId` string. This is a registry-level integrity concern, not a middleware-level one. Registries that may rotate tools mid-turn should expose immutable per-turn snapshots or block same-name swaps until the next advertisement boundary.
 
 ---
 

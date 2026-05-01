@@ -237,7 +237,14 @@ export function createToolDisclosureMiddleware(
 
   const middleware: ToolDisclosureMiddleware = {
     name: "tool-disclosure",
-    priority: 50,
+    // Priority 800: must be the INNERMOST tool-list mutator so the snapshot
+    // captured here matches what the model adapter actually sees. Tool
+    // selectors, permission filters, skills runtime, etc. (priorities
+    // ≤300) all run OUTSIDE us — they have already filtered/rewritten
+    // request.tools by the time wrapModelCall fires. If a peer middleware
+    // mutates tools at priority > 800, disclosure cannot see it; that is
+    // the documented composition contract.
+    priority: 800,
     phase: "intercept",
 
     async onSessionStart(ctx: SessionContext): Promise<void> {
