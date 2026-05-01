@@ -326,6 +326,18 @@ describe("createSqlitePlaybookStore — trajectories", () => {
     store.close();
   });
 
+  test("empty append() makes session visible to listSessions and survives reopen", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.trajectories.append("empty-s", []);
+    const sessions = await store.trajectories.listSessions();
+    expect(sessions).toContain("empty-s");
+    store.close();
+    const reopened = createSqlitePlaybookStore({ path: dbPath });
+    expect(await reopened.trajectories.listSessions()).toContain("empty-s");
+    expect(await reopened.trajectories.getSession("empty-s")).toEqual([]);
+    reopened.close();
+  });
+
   test("preserves metadata + bulletIds", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
     const e: TrajectoryEntry = {
@@ -479,7 +491,7 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
     const userVersion = after.query("PRAGMA user_version").get() as { user_version: number };
     after.close();
 
-    expect(userVersion.user_version).toBe(3);
+    expect(userVersion.user_version).toBe(4);
     expect(rows.length).toBe(1);
     expect(rows[0]?.id).toBe("e-new");
     expect(rows[0]?.verdict).toBe("promote");
@@ -630,7 +642,7 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
       .all() as readonly { session_id: string; seq: number }[];
     const userVersion = after.query("PRAGMA user_version").get() as { user_version: number };
     after.close();
-    expect(userVersion.user_version).toBe(3);
+    expect(userVersion.user_version).toBe(4);
     expect(seqRows.map((r) => `${r.session_id}:${String(r.seq)}`)).toEqual([
       "s1:1",
       "s1:2",

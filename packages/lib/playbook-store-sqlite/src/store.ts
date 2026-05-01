@@ -596,16 +596,23 @@ function createTrajectoryStore(db: Database): TrajectoryStore {
     "SELECT * FROM trajectory_entries WHERE session_id = ? ORDER BY seq",
   );
   const selectSessions = db.query(
-    "SELECT DISTINCT session_id FROM trajectory_entries ORDER BY session_id LIMIT ?",
+    "SELECT session_id FROM trajectory_sessions ORDER BY session_id LIMIT ?",
+  );
+  const insertSession = db.prepare(
+    "INSERT OR IGNORE INTO trajectory_sessions(session_id) VALUES (?)",
   );
 
   return {
     append: async (sessionId, entries) => {
-      if (entries.length === 0) return;
       // .immediate() acquires RESERVED at BEGIN so the MAX(seq) read and
       // ensuing inserts serialize against peer writers — concurrent appends
-      // can't race on the seq counter.
+      // can't race on the seq counter. Empty appends still record the
+      // session so listSessions() can enumerate it (matches in-memory
+      // baseline where opening a session before the first entry leaves it
+      // visible).
       db.transaction(() => {
+        insertSession.run(sessionId);
+        if (entries.length === 0) return;
         const maxRow = selectMaxSeq.get(sessionId) as { readonly s: number | null } | null;
         let next = (maxRow?.s ?? 0) + 1;
         for (const e of entries) {

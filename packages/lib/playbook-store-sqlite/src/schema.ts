@@ -23,8 +23,15 @@ import type { Database } from "bun:sqlite";
  *     version. Without this anchor, downstream promotion/rollback can't
  *     prove what snapshot was actually reviewed. Migration quarantines
  *     orphan proposals + their evaluations to *_quarantine_v3 tables.
+ *
+ * v4: trajectory_sessions table separates session identity from entries.
+ *     Empty sessions (append(sessionId, []) with no rows) are visible to
+ *     listSessions, matching the in-memory baseline. Without this table,
+ *     a session that was opened but never wrote an entry would disappear
+ *     across reopens. Migration populates trajectory_sessions from
+ *     DISTINCT trajectory_entries.session_id so existing data is preserved.
  */
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 4;
 
 export function applyPragmas(db: Database, durability: "process" | "os"): void {
   db.run("PRAGMA journal_mode = WAL");
@@ -65,6 +72,12 @@ export function applySchema(db: Database): void {
   db.run(
     "CREATE INDEX IF NOT EXISTS idx_trajectory_entries_session ON trajectory_entries(session_id, turn_index)",
   );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS trajectory_sessions (
+      session_id TEXT PRIMARY KEY
+    )
+  `);
 
   db.run(`
     CREATE TABLE IF NOT EXISTS playbooks (
@@ -156,13 +169,17 @@ export function applySchema(db: Database): void {
   // INSERTs every evaluation into a UNIQUE(proposal_id) table and would abort
   // the upgrade rather than self-repair. The check is a no-op when constraints
   // are intact (no rebuild) so re-running it on already-migrated DBs is cheap.
+  // All three migrations run unconditionally. Each one early-returns when its
+  // shape/constraint check is already satisfied, so the cost on healthy DBs
+  // is one or two PRAGMA round-trips. Gating on fromVersion would leave
+  // drifted v1/v2/v3 databases unrepaired: a DB that claims user_version=2
+  // but still has the legacy trajectory PK, or claims user_version=3 without
+  // the composite proposal FK, would never be re-validated. Those are the
+  // exact silent-corruption modes this package exists to prevent.
   migrateEvaluationsToV1(db);
-  if (fromVersion < 2) {
-    migrateTrajectoriesToV2(db);
-  }
-  if (fromVersion < 3) {
-    migrateProposalsToV3(db);
-  }
+  migrateTrajectoriesToV2(db);
+  migrateProposalsToV3(db);
+  migrateSessionsToV4(db);
   if (fromVersion < CURRENT_SCHEMA_VERSION) {
     db.run(`PRAGMA user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
   }
@@ -660,4 +677,25 @@ function trajectoryV2ShapeSatisfied(
   return (
     pkByPosition.size === 2 && pkByPosition.get(1) === "session_id" && pkByPosition.get(2) === "seq"
   );
+}
+
+/**
+ * Backfill trajectory_sessions from DISTINCT trajectory_entries.session_id so
+ * existing entries-bearing sessions remain visible after the v4 schema bump.
+ * Empty sessions (no entries) created after v4 are recorded directly by
+ * append(); this function only handles legacy data.
+ *
+ * No-op when trajectory_sessions already covers every distinct session_id in
+ * trajectory_entries.
+ */
+function migrateSessionsToV4(db: Database): void {
+  const tableInfo = db
+    .query("SELECT name FROM sqlite_master WHERE type='table' AND name='trajectory_sessions'")
+    .get() as { readonly name: string } | null;
+  if (tableInfo === null) return;
+  db.transaction(() => {
+    db.run(
+      "INSERT OR IGNORE INTO trajectory_sessions(session_id) SELECT DISTINCT session_id FROM trajectory_entries",
+    );
+  }).immediate();
 }
