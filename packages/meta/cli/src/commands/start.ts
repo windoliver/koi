@@ -736,7 +736,16 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           "Inspect or remove the .koi-meta.json file to continue.",
       );
     }
-    const resumeMeta = resumeMetaResult.kind === "ok" ? resumeMetaResult.meta : {};
+    // Round 10 finding: absent sidecar bypassed every resume guard
+    // (audit intent + ACE rejection). Refuse — legacy pre-sidecar
+    // sessions must be re-created.
+    if (resumeMetaResult.kind === "absent") {
+      return bail(
+        "session sidecar is missing — refusing to resume because resume safety guards " +
+          "(audit intent, ACE host check) depend on it. Start a new session.",
+      );
+    }
+    const resumeMeta = resumeMetaResult.meta;
     if (resumeMeta.manifestPath !== undefined) {
       const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
         skipAuditValidation: true,

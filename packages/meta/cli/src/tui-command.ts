@@ -1497,7 +1497,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       );
       process.exit(1);
     }
-    const resumeMeta: SessionMeta = resumeMetaResult.kind === "ok" ? resumeMetaResult.meta : {};
+    // Round 10 finding: absent sidecar silently downgraded resume to an
+    // unchecked path (manifest provenance, network/cred scope, audit
+    // intent, ACE config all skipped). Refuse. Legacy pre-sidecar
+    // sessions: operators must start a new session.
+    if (resumeMetaResult.kind === "absent") {
+      process.stderr.write(
+        "koi tui: session sidecar is missing — refusing to resume because resume safety " +
+          "guards (manifest provenance, network/credential scope, audit intent, ACE config) " +
+          "depend on it. Start a new session.\n",
+      );
+      process.exit(1);
+    }
+    const resumeMeta: SessionMeta = resumeMetaResult.meta;
     if (resumeMeta.manifestPath !== undefined) {
       const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
         allowOAuthSchemes: true,
