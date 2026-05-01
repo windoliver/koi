@@ -159,7 +159,10 @@ describe("createPolicyCacheMiddleware: cache-hit bypass equivalence", () => {
     expect(result.metadata?.policyDenied).toBe(true);
     expect(result.metadata?.hookName).toBe("policy-cache");
     expect(result.metadata?.toolId).toBe("search");
-    expect(result.metadata?.reason).toBe("blocked by policy");
+    // executor-supplied `reason` MUST NOT appear in metadata — event-trace
+    // persists allowlisted metadata to long-lived trajectory storage, and a
+    // raw reason could leak rule internals or input fragments.
+    expect(result.metadata?.reason).toBeUndefined();
   });
 
   test("only intercepts registered toolIds — others pass through", async () => {
@@ -235,7 +238,7 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
     expect(r1.metadata?.policyDenied).toBe(true);
     expect(r1.metadata?.blockedByHook).toBe(true);
     expect(r1.metadata?.hookName).toBe("policy-cache");
-    expect(r1.metadata?.reason).toContain("quarantined");
+    expect(r1.metadata?.reason).toBeUndefined();
     // Entry stays in cache (quarantine, not eviction).
     expect(handle.size()).toBe(1);
 
@@ -248,7 +251,6 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
     const r2 = await wrap(CTX, makeReq("search", { q: "x" }), next);
     expect(next).toHaveBeenCalledTimes(0);
     expect(r2.metadata?.policyDenied).toBe(true);
-    expect(r2.metadata?.reason).toContain("quarantined");
   });
 
   test("quarantined deny does NOT fall back to global allow (security property)", async () => {
@@ -569,7 +571,7 @@ describe("createPolicyCacheMiddleware: capability fragment", () => {
   });
 });
 
-describe("createPolicyCacheMiddleware: LRU eviction (recency-aware)", () => {
+describe("createPolicyCacheMiddleware: LRU eviction (recency-aware, per-owner)", () => {
   test("hot policy survives capacity pressure — lookup bumps recency", async () => {
     const handle = createPolicyCacheMiddleware({ maxEntries: 2 });
     handle.register(makeAgentPolicy("agent-A", "hot", "brick-hot", "block"));
@@ -594,6 +596,44 @@ describe("createPolicyCacheMiddleware: LRU eviction (recency-aware)", () => {
     // 'cold' is gone — pass through.
     const r2 = await wrap(CTX, makeReq("cold"), next);
     expect(r2.output).toBe("ok");
+  });
+
+  test("noisy agent CANNOT evict another agent's deny via capacity pressure", async () => {
+    // Per-owner partition: maxEntries=2 PER agent, not 2 globally.
+    const handle = createPolicyCacheMiddleware({ maxEntries: 2 });
+    handle.register(makeAgentPolicy("agent-victim", "secret", "brick-secret", "block"));
+
+    // Noisy agent registers 5 policies (3 over its own quota of 2).
+    for (let i = 0; i < 5; i++) {
+      handle.register(makeAgentPolicy("agent-noisy", `tool${i}`, `brick-noisy-${i}`, "allow"));
+    }
+
+    // Victim agent's quota is independent — its deny survives.
+    const next: ToolHandler = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+
+    const r = await wrap(ctxFor("agent-victim"), makeReq("secret"), next);
+    expect(next).toHaveBeenCalledTimes(0);
+    expect(r.metadata?.policyDenied).toBe(true);
+  });
+
+  test("global cache is its own bucket — agent overflow does not evict global denies", async () => {
+    const handle = createPolicyCacheMiddleware({ maxEntries: 2 });
+    handle.register(makeGlobalPolicy("danger", "brick-global", "block"));
+
+    // Agent fills its quota.
+    for (let i = 0; i < 5; i++) {
+      handle.register(makeAgentPolicy("agent-A", `tool${i}`, `brick-${i}`, "allow"));
+    }
+
+    const next: ToolHandler = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+
+    // Global deny is intact even though agent registered 5 entries.
+    const r = await wrap(ctxFor("agent-OTHER"), makeReq("danger"), next);
+    expect(r.metadata?.policyDenied).toBe(true);
   });
 });
 

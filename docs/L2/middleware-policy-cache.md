@@ -50,19 +50,20 @@ Hosts wire `onExecutorError` (fire-and-forget callback in `PolicyCacheConfig`) t
 
 ```typescript
 {
-  output: `Policy denied tool "${toolId}".`, // model-safe, leaks no internals
+  output: `Policy denied tool "${toolId}". This tool is not available in the current scope.`,
   metadata: {
     isError: true,
     blockedByHook: true,
     policyDenied: true,
     hookName: "policy-cache",
     toolId,
-    reason, // structured, for telemetry only
   },
 }
 ```
 
 The shape mirrors `middleware-permissions`'s deny payload so peer middleware (`event-trace`, `middleware-report`, `session-transcript`, `semantic-retry`) classifies the response as a non-execution rather than a successful tool call.
+
+> **Trust boundary: `reason` is intentionally NOT in metadata.** `event-trace` allowlists `reason` and persists it to long-lived trajectory storage. An executor-supplied `reason` string can contain rule internals or input fragments that should not cross into observability. Permissions middleware applies the same policy: the deny is classified in metadata, but executor text never rides along. The model sees a generic block message; operators wanting per-rule attribution should attach to `onExecutorError` or correlate via `brickId` in their own logging path.
 
 `wrapToolCall` is the only model/tool seam this middleware touches. It does not implement `wrapModelCall`, `wrapModelStream`, `onBeforeStop`, etc. — promotion is per-tool, not per-turn.
 
@@ -98,9 +99,14 @@ At lookup time the middleware reads `ctx.session.agentId` and probes scopes in p
 
 > **Why no `zone` scope?** `ForgeScope` defines three values (`agent`, `zone`, `global`), but `SessionContext` exposes no first-class zone field. Supporting `scope: "zone"` via opt-in metadata would let zone-scoped denies silently miss in any host that hadn't wired a resolver — exactly the kind of fail-open pattern this restoration was meant to remove. When the runtime threads zone identity through `SessionContext`, add `scope: "zone"` then.
 
-## Capacity eviction is real LRU
+## Capacity eviction is real LRU — and **per-owner**
 
-`maxEntries` (default `100`) bounds memory. On overflow the middleware evicts the least-recently-used entry — *not* the oldest by insertion. `wrapToolCall` touches each lookup hit (delete + re-set) so a frequently-hit deny policy registered early in the session survives churn from later promotions. FIFO eviction would be a user-visible enforcement gap: an active deny gets dropped and the tool reopens.
+`maxEntries` (default `100`) bounds memory. Two important properties:
+
+1. **Real LRU, not FIFO.** `wrapToolCall` touches each lookup hit (delete + re-set) so the oldest entry in insertion order is always the least-recently-used. A frequently-hit deny policy registered early in the session survives churn from later promotions.
+2. **Per-owner partitioning.** `maxEntries` applies *per agent* and once *globally*, not as a single shared budget. A noisy agent registering many policies can only evict its own entries — never another agent's deny. Without this, one tenant could register `maxEntries` allow-policies and silently knock another tenant's verified deny out of the cache, reopening the tool. Per-owner quotas turn capacity pressure from a cross-tenant attack vector into a self-limiting noise problem.
+
+The brick-id reverse index is global (one brickId → one bucket), so eviction and external invalidation remain O(1).
 
 ## Lifecycle: `dispose()`
 
