@@ -753,30 +753,153 @@ export async function resumeSessionFromJsonl(
 // cwd-based re-discovery (which is ambiguous when launched from a different dir).
 // ---------------------------------------------------------------------------
 
-const SESSION_META_VERSION = 1 as const;
+const SESSION_META_VERSION = 2 as const;
 
 /**
  * Write session provenance metadata to a sidecar file alongside the JSONL
- * transcript. Non-fatal if the sessions directory does not exist yet — the
- * transcript's first append creates it; a missing sidecar means "no provenance
- * recorded" and the resume audit check silently skips.
+ * transcript. Creates the sessions directory if missing so the sidecar always
+ * lands on disk — host-safety checks (audit, ACE) on resume rely on the
+ * sidecar being present whenever a manifest governed the original session.
+ * Errors are still swallowed to keep startup non-fatal in adversarial
+ * filesystem conditions, but the common cold-start case now persists.
  */
+/**
+ * Snapshot of host-safety-relevant manifest fields, frozen at session
+ * creation. Resume checks read this snapshot rather than re-parsing the
+ * mutable file at `manifestPath` — an attacker (or accidental edit)
+ * can flip `ace.enabled` or remove `audit` after the session was
+ * created, but the snapshot preserves the original contract.
+ *
+ * Both booleans are required so `readSessionMetaResult` can detect
+ * field-stripping tampering. A sidecar with `snapshot: {}` is treated
+ * as corrupt rather than falling back to re-parsing the mutable
+ * manifest.
+ */
+export interface SessionProvenanceSnapshot {
+  readonly aceEnabled: boolean;
+  readonly auditDeclared: boolean;
+}
+
 export async function writeSessionMeta(
   sessionsDir: string,
   sid: string,
-  meta: { readonly manifestPath?: string },
-): Promise<void> {
+  meta: {
+    /** Absolute path to the governing manifest, or `null` when the session was launched without one. */
+    readonly manifestPath: string | null;
+    readonly snapshot: SessionProvenanceSnapshot;
+  },
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: string }> {
   try {
     const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(sessionsDir, { recursive: true });
     await Bun.write(path, JSON.stringify({ version: SESSION_META_VERSION, ...meta }));
-  } catch {
-    // Non-fatal: directory may not exist yet on the very first run.
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
 /**
- * Read session provenance metadata; returns an empty object if the sidecar is
- * absent, unreadable, or malformed — callers treat this as "no manifest recorded."
+ * Read session provenance metadata. Distinguishes three outcomes:
+ *   - `{ kind: "missing" }`     — sidecar absent (legacy session or never written)
+ *   - `{ kind: "ok", manifestPath }` — sidecar present and parseable
+ *   - `{ kind: "corrupt", error }` — sidecar present but unreadable/malformed
+ *
+ * Callers must fail closed on `corrupt` for manifest-governed resumes
+ * (audit, ACE) so an attacker cannot bypass host-safety checks by
+ * truncating or tampering with `<sid>.koi-meta.json`.
+ */
+export type SessionMetaReadResult =
+  | { readonly kind: "missing" }
+  | {
+      /**
+       * Pre-snapshot sidecar (version 1) or no sidecar at all (v0). The
+       * caller falls back to the pre-PR behavior: if a manifest path
+       * is recorded, re-parse it for ACE/audit decisions; otherwise
+       * apply the pre-PR permissive default. This preserves resume
+       * compatibility for sessions created before the snapshot model.
+       */
+      readonly kind: "legacy";
+      readonly manifestPath: string | undefined;
+    }
+  | {
+      readonly kind: "ok";
+      readonly manifestPath: string | undefined;
+      readonly snapshot: SessionProvenanceSnapshot;
+    }
+  | { readonly kind: "corrupt"; readonly error: string };
+
+export async function readSessionMetaResult(
+  sessionsDir: string,
+  sid: string,
+): Promise<SessionMetaReadResult> {
+  const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
+  const file = Bun.file(path);
+  if (!(await file.exists())) return { kind: "missing" };
+  try {
+    const raw = await file.text();
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed === null || typeof parsed !== "object") {
+      return { kind: "corrupt", error: "sidecar root is not a JSON object" };
+    }
+    const meta = parsed as Record<string, unknown>;
+    // Pre-snapshot sidecars (version 1, written by an earlier
+    // build) lack the snapshot field. Honor them as legacy: callers
+    // fall back to re-parsing the manifest path. Only sidecars
+    // tagged with the current version are required to carry the
+    // immutable snapshot.
+    const versionField = meta.version;
+    const isLegacy = versionField !== SESSION_META_VERSION;
+    if (isLegacy) {
+      let legacyPath: string | undefined;
+      if (meta.manifestPath === null) legacyPath = undefined;
+      else if (typeof meta.manifestPath === "string") legacyPath = meta.manifestPath;
+      else return { kind: "legacy", manifestPath: undefined };
+      return { kind: "legacy", manifestPath: legacyPath };
+    }
+    // manifestPath may be a string (manifest-governed session) or null
+    // (no-manifest session — explicitly recorded so resume can
+    // distinguish it from a missing/tampered sidecar). Anything else
+    // is corruption.
+    let manifestPathValue: string | undefined;
+    if (meta.manifestPath === null) {
+      manifestPathValue = undefined;
+    } else if (typeof meta.manifestPath === "string") {
+      manifestPathValue = meta.manifestPath;
+    } else {
+      return { kind: "corrupt", error: "manifestPath field is missing or invalid" };
+    }
+    // snapshot is required for sidecars written by this version. A
+    // sidecar without snapshot is either pre-snapshot legacy (rare —
+    // this version always writes one) or tampered. Either way the
+    // safe answer is to refuse the resume; legitimate operators can
+    // restart the session.
+    const snap = meta.snapshot;
+    if (snap === undefined || snap === null || typeof snap !== "object") {
+      return { kind: "corrupt", error: "snapshot field is missing or not an object" };
+    }
+    const snapObj = snap as Record<string, unknown>;
+    if (typeof snapObj.aceEnabled !== "boolean" || typeof snapObj.auditDeclared !== "boolean") {
+      return {
+        kind: "corrupt",
+        error: "snapshot is missing required aceEnabled/auditDeclared booleans",
+      };
+    }
+    const snapshot: SessionProvenanceSnapshot = {
+      aceEnabled: snapObj.aceEnabled,
+      auditDeclared: snapObj.auditDeclared,
+    };
+    return { kind: "ok", manifestPath: manifestPathValue, snapshot };
+  } catch (err) {
+    return { kind: "corrupt", error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Backwards-compatible wrapper. Collapses corrupt sidecars to `{}` for
+ * callers that don't yet enforce fail-closed behavior. Prefer
+ * `readSessionMetaResult` for new call sites.
  */
 export async function readSessionMeta(
   sessionsDir: string,

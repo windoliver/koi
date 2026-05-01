@@ -2448,10 +2448,170 @@ describe("Golden: @koi/middleware-call-dedup", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Golden: @koi/governance-scope (2 queries)
+// Golden: @koi/eval (2 queries)
 // ---------------------------------------------------------------------------
 
+import { compareRuns, exactMatch, runEval, runSelfTest, toolCall } from "@koi/eval";
+
+describe("Golden: @koi/eval", () => {
+  test("runEval scores a fake-agent transcript with exactMatch + toolCall graders", async () => {
+    const events: readonly EngineEvent[] = [
+      { kind: "tool_call_start", toolName: "search", callId: "c1" as never, args: { q: "x" } },
+      { kind: "tool_result", callId: "c1" as never, output: { hits: 42 } },
+      { kind: "text_delta", delta: "found 42 results" },
+      {
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "completed",
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 1,
+            durationMs: 0,
+          },
+        },
+      },
+    ];
+    const run = await runEval({
+      name: "eval-golden",
+      tasks: [
+        {
+          id: "t1",
+          name: "search-and-summarize",
+          input: { kind: "text", text: "search for x" },
+          expected: { kind: "text", pattern: /42/ },
+          graders: [exactMatch(), toolCall({ calls: [{ toolName: "search" }] })],
+        },
+      ],
+      agentFactory: () => ({
+        stream: async function* (): AsyncIterable<EngineEvent> {
+          for (const ev of events) yield ev;
+        },
+      }),
+      idGen: () => "run-golden",
+    });
+    expect(run.id).toBe("run-golden");
+    expect(run.summary.passRate).toBe(1);
+    expect(run.summary.byTask[0]?.taskId).toBe("t1");
+  });
+
+  test("compareRuns + runSelfTest report regressions and capability checks", async () => {
+    const baseSummary = {
+      taskCount: 1,
+      trialCount: 1,
+      passRate: 1,
+      meanScore: 1,
+      errorCount: 0,
+      byTask: [],
+    } as const;
+    const baseline = {
+      id: "b",
+      name: "x",
+      timestamp: "2026-01-01T00:00:00Z",
+      config: { name: "x", timeoutMs: 60_000, passThreshold: 0.5, taskCount: 1 },
+      trials: [],
+      summary: baseSummary,
+    };
+    const current = { ...baseline, id: "c", summary: { ...baseSummary, passRate: 0.5 } };
+    const result = compareRuns(baseline, current);
+    expect(result.kind).toBe("fail");
+
+    const checks = await runSelfTest([
+      { name: "always-ok", run: () => ({ pass: true }) },
+      { name: "boom", run: () => ({ pass: false, message: "intentional" }) },
+    ]);
+    expect(checks.pass).toBe(false);
+    expect(checks.checks).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-event-rules
+// ---------------------------------------------------------------------------
+
+import { sessionId as makeSessionId } from "@koi/core";
 import { createScopedCredentials, createScopedFetcher } from "@koi/governance-scope";
+import { createEventRulesMiddleware, validateEventRulesConfig } from "@koi/middleware-event-rules";
+
+describe("Golden: @koi/middleware-event-rules", () => {
+  test("skip_tool action circuit-breaks tool after windowed failure threshold", async () => {
+    const compiled = validateEventRulesConfig({
+      rules: [
+        {
+          name: "trip-on-failures",
+          on: "tool_call",
+          match: { ok: false, toolId: "shell_exec" },
+          condition: { count: 2, window: "1m" },
+          actions: [{ type: "skip_tool", toolId: "shell_exec" }],
+        },
+      ],
+    });
+    if (!compiled.ok) throw new Error(compiled.error.message);
+
+    const mw = createEventRulesMiddleware({ ruleset: compiled.value });
+    const ctx = {
+      session: { sessionId: makeSessionId("er-golden"), agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core").TurnContext;
+
+    const failing: import("@koi/core").ToolHandler = async () => ({
+      output: "boom",
+      metadata: { error: true },
+    });
+    const ok: import("@koi/core").ToolHandler = async () => ({ output: "ok" });
+
+    await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: {} }, failing);
+    await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: {} }, failing);
+    const blocked = await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: {} }, ok);
+    expect(blocked?.metadata?.blocked).toBe(true);
+  });
+
+  test("log action fires through injected logger on matching tool failure", async () => {
+    const compiled = validateEventRulesConfig({
+      rules: [
+        {
+          name: "log-failures",
+          on: "tool_call",
+          match: { ok: false },
+          actions: [{ type: "log", level: "warn", message: "tool {{toolId}} failed" }],
+        },
+      ],
+    });
+    if (!compiled.ok) throw new Error(compiled.error.message);
+
+    const warnings: string[] = [];
+    const mw = createEventRulesMiddleware({
+      ruleset: compiled.value,
+      actionContext: {
+        logger: {
+          info: () => {},
+          warn: (m: string) => warnings.push(m),
+          error: () => {},
+          debug: () => {},
+        },
+      },
+    });
+    const ctx = {
+      session: { sessionId: makeSessionId("er-golden-2"), agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core").TurnContext;
+    const failing: import("@koi/core").ToolHandler = async () => ({
+      output: "x",
+      metadata: { error: true },
+    });
+
+    await mw.wrapToolCall?.(ctx, { toolId: "shell_exec", input: {} }, failing);
+    expect(warnings).toEqual(["tool shell_exec failed"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/governance-scope (2 queries)
+// ---------------------------------------------------------------------------
 
 describe("Golden: @koi/governance-scope", () => {
   test("createScopedCredentials fails closed — out-of-scope key returns undefined, in-scope key resolves", async () => {

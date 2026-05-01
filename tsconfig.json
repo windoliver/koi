@@ -23,6 +23,7 @@
     { "path": "packages/lib/tools-core" },
     { "path": "packages/lib/validation" },
     { "path": "packages/lib/context-manager" },
+    { "path": "packages/lib/eval" },
     { "path": "packages/lib/event-trace" },
     { "path": "packages/lib/middleware-otel" },
     { "path": "packages/lib/middleware-tool-audit" },

@@ -20,6 +20,7 @@ import { basename, dirname, isAbsolute, relative, resolve as resolvePath } from 
 import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
 import type { KoiMiddleware, MiddlewarePhase } from "@koi/core";
 import { createAuditMiddleware } from "@koi/middleware-audit";
+import { createEventRulesMiddleware, validateEventRulesConfig } from "@koi/middleware-event-rules";
 
 /**
  * Closable audit sink as returned by `createNdjsonAuditSink`.
@@ -524,6 +525,26 @@ export function createBuiltinManifestRegistry(
       trusted: true,
     });
   }
+  // @koi/middleware-event-rules registers as TRUSTED so the resolver
+  // honors its native intercept/50 phase/priority — that's what lets
+  // a manifest `tool_call` rule actually observe denials issued by
+  // outer permissions/exfiltration-guard layers (observe/concurrent
+  // wraps would never see them). Manifest config CANNOT escape the
+  // containment model because `createEventRulesManifestEntry` rejects
+  // every action type that could short-circuit runtime flow or wire
+  // host-handler-dependent side effects:
+  //   - skip_tool   → REJECTED (would let YAML block tools)
+  //   - notify/emit/escalate → REJECTED (would silently degrade to
+  //                            a local log without host wiring)
+  //   - log         → ALLOWED (pure observability, no flow change)
+  // The trust here is in the L2 package code (audited, repo-owned),
+  // not the manifest CONFIG (still validated through Zod + the
+  // log-only constraint). Programmatic hosts that want skip_tool /
+  // notify / emit / escalate use `createEventRulesMiddleware`
+  // directly and explicitly own that trust boundary.
+  registry.register("@koi/middleware-event-rules", createEventRulesManifestEntry, {
+    trusted: true,
+  });
   // @koi/middleware-rlm is intentionally NOT registered here. Every
   // safety-relevant RLM flag (`acknowledgeSegmentLocalContract`,
   // `trustMetadataRole`, `priority`) must be set per-request by
@@ -1101,4 +1122,73 @@ function getOrInitAuditSinkCloseState(sink: ClosableAuditSink): AuditSinkCloseSt
     auditSinkCloseStates.set(sink, state);
   }
   return state;
+}
+
+// ---------------------------------------------------------------------------
+// Built-in: @koi/middleware-event-rules
+// ---------------------------------------------------------------------------
+
+/**
+ * Manifest factory for `@koi/middleware-event-rules`. Validates the
+ * declared ruleset through the package's Zod schema and returns a
+ * configured middleware. The factory is host-context-agnostic — no
+ * file I/O, no shared sinks, no shutdown registration — because the
+ * middleware's state is per-session in-memory counters owned by the
+ * middleware instance itself.
+ *
+ * Manifest options shape (passed to `validateEventRulesConfig`):
+ *   { rules: [ { name, on, match?, condition?, actions, stopOnMatch? }, ... ] }
+ *
+ * Side-effecting actions (`escalate`, `notify`, `emit`) require a
+ * matching handler on `actionContext`; the manifest factory does NOT
+ * wire those handlers — hosts wanting them must use programmatic
+ * composition.
+ *
+ * **Manifest-mode is observe-safe only**: the factory rejects rulesets
+ * that contain `skip_tool` actions. The middleware's intercept-phase
+ * short-circuit (returning a synthetic denial without calling `next()`)
+ * is a runtime-flow modification that should only be available to
+ * programmatic composition where the host explicitly consents to that
+ * trust boundary. Manifest-driven deployments retain `log` / `notify` /
+ * `emit` / `escalate` for governance observability without granting
+ * user-controlled YAML the ability to leapfrog inner permission /
+ * call-limit / hook accounting.
+ */
+function createEventRulesManifestEntry(
+  entry: ManifestMiddlewareEntry,
+  _ctx: ManifestMiddlewareContext,
+): KoiMiddleware {
+  const validation = validateEventRulesConfig(entry.options);
+  if (!validation.ok) {
+    throw new Error(
+      `manifest @koi/middleware-event-rules: invalid ruleset — ${validation.error.message}`,
+    );
+  }
+  for (const rule of validation.value.rules) {
+    for (const action of rule.actions) {
+      if (action.type === "skip_tool") {
+        throw new Error(
+          `manifest @koi/middleware-event-rules: rule '${rule.name}' uses 'skip_tool', which is forbidden in manifest configs ` +
+            "(it would let user-controlled YAML short-circuit inner permissions/call-limits/hooks). " +
+            "Use programmatic composition (createEventRulesMiddleware) for skip_tool rules, " +
+            "or rewrite this rule to use 'log'/'notify'/'escalate'/'emit' for observability only.",
+        );
+      }
+      if (action.type === "notify" || action.type === "emit" || action.type === "escalate") {
+        throw new Error(
+          `manifest @koi/middleware-event-rules: rule '${rule.name}' uses '${action.type}', which requires a host-wired handler ` +
+            `(actionContext.${action.type === "notify" ? "sendNotification" : action.type === "emit" ? "emitEvent" : "requestEscalation"}). ` +
+            "Manifest mode cannot wire those handlers, so the action would silently degrade to a local log line — " +
+            "an observability gap when operators believe alerting is active. " +
+            "Use programmatic composition (createEventRulesMiddleware with actionContext) for notify/emit/escalate rules, " +
+            "or rewrite to 'log' for manifest-mode observability.",
+        );
+      }
+    }
+  }
+  // strictActions is redundant here because every requires-handler
+  // action type is rejected above, but enabling it provides defense
+  // in depth: if a future action variant is added without updating
+  // this manifest gate, the middleware constructor still throws.
+  return createEventRulesMiddleware({ ruleset: validation.value, strictActions: true });
 }
