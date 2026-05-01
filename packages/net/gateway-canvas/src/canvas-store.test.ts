@@ -6,7 +6,7 @@ import { createInMemorySurfaceStore } from "./canvas-store.js";
 describe("createInMemorySurfaceStore", () => {
   test("create → get returns entry with correct hash", async () => {
     const store = createInMemorySurfaceStore();
-    const result = await store.create("s1", "content-1", { key: "val" });
+    const result = await store.create("s1", "content-1", { metadata: { key: "val" } });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.surfaceId).toBe("s1");
@@ -124,36 +124,34 @@ describe("createInMemorySurfaceStore", () => {
     expect(store.size()).toBe(1);
   });
 
-  test("LRU eviction: oldest-accessed entry evicted when maxSurfaces reached", async () => {
-    const store = createInMemorySurfaceStore({ maxSurfaces: 3 });
-    await store.create("s1", "v1");
-    await store.create("s2", "v2");
-    await store.create("s3", "v3");
-
-    // Access s1 to make it more recent than s2
-    await store.get("s1");
-
-    // Adding s4 should evict s2 (oldest lastAccessedAt)
-    await store.create("s4", "v4");
-
-    expect(store.size()).toBe(3);
-    expect(await store.has("s2")).toEqual({ ok: true, value: false });
-    expect(await store.has("s1")).toEqual({ ok: true, value: true });
-    expect(await store.has("s3")).toEqual({ ok: true, value: true });
-    expect(await store.has("s4")).toEqual({ ok: true, value: true });
-  });
-
-  test("get updates lastAccessedAt preventing LRU eviction", async () => {
+  test("create at capacity → RESOURCE_EXHAUSTED (no silent eviction)", async () => {
     const store = createInMemorySurfaceStore({ maxSurfaces: 2 });
     await store.create("s1", "v1");
     await store.create("s2", "v2");
 
-    await store.get("s1");
-    await store.create("s3", "v3");
+    const overflow = await store.create("s3", "v3");
+    expect(overflow.ok).toBe(false);
+    if (overflow.ok) return;
+    expect(overflow.error.code).toBe("RESOURCE_EXHAUSTED");
+    expect(overflow.error.retryable).toBe(true);
 
+    // Existing surfaces are untouched — no silent data loss
     expect(await store.has("s1")).toEqual({ ok: true, value: true });
-    expect(await store.has("s2")).toEqual({ ok: true, value: false });
-    expect(await store.has("s3")).toEqual({ ok: true, value: true });
+    expect(await store.has("s2")).toEqual({ ok: true, value: true });
+    expect(store.size()).toBe(2);
+
+    // Freeing a slot lets the next create succeed
+    await store.delete("s1");
+    const retry = await store.create("s3", "v3");
+    expect(retry.ok).toBe(true);
+  });
+
+  test("create persists ownerId from options", async () => {
+    const store = createInMemorySurfaceStore();
+    const result = await store.create("s1", "v1", { ownerId: "agent-a" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.ownerId).toBe("agent-a");
   });
 
   test("create without metadata omits metadata field", async () => {
@@ -162,5 +160,67 @@ describe("createInMemorySurfaceStore", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.metadata).toBeUndefined();
+    expect(result.value.ownerId).toBeUndefined();
+  });
+
+  test("update with expectedOwnerId atomically rejects cross-owner mutation", async () => {
+    const store = createInMemorySurfaceStore();
+    await store.create("s1", "v1", { ownerId: "alice" });
+
+    const wrong = await store.update("s1", "v2", undefined, "mallory");
+    expect(wrong.ok).toBe(false);
+    if (wrong.ok) return;
+    expect(wrong.error.code).toBe("PERMISSION");
+
+    // Surface untouched
+    const peek = await store.get("s1");
+    if (!peek.ok) return;
+    expect(peek.value.content).toBe("v1");
+
+    const right = await store.update("s1", "v2", undefined, "alice");
+    expect(right.ok).toBe(true);
+  });
+
+  test("update with expectedOwnerId on ownerless surface → PERMISSION (fail-closed)", async () => {
+    const store = createInMemorySurfaceStore();
+    await store.create("s1", "v1"); // no ownerId
+
+    const result = await store.update("s1", "v2", undefined, "alice");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("PERMISSION");
+  });
+
+  test("each create produces a fresh generationId; recreate does not reuse", async () => {
+    const store = createInMemorySurfaceStore();
+    const a = await store.create("s1", "v1", { ownerId: "alice" });
+    if (!a.ok) return;
+    const genA = a.value.generationId;
+    expect(genA).toBeGreaterThan(0);
+
+    await store.delete("s1", "alice");
+    const b = await store.create("s1", "v1-new", { ownerId: "alice" });
+    if (!b.ok) return;
+    expect(b.value.generationId).toBeGreaterThan(genA);
+
+    // Independent surface gets its own generation
+    const c = await store.create("s2", "v2", { ownerId: "alice" });
+    if (!c.ok) return;
+    expect(c.value.generationId).toBeGreaterThan(b.value.generationId);
+  });
+
+  test("delete with expectedOwnerId atomically rejects cross-owner deletion", async () => {
+    const store = createInMemorySurfaceStore();
+    await store.create("s1", "v1", { ownerId: "alice" });
+
+    const wrong = await store.delete("s1", "mallory");
+    expect(wrong.ok).toBe(false);
+    if (wrong.ok) return;
+    expect(wrong.error.code).toBe("PERMISSION");
+
+    expect(await store.has("s1")).toEqual({ ok: true, value: true });
+
+    const right = await store.delete("s1", "alice");
+    expect(right).toEqual({ ok: true, value: true });
   });
 });

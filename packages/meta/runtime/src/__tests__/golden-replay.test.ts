@@ -13872,10 +13872,14 @@ describe("Golden: @koi/gateway-canvas", () => {
     const { createInMemorySurfaceStore } = await import("@koi/gateway-canvas");
     const store = createInMemorySurfaceStore();
 
-    const created = await store.create("dash-1", "<h1>v1</h1>", { author: "agent" });
+    const created = await store.create("dash-1", "<h1>v1</h1>", {
+      ownerId: "agent-1",
+      metadata: { author: "agent" },
+    });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     const v1Hash = created.value.contentHash;
+    expect(created.value.ownerId).toBe("agent-1");
     expect(created.value.metadata).toEqual({ author: "agent" });
 
     // Duplicate create → CONFLICT

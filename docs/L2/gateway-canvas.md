@@ -81,10 +81,21 @@ await canvas.server.start();
 
 ## REST API
 
+All operations are authenticated and tenant-scoped — surfaces are private to
+the agent that created them. Non-owner access (read, write, subscribe) returns
+404 (not 403) so existence is not leaked across tenants.
+
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `POST` | `/:surfaceId` | Required | Create surface, returns 201 + ETag |
-| `GET` | `/:surfaceId` | Public | Read surface, supports If-None-Match (304) |
-| `PATCH` | `/:surfaceId` | Required | Update surface, supports If-Match CAS (412 on conflict) |
-| `DELETE` | `/:surfaceId` | Required | Delete surface, returns 204 |
-| `GET` | `/:surfaceId/events` | Public | SSE stream for real-time updates |
+| `POST` | `/:surfaceId` | Required | Create surface, stamps `ownerId` from auth, returns 201 + ETag |
+| `GET` | `/:surfaceId` | Owner | Read surface, supports If-None-Match (304); 404 to non-owners |
+| `PATCH` | `/:surfaceId` | Owner | Update surface; `If-Match` is **required** (428 if missing, 412 if stale) |
+| `DELETE` | `/:surfaceId` | Owner | Delete surface, returns 204 |
+| `GET` | `/:surfaceId/events` | Owner | SSE stream for real-time updates; 404 to non-owners |
+
+Status semantics:
+- `401` — caller missing/invalid credentials.
+- `404` — surface does not exist OR caller is not its owner (no existence leak).
+- `412` — `If-Match` mismatch (stale ETag).
+- `428` — `If-Match` required but absent (PATCH must fence against a specific generation).
+- `503` — retryable failure: store at capacity (`Retry-After: 30`), SSE saturated (`Retry-After: 5`), or auth backend unavailable (`Retry-After: 5`).

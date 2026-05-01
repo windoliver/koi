@@ -20,6 +20,20 @@ export interface SurfaceEntry {
   readonly content: string;
   /** Hex content hash, used as ETag. */
   readonly contentHash: string;
+  /**
+   * Authenticated identity that created the surface. Subsequent writes
+   * (PATCH/DELETE) must be performed by the same `ownerId`. Undefined only
+   * when the server runs without an authenticator (single-tenant mode).
+   */
+  readonly ownerId?: string | undefined;
+  /**
+   * Monotonic per-store identifier for *this instance* of the surface.
+   * Distinct from `surfaceId`: re-creating the same `surfaceId` after a
+   * delete produces a fresh `generationId`. Used by SSE subscribe to detect
+   * delete/recreate races so a stream cannot be silently spliced across
+   * surface generations.
+   */
+  readonly generationId: number;
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly lastAccessedAt: number;
@@ -27,27 +41,56 @@ export interface SurfaceEntry {
 }
 
 export interface SurfaceStoreConfig {
-  /** Max surfaces retained — LRU eviction beyond this. */
+  /**
+   * Soft cap on retained surfaces. When the store is full, `create()` returns
+   * `RESOURCE_EXHAUSTED` rather than silently evicting an unrelated surface.
+   * Operators must explicitly DELETE surfaces (or raise the cap) to make room.
+   */
   readonly maxSurfaces: number;
 }
 
 /**
  * Pluggable surface persistence. Default in-memory implementation provided.
  * Operations return `T | Promise<T>` so durable backends can plug in.
+ *
+ * Ownership is enforced inside the store on mutations (`update`, `delete`):
+ * passing `expectedOwnerId` makes the backend perform an atomic owner check
+ * alongside the hash precondition, closing the TOCTOU window that would
+ * otherwise exist between a route-layer ownership read and the mutation.
+ *
+ * Owner-mismatch returns the `PERMISSION` error code; not-found returns
+ * `NOT_FOUND`. Routes should map both to HTTP 404 to avoid leaking existence.
  */
 export interface SurfaceStore {
   readonly get: (id: string) => Result<SurfaceEntry> | Promise<Result<SurfaceEntry>>;
   readonly create: (
     id: string,
     content: string,
-    metadata?: Readonly<Record<string, unknown>>,
+    options?: {
+      readonly ownerId?: string;
+      readonly metadata?: Readonly<Record<string, unknown>>;
+    },
   ) => Result<SurfaceEntry> | Promise<Result<SurfaceEntry>>;
+  /**
+   * Conditional update. When `expectedOwnerId` is provided, the backend MUST
+   * verify the surface's `ownerId` equals it and reject with `PERMISSION` if
+   * not — atomically with the hash check. Implementations that ignore this
+   * argument silently break tenant isolation under concurrency.
+   */
   readonly update: (
     id: string,
     content: string,
     expectedHash: string | undefined,
+    expectedOwnerId?: string,
   ) => Result<SurfaceEntry> | Promise<Result<SurfaceEntry>>;
-  readonly delete: (id: string) => Result<boolean> | Promise<Result<boolean>>;
+  /**
+   * Conditional delete. When `expectedOwnerId` is provided, the backend MUST
+   * verify ownership atomically and reject with `PERMISSION` on mismatch.
+   */
+  readonly delete: (
+    id: string,
+    expectedOwnerId?: string,
+  ) => Result<boolean> | Promise<Result<boolean>>;
   readonly has: (id: string) => Result<boolean> | Promise<Result<boolean>>;
   readonly size: () => number | Promise<number>;
 }
