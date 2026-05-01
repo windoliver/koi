@@ -6,8 +6,8 @@
  */
 
 import { Database } from "bun:sqlite";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import type {
   Playbook,
   PlaybookEvaluation,
@@ -92,8 +92,15 @@ function jsonEqual(a: string | null, b: string | null): boolean {
 // ---------------------------------------------------------------------------
 
 export interface SqlitePlaybookStoreConfig {
-  /** Database path. Defaults to `~/.koi/ace.sqlite`. Use `:memory:` for tests. */
-  readonly path?: string;
+  /**
+   * Database path. **Required** — there is no global default. The store keys
+   * playbooks/trajectories/proposals only by their domain identifiers, with
+   * no workspace or tenant column, so a shared default file would let learned
+   * state from one project bleed into another. Callers must provide a path
+   * scoped to the current workspace/repo (e.g. `<workspaceRoot>/.koi/ace.sqlite`)
+   * or `:memory:` for tests.
+   */
+  readonly path: string;
   /** "process" survives SIGKILL; "os" survives power loss. Default: "process". */
   readonly durability?: "process" | "os";
 }
@@ -108,11 +115,16 @@ export interface SqlitePlaybookStore {
   readonly close: () => void;
 }
 
-export function createSqlitePlaybookStore(
-  config: SqlitePlaybookStoreConfig = {},
-): SqlitePlaybookStore {
-  const path = config.path ?? join(homedir(), ".koi", "ace.sqlite");
-  const db = new Database(path, { create: true });
+export function createSqlitePlaybookStore(config: SqlitePlaybookStoreConfig): SqlitePlaybookStore {
+  if (config.path.length === 0) {
+    throw new Error("createSqlitePlaybookStore: config.path is required");
+  }
+  // Ensure the parent directory exists for non-memory paths so callers don't
+  // have to mkdir before opening the store.
+  if (config.path !== ":memory:") {
+    mkdirSync(dirname(config.path), { recursive: true });
+  }
+  const db = new Database(config.path, { create: true });
   applyPragmas(db, config.durability ?? "process");
   applySchema(db);
 
@@ -154,21 +166,36 @@ function createPlaybookStore(db: Database): PlaybookStore {
   const selectByMinConfidence = db.query("SELECT * FROM playbooks WHERE confidence >= ?");
   const deleteById = db.prepare("DELETE FROM playbooks WHERE id = ?");
 
+  const selectVersionById = db.query("SELECT version FROM playbooks WHERE id = ?");
+
   return {
     save: async (pb) => {
-      upsert.run(
-        pb.id,
-        pb.title,
-        pb.strategy,
-        canonicalJson(pb.tags),
-        pb.confidence,
-        pb.source,
-        pb.createdAt,
-        pb.updatedAt,
-        pb.sessionCount,
-        pb.version,
-        pb.provenance !== undefined ? canonicalJson(pb.provenance) : null,
-      );
+      // Monotonic-version guard: under concurrent writers (or stale retries
+      // from a slow process), an older save must not silently overwrite a
+      // newer learned playbook. Reject any save with version < current.
+      // .immediate() acquires the RESERVED lock at BEGIN so the read-then-
+      // write is serialized against peer writers.
+      db.transaction(() => {
+        const current = selectVersionById.get(pb.id) as { readonly version: number } | null;
+        if (current !== null && pb.version < current.version) {
+          throw new Error(
+            `playbook ${pb.id} cannot save version ${String(pb.version)} below current version ${String(current.version)}`,
+          );
+        }
+        upsert.run(
+          pb.id,
+          pb.title,
+          pb.strategy,
+          canonicalJson(pb.tags),
+          pb.confidence,
+          pb.source,
+          pb.createdAt,
+          pb.updatedAt,
+          pb.sessionCount,
+          pb.version,
+          pb.provenance !== undefined ? canonicalJson(pb.provenance) : null,
+        );
+      }).immediate();
     },
     get: async (id) => {
       const row = selectById.get(id) as PlaybookRow | null;
@@ -241,15 +268,20 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
     "SELECT snapshot FROM structured_playbook_versions WHERE playbook_id = ? AND version = ?",
   );
   const selectCurrentVersion = db.query("SELECT version FROM structured_playbooks WHERE id = ?");
+  // Lineage truth: MAX(version) committed for this playbook. Used to compute
+  // the effective head when the mutable head row is missing or stale. A
+  // partial-failure crash can leave lineage with v5 but no head row; using
+  // only the head row for the regression check would let a v3 retry sneak
+  // back in as the visible head.
+  const selectLineageMaxVersion = db.query(
+    "SELECT MAX(version) AS v FROM structured_playbook_versions WHERE playbook_id = ?",
+  );
   const selectById = db.query("SELECT * FROM structured_playbooks WHERE id = ?");
   const selectAll = db.query("SELECT * FROM structured_playbooks");
   const selectWatermark = db.query(
     "SELECT last_reflected_step_index FROM structured_playbooks WHERE id = ?",
   );
   const deleteCurrent = db.prepare("DELETE FROM structured_playbooks WHERE id = ?");
-  const deleteLineage = db.prepare(
-    "DELETE FROM structured_playbook_versions WHERE playbook_id = ?",
-  );
 
   const save = async (pb: StructuredPlaybook): Promise<void> => {
     // .immediate() acquires the SQLite RESERVED lock at BEGIN, so concurrent
@@ -261,9 +293,19 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       // resolves silently after head has advanced — losing the race without
       // surfacing it to the caller.
       const current = selectCurrentVersion.get(pb.id) as { readonly version: number } | null;
-      if (current !== null && pb.version < current.version) {
+      const lineageMaxRow = selectLineageMaxVersion.get(pb.id) as {
+        readonly v: number | null;
+      } | null;
+      const lineageMax = lineageMaxRow?.v ?? null;
+      // Effective head = current head row if present, else lineage MAX as
+      // fallback when the head row is missing (e.g. fresh self-heal scenario).
+      // We do NOT take max(current, lineageMax): a stray higher lineage row
+      // from manual repair or historical corruption must not wedge healthy
+      // writes against the live head pointer.
+      const effectiveHead = current?.version ?? lineageMax ?? null;
+      if (effectiveHead !== null && pb.version < effectiveHead) {
         throw new Error(
-          `playbook ${pb.id} cannot save version ${String(pb.version)} below current version ${String(current.version)}`,
+          `playbook ${pb.id} cannot save version ${String(pb.version)} below current version ${String(effectiveHead)}`,
         );
       }
       // Stamp the lineage commit time AFTER the write lock is held so the
@@ -360,12 +402,12 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       return filterByTags(rows, options?.tags);
     },
     remove: async (id) => {
-      const result = db.transaction(() => {
-        const r = deleteCurrent.run(id);
-        deleteLineage.run(id);
-        return r.changes > 0;
-      })();
-      return result;
+      // Soft-delete: drop the head row only, preserve structured_playbook_versions.
+      // Lineage is the audit trail for AGP rollback; destructive deletion would
+      // make rollback impossible after a mistaken remove. An admin-only purge
+      // path can be added later if a legitimate need to erase lineage emerges.
+      const r = deleteCurrent.run(id);
+      return r.changes > 0;
     },
     getVersion: async (id, version) => {
       const row = selectVersion.get(id, version) as { readonly snapshot: string } | null;

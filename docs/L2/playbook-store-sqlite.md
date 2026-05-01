@@ -147,8 +147,14 @@ store.close();
 
 ```typescript
 interface SqlitePlaybookStoreConfig {
-  /** Database file path. Use ":memory:" for tests. Default: "~/.koi/ace.sqlite". */
-  readonly path?: string;
+  /**
+   * Database file path. **Required** — there is no global default. Records are
+   * keyed only by domain identifiers (no workspace/tenant column), so a shared
+   * default file would let learned state from one project bleed into another.
+   * Pass a workspace-scoped path (e.g. `<repoRoot>/.koi/ace.sqlite`) or
+   * `":memory:"` for tests.
+   */
+  readonly path: string;
   /** Disk durability. "process" (default) survives process crash; "os" survives power loss. */
   readonly durability?: "process" | "os";
 }

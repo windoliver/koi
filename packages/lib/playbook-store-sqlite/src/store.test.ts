@@ -173,6 +173,25 @@ describe("createSqlitePlaybookStore — playbooks", () => {
     expect(got?.provenance).toEqual(provenance);
     store.close();
   });
+
+  test("rejects stale flat-playbook save (version below current)", async () => {
+    // Regression: in a shared store, a slow process must not silently
+    // overwrite a newer learned playbook with a stale snapshot. Save below
+    // current version is rejected.
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.playbooks.save(pb({ id: "p", version: 5, strategy: "new" }));
+    await expect(
+      store.playbooks.save(pb({ id: "p", version: 3, strategy: "old" })),
+    ).rejects.toThrow();
+    expect((await store.playbooks.get("p"))?.strategy).toBe("new");
+    store.close();
+  });
+
+  test("requires explicit path (no global default)", () => {
+    // Regression: the store must not silently fall back to a home-directory
+    // singleton that would bleed state across unrelated workspaces.
+    expect(() => createSqlitePlaybookStore({ path: "" })).toThrow(/path is required/);
+  });
 });
 
 describe("createSqlitePlaybookStore — structured playbooks + lineage", () => {
@@ -227,6 +246,21 @@ describe("createSqlitePlaybookStore — structured playbooks + lineage", () => {
     await store.structuredPlaybooks.save(spb({ id: "s2", tags: ["bar"] }));
     const filtered = await store.structuredPlaybooks.list({ tags: ["foo"] });
     expect(filtered.map((p) => p.id)).toEqual(["s1"]);
+    store.close();
+  });
+
+  test("remove preserves lineage (audit trail intact)", async () => {
+    // Regression: remove() must not destroy structured_playbook_versions.
+    // Lineage is the AGP rollback audit trail; a mistaken delete must remain
+    // recoverable via getVersion.
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, title: "v1" }));
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 2, title: "v2" }));
+    expect(await store.structuredPlaybooks.remove("s1")).toBe(true);
+    expect(await store.structuredPlaybooks.get("s1")).toBeUndefined();
+    // Lineage is still readable for forensic/rollback purposes.
+    expect((await store.structuredPlaybooks.getVersion("s1", 1))?.title).toBe("v1");
+    expect((await store.structuredPlaybooks.getVersion("s1", 2))?.title).toBe("v2");
     store.close();
   });
 });
@@ -350,7 +384,235 @@ describe("createSqlitePlaybookStore — legacy encoding compatibility", () => {
   });
 });
 
+describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
+  test("rebuilds legacy playbook_evaluations table, drops orphans, dedupes by latest", async () => {
+    // Seed a legacy DB: playbook_evaluations without UNIQUE(proposal_id) or FK,
+    // user_version = 0. Mix of valid, duplicate, and orphan rows.
+    const seed = new Database(dbPath, { create: true });
+    seed.run("PRAGMA user_version = 0");
+    seed.run(`
+      CREATE TABLE playbook_proposals (
+        id TEXT PRIMARY KEY, playbook_id TEXT NOT NULL, base_version INTEGER NOT NULL,
+        operations TEXT NOT NULL, source_trajectory_range TEXT NOT NULL,
+        reflection TEXT NOT NULL, created_at INTEGER NOT NULL
+      )
+    `);
+    seed.run(`
+      CREATE TABLE playbook_evaluations (
+        id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, verdict TEXT NOT NULL,
+        metrics TEXT NOT NULL, notes TEXT, evaluated_at INTEGER NOT NULL
+      )
+    `);
+    seed.run("INSERT INTO playbook_proposals VALUES ('p-1','pb-A',1,'[]','{}','{}',100)");
+    // Valid winner — duplicate on proposal p-1 with later evaluated_at:
+    seed.run("INSERT INTO playbook_evaluations VALUES ('e-old','p-1','reject','{}',NULL,100)");
+    seed.run("INSERT INTO playbook_evaluations VALUES ('e-new','p-1','promote','{}',NULL,200)");
+    // Orphan: references nonexistent proposal — must be dropped.
+    seed.run(
+      "INSERT INTO playbook_evaluations VALUES ('e-orphan','p-missing','promote','{}',NULL,50)",
+    );
+    seed.close();
+
+    const migrated = createSqlitePlaybookStore({ path: dbPath });
+    migrated.close();
+
+    const after = new Database(dbPath, { readonly: true });
+    const rows = after
+      .query("SELECT id, proposal_id, verdict FROM playbook_evaluations")
+      .all() as readonly { id: string; proposal_id: string; verdict: string }[];
+    const userVersion = after.query("PRAGMA user_version").get() as { user_version: number };
+    after.close();
+
+    expect(userVersion.user_version).toBe(1);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.id).toBe("e-new");
+    expect(rows[0]?.verdict).toBe("promote");
+  });
+
+  test("rebuild quarantines orphans + duplicates instead of deleting", async () => {
+    const seed = new Database(dbPath, { create: true });
+    seed.run("PRAGMA user_version = 0");
+    seed.run(`
+      CREATE TABLE playbook_proposals (
+        id TEXT PRIMARY KEY, playbook_id TEXT NOT NULL, base_version INTEGER NOT NULL,
+        operations TEXT NOT NULL, source_trajectory_range TEXT NOT NULL,
+        reflection TEXT NOT NULL, created_at INTEGER NOT NULL
+      )
+    `);
+    seed.run(`
+      CREATE TABLE playbook_evaluations (
+        id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, verdict TEXT NOT NULL,
+        metrics TEXT NOT NULL, notes TEXT, evaluated_at INTEGER NOT NULL
+      )
+    `);
+    seed.run("INSERT INTO playbook_proposals VALUES ('p-1','pb-A',1,'[]','{}','{}',100)");
+    seed.run("INSERT INTO playbook_evaluations VALUES ('e-old','p-1','reject','{}',NULL,100)");
+    seed.run("INSERT INTO playbook_evaluations VALUES ('e-new','p-1','promote','{}',NULL,200)");
+    seed.run(
+      "INSERT INTO playbook_evaluations VALUES ('e-orphan','p-missing','promote','{}',NULL,50)",
+    );
+    seed.close();
+
+    const migrated = createSqlitePlaybookStore({ path: dbPath });
+    migrated.close();
+
+    const after = new Database(dbPath, { readonly: true });
+    const quarantined = after
+      .query("SELECT id, reason FROM playbook_evaluations_quarantine_v1 ORDER BY id")
+      .all() as readonly { id: string; reason: string }[];
+    after.close();
+
+    expect(quarantined.length).toBe(2);
+    expect(quarantined.find((q) => q.id === "e-orphan")?.reason).toContain("orphan");
+    expect(quarantined.find((q) => q.id === "e-old")?.reason).toContain("duplicate");
+  });
+
+  test("partial-upgrade DB (UNIQUE but no FK) is detected and rebuilt", async () => {
+    // Simulate a drifted DB: schema has UNIQUE(proposal_id) but no FK, and
+    // user_version is still 0. The migration must NOT skip — it must rebuild
+    // and add the FK before bumping user_version.
+    const seed = new Database(dbPath, { create: true });
+    seed.run("PRAGMA user_version = 0");
+    seed.run(`
+      CREATE TABLE playbook_proposals (
+        id TEXT PRIMARY KEY, playbook_id TEXT NOT NULL, base_version INTEGER NOT NULL,
+        operations TEXT NOT NULL, source_trajectory_range TEXT NOT NULL,
+        reflection TEXT NOT NULL, created_at INTEGER NOT NULL
+      )
+    `);
+    seed.run(`
+      CREATE TABLE playbook_evaluations (
+        id TEXT PRIMARY KEY,
+        proposal_id TEXT NOT NULL UNIQUE,
+        verdict TEXT NOT NULL, metrics TEXT NOT NULL,
+        notes TEXT, evaluated_at INTEGER NOT NULL
+      )
+    `);
+    seed.run("INSERT INTO playbook_proposals VALUES ('p-1','pb-A',1,'[]','{}','{}',100)");
+    seed.run("INSERT INTO playbook_evaluations VALUES ('e-1','p-1','promote','{}',NULL,100)");
+    seed.close();
+
+    const migrated = createSqlitePlaybookStore({ path: dbPath });
+    migrated.close();
+
+    const after = new Database(dbPath, { readonly: true });
+    const fks = after.query("PRAGMA foreign_key_list(playbook_evaluations)").all() as readonly {
+      table: string;
+      from: string;
+    }[];
+    after.close();
+    // FK must now be present after migration.
+    expect(fks.some((fk) => fk.table === "playbook_proposals" && fk.from === "proposal_id")).toBe(
+      true,
+    );
+  });
+
+  test("post-migration writes are constraint-enforced", async () => {
+    const seed = new Database(dbPath, { create: true });
+    seed.run("PRAGMA user_version = 0");
+    seed.run(`
+      CREATE TABLE playbook_evaluations (
+        id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, verdict TEXT NOT NULL,
+        metrics TEXT NOT NULL, notes TEXT, evaluated_at INTEGER NOT NULL
+      )
+    `);
+    seed.close();
+
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
+    await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
+    // Constraint must now fire on duplicate proposal_id from the migrated table.
+    await expect(store.proposals.recordEvaluation(makeEvaluation("e-2", "p-1"))).rejects.toThrow();
+    store.close();
+  });
+
+  test("drifted FK targeting wrong column is detected and rebuilt", async () => {
+    // Simulate a drifted DB: schema declares FK from proposal_id but to the
+    // wrong target column (verdict instead of id). The migration must detect
+    // this via fk.to === 'id' check and rebuild before bumping user_version.
+    const seed = new Database(dbPath, { create: true });
+    seed.run("PRAGMA user_version = 0");
+    seed.run(`
+      CREATE TABLE playbook_proposals (
+        id TEXT PRIMARY KEY, playbook_id TEXT NOT NULL, base_version INTEGER NOT NULL,
+        operations TEXT NOT NULL, source_trajectory_range TEXT NOT NULL,
+        reflection TEXT NOT NULL, created_at INTEGER NOT NULL,
+        verdict TEXT
+      )
+    `);
+    seed.run(`
+      CREATE TABLE playbook_evaluations (
+        id TEXT PRIMARY KEY,
+        proposal_id TEXT NOT NULL UNIQUE
+                    REFERENCES playbook_proposals(verdict),
+        verdict TEXT NOT NULL, metrics TEXT NOT NULL,
+        notes TEXT, evaluated_at INTEGER NOT NULL
+      )
+    `);
+    seed.close();
+
+    const migrated = createSqlitePlaybookStore({ path: dbPath });
+    migrated.close();
+
+    const after = new Database(dbPath, { readonly: true });
+    const fks = after.query("PRAGMA foreign_key_list(playbook_evaluations)").all() as readonly {
+      table: string;
+      from: string;
+      to: string;
+    }[];
+    after.close();
+    expect(
+      fks.some(
+        (fk) => fk.table === "playbook_proposals" && fk.from === "proposal_id" && fk.to === "id",
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("createSqlitePlaybookStore — evaluation lineage integrity", () => {
+  test("recordEvaluation rejects orphan evaluation (no matching proposal)", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await expect(
+      store.proposals.recordEvaluation(makeEvaluation("e-1", "nonexistent")),
+    ).rejects.toThrow();
+    store.close();
+  });
+
+  test("recordEvaluation rejects second evaluation for same proposal", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
+    await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
+    // Different id, same proposal_id, different verdict — must reject.
+    await expect(
+      store.proposals.recordEvaluation({
+        ...makeEvaluation("e-2", "p-1"),
+        verdict: "reject",
+      }),
+    ).rejects.toThrow();
+    store.close();
+  });
+});
+
 describe("createSqlitePlaybookStore — head-row self-heal", () => {
+  test("self-heal cannot regress head to a stale lineage version", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    const v1 = spb({ id: "s1", version: 1, title: "v1" });
+    await store.structuredPlaybooks.save(v1);
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 2, title: "v2" }));
+    store.close();
+
+    // Simulate partial corruption: head row missing, lineage intact at v2.
+    const corrupt = new Database(dbPath);
+    corrupt.run("DELETE FROM structured_playbooks WHERE id = ?", ["s1"]);
+    corrupt.close();
+
+    const repaired = createSqlitePlaybookStore({ path: dbPath });
+    // Stale worker retries v1 — must throw (effectiveHead is v2 from lineage),
+    // not silently rebuild head as v1 and hide v2.
+    await expect(repaired.structuredPlaybooks.save(v1)).rejects.toThrow();
+    repaired.close();
+  });
+
   test("retry rebuilds missing head row when lineage is intact", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
     const base = spb({ id: "s1", version: 1, title: "v1" });
@@ -369,6 +631,31 @@ describe("createSqlitePlaybookStore — head-row self-heal", () => {
     await repaired.structuredPlaybooks.save(base);
     expect((await repaired.structuredPlaybooks.get("s1"))?.title).toBe("v1");
     repaired.close();
+  });
+
+  test("stray higher lineage row does not block writes against live head", async () => {
+    // Regression: a single stray higher version in lineage (from manual
+    // repair, historical corruption, or a prior bug) must not wedge healthy
+    // writes forever. The live head pointer is authoritative; lineage MAX is
+    // only consulted as fallback when the head row is missing.
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, title: "v1" }));
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 2, title: "v2" }));
+    store.close();
+
+    // Inject a stray v100 lineage row, leaving head at v2.
+    const corrupt = new Database(dbPath);
+    corrupt.run(
+      "INSERT INTO structured_playbook_versions (playbook_id, version, snapshot, committed_at) VALUES (?, ?, ?, ?)",
+      ["s1", 100, '{"orphaned":true}', 0],
+    );
+    corrupt.close();
+
+    const reopened = createSqlitePlaybookStore({ path: dbPath });
+    // Save at v3 must succeed (head=2 < 3), not be wedged behind stray v100.
+    await reopened.structuredPlaybooks.save(spb({ id: "s1", version: 3, title: "v3" }));
+    expect((await reopened.structuredPlaybooks.get("s1"))?.version).toBe(3);
+    reopened.close();
   });
 });
 
