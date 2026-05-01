@@ -12,8 +12,8 @@ export async function run(flags: CliFlags): Promise<ExitCode> {
   if (!isStatusFlags(flags)) return ExitCode.FAILURE;
   const resolved = await resolveServiceConfig({
     manifest: flags.manifest,
-    port: flags.port,
-    system: flags.system ? true : undefined,
+    port: undefined,
+    system: undefined,
     installedState: "prefer",
   });
   if (!resolved.ok) {

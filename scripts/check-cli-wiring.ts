@@ -37,6 +37,8 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/mcp-server",
   // Nexus filesystem — requires running Nexus Docker stack
   "@koi/fs-nexus",
+  // Config loader is CLI infrastructure, not a default TUI runtime provider.
+  "@koi/config",
   // Skills runtime — requires skill scanner config + filesystem scanning
   "@koi/skills-runtime",
   // Agent runtime — requires agent resolver dirs config

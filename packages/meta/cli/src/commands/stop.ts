@@ -8,7 +8,7 @@ export async function run(flags: CliFlags): Promise<ExitCode> {
   const resolved = await resolveServiceConfig({
     manifest: flags.manifest,
     port: undefined,
-    system: flags.system ? true : undefined,
+    system: undefined,
     installedState: "prefer",
   });
   if (!resolved.ok) {

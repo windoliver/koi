@@ -45,7 +45,6 @@
     "@koi/audit-sink-sqlite": "workspace:*",
     "@koi/channel-cli": "workspace:*",
     "@koi/checkpoint": "workspace:*",
-    "@koi/config": "workspace:*",
     "@koi/context-manager": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/file-type": "workspace:*",
@@ -123,7 +122,6 @@
     "@koi/tool-exec": "workspace:*",
     "@koi/tool-notebook": "workspace:*",
     "@koi/governance-scope": "workspace:*",
-    "@koi/gateway-http": "workspace:*",
     "@koi/url-safety": "workspace:*",
     "@koi/tools-bash": "workspace:*",
     "@koi/tools-builtin": "workspace:*",
@@ -143,6 +141,7 @@
   },
   "devDependencies": {
     "@koi/channel-cli": "workspace:*",
+    "@koi/config": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/harness": "workspace:*",
