@@ -719,20 +719,17 @@ export async function refreshPRDLock(lock: PRDLock): Promise<boolean> {
  * Idempotent: handles already-closed/released locks safely.
  */
 export async function releasePRDLock(lock: PRDLock): Promise<void> {
-  try {
-    const payload = JSON.stringify({
-      owner: lock.owner,
-      released: true,
-      releasedAt: new Date().toISOString(),
-    });
-    await lock.handle.truncate(0);
-    await lock.handle.write(payload, 0, "utf8");
-  } catch {
-    // Handle already closed / fs error — best-effort.
-  }
-  // Best-effort path unlink to keep the directory tidy. Inode-checked
-  // so we only remove a file that still points at OUR inode (any
-  // successor's inode will differ and we leave it alone).
+  // Inode-checked path unlink is the simplest race-free release: it
+  // is one atomic syscall against an inode we own. We do this FIRST
+  // (before any heartbeat or sentinel write that could be torn by a
+  // crash mid-write) so a crash during release leaves either:
+  //   (a) our lock fully present (acquirer sees it as live, but our
+  //       PID is dead → fast-path stale break, OR
+  //       heartbeat will eventually go stale), OR
+  //   (b) our lock cleanly gone (acquirer's O_EXCL wins immediately).
+  // What we MUST avoid: a torn empty/corrupt lockfile, which would
+  // make acquirer wait the full HEARTBEAT_STALE_MS (mtime tiebreaker)
+  // before recovering — a 15-min outage from a normal crash.
   try {
     const pathStat = await stat(lock.path);
     if (pathStat.ino === lock.inode) {

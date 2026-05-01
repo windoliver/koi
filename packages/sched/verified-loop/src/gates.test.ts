@@ -50,11 +50,21 @@ describe("createTestGate", () => {
     expect(result.passed).toBe(false);
   }, 5_000);
 
-  test("handles spawn failure for nonexistent command", async () => {
+  test("throws GateInfrastructureError on spawn failure for nonexistent command", async () => {
+    // Updated contract: a verifier that cannot be executed at all
+    // (ENOENT/EACCES/EPERM) is an infrastructure failure, not a
+    // verification miss. Surfacing it as passed:false would let it
+    // consume the per-item failure budget and durably skip untouched
+    // work — the same class of bug the runner-failure path avoids.
     const gate = createTestGate(["__nonexistent_command_verified_loop_test__"]);
-    const result = await gate(makeCtx());
-    expect(result.passed).toBe(false);
-    expect(result.details).toBeDefined();
+    let threw: Error | undefined;
+    try {
+      await gate(makeCtx());
+    } catch (e: unknown) {
+      threw = e as Error;
+    }
+    expect(threw).toBeDefined();
+    expect(threw?.name).toBe("GateInfrastructureError");
   });
 
   test("uses custom cwd", async () => {

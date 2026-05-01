@@ -7,7 +7,7 @@
 
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { extractMessage } from "@koi/errors";
-import { GateQuiescenceError } from "./gates.js";
+import { GateInfrastructureError, GateQuiescenceError } from "./gates.js";
 import { appendLearning, readLearnings } from "./learnings.js";
 import {
   acquirePRDLock,
@@ -491,30 +491,47 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
             // overlapping verification — exactly what the loop is
             // supposed to prevent. Surface as fatal.
             if (e instanceof GateQuiescenceError) throw e;
-            // Gate timed out or aborted. The gate's promise is still in
-            // flight unless it cooperatively settles after seeing
-            // gateSignal abort. Wait for quiescence with a bounded grace
-            // budget; if the gate refuses to settle, fail the run fatally
-            // — continuing while a verification call is still mutating
-            // external systems would produce overlapping work.
-            gateResult = { passed: false, details: `Gate error: ${extractMessage(e)}` };
-            // Use let — justified: race outcome flag.
-            let gateStuck = false;
-            const settled = gatePromise.then(
-              () => undefined,
-              () => undefined,
-            );
-            const grace = new Promise<void>((resolve) => {
-              setTimeout(() => {
-                gateStuck = true;
-                resolve();
-              }, GATE_QUIESCE_TIMEOUT_MS).unref?.();
-            });
-            await Promise.race([settled, grace]);
-            if (gateStuck) {
-              throw new RunnerStuckError(
-                `VerifiedLoop: gate did not quiesce within ${GATE_QUIESCE_TIMEOUT_MS}ms after timeout/abort; aborting run to avoid overlapping verification work`,
+            // GateInfrastructureError (spawn ENOENT/EACCES/etc.) means
+            // the verifier never ran — treat it like an iteration
+            // runner failure so it does not consume the per-item skip
+            // budget. Record it as iterError + passed:false so the
+            // result is observable but the "did real verification fail
+            // for this item?" predicate stays false.
+            if (e instanceof GateInfrastructureError) {
+              iterError = `Gate infrastructure failure: ${e.message}`;
+              gateResult = {
+                passed: false,
+                details: `Gate could not be executed (infrastructure failure): ${e.message}`,
+              };
+              // Fall through to the per-iteration record. The
+              // bumpFailureCount path is gated on iterError===undefined
+              // so this iteration won't consume the skip budget.
+            } else {
+              // Gate timed out or aborted. The gate's promise is still in
+              // flight unless it cooperatively settles after seeing
+              // gateSignal abort. Wait for quiescence with a bounded grace
+              // budget; if the gate refuses to settle, fail the run fatally
+              // — continuing while a verification call is still mutating
+              // external systems would produce overlapping work.
+              gateResult = { passed: false, details: `Gate error: ${extractMessage(e)}` };
+              // Use let — justified: race outcome flag.
+              let gateStuck = false;
+              const settled = gatePromise.then(
+                () => undefined,
+                () => undefined,
               );
+              const grace = new Promise<void>((resolve) => {
+                setTimeout(() => {
+                  gateStuck = true;
+                  resolve();
+                }, GATE_QUIESCE_TIMEOUT_MS).unref?.();
+              });
+              await Promise.race([settled, grace]);
+              if (gateStuck) {
+                throw new RunnerStuckError(
+                  `VerifiedLoop: gate did not quiesce within ${GATE_QUIESCE_TIMEOUT_MS}ms after timeout/abort; aborting run to avoid overlapping verification work`,
+                );
+              }
             }
           }
         }

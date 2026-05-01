@@ -22,6 +22,19 @@ export class GateQuiescenceError extends Error {
   override readonly name = "GateQuiescenceError";
 }
 
+/**
+ * Thrown by createTestGate when the verifier subprocess could not be
+ * executed at all (spawn ENOENT, EACCES, EPERM, ENOTDIR). Surfacing
+ * such a failure as passed:false would let it consume the per-item
+ * failure budget and durably skip untouched work — exactly the same
+ * class of bug the runner-failure path is designed to avoid. The
+ * orchestrator catches this and treats it like a runner error: the
+ * iteration is recorded as failed but the skip budget is not bumped.
+ */
+export class GateInfrastructureError extends Error {
+  override readonly name = "GateInfrastructureError";
+}
+
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 /** Create a gate that runs a shell command and passes on exit code 0. */
@@ -181,6 +194,30 @@ export function createTestGate(
             : `Test gate failed (exit ${exitCode}): ${stderr.slice(0, 500)}`,
       };
     } catch (e: unknown) {
+      // GateQuiescenceError must reach the orchestrator unchanged — it
+      // signals an unrecoverable subprocess-tree leak and the run must
+      // abort. Wrapping it as passed:false would let the loop advance
+      // to the next iteration with leftover descendants alive.
+      if (e instanceof GateQuiescenceError) throw e;
+      // GateInfrastructureError marks gate-execution failures (spawn
+      // ENOENT, EACCES, EPERM) that did not actually verify anything.
+      // Surfacing them as passed:false would consume the per-item
+      // failure budget and durably skip untouched work — the same
+      // class of bug the runner-failure path already avoids. Throw
+      // so the orchestrator can decide policy (currently: do not bump
+      // failure count; report as iteration error).
+      if (e instanceof GateInfrastructureError) throw e;
+      // Catch only "spawn" / "executable not found" / permission errors
+      // and convert to GateInfrastructureError. Other failures (e.g.,
+      // unexpected programming errors inside this gate function) stay
+      // as a passed:false with the message — they are at least bounded
+      // and the operator can read the details.
+      const code = (e as { readonly code?: unknown }).code;
+      if (code === "ENOENT" || code === "EACCES" || code === "EPERM" || code === "ENOTDIR") {
+        throw new GateInfrastructureError(
+          `Test gate could not be executed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
       const message = e instanceof Error ? e.message : String(e);
       return { passed: false, details: `Test gate error: ${message}` };
     }
