@@ -135,6 +135,12 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
   const cache = new Map<string, PolicyEntry>();
   // brickId → cacheKey for O(1) eviction.
   const brickIndex = new Map<string, string>();
+  // Brick IDs whose compiled executor threw. Quarantined entries stay in the
+  // cache and always return a canonical block response — they do NOT fall
+  // through to next-best scope. Cleared on re-register or external eviction.
+  // This is the safety property: a transient executor fault on a deny policy
+  // cannot silently downgrade enforcement to "tool runs normally".
+  const quarantined = new Map<string, string>(); // brickId → reason
 
   const register = (entry: PolicyEntry): Result<void> => {
     if (entry.verified !== true) {
@@ -172,6 +178,8 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
 
     cache.set(key, entry);
     brickIndex.set(entry.brickId, key);
+    // Re-registration clears any prior quarantine on this brickId.
+    quarantined.delete(entry.brickId);
     return { ok: true, value: undefined };
   };
 
@@ -181,6 +189,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       cache.delete(key);
       brickIndex.delete(brickId);
     }
+    quarantined.delete(brickId);
   };
 
   if (config.notifier !== undefined) {
@@ -227,25 +236,40 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       const entry = findEntry(ctx, request.toolId);
       if (entry === undefined) return next(request);
 
+      // Quarantined entries always block — keeps deny policies enforcing
+      // even after their executor faults. Cleared by re-register or
+      // external eviction (StoreChangeNotifier `removed` / `quarantined`).
+      const quarantineReason = quarantined.get(entry.brickId);
+      if (quarantineReason !== undefined) {
+        return blockResponse(request.toolId, quarantineReason);
+      }
+
       try {
         const decision = entry.execute(request.input);
         if (decision.action === "allow") return next(request);
         return blockResponse(request.toolId, decision.reason);
       } catch (cause) {
-        // Fail-closed under executor drift: a verified deny must not silently
-        // turn into a successful tool call when its compiled executor throws.
-        // Block the current call AND auto-evict so subsequent calls fall
-        // through to next-best scope or to the unwrapped tool path. The
-        // caller is notified via onExecutorError so operators see the
-        // broken promotion. (#1207 round 3)
-        evict(entry.brickId);
-        config.onExecutorError?.({
-          brickId: entry.brickId,
-          toolId: entry.toolId,
-          scope: entry.scope,
-          cause,
-        });
-        return blockResponse(request.toolId, "compiled policy executor failed; entry auto-evicted");
+        // Fail-closed AND quarantine: the entry stays in the cache and
+        // every subsequent call returns a canonical block until an external
+        // signal (re-register with a fixed brick, or a notifier event)
+        // clears the quarantine. This prevents a transient executor fault
+        // on a deny policy from silently downgrading to "tool runs normally"
+        // via fall-through. (#1207 round 4)
+        const reason = "compiled policy executor failed; entry quarantined";
+        quarantined.set(entry.brickId, reason);
+        // Telemetry hook isolated — a throwing callback must not change
+        // enforcement behavior. (#1207 round 4)
+        try {
+          config.onExecutorError?.({
+            brickId: entry.brickId,
+            toolId: entry.toolId,
+            scope: entry.scope,
+            cause,
+          });
+        } catch {
+          // Swallow callback failures; observability cannot break enforcement.
+        }
+        return blockResponse(request.toolId, reason);
       }
     },
 

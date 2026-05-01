@@ -222,8 +222,8 @@ describe("createPolicyCacheMiddleware: cache-hit bypass equivalence", () => {
   });
 });
 
-describe("createPolicyCacheMiddleware: executor failure (fail-closed + auto-evict)", () => {
-  test("throwing executor returns canonical block response and auto-evicts", async () => {
+describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantine)", () => {
+  test("throwing executor returns canonical block AND quarantines (deny stays enforced)", async () => {
     let errorInfo: { brickId: string; toolId: string; scope: string } | undefined;
     const handle = createPolicyCacheMiddleware({
       onExecutorError: (info) => {
@@ -246,27 +246,29 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + auto-evic
     const wrap = handle.middleware.wrapToolCall;
     if (wrap === undefined) throw new Error("wrapToolCall missing");
 
-    // First call: fail-closed — block AND evict.
-    const blocked = await wrap(CTX, makeReq("search", { q: "x" }), next);
+    // First call: throw → block (fail-closed).
+    const r1 = await wrap(CTX, makeReq("search", { q: "x" }), next);
     expect(next).toHaveBeenCalledTimes(0);
-    expect(blocked.metadata?.policyDenied).toBe(true);
-    expect(blocked.metadata?.blockedByHook).toBe(true);
-    expect(blocked.metadata?.hookName).toBe("policy-cache");
-    expect(blocked.metadata?.reason).toContain("auto-evicted");
-    expect(handle.size()).toBe(0);
+    expect(r1.metadata?.policyDenied).toBe(true);
+    expect(r1.metadata?.blockedByHook).toBe(true);
+    expect(r1.metadata?.hookName).toBe("policy-cache");
+    expect(r1.metadata?.reason).toContain("quarantined");
+    // Entry stays in cache (quarantine, not eviction).
+    expect(handle.size()).toBe(1);
 
     // Operator-visible incident reporting fired.
     expect(errorInfo?.brickId).toBe("brick-throws");
     expect(errorInfo?.toolId).toBe("search");
     expect(errorInfo?.scope).toBe("agent");
 
-    // Subsequent call: entry is gone → falls through to next as a normal cache miss.
-    const result2 = await wrap(CTX, makeReq("search", { q: "x" }), next);
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(result2.output).toBe("tool ran");
+    // Subsequent calls also block — no fall-through, executor not re-invoked.
+    const r2 = await wrap(CTX, makeReq("search", { q: "x" }), next);
+    expect(next).toHaveBeenCalledTimes(0);
+    expect(r2.metadata?.policyDenied).toBe(true);
+    expect(r2.metadata?.reason).toContain("quarantined");
   });
 
-  test("executor throw in agent scope falls back to global on retry", async () => {
+  test("quarantined deny does NOT fall back to global allow (security property)", async () => {
     const handle = createPolicyCacheMiddleware();
     handle.register({
       scope: "agent",
@@ -284,15 +286,113 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + auto-evic
     const wrap = handle.middleware.wrapToolCall;
     if (wrap === undefined) throw new Error("wrapToolCall missing");
 
-    // First call: agent throws → blocked + evicted.
-    const blocked = await wrap(CTX, makeReq("search", {}), next);
-    expect(blocked.metadata?.policyDenied).toBe(true);
+    // First call: agent throws → block + quarantine.
+    const r1 = await wrap(CTX, makeReq("search", {}), next);
+    expect(r1.metadata?.policyDenied).toBe(true);
     expect(next).toHaveBeenCalledTimes(0);
 
-    // Second call: agent gone → global allow → next runs.
-    const allowed = await wrap(CTX, makeReq("search", {}), next);
+    // Second call: agent is quarantined — does NOT fall back to global allow.
+    // The verified agent deny remains in force until re-promotion.
+    const r2 = await wrap(CTX, makeReq("search", {}), next);
+    expect(r2.metadata?.policyDenied).toBe(true);
+    expect(next).toHaveBeenCalledTimes(0);
+  });
+
+  test("re-registering brick clears quarantine", async () => {
+    const handle = createPolicyCacheMiddleware();
+    let throwOnce = true;
+    handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "search",
+      brickId: "brick-flaky",
+      verified: true,
+      execute: () => {
+        if (throwOnce) throw new Error("transient compile fault");
+        return { action: "allow" };
+      },
+    });
+
+    const next: ToolHandler = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+
+    // Quarantine it.
+    await wrap(CTX, makeReq("search"), next);
+    expect(next).toHaveBeenCalledTimes(0);
+
+    // Re-register with a fixed executor — quarantine clears.
+    throwOnce = false;
+    handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "search",
+      brickId: "brick-flaky",
+      verified: true,
+      execute: () => ({ action: "allow" }),
+    });
+
+    const r = await wrap(CTX, makeReq("search"), next);
     expect(next).toHaveBeenCalledTimes(1);
-    expect(allowed.output).toBe("tool ran");
+    expect(r.output).toBe("ok");
+  });
+
+  test("StoreChangeNotifier event clears quarantine via eviction", () => {
+    let listener: ((e: StoreChangeEvent) => void) | undefined;
+    const notifier: StoreChangeNotifier = {
+      notify: () => {},
+      subscribe: (cb) => {
+        listener = cb;
+        return () => {};
+      },
+    };
+    const handle = createPolicyCacheMiddleware({ notifier });
+    handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "search",
+      brickId: "brick-broken",
+      verified: true,
+      execute: () => {
+        throw new Error("fault");
+      },
+    });
+
+    // Trigger quarantine.
+    void handle.middleware.wrapToolCall?.(CTX, makeReq("search"), async () => makeResp());
+    expect(handle.size()).toBe(1);
+
+    // Notifier "updated" → evicts entry AND clears quarantine.
+    listener?.({ kind: "updated", brickId: "brick-broken" as never });
+    expect(handle.size()).toBe(0);
+  });
+
+  test("onExecutorError callback that throws does NOT break canonical block return", async () => {
+    const handle = createPolicyCacheMiddleware({
+      onExecutorError: () => {
+        throw new Error("audit sink offline");
+      },
+    });
+    handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "search",
+      brickId: "brick-throws",
+      verified: true,
+      execute: () => {
+        throw new Error("compile error");
+      },
+    });
+
+    const next: ToolHandler = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+
+    // Telemetry callback throws → enforcement still returns canonical block.
+    const r = await wrap(CTX, makeReq("search"), next);
+    expect(next).toHaveBeenCalledTimes(0);
+    expect(r.metadata?.policyDenied).toBe(true);
+    expect(r.metadata?.blockedByHook).toBe(true);
   });
 });
 

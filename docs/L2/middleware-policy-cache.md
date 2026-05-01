@@ -29,14 +29,20 @@ On `wrapToolCall`:
    - `{ action: "block", reason }` → return the **canonical block response** without calling `next`. No model call, no permission prompt, no tool execution.
 3. Hits are deterministic by construction: `execute` is a pure function of `req.input`, so two identical inputs produce identical decisions.
 
-If `execute` throws (schema drift, version skew, malformed input), the middleware **fails closed** for the current call (canonical block response, same shape as a normal `block` decision but with `reason` indicating executor failure) AND **auto-evicts** the broken entry. The next call for the same tool then falls through to the next-most-specific scope (e.g. `agent` failure → `zone` → `global`) or, if no other scope matches, runs the unwrapped tool path through permissions.
+If `execute` throws (schema drift, version skew, malformed input), the middleware **fails closed** for the current call AND **quarantines** the broken entry. The entry stays in the cache and every subsequent call returns the canonical block response — *without* re-invoking the broken executor and *without* falling through to a next-best scope. Quarantine is cleared by:
 
-This combination prevents two failure modes in tension:
+- Re-registering the same `brickId` (forge re-promotes a fixed brick), or
+- An external `StoreChangeNotifier` event of kind `updated` / `removed` / `quarantined` for that `brickId`.
 
-1. **Fail-open** — silently treating a throw as a cache miss would let a stale compiled deny policy revert to "tool runs normally" without any audit signal, exactly when verification is breaking.
-2. **Bricked-forever** — failing closed without evicting would deny every subsequent call until manual intervention, even though forge can re-promote a fixed brick.
+Quarantine — not eviction — is the right primitive here. Three failure modes in tension:
 
-Hosts can wire `onExecutorError` (a fire-and-forget callback exposed in `PolicyCacheConfig`) to surface the broken promotion to audit / metrics / oncall channels. The cache otherwise tells nobody — observability is a host concern.
+| Strategy | Verdict |
+|---|---|
+| Treat throw as cache miss → fall through to `next` | **Fail-open**: a stale deny silently reverts to "tool runs normally". Authorization regression. |
+| Block + auto-evict | **Authorization downgrade**: subsequent calls fall through to next-best scope or unwrapped tool path. A transient executor fault on a deny reopens the tool. |
+| Block + quarantine (this implementation) | **Safe**: deny stays enforced; recovery requires explicit re-promotion or external invalidation. |
+
+Hosts wire `onExecutorError` (fire-and-forget callback in `PolicyCacheConfig`) to surface the broken promotion to audit / metrics / oncall. The callback is invoked inside its own `try/catch` so a misbehaving telemetry sink cannot change enforcement behavior — observability sits outside the trust boundary.
 
 ### Canonical block response
 
@@ -89,6 +95,8 @@ Encoding the **concrete owner** (not just the scope enum) is what gives the cach
 At lookup time the middleware reads `ctx.session.agentId` and (optionally) `ctx.session.metadata.zoneId` and probes scopes in priority order: `agent` (most specific) → `zone` → `global`, matching `ANS_SCOPE_PRIORITY`. An agent-scoped `block` therefore overrides a more permissive zone- or global-scoped policy without removing it; evict the agent entry and the next-most-specific scope takes over.
 
 Hosts that don't model zones simply omit `zoneId` from session metadata — zone-scoped entries are then unreachable but agent and global entries continue to work.
+
+> **Zone-scope wiring requirement.** `SessionContext.metadata` is `{}` in the standard `@koi/runtime` and `@koi/engine` scaffolds today. To make zone-scoped policies match, the host must inject `metadata.zoneId` when building the session — either through `CreateKoiOptions.session.metadata` or via a custom turn-context builder. Until that wiring exists end-to-end, register only `agent`- and `global`-scoped entries; zone entries will silently miss every lookup.
 
 ---
 
