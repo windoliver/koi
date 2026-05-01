@@ -21,9 +21,17 @@
  *   row. `SessionPersistence.saveSession` is currently a full upsert with no
  *   CAS / version field, so concurrent writers to the same `sessionId` can
  *   clobber each other. This wrapper assumes the standard Koi invariant:
- *   one runtime owns a session at a time. Cross-host failover or true
- *   multi-writer scenarios need an atomic partial-update API (see follow-up
- *   issue) before this wrapper is safe to use under that topology.
+ *   one runtime owns a session at a time.
+ *
+ *   Even under that assumption, there is a residual race: between the
+ *   moment `saveSession` is dispatched and the moment the underlying store
+ *   commits, a timed-out write CAN still land after the wrapper has yielded
+ *   the terminal `done` event. The wrapper drops the common case via a
+ *   wrapper-scoped generation token checked at every `await` boundary
+ *   BEFORE issuing `saveSession`, but cannot atomically reject a dispatched
+ *   write at the storage layer. Closing that final window requires
+ *   extending `SessionPersistence.saveSession` with CAS / versioned updates
+ *   — tracked as a follow-up that gates true multi-writer correctness.
  */
 
 import type {
@@ -32,7 +40,6 @@ import type {
   EngineInput,
   EngineState,
   KoiError,
-  SessionId,
   SessionPersistence,
   SessionRecord,
 } from "@koi/core";
@@ -300,33 +307,16 @@ async function mergeAndSave(
     return;
   }
   const result = await deps.persistence.saveSession(merged);
-  if (!result.ok) {
-    deps.onPersistError(result.error);
-    return;
-  }
-  // Storage-level CAS doesn't exist on `SessionPersistence.saveSession`, so
-  // we cannot atomically reject a write whose `saveSession` itself stalled
-  // past the timeout. If the generation advanced WHILE this write was in
-  // flight, the late commit may have just resurrected stale state on top of
-  // a newer terminal's clear. Compensate best-effort.
-  await compensateStaleWrite(deps, gen, myGen, merged.sessionId);
-}
-
-async function compensateStaleWrite(
-  deps: WrapStreamDeps,
-  gen: GenRef,
-  myGen: number,
-  sid: SessionId,
-): Promise<void> {
-  if (gen.current === myGen) return;
-  const reload = await deps.persistence.loadSession(sid);
-  if (!reload.ok) return;
-  if (reload.value.lastEngineState === undefined) return;
-  const cleared: SessionRecord = {
-    ...reload.value,
-    lastEngineState: undefined,
-    lastPersistedAt: deps.now(),
-  };
-  const r = await deps.persistence.saveSession(cleared);
-  if (!r.ok) deps.onPersistError(r.error);
+  if (!result.ok) deps.onPersistError(result.error);
+  // Note: post-write race with a slow saveSession is intentionally NOT
+  // compensated. A "compensate by clearing if gen advanced" approach was
+  // tried and rejected — it can clobber a newer interrupted checkpoint that
+  // legitimately won the race. Without CAS / versioned updates in
+  // `SessionPersistence.saveSession`, the wrapper has no way to distinguish
+  // "I'm a late stale writer" from "I'm the legitimate latest writer that
+  // happened to commit after another terminal advanced gen." The pre-write
+  // generation check drops the common case (timeout fires before saveSession
+  // is even issued); the residual window between `await saveSession()`
+  // dispatch and the underlying store commit remains. See module docstring
+  // for the storage CAS follow-up.
 }
