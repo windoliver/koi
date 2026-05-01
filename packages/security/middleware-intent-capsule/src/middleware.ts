@@ -98,10 +98,13 @@ function createCapsuleEntry(
   });
   const mandateHash = computeStringHash(mandatePayload);
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const signature = sign(null, Buffer.from(mandateHash), privateKey).toString("base64");
-  const publicKeyB64 = Buffer.from(publicKey.export({ format: "der", type: "spki" })).toString(
-    "base64",
-  );
+  // Buffer.from(string) returns Buffer; cast through Uint8Array satisfies the
+  // ArrayBufferView constraint of crypto.sign() under @types/node 25 strictness.
+  const mandateBytes: Uint8Array = new Uint8Array(Buffer.from(mandateHash, "utf8"));
+  const sigBytes: Uint8Array = new Uint8Array(sign(null, mandateBytes, privateKey));
+  const signature = Buffer.from(sigBytes).toString("base64");
+  const pubKeyDer: Uint8Array = new Uint8Array(publicKey.export({ format: "der", type: "spki" }));
+  const publicKeyB64 = Buffer.from(pubKeyDer).toString("base64");
   const now = Date.now();
   const capsule: IntentCapsule = {
     id: capsuleId(`${ctx.agentId}:${ctx.sessionId as string}:${now}`),
