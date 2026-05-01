@@ -1393,6 +1393,13 @@
         "@modelcontextprotocol/sdk": "1.12.1",
       },
     },
+    "packages/sandbox/sandbox-conformance": {
+      "name": "@koi/sandbox-conformance",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/sandbox/sandbox-docker": {
       "name": "@koi/sandbox-docker",
       "version": "0.1.0",
@@ -2231,6 +2238,8 @@
     "@koi/rules-loader": ["@koi/rules-loader@workspace:packages/lib/rules-loader"],
 
     "@koi/runtime": ["@koi/runtime@workspace:packages/meta/runtime"],
+
+    "@koi/sandbox-conformance": ["@koi/sandbox-conformance@workspace:packages/sandbox/sandbox-conformance"],
 
     "@koi/sandbox-docker": ["@koi/sandbox-docker@workspace:packages/sandbox/sandbox-docker"],
 
