@@ -280,20 +280,18 @@ describe("createSqlitePlaybookStore — structured playbooks + lineage", () => {
     store.close();
   });
 
-  test("remove cascades through dependent proposals + evaluations", async () => {
-    // remove() must remove. Refusing because of dependent proposals
-    // would create a permanent dead-end (proposals/evaluations have no
-    // public delete API), so the cascade deletes evaluations →
-    // proposals → head + lineage in one transaction.
+  test("remove preserves append-only audit history (rejects when proposals exist)", async () => {
+    // remove() must NOT cascade through proposals/evaluations - that
+    // would erase the audit trail for past promotions. Callers must
+    // either retain the playbook (and its history) or perform explicit
+    // operator surgery to purge.
     const store = createSqlitePlaybookStore({ path: dbPath });
     await store.structuredPlaybooks.save(spb({ id: "pb-A", version: 1 }));
     await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
     await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
-    expect(await store.structuredPlaybooks.remove("pb-A")).toBe(true);
-    expect(await store.structuredPlaybooks.get("pb-A")).toBeUndefined();
-    expect(await store.structuredPlaybooks.getVersion("pb-A", 1)).toBeUndefined();
-    expect(await store.proposals.getProposal("p-1")).toBeUndefined();
-    expect(await store.proposals.listProposals("pb-A")).toEqual([]);
+    await expect(store.structuredPlaybooks.remove("pb-A")).rejects.toThrow(/dependent proposal/);
+    expect((await store.structuredPlaybooks.get("pb-A"))?.version).toBe(1);
+    expect((await store.proposals.getProposal("p-1"))?.id).toBe("p-1");
     store.close();
   });
 

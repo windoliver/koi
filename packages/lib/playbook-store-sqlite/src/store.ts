@@ -516,31 +516,30 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       return filterByTags(rows, options?.tags);
     },
     remove: async (id) => {
-      // Hard-delete: drop the head row, lineage rows, dependent proposals,
-      // and dependent evaluations in one transaction. Matches the in-memory
-      // baseline contract (`data.delete`) — callers expect remove() to
-      // actually remove. Without the cascade, the first proposal recorded
-      // for a playbook would permanently block remove() through the
-      // supported API surface (proposals/evaluations have no public delete).
-      //
-      // Cascade order respects FK dependencies:
-      //   evaluations → proposals → structured_playbooks + lineage
+      // Refuses deletion when dependent proposals exist. Cascading would
+      // wipe the append-only proposal/evaluation audit trail that this
+      // package treats as immutable lineage — a bad promotion or
+      // rollback could no longer be reconstructed from on-disk state.
+      // Operators needing full purge can do explicit raw SQL surgery
+      // (this store has no `force` flag because the L0 contract doesn't
+      // expose one); the default contract is "remove the playbook,
+      // preserve the audit history" so a routine delete cannot silently
+      // erase evidence of past promotions.
       //
       // .immediate() acquires the RESERVED write lock at BEGIN so the
-      // delete sequence is serialized against concurrent proposal inserts
-      // on a shared file.
+      // dependency check + delete sequence is serialized against
+      // concurrent proposal inserts.
       try {
         const result = db
           .transaction(() => {
-            // Delete evaluations whose proposals belong to this playbook.
-            db.run(
-              `DELETE FROM playbook_evaluations
-               WHERE proposal_id IN (
-                 SELECT id FROM playbook_proposals WHERE playbook_id = ?
-               )`,
-              [id],
-            );
-            db.run("DELETE FROM playbook_proposals WHERE playbook_id = ?", [id]);
+            const dep = db
+              .query("SELECT COUNT(*) AS n FROM playbook_proposals WHERE playbook_id = ?")
+              .get(id) as { readonly n: number } | null;
+            if (dep !== null && dep.n > 0) {
+              throw new Error(
+                `cannot remove structured playbook ${id}: ${String(dep.n)} dependent proposal(s) exist; preserving append-only audit history. Purge requires explicit operator surgery.`,
+              );
+            }
             // Return true if EITHER head OR lineage was removed. Returning
             // false when only lineage rows existed (head missing, lineage
             // intact) would hide an irreversible destructive change behind
