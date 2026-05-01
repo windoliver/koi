@@ -287,6 +287,86 @@ describe("wrapAdapterWithStatePersistence", () => {
     }
   });
 
+  test("error terminal preserves the prior cancel checkpoint (does NOT clear)", async () => {
+    // Cancel once → row has lastEngineState.
+    const cancelWrap = wrapAdapterWithStatePersistence(makeAdapter([interruptedDone], captured), {
+      persistence: store,
+      recordTemplate: template,
+    });
+    for await (const _ of cancelWrap.stream({ kind: "text", text: "hi" }));
+
+    // Subsequent error terminal must NOT erase the checkpoint — the resume
+    // path needs that state for the next attempt.
+    const errorDone: EngineEvent = {
+      kind: "done",
+      output: {
+        content: [],
+        stopReason: "error",
+        metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+      },
+    };
+    const errorWrap = wrapAdapterWithStatePersistence(makeAdapter([errorDone], captured), {
+      persistence: store,
+      recordTemplate: template,
+    });
+    for await (const _ of errorWrap.stream({ kind: "text", text: "hi" }));
+
+    const loaded = await store.loadSession(SID);
+    if (!loaded.ok) throw new Error("expected ok");
+    expect(loaded.value.lastEngineState).toEqual(captured);
+  });
+
+  test("max_turns terminal preserves the prior cancel checkpoint", async () => {
+    const cancelWrap = wrapAdapterWithStatePersistence(makeAdapter([interruptedDone], captured), {
+      persistence: store,
+      recordTemplate: template,
+    });
+    for await (const _ of cancelWrap.stream({ kind: "text", text: "hi" }));
+
+    const maxTurnsDone: EngineEvent = {
+      kind: "done",
+      output: {
+        content: [],
+        stopReason: "max_turns",
+        metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+      },
+    };
+    const wrap = wrapAdapterWithStatePersistence(makeAdapter([maxTurnsDone], captured), {
+      persistence: store,
+      recordTemplate: template,
+    });
+    for await (const _ of wrap.stream({ kind: "text", text: "hi" }));
+
+    const loaded = await store.loadSession(SID);
+    if (!loaded.ok) throw new Error("expected ok");
+    expect(loaded.value.lastEngineState).toEqual(captured);
+  });
+
+  test("hung saveState does NOT block cancel terminal beyond persistTimeoutMs", async () => {
+    const inner: EngineAdapter = {
+      ...makeAdapter([interruptedDone]),
+      saveState: () => new Promise<EngineState>(() => {}), // never resolves
+    };
+    const errors: Array<KoiError | Error> = [];
+    const wrapped = wrapAdapterWithStatePersistence(inner, {
+      persistence: store,
+      recordTemplate: template,
+      persistTimeoutMs: 50,
+      onPersistError: (e) => errors.push(e),
+    });
+
+    const startedAt = Date.now();
+    const events: EngineEvent[] = [];
+    for await (const e of wrapped.stream({ kind: "text", text: "hi" })) events.push(e);
+    const elapsed = Date.now() - startedAt;
+
+    expect(elapsed).toBeLessThan(2_000);
+    expect(events.at(-1)?.kind).toBe("done");
+    expect(errors).toHaveLength(1);
+    const e0 = errors[0];
+    expect(e0?.message ?? "").toContain("deadline");
+  });
+
   test("recordTemplate is invoked at terminal time, not at wrap time", async () => {
     let currentSeq = 0;
     const dynamicTemplate = (): SessionRecordTemplate => ({ ...template(), seq: currentSeq });

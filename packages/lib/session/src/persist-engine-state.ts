@@ -61,7 +61,17 @@ export interface PersistEngineStateOptions {
    * Optional clock for tests. Default: Date.now.
    */
   readonly now?: () => number;
+  /**
+   * Strict deadline (ms) for the entire persist sequence (`saveState` +
+   * `loadSession` + `saveSession`). When the deadline elapses, `onPersistError`
+   * fires with a TIMEOUT and the terminal `done` event is yielded immediately
+   * so cancel UX is never blocked by a hung adapter snapshot or stalled store.
+   * Default: 5_000.
+   */
+  readonly persistTimeoutMs?: number;
 }
+
+const DEFAULT_PERSIST_TIMEOUT_MS = 5_000 as const;
 
 /**
  * Wrap `inner` so on `done.stopReason === "interrupted"` it calls
@@ -90,6 +100,8 @@ export function wrapAdapterWithStatePersistence(
     return inner;
   }
 
+  const persistTimeoutMs = options.persistTimeoutMs ?? DEFAULT_PERSIST_TIMEOUT_MS;
+
   return {
     ...inner,
     stream: (input: EngineInput): AsyncIterable<EngineEvent> => {
@@ -100,6 +112,7 @@ export function wrapAdapterWithStatePersistence(
         recordTemplate,
         now,
         onPersistError,
+        persistTimeoutMs,
       });
     },
   };
@@ -111,6 +124,25 @@ interface WrapStreamDeps {
   readonly recordTemplate: () => SessionRecordTemplate;
   readonly now: () => number;
   readonly onPersistError: (error: KoiError | Error) => void;
+  readonly persistTimeoutMs: number;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`[@koi/session:persist-engine-state] ${label} exceeded ${ms}ms deadline`));
+    }, ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
 }
 
 async function* wrapStreamForCancelPersist(
@@ -128,10 +160,11 @@ async function* wrapStreamForCancelPersist(
     if (event.kind === "done") {
       if (event.output.stopReason === "interrupted") {
         await persistOnInterrupted(deps);
-      } else {
-        // Successful (non-interrupted) terminal — clear any stale checkpoint
-        // left by a prior cancel on this session so a later crash/resume
-        // cannot resurrect pre-resume state on top of newer transcript turns.
+      } else if (event.output.stopReason === "completed") {
+        // Only a `completed` terminal supersedes a prior cancel checkpoint.
+        // `error` and `max_turns` MUST preserve the previous checkpoint so a
+        // later resume can still recover from the last known-good state
+        // instead of falling back to transcript-only replay.
         await clearStaleCheckpoint(deps);
       }
     }
@@ -140,23 +173,38 @@ async function* wrapStreamForCancelPersist(
 }
 
 async function persistOnInterrupted(deps: WrapStreamDeps): Promise<void> {
-  // let: justified — populated in the try; consumed below.
-  let state: EngineState;
+  // Strict overall deadline so cancel UX is never gated on a hung adapter
+  // snapshot or stalled store. The full sequence (saveState + load + save)
+  // shares one budget — running them serially keeps the merge atomic, and
+  // the timer covers all three.
   try {
-    state = await deps.saveState();
+    await withTimeout(persistInterruptedInner(deps), deps.persistTimeoutMs, "persist sequence");
   } catch (e: unknown) {
     deps.onPersistError(e instanceof Error ? e : new Error(extractMessage(e)));
-    return;
   }
+}
+
+async function persistInterruptedInner(deps: WrapStreamDeps): Promise<void> {
+  const state = await deps.saveState();
   await mergeAndSave(deps, state);
 }
 
 async function clearStaleCheckpoint(deps: WrapStreamDeps): Promise<void> {
+  // Same strict deadline as the cancel-side write — a successful terminal
+  // must never block on a hung store either.
+  try {
+    await withTimeout(clearStaleCheckpointInner(deps), deps.persistTimeoutMs, "clear checkpoint");
+  } catch (e: unknown) {
+    deps.onPersistError(e instanceof Error ? e : new Error(extractMessage(e)));
+  }
+}
+
+async function clearStaleCheckpointInner(deps: WrapStreamDeps): Promise<void> {
   const sid = deps.recordTemplate().sessionId;
   const loaded = await deps.persistence.loadSession(sid);
   if (!loaded.ok) {
-    // NOT_FOUND on a session we never wrote is fine; any other error is logged
-    // but does not block the successful terminal.
+    // NOT_FOUND on a session we never wrote is fine; any other error is
+    // logged but does not block the successful terminal.
     if (loaded.error.code !== "NOT_FOUND") deps.onPersistError(loaded.error);
     return;
   }
