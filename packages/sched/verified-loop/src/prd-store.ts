@@ -1,23 +1,20 @@
 /**
  * File-based PRD (Product Requirements Document) store.
  *
- * Reads, queries, and updates PRD items with atomic write-temp-rename.
- * Each mutator re-reads the file just before rename and surfaces CONFLICT
- * if the bytes changed since the snapshot it built from. This is a
- * BEST-EFFORT detector — there is still a TOCTOU window between the
- * pre-rename re-read and the rename itself, so concurrent writers CAN
- * still lose updates. The check catches the common case (a writer that
- * landed during the in-memory mutation step) but is not a substitute for
- * file locking.
+ * Single-coordinator access is enforced via an advisory `.lock` sidecar
+ * file (acquirePRDLock / releasePRDLock). The orchestrator acquires the
+ * lock for the entire run() invocation, so concurrent verified-loop
+ * processes against the same PRD path are refused at run-start instead
+ * of being allowed to race the optimistic CAS below.
  *
- * The package contract is single-coordinator. Multi-writer deployments
- * MUST add their own exclusion (file locking, distributed lease, single-
- * writer queue) at the deployment layer. The CAS check exists to surface
- * accidental dual coordinators loudly when it can, not to make multi-
- * writer access safe.
+ * Within the held lock, mutators still use atomic write-temp-rename and
+ * a re-read CAS check before rename. The CAS guards against accidentally
+ * unlocked or out-of-band edits (a human editing the file with the loop
+ * paused, a cooperating tool that does not take the lock); under the
+ * normal locked single-writer contract it is just defense-in-depth.
  */
 
-import { open, rename } from "node:fs/promises";
+import { open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { conflict, internal, notFound, validation } from "@koi/core";
@@ -453,6 +450,109 @@ export async function markDoneMany(
   const newPrd: PRDFile = { ...prd, items: newItems };
 
   return writePRDIfUnchanged(path, raw, newPrd);
+}
+
+/**
+ * Handle returned by acquirePRDLock; pass to releasePRDLock to release.
+ * The lock path is exposed so the orchestrator can reference it in
+ * log/error messages.
+ */
+export interface PRDLock {
+  readonly path: string;
+}
+
+const STALE_LOCK_GRACE_MS = 30_000;
+
+/**
+ * Acquire an advisory lock on the PRD path. Creates `<prdPath>.lock`
+ * with O_EXCL containing the holder's PID + start time. Returns
+ * CONFLICT if another live coordinator already holds it. A stale lock
+ * (PID dead, file older than STALE_LOCK_GRACE_MS, or unparseable
+ * contents) is force-broken and re-acquired.
+ *
+ * Lock is process-local: it does NOT survive across hosts. For
+ * cross-host exclusion the deployment must front this with a
+ * distributed lease.
+ */
+export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, KoiError>> {
+  const lockPath = `${prdPath}.lock`;
+  // Use let — justified: retry once after breaking a stale lock.
+  let attempts = 0;
+  while (attempts < 2) {
+    attempts++;
+    try {
+      const handle = await open(lockPath, "wx");
+      try {
+        const payload = JSON.stringify({
+          pid: process.pid,
+          host: process.env.HOSTNAME ?? "unknown",
+          acquiredAt: new Date().toISOString(),
+        });
+        await handle.writeFile(payload);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      return { ok: true, value: { path: lockPath } };
+    } catch (e: unknown) {
+      const code = (e as { readonly code?: unknown }).code;
+      if (code !== "EEXIST") {
+        return {
+          ok: false,
+          error: internal(`Failed to acquire PRD lock at ${lockPath}: ${extractMessage(e)}`, e),
+        };
+      }
+      // Lock exists. Decide if it is stale and can be broken.
+      // Use let — justified: assigned across try/catch.
+      let stale = false;
+      try {
+        const raw = await readFile(lockPath, "utf8");
+        const meta = JSON.parse(raw) as { pid?: unknown; acquiredAt?: unknown };
+        const ageMs =
+          typeof meta.acquiredAt === "string"
+            ? Date.now() - Date.parse(meta.acquiredAt)
+            : Number.POSITIVE_INFINITY;
+        if (
+          typeof meta.pid !== "number" ||
+          !Number.isFinite(ageMs) ||
+          ageMs > STALE_LOCK_GRACE_MS
+        ) {
+          stale = true;
+        } else {
+          // process.kill(pid, 0) probes for liveness without signaling.
+          try {
+            process.kill(meta.pid, 0);
+          } catch (probeErr: unknown) {
+            const probeCode = (probeErr as { readonly code?: unknown }).code;
+            if (probeCode === "ESRCH") stale = true;
+          }
+        }
+      } catch {
+        // Unreadable / corrupt lock file — treat as stale.
+        stale = true;
+      }
+      if (!stale) {
+        return {
+          ok: false,
+          error: conflict(
+            lockPath,
+            `PRD is locked by another live coordinator (lockfile: ${lockPath}). Stop the other process or wait for it to exit.`,
+          ),
+        };
+      }
+      // Break the stale lock and retry once.
+      await unlink(lockPath).catch(() => undefined);
+    }
+  }
+  return {
+    ok: false,
+    error: internal(`Failed to acquire PRD lock at ${lockPath} after breaking stale holder`),
+  };
+}
+
+/** Release a lock previously acquired by acquirePRDLock. Idempotent. */
+export async function releasePRDLock(lock: PRDLock): Promise<void> {
+  await unlink(lock.path).catch(() => undefined);
 }
 
 async function updateItem(

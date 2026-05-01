@@ -1245,4 +1245,59 @@ describe("VerifiedLoop.run", () => {
     expect(result.completed).toEqual(["a"]);
     expect(result.iterations).toBe(1);
   });
+
+  test("refuses to start when another live coordinator holds the PRD lock", async () => {
+    // Regression: previously two verified-loop processes against the same
+    // PRD raced the optimistic CAS and could silently lose updates. The
+    // PRD lock now refuses the second runner at run() entry.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+    const lockPath = `${prdPath}.lock`;
+    // Simulate a live holder by writing a lock file with this process's
+    // own PID (which IS alive) and a fresh acquiredAt timestamp.
+    await Bun.write(
+      lockPath,
+      JSON.stringify({ pid: process.pid, host: "test", acquiredAt: new Date().toISOString() }),
+    );
+    try {
+      const loop = createVerifiedLoop(makeConfig());
+      let threw: Error | undefined;
+      try {
+        await loop.run();
+      } catch (e: unknown) {
+        threw = e as Error;
+      }
+      expect(threw).toBeDefined();
+      expect(threw?.message).toContain("CONFLICT");
+      expect(threw?.message).toContain("locked by another live coordinator");
+    } finally {
+      await Bun.file(lockPath)
+        .delete()
+        .catch(() => undefined);
+    }
+  });
+
+  test("breaks a stale lock from a dead PID", async () => {
+    // Regression: a crashed coordinator leaves its lock file behind. A
+    // restart must be able to take over rather than getting stuck.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+    const lockPath = `${prdPath}.lock`;
+    // PID 1 is reserved (init) but unreachable from a normal user;
+    // process.kill(1, 0) throws EPERM on macOS / Linux for non-root.
+    // Use a recycled-impossible PID instead: a very large number that
+    // is essentially never allocated.
+    await Bun.write(
+      lockPath,
+      JSON.stringify({
+        pid: 2147483646,
+        host: "test",
+        acquiredAt: new Date().toISOString(),
+      }),
+    );
+    const loop = createVerifiedLoop(makeConfig());
+    const result = await loop.run();
+    expect(result.completed).toContain("a");
+    // Lock should be released by the loop's finally block.
+    const stillLocked = await Bun.file(lockPath).exists();
+    expect(stillLocked).toBe(false);
+  });
 });

@@ -8,7 +8,14 @@
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { extractMessage } from "@koi/errors";
 import { appendLearning, readLearnings } from "./learnings.js";
-import { bumpFailureCount, markDoneMany, nextItem, readPRD } from "./prd-store.js";
+import {
+  acquirePRDLock,
+  bumpFailureCount,
+  markDoneMany,
+  nextItem,
+  readPRD,
+  releasePRDLock,
+} from "./prd-store.js";
 import type {
   EngineInput,
   IterationRecord,
@@ -220,6 +227,19 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
         );
       }
       runState = "running";
+      // Acquire the PRD lock BEFORE setting up the abort controller or
+      // touching state. A dual-coordinator scenario (accidental restart,
+      // duplicate scheduler fire, operator double-launch) would otherwise
+      // race byte-for-byte CAS and silently lose updates. The lock is
+      // released in the finally below regardless of outcome.
+      const lockResult = await acquirePRDLock(prdPath);
+      if (!lockResult.ok) {
+        runState = "completed";
+        throw new Error(
+          `VerifiedLoop.run(): cannot acquire PRD lock (${lockResult.error.code}): ${lockResult.error.message}`,
+        );
+      }
+      const lock = lockResult.value;
       const ac = new AbortController();
       abortController = ac;
       if (config.signal) {
@@ -235,6 +255,7 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
         return await runOnce(ac);
       } finally {
         runState = "completed";
+        await releasePRDLock(lock);
       }
     },
 
