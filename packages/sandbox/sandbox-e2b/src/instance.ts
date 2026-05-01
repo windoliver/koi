@@ -45,112 +45,38 @@ function sliceByBytes(s: string, maxBytes: number): { text: string; truncated: b
 }
 
 /**
- * Streaming accumulator with a single combined byte budget across stdout and
- * stderr. Bounds local memory so a noisy SDK that ignores server-side caps
- * cannot blow up the process — once the cap is hit, further chunks are
- * dropped and `truncated` is set.
+ * Apply a single combined-byte budget across stdout and stderr to the SDK's
+ * authoritative final strings. The SDK's returned `stdout`/`stderr` are the
+ * source of truth — streaming callbacks are advisory progress only, since we
+ * cannot prove they're complete (chunked SDKs may emit prefixes and return
+ * the full tail in the final result).
+ *
+ * stdout takes priority when the combined output exceeds the budget, since
+ * stdout typically carries the primary command output.
  */
-interface OutputBudget {
-  readonly stdoutChunks: Uint8Array[];
-  readonly stderrChunks: Uint8Array[];
-  remaining: number;
-  truncated: boolean;
-  appendStdout: (data: string) => void;
-  appendStderr: (data: string) => void;
-  resolveStdout: (sdkFallback: string) => string;
-  resolveStderr: (sdkFallback: string) => string;
-}
-
-function createOutputBudget(cap: number): OutputBudget {
+function applyCombinedBudget(
+  stdout: string,
+  stderr: string,
+  cap: number,
+  sdkTruncated: boolean | undefined,
+): { stdout: string; stderr: string; truncated: boolean } {
   const encoder = new TextEncoder();
-  const stdoutChunks: Uint8Array[] = [];
-  const stderrChunks: Uint8Array[] = [];
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
-  const state = {
-    stdoutChunks,
-    stderrChunks,
-    remaining: cap,
-    truncated: false,
-  };
-
-  function append(target: "stdout" | "stderr", data: string): void {
-    if (state.remaining <= 0) {
-      state.truncated = true;
-      return;
-    }
-    const bytes = encoder.encode(data);
-    if (bytes.byteLength <= state.remaining) {
-      // Fits entirely — append as-is.
-      if (target === "stdout") {
-        stdoutChunks.push(bytes);
-        stdoutBytes += bytes.byteLength;
-      } else {
-        stderrChunks.push(bytes);
-        stderrBytes += bytes.byteLength;
-      }
-      state.remaining -= bytes.byteLength;
-      return;
-    }
-    // Doesn't fit — trim to the last complete UTF-8 codepoint that fits in budget.
-    const trimmed = trimToUtf8Boundary(bytes, state.remaining);
-    if (trimmed.byteLength > 0) {
-      if (target === "stdout") {
-        stdoutChunks.push(trimmed);
-        stdoutBytes += trimmed.byteLength;
-      } else {
-        stderrChunks.push(trimmed);
-        stderrBytes += trimmed.byteLength;
-      }
-      state.remaining -= trimmed.byteLength;
-    }
-    state.truncated = true;
+  const stdoutBytes = encoder.encode(stdout).byteLength;
+  const stderrBytes = encoder.encode(stderr).byteLength;
+  if (stdoutBytes + stderrBytes <= cap) {
+    return { stdout, stderr, truncated: sdkTruncated === true };
   }
-
-  function resolve(target: "stdout" | "stderr", sdkFallback: string): string {
-    const chunks = target === "stdout" ? stdoutChunks : stderrChunks;
-    const used = target === "stdout" ? stdoutBytes : stderrBytes;
-    if (used > 0) {
-      const decoder = new TextDecoder("utf-8", { fatal: false });
-      const merged = new Uint8Array(used);
-      let offset = 0;
-      for (const c of chunks) {
-        merged.set(c, offset);
-        offset += c.byteLength;
-      }
-      return decoder.decode(merged);
-    }
-    // Streaming callbacks didn't fire — fall back to the SDK's final string,
-    // applying the *remaining* budget so the combined cap is still honoured.
-    if (state.remaining <= 0) {
-      state.truncated = true;
-      return "";
-    }
-    const sliced = sliceByBytes(sdkFallback, state.remaining);
-    state.remaining -= new TextEncoder().encode(sliced.text).byteLength;
-    if (sliced.truncated) state.truncated = true;
-    return sliced.text;
-  }
-
+  // Combined budget exceeded — slice with stdout-first priority.
+  const stdoutKeep = Math.min(stdoutBytes, cap);
+  const stdoutSliced = sliceByBytes(stdout, stdoutKeep);
+  const usedAfterStdout = encoder.encode(stdoutSliced.text).byteLength;
+  const remaining = cap - usedAfterStdout;
+  const stderrSliced =
+    remaining > 0 ? sliceByBytes(stderr, remaining) : { text: "", truncated: stderrBytes > 0 };
   return {
-    stdoutChunks,
-    stderrChunks,
-    get remaining() {
-      return state.remaining;
-    },
-    set remaining(v: number) {
-      state.remaining = v;
-    },
-    get truncated() {
-      return state.truncated;
-    },
-    set truncated(v: boolean) {
-      state.truncated = v;
-    },
-    appendStdout: (d) => append("stdout", d),
-    appendStderr: (d) => append("stderr", d),
-    resolveStdout: (s) => resolve("stdout", s),
-    resolveStderr: (s) => resolve("stderr", s),
+    stdout: stdoutSliced.text,
+    stderr: stderrSliced.text,
+    truncated: true,
   };
 }
 
@@ -234,25 +160,15 @@ export function createE2bInstance(
           : undefined;
       const mergedTimeout = options?.timeoutMs ?? defaults.timeoutMs;
       const cap = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-      const budget = createOutputBudget(cap);
-
-      // Wrap caller callbacks so we accumulate locally with a hard byte cap.
-      // This keeps memory bounded even when the SDK emits more than `cap`.
-      const wrappedStdout = (data: string): void => {
-        budget.appendStdout(data);
-        options?.onStdout?.(data);
-      };
-      const wrappedStderr = (data: string): void => {
-        budget.appendStderr(data);
-        options?.onStderr?.(data);
-      };
 
       const sdkOpts: E2bRunOpts = {
         ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}),
         ...(mergedEnv !== undefined ? { envs: mergedEnv } : {}),
         ...(mergedTimeout !== undefined ? { timeoutMs: mergedTimeout } : {}),
-        onStdout: wrappedStdout,
-        onStderr: wrappedStderr,
+        // Streaming callbacks are advisory — pass caller's through unchanged
+        // so they see live progress; the final SDK result is authoritative.
+        ...(options?.onStdout !== undefined ? { onStdout: options.onStdout } : {}),
+        ...(options?.onStderr !== undefined ? { onStderr: options.onStderr } : {}),
         ...(options?.signal !== undefined ? { signal: options.signal } : {}),
         ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
         ...(sdk.commands.supportsMaxOutputBytes === true ? { maxOutputBytes: cap } : {}),
@@ -265,12 +181,13 @@ export function createE2bInstance(
         const result = await sdk.commands.run(cmd, sdkOpts);
         const durationMs = performance.now() - start;
 
-        // Apply the combined budget: streaming-accumulator output (when the SDK
-        // fired callbacks) is preferred; otherwise we slice the SDK's final
-        // strings against the *remaining* budget so the combined cap holds.
-        const stdout = budget.resolveStdout(result.stdout);
-        const stderr = budget.resolveStderr(result.stderr);
-        const truncated = budget.truncated || result.truncated === true;
+        // Apply the combined-byte budget to the SDK's authoritative result.
+        // Memory bounding for non-truncating SDKs requires server-side cap
+        // (commands.supportsMaxOutputBytes); for those we forwarded the cap.
+        const capped = applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated);
+        const stdout = capped.stdout;
+        const stderr = capped.stderr;
+        const truncated = capped.truncated;
 
         // Map known exit-code conventions consistently with sandbox-docker so
         // callers see uniform timeout/OOM signals across backends.

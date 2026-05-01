@@ -44,7 +44,8 @@ describe("createE2bInstance", () => {
           opts?.onStdout?.("hello ");
           opts?.onStdout?.("world");
           opts?.onStderr?.("warn");
-          return { exitCode: 0, stdout: "", stderr: "" };
+          // SDK final strings are authoritative; streaming chunks are advisory.
+          return { exitCode: 0, stdout: "hello world", stderr: "warn" };
         },
       },
     };
@@ -279,14 +280,11 @@ describe("createE2bInstance", () => {
       commands: {
         ...base.commands,
         supportsMaxOutputBytes: true,
-        run: async (
-          _cmd: string,
-          opts?: import("./types.js").E2bRunOpts,
-        ): Promise<import("./types.js").E2bRunResult> => {
-          opts?.onStdout?.("a".repeat(800));
-          opts?.onStderr?.("b".repeat(800));
-          return { exitCode: 0, stdout: "", stderr: "" };
-        },
+        run: async (): Promise<import("./types.js").E2bRunResult> => ({
+          exitCode: 0,
+          stdout: "a".repeat(800),
+          stderr: "b".repeat(800),
+        }),
       },
     };
     const instance = createE2bInstance(sdk);

@@ -47,7 +47,20 @@ export interface DaytonaSdkSandbox {
     /** Optional binary-safe write; preferred over `write` when present. */
     readonly writeBytes?: (path: string, content: Uint8Array) => Promise<void>;
   };
+  /**
+   * Detach from / disconnect the workspace handle. In several Daytona SDK
+   * versions this is a client-side close that leaves the remote workspace
+   * **running**, so it cannot stand in for `destroy()`.
+   */
   readonly close: () => Promise<void>;
+  /**
+   * Permanently delete the remote workspace. The adapter prefers this when
+   * implementing `SandboxInstance.destroy` so callers cannot accidentally
+   * leak billable workspaces. If your wrapper only supports `close()`,
+   * this method must throw or be omitted; the adapter then refuses to
+   * `destroy()` and surfaces an error explaining the lifecycle gap.
+   */
+  readonly delete?: () => Promise<void>;
 }
 
 export interface DaytonaCreateOpts {

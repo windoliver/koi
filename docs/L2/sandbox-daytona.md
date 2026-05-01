@@ -10,7 +10,7 @@ A `SandboxAdapter` whose `create(profile)` returns a `SandboxInstance` running i
 
 - `exec(command, args, options)` — run a command. `AbortSignal` is forwarded into the SDK and raced locally so callers always see prompt cancellation (`exitCode = 130`).
 - `readFile(path)` / `writeFile(path, content)` — workspace file I/O. Prefers binary-safe `readBytes` / `writeBytes` when the SDK exposes them; otherwise rejects non-UTF-8 writes fail-closed.
-- `destroy()` — close the remote workspace. Idempotent on success, retryable on transient SDK failure, concurrent calls coalesce.
+- `destroy()` — permanently delete the remote workspace. Prefers `sdk.delete()` (genuine deletion) over `sdk.close()` because some Daytona SDK versions implement `close` as a client-side detach that leaves the workspace running and billable. If only `close` is available the adapter calls it and surfaces a docs-level warning; production callers should inject a `delete`-capable wrapper. Idempotent on success, retryable on transient SDK failure, concurrent calls coalesce.
 
 The adapter accepts a pluggable `client` so tests run with no network and so production callers control how `@daytonaio/sdk` (or any other client) is wired in.
 

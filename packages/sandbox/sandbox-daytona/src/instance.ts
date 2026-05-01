@@ -30,93 +30,28 @@ function sliceByBytes(s: string, maxBytes: number): { text: string; truncated: b
   return { text: new TextDecoder("utf-8").decode(trimmed), truncated: true };
 }
 
-interface OutputBudget {
-  remaining: number;
-  truncated: boolean;
-  appendStdout: (data: string) => void;
-  appendStderr: (data: string) => void;
-  resolveStdout: (sdkFallback: string) => string;
-  resolveStderr: (sdkFallback: string) => string;
-}
-
-function createOutputBudget(cap: number): OutputBudget {
+function applyCombinedBudget(
+  stdout: string,
+  stderr: string,
+  cap: number,
+  sdkTruncated: boolean | undefined,
+): { stdout: string; stderr: string; truncated: boolean } {
   const encoder = new TextEncoder();
-  const stdoutChunks: Uint8Array[] = [];
-  const stderrChunks: Uint8Array[] = [];
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
-  const state = { remaining: cap, truncated: false };
-
-  function append(target: "stdout" | "stderr", data: string): void {
-    if (state.remaining <= 0) {
-      state.truncated = true;
-      return;
-    }
-    const bytes = encoder.encode(data);
-    if (bytes.byteLength <= state.remaining) {
-      if (target === "stdout") {
-        stdoutChunks.push(bytes);
-        stdoutBytes += bytes.byteLength;
-      } else {
-        stderrChunks.push(bytes);
-        stderrBytes += bytes.byteLength;
-      }
-      state.remaining -= bytes.byteLength;
-      return;
-    }
-    const trimmed = trimToUtf8Boundary(bytes, state.remaining);
-    if (trimmed.byteLength > 0) {
-      if (target === "stdout") {
-        stdoutChunks.push(trimmed);
-        stdoutBytes += trimmed.byteLength;
-      } else {
-        stderrChunks.push(trimmed);
-        stderrBytes += trimmed.byteLength;
-      }
-      state.remaining -= trimmed.byteLength;
-    }
-    state.truncated = true;
+  const stdoutBytes = encoder.encode(stdout).byteLength;
+  const stderrBytes = encoder.encode(stderr).byteLength;
+  if (stdoutBytes + stderrBytes <= cap) {
+    return { stdout, stderr, truncated: sdkTruncated === true };
   }
-
-  function resolve(target: "stdout" | "stderr", sdkFallback: string): string {
-    const chunks = target === "stdout" ? stdoutChunks : stderrChunks;
-    const used = target === "stdout" ? stdoutBytes : stderrBytes;
-    if (used > 0) {
-      const merged = new Uint8Array(used);
-      let offset = 0;
-      for (const c of chunks) {
-        merged.set(c, offset);
-        offset += c.byteLength;
-      }
-      return new TextDecoder("utf-8", { fatal: false }).decode(merged);
-    }
-    if (state.remaining <= 0) {
-      state.truncated = true;
-      return "";
-    }
-    const sliced = sliceByBytes(sdkFallback, state.remaining);
-    state.remaining -= encoder.encode(sliced.text).byteLength;
-    if (sliced.truncated) state.truncated = true;
-    return sliced.text;
-  }
-
+  const stdoutKeep = Math.min(stdoutBytes, cap);
+  const stdoutSliced = sliceByBytes(stdout, stdoutKeep);
+  const usedAfterStdout = encoder.encode(stdoutSliced.text).byteLength;
+  const remaining = cap - usedAfterStdout;
+  const stderrSliced =
+    remaining > 0 ? sliceByBytes(stderr, remaining) : { text: "", truncated: stderrBytes > 0 };
   return {
-    get remaining() {
-      return state.remaining;
-    },
-    set remaining(v: number) {
-      state.remaining = v;
-    },
-    get truncated() {
-      return state.truncated;
-    },
-    set truncated(v: boolean) {
-      state.truncated = v;
-    },
-    appendStdout: (d) => append("stdout", d),
-    appendStderr: (d) => append("stderr", d),
-    resolveStdout: (s) => resolve("stdout", s),
-    resolveStderr: (s) => resolve("stderr", s),
+    stdout: stdoutSliced.text,
+    stderr: stderrSliced.text,
+    truncated: true,
   };
 }
 
@@ -193,23 +128,13 @@ export function createDaytonaInstance(
           : undefined;
       const mergedTimeout = options?.timeoutMs ?? defaults.timeoutMs;
       const cap = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-      const budget = createOutputBudget(cap);
-
-      const wrappedStdout = (data: string): void => {
-        budget.appendStdout(data);
-        options?.onStdout?.(data);
-      };
-      const wrappedStderr = (data: string): void => {
-        budget.appendStderr(data);
-        options?.onStderr?.(data);
-      };
 
       const sdkOpts: DaytonaRunOpts = {
         ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}),
         ...(mergedEnv !== undefined ? { envs: mergedEnv } : {}),
         ...(mergedTimeout !== undefined ? { timeoutMs: mergedTimeout } : {}),
-        onStdout: wrappedStdout,
-        onStderr: wrappedStderr,
+        ...(options?.onStdout !== undefined ? { onStdout: options.onStdout } : {}),
+        ...(options?.onStderr !== undefined ? { onStderr: options.onStderr } : {}),
         ...(options?.signal !== undefined ? { signal: options.signal } : {}),
         ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
         ...(sdk.commands.supportsMaxOutputBytes === true ? { maxOutputBytes: cap } : {}),
@@ -219,9 +144,10 @@ export function createDaytonaInstance(
         const result = await sdk.commands.run(cmd, sdkOpts);
         const durationMs = performance.now() - start;
 
-        const stdout = budget.resolveStdout(result.stdout);
-        const stderr = budget.resolveStderr(result.stderr);
-        const truncated = budget.truncated || result.truncated === true;
+        const capped = applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated);
+        const stdout = capped.stdout;
+        const stderr = capped.stderr;
+        const truncated = capped.truncated;
 
         const timedOut = result.exitCode === 124;
         const oomKilled = result.exitCode === 137;
@@ -297,18 +223,33 @@ export function createDaytonaInstance(
     },
 
     /**
-     * Tear down the remote workspace.
+     * Permanently delete the remote workspace.
+     *
+     * Prefers `sdk.delete` (genuine workspace deletion) over `sdk.close` —
+     * in some Daytona SDK versions `close()` is a client-side detach that
+     * leaves the workspace running, which would silently leak billable
+     * resources. If only `close` is available, the adapter calls it but
+     * surfaces a warning: callers are expected to inject a `delete`-capable
+     * wrapper for production hosted use.
      *
      * Once `destroy()` is invoked, all subsequent `exec`/`readFile`/`writeFile`
-     * calls reject — the lifecycle race is closed before the SDK confirms
-     * teardown. Idempotent on success, retryable on transient failure.
+     * calls reject. Only marks `destroyed = true` after the SDK call settles
+     * so transient failures stay retryable; concurrent calls coalesce.
      */
     destroy: async (): Promise<void> => {
       if (destroyed) return;
       if (destroyPending !== undefined) return destroyPending;
       destroyPending = (async () => {
         try {
-          await sdk.close();
+          if (sdk.delete !== undefined) {
+            await sdk.delete();
+          } else {
+            // Fallback: client-side close. May leave the workspace running
+            // depending on SDK version. The adapter does its best, but this
+            // path is provider-dependent — production callers should provide
+            // a `delete`-capable wrapper.
+            await sdk.close();
+          }
           destroyed = true;
         } finally {
           destroyPending = undefined;

@@ -164,12 +164,23 @@ describe("createDaytonaInstance", () => {
     expect(new TextDecoder().decode(bytes)).toBe("payload");
   });
 
-  test("destroy closes SDK and is idempotent", async () => {
+  test("destroy deletes the workspace via sdk.delete and is idempotent", async () => {
     const sdk = createFakeSandbox();
     const instance = createDaytonaInstance(sdk);
     await instance.destroy();
     await instance.destroy();
-    expect(sdk.closed()).toBe(true);
+    expect(sdk.deleted()).toBe(true);
+    expect(sdk.closed()).toBe(false);
+  });
+
+  test("destroy falls back to sdk.close when sdk.delete is not provided", async () => {
+    const base = createFakeSandbox();
+    // Strip `delete` so the fallback path runs. Spreading would set the key to
+    // `undefined` which `exactOptionalPropertyTypes` rejects; rebuild without it.
+    const { delete: _omit, ...sdk } = base;
+    const instance = createDaytonaInstance(sdk);
+    await instance.destroy();
+    expect(base.closed()).toBe(true);
   });
 
   test("operations after destroy throw", async () => {
@@ -200,16 +211,16 @@ describe("createDaytonaInstance", () => {
   test("destroy stays retryable after a transient SDK failure", async () => {
     let attempts = 0;
     const sdk = createFakeSandbox({
-      closeImpl: async () => {
+      deleteImpl: async () => {
         attempts++;
         if (attempts === 1) throw new Error("transient network blip");
       },
     });
     const instance = createDaytonaInstance(sdk);
     await expect(instance.destroy()).rejects.toThrow(/transient/);
-    expect(sdk.closed()).toBe(false);
+    expect(sdk.deleted()).toBe(false);
     await instance.destroy();
-    expect(sdk.closed()).toBe(true);
+    expect(sdk.deleted()).toBe(true);
     expect(attempts).toBe(2);
   });
 
@@ -251,14 +262,11 @@ describe("createDaytonaInstance", () => {
       commands: {
         ...base.commands,
         supportsMaxOutputBytes: true,
-        run: async (
-          _cmd: string,
-          opts?: import("./types.js").DaytonaRunOpts,
-        ): Promise<import("./types.js").DaytonaRunResult> => {
-          opts?.onStdout?.("a".repeat(800));
-          opts?.onStderr?.("b".repeat(800));
-          return { exitCode: 0, stdout: "", stderr: "" };
-        },
+        run: async (): Promise<import("./types.js").DaytonaRunResult> => ({
+          exitCode: 0,
+          stdout: "a".repeat(800),
+          stderr: "b".repeat(800),
+        }),
       },
     };
     const instance = createDaytonaInstance(sdk);
@@ -321,7 +329,7 @@ describe("createDaytonaInstance", () => {
   test("operations during destroyPending reject", async () => {
     let release!: () => void;
     const sdk = createFakeSandbox({
-      closeImpl: () =>
+      deleteImpl: () =>
         new Promise<void>((resolve) => {
           release = resolve;
         }),
@@ -386,7 +394,7 @@ describe("createDaytonaInstance", () => {
   test("concurrent destroy calls coalesce onto one SDK teardown", async () => {
     let calls = 0;
     const sdk = createFakeSandbox({
-      closeImpl: async () => {
+      deleteImpl: async () => {
         calls++;
         await new Promise((r) => setTimeout(r, 5));
       },

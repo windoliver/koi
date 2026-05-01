@@ -17,6 +17,7 @@ export interface FakeSandbox extends DaytonaSdkSandbox {
     readonly store: ReadonlyMap<string, string>;
   };
   readonly closed: () => boolean;
+  readonly deleted: () => boolean;
 }
 
 export interface FakeSandboxOptions {
@@ -24,6 +25,7 @@ export interface FakeSandboxOptions {
   readonly runError?: Error;
   readonly runImpl?: (cmd: string, opts: DaytonaRunOpts | undefined) => Promise<DaytonaRunResult>;
   readonly closeImpl?: () => Promise<void>;
+  readonly deleteImpl?: () => Promise<void>;
   readonly initialFiles?: ReadonlyMap<string, string>;
 }
 
@@ -31,10 +33,12 @@ export function createFakeSandbox(opts: FakeSandboxOptions = {}): FakeSandbox {
   const runCalls: FakeRunCall[] = [];
   const fileStore = new Map<string, string>(opts.initialFiles ?? []);
   let closed = false;
+  let deleted = false;
 
   return {
     runCalls,
     closed: () => closed,
+    deleted: () => deleted,
     commands: {
       run: async (cmd: string, runOpts?: DaytonaRunOpts): Promise<DaytonaRunResult> => {
         runCalls.push({ cmd, opts: runOpts });
@@ -71,6 +75,17 @@ export function createFakeSandbox(opts: FakeSandboxOptions = {}): FakeSandbox {
         return;
       }
       closed = true;
+    },
+    // The default fake exposes a delete method so the byte-oriented destroy
+    // semantics are exercised; tests that need to verify the close-only
+    // fallback build their own SDK shape inline.
+    delete: async (): Promise<void> => {
+      if (opts.deleteImpl !== undefined) {
+        await opts.deleteImpl();
+        deleted = true;
+        return;
+      }
+      deleted = true;
     },
   };
 }
