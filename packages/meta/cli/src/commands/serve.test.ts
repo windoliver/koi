@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type EngineEvent, type EngineInput, runId } from "@koi/core";
 import type { ServeFlags } from "../args/serve.js";
+import type { ManifestConfig } from "../manifest.js";
 import { ExitCode } from "../types.js";
 import { run } from "./serve.js";
 
@@ -160,7 +161,99 @@ describe("serve command", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("fails closed when manifest declares unsupported serve policy", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "koi-serve-policy-"));
+    const manifest = join(dir, "koi.yaml");
+    await writeFile(
+      manifest,
+      [
+        "name: Serve Agent",
+        "model:",
+        "  name: openai:gpt-test",
+        "governance:",
+        "  maxTurns: 1",
+      ].join("\n"),
+    );
+
+    const stderrChunks: string[] = [];
+    const stderr = spyOn(process.stderr, "write").mockImplementation(
+      (chunk: string | Uint8Array) => {
+        stderrChunks.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+        return true;
+      },
+    );
+    const prevState = process.env.KOI_STATE_DIR;
+    process.env.KOI_STATE_DIR = join(dir, "state");
+    let createRuntimeCalled = false;
+    try {
+      const exitCode = await run(
+        {
+          command: "serve",
+          version: false,
+          help: false,
+          manifest,
+          port: 0,
+          verbose: false,
+          logFormat: "text",
+        } satisfies ServeFlags,
+        {
+          loadManifestConfig: async () => ({
+            ok: true,
+            value: minimalManifestConfig({
+              governance: {
+                maxSpend: undefined,
+                maxTurns: 1,
+                maxSpawnDepth: undefined,
+                policyFile: undefined,
+                alertThresholds: undefined,
+              },
+            }),
+          }),
+          waitForShutdownSignal: async () => "unused",
+          createRuntime: async () => {
+            createRuntimeCalled = true;
+            return {
+              runtime: {
+                run: () => runHandle(singleEvent(doneEvent())),
+                dispose: async () => {},
+              },
+              shutdownBackgroundTasks: () => false,
+            };
+          },
+        },
+      );
+
+      expect(exitCode).toBe(ExitCode.FAILURE);
+      expect(createRuntimeCalled).toBe(false);
+      expect(stderrChunks.join("")).toContain("governance");
+    } finally {
+      stderr.mockRestore();
+      restoreEnv("KOI_STATE_DIR", prevState);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
+
+function minimalManifestConfig(overrides: Partial<ManifestConfig> = {}): ManifestConfig {
+  return {
+    modelName: "gpt-test",
+    instructions: undefined,
+    stacks: undefined,
+    plugins: undefined,
+    backgroundSubprocesses: undefined,
+    filesystem: undefined,
+    middleware: undefined,
+    governance: undefined,
+    supervision: undefined,
+    audit: undefined,
+    delegation: undefined,
+    network: undefined,
+    credentials: undefined,
+    ace: undefined,
+    ...overrides,
+  };
+}
 
 interface StartedEvent {
   readonly kind: "serve_started";

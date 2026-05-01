@@ -73,6 +73,22 @@ export interface TranscriptAdapterConfig {
 export function createTranscriptAdapter(config: TranscriptAdapterConfig): EngineAdapter {
   const { engineId, modelAdapter, transcript, maxTranscriptMessages, maxTurns, budgetConfig } =
     config;
+  const threadedTranscripts = new Map<string, InboundMessage[]>();
+
+  function resolveTranscript(input: EngineInput): {
+    readonly transcript: InboundMessage[];
+    readonly threadId: string | undefined;
+  } {
+    if (input.kind !== "messages") return { transcript, threadId: undefined };
+    const threadId = input.messages.find((msg) => msg.threadId !== undefined)?.threadId;
+    if (threadId === undefined || threadId.length === 0) return { transcript, threadId: undefined };
+    let scoped = threadedTranscripts.get(threadId);
+    if (scoped === undefined) {
+      scoped = [];
+      threadedTranscripts.set(threadId, scoped);
+    }
+    return { transcript: scoped, threadId };
+  }
 
   return {
     engineId,
@@ -89,15 +105,22 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
         );
       }
 
-      const text = input.kind === "text" ? input.text : "";
-      // Stage user message — only committed to transcript after a completed turn.
+      const active = resolveTranscript(input);
+      const activeTranscript = active.transcript;
+      const activeThreadId = active.threadId;
+      // Stage user message(s) — only committed to transcript after a completed turn.
       // Committing early would leave orphaned user prompts on failure, breaking
       // retry semantics on the next submit.
-      const stagedUserMsg: InboundMessage = {
-        senderId: "user",
-        timestamp: Date.now(),
-        content: [{ kind: "text", text }],
-      };
+      const stagedMessages: readonly InboundMessage[] =
+        input.kind === "messages"
+          ? input.messages
+          : [
+              {
+                senderId: "user",
+                timestamp: Date.now(),
+                content: [{ kind: "text", text: input.kind === "text" ? input.text : "" }],
+              },
+            ];
 
       return (async function* (): AsyncIterable<EngineEvent> {
         // Build context window: token-aware compaction when budgetConfig is set,
@@ -108,16 +131,20 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
           // model's context window immediately on the next turn, without
           // requiring the adapter to be rebuilt.
           const resolvedBudget = typeof budgetConfig === "function" ? budgetConfig() : budgetConfig;
-          const budgetResult = await enforceBudget([...transcript], undefined, resolvedBudget);
+          const budgetResult = await enforceBudget(
+            [...activeTranscript],
+            undefined,
+            resolvedBudget,
+          );
           if (budgetResult.compaction !== "noop") {
             // Splice transcript in-place so future turns see the compacted history.
-            transcript.splice(0, transcript.length, ...budgetResult.messages);
+            activeTranscript.splice(0, activeTranscript.length, ...budgetResult.messages);
           }
           contextMessages = budgetResult.messages;
         } else {
-          contextMessages = transcript.slice(-maxTranscriptMessages);
+          contextMessages = activeTranscript.slice(-maxTranscriptMessages);
         }
-        const contextWindow = [...contextMessages, stagedUserMsg];
+        const contextWindow = [...contextMessages, ...stagedMessages];
 
         // Accumulate tool history so follow-up turns see the full context
         // (assistant tool_call intents + tool results), not just final text.
@@ -169,6 +196,7 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
           if (event.kind === "tool_result") {
             pendingToolResults.push({
               senderId: "tool",
+              ...(activeThreadId !== undefined ? { threadId: activeThreadId } : {}),
               timestamp: Date.now(),
               content: [
                 {
@@ -185,7 +213,7 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
           if (event.kind === "turn_end") {
             // Commit user message once (first turn_end in this stream call).
             if (!userMessageCommitted) {
-              transcript.push(stagedUserMsg);
+              activeTranscript.push(...stagedMessages);
               userMessageCommitted = true;
             }
 
@@ -199,8 +227,9 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
             );
             const pairedCalls = pendingToolCalls.filter((tc) => pairedCallIds.has(tc.id));
             if (pairedCalls.length > 0) {
-              transcript.push({
+              activeTranscript.push({
                 senderId: "assistant",
+                ...(activeThreadId !== undefined ? { threadId: activeThreadId } : {}),
                 timestamp: Date.now(),
                 content: turnText.length > 0 ? [{ kind: "text", text: turnText }] : [],
                 metadata: {
@@ -212,11 +241,12 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
                 },
               });
               for (const msg of pendingToolResults) {
-                transcript.push(msg);
+                activeTranscript.push(msg);
               }
             } else if (turnText.length > 0) {
-              transcript.push({
+              activeTranscript.push({
                 senderId: "assistant",
+                ...(activeThreadId !== undefined ? { threadId: activeThreadId } : {}),
                 timestamp: Date.now(),
                 content: [{ kind: "text", text: turnText }],
               });
@@ -235,26 +265,29 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
             const stopReason = event.output.stopReason;
             if (stopReason === "completed" && !userMessageCommitted) {
               // Fallback: turn_end never fired — commit from done event.
-              transcript.push(stagedUserMsg);
+              activeTranscript.push(...stagedMessages);
               userMessageCommitted = true;
               const fallbackText = pendingTurnText.join("");
               if (fallbackText.length > 0) {
-                transcript.push({
+                activeTranscript.push({
                   senderId: "assistant",
+                  ...(activeThreadId !== undefined ? { threadId: activeThreadId } : {}),
                   timestamp: Date.now(),
                   content: [{ kind: "text", text: fallbackText }],
                 });
               } else {
                 const fullContent = event.output.content;
                 if (fullContent.length > 0) {
-                  transcript.push({
+                  activeTranscript.push({
                     senderId: "assistant",
+                    ...(activeThreadId !== undefined ? { threadId: activeThreadId } : {}),
                     timestamp: Date.now(),
                     content: fullContent,
                   });
                 } else if (deltaText.length > 0) {
-                  transcript.push({
+                  activeTranscript.push({
                     senderId: "assistant",
+                    ...(activeThreadId !== undefined ? { threadId: activeThreadId } : {}),
                     timestamp: Date.now(),
                     content: [{ kind: "text", text: deltaText }],
                   });
