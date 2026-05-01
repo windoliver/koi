@@ -21,8 +21,8 @@ export interface SurfaceEntry {
   /** Hex content hash. NOT the ETag — see {@link SurfaceEntry.etag}. */
   readonly contentHash: string;
   /**
-   * Generation- and version-aware precondition token:
-   * `${generationId}-${version}-${contentHash}`.
+   * Epoch- generation- and version-aware precondition token:
+   * `${instanceEpoch}-${generationId}-${version}-${contentHash}`.
    * This is the value the HTTP layer emits as ETag and compares against
    * `If-Match` / `If-None-Match`. Custom durable backends MUST emit and
    * validate this exact value, not raw `contentHash` — comparing only the
@@ -30,6 +30,29 @@ export interface SurfaceEntry {
    * vulnerability the generation fence is designed to close.
    */
   readonly etag: string;
+  /**
+   * Per-store-instance random epoch. Without this, a process restart resets
+   * the in-memory `generationCounter` to 0 and makes new etags collide with
+   * old ones (`1-1-<hash>` after restart matches `1-1-<hash>` before restart).
+   * A delayed PATCH/DELETE retry carrying a pre-restart `If-Match` token
+   * could then succeed against a different post-restart surface generation.
+   * Durable backends should persist this value across restarts; volatile
+   * backends generate a fresh random value at creation so cross-restart
+   * collisions are computationally negligible.
+   *
+   * REQUIRED on the type so the cross-restart fence cannot be silently
+   * undermined by a backend that omits the field. Pluggable durable
+   * backends MUST populate this on every row before serving it through
+   * the HTTP API; until they do, conditional writes against those rows
+   * are unsafe (a delayed pre-restart If-Match can still collide with
+   * post-restart state). Operators rolling out a backend that didn't
+   * previously emit this field MUST backfill or read-before-write the
+   * value as part of the migration — silent legacy fallback was
+   * considered and rejected because it leaves the original
+   * vulnerability open under exactly the failure mode (process restart)
+   * the field is designed to fence.
+   */
+  readonly instanceEpoch: string;
   /**
    * Per-entry write counter, starts at 1 on `create()` and bumps by 1 on
    * every successful `update()` — including no-op updates where the new

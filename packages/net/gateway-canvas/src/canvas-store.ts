@@ -27,17 +27,21 @@ function resourceExhausted(message: string): KoiError {
 }
 
 /**
- * The precondition token used by If-Match. Combines generationId with the
- * content hash so that a delete-then-recreate with identical content still
- * produces a fresh token — stale PATCH/DELETE retries cannot impersonate a
- * fence against a different surface generation.
+ * The precondition token used by If-Match. Combines a per-store-instance
+ * epoch with the generation, version, and content hash so that:
+ *  - delete-then-recreate (same content) produces a fresh `generationId`
+ *  - any update (incl. no-op) produces a fresh `version`
+ *  - a process restart produces a fresh `instanceEpoch`
+ * Stale PATCH/DELETE retries — even ones from before a process restart —
+ * cannot impersonate a fence against a different surface generation.
  */
 export function surfaceEtag(entry: {
+  readonly instanceEpoch: string;
   readonly generationId: number;
   readonly version: number;
   readonly contentHash: string;
 }): string {
-  return `${entry.generationId}-${entry.version}-${entry.contentHash}`;
+  return `${entry.instanceEpoch}-${entry.generationId}-${entry.version}-${entry.contentHash}`;
 }
 
 /**
@@ -77,6 +81,14 @@ export function createInMemorySurfaceStore(
   const perTenantCount = new Map<string, number>();
   // let: monotonic per-store generation counter; bumped on every create
   let generationCounter = 0;
+  // Per-store-instance random epoch. Embedded in every etag so that a
+  // process restart (which resets `generationCounter` to 0) cannot reissue
+  // an etag that collides with one held by a pre-restart client. 128 bits
+  // of randomness — collision probability is computationally negligible.
+  const instanceEpoch = computeStringHash(`${Date.now()}-${Math.random()}-${Math.random()}`).slice(
+    0,
+    16,
+  );
 
   // `undefined` (no owner) and `""` (empty-string owner) MUST encode to
   // distinct keys. Without the leading discriminator byte, an authenticator
@@ -140,8 +152,9 @@ export function createInMemorySurfaceStore(
         content,
         contentHash,
         version: 1,
-        etag: `${generationCounter}-1-${contentHash}`,
+        etag: `${instanceEpoch}-${generationCounter}-1-${contentHash}`,
         generationId: generationCounter,
+        instanceEpoch,
         createdAt: now,
         updatedAt: now,
         lastAccessedAt: now,
@@ -190,7 +203,7 @@ export function createInMemorySurfaceStore(
         content,
         contentHash,
         version,
-        etag: `${existing.generationId}-${version}-${contentHash}`,
+        etag: `${existing.instanceEpoch}-${existing.generationId}-${version}-${contentHash}`,
         updatedAt: now,
         lastAccessedAt: now,
       };

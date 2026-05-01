@@ -734,20 +734,67 @@ async function handleSseSubscribe(
     );
   }
 
-  // Initial `snapshot` event closes the GET→subscribe consistency gap: a
-  // client doing the normal "GET surface, then subscribe" flow can miss an
-  // update that lands between the two calls. The snapshot event lets the
-  // client compare the etag it has from GET against the etag at the moment
-  // of stream establishment and refresh state if they differ — without it,
-  // the UI can stay stale until the next unrelated write.
-  const snapshotEvent = textEncoder.encode(
-    `id: 0\nevent: snapshot\ndata: ${JSON.stringify({
+  // Initial `snapshot` event closes the GET→subscribe consistency gap AND
+  // the reconnect gap. We attempt to include full `content` so reconnects
+  // can self-heal without an out-of-band GET, BUT charge the encoded bytes
+  // against the same handshake budget that protects publish/keep-alive
+  // buffering. Without this, a 1 MB surface × N concurrent reconnects
+  // would burn O(N · surfaceSize) of memory/encoding work outside the cap
+  // — defeating the protection the budget was added for. On overflow we
+  // fall back to a metadata-only snapshot; clients that see no `content`
+  // field in the snapshot must do an explicit GET to rehydrate.
+  // Preflight on raw content length BEFORE any JSON.stringify/encode.
+  // A naive build-and-check would still pay O(content size) CPU+RAM per
+  // reconnect even when the result is rejected — defeating the budget.
+  // String length is an upper bound on JSON-encoded content (escape
+  // expansion at most ~6× for a worst-case all-control-char payload, but
+  // typical content is ≤2×). We use length × 2 as a conservative ceiling
+  // and only build the full payload if it could plausibly fit, then do
+  // the precise budget check on actual bytes.
+  const contentBytesUpperBound = recheck.value.content.length * 2;
+  const fullCouldFit =
+    contentBytesUpperBound <= config.maxBodyBytes &&
+    budget.bytes + contentBytesUpperBound <= HANDSHAKE_BYTES_CAP_PER_SERVER;
+  // let: chosen below based on whether full payload fits the budget.
+  let snapshotEvent: Uint8Array;
+  if (fullCouldFit) {
+    const fullPayload = JSON.stringify({
       surfaceId,
       etag: surfaceEtag(recheck.value),
       generationId: recheck.value.generationId,
       updatedAt: recheck.value.updatedAt,
-    })}\n\n`,
-  );
+      content: recheck.value.content,
+    });
+    const fullBytes = textEncoder.encode(`id: 0\nevent: snapshot\ndata: ${fullPayload}\n\n`);
+    if (
+      fullPayload.length <= config.maxBodyBytes &&
+      budget.bytes + fullBytes.byteLength <= HANDSHAKE_BYTES_CAP_PER_SERVER
+    ) {
+      snapshotEvent = fullBytes;
+      budget.bytes += fullBytes.byteLength;
+      pendingBytes += fullBytes.byteLength;
+    } else {
+      const metaPayload = JSON.stringify({
+        surfaceId,
+        etag: surfaceEtag(recheck.value),
+        generationId: recheck.value.generationId,
+        updatedAt: recheck.value.updatedAt,
+      });
+      snapshotEvent = textEncoder.encode(`id: 0\nevent: snapshot\ndata: ${metaPayload}\n\n`);
+      budget.bytes += snapshotEvent.byteLength;
+      pendingBytes += snapshotEvent.byteLength;
+    }
+  } else {
+    const metaPayload = JSON.stringify({
+      surfaceId,
+      etag: surfaceEtag(recheck.value),
+      generationId: recheck.value.generationId,
+      updatedAt: recheck.value.updatedAt,
+    });
+    snapshotEvent = textEncoder.encode(`id: 0\nevent: snapshot\ndata: ${metaPayload}\n\n`);
+    budget.bytes += snapshotEvent.byteLength;
+    pendingBytes += snapshotEvent.byteLength;
+  }
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {

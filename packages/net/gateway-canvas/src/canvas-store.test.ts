@@ -295,6 +295,39 @@ describe("createInMemorySurfaceStore", () => {
     expect(c.value.generationId).toBeGreaterThan(b.value.generationId);
   });
 
+  test("cross-restart If-Match never matches a fresh store instance (instanceEpoch fence)", async () => {
+    // Simulate process restart: a client holds an etag from store1, then
+    // store1 dies and store2 takes over. If store2 happens to recreate the
+    // same surfaceId with the same content, generationId/version/hash will
+    // collide. Only the per-store-instance random epoch prevents the stale
+    // pre-restart etag from impersonating a fence on the post-restart row.
+    const store1 = createInMemorySurfaceStore();
+    const r1 = await store1.create("home", "v1", { ownerId: "alice" });
+    if (!r1.ok) throw new Error("store1 create failed");
+    const preRestartEtag = r1.value.etag;
+
+    const store2 = createInMemorySurfaceStore();
+    const r2 = await store2.create("home", "v1", { ownerId: "alice" });
+    if (!r2.ok) throw new Error("store2 create failed");
+
+    // Same content + first-create both produce gen=1, ver=1, identical hash.
+    expect(r2.value.generationId).toBe(r1.value.generationId);
+    expect(r2.value.version).toBe(r1.value.version);
+    expect(r2.value.contentHash).toBe(r1.value.contentHash);
+    // But the etag MUST differ — instanceEpoch is per-store-instance random.
+    expect(r2.value.etag).not.toBe(preRestartEtag);
+
+    // Stale pre-restart etag MUST NOT pass If-Match against the new row.
+    const upd = await store2.update("home", "v2", preRestartEtag, "alice");
+    expect(upd.ok).toBe(false);
+    if (!upd.ok) expect(upd.error.code).toBe("CONFLICT");
+
+    // Same for DELETE — pre-restart etag cannot delete the post-restart row.
+    const del = await store2.delete("home", "alice", preRestartEtag);
+    expect(del.ok).toBe(false);
+    if (!del.ok) expect(del.error.code).toBe("CONFLICT");
+  });
+
   test("delete across tenants is a no-op (tenant-scoped namespace)", async () => {
     const store = createInMemorySurfaceStore();
     await store.create("s1", "v1", { ownerId: "alice" });
