@@ -69,8 +69,16 @@ export type PolicyEntry =
 export type SupportedScope = PolicyEntry["scope"];
 
 export interface PolicyCacheConfig {
-  /** Maximum cached policies. Default: 100. */
+  /** Maximum cached policies per bucket (per-agent and global). Default: 100. */
   readonly maxEntries?: number | undefined;
+  /**
+   * Maximum number of distinct agent buckets retained. When exceeded, the
+   * least-recently-used agent bucket is evicted in full. This bounds total
+   * retained state across long-lived multi-tenant runtimes — without it, a
+   * shared handle would retain `maxEntries` entries per distinct agentId
+   * with no process-wide cap. Default: 1000.
+   */
+  readonly maxAgentBuckets?: number | undefined;
   /** Optional notifier for event-driven invalidation. */
   readonly notifier?: StoreChangeNotifier | undefined;
   /**
@@ -110,7 +118,9 @@ export interface PolicyCacheHandle {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MAX_ENTRIES = 100;
+const DEFAULT_MAX_AGENT_BUCKETS = 1000;
 const NAME = "policy-cache";
+const QUARANTINE_REASON = "policy-cache: executor faulted; entry quarantined";
 // permissions runs at priority 100; lower = outer onion = runs first.
 const PRIORITY = 50;
 const PHASE = "intercept" as const;
@@ -121,6 +131,7 @@ const PHASE = "intercept" as const;
 
 export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): PolicyCacheHandle {
   const maxEntries = config.maxEntries ?? DEFAULT_MAX_ENTRIES;
+  const maxAgentBuckets = config.maxAgentBuckets ?? DEFAULT_MAX_AGENT_BUCKETS;
   // Per-owner partitioned caches. Each agent gets its OWN map with its OWN
   // maxEntries quota; global gets its own. This is what gives the cache
   // tenant-safe capacity behavior: a noisy agent registering many policies
@@ -136,12 +147,37 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
   // through to next-best scope. Cleared on re-register or external eviction.
   const quarantined = new Set<string>(); // brickIds (reason fixed by `QUARANTINE_REASON`)
 
+  // Touch an agent bucket: bump its recency in `agentCaches` insertion order so
+  // overflow eviction picks the LRU bucket.
+  const touchAgentBucket = (agentId: string, m: Map<string, PolicyEntry>): void => {
+    agentCaches.delete(agentId);
+    agentCaches.set(agentId, m);
+  };
+
   const getAgentCache = (agentId: string): Map<string, PolicyEntry> => {
-    let m = agentCaches.get(agentId);
-    if (m === undefined) {
-      m = new Map();
-      agentCaches.set(agentId, m);
+    const existing = agentCaches.get(agentId);
+    if (existing !== undefined) {
+      touchAgentBucket(agentId, existing);
+      return existing;
     }
+    // Process-wide bound: evict the LRU agent bucket before allocating a new
+    // one. Without this, retained state grows linearly with distinct agentIds
+    // — a DoS vector for hosts that share one handle across many agents.
+    if (agentCaches.size >= maxAgentBuckets) {
+      const lruAgentId = agentCaches.keys().next().value;
+      if (lruAgentId !== undefined) {
+        const lruMap = agentCaches.get(lruAgentId);
+        if (lruMap !== undefined) {
+          for (const e of lruMap.values()) {
+            brickIndex.delete(e.brickId);
+            quarantined.delete(e.brickId);
+          }
+        }
+        agentCaches.delete(lruAgentId);
+      }
+    }
+    const m = new Map<string, PolicyEntry>();
+    agentCaches.set(agentId, m);
     return m;
   };
 
@@ -239,6 +275,9 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       if (agentHit !== undefined) {
         agentMap.delete(toolId);
         agentMap.set(toolId, agentHit);
+        // A hit for this agent makes its bucket most-recently-used at the
+        // process level too — preserves it from cross-agent LRU eviction.
+        touchAgentBucket(ctx.session.agentId, agentMap);
         return agentHit;
       }
     }
@@ -270,6 +309,45 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
     },
   });
 
+  // Emit a synthetic permission-deny so observe-phase middleware (audit,
+  // monitor) sees policy-cache denials with the same shape as
+  // middleware-permissions denials. Fire-and-forget — the host injects this
+  // callback only when an observer is wired, and a throwing observer must
+  // not change enforcement behavior.
+  const dispatchSyntheticDeny = (
+    ctx: TurnContext,
+    entry: PolicyEntry,
+    toolId: string,
+    reason: string,
+  ): void => {
+    const dispatch = ctx.dispatchPermissionDecision;
+    if (dispatch === undefined) return;
+    try {
+      const principal = ctx.session.userId ?? `agent:${ctx.session.agentId}`;
+      const ctxField: JsonObject = {
+        source: NAME,
+        brickId: entry.brickId,
+        scope: entry.scope,
+      };
+      void dispatch(
+        {
+          principal,
+          action: "tool.call",
+          resource: `tool:${toolId}`,
+          context: ctxField,
+        },
+        { effect: "deny", reason, disposition: "hard" },
+      );
+    } catch {
+      // Swallow dispatch failures; observability cannot break enforcement.
+    }
+  };
+
+  // structuredClone is the simplest defense against an executor mutating
+  // request.input in place (TypeScript's `readonly` only enforces at compile
+  // time). JsonObject is JSON-shaped, so structuredClone is safe and cheap.
+  const cloneInput = (input: JsonObject): JsonObject => structuredClone(input);
+
   const sizeOf = (): number => {
     let n = globalCache.size;
     for (const m of agentCaches.values()) n += m.size;
@@ -298,12 +376,17 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       // even after their executor faults. Cleared by re-register or
       // external eviction (StoreChangeNotifier `removed` / `quarantined`).
       if (quarantined.has(entry.brickId)) {
+        dispatchSyntheticDeny(ctx, entry, request.toolId, QUARANTINE_REASON);
         return blockResponse(request.toolId);
       }
 
       try {
-        const decision = entry.execute(request.input);
+        // Clone before handing input to the executor so a buggy or
+        // compromised executor cannot mutate live request fields that the
+        // real tool will see when we forward via `next(request)`.
+        const decision = entry.execute(cloneInput(request.input));
         if (decision.action === "allow") return next(request);
+        dispatchSyntheticDeny(ctx, entry, request.toolId, decision.reason);
         return blockResponse(request.toolId);
       } catch (cause) {
         quarantined.add(entry.brickId);
@@ -317,6 +400,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         } catch {
           // Swallow callback failures; observability cannot break enforcement.
         }
+        dispatchSyntheticDeny(ctx, entry, request.toolId, QUARANTINE_REASON);
         return blockResponse(request.toolId);
       }
     },
