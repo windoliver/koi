@@ -6,7 +6,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type {
@@ -166,43 +166,52 @@ export function createSqlitePlaybookStore(config: SqlitePlaybookStoreConfig): Sq
 const noopRelease = (): void => {};
 
 /**
- * Acquire a PID-based writer lock for `dbPath`. Writes `<dbPath>.lock`
- * containing this process's PID. If the lockfile already exists and names a
- * live PID, throws — concurrent writers are unsupported (see explanation in
- * `createSqlitePlaybookStore`). Stale locks (PID no longer alive) are
- * reclaimed; callers always get the lock if no live writer holds it.
+ * Acquire a writer lock for `dbPath` atomically. Uses O_CREAT|O_EXCL via
+ * `openSync(path, "wx")` so two processes racing to create the lockfile
+ * cannot both succeed — exactly one open returns the descriptor; the other
+ * fails with EEXIST. The PID is then written to the descriptor for stale-
+ * lock reclamation.
+ *
+ * If the exclusive open fails with EEXIST, we read the existing lock's PID
+ * and reclaim it iff that PID is no longer alive. The reclaim itself is
+ * also atomic: unlink → re-attempt exclusive create. If another live
+ * process owns the lock, throw with an actionable error.
  */
 function acquireWriterLock(dbPath: string): () => void {
   const lockPath = `${dbPath}.lock`;
   const myPid = process.pid;
-  // Reclaim stale lock if the recorded PID is no longer alive.
-  try {
-    const raw = readFileSync(lockPath, "utf8").trim();
-    const heldPid = Number.parseInt(raw, 10);
-    if (Number.isFinite(heldPid) && heldPid > 0 && heldPid !== myPid) {
-      if (isProcessAlive(heldPid)) {
-        throw new Error(
-          `playbook-store-sqlite: refusing to open ${dbPath} — another process (pid ${heldPid}) ` +
-            "holds the writer lock. Concurrent ACE writers against one SQLite file are not supported. " +
-            `Stop the other process or remove ${lockPath} if it is stale.`,
-        );
-      }
-      // Stale: PID dead. Fall through to overwrite.
-    }
-  } catch (err) {
-    // ENOENT is the common path: no lock held. Re-throw the explicit refusal.
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      if (err instanceof Error && err.message.startsWith("playbook-store-sqlite:")) {
-        throw err;
-      }
-      // Unreadable/corrupt lockfile: treat as stale and overwrite.
-    }
+  // In-process refcount: multiple handles in one process share the lock
+  // (same fate, single-threaded). Only unlink when the LAST handle closes,
+  // otherwise an early close would drop the lock while another in-process
+  // handle is still writing — a foreign process could then grab it and
+  // race with us.
+  const existing = INPROC_LOCKS.get(lockPath);
+  if (existing !== undefined) {
+    existing.refcount += 1;
+    return makeReleaser(lockPath, myPid);
   }
-  writeFileSync(lockPath, String(myPid), { encoding: "utf8" });
+  const fd = openLockExclusive(lockPath, dbPath, /* allowReclaim= */ true);
+  try {
+    writeSync(fd, String(myPid));
+  } finally {
+    closeSync(fd);
+  }
+  INPROC_LOCKS.set(lockPath, { refcount: 1 });
+  return makeReleaser(lockPath, myPid);
+}
+
+const INPROC_LOCKS = new Map<string, { refcount: number }>();
+
+function makeReleaser(lockPath: string, myPid: number): () => void {
   let released = false;
   return (): void => {
     if (released) return;
     released = true;
+    const entry = INPROC_LOCKS.get(lockPath);
+    if (entry === undefined) return;
+    entry.refcount -= 1;
+    if (entry.refcount > 0) return;
+    INPROC_LOCKS.delete(lockPath);
     try {
       const raw = readFileSync(lockPath, "utf8").trim();
       if (Number.parseInt(raw, 10) === myPid) {
@@ -212,6 +221,55 @@ function acquireWriterLock(dbPath: string): () => void {
       // Lock file already gone or unreadable; nothing to do.
     }
   };
+}
+
+function openLockExclusive(lockPath: string, dbPath: string, allowReclaim: boolean): number {
+  try {
+    // "wx" = O_WRONLY | O_CREAT | O_EXCL: atomic create-or-fail.
+    return openSync(lockPath, "wx");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "EEXIST" || !allowReclaim) {
+      throw err;
+    }
+    // Lock exists. Reclaim only if its PID is dead. Anything else (live
+    // PID, malformed/unreadable) is treated as a live writer to avoid
+    // ever evicting a real owner — operators can remove a corrupt lock
+    // by hand if needed.
+    let heldPid = Number.NaN;
+    try {
+      heldPid = Number.parseInt(readFileSync(lockPath, "utf8").trim(), 10);
+    } catch {
+      // Unreadable lock — treat as live to fail closed.
+    }
+    // Same-PID re-open: an existing lock held by *this* process is not a
+    // foreign writer. Two handles in one process share fate (one ACE
+    // middleware per session, single-threaded JS) — allow it and write
+    // back our PID to keep the lock owned. Returns a no-op fd via a temp
+    // sentinel; we still hold the lock until close().
+    if (heldPid === process.pid) {
+      // Open for write so subsequent writeSync overwrites the same PID.
+      return openSync(lockPath, "w");
+    }
+    if (Number.isFinite(heldPid) && heldPid > 0 && !isProcessAlive(heldPid)) {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // Race: another process reclaimed first. Fall through; the
+        // re-attempt below will see EEXIST again and refuse.
+      }
+      // Re-attempt exactly once (allowReclaim=false): if a peer raced us to
+      // claim the freshly-unlinked lock, surface the refusal instead of
+      // looping. Their write wins; we refuse cleanly.
+      return openLockExclusive(lockPath, dbPath, /* allowReclaim= */ false);
+    }
+    throw new Error(
+      `playbook-store-sqlite: refusing to open ${dbPath} — another process` +
+        (Number.isFinite(heldPid) ? ` (pid ${heldPid})` : "") +
+        " holds the writer lock. Concurrent ACE writers against one SQLite file are not supported. " +
+        `Stop the other process or remove ${lockPath} if it is stale.`,
+    );
+  }
 }
 
 function isProcessAlive(pid: number): boolean {

@@ -65,6 +65,30 @@ import { validateFileSystemConfig } from "@koi/runtime";
  *   `local:///etc/config`           → `local:///etc/config` (already absolute)
  *   `gdrive://my-drive`             → `gdrive://my-drive` (not local)
  */
+/**
+ * Symlink-aware containment helper: returns the realpath of the longest
+ * existing prefix of `absPath`, with any not-yet-created suffix appended
+ * verbatim. Used by ACE playbook_path validation to detect a checked-in
+ * symlink (e.g. `.koi -> /elsewhere`) that lexically stays under the
+ * manifest dir but physically escapes it.
+ */
+function realpathOfLongestExistingPrefix(absPath: string): string {
+  const segments = absPath.split(sep);
+  // Walk from the deepest path inward until realpath() succeeds. Whatever
+  // does not yet exist is the file we are about to create — append it back.
+  for (let i = segments.length; i > 0; i--) {
+    const candidate = segments.slice(0, i).join(sep) || sep;
+    try {
+      const real = realpathSync(candidate);
+      const tail = segments.slice(i).join(sep);
+      return tail.length === 0 ? real : `${real}${sep}${tail}`;
+    } catch {
+      // Component does not exist yet — try the parent.
+    }
+  }
+  return absPath;
+}
+
 function absolutizeMountUri(mountUri: string, manifestDir: string): string {
   const prefix = "local://";
   if (!mountUri.startsWith(prefix)) return mountUri;
@@ -870,20 +894,27 @@ function parseManifestAce(
           'or ":memory:" for an ephemeral store.',
       };
     } else {
-      const resolved = resolvePath(manifestDir, playbookPathRaw);
-      const manifestDirResolved = resolvePath(manifestDir);
-      const isInside =
-        resolved === manifestDirResolved || resolved.startsWith(manifestDirResolved + sep);
+      // Resolve symlinks so a checked-in `.koi -> /elsewhere` symlink cannot
+      // bypass the containment check via a path that lexically stays under
+      // manifestDir but physically escapes it. Walk the longest existing
+      // prefix of the resolved path through realpath; the unresolved tail
+      // (the file we are about to create) is appended back.
+      const lexicalResolved = resolvePath(manifestDir, playbookPathRaw);
+      const manifestRoot = realpathSync(resolvePath(manifestDir));
+      const realResolved = realpathOfLongestExistingPrefix(lexicalResolved);
+      const isInside = realResolved === manifestRoot || realResolved.startsWith(manifestRoot + sep);
       if (!isInside) {
         return {
           ok: false,
           error:
             "manifest.ace.playbook_path must resolve inside the manifest directory " +
-            `(got: ${JSON.stringify(playbookPathRaw)} → ${JSON.stringify(resolved)}). ` +
-            'Use a relative path that stays inside the repo, or ":memory:".',
+            "(symlink-aware containment check). " +
+            `Got ${JSON.stringify(playbookPathRaw)} which canonicalizes to ` +
+            `${JSON.stringify(realResolved)} (manifest root: ${JSON.stringify(manifestRoot)}). ` +
+            'Use a path that stays inside the repo, or ":memory:".',
         };
       }
-      playbookPath = resolved;
+      playbookPath = realResolved;
     }
   }
 

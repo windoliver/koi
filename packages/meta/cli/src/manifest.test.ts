@@ -1047,6 +1047,34 @@ describe("loadManifestConfig: ace block (#2088)", () => {
     expect(result.error).toContain("relative to the manifest directory");
   });
 
+  test("rejects symlink-escape that lexically stays inside manifest dir", async () => {
+    // A repo could check in `escape -> /tmp` and a manifest with
+    // `playbook_path: ./escape/x.sqlite`. The lexical path stays under
+    // manifestDir but the realpath points outside. Containment must be
+    // symlink-aware.
+    const { mkdtempSync, symlinkSync } = await import("node:fs");
+    const outerDir = mkdtempSync(join(tmpdir(), "koi-symlink-outer-"));
+    try {
+      symlinkSync(outerDir, join(dir, "escape"));
+      const p = writeManifest(
+        [
+          "model:",
+          "  name: google/gemini-2.0-flash-001",
+          "ace:",
+          "  enabled: true",
+          "  playbook_path: ./escape/x.sqlite",
+        ].join("\n"),
+      );
+      const result = await loadManifestConfig(p);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toContain("symlink-aware");
+    } finally {
+      const { rmSync } = await import("node:fs");
+      rmSync(outerDir, { recursive: true, force: true });
+    }
+  });
+
   test("rejects relative playbook_path that escapes the manifest dir", async () => {
     const p = writeManifest(
       [
@@ -1076,7 +1104,9 @@ describe("loadManifestConfig: ace block (#2088)", () => {
     const result = await loadManifestConfig(p);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.ace?.playbookPath).toBe(`${dir}/.koi/ace.sqlite`);
+    // Path is symlink-resolved; on macOS tmpdir contains /private prefix.
+    const { realpathSync } = await import("node:fs");
+    expect(result.value.ace?.playbookPath).toBe(`${realpathSync(dir)}/.koi/ace.sqlite`);
   });
 
   test("accepts :memory: sentinel verbatim", async () => {
