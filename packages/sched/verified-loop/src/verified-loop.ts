@@ -485,7 +485,17 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
             }
           }
         }
-      } else if (!cancelled) {
+      } else if (!cancelled && iterError === undefined && !iterSignal.aborted) {
+        // Only count a bump when verification actually ran and returned
+        // passed:false. Runner aborts/timeouts/throws never reached the
+        // gate — treating those as per-item verification failures would
+        // let transient infrastructure outages (engine crash, adapter
+        // bug, auth hiccup, iteration timeout) accumulate against
+        // maxConsecutiveFailures and durably mark untouched work as
+        // skipped:true. The iterError/iterSignal-aborted branch above
+        // already records gateResult.passed:false in iterationRecords
+        // so the run still observes the failure; it just doesn't
+        // consume the per-item skip budget.
         // Persist the consecutive-failure count to disk. May be retried
         // once on a stale-snapshot CONFLICT (concurrent unrelated edit);
         // a CONFLICT that resolves to "item is now done" is treated as

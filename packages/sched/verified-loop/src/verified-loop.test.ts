@@ -339,6 +339,35 @@ describe("VerifiedLoop.run", () => {
     expect(after.items[0]?.consecutiveFailureCount ?? 0).toBe(0);
   });
 
+  test("runner failures do not consume the per-item skip budget", async () => {
+    // Regression: a runner that throws (engine crash, adapter bug,
+    // transient infra outage) sets gateResult.passed:false because the
+    // gate never runs against an unverified workspace. Previously the
+    // generic !passed branch then bumpFailureCount'd, so N infra
+    // failures would mark the item skipped:true even though no
+    // verification ever happened. Only true verification failures
+    // should accumulate against maxConsecutiveFailures.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+
+    const loop = createVerifiedLoop(
+      makeConfig({
+        maxIterations: 3,
+        maxConsecutiveFailures: 1,
+        runIteration: (_input: EngineInput): AsyncIterable<EngineEvent> => {
+          throw new Error("Adapter exploded");
+        },
+      }),
+    );
+    await loop.run();
+
+    const after = JSON.parse(await Bun.file(prdPath).text()) as PRDFile;
+    // Item must NOT be marked skipped — the runner never produced
+    // verifiable work, so the budget was not consumed.
+    expect(after.items[0]?.skipped).toBeFalsy();
+    expect(after.items[0]?.consecutiveFailureCount ?? 0).toBe(0);
+    expect(after.items[0]?.done).toBe(false);
+  });
+
   test("markDone clears prior skipped + consecutiveFailureCount", async () => {
     // Regression: a previously skipped item completed indirectly via
     // itemsCompleted would still appear in `result.skipped`, and stale
