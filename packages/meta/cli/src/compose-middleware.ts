@@ -37,6 +37,15 @@ export interface MiddlewareCompositionInput {
   readonly permissions: KoiMiddleware;
   /** Secret exfiltration guard: scans tool inputs and model outputs for leaks. */
   readonly exfiltrationGuard: KoiMiddleware;
+  /**
+   * Tool error formatter: catches tool throws via `wrapToolCall` and
+   * returns a formatted ToolResponse so the model can recover instead of
+   * the engine surfacing an opaque crash. Sits at resolve-phase priority
+   * 170 so guardrails (permissions/exfiltration-guard at lower priorities)
+   * run OUTSIDE it — guardrail aborts still propagate as model-visible
+   * failures unless explicitly opted into `passthroughCodes`.
+   */
+  readonly toolErrorFormatter: KoiMiddleware;
 
   // --- Optional layers ---
 
@@ -120,6 +129,7 @@ export interface MiddlewareCompositionInput {
  *             hook                     — required
  *             permissions              — required (terminal-capable)
  *             exfiltrationGuard        — required (terminal-capable)
+ *             toolErrorFormatter       — required (formats tool throws)
  *   [zone B]  manifestMiddleware[0..]  — user-controlled, runs INSIDE
  *                                         the security guard so it
  *                                         only sees already-gated and
@@ -161,6 +171,7 @@ export function composeRuntimeMiddleware(
     input.hook,
     input.permissions,
     input.exfiltrationGuard,
+    input.toolErrorFormatter,
     // Zone B — manifest-declared middleware, in declared order.
     // Runs INSIDE the security guard so repo-authored content
     // cannot observe or persist raw request/response data.
