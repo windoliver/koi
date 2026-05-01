@@ -28,19 +28,22 @@ const DEFAULT_SECRET_PATTERNS: readonly RegExp[] = [
 const DEFAULT_MAX_MESSAGE_LENGTH = 1000;
 
 /**
- * KoiError codes whose throws are propagated rather than formatted. These
- * represent hard guardrail aborts where converting the throw to a
- * ToolResponse would silently fail-open:
+ * Default passthrough codes is empty by design.
  *
- *   - `RATE_LIMIT`: `@koi/middleware-call-limits` with `exitBehavior: "error"`
- *     throws this to terminate the turn when the configured limit is hit.
- *   - `PERMISSION`: deny-by-default permissions middleware uses this code
- *     when a tool call is rejected and the engine must stop.
+ * Error codes alone are not a trustworthy guardrail signal: a tool wrapping
+ * a third-party SDK can legitimately surface upstream `RATE_LIMIT` or
+ * `PERMISSION` errors as ordinary tool failures, and converting those into
+ * hard-stop turn aborts is a behavioral regression. The PRIMARY mechanism
+ * for keeping guardrail aborts hard-stop is priority ordering: guardrail
+ * middleware should sit OUTSIDE this formatter (priority < 170) so its
+ * throws never enter our catch block to begin with.
  *
- * Both codes should never become model-readable "the tool failed" output —
- * they signal "the system refused", which is a different control flow.
+ * Callers who place a guardrail INSIDE this formatter (e.g.,
+ * `@koi/middleware-call-limits` at priority 175) MUST opt in by setting
+ * `passthroughCodes` and/or `passthroughPredicate` for that specific stack.
+ * Defense-in-depth, not magic defaults.
  */
-const DEFAULT_PASSTHROUGH_CODES: readonly string[] = ["RATE_LIMIT", "PERMISSION"] as const;
+const DEFAULT_PASSTHROUGH_CODES: readonly string[] = [] as const;
 
 const TRUNCATION_SUFFIX = "... (truncated)";
 
@@ -189,14 +192,7 @@ export function createToolErrorFormatterMiddleware(
   const secretPatterns: readonly RegExp[] = config?.replaceDefaultSecretPatterns
     ? (config.secretPatterns ?? [])
     : [...DEFAULT_SECRET_PATTERNS, ...(config?.secretPatterns ?? [])];
-  // Caller-supplied codes extend the defaults rather than replacing them —
-  // RATE_LIMIT and PERMISSION must not silently lose their hard-stop status
-  // when a team adds a third guardrail code.
-  const passthroughCodes = new Set<string>(
-    config?.replaceDefaultPassthroughCodes
-      ? (config.passthroughCodes ?? [])
-      : [...DEFAULT_PASSTHROUGH_CODES, ...(config?.passthroughCodes ?? [])],
-  );
+  const passthroughCodes = new Set<string>(config?.passthroughCodes ?? DEFAULT_PASSTHROUGH_CODES);
   const passthroughPredicate = config?.passthroughPredicate;
 
   const capabilityFragment: CapabilityFragment = {

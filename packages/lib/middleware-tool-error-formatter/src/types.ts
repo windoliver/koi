@@ -31,20 +31,17 @@ export interface ToolErrorFormatterConfig {
    */
   readonly replaceDefaultSecretPatterns?: boolean | undefined;
   /**
-   * Additional KoiError codes whose throws propagate instead of being
-   * formatted. Merged with the built-in hard-stop defaults
-   * (`RATE_LIMIT`, `PERMISSION`) so callers cannot silently disable those
-   * guardrails by extending this list. Use `replaceDefaultPassthroughCodes`
-   * to opt out (rare).
+   * KoiError codes whose throws propagate instead of being formatted. Empty
+   * by default — error codes alone are not a trustworthy guardrail signal,
+   * and a tool can legitimately surface upstream `RATE_LIMIT`/`PERMISSION`
+   * as model-visible failures. The primary defense against converting
+   * guardrail aborts into recoverable tool errors is priority ordering:
+   * guardrails should sit OUTSIDE this formatter (priority < 170). This
+   * field exists for stacks that wire a guardrail INSIDE the formatter
+   * (e.g., `@koi/middleware-call-limits` at priority 175 — opt in with
+   * `passthroughCodes: ["RATE_LIMIT"]`).
    */
   readonly passthroughCodes?: readonly string[] | undefined;
-  /**
-   * When true, `passthroughCodes` REPLACES the built-in defaults
-   * (`RATE_LIMIT`, `PERMISSION`) instead of extending them. Default: false.
-   * Pass `[]` with this flag set to format EVERY error (legacy behavior;
-   * dangerous in production stacks that rely on hard-stop semantics).
-   */
-  readonly replaceDefaultPassthroughCodes?: boolean | undefined;
   /**
    * Optional predicate run for every caught error after the
    * `passthroughCodes` check. Return `true` to re-throw instead of format.

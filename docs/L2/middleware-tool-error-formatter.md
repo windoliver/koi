@@ -124,20 +124,31 @@ On error the middleware returns:
 
 ## Guardrail Passthrough
 
-Hard-stop guardrail errors must propagate as throws — converting them into `ToolResponse` would let the engine continue past a deliberate abort. Errors whose `code` is in `passthroughCodes` skip formatting and re-throw.
+Hard-stop guardrail errors must propagate as throws — converting them into `ToolResponse` would let the engine continue past a deliberate abort. The PRIMARY defense is **priority ordering**: guardrail middleware should sit *outside* this formatter (priority < `170`) so its throws never enter the catch block to begin with.
 
-Default `passthroughCodes`: `["RATE_LIMIT", "PERMISSION"]`.
+| Middleware | Priority | Position relative to formatter |
+|------------|----------|-------------------------------|
+| `@koi/middleware-permissions` | `100` | OUTSIDE (good) |
+| `@koi/governance-core` | `150` | OUTSIDE (good) |
+| `@koi/middleware-tool-error-formatter` | `170` | reference |
+| `@koi/middleware-call-limits` | `175` | INSIDE — opt in to passthrough below |
 
-| Source | Code | Why it must throw |
-|--------|------|------------------|
-| `@koi/middleware-call-limits` (`exitBehavior: "error"`) | `RATE_LIMIT` | Limit breach must terminate the turn |
-| Permissions middleware deny path | `PERMISSION` | System refusal, not a tool failure |
+Default `passthroughCodes`: `[]`. Error codes alone are not a trustworthy signal — a tool wrapping a third-party SDK can legitimately surface upstream `RATE_LIMIT` or `PERMISSION` as ordinary tool failures, and converting those into hard-stop turn aborts would be a behavioral regression. So nothing is re-thrown by default beyond cancellation.
 
-Add codes to the set if your stack uses other guardrail middleware. Pass `[]` to format every error (legacy behavior).
+If you wire a guardrail INSIDE the formatter, opt in:
 
-For richer classification — e.g., a governance approval timeout where `KoiError.context.kind === "tool"` is the only reliable signal — supply a `passthroughPredicate(error) => boolean`. The predicate runs after the codes check; if it returns `true`, the error is re-thrown.
+```typescript
+createToolErrorFormatterMiddleware({
+  passthroughCodes: ["RATE_LIMIT"],          // call-limits-inside wiring
+  // OR provenance-aware:
+  passthroughPredicate: (error) =>
+    typeof error === "object"
+    && error !== null
+    && (error as { context?: { guardrail?: boolean } }).context?.guardrail === true,
+});
+```
 
-> **Priority ordering matters.** Guardrail middleware (permissions, governance, exfiltration-guard) should sit at a *lower* priority than this formatter (default `170`) so its throws are wrapped *outside* this layer and never enter the catch block to begin with. The passthrough config is a defense-in-depth — the primary protection is the onion order.
+Cancellation is always propagated: if `request.signal.aborted` is true or the caught error is an `AbortError` / `code === "ABORT_ERR"` / `code === "ABORTED"`, the throw re-emerges so the turn runner's cancellation path fires.
 
 Cancellation is also propagated: if `request.signal.aborted` is true or the caught error is an `AbortError` / `code === "ABORT_ERR"` / `code === "ABORTED"`, the throw re-emerges so the turn runner's cancellation path fires.
 

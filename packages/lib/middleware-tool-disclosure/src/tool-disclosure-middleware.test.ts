@@ -405,6 +405,40 @@ describe("createToolDisclosureMiddleware", () => {
       expect(nextCalled).toBe(true);
     });
 
+    test("stale disclosure state is cleared when tool count drops below threshold", async () => {
+      // Session sees 10 tools (threshold 5 — disclosure active) → state.knownNames populated
+      // Then sees 3 tools (below threshold) → must clear knownNames so the
+      // validation guard does not block tools the model is now seeing at full schema.
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const sid: SessionId = sessionId("dynamic-tool-set");
+      const ctxDyn = createMockTurnContext({ session: { sessionId: sid } });
+
+      // First turn: 10 tools — disclosure active
+      await mw.wrapModelCall?.(
+        ctxDyn,
+        { messages: [], tools: descriptors(10) },
+        captureNext().handler,
+      );
+
+      // Second turn: 3 tools — below threshold, full schemas sent
+      await mw.wrapModelCall?.(
+        ctxDyn,
+        { messages: [], tools: descriptors(3) },
+        captureNext().handler,
+      );
+
+      // Direct call to tool-1 must succeed (model just saw it at full schema)
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      let nextCalled = false;
+      const noop = async (): Promise<ToolResponse> => {
+        nextCalled = true;
+        return { output: "ok" };
+      };
+      await wrap(ctxDyn, { toolId: "tool-1", input: {} }, noop);
+      expect(nextCalled).toBe(true);
+    });
+
     test("below threshold: validation guard does NOT fire (no disclosure happened)", async () => {
       const mw = createToolDisclosureMiddleware({ threshold: 50 });
       const tools = descriptors(10);

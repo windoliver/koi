@@ -199,6 +199,15 @@ export function createToolDisclosureMiddleware(
       next: ModelHandler,
     ): Promise<ModelResponse> {
       if (request.tools === undefined || request.tools.length <= threshold) {
+        // Below-threshold (or no tools): the model sees the FULL schemas, so
+        // nothing was summarized — clear stale knownNames so wrapToolCall's
+        // validation guard does not block tools the model is now seeing at
+        // full schema. (Tool sets shrink dynamically with selector middleware
+        // or session reconfiguration.)
+        const state = sessions.get(ctx.session.sessionId);
+        if (state !== undefined && state.knownNames.size > 0) {
+          state.knownNames = new Set();
+        }
         return next(request);
       }
       const state = getOrCreate(ctx.session.sessionId);
