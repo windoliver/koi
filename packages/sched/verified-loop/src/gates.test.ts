@@ -208,6 +208,23 @@ describe("createTestGate signal handling", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
 
+  test("aborted gate fails even if child traps SIGTERM and exits 0", async () => {
+    // Regression: a child that handles SIGTERM and exits 0 (graceful
+    // shutdown) was previously reported as passed because the gate result
+    // only looked at exitCode. Cancellation must always force passed:false:
+    // the loop explicitly stopped verification, so its result is untrusted.
+    const controller = new AbortController();
+    const gate = createTestGate([
+      "bun",
+      "-e",
+      'process.on("SIGTERM", () => process.exit(0)); await new Promise(() => {})',
+    ]);
+    setTimeout(() => controller.abort("test abort"), 50);
+    const result = await gate(makeCtx({ signal: controller.signal }));
+    expect(result.passed).toBe(false);
+    expect(result.details).toContain("aborted");
+  }, 5_000);
+
   test("escalates to SIGKILL when child ignores SIGTERM", async () => {
     // Regression: a child that ignores or traps the initial termination
     // request would stay alive past proc.kill(); the gate could return

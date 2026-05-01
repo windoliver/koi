@@ -827,6 +827,23 @@ describe("VerifiedLoop.run", () => {
     expect(result.iterations).toBe(1);
   });
 
+  test("resolves a relative prdPath against workingDir, not process.cwd", async () => {
+    // Regression: when both prdPath is relative and workingDir is set,
+    // the loop must resolve the PRD against workingDir. Otherwise a
+    // process launched from a different cwd would silently read or
+    // overwrite an unrelated prd.json.
+    const items: PRDFile = { items: [{ id: "a", description: "Task A", done: false }] };
+    await Bun.write(join(tmpDir, "nested.json"), JSON.stringify(items, null, 2));
+    const loop = createVerifiedLoop({
+      ...makeConfig(),
+      prdPath: "nested.json", // relative
+      workingDir: tmpDir,
+    });
+    const result = await loop.run();
+    expect(result.completed).toEqual(["a"]);
+    expect(result.iterations).toBe(1);
+  });
+
   test("aborts the run fatally when iterator.return() rejects during cleanup", async () => {
     // Regression: a runner that signals cleanup failure (return() rejects)
     // is just as dangerous as one that hangs — we cannot assume side

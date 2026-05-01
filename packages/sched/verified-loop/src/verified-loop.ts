@@ -5,7 +5,7 @@
  * recording learnings and per-iteration metrics.
  */
 
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { extractMessage } from "@koi/errors";
 import { appendLearning, readLearnings } from "./learnings.js";
 import { bumpFailureCount, markDoneMany, nextItem, readPRD } from "./prd-store.js";
@@ -134,7 +134,17 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
   const maxIterations = config.maxIterations ?? DEFAULT_MAX_ITERATIONS;
   const maxLearningEntries = config.maxLearningEntries ?? DEFAULT_MAX_LEARNING_ENTRIES;
   const workingDir = config.workingDir ?? process.cwd();
-  const learningsPath = config.learningsPath ?? join(dirname(config.prdPath), "learnings.json");
+  // Resolve PRD and learnings paths against workingDir at construction so
+  // every store call is process-cwd-independent. A loop launched from a
+  // different cwd than its workspace must not silently read or overwrite
+  // an unrelated PRD file. Absolute paths pass through unchanged.
+  const prdPath = isAbsolute(config.prdPath) ? config.prdPath : resolve(workingDir, config.prdPath);
+  const learningsPath =
+    config.learningsPath !== undefined
+      ? isAbsolute(config.learningsPath)
+        ? config.learningsPath
+        : resolve(workingDir, config.learningsPath)
+      : join(dirname(prdPath), "learnings.json");
   const iterationTimeoutMs = config.iterationTimeoutMs ?? DEFAULT_ITERATION_TIMEOUT_MS;
   const gateTimeoutMs = config.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
   const maxConsecutiveFailures = config.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_FAILURES;
@@ -156,13 +166,13 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
       const startTime = performance.now();
       const iterationRecords: IterationRecord[] = [];
 
-      const prdResult = await readPRD(config.prdPath);
+      const prdResult = await readPRD(prdPath);
       if (!prdResult.ok) {
         // Cannot read or parse the PRD — refuse to silently succeed.
         // A scheduler that gets `iterations: 0` from a missing/corrupt PRD
         // would falsely mark the run as a clean no-op. Surface the error.
         throw new Error(
-          `VerifiedLoop: cannot read PRD at ${config.prdPath} (${prdResult.error.code}): ${prdResult.error.message}`,
+          `VerifiedLoop: cannot read PRD at ${prdPath} (${prdResult.error.code}): ${prdResult.error.message}`,
         );
       }
 
@@ -186,12 +196,12 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
       ) {
         const iterStart = performance.now();
 
-        const currentPrd = await readPRD(config.prdPath);
+        const currentPrd = await readPRD(prdPath);
         if (!currentPrd.ok) {
           // PRD became unreadable mid-loop (concurrent overwrite, disk error,
           // or someone deleted it). Same as initial-read failure — surface it.
           throw new Error(
-            `VerifiedLoop: PRD became unreadable mid-loop at ${config.prdPath} (${currentPrd.error.code}): ${currentPrd.error.message}`,
+            `VerifiedLoop: PRD became unreadable mid-loop at ${prdPath} (${currentPrd.error.code}): ${currentPrd.error.message}`,
           );
         }
 
@@ -283,7 +293,7 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
             return false;
           });
           if (toComplete.length > 0) {
-            const doneResult = await markDoneMany(config.prdPath, toComplete);
+            const doneResult = await markDoneMany(prdPath, toComplete);
             if (!doneResult.ok) {
               // PRD persistence is the source of truth — refuse to keep
               // iterating on an unknown state. Surface storage failure.
@@ -295,11 +305,7 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
         } else if (!cancelled) {
           // Persist the consecutive-failure count to disk in the same atomic
           // write that may also flip skipped:true. Survives crash/restart.
-          const bumpResult = await bumpFailureCount(
-            config.prdPath,
-            current.id,
-            maxConsecutiveFailures,
-          );
+          const bumpResult = await bumpFailureCount(prdPath, current.id, maxConsecutiveFailures);
           if (!bumpResult.ok) {
             // CONFLICT = the item was completed out-of-band (concurrent run,
             // hand edit) between selection and failure persistence. The store
@@ -360,12 +366,12 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
         }
       }
 
-      const finalPrd = await readPRD(config.prdPath);
+      const finalPrd = await readPRD(prdPath);
       if (!finalPrd.ok) {
         // Same contract as the initial and mid-loop reads — never collapse a
         // storage failure into "0 items, all done". Force the caller to handle.
         throw new Error(
-          `VerifiedLoop: cannot read final PRD at ${config.prdPath} (${finalPrd.error.code}): ${finalPrd.error.message}`,
+          `VerifiedLoop: cannot read final PRD at ${prdPath} (${finalPrd.error.code}): ${finalPrd.error.message}`,
         );
       }
       const finalItems = finalPrd.value.items;

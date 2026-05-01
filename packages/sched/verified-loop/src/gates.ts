@@ -70,17 +70,24 @@ export function createTestGate(
       // POSIX recycles PIDs/PGIDs aggressively; an untracked late kill could
       // hit an unrelated process group.
       let killTimer: ReturnType<typeof setTimeout> | undefined;
+      // Use let — justified: track whether the gate was aborted/timed out so
+      // a graceful SIGTERM-handling child cannot return passed:true after we
+      // explicitly cancelled verification.
+      let aborted = false;
+      let timedOut = false;
       const escalate = (): void => {
         killGroup("SIGTERM");
         killTimer = setTimeout(() => killGroup("SIGKILL"), 1_000);
       };
 
       const onAbort = (): void => {
+        aborted = true;
         escalate();
       };
       ctx.signal.addEventListener("abort", onAbort, { once: true });
 
       const timer = setTimeout(() => {
+        timedOut = true;
         escalate();
       }, timeoutMs);
 
@@ -90,6 +97,22 @@ export function createTestGate(
       if (killTimer !== undefined) clearTimeout(killTimer);
       ctx.signal.removeEventListener("abort", onAbort);
 
+      // Cancellation is a verification failure regardless of exit code. A
+      // child that traps SIGTERM and exits 0 (or simply finishes during the
+      // signal-delivery window) must not be reported as passed: the loop
+      // explicitly told the gate to stop, so its result is untrusted.
+      if (aborted) {
+        return {
+          passed: false,
+          details: `Test gate aborted by ctx.signal (exit ${exitCode}): ${stderr.slice(0, 500)}`,
+        };
+      }
+      if (timedOut) {
+        return {
+          passed: false,
+          details: `Test gate timed out after ${timeoutMs}ms (exit ${exitCode}): ${stderr.slice(0, 500)}`,
+        };
+      }
       return {
         passed: exitCode === 0,
         details:
