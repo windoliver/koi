@@ -8,7 +8,11 @@ export { wrapAdapterWithStatePersistence } from "./persist-engine-state.js";
 export { createInMemorySessionPersistence } from "./persistence/memory-store.js";
 export type { SessionStoreConfig } from "./persistence/sqlite-store.js";
 export { createSqliteSessionPersistence } from "./persistence/sqlite-store.js";
-export type { ResumeResult, ResumeWithStateResult } from "./resume.js";
+export type {
+  ResumeResult,
+  ResumeWithStateOptions,
+  ResumeWithStateResult,
+} from "./resume.js";
 export {
   resumeForSession,
   resumeFromTranscript,

@@ -47,19 +47,40 @@ describe("resumeWithEngineState", () => {
     transcript = createInMemoryTranscript();
   });
 
-  test("returns lastEngineState when persisted", async () => {
+  test("returns lastEngineState when engineId matches expected", async () => {
     const state: EngineState = { engineId: "e", data: { step: 5 } };
     await store.saveSession(makeRecord({ lastEngineState: state }));
 
-    const result = await resumeWithEngineState(SID, transcript, store);
+    const result = await resumeWithEngineState(SID, transcript, store, {
+      expectedEngineId: "e",
+    });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error();
     expect(result.value.lastEngineState).toEqual(state);
     expect(result.value.messages).toEqual([]);
   });
 
+  test("drops persisted state whose engineId does not match (adapter swap / version skew)", async () => {
+    const state: EngineState = { engineId: "old-engine-v1", data: { step: 5 } };
+    await store.saveSession(makeRecord({ lastEngineState: state }));
+
+    const mismatches: Array<[EngineState, string]> = [];
+    const result = await resumeWithEngineState(SID, transcript, store, {
+      expectedEngineId: "new-engine-v2",
+      onEngineMismatch: (s, expected) => mismatches.push([s, expected]),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error();
+    expect(result.value.lastEngineState).toBeUndefined();
+    expect(mismatches).toHaveLength(1);
+    expect(mismatches[0]?.[0].engineId).toBe("old-engine-v1");
+    expect(mismatches[0]?.[1]).toBe("new-engine-v2");
+  });
+
   test("missing session record falls back to undefined state (transcript-only)", async () => {
-    const result = await resumeWithEngineState(SID, transcript, store);
+    const result = await resumeWithEngineState(SID, transcript, store, {
+      expectedEngineId: "e",
+    });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error();
     expect(result.value.lastEngineState).toBeUndefined();
@@ -67,7 +88,9 @@ describe("resumeWithEngineState", () => {
 
   test("session record without lastEngineState yields undefined state", async () => {
     await store.saveSession(makeRecord());
-    const result = await resumeWithEngineState(SID, transcript, store);
+    const result = await resumeWithEngineState(SID, transcript, store, {
+      expectedEngineId: "e",
+    });
     if (!result.ok) throw new Error();
     expect(result.value.lastEngineState).toBeUndefined();
   });
@@ -80,14 +103,18 @@ describe("resumeWithEngineState", () => {
         error: { code: "INTERNAL", message: "boom", retryable: true, context: {} },
       }),
     };
-    const result = await resumeWithEngineState(SID, transcript, failing);
+    const result = await resumeWithEngineState(SID, transcript, failing, {
+      expectedEngineId: "e",
+    });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error();
     expect(result.error.code).toBe("INTERNAL");
   });
 
   test("propagates transcript validation error (empty session id)", async () => {
-    const result = await resumeWithEngineState(sessionId(""), transcript, store);
+    const result = await resumeWithEngineState(sessionId(""), transcript, store, {
+      expectedEngineId: "e",
+    });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error();
     expect(result.error.code).toBe("VALIDATION");

@@ -342,6 +342,44 @@ describe("wrapAdapterWithStatePersistence", () => {
     expect(loaded.value.lastEngineState).toEqual(captured);
   });
 
+  test("late-finishing timed-out persist does NOT overwrite a newer terminal's state", async () => {
+    // Adapter saveState is slow (resolves after the timeout fires). The
+    // wrapper must not let that late write commit on top of a subsequent
+    // completed terminal that already cleared the checkpoint.
+    let releaseSaveState: ((state: EngineState) => void) | undefined;
+    const slowSavePromise = new Promise<EngineState>((resolve) => {
+      releaseSaveState = resolve;
+    });
+
+    const inner: EngineAdapter = {
+      ...makeAdapter([interruptedDone, completedDone]),
+      saveState: () => slowSavePromise,
+    };
+    const errors: Array<KoiError | Error> = [];
+    const wrapped = wrapAdapterWithStatePersistence(inner, {
+      persistence: store,
+      recordTemplate: template,
+      persistTimeoutMs: 30,
+      onPersistError: (e) => errors.push(e),
+    });
+
+    // Drain both terminals: interrupt first (will time out), then completed.
+    for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
+
+    // Interrupt timed out; completed had no prior checkpoint to clear.
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+    const noRowYet = await store.loadSession(SID);
+    expect(noRowYet.ok).toBe(false);
+
+    // Now release the late saveState — its merge attempt must drop because
+    // the generation has advanced past it.
+    releaseSaveState?.(captured);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const finalRow = await store.loadSession(SID);
+    expect(finalRow.ok).toBe(false); // no late write resurrected the checkpoint
+  });
+
   test("hung saveState does NOT block cancel terminal beyond persistTimeoutMs", async () => {
     const inner: EngineAdapter = {
       ...makeAdapter([interruptedDone]),

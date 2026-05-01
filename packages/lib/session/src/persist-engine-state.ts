@@ -145,66 +145,96 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
+/**
+ * Per-stream generation token. Each terminal event mints a new generation
+ * before kicking off its persist work; in-flight persist work captures the
+ * current generation at start and re-checks before `saveSession` to refuse
+ * to commit if a newer terminal has already advanced state. This prevents a
+ * timed-out interrupted write from racing past a later `completed` clear and
+ * resurrecting a stale checkpoint.
+ */
+interface GenRef {
+  current: number;
+}
+
 async function* wrapStreamForCancelPersist(
   inner: AsyncIterable<EngineEvent>,
   deps: WrapStreamDeps,
 ): AsyncIterable<EngineEvent> {
+  const gen: GenRef = { current: 0 };
   for await (const event of inner) {
     // Persist BEFORE yielding the terminal `done` event. Yielding first would
-    // make checkpointing dependent on the consumer pulling the next item — and
-    // production consumers (e.g. headless workers, TUI cancel handlers) break
-    // out of the iteration loop the instant they observe `signal.aborted`, so
-    // they never request a successor. With persist-after-yield, the side
-    // effect would silently disappear under exactly the cancel path this
-    // feature is meant to make durable.
+    // make checkpointing dependent on the consumer pulling the next item —
+    // and production consumers (e.g. headless workers, TUI cancel handlers)
+    // break out of the iteration loop the instant they observe
+    // `signal.aborted`, so they never request a successor.
     if (event.kind === "done") {
+      gen.current += 1;
+      const myGen = gen.current;
       if (event.output.stopReason === "interrupted") {
-        await persistOnInterrupted(deps);
+        await persistOnInterrupted(deps, gen, myGen);
       } else if (event.output.stopReason === "completed") {
-        // Only a `completed` terminal supersedes a prior cancel checkpoint.
-        // `error` and `max_turns` MUST preserve the previous checkpoint so a
-        // later resume can still recover from the last known-good state
-        // instead of falling back to transcript-only replay.
-        await clearStaleCheckpoint(deps);
+        // Only `completed` supersedes a prior cancel checkpoint. `error` and
+        // `max_turns` MUST preserve the previous checkpoint so a later
+        // resume can still recover from the last known-good state.
+        await clearStaleCheckpoint(deps, gen, myGen);
       }
     }
     yield event;
   }
 }
 
-async function persistOnInterrupted(deps: WrapStreamDeps): Promise<void> {
-  // Strict overall deadline so cancel UX is never gated on a hung adapter
-  // snapshot or stalled store. The full sequence (saveState + load + save)
-  // shares one budget — running them serially keeps the merge atomic, and
-  // the timer covers all three.
+async function persistOnInterrupted(
+  deps: WrapStreamDeps,
+  gen: GenRef,
+  myGen: number,
+): Promise<void> {
   try {
-    await withTimeout(persistInterruptedInner(deps), deps.persistTimeoutMs, "persist sequence");
+    await withTimeout(
+      persistInterruptedInner(deps, gen, myGen),
+      deps.persistTimeoutMs,
+      "persist sequence",
+    );
   } catch (e: unknown) {
     deps.onPersistError(e instanceof Error ? e : new Error(extractMessage(e)));
   }
 }
 
-async function persistInterruptedInner(deps: WrapStreamDeps): Promise<void> {
+async function persistInterruptedInner(
+  deps: WrapStreamDeps,
+  gen: GenRef,
+  myGen: number,
+): Promise<void> {
   const state = await deps.saveState();
-  await mergeAndSave(deps, state);
+  if (gen.current !== myGen) return; // a later terminal already won — drop
+  await mergeAndSave(deps, state, gen, myGen);
 }
 
-async function clearStaleCheckpoint(deps: WrapStreamDeps): Promise<void> {
-  // Same strict deadline as the cancel-side write — a successful terminal
-  // must never block on a hung store either.
+async function clearStaleCheckpoint(
+  deps: WrapStreamDeps,
+  gen: GenRef,
+  myGen: number,
+): Promise<void> {
   try {
-    await withTimeout(clearStaleCheckpointInner(deps), deps.persistTimeoutMs, "clear checkpoint");
+    await withTimeout(
+      clearStaleCheckpointInner(deps, gen, myGen),
+      deps.persistTimeoutMs,
+      "clear checkpoint",
+    );
   } catch (e: unknown) {
     deps.onPersistError(e instanceof Error ? e : new Error(extractMessage(e)));
   }
 }
 
-async function clearStaleCheckpointInner(deps: WrapStreamDeps): Promise<void> {
+async function clearStaleCheckpointInner(
+  deps: WrapStreamDeps,
+  gen: GenRef,
+  myGen: number,
+): Promise<void> {
   const sid = deps.recordTemplate().sessionId;
   const loaded = await deps.persistence.loadSession(sid);
+  if (gen.current !== myGen) return;
   if (!loaded.ok) {
-    // NOT_FOUND on a session we never wrote is fine; any other error is
-    // logged but does not block the successful terminal.
     if (loaded.error.code !== "NOT_FOUND") deps.onPersistError(loaded.error);
     return;
   }
@@ -224,10 +254,19 @@ async function clearStaleCheckpointInner(deps: WrapStreamDeps): Promise<void> {
  * `seq`, `remoteSeq`, `metadata`, and `status` — fields the caller's
  * template may not have refreshed since the last successful turn — while
  * still allowing the very first cancel of a new session to create the row.
+ *
+ * Re-checks the generation token AFTER `loadSession` returns so a late
+ * timed-out write cannot commit on top of a newer terminal's state.
  */
-async function mergeAndSave(deps: WrapStreamDeps, state: EngineState): Promise<void> {
+async function mergeAndSave(
+  deps: WrapStreamDeps,
+  state: EngineState,
+  gen: GenRef,
+  myGen: number,
+): Promise<void> {
   const template = deps.recordTemplate();
   const loaded = await deps.persistence.loadSession(template.sessionId);
+  if (gen.current !== myGen) return;
   // let: justified — assigned in either branch below.
   let merged: SessionRecord;
   if (loaded.ok) {
