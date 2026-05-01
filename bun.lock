@@ -1131,6 +1131,7 @@
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
         "@koi/gateway": "workspace:*",
+        "@koi/gateway-canvas": "workspace:*",
         "@koi/gateway-http": "workspace:*",
         "@koi/gateway-types": "workspace:*",
         "@koi/gateway-webhook": "workspace:*",
@@ -1352,6 +1353,14 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/gateway-types": "workspace:*",
+      },
+    },
+    "packages/net/gateway-canvas": {
+      "name": "@koi/gateway-canvas",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
       },
     },
     "packages/net/gateway-http": {
@@ -2092,6 +2101,8 @@
     "@koi/fs-scoped": ["@koi/fs-scoped@workspace:packages/lib/fs-scoped"],
 
     "@koi/gateway": ["@koi/gateway@workspace:packages/net/gateway"],
+
+    "@koi/gateway-canvas": ["@koi/gateway-canvas@workspace:packages/net/gateway-canvas"],
 
     "@koi/gateway-http": ["@koi/gateway-http@workspace:packages/net/gateway-http"],
 

@@ -64,6 +64,7 @@
     { "path": "../../mm/model-openai-compat" },
     { "path": "../../net/daemon" },
     { "path": "../../net/gateway" },
+    { "path": "../../net/gateway-canvas" },
     { "path": "../../net/gateway-http" },
     { "path": "../../lib/gateway-types" },
     { "path": "../../net/gateway-webhook" },

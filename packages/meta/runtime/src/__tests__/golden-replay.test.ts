@@ -13861,6 +13861,96 @@ describe("Golden: @koi/gateway-webhook", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/gateway-canvas
+// Surface store + SSE manager — sit outside the agent loop (no cassette needed).
+// Tests validate the public API surface: in-memory store CRUD with ETag CAS,
+// and SSE fan-out with subscriber lifecycle. Neither interacts with the LLM.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/gateway-canvas", () => {
+  test("createInMemorySurfaceStore — CRUD + ETag CAS via expectedHash", async () => {
+    const { createInMemorySurfaceStore, surfaceEtag } = await import("@koi/gateway-canvas");
+    const store = createInMemorySurfaceStore();
+
+    const created = await store.create("dash-1", "<h1>v1</h1>", {
+      ownerId: "agent-1",
+      metadata: { author: "agent" },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const v1Token = surfaceEtag(created.value);
+    expect(created.value.ownerId).toBe("agent-1");
+    expect(created.value.metadata).toEqual({ author: "agent" });
+
+    // Same-tenant duplicate create → CONFLICT (tenant-scoped namespace)
+    const dup = await store.create("dash-1", "<h1>x</h1>", { ownerId: "agent-1" });
+    expect(dup.ok).toBe(false);
+    if (!dup.ok) expect(dup.error.code).toBe("CONFLICT");
+
+    // CAS update with matching token succeeds + new token differs
+    const updated = await store.update("dash-1", "<h1>v2</h1>", v1Token, "agent-1");
+    expect(updated.ok).toBe(true);
+    if (!updated.ok) return;
+    expect(surfaceEtag(updated.value)).not.toBe(v1Token);
+
+    // CAS update with stale token → CONFLICT (precondition failed)
+    const stale = await store.update("dash-1", "<h1>v3</h1>", v1Token, "agent-1");
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.error.code).toBe("CONFLICT");
+
+    // delete returns true once, false thereafter; subsequent get → NOT_FOUND
+    const del = await store.delete("dash-1", "agent-1");
+    expect(del).toEqual({ ok: true, value: true });
+    const missing = await store.get("dash-1", "agent-1");
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error.code).toBe("NOT_FOUND");
+  });
+
+  test("createCanvasSseManager — publish fans out, dead subscribers are reaped, close emits deleted", async () => {
+    const { createCanvasSseManager } = await import("@koi/gateway-canvas");
+    const sse = createCanvasSseManager({
+      maxSubscribersPerSurface: 8,
+      maxTotalSubscribers: 16,
+      keepAliveIntervalMs: 60_000,
+    });
+
+    try {
+      const decoder = new TextDecoder();
+      const live: string[] = [];
+      const liveResult = sse.subscribe("dash-1", (data) => {
+        live.push(decoder.decode(data));
+        return true;
+      });
+      expect(liveResult.ok).toBe(true);
+
+      // Dead subscriber (returns false) gets reaped on first publish
+      sse.subscribe("dash-1", () => false);
+      expect(sse.subscriberCount("dash-1")).toBe(2);
+
+      sse.publish("dash-1", { id: "1", event: "updated", data: '{"v":2}' });
+      expect(live).toHaveLength(1);
+      expect(live[0]).toBe('id: 1\nevent: updated\ndata: {"v":2}\n\n');
+      expect(sse.subscriberCount("dash-1")).toBe(1);
+
+      // Caller publishes the public deleted event first; close() is pure
+      // teardown (does NOT embed the registry key as the wire surfaceId).
+      sse.publish("dash-1", {
+        id: "2",
+        event: "deleted",
+        data: JSON.stringify({ surfaceId: "dash-1" }),
+      });
+      sse.close("dash-1");
+      expect(live).toHaveLength(2);
+      expect(live[1]).toContain("event: deleted");
+      expect(live[1]).toContain('"surfaceId":"dash-1"');
+      expect(sse.totalSubscribers()).toBe(0);
+    } finally {
+      sse.dispose();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/governance-delegation — capability-token primitives
 // ---------------------------------------------------------------------------
 

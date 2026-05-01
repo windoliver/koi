@@ -71,6 +71,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/artifacts-s3",
   "@koi/forge-tools",
   "@koi/gateway",
+  "@koi/gateway-canvas",
   "@koi/gateway-webhook",
   "@koi/audit-sink-ndjson",
   "@koi/audit-sink-nexus",
