@@ -22,6 +22,7 @@ import type { CliRenderer, SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { createComponent } from "solid-js";
 import type { PermissionBridge } from "./bridge/permission-bridge.js";
+import { initProfiling, shutdownProfiling } from "./profiling/integration.js";
 import type { TuiStore } from "./state/store.js";
 import type { FetchModelsResult, ModelEntry } from "./state/types.js";
 import { wireStdinResurrection } from "./stdin-resurrection.js";
@@ -274,6 +275,11 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
   // `let`: re-entrancy guard so a critical-subscriber failure during stop()
   // does not recursively trigger another stop().
   let fatalShutdownActive = false;
+  // Wave 5 (#1586): true when this handle owns the process-global profiler
+  // state. Set by start() via initProfiling(); only an owner may call
+  // shutdownProfiling() in stop()/error paths — otherwise a non-owner stop
+  // would tear down another running profiled run.
+  let profilingOwned = false;
   // Captured reference to the renderer.once("destroy") handler so stop()
   // can unregister it before calling renderer.destroy(). Without this,
   // destroy's synchronous "destroy" event would fire the handler during
@@ -290,6 +296,13 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
       if (started) return; // already running
       if (closing) return; // stop() was called — handle is permanently closed
       if (startPromise !== null) return startPromise; // concurrent call — share init
+
+      // Wave 5 measurement (#1586): try to take profiler ownership before
+      // we start any heavy work. Only this handle's stop()/error paths
+      // will tear profiling down, so a concurrent profiled handle (which
+      // gets profilingOwned=false) cannot truncate this run's report.
+      // No-op when KOI_TUI_PROFILE!=1.
+      profilingOwned = initProfiling();
 
       // Wire fatal-listener teardown (#1940). Installed AFTER the concurrency
       // guard so concurrent start() calls do not stack multiple wrappers; the
@@ -527,6 +540,15 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           // a fresh one on the next invocation rather than reusing a
           // destroyed object.
           activeRenderer = undefined;
+          // #1586 — release profiling ownership so a later restart in this
+          // same process is accepted by initProfiling. Without this, the
+          // process-global runActive latch stays set forever after an
+          // external destroy and every subsequent profiled createTuiApp
+          // is rejected as "already being profiled".
+          if (profilingOwned) {
+            shutdownProfiling();
+            profilingOwned = false;
+          }
           currentDoneResolve?.();
           currentDoneResolve = null;
           currentDone = Promise.resolve();
@@ -559,6 +581,15 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           restoreFatalHandler?.();
           restoreFatalHandler = undefined;
           fatalShutdownActive = false;
+          // #1586: aborted mount — release profiling ownership so a later
+          // createTuiApp() can profile cleanly. stop() will not be called.
+          // Skip the report write: a never-mounted run has no measurement
+          // worth flushing, and the empty/partial JSON would clobber a
+          // previous successful report at the same path.
+          if (profilingOwned) {
+            shutdownProfiling({ write: false });
+            profilingOwned = false;
+          }
         }
       } catch (e) {
         // Renderer creation / render() failed. Unwind fatal handler so a
@@ -567,6 +598,13 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         restoreFatalHandler?.();
         restoreFatalHandler = undefined;
         fatalShutdownActive = false;
+        // #1586: failed start — same logic. stop() will not run for a
+        // never-mounted handle, so release profiling here. Skip write
+        // for the same reason as the aborted-mount branch.
+        if (profilingOwned) {
+          shutdownProfiling({ write: false });
+          profilingOwned = false;
+        }
         throw e;
       } finally {
         // Clear the in-flight promise so a failed start can be retried and
@@ -607,6 +645,21 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         // Startup was cancelled, failed, or timed out — reset closing so the
         // handle can be started again after a transient failure.
         closing = false;
+        // #1586: release profiling synchronously even on the timeout path.
+        // Deferring until startPromise settles risks waiting forever when
+        // the very failure mode the timeout exists for is a never-settling
+        // native FFI init: the sampler would keep ticking, the global
+        // run-active latch would block all future profiled starts, and the
+        // exit handler would write a bogus partial profile on process exit.
+        //
+        // If start() does eventually mount after this point, profiling is
+        // already disarmed so its probes are no-ops — the mounted TUI runs
+        // unprofiled. That is the lesser evil: a 5s-timed-out startup is
+        // already an aborted run from the caller's perspective.
+        if (profilingOwned) {
+          shutdownProfiling({ write: false });
+          profilingOwned = false;
+        }
         return;
       }
       started = false;
@@ -696,6 +749,16 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
       if (keepAliveTimer !== null) {
         clearInterval(keepAliveTimer);
         keepAliveTimer = null;
+      }
+
+      // Wave 5 measurement (#1586): stop the sampler and flush the report
+      // ONLY if this handle took profiling ownership in start(). A
+      // non-owning handle (concurrent profiled createTuiApp; was rejected
+      // by initProfiling) must not call shutdownProfiling — that would
+      // truncate the active owner's measurement.
+      if (profilingOwned) {
+        shutdownProfiling();
+        profilingOwned = false;
       }
 
       // Resolve the per-run deferred — unblocks callers awaiting handle.done().

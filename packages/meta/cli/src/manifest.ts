@@ -389,6 +389,13 @@ export interface ManifestDelegationConfig {
  */
 export interface ManifestAceConfig {
   readonly enabled: boolean;
+  /**
+   * Required when `enabled: true`. Acknowledges that ACE-learned playbooks
+   * persist across `/clear` and `/new` within a TUI process — they survive
+   * conversation resets and are only discarded on process exit. Operators
+   * who want a privacy boundary must restart the TUI. (#2088 reviewer ask)
+   */
+  readonly acknowledgeCrossSessionState: boolean;
   readonly maxInjectedTokens: number | undefined;
   readonly minScore: number | undefined;
   readonly lambda: number | undefined;
@@ -734,6 +741,7 @@ export async function loadManifestConfig(
 
 const ACE_KNOWN_KEYS: ReadonlySet<string> = new Set([
   "enabled",
+  "acknowledge_cross_session_state",
   "max_injected_tokens",
   "min_score",
   "lambda",
@@ -779,6 +787,25 @@ function parseManifestAce(
     return {
       ok: false,
       error: `manifest.ace.enabled must be a boolean (got: ${JSON.stringify(enabled)})`,
+    };
+  }
+
+  const ackRaw = obj.acknowledge_cross_session_state;
+  if (ackRaw !== undefined && typeof ackRaw !== "boolean") {
+    return {
+      ok: false,
+      error: `manifest.ace.acknowledge_cross_session_state must be a boolean (got: ${JSON.stringify(ackRaw)})`,
+    };
+  }
+  const acknowledgeCrossSessionState = ackRaw === true;
+  if (enabled === true && !acknowledgeCrossSessionState) {
+    return {
+      ok: false,
+      error:
+        "manifest.ace.enabled: true requires acknowledge_cross_session_state: true. " +
+        "ACE-learned playbooks persist across /clear and /new within a TUI process — they " +
+        "survive conversation resets and are only discarded on process exit. Set " +
+        "acknowledge_cross_session_state: true to confirm you want this, or set enabled: false.",
     };
   }
 
@@ -838,6 +865,7 @@ function parseManifestAce(
     ok: true,
     value: {
       enabled: enabled ?? false,
+      acknowledgeCrossSessionState,
       maxInjectedTokens: maxInjectedTokens as number | undefined,
       minScore: minScore as number | undefined,
       lambda: lambda as number | undefined,

@@ -6,11 +6,6 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
-- **`@koi/governance-scope` ambient URLPattern type (#1388-related)**: pure
-  type-system fix in the L2 package; CLI integration is unchanged. The
-  CLI now compiles cleanly when the governance-scope package's URLPattern
-  global is declared in its own ambient .d.ts file.
-
 - **`@koi/governance-scope` wired (#1882 gov-15)**: CLI manifest gains `network:`
   and `credentials:` blocks. The TUI command translates these into compiled scope
   objects (`compileScopedFs`, `createScopedFetcher`, `createScopedCredentials`)
@@ -573,6 +568,8 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/context-manager` | L0u | Token-aware transcript compaction — `enforceBudget()` micro/full cascade, `resolveConfig()` + `budgetConfigFromResolved()` for per-model window from `@koi/model-registry`. Wired into `createTranscriptAdapter()` in `engine-adapter.ts`; both `koi start` and `koi tui` use it. `KOI_COMPACTION_WINDOW` env var overrides the window for testing (#1623) |
 | `@koi/audit-sink-sqlite` | L2 | WAL-mode SQLite audit sink — opt-in via `KOI_AUDIT_SQLITE` env var, parallel to NDJSON sink. Collision guard prevents dual-writer corruption (#1849) |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
+| `@koi/middleware-ace` | L2 | Adaptive Continuous Enhancement — opt-in via `manifest.ace.enabled: true` + `acknowledge_cross_session_state: true` + operator env `KOI_ACE_ACKNOWLEDGE_CROSS_SESSION_STATE=true`. TUI-only (rejected by `koi start` and `koi tui --resume` with ACE-bound sessions). Incompatible with the `checkpoint` preset stack — `/rewind` cannot roll back learned playbooks. Provenance recorded in versioned `<sid>.koi-meta.json` sidecar; resume / picker honor immutable snapshot of `ace.enabled` + `audit` to fail closed against post-creation manifest edits. (#2088, follow-up #2087 for sqlite-backed playbook persistence) |
+| `@koi/middleware-event-rules` | L2 | Declarative YAML event→action rules (#1422). Manifest factory restricts host-loaded rulesets to `log` actions only (rejects `skip_tool`/`notify`/`emit`/`escalate`) so untrusted manifests cannot perform side effects; trusted programmatic wiring through `createEventRulesMiddleware()` retains the full action surface. Priority 50, intercept phase. See `docs/L2/middleware-event-rules.md` |
 | `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to file-backed memory backend. **Fix (#1964):** `heuristic`/`pattern` → `feedback`. **Fix (#1966):** `MemoryType` threaded via `MemoryStoreOptions.type`; JSON output filtered through allowlist; command-result envelopes skipped. |
 | `@koi/middleware-collective-memory` | L2 | Cross-run learning persistence — extracts reusable learnings from spawn-family tool outputs, persists as `CollectiveMemory` on brick artifacts, and injects relevant entries as a system message at session start (one-shot, token-budgeted). Post-session LLM extraction batch-processes up to 20 spawn outputs. Compaction via cold-age eviction. Priority 305. See `docs/L2/middleware-collective-memory.md` |
 | `@koi/middleware-dream` | L2 | Background dream-consolidation gate — `onSessionEnd` hook bumps `<memoryDir>/.dream-gate.json` via atomic `mutateGateState` (in-process mutex chain + cross-process O_EXCL on `.dream-gate.lock`). When the gate fires, fire-and-forget `runDreamConsolidation` runs under `.dream.lock` (PID-bearing). Wired via the `dreamStack` preset; no-op when `ctx.modelAdapter` is undefined. Companion CLI: `koi dream` |
@@ -907,4 +904,5 @@ spans on both model and tool paths in `/trajectory`.
 
 ## Changelog
 
+- 2026-04-30: `@koi/governance-scope` `tsconfig.json` adds `DOM` to `lib` for `URLPattern` resolution (transitive surface; no behavior change for the CLI).
 - 2026-04-29: Adversarial review hardening (#1378) — bounded shutdown waits, pre-await accounting, identity-based dedup (transport+name), allowlist-based env exposure, reused in-flight scans, and lint cleanup.

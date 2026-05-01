@@ -82,10 +82,9 @@ compiled scope objects before passing them to tool/provider factories.
 - `createScopedFs` always rejects on path-resolution error rather than
   falling back to the underlying backend.
 
-## Type declarations
+## Build configuration
 
-- `src/url-pattern.d.ts` provides an ambient declaration for the
-  `URLPattern` global. The type is not yet in the TypeScript ES2025
-  lib or `bun-types`, but the runtime provides it. The declaration
-  is package-local because each L2 tsconfig has `rootDir: src` +
-  `composite: true`.
+`tsconfig.json` adds `"DOM"` to `lib` so TypeScript can resolve
+`URLPattern` (used by `createScopedFetcher`'s public types). The
+runtime is Bun, which provides `URLPattern` natively; the lib import is
+type-only.

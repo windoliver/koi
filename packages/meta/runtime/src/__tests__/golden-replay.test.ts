@@ -15857,3 +15857,39 @@ describe("Golden: @koi/middleware-ace", () => {
     expect(toolSteps[0]?.outcome).toBe("success");
   });
 });
+
+describe("Golden: @koi/middleware-intent-capsule", () => {
+  test("createIntentCapsuleMiddleware returns a KoiMiddleware with correct name and priority", async () => {
+    const { createIntentCapsuleMiddleware } = await import("@koi/middleware-intent-capsule");
+    const mw = createIntentCapsuleMiddleware({ systemPrompt: "You are a test agent." });
+    expect(mw.name).toBe("intent-capsule");
+    expect(mw.priority).toBe(290);
+    expect(typeof mw.onSessionStart).toBe("function");
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapModelStream).toBe("function");
+    expect(typeof mw.onSessionEnd).toBe("function");
+  });
+
+  test("wrapModelCall throws PERMISSION when onSessionStart was not called (fail-closed)", async () => {
+    const { createIntentCapsuleMiddleware } = await import("@koi/middleware-intent-capsule");
+    const mw = createIntentCapsuleMiddleware({ systemPrompt: "Secure agent." });
+
+    const ctx = {
+      session: {
+        agentId: "agent-golden",
+        sessionId: "session-golden" as never,
+        runId: "run-golden" as never,
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: "turn-golden" as never,
+      messages: [],
+      metadata: {},
+    } as never;
+
+    const next = async () => ({ content: "should not reach", model: "test" });
+    await expect(mw.wrapModelCall?.(ctx, { messages: [] }, next)).rejects.toMatchObject({
+      code: "PERMISSION",
+    });
+  });
+});
