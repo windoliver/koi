@@ -13861,6 +13861,86 @@ describe("Golden: @koi/gateway-webhook", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/gateway-canvas
+// Surface store + SSE manager — sit outside the agent loop (no cassette needed).
+// Tests validate the public API surface: in-memory store CRUD with ETag CAS,
+// and SSE fan-out with subscriber lifecycle. Neither interacts with the LLM.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/gateway-canvas", () => {
+  test("createInMemorySurfaceStore — CRUD + ETag CAS via expectedHash", async () => {
+    const { createInMemorySurfaceStore } = await import("@koi/gateway-canvas");
+    const store = createInMemorySurfaceStore();
+
+    const created = await store.create("dash-1", "<h1>v1</h1>", { author: "agent" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const v1Hash = created.value.contentHash;
+    expect(created.value.metadata).toEqual({ author: "agent" });
+
+    // Duplicate create → CONFLICT
+    const dup = await store.create("dash-1", "<h1>x</h1>");
+    expect(dup.ok).toBe(false);
+    if (!dup.ok) expect(dup.error.code).toBe("CONFLICT");
+
+    // CAS update with matching hash succeeds + new hash differs
+    const updated = await store.update("dash-1", "<h1>v2</h1>", v1Hash);
+    expect(updated.ok).toBe(true);
+    if (!updated.ok) return;
+    expect(updated.value.contentHash).not.toBe(v1Hash);
+
+    // CAS update with stale hash → CONFLICT (precondition failed)
+    const stale = await store.update("dash-1", "<h1>v3</h1>", v1Hash);
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.error.code).toBe("CONFLICT");
+
+    // delete returns true once, false thereafter; subsequent get → NOT_FOUND
+    const del = await store.delete("dash-1");
+    expect(del).toEqual({ ok: true, value: true });
+    const missing = await store.get("dash-1");
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error.code).toBe("NOT_FOUND");
+  });
+
+  test("createCanvasSseManager — publish fans out, dead subscribers are reaped, close emits deleted", async () => {
+    const { createCanvasSseManager } = await import("@koi/gateway-canvas");
+    const sse = createCanvasSseManager({
+      maxSubscribersPerSurface: 8,
+      maxTotalSubscribers: 16,
+      keepAliveIntervalMs: 60_000,
+    });
+
+    try {
+      const decoder = new TextDecoder();
+      const live: string[] = [];
+      const liveResult = sse.subscribe("dash-1", (data) => {
+        live.push(decoder.decode(data));
+        return true;
+      });
+      expect(liveResult.ok).toBe(true);
+
+      // Dead subscriber (returns false) gets reaped on first publish
+      sse.subscribe("dash-1", () => false);
+      expect(sse.subscriberCount("dash-1")).toBe(2);
+
+      sse.publish("dash-1", { id: "1", event: "updated", data: '{"v":2}' });
+      expect(live).toHaveLength(1);
+      expect(live[0]).toBe('id: 1\nevent: updated\ndata: {"v":2}\n\n');
+      expect(sse.subscriberCount("dash-1")).toBe(1);
+
+      // close emits a "deleted" event then evicts everyone
+      sse.close("dash-1");
+      expect(live).toHaveLength(2);
+      expect(live[1]).toContain("event: deleted");
+      expect(live[1]).toContain('"surfaceId":"dash-1"');
+      expect(sse.totalSubscribers()).toBe(0);
+    } finally {
+      sse.dispose();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/governance-delegation — capability-token primitives
 // ---------------------------------------------------------------------------
 
