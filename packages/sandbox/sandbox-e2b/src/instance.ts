@@ -2,6 +2,9 @@ import type { SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from "
 import type { ProfileDefaults } from "./profile.js";
 import type { E2bRunOpts, E2bSdkSandbox } from "./types.js";
 
+/** Mirrors the default capture cap documented in `SandboxExecOptions.maxOutputBytes`. */
+const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
+
 function quoteArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
@@ -10,14 +13,26 @@ function joinCommand(command: string, args: readonly string[]): string {
   return [command, ...args].map(quoteArg).join(" ");
 }
 
-function abortedResult(durationMs: number): SandboxAdapterResult {
+/**
+ * Local guarantee for the `maxOutputBytes` contract: regardless of whether the
+ * SDK honoured the cap server-side, slice stdout/stderr down to the limit and
+ * report `truncated` so callers see consistent behaviour.
+ */
+function truncateOutput(
+  stdout: string,
+  stderr: string,
+  cap: number,
+  sdkTruncated: boolean | undefined,
+): { stdout: string; stderr: string; truncated: boolean } {
+  const encoder = new TextEncoder();
+  const stdoutBytes = encoder.encode(stdout).byteLength;
+  const stderrBytes = encoder.encode(stderr).byteLength;
+  const stdoutOver = stdoutBytes > cap;
+  const stderrOver = stderrBytes > cap;
   return {
-    exitCode: 130,
-    stdout: "",
-    stderr: "",
-    durationMs,
-    timedOut: false,
-    oomKilled: false,
+    stdout: stdoutOver ? stdout.slice(0, cap) : stdout,
+    stderr: stderrOver ? stderr.slice(0, cap) : stderr,
+    truncated: sdkTruncated === true || stdoutOver || stderrOver,
   };
 }
 
@@ -68,9 +83,15 @@ export function createE2bInstance(
             "does not advertise commands.supportsMaxOutputBytes=true.",
         );
       }
-
-      if (options?.signal?.aborted === true) {
-        return abortedResult(0);
+      if (options?.signal !== undefined && sdk.commands.supportsAbort !== true) {
+        // Fail-closed: returning before the remote command was actually killed
+        // would let callers retry while the original is still running, leading
+        // to duplicate side effects.
+        throw new Error(
+          "sandbox-e2b: SandboxExecOptions.signal was provided but the injected SDK " +
+            "does not advertise commands.supportsAbort=true. Without provider-side " +
+            "kill confirmation, abort cannot be honoured safely.",
+        );
       }
 
       const start = performance.now();
@@ -81,6 +102,7 @@ export function createE2bInstance(
           ? { ...(defaults.env ?? {}), ...(options?.env ?? {}) }
           : undefined;
       const mergedTimeout = options?.timeoutMs ?? defaults.timeoutMs;
+      const cap = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 
       const sdkOpts: E2bRunOpts = {
         ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -90,49 +112,41 @@ export function createE2bInstance(
         ...(options?.onStderr !== undefined ? { onStderr: options.onStderr } : {}),
         ...(options?.signal !== undefined ? { signal: options.signal } : {}),
         ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
-        ...(options?.maxOutputBytes !== undefined
-          ? { maxOutputBytes: options.maxOutputBytes }
-          : {}),
+        // Always forward a cap when the SDK supports it — applies the contract
+        // default even when the caller didn't ask for one. Server-side cap
+        // bounds bandwidth; local truncation below bounds memory regardless.
+        ...(sdk.commands.supportsMaxOutputBytes === true ? { maxOutputBytes: cap } : {}),
       };
 
-      const runPromise = sdk.commands.run(cmd, sdkOpts);
-
-      const signal = options?.signal;
       try {
-        let result: { exitCode: number; stdout: string; stderr: string; truncated?: boolean };
-        if (signal !== undefined) {
-          result = await new Promise<typeof result>((resolve, reject) => {
-            const onAbort = (): void => {
-              resolve({ exitCode: 130, stdout: "", stderr: "" });
-            };
-            signal.addEventListener("abort", onAbort, { once: true });
-            runPromise.then(
-              (r) => {
-                signal.removeEventListener("abort", onAbort);
-                resolve(r);
-              },
-              (e: unknown) => {
-                signal.removeEventListener("abort", onAbort);
-                reject(e instanceof Error ? e : new Error(String(e)));
-              },
-            );
-          });
-        } else {
-          result = await runPromise;
-        }
-
+        // Always await the SDK call. When `supportsAbort` is true the SDK is
+        // contractually required to settle this promise after the remote
+        // process is gone, so we never report cancellation before termination.
+        const result = await sdk.commands.run(cmd, sdkOpts);
         const durationMs = performance.now() - start;
-        if (signal?.aborted === true && result.exitCode === 130) {
-          return abortedResult(durationMs);
+        const capped = truncateOutput(result.stdout, result.stderr, cap, result.truncated);
+
+        if (options?.signal?.aborted === true) {
+          // SDK honoured the abort; surface the standard cancellation result
+          // rather than the SDK's exit code (which may be provider-specific).
+          return {
+            exitCode: 130,
+            stdout: capped.stdout,
+            stderr: capped.stderr,
+            durationMs,
+            timedOut: false,
+            oomKilled: false,
+            ...(capped.truncated ? { truncated: true } : {}),
+          };
         }
         return {
           exitCode: result.exitCode,
-          stdout: result.stdout,
-          stderr: result.stderr,
+          stdout: capped.stdout,
+          stderr: capped.stderr,
           durationMs,
           timedOut: false,
           oomKilled: false,
-          ...(result.truncated !== undefined ? { truncated: result.truncated } : {}),
+          ...(capped.truncated ? { truncated: true } : {}),
         };
       } catch (e: unknown) {
         const durationMs = performance.now() - start;

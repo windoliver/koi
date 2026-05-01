@@ -2,6 +2,8 @@ import type { SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from "
 import type { ProfileDefaults } from "./profile.js";
 import type { DaytonaRunOpts, DaytonaSdkSandbox } from "./types.js";
 
+const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
+
 function quoteArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
@@ -10,14 +12,19 @@ function joinCommand(command: string, args: readonly string[]): string {
   return [command, ...args].map(quoteArg).join(" ");
 }
 
-function abortedResult(durationMs: number): SandboxAdapterResult {
+function truncateOutput(
+  stdout: string,
+  stderr: string,
+  cap: number,
+  sdkTruncated: boolean | undefined,
+): { stdout: string; stderr: string; truncated: boolean } {
+  const encoder = new TextEncoder();
+  const stdoutOver = encoder.encode(stdout).byteLength > cap;
+  const stderrOver = encoder.encode(stderr).byteLength > cap;
   return {
-    exitCode: 130,
-    stdout: "",
-    stderr: "",
-    durationMs,
-    timedOut: false,
-    oomKilled: false,
+    stdout: stdoutOver ? stdout.slice(0, cap) : stdout,
+    stderr: stderrOver ? stderr.slice(0, cap) : stderr,
+    truncated: sdkTruncated === true || stdoutOver || stderrOver,
   };
 }
 
@@ -65,9 +72,12 @@ export function createDaytonaInstance(
             "does not advertise commands.supportsMaxOutputBytes=true.",
         );
       }
-
-      if (options?.signal?.aborted === true) {
-        return abortedResult(0);
+      if (options?.signal !== undefined && sdk.commands.supportsAbort !== true) {
+        throw new Error(
+          "sandbox-daytona: SandboxExecOptions.signal was provided but the injected SDK " +
+            "does not advertise commands.supportsAbort=true. Without provider-side " +
+            "kill confirmation, abort cannot be honoured safely.",
+        );
       }
 
       const start = performance.now();
@@ -78,6 +88,7 @@ export function createDaytonaInstance(
           ? { ...(defaults.env ?? {}), ...(options?.env ?? {}) }
           : undefined;
       const mergedTimeout = options?.timeoutMs ?? defaults.timeoutMs;
+      const cap = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 
       const sdkOpts: DaytonaRunOpts = {
         ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -87,49 +98,33 @@ export function createDaytonaInstance(
         ...(options?.onStderr !== undefined ? { onStderr: options.onStderr } : {}),
         ...(options?.signal !== undefined ? { signal: options.signal } : {}),
         ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
-        ...(options?.maxOutputBytes !== undefined
-          ? { maxOutputBytes: options.maxOutputBytes }
-          : {}),
+        ...(sdk.commands.supportsMaxOutputBytes === true ? { maxOutputBytes: cap } : {}),
       };
 
-      const runPromise = sdk.commands.run(cmd, sdkOpts);
-
-      const signal = options?.signal;
       try {
-        let result: { exitCode: number; stdout: string; stderr: string; truncated?: boolean };
-        if (signal !== undefined) {
-          result = await new Promise<typeof result>((resolve, reject) => {
-            const onAbort = (): void => {
-              resolve({ exitCode: 130, stdout: "", stderr: "" });
-            };
-            signal.addEventListener("abort", onAbort, { once: true });
-            runPromise.then(
-              (r) => {
-                signal.removeEventListener("abort", onAbort);
-                resolve(r);
-              },
-              (e: unknown) => {
-                signal.removeEventListener("abort", onAbort);
-                reject(e instanceof Error ? e : new Error(String(e)));
-              },
-            );
-          });
-        } else {
-          result = await runPromise;
-        }
-
+        const result = await sdk.commands.run(cmd, sdkOpts);
         const durationMs = performance.now() - start;
-        if (signal?.aborted === true && result.exitCode === 130) {
-          return abortedResult(durationMs);
+        const capped = truncateOutput(result.stdout, result.stderr, cap, result.truncated);
+
+        if (options?.signal?.aborted === true) {
+          return {
+            exitCode: 130,
+            stdout: capped.stdout,
+            stderr: capped.stderr,
+            durationMs,
+            timedOut: false,
+            oomKilled: false,
+            ...(capped.truncated ? { truncated: true } : {}),
+          };
         }
         return {
           exitCode: result.exitCode,
-          stdout: result.stdout,
-          stderr: result.stderr,
+          stdout: capped.stdout,
+          stderr: capped.stderr,
           durationMs,
           timedOut: false,
           oomKilled: false,
-          ...(result.truncated !== undefined ? { truncated: result.truncated } : {}),
+          ...(capped.truncated ? { truncated: true } : {}),
         };
       } catch (e: unknown) {
         const durationMs = performance.now() - start;

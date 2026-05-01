@@ -77,7 +77,9 @@ The hosted backend has no provider-side hook for filesystem allow/deny lists, ne
 
 ## Per-call exec capability gating
 
-`SandboxExecOptions.stdin` and `maxOutputBytes` are forwarded only when the injected SDK declares the matching capability flag (`commands.supportsStdin` / `commands.supportsMaxOutputBytes`). When absent, the adapter throws fail-closed.
+`SandboxExecOptions.stdin`, `maxOutputBytes`, and `signal` each gate on a matching SDK capability flag (`commands.supportsStdin` / `supportsMaxOutputBytes` / `supportsAbort`). Without the flag, callers that supply the corresponding field see a fail-closed error.
+
+A 1 MB default cap is always forwarded when `supportsMaxOutputBytes=true`, and returned `stdout` / `stderr` are truncated locally to the cap with `truncated=true` so memory is bounded regardless of SDK behaviour.
 
 `readFile` requires `sdk.files.readBytes` for binary-safe reads. `writeFile` rejects non-UTF-8 bytes when the SDK is text-only.
 

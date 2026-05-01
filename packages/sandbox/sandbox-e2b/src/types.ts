@@ -45,8 +45,16 @@ export interface E2bSdkSandbox {
     readonly run: (cmd: string, opts?: E2bRunOpts) => Promise<E2bRunResult>;
     /** Capability flag — `true` when the SDK honours `E2bRunOpts.stdin`. */
     readonly supportsStdin?: boolean;
-    /** Capability flag — `true` when the SDK honours `maxOutputBytes`. */
+    /** Capability flag — `true` when the SDK honours `maxOutputBytes` server-side. */
     readonly supportsMaxOutputBytes?: boolean;
+    /**
+     * Capability flag — `true` when the SDK actively kills the remote command
+     * once the forwarded `AbortSignal` aborts (and the returned promise only
+     * resolves after termination is confirmed). Without this flag, calls that
+     * supply a signal are rejected fail-closed — silently returning before
+     * remote work has stopped would let callers double-execute side effects.
+     */
+    readonly supportsAbort?: boolean;
   };
   readonly files: {
     readonly read: (path: string) => Promise<string>;

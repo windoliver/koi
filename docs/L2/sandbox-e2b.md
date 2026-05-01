@@ -78,9 +78,11 @@ Errors include the unsupported field list so callers know exactly what policy wa
 
 ## Per-call exec capability gating
 
-`SandboxExecOptions.stdin` and `maxOutputBytes` are forwarded only when the injected SDK declares the matching capability flag (`commands.supportsStdin` / `commands.supportsMaxOutputBytes`). When the flag is absent the adapter throws — silently dropping these fields would mean commands hang waiting for stdin or emit unbounded output despite the caller's cap.
+`SandboxExecOptions.stdin`, `maxOutputBytes`, and `signal` each gate on a matching SDK capability flag (`commands.supportsStdin` / `supportsMaxOutputBytes` / `supportsAbort`). When a flag is absent and the caller supplied that field, the adapter throws fail-closed — the alternative would be silently dropping stdin (commands hang), letting output grow unbounded, or returning before the remote process has actually been killed (duplicate side effects on retry).
 
-`readFile` requires `sdk.files.readBytes`. The text-only fallback would re-encode the SDK's string through `TextEncoder` and corrupt non-UTF-8 content, so we refuse rather than weaken the byte-oriented contract. `writeFile` accepts UTF-8 payloads on text-only SDKs and rejects non-UTF-8 input fail-closed.
+A 1 MB default cap (mirroring `SandboxExecOptions`) is forwarded whenever `supportsMaxOutputBytes=true`, even if the caller doesn't ask for one. Returned `stdout` / `stderr` are also truncated locally to the cap so memory is bounded regardless of SDK behaviour, with `truncated=true` set when slicing kicks in.
+
+`readFile` requires `sdk.files.readBytes` for binary-safe reads. `writeFile` accepts UTF-8 payloads on text-only SDKs and rejects non-UTF-8 input fail-closed.
 
 ---
 

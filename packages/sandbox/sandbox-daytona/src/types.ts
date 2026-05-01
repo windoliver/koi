@@ -32,6 +32,12 @@ export interface DaytonaSdkSandbox {
     readonly run: (cmd: string, opts?: DaytonaRunOpts) => Promise<DaytonaRunResult>;
     readonly supportsStdin?: boolean;
     readonly supportsMaxOutputBytes?: boolean;
+    /**
+     * `true` when the SDK kills the remote command on `AbortSignal.abort()`
+     * and the returned promise only resolves after termination. Without this
+     * flag, calls that supply a signal are rejected fail-closed.
+     */
+    readonly supportsAbort?: boolean;
   };
   readonly files: {
     readonly read: (path: string) => Promise<string>;

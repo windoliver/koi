@@ -23,13 +23,37 @@ describe("createDaytonaInstance", () => {
     expect(call?.opts?.timeoutMs).toBe(1000);
   });
 
-  test("exec returns 130 immediately when signal pre-aborted", async () => {
+  test("exec returns exitCode 130 when SDK observes the abort", async () => {
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        supportsAbort: true,
+        run: async (
+          _cmd: string,
+          opts?: import("./types.js").DaytonaRunOpts,
+        ): Promise<import("./types.js").DaytonaRunResult> => {
+          await new Promise<void>((resolve) => {
+            if (opts?.signal?.aborted === true) resolve();
+            else opts?.signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          return { exitCode: 137, stdout: "", stderr: "" };
+        },
+      },
+    };
+    const instance = createDaytonaInstance(sdk);
+    const ac = new AbortController();
+    queueMicrotask(() => ac.abort());
+    const result = await instance.exec("ls", [], { signal: ac.signal });
+    expect(result.exitCode).toBe(130);
+  });
+
+  test("exec rejects fail-closed when signal provided but SDK has no supportsAbort", async () => {
     const sdk = createFakeSandbox();
     const instance = createDaytonaInstance(sdk);
     const ac = new AbortController();
-    ac.abort();
-    const result = await instance.exec("ls", [], { signal: ac.signal });
-    expect(result.exitCode).toBe(130);
+    await expect(instance.exec("ls", [], { signal: ac.signal })).rejects.toThrow(/supportsAbort/);
     expect(sdk.runCalls).toHaveLength(0);
   });
 
@@ -80,30 +104,13 @@ describe("createDaytonaInstance", () => {
     expect(sdk.runCalls[0]?.cmd).toBe("'/bin/with space; rm -rf /'");
   });
 
-  test("exec forwards AbortSignal to SDK opts", async () => {
-    const sdk = createFakeSandbox();
+  test("exec forwards AbortSignal to SDK opts when supportsAbort is true", async () => {
+    const base = createFakeSandbox();
+    const sdk = { ...base, commands: { ...base.commands, supportsAbort: true } };
     const instance = createDaytonaInstance(sdk);
     const ac = new AbortController();
     await instance.exec("ls", [], { signal: ac.signal });
-    expect(sdk.runCalls[0]?.opts?.signal).toBe(ac.signal);
-  });
-
-  test("exec resolves promptly with exit 130 when aborted mid-flight", async () => {
-    let resolveRun!: (v: { exitCode: number; stdout: string; stderr: string }) => void;
-    const sdk = createFakeSandbox({
-      runImpl: () =>
-        new Promise((resolve) => {
-          resolveRun = resolve;
-        }),
-    });
-    const instance = createDaytonaInstance(sdk);
-    const ac = new AbortController();
-    const p = instance.exec("ls", [], { signal: ac.signal });
-    queueMicrotask(() => ac.abort());
-    const result = await p;
-    expect(result.exitCode).toBe(130);
-    expect(result.timedOut).toBe(false);
-    resolveRun({ exitCode: 0, stdout: "", stderr: "" });
+    expect(base.runCalls[0]?.opts?.signal).toBe(ac.signal);
   });
 
   test("destroy stays retryable after a transient SDK failure", async () => {
@@ -143,6 +150,34 @@ describe("createDaytonaInstance", () => {
     await expect(instance.exec("ls", [], { maxOutputBytes: 1024 })).rejects.toThrow(
       /supportsMaxOutputBytes/,
     );
+  });
+
+  test("exec applies the contract default 1MB cap when SDK supports maxOutputBytes", async () => {
+    const base = createFakeSandbox();
+    const sdk = { ...base, commands: { ...base.commands, supportsMaxOutputBytes: true } };
+    const instance = createDaytonaInstance(sdk);
+    await instance.exec("ls", []);
+    expect(base.runCalls[0]?.opts?.maxOutputBytes).toBe(1_000_000);
+  });
+
+  test("exec truncates oversized SDK output locally and reports truncated=true", async () => {
+    const big = "a".repeat(1_500_000);
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        run: async (): Promise<{ exitCode: number; stdout: string; stderr: string }> => ({
+          exitCode: 0,
+          stdout: big,
+          stderr: "",
+        }),
+      },
+    };
+    const instance = createDaytonaInstance(sdk);
+    const result = await instance.exec("ls", []);
+    expect(result.truncated).toBe(true);
+    expect(result.stdout.length).toBe(1_000_000);
   });
 
   test("exec surfaces SDK truncated flag when present", async () => {
