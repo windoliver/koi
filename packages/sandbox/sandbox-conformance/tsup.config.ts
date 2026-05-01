@@ -2,6 +2,7 @@ import { defineConfig } from "tsup";
 
 export default defineConfig({
   entry: ["src/index.ts"],
+  external: ["bun:test"],
   format: ["esm"],
   dts: {
     compilerOptions: {
