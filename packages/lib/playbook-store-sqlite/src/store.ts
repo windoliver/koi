@@ -700,6 +700,9 @@ function createProposalStore(db: Database): PlaybookProposalStore {
   const selectStructuredHeadVersion = db.query(
     "SELECT version FROM structured_playbooks WHERE id = ?",
   );
+  const selectStructuredLineageMaxVersion = db.query(
+    "SELECT MAX(version) AS v FROM structured_playbook_versions WHERE playbook_id = ?",
+  );
 
   return {
     recordProposal: async (p) => {
@@ -718,17 +721,30 @@ function createProposalStore(db: Database): PlaybookProposalStore {
         );
         if (result.changes > 0) {
           // baseVersion is the documented optimistic-concurrency anchor.
-          // Reject stale proposals whose anchor is no longer the live head
-          // — the schema FK only proves the version existed at some point,
-          // not that it is current. We check AFTER the insert (instead of
+          // Reject stale proposals whose anchor is no longer the effective
+          // head — the schema FK only proves the version existed at some
+          // point, not that it is current. We check AFTER the insert (not
           // before) so retries land in the content-compare branch below
-          // even after the head advanced; only fresh inserts pay this cost.
+          // even after the head advances; only fresh inserts pay this cost.
+          // When the mutable head row is missing (partial corruption), fall
+          // back to MAX(lineage version) — same effective-head policy that
+          // structuredPlaybooks.save() uses, so proposal capture is not
+          // wedged by the exact missing-head scenario the store self-heals.
           const headRow = selectStructuredHeadVersion.get(p.playbookId) as {
             readonly version: number;
           } | null;
-          if (headRow === null || headRow.version !== p.baseVersion) {
+          let effectiveHead: number | null;
+          if (headRow !== null) {
+            effectiveHead = headRow.version;
+          } else {
+            const lineageRow = selectStructuredLineageMaxVersion.get(p.playbookId) as {
+              readonly v: number | null;
+            } | null;
+            effectiveHead = lineageRow?.v ?? null;
+          }
+          if (effectiveHead === null || effectiveHead !== p.baseVersion) {
             throw new Error(
-              `proposal ${p.id} baseVersion ${String(p.baseVersion)} does not match current head ${headRow === null ? "(missing)" : String(headRow.version)} for playbook ${p.playbookId}`,
+              `proposal ${p.id} baseVersion ${String(p.baseVersion)} does not match current head ${effectiveHead === null ? "(missing)" : String(effectiveHead)} for playbook ${p.playbookId}`,
             );
           }
         }

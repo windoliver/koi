@@ -1331,6 +1331,20 @@ describe("createSqlitePlaybookStore — append-only invariants", () => {
     store.close();
   });
 
+  test("recordProposal accepts baseVersion against lineage MAX when head row is missing", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await seedAnchor(store, "pb-A", 1);
+    store.close();
+    // Simulate partial corruption: head row gone but lineage intact.
+    const surgery = new Database(dbPath);
+    surgery.exec("DELETE FROM structured_playbooks WHERE id = 'pb-A'");
+    surgery.close();
+    const reopened = createSqlitePlaybookStore({ path: dbPath });
+    await reopened.proposals.recordProposal(makeProposal("p-1", "pb-A"));
+    expect((await reopened.proposals.getProposal("p-1"))?.baseVersion).toBe(1);
+    reopened.close();
+  });
+
   test("recordProposal accepts byte-identical idempotent retry", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
     await seedAnchor(store, "pb-A");
