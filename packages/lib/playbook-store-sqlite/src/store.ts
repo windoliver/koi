@@ -6,8 +6,14 @@
  */
 
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+
+function sha256Hex(input: string): string {
+  return createHash("sha256").update(input).digest("hex");
+}
+
 import type {
   Playbook,
   PlaybookEvaluation,
@@ -484,11 +490,15 @@ interface TrajectoryRow {
 
 function createTrajectoryStore(db: Database): TrajectoryStore {
   // Trajectory rows are an append-only audit log keyed by per-session seq, a
-  // monotonic counter assigned at append time. The legacy PK
-  // (session_id, turn_index, identifier) collapsed legitimate same-tool
-  // repeats inside a single turn — three `fs.read` calls in turn 0 must
-  // round-trip as three rows. Idempotency is the caller's responsibility:
-  // wrap append() in your own transaction or use a fresh batch per attempt.
+  // monotonic counter assigned at append time. Multiple same-tool calls
+  // within a single turn round-trip as distinct rows.
+  //
+  // Batch dedup: `trajectory_append_log` records a content hash of every
+  // committed batch. A retry that presents the byte-identical entries array
+  // (after canonicalization) short-circuits as a no-op, so a caller in
+  // unknown-commit-state can safely retry without duplicating audit
+  // evidence. A genuinely repeated batch with the same bytes is treated as
+  // the same event.
   const insert = db.prepare(`
     INSERT INTO trajectory_entries
       (session_id, seq, turn_index, timestamp, kind, identifier, outcome, duration_ms, metadata, bullet_ids)
@@ -503,13 +513,38 @@ function createTrajectoryStore(db: Database): TrajectoryStore {
   const selectSessions = db.query(
     "SELECT DISTINCT session_id FROM trajectory_entries ORDER BY session_id LIMIT ?",
   );
+  const insertBatchHash = db.prepare(
+    "INSERT INTO trajectory_append_log (session_id, batch_hash, appended_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+  );
 
   return {
     append: async (sessionId, entries) => {
-      // .immediate() acquires RESERVED at BEGIN, so the MAX(seq) read and the
-      // ensuing inserts are serialized against peer writers — concurrent
-      // appends to the same session can't race on the seq counter.
+      if (entries.length === 0) return;
+      // Deterministic content hash over the canonicalized batch. Any
+      // difference in the entries array (order, value, presence) yields a
+      // different hash, so legitimate "different" batches are not collapsed.
+      const batchHash = sha256Hex(
+        canonicalJson(
+          entries.map((e) => ({
+            turnIndex: e.turnIndex,
+            timestamp: e.timestamp,
+            kind: e.kind,
+            identifier: e.identifier,
+            outcome: e.outcome,
+            durationMs: e.durationMs,
+            metadata: e.metadata ?? null,
+            bulletIds: e.bulletIds ?? null,
+          })),
+        ),
+      );
+      // .immediate() acquires RESERVED at BEGIN so the dedup check, MAX(seq)
+      // read, and ensuing inserts all serialize against peer writers.
       db.transaction(() => {
+        const claim = insertBatchHash.run(sessionId, batchHash, Date.now());
+        if (claim.changes === 0) {
+          // Same batch already committed — short-circuit as no-op.
+          return;
+        }
         const maxRow = selectMaxSeq.get(sessionId) as { readonly s: number | null } | null;
         let next = (maxRow?.s ?? 0) + 1;
         for (const e of entries) {

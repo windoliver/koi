@@ -99,7 +99,8 @@ CREATE TABLE structured_playbook_versions (
   PRIMARY KEY (playbook_id, version)
 );
 
--- Append-only proposals
+-- Append-only proposals. Composite FK to structured_playbook_versions
+-- ensures a proposal can only claim ancestry on a real committed snapshot.
 CREATE TABLE playbook_proposals (
   id                       TEXT PRIMARY KEY,
   playbook_id              TEXT NOT NULL,
@@ -107,9 +108,22 @@ CREATE TABLE playbook_proposals (
   operations               TEXT NOT NULL,   -- JSON
   source_trajectory_range  TEXT NOT NULL,   -- JSON
   reflection               TEXT NOT NULL,   -- JSON
-  created_at               INTEGER NOT NULL
+  created_at               INTEGER NOT NULL,
+  FOREIGN KEY (playbook_id, base_version)
+    REFERENCES structured_playbook_versions(playbook_id, version)
+    ON DELETE RESTRICT
 );
 CREATE INDEX idx_playbook_proposals_playbook ON playbook_proposals(playbook_id, created_at);
+
+-- Per-session dedup log. append() hashes the canonicalized batch and
+-- short-circuits when the same hash is already recorded for this session,
+-- so a caller in unknown-commit-state can safely retry an append.
+CREATE TABLE trajectory_append_log (
+  session_id   TEXT    NOT NULL,
+  batch_hash   TEXT    NOT NULL,
+  appended_at  INTEGER NOT NULL,
+  PRIMARY KEY (session_id, batch_hash)
+);
 
 -- Append-only evaluations (one per proposal_id, but enforced at app layer)
 CREATE TABLE playbook_evaluations (

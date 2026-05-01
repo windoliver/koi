@@ -85,6 +85,17 @@ function makeEntry(turnIndex: number, identifier: string): TrajectoryEntry {
   };
 }
 
+// Seed the structured_playbook_versions row that playbook_proposals' FK
+// requires. Tests that record proposals must call this first for the
+// (playbookId, baseVersion=1) anchor.
+async function seedAnchor(
+  store: ReturnType<typeof createSqlitePlaybookStore>,
+  playbookId: string,
+  version = 1,
+): Promise<void> {
+  await store.structuredPlaybooks.save(spb({ id: playbookId, version }));
+}
+
 function makeProposal(id: string, playbookId: string): PlaybookProposal {
   return {
     id,
@@ -321,6 +332,8 @@ describe("createSqlitePlaybookStore — trajectories", () => {
 describe("createSqlitePlaybookStore — proposals", () => {
   test("records, fetches, lists by playbookId", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
+    await seedAnchor(store, "pb-A");
+    await seedAnchor(store, "pb-B");
     await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
     await store.proposals.recordProposal(makeProposal("p-2", "pb-A"));
     await store.proposals.recordProposal(makeProposal("p-3", "pb-B"));
@@ -335,6 +348,7 @@ describe("createSqlitePlaybookStore — proposals", () => {
 
   test("records evaluation + roundtrips reflection JSON", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
+    await seedAnchor(store, "pb-A");
     await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
     await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
     const got = await store.proposals.getProposal("p-1");
@@ -423,6 +437,16 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
         metrics TEXT NOT NULL, notes TEXT, evaluated_at INTEGER NOT NULL
       )
     `);
+    // structured_playbook_versions row anchors the proposal so v3 doesn't
+    // quarantine it.
+    seed.run(`
+      CREATE TABLE structured_playbook_versions (
+        playbook_id TEXT NOT NULL, version INTEGER NOT NULL,
+        snapshot TEXT NOT NULL, committed_at INTEGER NOT NULL,
+        PRIMARY KEY (playbook_id, version)
+      )
+    `);
+    seed.run("INSERT INTO structured_playbook_versions VALUES ('pb-A',1,'{}',0)");
     seed.run("INSERT INTO playbook_proposals VALUES ('p-1','pb-A',1,'[]','{}','{}',100)");
     // Valid winner — duplicate on proposal p-1 with later evaluated_at:
     seed.run("INSERT INTO playbook_evaluations VALUES ('e-old','p-1','reject','{}',NULL,100)");
@@ -443,7 +467,7 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
     const userVersion = after.query("PRAGMA user_version").get() as { user_version: number };
     after.close();
 
-    expect(userVersion.user_version).toBe(2);
+    expect(userVersion.user_version).toBe(3);
     expect(rows.length).toBe(1);
     expect(rows[0]?.id).toBe("e-new");
     expect(rows[0]?.verdict).toBe("promote");
@@ -539,6 +563,7 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
     seed.close();
 
     const store = createSqlitePlaybookStore({ path: dbPath });
+    await seedAnchor(store, "pb-A");
     await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
     await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
     // Constraint must now fire on duplicate proposal_id from the migrated table.
@@ -593,7 +618,7 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
       .all() as readonly { session_id: string; seq: number }[];
     const userVersion = after.query("PRAGMA user_version").get() as { user_version: number };
     after.close();
-    expect(userVersion.user_version).toBe(2);
+    expect(userVersion.user_version).toBe(3);
     expect(seqRows.map((r) => `${r.session_id}:${String(r.seq)}`)).toEqual([
       "s1:1",
       "s1:2",
@@ -655,6 +680,7 @@ describe("createSqlitePlaybookStore — evaluation lineage integrity", () => {
 
   test("recordEvaluation rejects second evaluation for same proposal", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
+    await seedAnchor(store, "pb-A");
     await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
     await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
     // Different id, same proposal_id, different verdict — must reject.
@@ -852,6 +878,7 @@ describe("createSqlitePlaybookStore — rollback workflow", () => {
 describe("createSqlitePlaybookStore — canonical JSON idempotency", () => {
   test("recordProposal accepts retry with key-reordered payload", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
+    await seedAnchor(store, "pb-A");
     const original = makeProposal("p-1", "pb-A");
     await store.proposals.recordProposal(original);
 
@@ -917,8 +944,31 @@ describe("createSqlitePlaybookStore — append-only invariants", () => {
     store.close();
   });
 
+  test("trajectory append dedups byte-identical batch retry", async () => {
+    // Regression: a caller in unknown-commit-state must be able to retry the
+    // same batch without duplicating audit evidence.
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    const batch = [makeEntry(0, "x"), makeEntry(1, "y")];
+    await store.trajectories.append("s1", batch);
+    await store.trajectories.append("s1", batch);
+    const back = await store.trajectories.getSession("s1");
+    expect(back.map((e) => e.identifier)).toEqual(["x", "y"]);
+    store.close();
+  });
+
+  test("recordProposal rejects ancestry on nonexistent playbook version", async () => {
+    // Regression: a proposal can't claim to be derived from a playbook
+    // version that was never committed. Composite FK enforces this.
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await expect(
+      store.proposals.recordProposal(makeProposal("p-1", "pb-missing")),
+    ).rejects.toThrow();
+    store.close();
+  });
+
   test("recordProposal rejects duplicate id with different content", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
+    await seedAnchor(store, "pb-A");
     await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
     await expect(
       store.proposals.recordProposal({
@@ -932,6 +982,7 @@ describe("createSqlitePlaybookStore — append-only invariants", () => {
 
   test("recordProposal accepts byte-identical idempotent retry", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
+    await seedAnchor(store, "pb-A");
     const p = makeProposal("p-1", "pb-A");
     await store.proposals.recordProposal(p);
     await store.proposals.recordProposal(p);
@@ -941,6 +992,7 @@ describe("createSqlitePlaybookStore — append-only invariants", () => {
 
   test("recordEvaluation rejects duplicate id with different verdict", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
+    await seedAnchor(store, "pb-A");
     await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
     await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
     await expect(
@@ -960,6 +1012,7 @@ describe("createSqlitePlaybookStore — crash safety", () => {
     await w.structuredPlaybooks.save(spb({ id: "s1", version: 1 }));
     await w.structuredPlaybooks.save(spb({ id: "s1", version: 2, title: "v2" }));
     await w.trajectories.append("sess", [makeEntry(0, "x")]);
+    await seedAnchor(w, "pb1");
     await w.proposals.recordProposal(makeProposal("p-1", "pb1"));
     w.close();
 

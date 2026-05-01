@@ -16,8 +16,17 @@ import type { Database } from "bun:sqlite";
  *     row, losing replay/audit fidelity. Legacy rows are migrated by
  *     assigning seq = ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY
  *     turn_index, identifier).
+ *
+ * v3: playbook_proposals gains composite FK
+ *     (playbook_id, base_version) -> structured_playbook_versions(playbook_id, version)
+ *     so a proposal can never claim ancestry on a nonexistent playbook
+ *     version. Without this anchor, downstream promotion/rollback can't prove
+ *     what snapshot was actually reviewed. Adds new
+ *     `trajectory_append_log` table for caller-transparent dedup of
+ *     byte-identical replayed batches: append() hashes the entries and
+ *     short-circuits when the same hash was already recorded for this session.
  */
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 
 export function applyPragmas(db: Database, durability: "process" | "os"): void {
   db.run("PRAGMA journal_mode = WAL");
@@ -94,6 +103,10 @@ export function applySchema(db: Database): void {
     )
   `);
 
+  // Composite FK (playbook_id, base_version) -> structured_playbook_versions
+  // anchors every proposal to a real committed playbook snapshot. Without
+  // this, downstream promotion/rollback couldn't prove what snapshot was
+  // reviewed.
   db.run(`
     CREATE TABLE IF NOT EXISTS playbook_proposals (
       id                      TEXT    PRIMARY KEY,
@@ -102,12 +115,27 @@ export function applySchema(db: Database): void {
       operations              TEXT    NOT NULL,
       source_trajectory_range TEXT    NOT NULL,
       reflection              TEXT    NOT NULL,
-      created_at              INTEGER NOT NULL
+      created_at              INTEGER NOT NULL,
+      FOREIGN KEY (playbook_id, base_version)
+        REFERENCES structured_playbook_versions(playbook_id, version)
+        ON DELETE RESTRICT
     )
   `);
   db.run(
     "CREATE INDEX IF NOT EXISTS idx_playbook_proposals_playbook ON playbook_proposals(playbook_id, created_at)",
   );
+
+  // Per-session batch dedup: idempotent retry of the same byte-identical
+  // entries array short-circuits without inserting duplicates. Caller can
+  // safely retry an append after an unknown-commit-state failure.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS trajectory_append_log (
+      session_id   TEXT    NOT NULL,
+      batch_hash   TEXT    NOT NULL,
+      appended_at  INTEGER NOT NULL,
+      PRIMARY KEY (session_id, batch_hash)
+    )
+  `);
 
   // FK to playbook_proposals.id rejects orphan evaluations (must reference an
   // existing proposal). UNIQUE(proposal_id) enforces one evaluation per
@@ -133,6 +161,9 @@ export function applySchema(db: Database): void {
   }
   if (fromVersion < 2) {
     migrateTrajectoriesToV2(db);
+  }
+  if (fromVersion < 3) {
+    migrateProposalsToV3(db);
   }
   if (fromVersion < CURRENT_SCHEMA_VERSION) {
     db.run(`PRAGMA user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
@@ -372,4 +403,167 @@ function migrateTrajectoriesToV2(db: Database): void {
       );
     }
   })();
+}
+
+interface LegacyProposalRow {
+  readonly id: string;
+  readonly playbook_id: string;
+  readonly base_version: number;
+  readonly operations: string;
+  readonly source_trajectory_range: string;
+  readonly reflection: string;
+  readonly created_at: number;
+}
+
+/**
+ * Migrate playbook_proposals to add composite FK
+ * (playbook_id, base_version) -> structured_playbook_versions(playbook_id, version).
+ *
+ * Orphan proposals (no matching version row) are quarantined to
+ * `playbook_proposals_quarantine_v3` with a reason; the new table accepts
+ * only proposals whose lineage anchor exists. No-op when the table already
+ * has the FK or doesn't exist.
+ */
+function migrateProposalsToV3(db: Database): void {
+  const tableInfo = db
+    .query("SELECT name FROM sqlite_master WHERE type='table' AND name='playbook_proposals'")
+    .get() as { readonly name: string } | null;
+  if (tableInfo === null) return;
+  if (proposalsLineageFkSatisfied(db)) return;
+
+  const versionRows = db
+    .query("SELECT playbook_id, version FROM structured_playbook_versions")
+    .all() as readonly { readonly playbook_id: string; readonly version: number }[];
+  const validAnchors = new Set<string>(
+    versionRows.map((r) => `${r.playbook_id}::${String(r.version)}`),
+  );
+  const legacy = db.query("SELECT * FROM playbook_proposals").all() as readonly LegacyProposalRow[];
+
+  const winners: LegacyProposalRow[] = [];
+  const quarantine: LegacyProposalRow[] = [];
+  for (const r of legacy) {
+    if (validAnchors.has(`${r.playbook_id}::${String(r.base_version)}`)) {
+      winners.push(r);
+    } else {
+      quarantine.push(r);
+    }
+  }
+
+  db.transaction(() => {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS playbook_proposals_quarantine_v3 (
+        id                      TEXT    NOT NULL,
+        playbook_id             TEXT    NOT NULL,
+        base_version            INTEGER NOT NULL,
+        operations              TEXT    NOT NULL,
+        source_trajectory_range TEXT    NOT NULL,
+        reflection              TEXT    NOT NULL,
+        created_at              INTEGER NOT NULL,
+        reason                  TEXT    NOT NULL,
+        quarantined_at          INTEGER NOT NULL
+      )
+    `);
+    const qInsert = db.prepare(
+      "INSERT INTO playbook_proposals_quarantine_v3 (id, playbook_id, base_version, operations, source_trajectory_range, reflection, created_at, reason, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    const now = Date.now();
+    for (const r of quarantine) {
+      qInsert.run(
+        r.id,
+        r.playbook_id,
+        r.base_version,
+        r.operations,
+        r.source_trajectory_range,
+        r.reflection,
+        r.created_at,
+        "orphan: (playbook_id, base_version) not in structured_playbook_versions",
+        now,
+      );
+    }
+
+    // Drop dependent FK from playbook_evaluations first by recreating after.
+    // playbook_evaluations FK to playbook_proposals.id, so we must temporarily
+    // detach it. Simpler: drop evals, rebuild proposals with new FK, then
+    // recreate evals from saved rows.
+    const savedEvals = db
+      .query(
+        "SELECT id, proposal_id, verdict, metrics, notes, evaluated_at FROM playbook_evaluations",
+      )
+      .all() as readonly {
+      readonly id: string;
+      readonly proposal_id: string;
+      readonly verdict: string;
+      readonly metrics: string;
+      readonly notes: string | null;
+      readonly evaluated_at: number;
+    }[];
+    db.run("DROP TABLE IF EXISTS playbook_evaluations");
+
+    db.run("DROP TABLE playbook_proposals");
+    db.run(`
+      CREATE TABLE playbook_proposals (
+        id                      TEXT    PRIMARY KEY,
+        playbook_id             TEXT    NOT NULL,
+        base_version            INTEGER NOT NULL,
+        operations              TEXT    NOT NULL,
+        source_trajectory_range TEXT    NOT NULL,
+        reflection              TEXT    NOT NULL,
+        created_at              INTEGER NOT NULL,
+        FOREIGN KEY (playbook_id, base_version)
+          REFERENCES structured_playbook_versions(playbook_id, version)
+          ON DELETE RESTRICT
+      )
+    `);
+    db.run(
+      "CREATE INDEX IF NOT EXISTS idx_playbook_proposals_playbook ON playbook_proposals(playbook_id, created_at)",
+    );
+    const propInsert = db.prepare(
+      "INSERT INTO playbook_proposals (id, playbook_id, base_version, operations, source_trajectory_range, reflection, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    );
+    for (const r of winners) {
+      propInsert.run(
+        r.id,
+        r.playbook_id,
+        r.base_version,
+        r.operations,
+        r.source_trajectory_range,
+        r.reflection,
+        r.created_at,
+      );
+    }
+
+    db.run(`
+      CREATE TABLE playbook_evaluations (
+        id           TEXT    PRIMARY KEY,
+        proposal_id  TEXT    NOT NULL UNIQUE
+                     REFERENCES playbook_proposals(id) ON DELETE RESTRICT,
+        verdict      TEXT    NOT NULL,
+        metrics      TEXT    NOT NULL,
+        notes        TEXT,
+        evaluated_at INTEGER NOT NULL
+      )
+    `);
+    const validProposalIds = new Set(winners.map((w) => w.id));
+    const evalInsert = db.prepare(
+      "INSERT INTO playbook_evaluations (id, proposal_id, verdict, metrics, notes, evaluated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    );
+    for (const e of savedEvals) {
+      if (validProposalIds.has(e.proposal_id)) {
+        evalInsert.run(e.id, e.proposal_id, e.verdict, e.metrics, e.notes, e.evaluated_at);
+      }
+    }
+  })();
+}
+
+function proposalsLineageFkSatisfied(db: Database): boolean {
+  const fks = db.query("PRAGMA foreign_key_list(playbook_proposals)").all() as readonly {
+    readonly table: string;
+    readonly from: string;
+    readonly to: string;
+  }[];
+  // Composite FKs appear as multiple rows with the same `id`; we only need
+  // to confirm both columns target structured_playbook_versions.
+  const targets = fks.filter((fk) => fk.table === "structured_playbook_versions");
+  const fromCols = new Set(targets.map((fk) => fk.from));
+  return fromCols.has("playbook_id") && fromCols.has("base_version");
 }
