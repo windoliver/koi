@@ -667,6 +667,86 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
       ),
     ).toBe(true);
   });
+
+  test("v3 quarantines evaluations attached to orphaned proposals (no audit loss)", async () => {
+    // Seed a v0 DB with a proposal whose anchor (pb-X, 1) does NOT exist in
+    // structured_playbook_versions, plus an evaluation attached to it. After
+    // v3 migration both must be quarantined — neither is silently dropped.
+    const seed = new Database(dbPath, { create: true });
+    seed.run("PRAGMA user_version = 0");
+    seed.run(`
+      CREATE TABLE structured_playbook_versions (
+        playbook_id TEXT NOT NULL, version INTEGER NOT NULL,
+        snapshot TEXT NOT NULL, committed_at INTEGER NOT NULL,
+        PRIMARY KEY (playbook_id, version)
+      )
+    `);
+    seed.run(`
+      CREATE TABLE playbook_proposals (
+        id TEXT PRIMARY KEY, playbook_id TEXT NOT NULL, base_version INTEGER NOT NULL,
+        operations TEXT NOT NULL, source_trajectory_range TEXT NOT NULL,
+        reflection TEXT NOT NULL, created_at INTEGER NOT NULL
+      )
+    `);
+    seed.run(`
+      CREATE TABLE playbook_evaluations (
+        id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, verdict TEXT NOT NULL,
+        metrics TEXT NOT NULL, notes TEXT, evaluated_at INTEGER NOT NULL
+      )
+    `);
+    seed.run("INSERT INTO playbook_proposals VALUES ('p-orph','pb-X',1,'[]','{}','{}',100)");
+    seed.run("INSERT INTO playbook_evaluations VALUES ('e-orph','p-orph','promote','{}',NULL,200)");
+    seed.close();
+
+    const migrated = createSqlitePlaybookStore({ path: dbPath });
+    migrated.close();
+
+    const after = new Database(dbPath, { readonly: true });
+    const qProps = after
+      .query("SELECT id, reason FROM playbook_proposals_quarantine_v3")
+      .all() as readonly { id: string; reason: string }[];
+    const qEvals = after
+      .query("SELECT id, reason FROM playbook_evaluations_quarantine_v3")
+      .all() as readonly { id: string; reason: string }[];
+    after.close();
+    expect(qProps.find((q) => q.id === "p-orph")).toBeDefined();
+    expect(qEvals.find((q) => q.id === "e-orph")?.reason).toContain("proposal quarantined");
+  });
+
+  test("v2 trajectory migration preserves legacy insertion order (rowid, not identifier)", async () => {
+    // Two same-turn rows whose alphabetic identifier order DIFFERS from
+    // their original insertion order. The migration must use rowid (i.e.
+    // append order) to assign seq, otherwise replay sees fabricated order.
+    const seed = new Database(dbPath, { create: true });
+    seed.run("PRAGMA user_version = 1");
+    seed.run(`
+      CREATE TABLE trajectory_entries (
+        session_id  TEXT    NOT NULL,
+        turn_index  INTEGER NOT NULL,
+        timestamp   INTEGER NOT NULL,
+        kind        TEXT    NOT NULL,
+        identifier  TEXT    NOT NULL,
+        outcome     TEXT    NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        metadata    TEXT,
+        bullet_ids  TEXT,
+        PRIMARY KEY (session_id, turn_index, identifier)
+      )
+    `);
+    // Insert "z" before "a" — identifier ASC would scramble this order.
+    seed.run(
+      "INSERT INTO trajectory_entries VALUES ('s1', 0, 100, 'tool_call', 'z.first', 'success', 5, NULL, NULL)",
+    );
+    seed.run(
+      "INSERT INTO trajectory_entries VALUES ('s1', 0, 200, 'tool_call', 'a.second', 'success', 7, NULL, NULL)",
+    );
+    seed.close();
+
+    const migrated = createSqlitePlaybookStore({ path: dbPath });
+    const back = await migrated.trajectories.getSession("s1");
+    migrated.close();
+    expect(back.map((e) => e.identifier)).toEqual(["z.first", "a.second"]);
+  });
 });
 
 describe("createSqlitePlaybookStore — evaluation lineage integrity", () => {

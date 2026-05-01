@@ -200,47 +200,53 @@ function migrateEvaluationsToV1(db: Database): void {
   if (tableInfo === null) return;
   if (evaluationsConstraintsSatisfied(db)) return;
 
-  const proposalsExists = db
-    .query("SELECT name FROM sqlite_master WHERE type='table' AND name='playbook_proposals'")
-    .get() as { readonly name: string } | null;
-  const validProposalIds = new Set<string>(
-    proposalsExists !== null
-      ? (
-          db.query("SELECT id FROM playbook_proposals").all() as readonly { readonly id: string }[]
-        ).map((r) => r.id)
-      : [],
-  );
-
-  const legacyRows = db
-    .query("SELECT * FROM playbook_evaluations")
-    .all() as readonly LegacyEvalRow[];
-
-  // Partition: orphans go to quarantine; for duplicate proposal_id keep the
-  // latest by evaluated_at (id as tiebreaker), the rest go to quarantine.
-  const winners = new Map<string, LegacyEvalRow>();
-  const quarantine: { readonly row: LegacyEvalRow; readonly reason: string }[] = [];
-  for (const row of legacyRows) {
-    if (!validProposalIds.has(row.proposal_id)) {
-      quarantine.push({ row, reason: "orphan: proposal_id not in playbook_proposals" });
-      continue;
-    }
-    const existing = winners.get(row.proposal_id);
-    if (existing === undefined) {
-      winners.set(row.proposal_id, row);
-      continue;
-    }
-    const incomingWins =
-      row.evaluated_at > existing.evaluated_at ||
-      (row.evaluated_at === existing.evaluated_at && row.id > existing.id);
-    if (incomingWins) {
-      quarantine.push({ row: existing, reason: "duplicate: superseded by later evaluated_at" });
-      winners.set(row.proposal_id, row);
-    } else {
-      quarantine.push({ row, reason: "duplicate: superseded by later evaluated_at" });
-    }
-  }
-
+  // Read + write inside .immediate(): the RESERVED lock at BEGIN serializes
+  // against concurrent peer writers, so a row committed mid-migration on a
+  // shared SQLite file cannot be erased by the rebuild.
   db.transaction(() => {
+    const proposalsExists = db
+      .query("SELECT name FROM sqlite_master WHERE type='table' AND name='playbook_proposals'")
+      .get() as { readonly name: string } | null;
+    const validProposalIds = new Set<string>(
+      proposalsExists !== null
+        ? (
+            db.query("SELECT id FROM playbook_proposals").all() as readonly {
+              readonly id: string;
+            }[]
+          ).map((r) => r.id)
+        : [],
+    );
+
+    const legacyRows = db
+      .query("SELECT * FROM playbook_evaluations")
+      .all() as readonly LegacyEvalRow[];
+
+    // Partition: orphans go to quarantine; for duplicate proposal_id keep
+    // the latest by evaluated_at (id as tiebreaker), the rest go to
+    // quarantine.
+    const winners = new Map<string, LegacyEvalRow>();
+    const quarantine: { readonly row: LegacyEvalRow; readonly reason: string }[] = [];
+    for (const row of legacyRows) {
+      if (!validProposalIds.has(row.proposal_id)) {
+        quarantine.push({ row, reason: "orphan: proposal_id not in playbook_proposals" });
+        continue;
+      }
+      const existing = winners.get(row.proposal_id);
+      if (existing === undefined) {
+        winners.set(row.proposal_id, row);
+        continue;
+      }
+      const incomingWins =
+        row.evaluated_at > existing.evaluated_at ||
+        (row.evaluated_at === existing.evaluated_at && row.id > existing.id);
+      if (incomingWins) {
+        quarantine.push({ row: existing, reason: "duplicate: superseded by later evaluated_at" });
+        winners.set(row.proposal_id, row);
+      } else {
+        quarantine.push({ row, reason: "duplicate: superseded by later evaluated_at" });
+      }
+    }
+
     db.run(`
       CREATE TABLE IF NOT EXISTS playbook_evaluations_quarantine_v1 (
         id           TEXT    NOT NULL,
@@ -289,7 +295,7 @@ function migrateEvaluationsToV1(db: Database): void {
     for (const row of winners.values()) {
       insert.run(row.id, row.proposal_id, row.verdict, row.metrics, row.notes, row.evaluated_at);
     }
-  })();
+  }).immediate();
 }
 
 /**
@@ -356,13 +362,20 @@ function migrateTrajectoriesToV2(db: Database): void {
   if (cols.length === 0) return;
   if (cols.some((c) => c.name === "seq")) return;
 
-  const legacyRows = db
-    .query(
-      "SELECT session_id, turn_index, timestamp, kind, identifier, outcome, duration_ms, metadata, bullet_ids FROM trajectory_entries ORDER BY session_id, turn_index, identifier",
-    )
-    .all() as readonly LegacyTrajectoryRow[];
-
+  // RESERVED lock at BEGIN serializes against concurrent writers on the same
+  // SQLite file: read of legacy rows + DROP + INSERT must observe a stable
+  // snapshot, otherwise a peer's INSERT can be erased by the rebuild.
   db.transaction(() => {
+    // Order legacy rows by `rowid` (insertion order) within each session,
+    // tie-breaking on `timestamp` for paranoia. ORDER BY (turn_index,
+    // identifier) would invent a fabricated ordering for same-turn rows
+    // whose original append order is what downstream replay relies on.
+    const legacyRows = db
+      .query(
+        "SELECT session_id, turn_index, timestamp, kind, identifier, outcome, duration_ms, metadata, bullet_ids FROM trajectory_entries ORDER BY session_id, rowid, timestamp",
+      )
+      .all() as readonly LegacyTrajectoryRow[];
+
     db.run("DROP TABLE trajectory_entries");
     db.run(`
       CREATE TABLE trajectory_entries (
@@ -402,7 +415,7 @@ function migrateTrajectoriesToV2(db: Database): void {
         r.bullet_ids,
       );
     }
-  })();
+  }).immediate();
 }
 
 interface LegacyProposalRow {
@@ -431,25 +444,47 @@ function migrateProposalsToV3(db: Database): void {
   if (tableInfo === null) return;
   if (proposalsLineageFkSatisfied(db)) return;
 
-  const versionRows = db
-    .query("SELECT playbook_id, version FROM structured_playbook_versions")
-    .all() as readonly { readonly playbook_id: string; readonly version: number }[];
-  const validAnchors = new Set<string>(
-    versionRows.map((r) => `${r.playbook_id}::${String(r.version)}`),
-  );
-  const legacy = db.query("SELECT * FROM playbook_proposals").all() as readonly LegacyProposalRow[];
-
-  const winners: LegacyProposalRow[] = [];
-  const quarantine: LegacyProposalRow[] = [];
-  for (const r of legacy) {
-    if (validAnchors.has(`${r.playbook_id}::${String(r.base_version)}`)) {
-      winners.push(r);
-    } else {
-      quarantine.push(r);
-    }
-  }
-
+  // All reads + writes happen inside .immediate(): the RESERVED lock is
+  // acquired at BEGIN, so a concurrent writer on the same SQLite file cannot
+  // commit a new proposal between our snapshot read and the rebuild — the
+  // peer must wait, retry against the rebuilt schema, and is then subject to
+  // the new FK.
   db.transaction(() => {
+    const versionRows = db
+      .query("SELECT playbook_id, version FROM structured_playbook_versions")
+      .all() as readonly { readonly playbook_id: string; readonly version: number }[];
+    const validAnchors = new Set<string>(
+      versionRows.map((r) => `${r.playbook_id}::${String(r.version)}`),
+    );
+    const legacyProposals = db
+      .query("SELECT * FROM playbook_proposals")
+      .all() as readonly LegacyProposalRow[];
+
+    const winners: LegacyProposalRow[] = [];
+    const orphanProposals: LegacyProposalRow[] = [];
+    for (const r of legacyProposals) {
+      if (validAnchors.has(`${r.playbook_id}::${String(r.base_version)}`)) {
+        winners.push(r);
+      } else {
+        orphanProposals.push(r);
+      }
+    }
+    const validProposalIds = new Set(winners.map((w) => w.id));
+    const orphanProposalIds = new Set(orphanProposals.map((o) => o.id));
+
+    const savedEvals = db
+      .query(
+        "SELECT id, proposal_id, verdict, metrics, notes, evaluated_at FROM playbook_evaluations",
+      )
+      .all() as readonly {
+      readonly id: string;
+      readonly proposal_id: string;
+      readonly verdict: string;
+      readonly metrics: string;
+      readonly notes: string | null;
+      readonly evaluated_at: number;
+    }[];
+
     db.run(`
       CREATE TABLE IF NOT EXISTS playbook_proposals_quarantine_v3 (
         id                      TEXT    NOT NULL,
@@ -463,12 +498,30 @@ function migrateProposalsToV3(db: Database): void {
         quarantined_at          INTEGER NOT NULL
       )
     `);
-    const qInsert = db.prepare(
+    // Quarantine evaluations whose proposal was orphaned, alongside the
+    // proposals — append-only audit trail must not lose evidence even when
+    // its anchor was invalid.
+    db.run(`
+      CREATE TABLE IF NOT EXISTS playbook_evaluations_quarantine_v3 (
+        id           TEXT    NOT NULL,
+        proposal_id  TEXT    NOT NULL,
+        verdict      TEXT    NOT NULL,
+        metrics      TEXT    NOT NULL,
+        notes        TEXT,
+        evaluated_at INTEGER NOT NULL,
+        reason       TEXT    NOT NULL,
+        quarantined_at INTEGER NOT NULL
+      )
+    `);
+    const qPropInsert = db.prepare(
       "INSERT INTO playbook_proposals_quarantine_v3 (id, playbook_id, base_version, operations, source_trajectory_range, reflection, created_at, reason, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
+    const qEvalInsert = db.prepare(
+      "INSERT INTO playbook_evaluations_quarantine_v3 (id, proposal_id, verdict, metrics, notes, evaluated_at, reason, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    );
     const now = Date.now();
-    for (const r of quarantine) {
-      qInsert.run(
+    for (const r of orphanProposals) {
+      qPropInsert.run(
         r.id,
         r.playbook_id,
         r.base_version,
@@ -480,25 +533,24 @@ function migrateProposalsToV3(db: Database): void {
         now,
       );
     }
+    for (const e of savedEvals) {
+      if (orphanProposalIds.has(e.proposal_id) || !validProposalIds.has(e.proposal_id)) {
+        qEvalInsert.run(
+          e.id,
+          e.proposal_id,
+          e.verdict,
+          e.metrics,
+          e.notes,
+          e.evaluated_at,
+          orphanProposalIds.has(e.proposal_id)
+            ? "proposal quarantined as orphan"
+            : "proposal_id not in playbook_proposals",
+          now,
+        );
+      }
+    }
 
-    // Drop dependent FK from playbook_evaluations first by recreating after.
-    // playbook_evaluations FK to playbook_proposals.id, so we must temporarily
-    // detach it. Simpler: drop evals, rebuild proposals with new FK, then
-    // recreate evals from saved rows.
-    const savedEvals = db
-      .query(
-        "SELECT id, proposal_id, verdict, metrics, notes, evaluated_at FROM playbook_evaluations",
-      )
-      .all() as readonly {
-      readonly id: string;
-      readonly proposal_id: string;
-      readonly verdict: string;
-      readonly metrics: string;
-      readonly notes: string | null;
-      readonly evaluated_at: number;
-    }[];
     db.run("DROP TABLE IF EXISTS playbook_evaluations");
-
     db.run("DROP TABLE playbook_proposals");
     db.run(`
       CREATE TABLE playbook_proposals (
@@ -543,7 +595,6 @@ function migrateProposalsToV3(db: Database): void {
         evaluated_at INTEGER NOT NULL
       )
     `);
-    const validProposalIds = new Set(winners.map((w) => w.id));
     const evalInsert = db.prepare(
       "INSERT INTO playbook_evaluations (id, proposal_id, verdict, metrics, notes, evaluated_at) VALUES (?, ?, ?, ?, ?, ?)",
     );
@@ -552,7 +603,7 @@ function migrateProposalsToV3(db: Database): void {
         evalInsert.run(e.id, e.proposal_id, e.verdict, e.metrics, e.notes, e.evaluated_at);
       }
     }
-  })();
+  }).immediate();
 }
 
 function proposalsLineageFkSatisfied(db: Database): boolean {
