@@ -380,6 +380,54 @@ describe("wrapAdapterWithStatePersistence", () => {
     expect(finalRow.ok).toBe(false); // no late write resurrected the checkpoint
   });
 
+  test("late timed-out persist from prior stream() call does NOT clobber a later stream's state", async () => {
+    // Production sessions reuse one wrapper across many stream() invocations.
+    // A slow saveState from stream-1 must not race past stream-2's clear.
+    let releaseStream1Save: ((s: EngineState) => void) | undefined;
+    const slow = new Promise<EngineState>((r) => {
+      releaseStream1Save = r;
+    });
+
+    const events1 = (async function* (): AsyncIterable<EngineEvent> {
+      yield interruptedDone;
+    })();
+    const events2 = (async function* (): AsyncIterable<EngineEvent> {
+      yield completedDone;
+    })();
+
+    let streamCallCount = 0;
+    const inner: EngineAdapter = {
+      engineId: "test-engine",
+      capabilities: caps,
+      stream: () => (streamCallCount++ === 0 ? events1 : events2),
+      saveState: () => slow,
+    };
+    const errors: Array<KoiError | Error> = [];
+    const wrapped = wrapAdapterWithStatePersistence(inner, {
+      persistence: store,
+      recordTemplate: template,
+      persistTimeoutMs: 30,
+      onPersistError: (e) => errors.push(e),
+    });
+
+    // Stream 1: interrupted; saveState hangs and times out.
+    for await (const _ of wrapped.stream({ kind: "text", text: "a" }));
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+
+    // Stream 2: completed terminal advances the wrapper-level generation.
+    for await (const _ of wrapped.stream({ kind: "text", text: "b" }));
+
+    // Now release the stream-1 saveState; its merge path must drop because
+    // the shared generation has advanced.
+    releaseStream1Save?.(captured);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const final = await store.loadSession(SID);
+    // Either the row was never written (stream 2 had nothing to clear) or it
+    // exists with no lastEngineState — what we forbid is a stale resurrect.
+    if (final.ok) expect(final.value.lastEngineState).toBeUndefined();
+  });
+
   test("hung saveState does NOT block cancel terminal beyond persistTimeoutMs", async () => {
     const inner: EngineAdapter = {
       ...makeAdapter([interruptedDone]),

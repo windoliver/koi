@@ -15,6 +15,15 @@
  * Adapter without `saveState`:
  *   Pass-through — the wrapper records nothing and the caller falls back to
  *   transcript-only resume via `resumeForSession`.
+ *
+ * Concurrency assumption (single-writer-per-session):
+ *   The merge / clear paths are read-modify-write against the full session
+ *   row. `SessionPersistence.saveSession` is currently a full upsert with no
+ *   CAS / version field, so concurrent writers to the same `sessionId` can
+ *   clobber each other. This wrapper assumes the standard Koi invariant:
+ *   one runtime owns a session at a time. Cross-host failover or true
+ *   multi-writer scenarios need an atomic partial-update API (see follow-up
+ *   issue) before this wrapper is safe to use under that topology.
  */
 
 import type {
@@ -102,11 +111,20 @@ export function wrapAdapterWithStatePersistence(
 
   const persistTimeoutMs = options.persistTimeoutMs ?? DEFAULT_PERSIST_TIMEOUT_MS;
 
+  // The generation counter MUST be wrapper-scoped, not stream-scoped. A
+  // production session reuses the same wrapper across many `stream()` calls.
+  // If the gen counter were per-stream, a timed-out interrupted persist from
+  // stream N could resolve in the background AFTER stream N+1 already cleared
+  // the checkpoint — and stream N+1's gen counter would not invalidate it.
+  // Sharing a single ref means every later terminal advances `gen.current`,
+  // so any stale write checking it sees a mismatch and aborts.
+  const gen: GenRef = { current: 0 };
+
   return {
     ...inner,
     stream: (input: EngineInput): AsyncIterable<EngineEvent> => {
       const innerStream = inner.stream(input);
-      return wrapStreamForCancelPersist(innerStream, {
+      return wrapStreamForCancelPersist(innerStream, gen, {
         saveState,
         persistence,
         recordTemplate,
@@ -146,12 +164,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 /**
- * Per-stream generation token. Each terminal event mints a new generation
- * before kicking off its persist work; in-flight persist work captures the
- * current generation at start and re-checks before `saveSession` to refuse
- * to commit if a newer terminal has already advanced state. This prevents a
- * timed-out interrupted write from racing past a later `completed` clear and
- * resurrecting a stale checkpoint.
+ * Wrapper-scoped generation token. Each terminal event mints a new
+ * generation before kicking off its persist work; in-flight persist work
+ * captures the current generation at start and re-checks at every async
+ * boundary to refuse to commit if a newer terminal — even one from a later
+ * `stream()` call on the same wrapper — has already advanced state.
+ *
+ * This prevents a timed-out interrupted write from racing past a subsequent
+ * `completed` clear and resurrecting a stale checkpoint, both within a
+ * single stream and across consecutive streams that reuse this wrapper.
  */
 interface GenRef {
   current: number;
@@ -159,9 +180,9 @@ interface GenRef {
 
 async function* wrapStreamForCancelPersist(
   inner: AsyncIterable<EngineEvent>,
+  gen: GenRef,
   deps: WrapStreamDeps,
 ): AsyncIterable<EngineEvent> {
-  const gen: GenRef = { current: 0 };
   for await (const event of inner) {
     // Persist BEFORE yielding the terminal `done` event. Yielding first would
     // make checkpointing dependent on the consumer pulling the next item —
