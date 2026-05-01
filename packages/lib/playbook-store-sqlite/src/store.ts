@@ -317,6 +317,12 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
   const selectWatermark = db.query(
     "SELECT last_reflected_step_index FROM structured_playbooks WHERE id = ?",
   );
+  // Watermark fallback when the head row is missing: read the latest
+  // committed lineage snapshot and extract its lastReflectedStepIndex so a
+  // forward save still clamps against the persisted watermark.
+  const selectLatestLineageSnapshot = db.query(
+    "SELECT snapshot FROM structured_playbook_versions WHERE playbook_id = ? ORDER BY version DESC LIMIT 1",
+  );
   const deleteCurrent = db.prepare("DELETE FROM structured_playbooks WHERE id = ?");
   const deleteLineage = db.prepare(
     "DELETE FROM structured_playbook_versions WHERE playbook_id = ?",
@@ -365,7 +371,26 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       const currentWatermarkRow = selectWatermark.get(pb.id) as {
         readonly last_reflected_step_index: number | null;
       } | null;
-      const currentWatermark = currentWatermarkRow?.last_reflected_step_index ?? null;
+      // When the head row is missing, fall back to the latest lineage
+      // snapshot's watermark. Otherwise a forward save after head loss
+      // would clamp against null and silently downgrade the watermark,
+      // reopening already-reflected trajectory windows.
+      let currentWatermark: number | null;
+      if (currentWatermarkRow !== null) {
+        currentWatermark = currentWatermarkRow.last_reflected_step_index;
+      } else {
+        const latestRow = selectLatestLineageSnapshot.get(pb.id) as {
+          readonly snapshot: string;
+        } | null;
+        if (latestRow !== null) {
+          const latestSnapshot = JSON.parse(latestRow.snapshot) as {
+            readonly lastReflectedStepIndex?: number;
+          };
+          currentWatermark = latestSnapshot.lastReflectedStepIndex ?? null;
+        } else {
+          currentWatermark = null;
+        }
+      }
       const incomingWatermark = pb.lastReflectedStepIndex ?? null;
       const monotonicWatermark =
         currentWatermark === null

@@ -920,6 +920,31 @@ describe("createSqlitePlaybookStore — head-row self-heal", () => {
     reopened.close();
   });
 
+  test("forward save after head loss clamps watermark against latest lineage snapshot", async () => {
+    // Regression: when current is null but lineage has a row with a high
+    // watermark, a forward save with a lower watermark must NOT downgrade
+    // — otherwise ACE would reopen already-reflected trajectory windows.
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(
+      spb({ id: "s1", version: 1, lastReflectedStepIndex: 100, title: "v1" }),
+    );
+    store.close();
+
+    // Head row gone, lineage v1 still has watermark=100.
+    const corrupt = new Database(dbPath);
+    corrupt.run("DELETE FROM structured_playbooks WHERE id = ?", ["s1"]);
+    corrupt.close();
+
+    const repaired = createSqlitePlaybookStore({ path: dbPath });
+    // Forward save at v2 with a low watermark — must clamp against
+    // lineage's 100, not silently downgrade to 5.
+    await repaired.structuredPlaybooks.save(
+      spb({ id: "s1", version: 2, lastReflectedStepIndex: 5, title: "v2" }),
+    );
+    expect((await repaired.structuredPlaybooks.get("s1"))?.lastReflectedStepIndex).toBe(100);
+    repaired.close();
+  });
+
   test("self-heal rejects conflicting payload when head is missing (no silent lost-update)", async () => {
     // Regression: when lineage has v=N and the head row is missing,
     // submitting a DIFFERENT payload at v=N must throw, not silently
