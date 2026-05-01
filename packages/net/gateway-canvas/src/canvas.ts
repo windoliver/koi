@@ -23,7 +23,7 @@ export function createCanvas(
     ...(config.sseKeepAliveMs !== undefined ? { keepAliveIntervalMs: config.sseKeepAliveMs } : {}),
   });
 
-  const server = createCanvasServer(
+  const innerServer = createCanvasServer(
     {
       port: config.port,
       pathPrefix: config.pathPrefix ?? "/gateway/canvas",
@@ -33,6 +33,31 @@ export function createCanvas(
     sse,
     authenticator,
   );
+
+  // Lifecycle: `stop()` is TERMINAL — it disposes the SSE manager along with
+  // the HTTP listener, so the returned wiring is single-use. Callers that
+  // need start→stop→start should call `createCanvas()` again to obtain a
+  // fresh wiring; reusing a stopped wiring would accept HTTP connections
+  // backed by a disposed (timer-less) SSE manager and silently drop
+  // long-lived event streams.
+  let stopped = false;
+  const server = {
+    start: async (): Promise<void> => {
+      if (stopped) {
+        throw new Error(
+          "createCanvas: server.stop() is terminal — call createCanvas() again for a fresh wiring",
+        );
+      }
+      await innerServer.start();
+    },
+    stop: (): void => {
+      if (stopped) return;
+      stopped = true;
+      innerServer.stop();
+      sse.dispose();
+    },
+    port: innerServer.port,
+  };
 
   return { server, sse, store };
 }

@@ -254,15 +254,16 @@ describe("canvas routes", () => {
   });
 
   test("DELETE existing → 204", async () => {
-    await fetch(url(server, "/del-1"), {
+    const create = await fetch(url(server, "/del-1"), {
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify({ content: "v1" }),
     });
+    const etag = create.headers.get("ETag") ?? "";
 
     const res = await fetch(url(server, "/del-1"), {
       method: "DELETE",
-      headers: { Authorization: "Bearer test-agent" },
+      headers: { Authorization: "Bearer test-agent", "If-Match": etag },
     });
 
     expect(res.status).toBe(204);
@@ -271,15 +272,59 @@ describe("canvas routes", () => {
   test("DELETE nonexistent → 404", async () => {
     const res = await fetch(url(server, "/nope"), {
       method: "DELETE",
-      headers: { Authorization: "Bearer test-agent" },
+      headers: { Authorization: "Bearer test-agent", "If-Match": '"any"' },
     });
 
     expect(res.status).toBe(404);
   });
 
   test("DELETE without auth → 401", async () => {
-    const res = await fetch(url(server, "/no-auth"), { method: "DELETE" });
+    const res = await fetch(url(server, "/no-auth"), {
+      method: "DELETE",
+      headers: { "If-Match": '"any"' },
+    });
     expect(res.status).toBe(401);
+  });
+
+  test("DELETE without If-Match → 428 Precondition Required", async () => {
+    await fetch(url(server, "/del-fence"), {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ content: "v1" }),
+    });
+
+    const res = await fetch(url(server, "/del-fence"), {
+      method: "DELETE",
+      headers: { Authorization: "Bearer test-agent" },
+    });
+
+    expect(res.status).toBe(428);
+  });
+
+  test("DELETE with stale If-Match → 412 (stops cross-generation wipe on retry)", async () => {
+    const create = await fetch(url(server, "/del-stale"), {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ content: "v1" }),
+    });
+    const oldEtag = create.headers.get("ETag") ?? "";
+
+    // Owner mutates the surface (etag changes)
+    await fetch(url(server, "/del-stale"), {
+      method: "PATCH",
+      headers: { ...authHeaders(), "If-Match": oldEtag },
+      body: JSON.stringify({ content: "v2" }),
+    });
+
+    // Replayed delete with old etag → 412, surface preserved
+    const res = await fetch(url(server, "/del-stale"), {
+      method: "DELETE",
+      headers: { Authorization: "Bearer test-agent", "If-Match": oldEtag },
+    });
+    expect(res.status).toBe(412);
+
+    const stillThere = await fetch(url(server, "/del-stale"), { headers: authHeaders() });
+    expect(stillThere.status).toBe(200);
   });
 
   test("POST body exceeding maxBodyBytes → 413", async () => {
@@ -429,15 +474,16 @@ describe("canvas routes", () => {
   });
 
   test("DELETE by non-owner → 404 (cross-tenant isolation)", async () => {
-    await fetch(url(server, "/own-2"), {
+    const create = await fetch(url(server, "/own-2"), {
       method: "POST",
       headers: authHeaders("alice"),
       body: JSON.stringify({ content: "v1" }),
     });
+    const etag = create.headers.get("ETag") ?? "";
 
     const res = await fetch(url(server, "/own-2"), {
       method: "DELETE",
-      headers: { Authorization: "Bearer mallory" },
+      headers: { Authorization: "Bearer mallory", "If-Match": etag },
     });
 
     expect(res.status).toBe(404);
@@ -445,6 +491,39 @@ describe("canvas routes", () => {
     // Surface still belongs to alice
     const stillThere = await fetch(url(server, "/own-2"), { headers: authHeaders("alice") });
     expect(stillThere.status).toBe(200);
+  });
+
+  test("POST by non-owner on existing surface → 404 (no existence leak)", async () => {
+    await fetch(url(server, "/probe"), {
+      method: "POST",
+      headers: authHeaders("alice"),
+      body: JSON.stringify({ content: "v1" }),
+    });
+
+    const res = await fetch(url(server, "/probe"), {
+      method: "POST",
+      headers: authHeaders("mallory"),
+      body: JSON.stringify({ content: "different" }),
+    });
+
+    // Mallory must NOT learn the surface exists. 404, not 409.
+    expect(res.status).toBe(404);
+  });
+
+  test("POST by owner on own existing surface → 409 (real self-collision)", async () => {
+    await fetch(url(server, "/self-dup"), {
+      method: "POST",
+      headers: authHeaders("alice"),
+      body: JSON.stringify({ content: "v1" }),
+    });
+
+    const res = await fetch(url(server, "/self-dup"), {
+      method: "POST",
+      headers: authHeaders("alice"),
+      body: JSON.stringify({ content: "v2" }),
+    });
+
+    expect(res.status).toBe(409);
   });
 
   test("PATCH by owner succeeds (ownership round-trip)", async () => {
@@ -539,6 +618,72 @@ describe("canvas routes — capacity & overload", () => {
     }
   });
 
+  test("auth-503 body does not echo backend exception text (info-leak)", async () => {
+    const leakyAuth: CanvasAuthenticator = async (): Promise<Result<CanvasAuthResult>> => ({
+      ok: false,
+      error: {
+        code: "EXTERNAL",
+        message: "internal/auth: postgres pool exhausted at db-prod-3.local:5432",
+        retryable: true,
+      },
+    });
+    const store = createInMemorySurfaceStore();
+    const sse = createCanvasSseManager({ keepAliveIntervalMs: 60_000 });
+    const server = createCanvasServer({ port: 0, pathPrefix: PREFIX }, store, sse, leakyAuth);
+    await server.start();
+    try {
+      const res = await fetch(`http://localhost:${server.port()}${PREFIX}/x`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "v1" }),
+      });
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as { error?: string };
+      expect(body.error).toBe("Auth backend unavailable");
+      expect(body.error).not.toContain("postgres");
+      expect(body.error).not.toContain("db-prod");
+    } finally {
+      server.stop();
+      sse.dispose();
+    }
+  });
+
+  test("SSE recheck throws → 503 + reserved subscriber slot is released", async () => {
+    // Stub store: `get()` succeeds first time (initial read), throws second
+    // (post-subscribe recheck). This proves the handler unsubscribes on the
+    // exceptional path so reservations don't leak.
+    let getCalls = 0;
+    const baseStore = createInMemorySurfaceStore();
+    await baseStore.create("s1", "v1", { ownerId: "agent-a" });
+    const flakyStore = {
+      ...baseStore,
+      get: async (id: string) => {
+        getCalls += 1;
+        if (getCalls >= 2) throw new Error("backend pool exhausted");
+        return baseStore.get(id);
+      },
+    };
+    const auth: CanvasAuthenticator = async () => ({ ok: true, value: { agentId: "agent-a" } });
+    const sse = createCanvasSseManager({ keepAliveIntervalMs: 60_000 });
+    const server = createCanvasServer({ port: 0, pathPrefix: PREFIX }, flakyStore, sse, auth);
+    await server.start();
+    try {
+      const res = await fetch(`http://localhost:${server.port()}${PREFIX}/s1/events`, {
+        headers: { Accept: "text/event-stream" },
+      });
+      expect(res.status).toBe(503);
+      expect(res.headers.get("Retry-After")).toBe("5");
+      // Drain body so the connection closes cleanly.
+      await res.text();
+      // Reservation must be released — manager has zero subscribers.
+      expect(sse.subscriberCount("s1")).toBe(0);
+      expect(sse.totalSubscribers()).toBe(0);
+    } finally {
+      server.stop();
+      sse.dispose();
+    }
+  });
+
   test("retryable authenticator failure → 503 (not 401)", async () => {
     const flakyAuth: CanvasAuthenticator = async (): Promise<Result<CanvasAuthResult>> => ({
       ok: false,
@@ -556,6 +701,66 @@ describe("canvas routes — capacity & overload", () => {
       });
       expect(res.status).toBe(503);
       expect(res.headers.get("Retry-After")).toBe("5");
+    } finally {
+      server.stop();
+      sse.dispose();
+    }
+  });
+
+  test("createCanvasServer rejects empty pathPrefix ('/' or '')", () => {
+    const store = createInMemorySurfaceStore();
+    const sse = createCanvasSseManager({ keepAliveIntervalMs: 60_000 });
+    try {
+      expect(() => createCanvasServer({ port: 0, pathPrefix: "/" }, store, sse)).toThrow(
+        /pathPrefix cannot be/,
+      );
+      expect(() => createCanvasServer({ port: 0, pathPrefix: "" }, store, sse)).toThrow(
+        /pathPrefix cannot be/,
+      );
+    } finally {
+      sse.dispose();
+    }
+  });
+
+  test("store backend throws on POST → 503 (not 500)", async () => {
+    const auth: CanvasAuthenticator = async () => ({ ok: true, value: { agentId: "alice" } });
+    const flakyStore = {
+      ...createInMemorySurfaceStore(),
+      create: async () => {
+        throw new Error("backend down");
+      },
+    };
+    const sse = createCanvasSseManager({ keepAliveIntervalMs: 60_000 });
+    const server = createCanvasServer({ port: 0, pathPrefix: PREFIX }, flakyStore, sse, auth);
+    await server.start();
+    try {
+      const res = await fetch(`http://localhost:${server.port()}${PREFIX}/x`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "v1" }),
+      });
+      expect(res.status).toBe(503);
+      expect(res.headers.get("Retry-After")).toBe("5");
+    } finally {
+      server.stop();
+      sse.dispose();
+    }
+  });
+
+  test("store backend throws on GET → 503", async () => {
+    const auth: CanvasAuthenticator = async () => ({ ok: true, value: { agentId: "alice" } });
+    const flakyStore = {
+      ...createInMemorySurfaceStore(),
+      get: async () => {
+        throw new Error("backend down");
+      },
+    };
+    const sse = createCanvasSseManager({ keepAliveIntervalMs: 60_000 });
+    const server = createCanvasServer({ port: 0, pathPrefix: PREFIX }, flakyStore, sse, auth);
+    await server.start();
+    try {
+      const res = await fetch(`http://localhost:${server.port()}${PREFIX}/x`);
+      expect(res.status).toBe(503);
     } finally {
       server.stop();
       sse.dispose();

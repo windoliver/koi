@@ -8,7 +8,7 @@
 export { createCanvas } from "./canvas.js";
 export { createCanvasServer } from "./canvas-routes.js";
 export { createCanvasSseManager, formatSseEvent } from "./canvas-sse.js";
-export { createInMemorySurfaceStore } from "./canvas-store.js";
+export { createInMemorySurfaceStore, surfaceEtag } from "./canvas-store.js";
 export type {
   CanvasAuthenticator,
   CanvasAuthResult,

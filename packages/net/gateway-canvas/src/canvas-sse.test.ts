@@ -168,6 +168,49 @@ describe("createCanvasSseManager", () => {
     sse.publish("unknown", { id: "1", event: "updated", data: "{}" });
   });
 
+  test("throwing subscriber is contained and reaped (write path stays uncorrupted)", () => {
+    const throwing: SseSubscriber = () => {
+      throw new Error("connection died mid-send");
+    };
+    const alive = createMockSubscriber();
+    sse.subscribe("s1", throwing);
+    sse.subscribe("s1", alive.subscriber);
+
+    // publish() must not throw — a thrown subscriber would otherwise turn a
+    // committed write (PATCH/DELETE) into a 500.
+    expect(() => sse.publish("s1", { id: "1", event: "updated", data: "{}" })).not.toThrow();
+
+    // throwing subscriber treated as dead and reaped
+    expect(sse.subscriberCount("s1")).toBe(1);
+    expect(alive.chunks).toHaveLength(1);
+  });
+
+  test("close() with throwing subscriber does not bubble", () => {
+    const throwing: SseSubscriber = () => {
+      throw new Error("dead pipe");
+    };
+    sse.subscribe("s1", throwing);
+    expect(() => sse.close("s1")).not.toThrow();
+    expect(sse.subscriberCount("s1")).toBe(0);
+  });
+
+  test("duplicate subscribe rejected; total stays accurate after unsubscribe", () => {
+    const mock = createMockSubscriber();
+    const first = sse.subscribe("s1", mock.subscriber);
+    expect(first.ok).toBe(true);
+    expect(sse.totalSubscribers()).toBe(1);
+
+    // Same callback registered twice → CONFLICT, total NOT bumped (otherwise
+    // a later unsubscribe would leave total > 0 with no real subscribers).
+    const dup = sse.subscribe("s1", mock.subscriber);
+    expect(dup.ok).toBe(false);
+    expect(sse.totalSubscribers()).toBe(1);
+
+    if (first.ok) first.value();
+    expect(sse.totalSubscribers()).toBe(0);
+    expect(sse.subscriberCount("s1")).toBe(0);
+  });
+
   test("nextEventId returns monotonic IDs", () => {
     expect(sse.nextEventId("s1")).toBe("1");
     expect(sse.nextEventId("s1")).toBe("2");

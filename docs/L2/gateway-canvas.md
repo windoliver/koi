@@ -90,7 +90,7 @@ the agent that created them. Non-owner access (read, write, subscribe) returns
 | `POST` | `/:surfaceId` | Required | Create surface, stamps `ownerId` from auth, returns 201 + ETag |
 | `GET` | `/:surfaceId` | Owner | Read surface, supports If-None-Match (304); 404 to non-owners |
 | `PATCH` | `/:surfaceId` | Owner | Update surface; `If-Match` is **required** (428 if missing, 412 if stale) |
-| `DELETE` | `/:surfaceId` | Owner | Delete surface, returns 204 |
+| `DELETE` | `/:surfaceId` | Owner | Delete surface; `If-Match` is **required** (428 if missing, 412 if stale) |
 | `GET` | `/:surfaceId/events` | Owner | SSE stream for real-time updates; 404 to non-owners |
 
 Status semantics:

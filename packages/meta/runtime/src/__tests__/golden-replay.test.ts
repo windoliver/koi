@@ -13869,7 +13869,7 @@ describe("Golden: @koi/gateway-webhook", () => {
 
 describe("Golden: @koi/gateway-canvas", () => {
   test("createInMemorySurfaceStore — CRUD + ETag CAS via expectedHash", async () => {
-    const { createInMemorySurfaceStore } = await import("@koi/gateway-canvas");
+    const { createInMemorySurfaceStore, surfaceEtag } = await import("@koi/gateway-canvas");
     const store = createInMemorySurfaceStore();
 
     const created = await store.create("dash-1", "<h1>v1</h1>", {
@@ -13878,7 +13878,7 @@ describe("Golden: @koi/gateway-canvas", () => {
     });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
-    const v1Hash = created.value.contentHash;
+    const v1Token = surfaceEtag(created.value);
     expect(created.value.ownerId).toBe("agent-1");
     expect(created.value.metadata).toEqual({ author: "agent" });
 
@@ -13887,14 +13887,14 @@ describe("Golden: @koi/gateway-canvas", () => {
     expect(dup.ok).toBe(false);
     if (!dup.ok) expect(dup.error.code).toBe("CONFLICT");
 
-    // CAS update with matching hash succeeds + new hash differs
-    const updated = await store.update("dash-1", "<h1>v2</h1>", v1Hash);
+    // CAS update with matching token succeeds + new token differs
+    const updated = await store.update("dash-1", "<h1>v2</h1>", v1Token);
     expect(updated.ok).toBe(true);
     if (!updated.ok) return;
-    expect(updated.value.contentHash).not.toBe(v1Hash);
+    expect(surfaceEtag(updated.value)).not.toBe(v1Token);
 
-    // CAS update with stale hash → CONFLICT (precondition failed)
-    const stale = await store.update("dash-1", "<h1>v3</h1>", v1Hash);
+    // CAS update with stale token → CONFLICT (precondition failed)
+    const stale = await store.update("dash-1", "<h1>v3</h1>", v1Token);
     expect(stale.ok).toBe(false);
     if (!stale.ok) expect(stale.error.code).toBe("CONFLICT");
 

@@ -25,6 +25,19 @@ function resourceExhausted(message: string): KoiError {
   return { code: "RESOURCE_EXHAUSTED", message, retryable: true };
 }
 
+/**
+ * The precondition token used by If-Match. Combines generationId with the
+ * content hash so that a delete-then-recreate with identical content still
+ * produces a fresh token — stale PATCH/DELETE retries cannot impersonate a
+ * fence against a different surface generation.
+ */
+export function surfaceEtag(entry: {
+  readonly generationId: number;
+  readonly contentHash: string;
+}): string {
+  return `${entry.generationId}-${entry.contentHash}`;
+}
+
 export function createInMemorySurfaceStore(
   configOverrides?: Partial<SurfaceStoreConfig>,
 ): SurfaceStore {
@@ -45,7 +58,14 @@ export function createInMemorySurfaceStore(
     },
 
     create(id, content, options) {
-      if (map.has(id)) {
+      const existing = map.get(id);
+      if (existing !== undefined) {
+        // Atomic classification: cross-owner collision returns PERMISSION
+        // (route → 404, no existence leak); self-collision returns CONFLICT
+        // (route → 409). No follow-up `get()` needed.
+        if (options?.ownerId !== undefined && existing.ownerId !== options.ownerId) {
+          return { ok: false, error: permission(`Surface owned by another agent: ${id}`) };
+        }
         return { ok: false, error: conflict(id, `Surface already exists: ${id}`) };
       }
       if (map.size >= config.maxSurfaces) {
@@ -58,10 +78,12 @@ export function createInMemorySurfaceStore(
       }
       const now = Date.now();
       generationCounter += 1;
+      const contentHash = computeStringHash(content);
       const entry: SurfaceEntry = {
         surfaceId: id,
         content,
-        contentHash: computeStringHash(content),
+        contentHash,
+        etag: `${generationCounter}-${contentHash}`,
         generationId: generationCounter,
         createdAt: now,
         updatedAt: now,
@@ -73,7 +95,7 @@ export function createInMemorySurfaceStore(
       return { ok: true, value: entry };
     },
 
-    update(id, content, expectedHash, expectedOwnerId) {
+    update(id, content, expectedEtag, expectedOwnerId) {
       const existing = map.get(id);
       if (existing === undefined) {
         return { ok: false, error: notFound(id, `Surface not found: ${id}`) };
@@ -84,12 +106,12 @@ export function createInMemorySurfaceStore(
       if (expectedOwnerId !== undefined && existing.ownerId !== expectedOwnerId) {
         return { ok: false, error: permission(`Not the owner of surface: ${id}`) };
       }
-      if (expectedHash !== undefined && expectedHash !== existing.contentHash) {
+      if (expectedEtag !== undefined && expectedEtag !== surfaceEtag(existing)) {
         return {
           ok: false,
           error: conflict(
             id,
-            `Content hash mismatch: expected ${expectedHash}, got ${existing.contentHash}`,
+            `Precondition token mismatch: expected ${expectedEtag}, got ${surfaceEtag(existing)}`,
           ),
         };
       }
@@ -100,6 +122,7 @@ export function createInMemorySurfaceStore(
         ...existing,
         content,
         contentHash,
+        etag: `${existing.generationId}-${contentHash}`,
         updatedAt: now,
         lastAccessedAt: now,
       };
@@ -107,7 +130,7 @@ export function createInMemorySurfaceStore(
       return { ok: true, value: updated };
     },
 
-    delete(id, expectedOwnerId) {
+    delete(id, expectedOwnerId, expectedEtag) {
       const existing = map.get(id);
       // Owner-aware delete: atomic check + remove; missing entry returns false
       // (idempotent). Owner mismatch returns PERMISSION (mapped to 404 by routes).
@@ -117,6 +140,23 @@ export function createInMemorySurfaceStore(
         existing.ownerId !== expectedOwnerId
       ) {
         return { ok: false, error: permission(`Not the owner of surface: ${id}`) };
+      }
+      // Generation fence: the supplied token must match `surfaceEtag()` of
+      // the current entry — i.e. include both `generationId` and content
+      // hash. A delete + recreate with identical content produces a fresh
+      // generation, so stale tokens cannot impersonate the new instance.
+      if (
+        expectedEtag !== undefined &&
+        existing !== undefined &&
+        expectedEtag !== surfaceEtag(existing)
+      ) {
+        return {
+          ok: false,
+          error: conflict(
+            id,
+            `Precondition token mismatch: expected ${expectedEtag}, got ${surfaceEtag(existing)}`,
+          ),
+        };
       }
       return { ok: true, value: map.delete(id) };
     },

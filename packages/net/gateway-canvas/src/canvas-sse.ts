@@ -60,10 +60,22 @@ export function createCanvasSseManager(
     }
   }
 
+  // Subscriber callbacks must never escape: a throwing or returning-false
+  // subscriber is a dead connection. Letting an exception bubble would turn a
+  // committed write (PATCH/DELETE) into a 500, or take down the keep-alive
+  // timer.
+  function safeDeliver(subscriber: SseSubscriber, data: Uint8Array): boolean {
+    try {
+      return subscriber(data);
+    } catch {
+      return false;
+    }
+  }
+
   function fanOut(surfaceId: string, data: Uint8Array): void {
     const subscribers = registry.get(surfaceId);
     if (subscribers === undefined) return;
-    const dead = [...subscribers].filter((subscriber) => !subscriber(data));
+    const dead = [...subscribers].filter((subscriber) => !safeDeliver(subscriber, data));
     for (const subscriber of dead) {
       removeSubscriber(surfaceId, subscriber);
     }
@@ -106,7 +118,23 @@ export function createCanvasSseManager(
         };
       }
 
+      // Only increment `total` when the set actually grew. Duplicate
+      // registrations of the same callback otherwise inflate `total`
+      // permanently — a single `unsubscribe()` would then leave `total > 0`
+      // with zero real subscribers, eventually returning false 503
+      // saturation errors to real clients.
+      const sizeBefore = subscribers.size;
       subscribers.add(subscriber);
+      if (subscribers.size === sizeBefore) {
+        return {
+          ok: false,
+          error: {
+            code: "CONFLICT",
+            message: "Subscriber already registered for this surface",
+            retryable: false,
+          },
+        };
+      }
       total += 1;
 
       const unsubscribe = (): void => {
@@ -129,7 +157,7 @@ export function createCanvasSseManager(
         data: JSON.stringify({ surfaceId }),
       });
       for (const subscriber of subscribers) {
-        subscriber(deletedEvent);
+        safeDeliver(subscriber, deletedEvent);
       }
       total -= subscribers.size;
       registry.delete(surfaceId);

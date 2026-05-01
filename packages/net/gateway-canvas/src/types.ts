@@ -18,8 +18,17 @@ import type { Result } from "@koi/core";
 export interface SurfaceEntry {
   readonly surfaceId: string;
   readonly content: string;
-  /** Hex content hash, used as ETag. */
+  /** Hex content hash. NOT the ETag — see {@link SurfaceEntry.etag}. */
   readonly contentHash: string;
+  /**
+   * Generation-aware precondition token: `${generationId}-${contentHash}`.
+   * This is the value the HTTP layer emits as ETag and compares against
+   * `If-Match` / `If-None-Match`. Custom durable backends MUST emit and
+   * validate this exact value, not raw `contentHash` — comparing only the
+   * hash silently reintroduces the delete+recreate-with-identical-content
+   * vulnerability the generation fence is designed to close.
+   */
+  readonly etag: string;
   /**
    * Authenticated identity that created the surface. Subsequent writes
    * (PATCH/DELETE) must be performed by the same `ownerId`. Undefined only
@@ -63,6 +72,16 @@ export interface SurfaceStoreConfig {
  */
 export interface SurfaceStore {
   readonly get: (id: string) => Result<SurfaceEntry> | Promise<Result<SurfaceEntry>>;
+  /**
+   * Create a new surface. On collision the backend MUST classify atomically:
+   * - if `options.ownerId` is provided and the existing surface is owned by
+   *   a different agent, return `PERMISSION` (route maps to 404 to avoid
+   *   leaking existence to non-owners);
+   * - otherwise (same-owner self-collision, or no owner specified), return
+   *   `CONFLICT`.
+   * The two-step "create then get to learn the owner" pattern is unsafe on
+   * async backends and must be replaced by this atomic classification.
+   */
   readonly create: (
     id: string,
     content: string,
@@ -74,22 +93,34 @@ export interface SurfaceStore {
   /**
    * Conditional update. When `expectedOwnerId` is provided, the backend MUST
    * verify the surface's `ownerId` equals it and reject with `PERMISSION` if
-   * not — atomically with the hash check. Implementations that ignore this
+   * not — atomically with the etag check. Implementations that ignore this
    * argument silently break tenant isolation under concurrency.
+   *
+   * `expectedEtag` MUST be compared against the surface's full
+   * generation-aware {@link SurfaceEntry.etag}, not raw `contentHash`.
+   * Comparing only the hash re-opens the delete+recreate-with-identical-
+   * content vulnerability the generation fence is designed to close.
    */
   readonly update: (
     id: string,
     content: string,
-    expectedHash: string | undefined,
+    expectedEtag: string | undefined,
     expectedOwnerId?: string,
   ) => Result<SurfaceEntry> | Promise<Result<SurfaceEntry>>;
   /**
    * Conditional delete. When `expectedOwnerId` is provided, the backend MUST
    * verify ownership atomically and reject with `PERMISSION` on mismatch.
+   * When `expectedEtag` is provided, the backend MUST verify the surface's
+   * current `etag` (i.e. {@link SurfaceEntry.etag} = generation-aware token,
+   * NOT raw `contentHash`) matches and reject with `CONFLICT` on mismatch.
+   * Comparing only `contentHash` re-opens the delete+recreate-with-identical-
+   * content vulnerability — the generation fence is mandatory for backend
+   * conformance.
    */
   readonly delete: (
     id: string,
     expectedOwnerId?: string,
+    expectedEtag?: string,
   ) => Result<boolean> | Promise<Result<boolean>>;
   readonly has: (id: string) => Result<boolean> | Promise<Result<boolean>>;
   readonly size: () => number | Promise<number>;

@@ -15,6 +15,7 @@
 
 import type { Result } from "@koi/core";
 
+import { surfaceEtag } from "./canvas-store.js";
 import { jsonResponse, matchPath, parseJsonBody } from "./http-helpers.js";
 import type {
   CanvasAuthenticator,
@@ -98,15 +99,39 @@ async function requireAuth(
 
 function authFailureResponse(failure: AuthFailure): Response {
   if (failure.kind === "unavailable") {
-    return new Response(
-      JSON.stringify({ ok: false, error: `Auth backend unavailable: ${failure.message}` }),
-      {
-        status: 503,
-        headers: { "Content-Type": "application/json", "Retry-After": "5" },
-      },
-    );
+    // Generic client-facing message — never echo backend exception text.
+    // The detailed `failure.message` is intentionally not surfaced; operators
+    // should consult server-side logs (added via the host application's
+    // logging middleware) for correlation.
+    return new Response(JSON.stringify({ ok: false, error: "Auth backend unavailable" }), {
+      status: 503,
+      headers: { "Content-Type": "application/json", "Retry-After": "5" },
+    });
   }
   return jsonResponse(401, { ok: false, error: "Unauthorized" });
+}
+
+/**
+ * Bounded 503 for store backend faults. Durable backends may reject store
+ * calls (network errors, pool exhaustion, etc.); wrap every `await store.*`
+ * with this helper so a thrown promise becomes a retryable response instead
+ * of an opaque 500 with no `Retry-After`.
+ */
+function storeUnavailableResponse(): Response {
+  return new Response(JSON.stringify({ ok: false, error: "Surface store unavailable" }), {
+    status: 503,
+    headers: { "Content-Type": "application/json", "Retry-After": "5" },
+  });
+}
+
+async function safeStoreCall<T>(
+  call: () => Promise<T> | T,
+): Promise<{ ok: true; value: T } | { ok: false; response: Response }> {
+  try {
+    return { ok: true, value: await call() };
+  } catch {
+    return { ok: false, response: storeUnavailableResponse() };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -132,14 +157,25 @@ async function handlePost(
   if (!isRecord(parsed) || typeof parsed.content !== "string") {
     return jsonResponse(400, { ok: false, error: "Body must include a string 'content' field" });
   }
+  const content: string = parsed.content;
 
   const metadata = isRecord(parsed.metadata) ? parsed.metadata : undefined;
 
-  const result = await store.create(surfaceId, parsed.content, {
-    ownerId: auth.value.agentId,
-    ...(metadata !== undefined ? { metadata } : {}),
-  });
+  const safe = await safeStoreCall(() =>
+    store.create(surfaceId, content, {
+      ownerId: auth.value.agentId,
+      ...(metadata !== undefined ? { metadata } : {}),
+    }),
+  );
+  if (!safe.ok) return safe.response;
+  const result = safe.value;
   if (!result.ok) {
+    // Cross-owner collision: store atomically returned PERMISSION so we
+    // don't leak existence to non-owners. Self-collision: store returned
+    // CONFLICT.
+    if (result.error.code === "PERMISSION") {
+      return jsonResponse(404, { ok: false, error: "Surface not found" });
+    }
     if (result.error.code === "CONFLICT") {
       return jsonResponse(409, { ok: false, error: result.error.message });
     }
@@ -156,7 +192,7 @@ async function handlePost(
     status: 201,
     headers: {
       "Content-Type": "application/json",
-      ETag: `"${result.value.contentHash}"`,
+      ETag: `"${surfaceEtag(result.value)}"`,
       Location: `${config.pathPrefix}/${surfaceId}`,
     },
   });
@@ -174,7 +210,9 @@ async function handleGet(
   const auth = await requireAuth(request, authenticator);
   if (!auth.ok) return authFailureResponse(auth.error);
 
-  const result = await store.get(surfaceId);
+  const safe = await safeStoreCall(() => store.get(surfaceId));
+  if (!safe.ok) return safe.response;
+  const result = safe.value;
   if (!result.ok) {
     return jsonResponse(404, { ok: false, error: "Surface not found" });
   }
@@ -185,7 +223,7 @@ async function handleGet(
     return jsonResponse(404, { ok: false, error: "Surface not found" });
   }
 
-  const etag = `"${result.value.contentHash}"`;
+  const etag = `"${surfaceEtag(result.value)}"`;
   const ifNoneMatch = request.headers.get("If-None-Match");
   if (ifNoneMatch === etag) {
     return new Response(null, { status: 304, headers: { ETag: etag } });
@@ -241,12 +279,17 @@ async function handlePatch(
       error: "If-Match header is required (use the surface's current ETag)",
     });
   }
-  const expectedHash = ifMatch.replace(/^"|"$/g, "");
+  const expectedEtag = ifMatch.replace(/^"|"$/g, "");
 
   // Atomic ownership + hash precondition inside the store. Avoids the TOCTOU
   // window of a separate get-then-update on async backends. Map PERMISSION
   // (owner mismatch) to 404 to avoid leaking existence to non-owners.
-  const result = await store.update(surfaceId, parsed.content, expectedHash, auth.value.agentId);
+  const updateContent: string = parsed.content;
+  const safe = await safeStoreCall(() =>
+    store.update(surfaceId, updateContent, expectedEtag, auth.value.agentId),
+  );
+  if (!safe.ok) return safe.response;
+  const result = safe.value;
   if (!result.ok) {
     if (result.error.code === "NOT_FOUND" || result.error.code === "PERMISSION") {
       return jsonResponse(404, { ok: false, error: "Surface not found" });
@@ -264,7 +307,7 @@ async function handlePatch(
   };
   sse.publish(surfaceId, sseEvent);
 
-  const etag = `"${result.value.contentHash}"`;
+  const etag = `"${surfaceEtag(result.value)}"`;
   return new Response(JSON.stringify({ ok: true, surfaceId }), {
     status: 200,
     headers: { "Content-Type": "application/json", ETag: etag },
@@ -281,11 +324,28 @@ async function handleDelete(
   const auth = await requireAuth(request, authenticator);
   if (!auth.ok) return authFailureResponse(auth.error);
 
-  // Atomic ownership check inside the store. Owner mismatch → 404 (no leak).
-  const result = await store.delete(surfaceId, auth.value.agentId);
+  // If-Match is mandatory on DELETE for the same reason it's required on
+  // PATCH: a stale/replayed unconditional DELETE could wipe a surface that
+  // was recreated under the same surfaceId.
+  const ifMatch = request.headers.get("If-Match");
+  if (ifMatch === null) {
+    return jsonResponse(428, {
+      ok: false,
+      error: "If-Match header is required (use the surface's current ETag)",
+    });
+  }
+  const expectedEtag = ifMatch.replace(/^"|"$/g, "");
+
+  // Atomic ownership + generation fence inside the store.
+  const safe = await safeStoreCall(() => store.delete(surfaceId, auth.value.agentId, expectedEtag));
+  if (!safe.ok) return safe.response;
+  const result = safe.value;
   if (!result.ok) {
     if (result.error.code === "PERMISSION") {
       return jsonResponse(404, { ok: false, error: "Surface not found" });
+    }
+    if (result.error.code === "CONFLICT") {
+      return jsonResponse(412, { ok: false, error: "Precondition failed: content hash mismatch" });
     }
     return jsonResponse(500, { ok: false, error: "Internal error" });
   }
@@ -313,7 +373,9 @@ async function handleSseSubscribe(
   // recheck below verifies the same generation is still in place, so a
   // delete-then-recreate (even by the same owner) cannot splice a new
   // surface instance into this stream.
-  const initial = await store.get(surfaceId);
+  const initialSafe = await safeStoreCall(() => store.get(surfaceId));
+  if (!initialSafe.ok) return initialSafe.response;
+  const initial = initialSafe.value;
   if (!initial.ok || initial.value.ownerId !== auth.value.agentId) {
     return jsonResponse(404, { ok: false, error: "Surface not found" });
   }
@@ -331,9 +393,16 @@ async function handleSseSubscribe(
   // Cap the pre-start buffer so a hot publisher cannot exhaust memory if
   // the recheck is slow on a durable backend.
   const PENDING_CAP = 64;
+  // let: set to true if the pre-start buffer overflowed, signaling that the
+  // SSE manager reaped this subscriber. We must fail the handshake instead
+  // of returning 200 on a zombie stream that will never see future events.
+  let preStartOverflow = false;
   const subscribeResult = sse.subscribe(surfaceId, (data) => {
     if (controllerRef === undefined) {
-      if (pendingChunks.length >= PENDING_CAP) return false;
+      if (pendingChunks.length >= PENDING_CAP) {
+        preStartOverflow = true;
+        return false;
+      }
       pendingChunks.push(data);
       return true;
     }
@@ -352,11 +421,39 @@ async function handleSseSubscribe(
   }
   const unsubscribe = subscribeResult.value;
 
+  // Attach abort cleanup BEFORE the next await. If the client disconnects
+  // during the post-admit recheck, the listener (or the synchronous
+  // signal.aborted check below) ensures the reserved subscriber slot is
+  // released — otherwise dead subscribers can accumulate and starve real
+  // ones until a publish/keep-alive reaps them.
+  request.signal.addEventListener("abort", () => {
+    unsubscribe();
+  });
+  if (request.signal.aborted) {
+    unsubscribe();
+    return jsonResponse(499, { ok: false, error: "Client disconnected" });
+  }
+
   // Generation-aware revalidation: if the surface was deleted/recreated
   // (any owner — same or different) between the initial read and this
   // subscribe(), the new instance has a fresh generationId. Reject so the
   // client cannot merge events across surface instances.
-  const recheck = await store.get(surfaceId);
+  // The store may be a durable backend whose `get()` can reject. If it does,
+  // we MUST release the reserved subscriber slot before propagating, or the
+  // slot leaks until next publish/keep-alive — repeated backend faults would
+  // accumulate dead reservations and starve real subscribers with false
+  // 503s. Catch + map to a retryable 503 instead of letting the exception
+  // bubble as an opaque 500.
+  let recheck: Awaited<ReturnType<typeof store.get>>;
+  try {
+    recheck = await store.get(surfaceId);
+  } catch {
+    unsubscribe();
+    return new Response(JSON.stringify({ ok: false, error: "Surface store unavailable" }), {
+      status: 503,
+      headers: { "Content-Type": "application/json", "Retry-After": "5" },
+    });
+  }
   if (
     !recheck.ok ||
     recheck.value.ownerId !== auth.value.agentId ||
@@ -364,6 +461,22 @@ async function handleSseSubscribe(
   ) {
     unsubscribe();
     return jsonResponse(404, { ok: false, error: "Surface not found" });
+  }
+  if (request.signal.aborted) {
+    unsubscribe();
+    return jsonResponse(499, { ok: false, error: "Client disconnected" });
+  }
+  // Pre-start buffer overflowed during the recheck await: the SSE manager
+  // already reaped this subscriber (it returned false). Returning 200 now
+  // would hand the client a zombie stream. Fail with a retryable 503.
+  if (preStartOverflow) {
+    return new Response(
+      JSON.stringify({ ok: false, error: "Subscription handshake overrun; retry" }),
+      {
+        status: 503,
+        headers: { "Content-Type": "application/json", "Retry-After": "1" },
+      },
+    );
   }
 
   const stream = new ReadableStream<Uint8Array>({
@@ -377,10 +490,6 @@ async function handleSseSubscribe(
     cancel() {
       unsubscribe();
     },
-  });
-
-  request.signal.addEventListener("abort", () => {
-    unsubscribe();
   });
 
   return new Response(stream, {
@@ -416,6 +525,12 @@ export function createCanvasServer(
   const prefix = routeConfig.pathPrefix.endsWith("/")
     ? routeConfig.pathPrefix.slice(0, -1)
     : routeConfig.pathPrefix;
+  if (prefix === "") {
+    throw new Error(
+      "createCanvasServer: pathPrefix cannot be '/' or empty. " +
+        "Use a specific path like '/gateway/canvas' to avoid shadowing every route.",
+    );
+  }
 
   return {
     async start(): Promise<void> {

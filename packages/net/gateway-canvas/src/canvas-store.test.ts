@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { computeStringHash } from "@koi/hash";
 
-import { createInMemorySurfaceStore } from "./canvas-store.js";
+import { createInMemorySurfaceStore, surfaceEtag } from "./canvas-store.js";
 
 describe("createInMemorySurfaceStore", () => {
   test("create → get returns entry with correct hash", async () => {
@@ -37,21 +37,54 @@ describe("createInMemorySurfaceStore", () => {
     expect(result.error.code).toBe("NOT_FOUND");
   });
 
-  test("update with matching expectedHash → success + new hash", async () => {
+  test("update with matching surfaceEtag token → success + new hash", async () => {
     const store = createInMemorySurfaceStore();
     const created = await store.create("s1", "v1");
     if (!created.ok) throw new Error("setup failed");
-    const oldHash = created.value.contentHash;
+    const oldToken = surfaceEtag(created.value);
 
-    const updated = await store.update("s1", "v2", oldHash);
+    const updated = await store.update("s1", "v2", oldToken);
     expect(updated.ok).toBe(true);
     if (!updated.ok) return;
     expect(updated.value.content).toBe("v2");
     expect(updated.value.contentHash).toBe(computeStringHash("v2"));
-    expect(updated.value.contentHash).not.toBe(oldHash);
+    expect(surfaceEtag(updated.value)).not.toBe(oldToken);
   });
 
-  test("update with stale expectedHash → CONFLICT", async () => {
+  test("delete-recreate with identical content yields a fresh ETag (generation fence)", async () => {
+    const store = createInMemorySurfaceStore();
+    const v1 = await store.create("s1", "same-content", { ownerId: "alice" });
+    if (!v1.ok) return;
+    const oldToken = surfaceEtag(v1.value);
+
+    await store.delete("s1", "alice", oldToken);
+    const v2 = await store.create("s1", "same-content", { ownerId: "alice" });
+    if (!v2.ok) return;
+    const newToken = surfaceEtag(v2.value);
+
+    // Same content — same hash — but different generation, so the token
+    // must not collide.
+    expect(v1.value.contentHash).toBe(v2.value.contentHash);
+    expect(newToken).not.toBe(oldToken);
+
+    // Stale PATCH against the recreated surface is rejected
+    const stalePatch = await store.update("s1", "v3", oldToken, "alice");
+    expect(stalePatch.ok).toBe(false);
+    if (stalePatch.ok) return;
+    expect(stalePatch.error.code).toBe("CONFLICT");
+
+    // Stale DELETE against the recreated surface is rejected
+    const staleDel = await store.delete("s1", "alice", oldToken);
+    expect(staleDel.ok).toBe(false);
+    if (staleDel.ok) return;
+    expect(staleDel.error.code).toBe("CONFLICT");
+
+    // New token works
+    const fresh = await store.update("s1", "v3", newToken, "alice");
+    expect(fresh.ok).toBe(true);
+  });
+
+  test("update with stale expectedEtag → CONFLICT", async () => {
     const store = createInMemorySurfaceStore();
     await store.create("s1", "v1");
 
@@ -61,7 +94,7 @@ describe("createInMemorySurfaceStore", () => {
     expect(result.error.code).toBe("CONFLICT");
   });
 
-  test("update without expectedHash → unconditional success", async () => {
+  test("update without expectedEtag → unconditional success", async () => {
     const store = createInMemorySurfaceStore();
     await store.create("s1", "v1");
 
