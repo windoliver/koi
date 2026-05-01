@@ -110,16 +110,14 @@ export function createTestGate(
       // stream) cannot retroactively mark a successful run as failed.
       exited = true;
       ctx.signal.removeEventListener("abort", onAbort);
-      // The leader has exited but forked descendants may still be running
-      // (e.g., backgrounded test workers, build daemons). Reaping them is
-      // a quiescence requirement: the next iteration would otherwise
-      // start while leftover children from this gate are still mutating
-      // the workspace or external systems. SIGKILL the whole group
-      // immediately — while the leader's slot is fresh in the kernel
-      // tables and any descendant still alive keeps the PGID owned by
-      // this group. A delayed kill (post-drain) was tried and rejected:
-      // by then the group could be empty and the PGID re-allocatable.
-      killGroup("SIGKILL");
+      // Do NOT issue an unconditional process-group SIGKILL on the
+      // normal-exit path. The leader has already exited, so on a busy
+      // host the kernel may have recycled its numeric PGID for an
+      // unrelated process group; a blanket negative-PID kill could
+      // SIGTERM/SIGKILL a stranger. The drainStuck check below is
+      // our quiescence signal: if descendants are still holding the
+      // pipe past the grace window, we fail the gate (rather than
+      // signal a possibly-recycled PGID).
       // Bound the stderr drain wait. With descendants killed, the pipe
       // should close almost immediately, but a kernel that has not yet
       // delivered SIGKILL can hold it briefly. If even SIGKILL hasn't

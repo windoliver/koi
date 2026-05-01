@@ -1439,6 +1439,44 @@ describe("VerifiedLoop.run", () => {
       .catch(() => undefined);
   });
 
+  test("refresh detects unlink+recreate by a successor (inode change)", async () => {
+    // Regression: a coordinator whose lock was unlinked and replaced
+    // by a successor must not be able to refresh its heartbeat to the
+    // path. Inode-anchored refresh detects the swap deterministically
+    // even when the bytes-only owner check would miss the race window.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+    const lockPath = `${prdPath}.lock`;
+    const loop = createVerifiedLoop(
+      makeConfig({
+        verify: async (_ctx) => {
+          // Atomically swap the lock file: unlink then recreate.
+          // Both files would have the same owner content if we were
+          // bytes-only checking — the inode check catches it.
+          const original = await Bun.file(lockPath).text();
+          await Bun.file(lockPath)
+            .delete()
+            .catch(() => undefined);
+          await Bun.write(lockPath, original);
+          return { passed: true };
+        },
+      }),
+    );
+    let threw: Error | undefined;
+    try {
+      await loop.run();
+    } catch (e: unknown) {
+      threw = e as Error;
+    }
+    expect(threw).toBeDefined();
+    expect(threw?.message).toContain("no longer owned by this coordinator");
+    // PRD must NOT show "a" as done — refresh detected the swap.
+    const after = JSON.parse(await Bun.file(prdPath).text()) as PRDFile;
+    expect(after.items[0]?.done).toBe(false);
+    await Bun.file(lockPath)
+      .delete()
+      .catch(() => undefined);
+  });
+
   test("breaks a lock with a stale heartbeat", async () => {
     // Regression: a crashed coordinator leaves its lock file behind
     // with a heartbeat that no live owner is updating. After

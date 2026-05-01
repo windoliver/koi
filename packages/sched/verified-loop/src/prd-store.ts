@@ -14,7 +14,7 @@
  * normal locked single-writer contract it is just defense-in-depth.
  */
 
-import { open, readFile, rename, unlink } from "node:fs/promises";
+import { type FileHandle, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { conflict, internal, notFound, validation } from "@koi/core";
@@ -456,14 +456,25 @@ export async function markDoneMany(
  * Handle returned by acquirePRDLock; pass to releasePRDLock to release
  * or to refreshPRDLock to extend the heartbeat.
  *
- * Carries an unguessable owner token so releasePRDLock / refreshPRDLock
- * can verify this process still owns the lock before mutating it —
- * preventing one coordinator from accidentally deleting another's live
- * lock if a stale-break ever races a normal exit.
+ * Carries:
+ *   - `owner`: unguessable token. releasePRDLock / refreshPRDLock
+ *     compare it against the on-disk lock content before mutating.
+ *   - `handle`: the open FileHandle from acquire-time. Refresh writes
+ *     via this handle (truncate + write) so its updates always go to
+ *     the original inode. If a successor coordinator unlinks the
+ *     lockfile and creates a new one at the same path, our writes
+ *     still target the original (now orphaned) inode and never
+ *     overwrite the successor's lock content. Combined with an
+ *     inode-equality check (stat(path).ino vs fstat(handle).ino)
+ *     this gives us race-free ownership detection without needing
+ *     flock or renameat2.
+ *   - `inode`: original inode number captured at acquire time.
  */
 export interface PRDLock {
   readonly path: string;
   readonly owner: string;
+  readonly handle: FileHandle;
+  readonly inode: number;
 }
 
 /**
@@ -503,24 +514,30 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
   let attempts = 0;
   while (attempts < 2) {
     attempts++;
+    // Use let — justified: assigned in try, used after for cleanup-on-error.
+    let handle: FileHandle | undefined;
     try {
-      const handle = await open(lockPath, "wx");
-      try {
-        const now = new Date().toISOString();
-        const payload = JSON.stringify({
-          pid: process.pid,
-          host: process.env.HOSTNAME ?? "unknown",
-          owner,
-          acquiredAt: now,
-          heartbeatAt: now,
-        });
-        await handle.writeFile(payload);
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      return { ok: true, value: { path: lockPath, owner } };
+      handle = await open(lockPath, "wx");
+      const now = new Date().toISOString();
+      const payload = JSON.stringify({
+        pid: process.pid,
+        host: process.env.HOSTNAME ?? "unknown",
+        owner,
+        acquiredAt: now,
+        heartbeatAt: now,
+      });
+      await handle.writeFile(payload);
+      await handle.sync();
+      // Capture inode for later identity checks. fstat returns the
+      // inode of the file referenced by the handle, which stays the
+      // same even if another process unlinks/replaces the path.
+      const st = await handle.stat();
+      const inode = st.ino;
+      // Hold the handle open for the lock lifetime; releasePRDLock
+      // closes it. Do NOT close here.
+      return { ok: true, value: { path: lockPath, owner, handle, inode } };
     } catch (e: unknown) {
+      if (handle !== undefined) await handle.close().catch(() => undefined);
       const code = (e as { readonly code?: unknown }).code;
       if (code !== "EEXIST") {
         return {
@@ -602,60 +619,58 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
 }
 
 /**
- * Refresh the heartbeat of a held lock. Owner-checked AND post-write
- * verified: returns true only if the lock still belongs to us after
- * the rename. Returns false on any of:
- *   - lock file missing / unparseable / owned by another token
- *   - rename clobbered a successor lock (another coordinator
- *     stale-broke our lock and reacquired between our read and rename)
+ * Refresh the heartbeat of a held lock. Inode-anchored and race-free
+ * with respect to a successor coordinator stealing the lockfile path:
  *
- * The post-rename re-read closes the stale-break race: if our rename
- * happened to overwrite another coordinator's freshly acquired lock,
- * we detect it deterministically and the caller can abort the run
- * before any further PRD mutation. We cannot fully PREVENT the
- * clobber without renameat2(RENAME_NOREPLACE) or flock — neither is
- * portable across Bun on macOS — but detect-and-fail is enough to
- * keep two coordinators from BOTH believing they own the lock.
+ *   1. fstat the held FileHandle and stat() the lockfile path.
+ *      If their inodes differ, the path now points at someone else's
+ *      lockfile (stale-break + reacquire happened) — return false.
+ *   2. Truncate and rewrite the lockfile via the held handle. Writes
+ *      always target the original inode. If the path was unlinked and
+ *      a successor created a new file at the same path, our writes
+ *      go to the orphaned inode and never touch the successor's lock.
+ *   3. Re-stat to confirm the inode hasn't changed during the write.
  *
- * Read-modify-write is intentional: we preserve any other fields the
- * lock format may grow (acquiredAt, host, pid).
+ * Returns false on:
+ *   - inode mismatch at any check (lock was stolen)
+ *   - any I/O failure
+ *
+ * This avoids the read-then-rename TOCTOU window that bytes-only
+ * approaches have, without requiring renameat2/flock (neither is
+ * portable across Bun on macOS).
  */
 export async function refreshPRDLock(lock: PRDLock): Promise<boolean> {
-  // Use let — justified: assigned across try/catch.
-  let meta: Record<string, unknown>;
+  // Pre-check: does the path still point at our inode?
   try {
-    const raw = await readFile(lock.path, "utf8");
-    meta = JSON.parse(raw) as Record<string, unknown>;
+    const pathStat = await stat(lock.path);
+    if (pathStat.ino !== lock.inode) return false;
+  } catch {
+    // Path missing — lock was unlinked. We've lost it.
+    return false;
+  }
+  // Build the refreshed payload. We don't need to preserve unknown
+  // fields here because we wrote the file ourselves at acquire-time
+  // and the heartbeat-only update is bounded.
+  const payload = JSON.stringify({
+    pid: process.pid,
+    host: process.env.HOSTNAME ?? "unknown",
+    owner: lock.owner,
+    heartbeatAt: new Date().toISOString(),
+  });
+  try {
+    await lock.handle.truncate(0);
+    // pwrite at offset 0 to avoid relying on internal cursor position.
+    await lock.handle.write(payload, 0, "utf8");
   } catch {
     return false;
   }
-  if (meta.owner !== lock.owner) return false;
-  meta.heartbeatAt = new Date().toISOString();
-  // Atomic-ish update: write to tmp + rename. We do not fsync here
-  // because heartbeat loss across a crash is harmless — the next
-  // owner just sees a slightly older heartbeatAt and waits longer.
-  const tmpPath = `${lock.path}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  // Post-check: confirm the path still resolves to our inode. If a
+  // successor unlinked + recreated between the pre-check and now,
+  // this catches it. The successor's lock is untouched (our writes
+  // went to the original, now-orphaned inode).
   try {
-    await Bun.write(tmpPath, JSON.stringify(meta));
-    await rename(tmpPath, lock.path);
-  } catch {
-    await unlink(tmpPath).catch(() => undefined);
-    return false;
-  }
-  // Post-rename ownership verification: re-read and confirm the file
-  // we just wrote is still ours. If a successor coordinator
-  // acquired the lock between our read and rename, our rename
-  // clobbered theirs — we'd both think we own. The post-check makes
-  // that detectable: ours says owner=ours, but a parallel writer who
-  // also writes their own owner just after us would win the LATEST
-  // post-check. The narrow remaining window (between our post-check
-  // and the next syscall) is bounded and detected by the next
-  // refresh tick. Combined with the orchestrator aborting the run
-  // on any false return, total exposure is one heartbeat interval.
-  try {
-    const raw = await readFile(lock.path, "utf8");
-    const after = JSON.parse(raw) as { owner?: unknown };
-    if (after.owner !== lock.owner) return false;
+    const pathStat = await stat(lock.path);
+    if (pathStat.ino !== lock.inode) return false;
   } catch {
     return false;
   }
@@ -664,26 +679,25 @@ export async function refreshPRDLock(lock: PRDLock): Promise<boolean> {
 
 /**
  * Release a lock previously acquired by acquirePRDLock. Idempotent and
- * ownership-checked: only unlinks the lockfile if its `owner` token
- * still matches `lock.owner`. Without this, a coordinator A that lost
- * its lock to a stale-break (e.g., a clock skew or external delete)
- * and was succeeded by coordinator B would, on its own normal exit,
- * delete B's live lock — opening a window for a third coordinator C
- * to start while B is still running.
+ * inode-checked: only unlinks the lockfile if its inode still matches
+ * the inode we captured at acquire time. Without this check, a
+ * coordinator A whose lock was stale-broken and replaced by B would,
+ * on its own normal exit, delete B's live lock — opening a window
+ * for a third coordinator C to start while B is still running.
+ *
+ * Also closes the held FileHandle in all cases (whether or not we
+ * still own the lock) to prevent fd leaks.
  */
 export async function releasePRDLock(lock: PRDLock): Promise<void> {
-  // Use let — justified: assigned across try/catch.
-  let owns = false;
   try {
-    const raw = await readFile(lock.path, "utf8");
-    const meta = JSON.parse(raw) as { owner?: unknown };
-    owns = meta.owner === lock.owner;
+    const pathStat = await stat(lock.path);
+    if (pathStat.ino === lock.inode) {
+      await unlink(lock.path).catch(() => undefined);
+    }
   } catch {
-    // Lock file already gone or corrupt — nothing to release.
-    return;
+    // Path missing — already released by stale-break or never existed.
   }
-  if (!owns) return;
-  await unlink(lock.path).catch(() => undefined);
+  await lock.handle.close().catch(() => undefined);
 }
 
 async function updateItem(
