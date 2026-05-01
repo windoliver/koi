@@ -416,10 +416,14 @@ export function createToolDisclosureMiddleware(
   return middleware;
 }
 
-/** Companion tool descriptor for `promote_tools`. */
-export function createPromoteToolDescriptor(): ToolDescriptor {
+/**
+ * Companion tool descriptor for the promote-tools companion. Pass the same
+ * `name` value as `ToolDisclosureConfig.promoteToolName` to the middleware,
+ * or omit both for the `"promote_tools"` default.
+ */
+export function createPromoteToolDescriptor(name: string = PROMOTE_TOOL_NAME): ToolDescriptor {
   return {
-    name: PROMOTE_TOOL_NAME,
+    name,
     description:
       "Load full tool schemas for the named tools. Call this before using a tool whose inputSchema is empty (summary-level). Returns the list of successfully promoted tool names.",
     inputSchema: {

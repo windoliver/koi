@@ -30,8 +30,8 @@ interface PromoteResult {
   readonly error?: { readonly code: string; readonly message: string };
 }
 
-function createPromoteToolsTool(): Tool {
-  const descriptor: ToolDescriptor = createPromoteToolDescriptor();
+function createPromoteToolsTool(toolName: string): Tool {
+  const descriptor: ToolDescriptor = createPromoteToolDescriptor(toolName);
 
   return {
     descriptor,
@@ -42,7 +42,7 @@ function createPromoteToolsTool(): Tool {
         ok: false,
         error: {
           code: "INTERNAL",
-          message: `${PROMOTE_TOOL_NAME} requires the tool-disclosure middleware to be registered. The middleware intercepts this call and routes promotion to the correct session — without it, this fallback tool cannot determine which session is asking.`,
+          message: `${toolName} requires the tool-disclosure middleware to be registered. The middleware intercepts this call and routes promotion to the correct session — without it, this fallback tool cannot determine which session is asking.`,
         },
       };
     },
@@ -52,15 +52,20 @@ function createPromoteToolsTool(): Tool {
 /**
  * Creates a disclosure bundle: middleware + `promote_tools` ComponentProvider.
  * Register `bundle.middleware` on the agent and `bundle.providers` on its ECS.
+ *
+ * If `config.promoteToolName` is set, the bundle plumbs that name through
+ * the middleware, the provider, and the descriptor so they all agree on the
+ * companion tool name. The default is `"promote_tools"`.
  */
 export function createToolDisclosureBundle(config?: ToolDisclosureConfig): ToolDisclosureBundle {
+  const toolName = config?.promoteToolName ?? PROMOTE_TOOL_NAME;
   const middleware = createToolDisclosureMiddleware(config);
   middleware.notifyCompanionRegistered();
 
   const provider = createSingleToolProvider({
     name: "tool-disclosure",
-    toolName: PROMOTE_TOOL_NAME,
-    createTool: () => createPromoteToolsTool(),
+    toolName,
+    createTool: () => createPromoteToolsTool(toolName),
   });
 
   return { middleware, providers: [provider] };

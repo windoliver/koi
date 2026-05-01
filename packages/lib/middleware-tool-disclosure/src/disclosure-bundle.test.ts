@@ -104,4 +104,44 @@ describe("createToolDisclosureBundle", () => {
       expect(out.message).toContain("No tools were promoted");
     });
   });
+
+  describe("custom promoteToolName", () => {
+    test("middleware, provider, and descriptor all agree on the configured name", async () => {
+      // Regression: bundle must thread promoteToolName end-to-end so the
+      // model can still call the companion when the default name collides
+      // with an application-owned tool.
+      const customName = "__koi_promote_tools";
+      const bundle = createToolDisclosureBundle({ promoteToolName: customName });
+
+      // Component registers under the custom name
+      const components = await attachComponents(bundle);
+      expect(components.has(`tool:${customName}`)).toBe(true);
+      expect(components.has(`tool:${PROMOTE_TOOL_NAME}`)).toBe(false);
+
+      // Middleware intercepts the custom name
+      const wrap = bundle.middleware.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      const response = await wrap(
+        ctx,
+        { toolId: customName, input: { names: ["whatever"] } },
+        async (): Promise<ToolResponse> => {
+          throw new Error("next() should not be called for custom companion name");
+        },
+      );
+      const out = response.output as { ok: boolean };
+      expect(out.ok).toBe(true);
+
+      // Old default name is NOT intercepted (would throw via next())
+      let nextCalled = false;
+      await wrap(
+        ctx,
+        { toolId: PROMOTE_TOOL_NAME, input: { names: ["whatever"] } },
+        async (): Promise<ToolResponse> => {
+          nextCalled = true;
+          return { output: "user-tool" };
+        },
+      );
+      expect(nextCalled).toBe(true);
+    });
+  });
 });
