@@ -574,8 +574,23 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
         parsedMeta = JSON.parse(raw) as { heartbeatAt?: unknown; pid?: unknown };
         metaReadable = true;
       } catch {
-        // Unreadable / corrupt lock file. Treat as live to avoid
-        // split-brain on transient I/O — the safer default.
+        // Unreadable / corrupt lock file. Two cases to distinguish:
+        //   1. Transient I/O (flaky storage, partial read) — must NOT
+        //      steal a healthy live lock.
+        //   2. Crash mid-refresh left a torn/empty payload — without
+        //      breaking, the loop is permanently wedged.
+        // Use the file's mtime as a tiebreaker: if mtime is older than
+        // the heartbeat staleness window, no one has been writing it
+        // recently, so it is safe to assume the holder is dead and
+        // break. mtime is updated by both truncate() and write(), so
+        // a healthy refresh always bumps it.
+        try {
+          const fileStat = await stat(lockPath);
+          const mtimeAgeMs = Date.now() - fileStat.mtimeMs;
+          if (mtimeAgeMs > HEARTBEAT_STALE_MS) stale = true;
+        } catch {
+          // Even stat failed — leave stale=false to avoid stealing.
+        }
       }
       if (metaReadable && parsedMeta !== undefined) {
         const heartbeatMs =

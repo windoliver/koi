@@ -1361,6 +1361,28 @@ describe("VerifiedLoop.run", () => {
     }
   });
 
+  test("recovers from a torn lockfile if its mtime is past the staleness window", async () => {
+    // Regression: a crash mid-refresh can leave a corrupt/empty
+    // lockfile. Without an mtime tiebreaker, acquirePRDLock would
+    // permanently refuse the path (round 5 made unparseable = live
+    // to avoid split-brain on transient I/O). Now: unparseable AND
+    // mtime past HEARTBEAT_STALE_MS = stale; break and recover.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+    const lockPath = `${prdPath}.lock`;
+    // Empty file simulates a torn refresh (truncate succeeded, write
+    // never ran).
+    await Bun.write(lockPath, "");
+    // Backdate mtime to 1 hour ago — past the 15-min staleness window.
+    const oldTime = new Date(Date.now() - 60 * 60 * 1000);
+    const fs = await import("node:fs/promises");
+    await fs.utimes(lockPath, oldTime, oldTime);
+    const loop = createVerifiedLoop(makeConfig());
+    const result = await loop.run();
+    expect(result.completed).toContain("a");
+    // Lock released by finally.
+    expect(await Bun.file(lockPath).exists()).toBe(false);
+  });
+
   test("does not steal a live lock just because it is unparseable", async () => {
     // Regression: a transient readFile fault, partial read on flaky
     // storage, or zero-byte lock from a write crash would previously
