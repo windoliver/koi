@@ -96,6 +96,29 @@ describe("createFileGate", () => {
     expect(result.details).toContain("not found");
   });
 
+  test("resolves a relative path against ctx.workingDir, not process.cwd", async () => {
+    // Regression: createFileGate originally called Bun.file(path) directly,
+    // which is process-cwd-relative. A loop launched from a different cwd
+    // than its workspace would read an unrelated file and produce a false-
+    // positive verification. The gate must resolve against ctx.workingDir.
+    const filePath = "marker.txt"; // relative
+    await Bun.write(join(tmpDir, filePath), "DONE");
+    const gate = createFileGate(filePath, "DONE");
+    // ctx.workingDir = tmpDir; the file lives there, not in process.cwd.
+    const result = await gate(makeCtx());
+    expect(result.passed).toBe(true);
+    expect(result.details).toContain(tmpDir);
+  });
+
+  test("relative path that does not exist under ctx.workingDir fails", async () => {
+    const gate = createFileGate("does-not-exist.txt", "anything");
+    const result = await gate(makeCtx());
+    expect(result.passed).toBe(false);
+    // Error must reference the resolved path so the operator can debug
+    // workingDir misconfiguration without guessing.
+    expect(result.details).toContain(tmpDir);
+  });
+
   test("global regex returns the same result on identical content (lastIndex reset)", async () => {
     // Regression: a /g or /y regex shared across multiple gate calls mutates
     // its own lastIndex. Without an explicit reset, `match.test(content)` can

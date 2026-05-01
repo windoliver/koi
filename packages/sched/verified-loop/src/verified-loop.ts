@@ -72,15 +72,21 @@ async function drainWithAbort(
   // continuing the loop while the previous runner may still be mutating
   // the workspace would produce overlapping iterations, duplicate side
   // effects, and corrupt verification on non-idempotent runners.
-  // Use let — justified: track which branch of the race won.
+  // Use let — justified: track race outcome and capture cleanup rejection.
   let stuckCleanup = false;
+  let cleanupError: unknown;
   const returnFn = iterator.return;
   if (returnFn !== undefined) {
     // Use let — justified: race outcome flag.
     let timedOut = false;
+    // Capture rejections separately from successes — a runner that signals
+    // cleanup failure (return() rejects) is just as dangerous as one that
+    // hangs: we cannot assume side effects have stopped. Both must be fatal.
     const cleanup = returnFn.call(iterator).then(
       () => undefined,
-      () => undefined,
+      (e: unknown) => {
+        cleanupError = e;
+      },
     );
     const timeout = new Promise<void>((resolve) => {
       setTimeout(() => {
@@ -98,6 +104,13 @@ async function drainWithAbort(
     // is uncancellable and the loop must not advance.
     throw new RunnerStuckError(
       `VerifiedLoop: runner iterator.return() did not settle within ${ITERATOR_RETURN_TIMEOUT_MS}ms; aborting run to avoid overlapping iterations`,
+    );
+  }
+  if (cleanupError !== undefined) {
+    // return() rejected — adapter explicitly reported cleanup failure. We
+    // cannot guarantee the runner stopped, so refuse to advance.
+    throw new RunnerStuckError(
+      `VerifiedLoop: runner iterator.return() rejected during cleanup: ${extractMessage(cleanupError)}`,
     );
   }
   if (drainError !== undefined) throw drainError;

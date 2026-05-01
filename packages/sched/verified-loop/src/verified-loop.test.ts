@@ -827,6 +827,39 @@ describe("VerifiedLoop.run", () => {
     expect(result.iterations).toBe(1);
   });
 
+  test("aborts the run fatally when iterator.return() rejects during cleanup", async () => {
+    // Regression: a runner that signals cleanup failure (return() rejects)
+    // is just as dangerous as one that hangs — we cannot assume side
+    // effects have stopped. Continuing to verification or the next
+    // iteration could overlap with stale work. Both paths now throw
+    // RunnerStuckError fatally.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+
+    const rejectingRunner: RunIterationFn = (input: EngineInput): AsyncIterable<EngineEvent> => {
+      void input;
+      return {
+        [Symbol.asyncIterator]: () => ({
+          next: async () => ({ done: true, value: undefined }),
+          return: async () => {
+            throw new Error("cleanup failed: subprocess unreachable");
+          },
+        }),
+      };
+    };
+
+    const loop = createVerifiedLoop(makeConfig({ runIteration: rejectingRunner }));
+    let threw = false;
+    let message: string | undefined;
+    try {
+      await loop.run();
+    } catch (e: unknown) {
+      threw = true;
+      message = e instanceof Error ? e.message : String(e);
+    }
+    expect(threw).toBe(true);
+    expect(message).toContain("rejected during cleanup");
+  });
+
   test("aborts the run fatally when runIteration's iterator.return() never resolves", async () => {
     // Regression: a runner whose async-iterator return() hangs forever
     // (consumer cleanup bug or non-cooperative adapter) is treated as

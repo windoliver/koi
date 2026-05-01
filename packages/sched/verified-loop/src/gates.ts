@@ -8,6 +8,7 @@
  *   - createCompositeGate: AND-combine sub-gates
  */
 
+import { isAbsolute, resolve } from "node:path";
 import type { GateContext, VerificationFn, VerificationResult } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -103,13 +104,20 @@ export function createTestGate(
   };
 }
 
-/** Create a gate that checks if a file contains a string or matches a regex. */
+/**
+ * Create a gate that checks if a file contains a string or matches a regex.
+ *
+ * Relative paths are resolved against `ctx.workingDir` at call time, not the
+ * process cwd. A loop launched from a different cwd than its workspace would
+ * otherwise read an unrelated file and produce a false-positive verification.
+ */
 export function createFileGate(path: string, match: string | RegExp): VerificationFn {
-  return async (_ctx: GateContext): Promise<VerificationResult> => {
-    const file = Bun.file(path);
+  return async (ctx: GateContext): Promise<VerificationResult> => {
+    const resolvedPath = isAbsolute(path) ? path : resolve(ctx.workingDir, path);
+    const file = Bun.file(resolvedPath);
     const exists = await file.exists();
     if (!exists) {
-      return { passed: false, details: `File not found: ${path}` };
+      return { passed: false, details: `File not found: ${resolvedPath}` };
     }
 
     try {
@@ -129,8 +137,8 @@ export function createFileGate(path: string, match: string | RegExp): Verificati
       return {
         passed: matched,
         details: matched
-          ? `File gate passed: ${path}`
-          : `File gate failed: pattern not found in ${path}`,
+          ? `File gate passed: ${resolvedPath}`
+          : `File gate failed: pattern not found in ${resolvedPath}`,
       };
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
