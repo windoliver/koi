@@ -946,6 +946,14 @@ export type {
   RunDuration,
   RunReport,
 } from "./run-report.js";
+// adapter capabilities — selection metadata for sandbox-router
+export type {
+  AdapterCapability,
+  AdapterCapabilities,
+  BackendState,
+  BackendDescriptor,
+  CapabilityRequirements,
+} from "./adapter-capabilities.js";
 // sandbox adapter — pluggable sandbox backends (OS-level, cloud, WASM)
 export type {
   SandboxAdapter,
