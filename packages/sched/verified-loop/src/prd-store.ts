@@ -111,43 +111,51 @@ async function writePRDIfUnchanged(
   originalRaw: string,
   newPrd: PRDFile,
 ): Promise<Result<void, KoiError>> {
-  const file = Bun.file(path);
-  const exists = await file.exists();
-  if (!exists) {
-    // The file vanished between read and write — treat as CONFLICT, not
-    // NOT_FOUND, so callers know it was a concurrent state change rather
-    // than a missing-from-the-start error.
-    return {
-      ok: false,
-      error: conflict(path, `PRD file disappeared between read and write: ${path}`),
-    };
-  }
-  const currentRaw = await file.text();
-  if (currentRaw !== originalRaw) {
-    return {
-      ok: false,
-      error: conflict(
-        path,
-        `PRD file changed between read and write (concurrent writer detected): ${path}`,
-      ),
-    };
-  }
-  // Use a random suffix on the tmp path so two concurrent writers don't
-  // collide on the same `${path}.tmp`. Without this, a parallel mutator
-  // could rename our staged tmp out from under us, producing ENOENT
-  // instead of a clean CONFLICT.
+  // Write tmp first, then re-read-and-check just before rename. This
+  // narrows the TOCTOU window between the CAS check and the rename to a
+  // single syscall — anything more than that requires real exclusion
+  // (file locking) which is the deployment-layer's responsibility per
+  // this module's documented contract.
+  // Random suffix so two concurrent writers don't collide on the same
+  // `${path}.tmp` and produce ENOENT instead of a clean CONFLICT.
   const tmpPath = `${path}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
   await Bun.write(tmpPath, JSON.stringify(newPrd, null, 2));
   try {
+    const file = Bun.file(path);
+    const exists = await file.exists();
+    if (!exists) {
+      return {
+        ok: false,
+        error: conflict(path, `PRD file disappeared between read and write: ${path}`),
+      };
+    }
+    const currentRaw = await file.text();
+    if (currentRaw !== originalRaw) {
+      return {
+        ok: false,
+        error: conflict(
+          path,
+          `PRD file changed between read and write (concurrent writer detected): ${path}`,
+        ),
+      };
+    }
     await rename(tmpPath, path);
+    return { ok: true, value: undefined };
   } catch (e: unknown) {
-    // Best-effort tmp cleanup; if rename failed we don't want to leak it.
+    // Best-effort tmp cleanup on any error path so we never leak tmps.
     await Bun.file(tmpPath)
       .delete()
       .catch(() => undefined);
     throw e;
+  } finally {
+    // If we returned a CONFLICT result above, the rename never ran and
+    // the tmp is still on disk. Clean it up.
+    if (await Bun.file(tmpPath).exists()) {
+      await Bun.file(tmpPath)
+        .delete()
+        .catch(() => undefined);
+    }
   }
-  return { ok: true, value: undefined };
 }
 
 /**

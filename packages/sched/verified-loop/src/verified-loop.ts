@@ -368,13 +368,45 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           return false;
         });
         if (toComplete.length > 0) {
-          const doneResult = await markDoneMany(prdPath, toComplete);
-          if (!doneResult.ok) {
-            // PRD persistence is the source of truth — refuse to keep
-            // iterating on an unknown state. Surface storage failure.
-            throw new Error(
-              `VerifiedLoop: failed to persist completion for [${toComplete.join(", ")}] (${doneResult.error.code}): ${doneResult.error.message}`,
+          // Retry CONFLICT (stale-snapshot from concurrent edit) once with
+          // fresh state. A genuinely successful iteration must not be
+          // replayed just because another writer touched an unrelated row;
+          // that would re-execute non-idempotent side effects. NOT_FOUND /
+          // VALIDATION / IO errors remain fatal.
+          // Use let — justified: retry counter for stale-snapshot CAS races.
+          let doneAttempts = 0;
+          while (true) {
+            doneAttempts++;
+            const doneResult = await markDoneMany(prdPath, toComplete);
+            if (doneResult.ok) break;
+            if (doneResult.error.code !== "CONFLICT") {
+              throw new Error(
+                `VerifiedLoop: failed to persist completion for [${toComplete.join(", ")}] (${doneResult.error.code}): ${doneResult.error.message}`,
+              );
+            }
+            // CONFLICT — re-read and check whether all the items are now
+            // already done (work was committed by another path). If so,
+            // success. If still pending, retry once with fresh snapshot.
+            const recheck = await readPRD(prdPath);
+            if (!recheck.ok) {
+              throw new Error(
+                `VerifiedLoop: PRD became unreadable after CONFLICT for [${toComplete.join(", ")}] (${recheck.error.code}): ${recheck.error.message}`,
+              );
+            }
+            const allAlreadyDone = toComplete.every(
+              (id) => recheck.value.items.find((it) => it.id === id)?.done === true,
             );
+            if (allAlreadyDone) {
+              console.warn(
+                `[verified-loop] Skipping completion persistence for [${toComplete.join(", ")}] (already done)`,
+              );
+              break;
+            }
+            if (doneAttempts >= 2) {
+              throw new Error(
+                `VerifiedLoop: failed to persist completion for [${toComplete.join(", ")}] after retry (concurrent writers contending on PRD): ${doneResult.error.message}`,
+              );
+            }
           }
         }
       } else if (!cancelled) {
