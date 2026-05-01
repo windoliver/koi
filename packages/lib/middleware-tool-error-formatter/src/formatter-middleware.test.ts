@@ -435,6 +435,26 @@ describe("createToolErrorFormatterMiddleware", () => {
       }
     });
 
+    test("KoiRuntimeError preserves stack alongside KoiError fields", async () => {
+      const wrap = getWrapToolCall();
+      const koiError: KoiError = {
+        code: "EXTERNAL",
+        message: "remote api failed",
+        retryable: true,
+      };
+      const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
+
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+
+      // KoiError fields preserved
+      expect(response.metadata?.code).toBe("EXTERNAL");
+      expect(response.metadata?.retryable).toBe(true);
+      // Error fields ALSO preserved (stack)
+      expect(typeof response.metadata?.stack).toBe("string");
+      const stack = response.metadata?.stack;
+      if (typeof stack === "string") expect(stack.length).toBeGreaterThan(0);
+    });
+
     test("non-Error throw produces originalMessage", async () => {
       const wrap = getWrapToolCall();
       const failing = createFailingToolHandler("plain string failure");
@@ -566,6 +586,43 @@ describe("createToolErrorFormatterMiddleware", () => {
         thrown = e;
       }
       expect(thrown).toBeInstanceOf(KoiRuntimeError);
+    });
+
+    test("passthroughPredicate can re-throw codes outside the default set", async () => {
+      const wrap = getWrapToolCall({
+        passthroughPredicate: (e: unknown): boolean => {
+          if (e === null || typeof e !== "object") return false;
+          const ctx = (e as { context?: { kind?: unknown } }).context;
+          return ctx?.kind === "tool"; // governance approval marker
+        },
+      });
+      const koiError: KoiError = {
+        code: "TIMEOUT",
+        message: "approval timed out",
+        retryable: false,
+        context: { kind: "tool", askId: "abc" },
+      };
+      const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
+
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(KoiRuntimeError);
+    });
+
+    test("passthroughPredicate that throws falls back to formatting", async () => {
+      const wrap = getWrapToolCall({
+        passthroughPredicate: () => {
+          throw new Error("predicate broken");
+        },
+      });
+      const failing = createFailingToolHandler(new Error("tool boom"));
+
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+      expect(response.metadata?.error).toBe(true);
     });
 
     test("non-passthrough KoiError codes are still formatted", async () => {

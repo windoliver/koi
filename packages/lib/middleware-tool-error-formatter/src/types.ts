@@ -42,4 +42,15 @@ export interface ToolErrorFormatterConfig {
    * additional guardrail middleware in your stack.
    */
   readonly passthroughCodes?: readonly string[] | undefined;
+  /**
+   * Optional predicate run for every caught error after the
+   * `passthroughCodes` check. Return `true` to re-throw instead of format.
+   * Use this to classify guardrail aborts that don't have a stable code —
+   * e.g., a governance approval timeout where `error.context.kind === "tool"`
+   * is the only reliable signal.
+   *
+   * The predicate must not throw; if it does, the error is formatted as
+   * a fallback.
+   */
+  readonly passthroughPredicate?: ((error: unknown) => boolean) | undefined;
 }

@@ -125,6 +125,9 @@ function truncateMessage(message: string, maxLength: number): string {
  */
 function buildStructuredFailure(error: unknown, secretPatterns: readonly RegExp[]): JsonObject {
   const out: { -readonly [K in keyof JsonObject]: JsonObject[K] } = {};
+  // KoiError fields (code/retryable/context/retryAfterMs) and Error fields
+  // (stack, cause) are additive — KoiRuntimeError satisfies both shapes and
+  // we want both diagnostic surfaces preserved.
   if (isKoiError(error)) {
     out.code = error.code;
     out.retryable = error.retryable;
@@ -137,20 +140,21 @@ function buildStructuredFailure(error: unknown, secretPatterns: readonly RegExp[
       const causeMessage = extractMessage(error.cause);
       if (causeMessage.length > 0) out.cause = sanitizeSecrets(causeMessage, secretPatterns);
     }
+  } else if (error instanceof Error) {
+    out.originalMessage = sanitizeSecrets(error.message, secretPatterns);
+  } else {
+    out.originalMessage = sanitizeSecrets(extractMessage(error), secretPatterns);
     return out;
   }
   if (error instanceof Error) {
-    out.originalMessage = sanitizeSecrets(error.message, secretPatterns);
     if (typeof error.stack === "string" && error.stack.length > 0) {
       out.stack = sanitizeSecrets(error.stack, secretPatterns);
     }
-    if (error.cause !== undefined) {
+    if (out.cause === undefined && error.cause !== undefined) {
       const causeMessage = extractMessage(error.cause);
       if (causeMessage.length > 0) out.cause = sanitizeSecrets(causeMessage, secretPatterns);
     }
-    return out;
   }
-  out.originalMessage = sanitizeSecrets(extractMessage(error), secretPatterns);
   return out;
 }
 
@@ -186,6 +190,7 @@ export function createToolErrorFormatterMiddleware(
     ? (config.secretPatterns ?? [])
     : [...DEFAULT_SECRET_PATTERNS, ...(config?.secretPatterns ?? [])];
   const passthroughCodes = new Set<string>(config?.passthroughCodes ?? DEFAULT_PASSTHROUGH_CODES);
+  const passthroughPredicate = config?.passthroughPredicate;
 
   const capabilityFragment: CapabilityFragment = {
     label: "tool-error-formatter",
@@ -242,6 +247,15 @@ export function createToolErrorFormatterMiddleware(
         // would let the engine continue past a deliberate abort.
         if (isKoiError(e) && passthroughCodes.has(e.code)) {
           throw e;
+        }
+        if (passthroughPredicate !== undefined) {
+          let shouldPassthrough = false;
+          try {
+            shouldPassthrough = passthroughPredicate(e);
+          } catch {
+            shouldPassthrough = false;
+          }
+          if (shouldPassthrough) throw e;
         }
         const customMessage = await tryCustomFormatter(e, request.toolId, request.input);
         const rawMessage = customMessage ?? defaultFormat(e, request.toolId);

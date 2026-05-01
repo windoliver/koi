@@ -135,6 +135,10 @@ Default `passthroughCodes`: `["RATE_LIMIT", "PERMISSION"]`.
 
 Add codes to the set if your stack uses other guardrail middleware. Pass `[]` to format every error (legacy behavior).
 
+For richer classification — e.g., a governance approval timeout where `KoiError.context.kind === "tool"` is the only reliable signal — supply a `passthroughPredicate(error) => boolean`. The predicate runs after the codes check; if it returns `true`, the error is re-thrown.
+
+> **Priority ordering matters.** Guardrail middleware (permissions, governance, exfiltration-guard) should sit at a *lower* priority than this formatter (default `170`) so its throws are wrapped *outside* this layer and never enter the catch block to begin with. The passthrough config is a defense-in-depth — the primary protection is the onion order.
+
 Cancellation is also propagated: if `request.signal.aborted` is true or the caught error is an `AbortError` / `code === "ABORT_ERR"` / `code === "ABORTED"`, the throw re-emerges so the turn runner's cancellation path fires.
 
 ## Failure Modes
