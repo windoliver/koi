@@ -36,14 +36,22 @@ function isNonEmptyError(value: unknown): boolean {
 }
 
 /**
- * True when the response carries any of the canonical denial / error markers
- * that downstream observers (`@koi/event-trace`, `@koi/middleware-report`,
- * `@koi/session-transcript`) honour. Soft-deny responses from
- * `middleware-permissions` set `metadata.blockedByHook = true` (and
- * `permissionDenied` for #1650). Hook-side errors set `metadata.isError =
- * true`. Without this check a denied tool with a primitive `output` string
- * would be misclassified as success and produce false-positive forge
- * candidates for blocked workflows.
+ * True when the response carries any of the canonical denial / safety-
+ * degraded markers that downstream observers (`@koi/event-trace`,
+ * `@koi/middleware-report`, `@koi/session-transcript`) honour. Soft-deny
+ * responses from `middleware-permissions` set `metadata.blockedByHook =
+ * true` (and `permissionDenied` for #1650). Hook-side errors set
+ * `metadata.isError = true`. The hooks middleware sets
+ * `metadata.committedButRedacted = true` when post-call hooks time out
+ * or are skipped under cancellation — the tool side-effect ran but the
+ * output was redacted to prevent leaks, so the workflow is not safe to
+ * forge.
+ *
+ * **Caveat**: the L0 `TurnTrace.tool_call` event only carries `output`,
+ * not the full `ToolResponse` shape. Metadata-based detection therefore
+ * only fires when the trace producer preserves the response envelope
+ * (e.g. by writing `{ output, metadata }` into `event.output`). Producers
+ * that drop `metadata` will silently fall back to payload-only inference.
  */
 function hasDenialMetadata(metadata: unknown): boolean {
   if (metadata === null || typeof metadata !== "object") return false;
@@ -51,8 +59,14 @@ function hasDenialMetadata(metadata: unknown): boolean {
     readonly blockedByHook?: unknown;
     readonly permissionDenied?: unknown;
     readonly isError?: unknown;
+    readonly committedButRedacted?: unknown;
   };
-  return m.blockedByHook === true || m.permissionDenied === true || m.isError === true;
+  return (
+    m.blockedByHook === true ||
+    m.permissionDenied === true ||
+    m.isError === true ||
+    m.committedButRedacted === true
+  );
 }
 
 /** True when `value` looks like a thrown JavaScript error preserved into the trace. */

@@ -146,6 +146,21 @@ describe("extractToolSequences", () => {
     expect(seqs[0]?.steps[0]?.outcome).toBe("failure");
   });
 
+  test("metadata.committedButRedacted (post-hook safety-degraded path) is failure", () => {
+    // The hooks middleware sets `committedButRedacted: true` when post-call
+    // hooks time out or are skipped under cancellation — the tool ran, but
+    // its output was redacted to prevent leaks. Such a workflow is not
+    // safe to forge: it completed under degraded safety controls.
+    const seqs = extractToolSequences([
+      createTrace(
+        0,
+        ["x"],
+        [{ output: "<redacted>", metadata: { committedButRedacted: true, hookName: "audit" } }],
+      ),
+    ]);
+    expect(seqs[0]?.steps[0]?.outcome).toBe("failure");
+  });
+
   test("benign metadata (provenance, hookName without denial flag) does not flip success", () => {
     const seqs = extractToolSequences([
       createTrace(
