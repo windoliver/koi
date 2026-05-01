@@ -693,6 +693,68 @@ describe("createToolDisclosureMiddleware", () => {
       expect(out.error?.message).toContain("different turn");
     });
 
+    test("stale-turn promote_tools call is rejected", async () => {
+      // Regression: a delayed/retried companion call from a prior turn must
+      // not mutate state that was rewritten by a newer wrapModelCall.
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      mw.notifyCompanionRegistered();
+      const tools: readonly ToolDescriptor[] = [...descriptors(10), createPromoteToolDescriptor()];
+      const sid: SessionId = sessionId("stale-promote");
+      const ctxT0 = createMockTurnContext({ session: { sessionId: sid }, turnIndex: 0 });
+      const ctxT1 = createMockTurnContext({ session: { sessionId: sid }, turnIndex: 1 });
+      await mw.wrapModelCall?.(ctxT0, { messages: [], tools }, captureNext().handler);
+      // Newer turn rewrites state
+      await mw.wrapModelCall?.(ctxT1, { messages: [], tools }, captureNext().handler);
+
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      const noopNext = async (): Promise<ToolResponse> => {
+        throw new Error("companion should be intercepted (stale or not)");
+      };
+      // Stale call from turn 0 arrives after turn 1 advanced state — reject
+      const response = await wrap(
+        ctxT0,
+        { toolId: PROMOTE_TOOL_NAME, input: { names: ["tool-3"] } },
+        noopNext,
+      );
+      const out = response.output as { ok: boolean; error?: { code: string; message: string } };
+      expect(out.ok).toBe(false);
+      expect(out.error?.code).toBe("VALIDATION");
+      expect(out.error?.message).toContain("cannot mutate the active advertisement");
+    });
+
+    test("below-threshold: duplicate names are dropped (fail closed in both modes)", async () => {
+      // Regression: the implicit-promotion path below the threshold must
+      // apply the same duplicate-name fail-closed as the disclosure path.
+      const mw = createToolDisclosureMiddleware({ threshold: 50 });
+      const sid: SessionId = sessionId("dup-lowt");
+      const ctxL = createMockTurnContext({ session: { sessionId: sid } });
+      const dupA: ToolDescriptor = {
+        name: "dup",
+        description: "impl-a",
+        inputSchema: { type: "object", properties: { x: { type: "string" } } },
+      };
+      const dupB: ToolDescriptor = {
+        name: "dup",
+        description: "impl-b",
+        inputSchema: { type: "object", properties: { y: { type: "number" } } },
+      };
+      const tools: readonly ToolDescriptor[] = [...descriptors(3), dupA, dupB];
+      const seen = captureNext();
+      await mw.wrapModelCall?.(ctxL, { messages: [], tools }, seen.handler);
+
+      const dupsInDisclosed = (seen.seen.request?.tools ?? []).filter((t) => t.name === "dup");
+      expect(dupsInDisclosed.length).toBe(0);
+
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      const noop = async (): Promise<ToolResponse> => ({ output: "ok" });
+      const response = await wrap(ctxL, { toolId: "dup", input: {} }, noop);
+      const out = response.output as { ok: boolean; error?: { code: string } };
+      expect(out.ok).toBe(false);
+      expect(out.error?.code).toBe("VALIDATION");
+    });
+
     test("duplicate-name tools in advertised set are dropped (fail closed)", async () => {
       // Regression: two distinct tools sharing one name would let a single
       // promotion authorize either implementation. The middleware drops

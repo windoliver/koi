@@ -341,11 +341,27 @@ export function createToolDisclosureMiddleware(
         // current fingerprints) and lastFingerprints so wrapToolCall rejects
         // stale/leaked names not in the latest advertised list, and a later
         // same-name swap still invalidates the implicit grant.
+        //
+        // Same duplicate-name fail-closed as the above-threshold path:
+        // ambiguous names are dropped from BOTH advertisement and state so
+        // a single promotion can't authorize either implementation.
         const state = getOrCreate(ctx.session.sessionId);
+        const seenLowt = new Set<string>();
+        const ambiguousLowt = new Set<string>();
+        for (const tool of request.tools) {
+          if (seenLowt.has(tool.name)) ambiguousLowt.add(tool.name);
+          else seenLowt.add(tool.name);
+        }
         const names = new Set<string>();
         const fingerprints = new Map<string, string>();
         const newPromoted = new Map<string, string>();
+        const filteredTools: ToolDescriptor[] = [];
+        const emittedLowt = new Set<string>();
         for (const tool of request.tools) {
+          if (ambiguousLowt.has(tool.name)) continue;
+          if (emittedLowt.has(tool.name)) continue;
+          emittedLowt.add(tool.name);
+          filteredTools.push(tool);
           names.add(tool.name);
           const fp = fingerprintDescriptor(tool);
           fingerprints.set(tool.name, fp);
@@ -360,7 +376,13 @@ export function createToolDisclosureMiddleware(
         // this same advertisement.
         state.executable = new Set(names);
         recordAdvertisement(state, ctx.turnId);
-        return next(request);
+        // Pass through unchanged when no duplicates were detected (preserves
+        // the zero-overhead below-threshold contract); otherwise hand the
+        // model only the deduped/disambiguated subset.
+        if (ambiguousLowt.size === 0 && filteredTools.length === request.tools.length) {
+          return next(request);
+        }
+        return next({ ...request, tools: filteredTools });
       }
       const state = getOrCreate(ctx.session.sessionId);
       const disclosed = disclose(state, request.tools);
@@ -388,6 +410,21 @@ export function createToolDisclosureMiddleware(
       // filtered it out for the turn.
       if (request.toolId === promoteToolName && companionToolRegistered) {
         const sessionState = sessions.get(ctx.session.sessionId);
+        // Stale-turn guard: a delayed/retried companion call from turn N
+        // must NOT mutate state that was rewritten by turn N+1. Reject
+        // when the companion call's turn does not match the active
+        // advertisement snapshot.
+        if (sessionState?.lastTurnId !== undefined && sessionState.lastTurnId !== ctx.turnId) {
+          return {
+            output: {
+              ok: false,
+              error: {
+                code: "VALIDATION",
+                message: `${promoteToolName} call from turn ${String(ctx.turnId)} cannot mutate the active advertisement (turn ${String(sessionState.lastTurnId)}).`,
+              },
+            } satisfies PromoteResult,
+          };
+        }
         const companionAdvertised =
           sessionState?.knownNames.has(promoteToolName) === true ||
           // If the session has never advertised any tool list (no
