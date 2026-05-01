@@ -537,16 +537,35 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
       // the owner token), so PID reuse cannot forge it. The PID-dead
       // path exists as a fast-recovery hint: if we can prove the
       // holder is gone, we don't need to wait for heartbeat staleness.
+      // Only break a lock on POSITIVE evidence: a parsed heartbeat
+      // older than HEARTBEAT_STALE_MS, OR a parsed PID we can prove
+      // is dead. Transient readFile failures, partial reads on flaky
+      // storage, permission problems, and unparseable JSON are NOT
+      // permission to steal the lock — that would let one transient
+      // I/O error allow a second coordinator to start while the first
+      // is still healthy. On any read/parse failure, conservatively
+      // treat the lock as live and refuse acquisition; the operator
+      // can manually delete a genuinely corrupt lockfile.
       // Use let — justified: assigned across try/catch.
       let stale = false;
+      // Use let — justified: assigned across try/catch boundary.
+      let metaReadable = false;
+      // Use let — justified: declared before try, assigned inside.
+      let parsedMeta: { heartbeatAt?: unknown; pid?: unknown } | undefined;
       try {
         const raw = await readFile(lockPath, "utf8");
-        const meta = JSON.parse(raw) as { heartbeatAt?: unknown; pid?: unknown };
+        parsedMeta = JSON.parse(raw) as { heartbeatAt?: unknown; pid?: unknown };
+        metaReadable = true;
+      } catch {
+        // Unreadable / corrupt lock file. Treat as live to avoid
+        // split-brain on transient I/O — the safer default.
+      }
+      if (metaReadable && parsedMeta !== undefined) {
         const heartbeatMs =
-          typeof meta.heartbeatAt === "string" ? Date.parse(meta.heartbeatAt) : Number.NaN;
-        if (!Number.isFinite(heartbeatMs)) {
-          stale = true;
-        } else {
+          typeof parsedMeta.heartbeatAt === "string"
+            ? Date.parse(parsedMeta.heartbeatAt)
+            : Number.NaN;
+        if (Number.isFinite(heartbeatMs)) {
           const ageMs = Date.now() - heartbeatMs;
           if (ageMs > HEARTBEAT_STALE_MS) stale = true;
         }
@@ -554,17 +573,14 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
         // if the heartbeat is fresh (the holder couldn't have updated
         // it). EPERM means the process exists under a different uid —
         // do NOT treat as dead. ESRCH = no such process.
-        if (!stale && typeof meta.pid === "number") {
+        if (!stale && typeof parsedMeta.pid === "number") {
           try {
-            process.kill(meta.pid, 0);
+            process.kill(parsedMeta.pid, 0);
           } catch (probeErr: unknown) {
             const probeCode = (probeErr as { readonly code?: unknown }).code;
             if (probeCode === "ESRCH") stale = true;
           }
         }
-      } catch {
-        // Unreadable / corrupt lock file — treat as stale.
-        stale = true;
       }
       if (!stale) {
         return {

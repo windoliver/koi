@@ -1361,6 +1361,36 @@ describe("VerifiedLoop.run", () => {
     }
   });
 
+  test("does not steal a live lock just because it is unparseable", async () => {
+    // Regression: a transient readFile fault, partial read on flaky
+    // storage, or zero-byte lock from a write crash would previously
+    // be treated as "stale", letting a second coordinator break a
+    // potentially-live lock and produce split-brain mutation. Treat
+    // unreadable/corrupt as live (CONFLICT) — operator must manually
+    // resolve a genuinely corrupt lock.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+    const lockPath = `${prdPath}.lock`;
+    await Bun.write(lockPath, "{ this is not valid json");
+    try {
+      const loop = createVerifiedLoop(makeConfig());
+      let threw: Error | undefined;
+      try {
+        await loop.run();
+      } catch (e: unknown) {
+        threw = e as Error;
+      }
+      expect(threw).toBeDefined();
+      expect(threw?.message).toContain("CONFLICT");
+      // Lock file must still be there — we did NOT steal it.
+      const stillThere = await Bun.file(lockPath).exists();
+      expect(stillThere).toBe(true);
+    } finally {
+      await Bun.file(lockPath)
+        .delete()
+        .catch(() => undefined);
+    }
+  });
+
   test("breaks a lock with a stale heartbeat", async () => {
     // Regression: a crashed coordinator leaves its lock file behind
     // with a heartbeat that no live owner is updating. After

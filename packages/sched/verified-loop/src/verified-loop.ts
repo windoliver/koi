@@ -36,6 +36,11 @@ const DEFAULT_MAX_CONSECUTIVE_FAILURES = 3;
 
 const ITERATOR_RETURN_TIMEOUT_MS = 5_000;
 const GATE_QUIESCE_TIMEOUT_MS = 5_000;
+// Refresh the PRD lock heartbeat on a wall-clock timer so a single long
+// iteration cannot exceed the staleness threshold and let a peer steal
+// the lock. 60s is well under the 15-min stale window and adds one
+// rename syscall per minute — negligible compared to iteration cost.
+const HEARTBEAT_REFRESH_INTERVAL_MS = 60_000;
 
 /**
  * Thrown when the runner's iterator.return() does not settle within the
@@ -253,9 +258,25 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           });
         }
       }
+      // Independent wall-clock heartbeat refresh. The per-iteration
+      // refresh inside runOnce is not enough on its own: a caller can
+      // legally configure a single iteration to run longer than
+      // HEARTBEAT_STALE_MS (no upper bound on iterationTimeoutMs +
+      // gateTimeoutMs), after which a peer would classify this live
+      // lock as stale and start a second coordinator. The interval
+      // ensures heartbeat freshness regardless of iteration length.
+      // unref() so a lingering interval cannot keep the event loop
+      // alive past loop completion.
+      const heartbeatTimer = setInterval(() => {
+        // Fire-and-forget: refresh failures are surfaced by the
+        // per-iteration check in runOnce, which throws fatally.
+        refreshPRDLock(lock).catch(() => undefined);
+      }, HEARTBEAT_REFRESH_INTERVAL_MS);
+      heartbeatTimer.unref?.();
       try {
         return await runOnce(ac, lock);
       } finally {
+        clearInterval(heartbeatTimer);
         runState = "completed";
         await releasePRDLock(lock);
       }
