@@ -57,7 +57,16 @@ const registryServerEnvelopeSchema = z.union([
 ]);
 
 export const registryServerResponseSchema: z.ZodType<RegistryServer> =
-  registryServerEnvelopeSchema.transform((value) => ("server" in value ? value.server : value));
+  registryServerEnvelopeSchema.transform((value) => {
+    if (!("server" in value)) return value;
+    // Preserve envelope-level `_meta` (subregistry-supplied scan results,
+    // auth hints, ratings) by merging it onto the inner server's `_meta`.
+    // Inner `_meta` wins on key conflict so server-authored data is canonical.
+    const envelopeMeta = value._meta;
+    if (envelopeMeta === undefined) return value.server;
+    const innerMeta = value.server._meta ?? {};
+    return { ...value.server, _meta: { ...envelopeMeta, ...innerMeta } };
+  });
 
 export const registrySearchResponseSchema: z.ZodType<RegistrySearchResponse> = z.object({
   servers: z.array(registryServerResponseSchema),

@@ -168,6 +168,37 @@ describe("createRegistryClient.getServer", () => {
     expect(result.error.code).toBe("NOT_FOUND");
   });
 
+  test("preserves envelope-level _meta on the parsed RegistryServer", async () => {
+    const client = createRegistryClient({
+      fetch: mockFetch(
+        () =>
+          new Response(
+            JSON.stringify({
+              server: {
+                name: "io.example/with-meta",
+                description: "x",
+                version: "1.0.0",
+                _meta: { "io.example/inner": { foo: "inner" } },
+              },
+              _meta: {
+                "io.modelcontextprotocol.registry/official": { isLatest: true, status: "active" },
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    });
+    const result = await client.getServer("io.example/with-meta");
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value._meta).toBeDefined();
+    expect(result.value._meta?.["io.modelcontextprotocol.registry/official"]).toEqual({
+      isLatest: true,
+      status: "active",
+    });
+    // Inner _meta wins on conflict; non-conflicting keys from both are present.
+    expect(result.value._meta?.["io.example/inner"]).toEqual({ foo: "inner" });
+  });
+
   test("unwraps the { server, _meta } envelope returned by the hosted registry", async () => {
     const client = createRegistryClient({
       fetch: mockFetch(

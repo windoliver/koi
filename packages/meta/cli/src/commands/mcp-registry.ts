@@ -16,7 +16,6 @@ import type {
 } from "@koi/mcp";
 import {
   computeServerKey,
-  createMcpConnection,
   createRegistryCache,
   createRegistryClient,
   installMcpServer,
@@ -26,6 +25,7 @@ import {
 } from "@koi/mcp";
 import { createSecureStorage } from "@koi/secure-storage";
 import type { McpFlags } from "../args.js";
+import { createOAuthAwareMcpConnection } from "../mcp-connection-factory.js";
 import { ExitCode } from "../types.js";
 
 const DEFAULT_SEARCH_LIMIT = 20;
@@ -241,7 +241,11 @@ function hasOAuthRequirement(server: RegistryServer): boolean {
 async function defaultVerifyConnection(
   config: ResolvedMcpServerConfig,
 ): Promise<Result<readonly McpToolInfo[], KoiError>> {
-  const conn = createMcpConnection(config);
+  // Use the OAuth-aware connection factory so HTTP servers with an `oauth`
+  // block (which `pickPackageForInstall` always emits for http remotes)
+  // perform Dynamic Client Registration + interactive flow against the
+  // CLI runtime instead of failing the dry-run with a 401.
+  const conn = createOAuthAwareMcpConnection(config.server);
   try {
     return await conn.listTools();
   } finally {

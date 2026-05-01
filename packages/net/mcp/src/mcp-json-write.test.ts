@@ -91,8 +91,8 @@ describe("addServerToMcpJson", () => {
       );
       await addServerToMcpJson(path, "foo", { type: "http", url: "https://x" });
       const file = JSON.parse(await Bun.file(path).text()) as Record<string, unknown>;
-      expect(file["$schema"]).toBe("https://example.com/schema.json");
-      expect(file["customSetting"]).toBe("preserved");
+      expect(file.$schema).toBe("https://example.com/schema.json");
+      expect(file.customSetting).toBe("preserved");
     } finally {
       cleanup();
     }
@@ -132,6 +132,64 @@ describe("addServerToMcpJson", () => {
         mcpServers: Record<string, unknown>;
       };
       expect(file.mcpServers.foo).toEqual({ type: "http", url: "https://x" });
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("concurrent writes (file lock)", () => {
+  test("two parallel addServerToMcpJson calls do not lose entries", async () => {
+    const { path, cleanup } = tmpFile();
+    try {
+      const calls = Array.from({ length: 8 }, (_, i) =>
+        addServerToMcpJson(path, `server-${i}`, { type: "http", url: `https://${i}.x` }),
+      );
+      const results = await Promise.all(calls);
+      for (const r of results) expect(r.ok).toBe(true);
+
+      const file = JSON.parse(await Bun.file(path).text()) as {
+        mcpServers: Record<string, unknown>;
+      };
+      expect(Object.keys(file.mcpServers).sort()).toEqual([
+        "server-0",
+        "server-1",
+        "server-2",
+        "server-3",
+        "server-4",
+        "server-5",
+        "server-6",
+        "server-7",
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("interleaved add + remove operations remain consistent", async () => {
+    const { path, cleanup } = tmpFile();
+    try {
+      // Seed.
+      await addServerToMcpJson(path, "keep", { type: "stdio", command: "x" });
+      // Race adds against a removal of the same name.
+      const tasks: Array<Promise<unknown>> = [];
+      for (let i = 0; i < 5; i++) {
+        tasks.push(addServerToMcpJson(path, `s-${i}`, { type: "http", url: `https://${i}.x` }));
+      }
+      tasks.push(removeServerFromMcpJson(path, "keep"));
+      await Promise.all(tasks);
+
+      const file = JSON.parse(await Bun.file(path).text()) as {
+        mcpServers: Record<string, unknown>;
+      };
+      // All 5 adds must be present; "keep" must be gone.
+      const keys = Object.keys(file.mcpServers).sort();
+      expect(keys).toContain("s-0");
+      expect(keys).toContain("s-1");
+      expect(keys).toContain("s-2");
+      expect(keys).toContain("s-3");
+      expect(keys).toContain("s-4");
+      expect(keys).not.toContain("keep");
     } finally {
       cleanup();
     }
