@@ -164,287 +164,321 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
   const gateTimeoutMs = config.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
   const maxConsecutiveFailures = config.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_FAILURES;
 
-  const abortController = new AbortController();
-
-  if (config.signal) {
-    if (config.signal.aborted) {
-      abortController.abort(config.signal.reason);
-    } else {
-      config.signal.addEventListener("abort", () => {
-        abortController.abort(config.signal?.reason);
-      });
-    }
-  }
+  // Single-use enforcement. Sharing one AbortController across multiple
+  // run() calls would mean: a stop() on call N silently disables call N+1
+  // (the signal stays aborted forever). Concurrent run() calls would
+  // race themselves on the same PRD with shared cancellation. Make the
+  // contract explicit instead: each createVerifiedLoop() returns a
+  // single-use, single-flight loop. Use a fresh factory call to start a
+  // new run.
+  // Use let — justified: lifecycle flag toggled by run().
+  let runState: "pending" | "running" | "completed" = "pending";
+  // Use let — justified: assigned on run() entry so stop() can target
+  // the live invocation; null between runs.
+  let abortController: AbortController | null = null;
 
   return {
     run: async (): Promise<VerifiedLoopResult> => {
-      const startTime = performance.now();
-      const iterationRecords: IterationRecord[] = [];
-
-      const prdResult = await readPRD(prdPath);
-      if (!prdResult.ok) {
-        // Cannot read or parse the PRD — refuse to silently succeed.
-        // A scheduler that gets `iterations: 0` from a missing/corrupt PRD
-        // would falsely mark the run as a clean no-op. Surface the error.
+      if (runState === "running") {
         throw new Error(
-          `VerifiedLoop: cannot read PRD at ${prdPath} (${prdResult.error.code}): ${prdResult.error.message}`,
+          "VerifiedLoop.run(): already running — this loop instance is single-flight; create a new instance for a parallel run",
         );
       }
-
-      if (prdResult.value.items.every((i) => i.done || i.skipped)) {
-        return {
-          iterations: 0,
-          completed: prdResult.value.items.filter((i) => i.done).map((i) => i.id),
-          remaining: [],
-          skipped: prdResult.value.items.filter((i) => i.skipped).map((i) => i.id),
-          learnings: await readLearnings(learningsPath),
-          durationMs: performance.now() - startTime,
-          iterationRecords: [],
-        };
+      if (runState === "completed") {
+        throw new Error(
+          "VerifiedLoop.run(): this loop instance has already completed; create a new instance to run again",
+        );
       }
-
-      for (
-        // Use let — justified: outer loop counter
-        let i = 1;
-        i <= maxIterations && !abortController.signal.aborted;
-        i++
-      ) {
-        const iterStart = performance.now();
-
-        const currentPrd = await readPRD(prdPath);
-        if (!currentPrd.ok) {
-          // PRD became unreadable mid-loop (concurrent overwrite, disk error,
-          // or someone deleted it). Same as initial-read failure — surface it.
-          throw new Error(
-            `VerifiedLoop: PRD became unreadable mid-loop at ${prdPath} (${currentPrd.error.code}): ${currentPrd.error.message}`,
-          );
-        }
-
-        const current = nextItem(currentPrd.value.items);
-        if (!current) break;
-
-        const learnings = await readLearnings(learningsPath);
-        const remainingItems = currentPrd.value.items.filter((x) => !x.done && !x.skipped);
-        const completedItems = currentPrd.value.items.filter((x) => x.done);
-
-        const promptText = config.iterationPrompt({
-          iteration: i,
-          currentItem: current,
-          remainingItems,
-          completedItems,
-          learnings,
-          totalIterations: maxIterations,
-        });
-
-        // Use let — justified: mutable error tracking across try/catch
-        let iterError: string | undefined;
-        // Construct iterSignal in outer scope so we can check `.aborted`
-        // after the drain to decide whether the iteration's work is trusted.
-        const iterSignal = AbortSignal.any([
-          abortController.signal,
-          AbortSignal.timeout(iterationTimeoutMs),
-        ]);
-        try {
-          const input: EngineInput = { kind: "text", text: promptText, signal: iterSignal };
-          await drainWithAbort(config.runIteration(input), iterSignal);
-        } catch (e: unknown) {
-          // RunnerStuckError = uncancellable runner; we cannot proceed to
-          // verification or the next iteration without risking overlapping
-          // work. Surface it as a fatal run-level error.
-          if (e instanceof RunnerStuckError) throw e;
-          iterError = extractMessage(e);
-        }
-
-        // Use let — justified: mutable gate result.
-        let gateResult: VerificationResult;
-        if (iterSignal.aborted || iterError !== undefined) {
-          // The iteration was aborted, timed out, or the runner threw.
-          // Skip verify entirely: a stale workspace can satisfy a file gate
-          // (passed:true) and falsely mark the item done despite the runner
-          // never completing successfully. Runner crashes/exceptions are
-          // just as untrusted as cancellation. Whether this counts against
-          // the per-item failure budget is decided below by `cancelled`
-          // (loop-level abort = no, runner crash = yes).
-          const reason = iterSignal.aborted
-            ? "Iteration aborted/timed out"
-            : "Iteration runner threw";
-          gateResult = {
-            passed: false,
-            details: iterError
-              ? `${reason} before verification could run: ${iterError}`
-              : `${reason} before verification could run`,
-          };
+      runState = "running";
+      const ac = new AbortController();
+      abortController = ac;
+      if (config.signal) {
+        if (config.signal.aborted) {
+          ac.abort(config.signal.reason);
         } else {
-          const gateSignal = AbortSignal.any([
-            abortController.signal,
-            AbortSignal.timeout(gateTimeoutMs),
-          ]);
-          try {
-            const gatePromise = config.verify({
-              iteration: i,
-              currentItem: current,
-              workingDir,
-              iterationRecords: [...iterationRecords],
-              learnings,
-              remainingItems,
-              completedItems,
-              signal: gateSignal,
-            });
-            const timeoutPromise = new Promise<never>((_, reject) => {
-              gateSignal.addEventListener("abort", () => reject(new Error("Gate timed out")), {
-                once: true,
-              });
-            });
-            gateResult = await Promise.race([gatePromise, timeoutPromise]);
-          } catch (e: unknown) {
-            gateResult = { passed: false, details: `Gate error: ${extractMessage(e)}` };
-          }
-        }
-
-        // Operator-stop / external-abort is NOT a verification failure. Do not
-        // consume the per-item skip budget when the loop is being torn down —
-        // a noisy operator who restarts often would otherwise mark unrelated
-        // items as skipped. The abortController.signal is the loop-level signal
-        // (loop.stop() or external config.signal); a per-call gate timeout
-        // fires the local gateSignal but leaves abortController.signal clear.
-        const cancelled = abortController.signal.aborted;
-
-        if (gateResult.passed) {
-          // A passing gate always marks the current item done. itemsCompleted
-          // adds *additional* ids (e.g., a single iteration that completes
-          // multiple work items). Persisted as ONE atomic write so a crash
-          // cannot commit only a prefix of the verified set.
-          const requested = [
-            ...new Set<string>([current.id, ...(gateResult.itemsCompleted ?? [])]),
-          ];
-          // Filter out ghost ids (gate-API misuse, not a storage error). The
-          // current PRD snapshot is currentPrd.value — anything not present
-          // there is logged and dropped before the atomic write.
-          const validIds = new Set(currentPrd.value.items.map((it) => it.id));
-          const toComplete = requested.filter((id) => {
-            if (validIds.has(id)) return true;
-            console.warn(
-              `[verified-loop] Failed to mark item "${id}" as done: PRD item not found: ${id}`,
-            );
-            return false;
+          config.signal.addEventListener("abort", () => {
+            ac.abort(config.signal?.reason);
           });
-          if (toComplete.length > 0) {
-            const doneResult = await markDoneMany(prdPath, toComplete);
-            if (!doneResult.ok) {
-              // PRD persistence is the source of truth — refuse to keep
-              // iterating on an unknown state. Surface storage failure.
-              throw new Error(
-                `VerifiedLoop: failed to persist completion for [${toComplete.join(", ")}] (${doneResult.error.code}): ${doneResult.error.message}`,
-              );
-            }
-          }
-        } else if (!cancelled) {
-          // Persist the consecutive-failure count to disk. May be retried
-          // once on a stale-snapshot CONFLICT (concurrent unrelated edit);
-          // a CONFLICT that resolves to "item is now done" is treated as
-          // out-of-band completion and the bump is skipped. Other errors
-          // remain fatal — without a working skip budget on disk, a
-          // permanently failing item could be retried indefinitely.
-          // Use let — justified: retry counter for stale-snapshot CAS races.
-          let bumpAttempts = 0;
-          while (true) {
-            bumpAttempts++;
-            const bumpResult = await bumpFailureCount(prdPath, current.id, maxConsecutiveFailures);
-            if (bumpResult.ok) break;
-            if (bumpResult.error.code !== "CONFLICT") {
-              throw new Error(
-                `VerifiedLoop: failed to persist failure count for "${current.id}" (${bumpResult.error.code}): ${bumpResult.error.message}`,
-              );
-            }
-            // CONFLICT — distinguish "item became done out-of-band" from
-            // "generic stale snapshot due to concurrent edit". Re-read.
-            const recheck = await readPRD(prdPath);
-            if (!recheck.ok) {
-              throw new Error(
-                `VerifiedLoop: PRD became unreadable after CONFLICT for "${current.id}" (${recheck.error.code}): ${recheck.error.message}`,
-              );
-            }
-            const item = recheck.value.items.find((it) => it.id === current.id);
-            if (item?.done === true) {
-              console.warn(
-                `[verified-loop] Skipping failure-count bump for "${current.id}" (already completed): ${bumpResult.error.message}`,
-              );
-              break;
-            }
-            // Generic stale-snapshot conflict (another writer touched
-            // unrelated rows). Retry once with fresh state.
-            if (bumpAttempts >= 2) {
-              throw new Error(
-                `VerifiedLoop: failed to persist failure count for "${current.id}" after retry (concurrent writers contending on PRD): ${bumpResult.error.message}`,
-              );
-            }
-          }
-        }
-
-        const learningEntry: LearningsEntry = {
-          iteration: i,
-          timestamp: new Date().toISOString(),
-          itemId: current.id,
-          discovered: gateResult.passed ? [`Item ${current.id} completed`] : [],
-          failed: iterError
-            ? [iterError]
-            : !gateResult.passed
-              ? [gateResult.details ?? "Gate failed"]
-              : [],
-          context: `Working on: ${current.description}`,
-        };
-        // Learnings are advisory — never fail the run after PRD state has
-        // already been mutated. A learnings disk error here would leave the
-        // caller with a thrown run() but the authoritative item state already
-        // committed, which is exactly the retry/rollback ambiguity we avoid.
-        try {
-          await appendLearning(learningsPath, learningEntry, maxLearningEntries);
-        } catch (e: unknown) {
-          console.warn(
-            `[verified-loop] Failed to append learning entry (non-fatal): ${extractMessage(e)}`,
-          );
-        }
-
-        const record: IterationRecord = {
-          iteration: i,
-          itemId: current.id,
-          durationMs: performance.now() - iterStart,
-          gateResult,
-          error: iterError,
-        };
-        iterationRecords.push(record);
-        if (config.onIteration) {
-          try {
-            config.onIteration(record);
-          } catch (e: unknown) {
-            console.warn(`[verified-loop] onIteration callback threw: ${extractMessage(e)}`);
-          }
         }
       }
-
-      const finalPrd = await readPRD(prdPath);
-      if (!finalPrd.ok) {
-        // Same contract as the initial and mid-loop reads — never collapse a
-        // storage failure into "0 items, all done". Force the caller to handle.
-        throw new Error(
-          `VerifiedLoop: cannot read final PRD at ${prdPath} (${finalPrd.error.code}): ${finalPrd.error.message}`,
-        );
+      try {
+        return await runOnce(ac);
+      } finally {
+        runState = "completed";
       }
-      const finalItems = finalPrd.value.items;
-
-      return {
-        iterations: iterationRecords.length,
-        completed: finalItems.filter((i) => i.done).map((i) => i.id),
-        remaining: finalItems.filter((i) => !i.done && !i.skipped).map((i) => i.id),
-        skipped: finalItems.filter((i) => i.skipped === true).map((i) => i.id),
-        learnings: await readLearnings(learningsPath),
-        durationMs: performance.now() - startTime,
-        iterationRecords,
-      };
     },
 
     stop: (): void => {
-      abortController.abort("Verified loop stopped");
+      // Idempotent — stopping a non-running or already-completed loop is a
+      // no-op. Targets only the in-flight run; a future invocation would
+      // throw at the lifecycle guard above anyway.
+      abortController?.abort("Verified loop stopped");
     },
   };
+
+  // The actual run loop, factored out so the lifecycle guard above stays
+  // readable and the abort controller is scoped to each invocation.
+  async function runOnce(abortController: AbortController): Promise<VerifiedLoopResult> {
+    const startTime = performance.now();
+    const iterationRecords: IterationRecord[] = [];
+
+    const prdResult = await readPRD(prdPath);
+    if (!prdResult.ok) {
+      // Cannot read or parse the PRD — refuse to silently succeed.
+      // A scheduler that gets `iterations: 0` from a missing/corrupt PRD
+      // would falsely mark the run as a clean no-op. Surface the error.
+      throw new Error(
+        `VerifiedLoop: cannot read PRD at ${prdPath} (${prdResult.error.code}): ${prdResult.error.message}`,
+      );
+    }
+
+    if (prdResult.value.items.every((i) => i.done || i.skipped)) {
+      return {
+        iterations: 0,
+        completed: prdResult.value.items.filter((i) => i.done).map((i) => i.id),
+        remaining: [],
+        skipped: prdResult.value.items.filter((i) => i.skipped).map((i) => i.id),
+        learnings: await readLearnings(learningsPath),
+        durationMs: performance.now() - startTime,
+        iterationRecords: [],
+      };
+    }
+
+    for (
+      // Use let — justified: outer loop counter
+      let i = 1;
+      i <= maxIterations && !abortController.signal.aborted;
+      i++
+    ) {
+      const iterStart = performance.now();
+
+      const currentPrd = await readPRD(prdPath);
+      if (!currentPrd.ok) {
+        // PRD became unreadable mid-loop (concurrent overwrite, disk error,
+        // or someone deleted it). Same as initial-read failure — surface it.
+        throw new Error(
+          `VerifiedLoop: PRD became unreadable mid-loop at ${prdPath} (${currentPrd.error.code}): ${currentPrd.error.message}`,
+        );
+      }
+
+      const current = nextItem(currentPrd.value.items);
+      if (!current) break;
+
+      const learnings = await readLearnings(learningsPath);
+      const remainingItems = currentPrd.value.items.filter((x) => !x.done && !x.skipped);
+      const completedItems = currentPrd.value.items.filter((x) => x.done);
+
+      const promptText = config.iterationPrompt({
+        iteration: i,
+        currentItem: current,
+        remainingItems,
+        completedItems,
+        learnings,
+        totalIterations: maxIterations,
+      });
+
+      // Use let — justified: mutable error tracking across try/catch
+      let iterError: string | undefined;
+      // Construct iterSignal in outer scope so we can check `.aborted`
+      // after the drain to decide whether the iteration's work is trusted.
+      const iterSignal = AbortSignal.any([
+        abortController.signal,
+        AbortSignal.timeout(iterationTimeoutMs),
+      ]);
+      try {
+        const input: EngineInput = { kind: "text", text: promptText, signal: iterSignal };
+        await drainWithAbort(config.runIteration(input), iterSignal);
+      } catch (e: unknown) {
+        // RunnerStuckError = uncancellable runner; we cannot proceed to
+        // verification or the next iteration without risking overlapping
+        // work. Surface it as a fatal run-level error.
+        if (e instanceof RunnerStuckError) throw e;
+        iterError = extractMessage(e);
+      }
+
+      // Use let — justified: mutable gate result.
+      let gateResult: VerificationResult;
+      if (iterSignal.aborted || iterError !== undefined) {
+        // The iteration was aborted, timed out, or the runner threw.
+        // Skip verify entirely: a stale workspace can satisfy a file gate
+        // (passed:true) and falsely mark the item done despite the runner
+        // never completing successfully. Runner crashes/exceptions are
+        // just as untrusted as cancellation. Whether this counts against
+        // the per-item failure budget is decided below by `cancelled`
+        // (loop-level abort = no, runner crash = yes).
+        const reason = iterSignal.aborted
+          ? "Iteration aborted/timed out"
+          : "Iteration runner threw";
+        gateResult = {
+          passed: false,
+          details: iterError
+            ? `${reason} before verification could run: ${iterError}`
+            : `${reason} before verification could run`,
+        };
+      } else {
+        const gateSignal = AbortSignal.any([
+          abortController.signal,
+          AbortSignal.timeout(gateTimeoutMs),
+        ]);
+        try {
+          const gatePromise = config.verify({
+            iteration: i,
+            currentItem: current,
+            workingDir,
+            iterationRecords: [...iterationRecords],
+            learnings,
+            remainingItems,
+            completedItems,
+            signal: gateSignal,
+          });
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            gateSignal.addEventListener("abort", () => reject(new Error("Gate timed out")), {
+              once: true,
+            });
+          });
+          gateResult = await Promise.race([gatePromise, timeoutPromise]);
+        } catch (e: unknown) {
+          gateResult = { passed: false, details: `Gate error: ${extractMessage(e)}` };
+        }
+      }
+
+      // Operator-stop / external-abort is NOT a verification failure. Do not
+      // consume the per-item skip budget when the loop is being torn down —
+      // a noisy operator who restarts often would otherwise mark unrelated
+      // items as skipped. The abortController.signal is the loop-level signal
+      // (loop.stop() or external config.signal); a per-call gate timeout
+      // fires the local gateSignal but leaves abortController.signal clear.
+      const cancelled = abortController.signal.aborted;
+
+      if (gateResult.passed) {
+        // A passing gate always marks the current item done. itemsCompleted
+        // adds *additional* ids (e.g., a single iteration that completes
+        // multiple work items). Persisted as ONE atomic write so a crash
+        // cannot commit only a prefix of the verified set.
+        const requested = [...new Set<string>([current.id, ...(gateResult.itemsCompleted ?? [])])];
+        // Filter out ghost ids (gate-API misuse, not a storage error). The
+        // current PRD snapshot is currentPrd.value — anything not present
+        // there is logged and dropped before the atomic write.
+        const validIds = new Set(currentPrd.value.items.map((it) => it.id));
+        const toComplete = requested.filter((id) => {
+          if (validIds.has(id)) return true;
+          console.warn(
+            `[verified-loop] Failed to mark item "${id}" as done: PRD item not found: ${id}`,
+          );
+          return false;
+        });
+        if (toComplete.length > 0) {
+          const doneResult = await markDoneMany(prdPath, toComplete);
+          if (!doneResult.ok) {
+            // PRD persistence is the source of truth — refuse to keep
+            // iterating on an unknown state. Surface storage failure.
+            throw new Error(
+              `VerifiedLoop: failed to persist completion for [${toComplete.join(", ")}] (${doneResult.error.code}): ${doneResult.error.message}`,
+            );
+          }
+        }
+      } else if (!cancelled) {
+        // Persist the consecutive-failure count to disk. May be retried
+        // once on a stale-snapshot CONFLICT (concurrent unrelated edit);
+        // a CONFLICT that resolves to "item is now done" is treated as
+        // out-of-band completion and the bump is skipped. Other errors
+        // remain fatal — without a working skip budget on disk, a
+        // permanently failing item could be retried indefinitely.
+        // Use let — justified: retry counter for stale-snapshot CAS races.
+        let bumpAttempts = 0;
+        while (true) {
+          bumpAttempts++;
+          const bumpResult = await bumpFailureCount(prdPath, current.id, maxConsecutiveFailures);
+          if (bumpResult.ok) break;
+          if (bumpResult.error.code !== "CONFLICT") {
+            throw new Error(
+              `VerifiedLoop: failed to persist failure count for "${current.id}" (${bumpResult.error.code}): ${bumpResult.error.message}`,
+            );
+          }
+          // CONFLICT — distinguish "item became done out-of-band" from
+          // "generic stale snapshot due to concurrent edit". Re-read.
+          const recheck = await readPRD(prdPath);
+          if (!recheck.ok) {
+            throw new Error(
+              `VerifiedLoop: PRD became unreadable after CONFLICT for "${current.id}" (${recheck.error.code}): ${recheck.error.message}`,
+            );
+          }
+          const item = recheck.value.items.find((it) => it.id === current.id);
+          if (item?.done === true) {
+            console.warn(
+              `[verified-loop] Skipping failure-count bump for "${current.id}" (already completed): ${bumpResult.error.message}`,
+            );
+            break;
+          }
+          // Generic stale-snapshot conflict (another writer touched
+          // unrelated rows). Retry once with fresh state.
+          if (bumpAttempts >= 2) {
+            throw new Error(
+              `VerifiedLoop: failed to persist failure count for "${current.id}" after retry (concurrent writers contending on PRD): ${bumpResult.error.message}`,
+            );
+          }
+        }
+      }
+
+      const learningEntry: LearningsEntry = {
+        iteration: i,
+        timestamp: new Date().toISOString(),
+        itemId: current.id,
+        discovered: gateResult.passed ? [`Item ${current.id} completed`] : [],
+        failed: iterError
+          ? [iterError]
+          : !gateResult.passed
+            ? [gateResult.details ?? "Gate failed"]
+            : [],
+        context: `Working on: ${current.description}`,
+      };
+      // Learnings are advisory — never fail the run after PRD state has
+      // already been mutated. A learnings disk error here would leave the
+      // caller with a thrown run() but the authoritative item state already
+      // committed, which is exactly the retry/rollback ambiguity we avoid.
+      try {
+        await appendLearning(learningsPath, learningEntry, maxLearningEntries);
+      } catch (e: unknown) {
+        console.warn(
+          `[verified-loop] Failed to append learning entry (non-fatal): ${extractMessage(e)}`,
+        );
+      }
+
+      const record: IterationRecord = {
+        iteration: i,
+        itemId: current.id,
+        durationMs: performance.now() - iterStart,
+        gateResult,
+        error: iterError,
+      };
+      iterationRecords.push(record);
+      if (config.onIteration) {
+        try {
+          config.onIteration(record);
+        } catch (e: unknown) {
+          console.warn(`[verified-loop] onIteration callback threw: ${extractMessage(e)}`);
+        }
+      }
+    }
+
+    const finalPrd = await readPRD(prdPath);
+    if (!finalPrd.ok) {
+      // Same contract as the initial and mid-loop reads — never collapse a
+      // storage failure into "0 items, all done". Force the caller to handle.
+      throw new Error(
+        `VerifiedLoop: cannot read final PRD at ${prdPath} (${finalPrd.error.code}): ${finalPrd.error.message}`,
+      );
+    }
+    const finalItems = finalPrd.value.items;
+
+    return {
+      iterations: iterationRecords.length,
+      completed: finalItems.filter((i) => i.done).map((i) => i.id),
+      remaining: finalItems.filter((i) => !i.done && !i.skipped).map((i) => i.id),
+      skipped: finalItems.filter((i) => i.skipped === true).map((i) => i.id),
+      learnings: await readLearnings(learningsPath),
+      durationMs: performance.now() - startTime,
+      iterationRecords,
+    };
+  }
 }

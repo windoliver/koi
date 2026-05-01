@@ -952,6 +952,52 @@ describe("VerifiedLoop.run", () => {
     expect(result.iterationRecords[0]?.gateResult.passed).toBe(false);
   }, 5_000);
 
+  test("rejects a second run() on the same instance (single-use contract)", async () => {
+    // Regression: createVerifiedLoop returned an object with reusable
+    // run/stop methods, but state (especially abortController) was
+    // shared across calls. Once stop() fired, subsequent run() returned
+    // immediately with pending items untouched. Make the contract
+    // explicit: each instance is single-use; create a new one to run again.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+    const loop = createVerifiedLoop(makeConfig());
+    await loop.run();
+    let threw = false;
+    let message: string | undefined;
+    try {
+      await loop.run();
+    } catch (e: unknown) {
+      threw = true;
+      message = e instanceof Error ? e.message : String(e);
+    }
+    expect(threw).toBe(true);
+    expect(message).toContain("already completed");
+  });
+
+  test("rejects an overlapping concurrent run() on the same instance", async () => {
+    // Regression: two callers could await loop.run() in parallel and
+    // both operate on the same PRD with shared cancellation. Single-flight
+    // guard rejects the second call immediately.
+    await writePrd({
+      items: [
+        { id: "a", description: "Task A", done: false },
+        { id: "b", description: "Task B", done: false },
+      ],
+    });
+    const loop = createVerifiedLoop(makeConfig());
+    const p1 = loop.run();
+    let threw = false;
+    let message: string | undefined;
+    try {
+      await loop.run();
+    } catch (e: unknown) {
+      threw = true;
+      message = e instanceof Error ? e.message : String(e);
+    }
+    await p1;
+    expect(threw).toBe(true);
+    expect(message).toContain("already running");
+  });
+
   test("aborts the run fatally when iterator has no return() and is cancelled", async () => {
     // Regression: runIteration is consumer-injected and only typed as
     // AsyncIterable; iterator.return() is optional. Without return(), we
