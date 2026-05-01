@@ -228,10 +228,28 @@ export function createToolDisclosureMiddleware(
     tools: readonly ToolDescriptor[],
   ): readonly ToolDescriptor[] {
     if (tools.length <= threshold) return tools;
+    // Duplicate-name detection. Two distinct tools sharing one name would
+    // collapse into a single fingerprint in our state, so a promotion of
+    // the name could authorize either implementation. We can't disambiguate
+    // here, so fail closed: pass-1 finds duplicates, pass-2 omits the
+    // ambiguous name from BOTH the advertised set AND our authorization
+    // state. The model will not see the tool; if it somehow tries to call
+    // it, wrapToolCall's "not in advertised set" guard rejects it.
+    const seen = new Set<string>();
+    const ambiguous = new Set<string>();
+    for (const tool of tools) {
+      if (seen.has(tool.name)) ambiguous.add(tool.name);
+      else seen.add(tool.name);
+    }
+
     const result: ToolDescriptor[] = [];
     const names = new Set<string>();
     const currentFingerprints = new Map<string, string>();
+    const emitted = new Set<string>();
     for (const tool of tools) {
+      if (ambiguous.has(tool.name)) continue;
+      if (emitted.has(tool.name)) continue;
+      emitted.add(tool.name);
       names.add(tool.name);
       const fp = fingerprintDescriptor(tool);
       currentFingerprints.set(tool.name, fp);

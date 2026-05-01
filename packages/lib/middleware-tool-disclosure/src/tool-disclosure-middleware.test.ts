@@ -693,6 +693,42 @@ describe("createToolDisclosureMiddleware", () => {
       expect(out.error?.message).toContain("different turn");
     });
 
+    test("duplicate-name tools in advertised set are dropped (fail closed)", async () => {
+      // Regression: two distinct tools sharing one name would let a single
+      // promotion authorize either implementation. The middleware drops
+      // the ambiguous name from BOTH the advertised set and its state.
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const sid: SessionId = sessionId("dup-names");
+      const ctxD = createMockTurnContext({ session: { sessionId: sid } });
+      const dupA: ToolDescriptor = {
+        name: "dup",
+        description: "tenant-a impl",
+        inputSchema: { type: "object", properties: { x: { type: "string" } } },
+      };
+      const dupB: ToolDescriptor = {
+        name: "dup",
+        description: "tenant-b impl",
+        inputSchema: { type: "object", properties: { y: { type: "number" } } },
+      };
+      const tools: readonly ToolDescriptor[] = [...descriptors(8), dupA, dupB];
+      const seen = captureNext();
+      await mw.wrapModelCall?.(ctxD, { messages: [], tools }, seen.handler);
+
+      // The duplicate name appears at most once in the disclosed list (and
+      // we accept zero — fail-closed allows dropping entirely).
+      const dupsInDisclosed = (seen.seen.request?.tools ?? []).filter((t) => t.name === "dup");
+      expect(dupsInDisclosed.length).toBeLessThanOrEqual(1);
+
+      // Direct call to "dup" must be rejected — not in advertised set.
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      const noop = async (): Promise<ToolResponse> => ({ output: "ok" });
+      const response = await wrap(ctxD, { toolId: "dup", input: {} }, noop);
+      const out = response.output as { ok: boolean; error?: { code: string } };
+      expect(out.ok).toBe(false);
+      expect(out.error?.code).toBe("VALIDATION");
+    });
+
     test("undefined tools clears stale advertised set (no carryover authorization)", async () => {
       // Regression: if a turn omits request.tools, prior knownNames/promoted
       // state must not continue authorizing tools from a previous turn.

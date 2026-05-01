@@ -555,6 +555,43 @@ describe("createToolErrorFormatterMiddleware", () => {
     });
   });
 
+  describe("metadata JSON-safety", () => {
+    test("ToolResponse.metadata survives JSON.stringify with bigint/Date/function context", async () => {
+      // Regression: KoiError.context with non-JSON-safe values (bigint, Date,
+      // function, symbol) must be coerced before reaching metadata.context.
+      // Otherwise a downstream serializer (audit, transcript) would throw and
+      // turn a handled tool failure into a turn-level crash.
+      const wrap = getWrapToolCall();
+      const err = {
+        name: "KoiRuntimeError",
+        code: "EXTERNAL",
+        message: "downstream failed",
+        retryable: true,
+        context: {
+          big: 12345678901234567890n,
+          when: new Date("2026-01-01T00:00:00Z"),
+          handler: () => "should not be serialized",
+          marker: Symbol("test"),
+          regular: "ok",
+        },
+      };
+      const failing = createFailingToolHandler(err);
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+
+      expect(response.metadata?.error).toBe(true);
+      // Must not throw.
+      const serialized = JSON.stringify(response.metadata);
+      expect(typeof serialized).toBe("string");
+      const parsed = JSON.parse(serialized) as {
+        context?: { big?: unknown; when?: unknown; handler?: unknown; marker?: unknown };
+      };
+      expect(parsed.context?.big).toBe("12345678901234567890n");
+      expect(parsed.context?.when).toBe("2026-01-01T00:00:00.000Z");
+      expect(parsed.context?.handler).toBe("[function]");
+      expect(parsed.context?.marker).toBe("[symbol]");
+    });
+  });
+
   describe("guardrail provenance propagation", () => {
     test("error with guardrail:true is re-thrown without explicit passthroughCodes", async () => {
       // Regression: defense-in-depth — guardrail errors propagate regardless

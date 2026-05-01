@@ -100,12 +100,30 @@ function sanitizeJsonValueInner(
   seen: WeakSet<object>,
 ): unknown {
   if (typeof value === "string") return sanitizeSecrets(value, patterns);
+  // JSON-safe primitives pass through unchanged.
+  if (value === null) return null;
+  if (typeof value === "boolean" || typeof value === "number") {
+    return Number.isFinite(value) || typeof value === "boolean" ? value : null;
+  }
+  // Non-JSON-serializable runtime values: coerce to strings (with secret
+  // sanitization) or drop. Without this, JSON.stringify on the resulting
+  // metadata would throw on bigint/function/symbol downstream and turn a
+  // handled tool error into a turn-level crash.
+  if (typeof value === "bigint") return sanitizeSecrets(`${value.toString()}n`, patterns);
+  if (typeof value === "function" || typeof value === "symbol") {
+    return `[${typeof value}]`;
+  }
+  if (typeof value === "undefined") return null;
+  // Date and other built-ins with sensible toJSON / toISOString.
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+  }
   if (Array.isArray(value)) {
     if (seen.has(value)) return CYCLE_MARKER;
     seen.add(value);
     return value.map((v) => sanitizeJsonValueInner(v, patterns, seen));
   }
-  if (value !== null && typeof value === "object") {
+  if (typeof value === "object") {
     if (seen.has(value)) return CYCLE_MARKER;
     seen.add(value);
     const out: Record<string, unknown> = {};
