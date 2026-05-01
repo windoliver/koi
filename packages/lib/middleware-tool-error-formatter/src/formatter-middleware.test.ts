@@ -234,6 +234,36 @@ describe("createToolErrorFormatterMiddleware", () => {
       expect(output).toContain("[REDACTED]");
     });
 
+    test("default patterns redact common credential shapes", async () => {
+      const wrap = getWrapToolCall();
+      const cases: readonly { readonly leak: string; readonly secret: string }[] = [
+        { leak: "Authorization: Basic dXNlcjpwYXNzd29yZA==", secret: "dXNlcjpwYXNzd29yZA==" },
+        { leak: "Cookie: session=abc123xyz789secret", secret: "session=abc123xyz789secret" },
+        {
+          leak: "https://example.com/?api_key=topsecretvalue&foo=bar",
+          secret: "topsecretvalue",
+        },
+        {
+          leak: "JWT: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.SflKxwRJSMeKKF2QT4fwpMeJf36",
+          secret: "eyJzdWIiOiIxMjM0NSJ9",
+        },
+        { leak: "AWS key AKIAIOSFODNN7EXAMPLE failed", secret: "AKIAIOSFODNN7EXAMPLE" },
+        { leak: "GitHub token ghp_abcdefghijklmnopqrstuvwxyz0123456789 expired", secret: "ghp_" },
+        {
+          leak: "DB connection postgres://admin:s3cret@host/db unreachable",
+          secret: "admin:s3cret",
+        },
+      ];
+      for (const { leak, secret } of cases) {
+        const failing = createFailingToolHandler(new Error(leak));
+        const response = await wrap(mockCtx, baseToolRequest, failing);
+        const output = response.output;
+        expect(typeof output).toBe("string");
+        if (typeof output !== "string") continue;
+        expect(output).not.toContain(secret);
+      }
+    });
+
     test("custom secret patterns are applied", async () => {
       const wrap = getWrapToolCall({
         secretPatterns: [/xoxb-[A-Za-z0-9-]+/g],

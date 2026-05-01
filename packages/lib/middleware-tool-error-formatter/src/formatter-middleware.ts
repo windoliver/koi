@@ -19,10 +19,41 @@ import type {
 import { formatToolError, isKoiError, toKoiError } from "@koi/errors";
 import type { ToolErrorFormatterConfig } from "./types.js";
 
-/** Default secret patterns to sanitize from error messages. */
+/**
+ * Default secret patterns to sanitize from error messages, stacks, and
+ * structured context before they reach the model or logs. Covers common
+ * credential shapes seen in tool error payloads: API keys, HTTP auth
+ * headers, cookies, signed-URL query parameters, JWTs, AWS access keys,
+ * GitHub PATs, Slack tokens, and password-bearing connection strings.
+ *
+ * Caller-supplied `secretPatterns` extend this list (see
+ * `replaceDefaultSecretPatterns` in types.ts to opt out).
+ */
 const DEFAULT_SECRET_PATTERNS: readonly RegExp[] = [
-  /sk-[A-Za-z0-9_-]{20,}/g,
-  /Bearer\s+[A-Za-z0-9._~+/=-]+/g,
+  // Generic API key prefixes (OpenAI, Anthropic, etc.)
+  /\bsk-[A-Za-z0-9_-]{20,}/g,
+  // HTTP auth headers
+  /\bBearer\s+[A-Za-z0-9._~+/=-]+/g,
+  /\bBasic\s+[A-Za-z0-9+/=]{8,}/g,
+  // Cookie/Set-Cookie values
+  /\b(?:Cookie|Set-Cookie):\s*[^\r\n]+/gi,
+  // Signed-URL query parameters (AWS, Azure, GCP)
+  /\b(?:X-Amz-Signature|X-Amz-Security-Token|sig|signature|sas|token|access_token|refresh_token|api_key|apikey|password|passwd|pwd|secret)=[^\s&"']+/gi,
+  // JWT (three base64url segments)
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+  // AWS access keys and GitHub PATs
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\bASIA[0-9A-Z]{16}\b/g,
+  /\bghp_[A-Za-z0-9]{36}\b/g,
+  /\bgho_[A-Za-z0-9]{36}\b/g,
+  /\bghs_[A-Za-z0-9]{36}\b/g,
+  /\bghu_[A-Za-z0-9]{36}\b/g,
+  // Slack / Stripe / Google tokens
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
+  /\b(?:rk|sk|pk)_(?:test|live)_[A-Za-z0-9]{16,}/g,
+  /\bAIza[0-9A-Za-z_-]{35}\b/g,
+  // Connection strings with embedded credentials (postgres://user:pass@...)
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s@/]+@[^\s"']+/gi,
 ] as const;
 
 const DEFAULT_MAX_MESSAGE_LENGTH = 1000;
