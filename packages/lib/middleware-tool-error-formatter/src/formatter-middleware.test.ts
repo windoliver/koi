@@ -547,6 +547,44 @@ describe("createToolErrorFormatterMiddleware", () => {
     });
   });
 
+  describe("guardrail provenance propagation", () => {
+    test("error with guardrail:true is re-thrown without explicit passthroughCodes", async () => {
+      // Regression: defense-in-depth — guardrail errors propagate regardless
+      // of priority ordering or passthroughCodes config.
+      const wrap = getWrapToolCall();
+      const err = Object.assign(new Error("permission denied"), { guardrail: true });
+      const failing = createFailingToolHandler(err);
+
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBe(err);
+    });
+
+    test("KoiError with context.guardrail:true is re-thrown", async () => {
+      const wrap = getWrapToolCall();
+      const err = {
+        name: "KoiRuntimeError",
+        code: "PERMISSION",
+        message: "blocked by policy",
+        retryable: false,
+        context: { guardrail: true },
+      };
+      const failing = createFailingToolHandler(err);
+
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBe(err);
+    });
+  });
+
   describe("post-commit failure propagation", () => {
     test("error with committed:true is re-thrown (no retryable-looking ToolResponse)", async () => {
       // Regression: the tool already executed and side effects landed.

@@ -124,7 +124,13 @@ On error the middleware returns:
 
 ## Guardrail Passthrough
 
-Hard-stop guardrail errors must propagate as throws — converting them into `ToolResponse` would let the engine continue past a deliberate abort. The PRIMARY defense is **priority ordering**: guardrail middleware should sit *outside* this formatter (priority < `170`) so its throws never enter the catch block to begin with.
+Hard-stop guardrail errors must propagate as throws — converting them into `ToolResponse` would let the engine continue past a deliberate abort.
+
+There are **three independent layers** of guardrail propagation, each fail-closed:
+
+1. **Provenance signal (default, fail-closed)** — any thrown error with `guardrail: true` (or `context.guardrail: true` on a KoiError) is re-thrown automatically, no config needed. Permissions / governance / rate-limit / kill-switch middleware **must** set this marker on their throws. Misordering can no longer silently downgrade a guardrail abort into recovery text.
+2. **Priority ordering (defense-in-depth)** — guardrail middleware should still sit *outside* this formatter (priority < `170`) so its throws never enter the catch block in the first place.
+3. **Explicit `passthroughCodes` / `passthroughPredicate` (escape hatch)** — for guardrails inside the formatter that legitimately can't set the provenance marker (e.g., third-party SDK throws caught by call-limits at priority 175).
 
 | Middleware | Priority | Position relative to formatter |
 |------------|----------|-------------------------------|

@@ -157,6 +157,29 @@ function isAbortError(error: unknown): boolean {
  * KoiError. No marker = treat as a normal pre-commit failure (current
  * behavior preserved for callers that don't opt in).
  */
+/**
+ * True if the error carries an explicit `guardrail: true` provenance marker
+ * (either directly on the Error or in `context.guardrail` on a KoiError).
+ * Guardrail middleware (permissions, governance, rate-limit, kill-switch)
+ * should mark their throws so the formatter never silently downgrades a
+ * deliberate hard-stop into a recoverable-looking ToolResponse — even when
+ * misordered INSIDE the formatter and not explicitly listed in
+ * `passthroughCodes`. Defense-in-depth, fail-closed by signal not by config.
+ */
+function isGuardrailError(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  if ((error as { guardrail?: unknown }).guardrail === true) return true;
+  const ctx = (error as { context?: unknown }).context;
+  if (
+    ctx !== null &&
+    typeof ctx === "object" &&
+    (ctx as { guardrail?: unknown }).guardrail === true
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function isPostCommitFailure(error: unknown): boolean {
   if (error === null || typeof error !== "object") return false;
   if ((error as { committed?: unknown }).committed === true) return true;
@@ -301,6 +324,16 @@ export function createToolErrorFormatterMiddleware(
         // ToolResponse would cause the turn runner to continue with another
         // model call after the user already canceled the turn.
         if (request.signal?.aborted === true || isAbortError(e)) {
+          throw e;
+        }
+        // Guardrail-flagged errors propagate regardless of priority ordering.
+        // Permissions/rate-limit/governance middleware that surfaces a
+        // deliberate hard-stop must set `guardrail: true` on the thrown
+        // error (or `context.guardrail: true` on a KoiError). This is the
+        // fail-closed default — misordering or unconfigured passthroughCodes
+        // can no longer silently downgrade a guardrail abort into model
+        // recovery text.
+        if (isGuardrailError(e)) {
           throw e;
         }
         // Post-commit failures must propagate. The tool's side effects have
