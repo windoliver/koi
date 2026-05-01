@@ -150,9 +150,13 @@ export function applySchema(db: Database): void {
   // sibling tables (e.g. evaluations FK to proposals) that the migration may
   // need to exist. CREATE IF NOT EXISTS is a no-op when the legacy shape is
   // already present, leaving the rebuild to migrateEvaluationsToV1.
-  if (fromVersion < 1) {
-    migrateEvaluationsToV1(db);
-  }
+  // Always re-validate evaluation-table constraints, not just at fromVersion=0.
+  // A v1/v2 DB with manually-rebuilt or otherwise drifted playbook_evaluations
+  // would otherwise carry duplicate proposal_ids into the v3 migration, which
+  // INSERTs every evaluation into a UNIQUE(proposal_id) table and would abort
+  // the upgrade rather than self-repair. The check is a no-op when constraints
+  // are intact (no rebuild) so re-running it on already-migrated DBs is cheap.
+  migrateEvaluationsToV1(db);
   if (fromVersion < 2) {
     migrateTrajectoriesToV2(db);
   }
