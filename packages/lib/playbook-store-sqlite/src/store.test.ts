@@ -680,6 +680,45 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
     ).toBe(true);
   });
 
+  test("v2 rebuilds drifted table that has seq column but legacy collapsing PK", async () => {
+    // Regression: a partially-upgraded DB that grew a `seq` column but kept
+    // PK (session_id, turn_index, identifier) must NOT be blessed as v2.
+    // Same-turn replays would still collide on the legacy PK.
+    const seed = new Database(dbPath, { create: true });
+    seed.run("PRAGMA user_version = 1");
+    seed.run(`
+      CREATE TABLE trajectory_entries (
+        session_id  TEXT    NOT NULL,
+        seq         INTEGER NOT NULL,
+        turn_index  INTEGER NOT NULL,
+        timestamp   INTEGER NOT NULL,
+        kind        TEXT    NOT NULL,
+        identifier  TEXT    NOT NULL,
+        outcome     TEXT    NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        metadata    TEXT,
+        bullet_ids  TEXT,
+        PRIMARY KEY (session_id, turn_index, identifier)
+      )
+    `);
+    seed.run(
+      "INSERT INTO trajectory_entries VALUES ('s1', 1, 0, 100, 'tool_call', 'fs.read', 'success', 5, NULL, NULL)",
+    );
+    seed.close();
+
+    const migrated = createSqlitePlaybookStore({ path: dbPath });
+    // Append two same-(turn, identifier) rows; legacy PK would have rejected
+    // the second. Migrated v2 PK accepts both.
+    await migrated.trajectories.append("s1", [
+      { ...makeEntry(0, "fs.read"), timestamp: 200 },
+      { ...makeEntry(0, "fs.read"), timestamp: 300 },
+    ]);
+    const back = await migrated.trajectories.getSession("s1");
+    migrated.close();
+    expect(back.length).toBe(3);
+    expect(back.map((e) => e.timestamp)).toEqual([100, 200, 300]);
+  });
+
   test("v3 detects FK with swapped target columns and rebuilds", async () => {
     // Regression: the v3 satisfaction check must verify the full composite
     // FK shape (playbook_id → playbook_id, base_version → version), not

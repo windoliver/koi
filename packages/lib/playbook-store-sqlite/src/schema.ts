@@ -346,15 +346,18 @@ interface LegacyTrajectoryRow {
  * (session_id, seq). The legacy PK collapsed multiple same-tool calls in one
  * turn into a single row; the new PK preserves every call as a distinct row.
  *
- * No-op when the table already has the `seq` column (CREATE IF NOT EXISTS in
- * applySchema may have emitted the new shape on a fresh DB).
+ * Skips only when the table has the EXACT v2 shape (seq column present AND
+ * primary key is exactly `(session_id, seq)`). A drifted DB that grew a seq
+ * column but kept the legacy collapsing PK is rebuilt — same-turn replays
+ * would otherwise still collide while the schema claimed v2 status.
  */
 function migrateTrajectoriesToV2(db: Database): void {
   const cols = db.query("PRAGMA table_info(trajectory_entries)").all() as readonly {
     readonly name: string;
+    readonly pk: number;
   }[];
   if (cols.length === 0) return;
-  if (cols.some((c) => c.name === "seq")) return;
+  if (trajectoryV2ShapeSatisfied(cols)) return;
 
   // RESERVED lock at BEGIN serializes against concurrent writers on the same
   // SQLite file: read of legacy rows + DROP + INSERT must observe a stable
@@ -631,4 +634,26 @@ function proposalsLineageFkSatisfied(db: Database): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Verify the trajectory_entries table has the exact v2 shape: a `seq` column
+ * AND a primary key that is exactly (session_id, seq) with seq second.
+ * `PRAGMA table_info` reports the PK column position via the `pk` field
+ * (1-indexed for PK members, 0 for non-PK columns).
+ */
+function trajectoryV2ShapeSatisfied(
+  cols: readonly { readonly name: string; readonly pk: number }[],
+): boolean {
+  const seqCol = cols.find((c) => c.name === "seq");
+  if (seqCol === undefined) return false;
+  // Build {pkPosition: name} map for PK columns. Composite PK in
+  // SQLite reports each member with its position (1, 2, ...).
+  const pkByPosition = new Map<number, string>();
+  for (const c of cols) {
+    if (c.pk > 0) pkByPosition.set(c.pk, c.name);
+  }
+  return (
+    pkByPosition.size === 2 && pkByPosition.get(1) === "session_id" && pkByPosition.get(2) === "seq"
+  );
 }

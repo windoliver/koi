@@ -450,18 +450,43 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       // the SQL layer with a generic FK error. Detect and surface a
       // domain-typed error instead, so callers know to clean up the
       // proposal/evaluation flow first.
-      const result = db.transaction(() => {
-        const dep = countDependentProposals.get(id) as { readonly n: number } | null;
-        if (dep !== null && dep.n > 0) {
+      //
+      // .immediate() acquires the RESERVED write lock at BEGIN so the
+      // dependency count + delete sequence is serialized against
+      // concurrent proposal inserts on a shared file. Without this, a
+      // peer writer could insert a proposal between our COUNT(*) returning
+      // 0 and the DELETE, surfacing the raw FK constraint error.
+      try {
+        const result = db
+          .transaction(() => {
+            const dep = countDependentProposals.get(id) as { readonly n: number } | null;
+            if (dep !== null && dep.n > 0) {
+              throw new Error(
+                `cannot remove structured playbook ${id}: ${String(dep.n)} dependent proposal(s) exist; remove proposals/evaluations first`,
+              );
+            }
+            const r = deleteCurrent.run(id);
+            deleteLineage.run(id);
+            return r.changes > 0;
+          })
+          .immediate();
+        return result;
+      } catch (err: unknown) {
+        // Defensive remap: if SQLite still surfaces a FK error (e.g.
+        // because some non-proposal table grew an unexpected dependency
+        // on lineage), give callers the same domain-typed message instead
+        // of leaking SQLITE_CONSTRAINT_FOREIGNKEY.
+        const code =
+          typeof err === "object" && err !== null && "code" in err
+            ? (err as { readonly code?: unknown }).code
+            : undefined;
+        if (code === "SQLITE_CONSTRAINT_FOREIGNKEY") {
           throw new Error(
-            `cannot remove structured playbook ${id}: ${String(dep.n)} dependent proposal(s) exist; remove proposals/evaluations first`,
+            `cannot remove structured playbook ${id}: dependent rows exist; remove proposals/evaluations first`,
           );
         }
-        const r = deleteCurrent.run(id);
-        deleteLineage.run(id);
-        return r.changes > 0;
-      })();
-      return result;
+        throw err;
+      }
     },
     getVersion: async (id, version) => {
       const row = selectVersion.get(id, version) as { readonly snapshot: string } | null;
