@@ -324,6 +324,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/redaction": "workspace:*",
       },
     },
     "packages/lib/execution-context": {
@@ -648,6 +649,27 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/middleware-tool-disclosure": {
+      "name": "@koi/middleware-tool-disclosure",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-tool-error-formatter": {
+      "name": "@koi/middleware-tool-error-formatter",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
+      },
+    },
     "packages/lib/middleware-tool-recovery": {
       "name": "@koi/middleware-tool-recovery",
       "version": "0.0.0",
@@ -708,6 +730,14 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/token-estimator": "workspace:*",
+      },
+    },
+    "packages/lib/playbook-store-sqlite": {
+      "name": "@koi/playbook-store-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/ace-types": "workspace:*",
+        "@koi/core": "workspace:*",
       },
     },
     "packages/lib/plugins": {
@@ -974,6 +1004,7 @@
         "koi": "./dist/bin.js",
       },
       "dependencies": {
+        "@koi/ace-types": "workspace:*",
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
         "@koi/artifacts": "workspace:*",
@@ -1031,6 +1062,7 @@
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
+        "@koi/middleware-tool-error-formatter": "workspace:*",
         "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -1038,6 +1070,7 @@
         "@koi/nexus-delegation": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
+        "@koi/playbook-store-sqlite": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/rules-loader": "workspace:*",
@@ -1132,6 +1165,7 @@
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
         "@koi/gateway": "workspace:*",
+        "@koi/gateway-canvas": "workspace:*",
         "@koi/gateway-http": "workspace:*",
         "@koi/gateway-types": "workspace:*",
         "@koi/gateway-webhook": "workspace:*",
@@ -1180,6 +1214,8 @@
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-strict-agentic": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
+        "@koi/middleware-tool-disclosure": "workspace:*",
+        "@koi/middleware-tool-error-formatter": "workspace:*",
         "@koi/middleware-turn-ack": "workspace:*",
         "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
@@ -1189,8 +1225,10 @@
         "@koi/outcome-evaluator": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
+        "@koi/playbook-store-sqlite": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
+        "@koi/redaction": "workspace:*",
         "@koi/replay": "workspace:*",
         "@koi/rules-loader": "workspace:*",
         "@koi/sandbox-docker": "workspace:*",
@@ -1355,6 +1393,14 @@
         "@koi/gateway-types": "workspace:*",
       },
     },
+    "packages/net/gateway-canvas": {
+      "name": "@koi/gateway-canvas",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
     "packages/net/gateway-http": {
       "name": "@koi/gateway-http",
       "version": "0.0.0",
@@ -1431,6 +1477,14 @@
       },
       "devDependencies": {
         "@koi/scheduler": "workspace:*",
+      },
+    },
+    "packages/sched/verified-loop": {
+      "name": "@koi/verified-loop",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/security/audit-sink-ndjson": {
@@ -2086,6 +2140,8 @@
 
     "@koi/gateway": ["@koi/gateway@workspace:packages/net/gateway"],
 
+    "@koi/gateway-canvas": ["@koi/gateway-canvas@workspace:packages/net/gateway-canvas"],
+
     "@koi/gateway-http": ["@koi/gateway-http@workspace:packages/net/gateway-http"],
 
     "@koi/gateway-types": ["@koi/gateway-types@workspace:packages/lib/gateway-types"],
@@ -2188,6 +2244,10 @@
 
     "@koi/middleware-tool-audit": ["@koi/middleware-tool-audit@workspace:packages/lib/middleware-tool-audit"],
 
+    "@koi/middleware-tool-disclosure": ["@koi/middleware-tool-disclosure@workspace:packages/lib/middleware-tool-disclosure"],
+
+    "@koi/middleware-tool-error-formatter": ["@koi/middleware-tool-error-formatter@workspace:packages/lib/middleware-tool-error-formatter"],
+
     "@koi/middleware-tool-recovery": ["@koi/middleware-tool-recovery@workspace:packages/lib/middleware-tool-recovery"],
 
     "@koi/middleware-tool-selector": ["@koi/middleware-tool-selector@workspace:packages/lib/middleware-tool-selector"],
@@ -2211,6 +2271,8 @@
     "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
 
     "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/security/permissions-nexus"],
+
+    "@koi/playbook-store-sqlite": ["@koi/playbook-store-sqlite@workspace:packages/lib/playbook-store-sqlite"],
 
     "@koi/plugins": ["@koi/plugins@workspace:packages/lib/plugins"],
 
@@ -2293,6 +2355,8 @@
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
 
     "@koi/variant-selection": ["@koi/variant-selection@workspace:packages/lib/variant-selection"],
+
+    "@koi/verified-loop": ["@koi/verified-loop@workspace:packages/sched/verified-loop"],
 
     "@koi/violation-store-sqlite": ["@koi/violation-store-sqlite@workspace:packages/security/violation-store-sqlite"],
 

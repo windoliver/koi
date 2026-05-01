@@ -61,15 +61,15 @@ support.
 L0  @koi/core              ─ KoiMiddleware, TurnContext, SessionContext,
                                IntentCapsule, CapsuleVerifier,
                                ModelRequest, ModelResponse (types only)
-L0u @koi/hash              ─ computeStringHash (SHA-256 mandate hash)
-Node crypto                ─ generateKeyPairSync("ed25519"), sign()
+L0u @koi/hash              ─ computeStringHash (SHA-256 via Bun.CryptoHasher)
 L0u @koi/errors            ─ KoiRuntimeError
+    node:crypto             ─ generateKeyPairSync, sign (Ed25519, built-in)
 L2  @koi/middleware-intent-capsule ─ this package (no L1 dependency)
 ```
 
 `@koi/middleware-intent-capsule` imports only from `@koi/core`, `@koi/hash`,
-Node built-ins, and `@koi/errors`. It never touches `@koi/engine` (L1), making it
-fully swappable and independently testable.
+`@koi/errors`, and `node:crypto` (built-in). It never touches `@koi/engine` (L1),
+making it fully swappable and independently testable.
 
 ### Internal module map
 
@@ -271,14 +271,21 @@ Inject a custom verifier for:
 
 ```typescript
 // Example: full Ed25519 signature re-verification (optional, more expensive)
-import { verifyEd25519, sha256Hex } from "@koi/crypto-utils";
+import { createPublicKey, verify } from "node:crypto";
+import { computeStringHash } from "@koi/hash";
 
 const strictVerifier: CapsuleVerifier = {
   verify(capsule, currentMandateHash): CapsuleVerifyResult {
     if (capsule.mandateHash !== currentMandateHash) {
       return { ok: false, reason: "mandate_hash_mismatch" };
     }
-    const valid = verifyEd25519(currentMandateHash, capsule.publicKey, capsule.signature);
+    const pubKey = createPublicKey({
+      key: Buffer.from(capsule.publicKey, "base64"),
+      format: "der",
+      type: "spki",
+    });
+    const sigBytes = Buffer.from(capsule.signature, "base64");
+    const valid = verify(null, Buffer.from(capsule.mandateHash), pubKey, sigBytes);
     if (!valid) return { ok: false, reason: "invalid_signature" };
     return { ok: true, capsule };
   },
@@ -611,27 +618,30 @@ L0  @koi/core ──────────────────────
     ModelRequest, ModelResponse, ModelChunk,                     │
     CapabilityFragment                                           │
                                                                  │
-L0u @koi/crypto-utils ──────────────────────────────────────┐   │
-    generateEd25519KeyPair, signEd25519, sha256Hex           │   │
+L0u @koi/hash ──────────────────────────────────────────────┐   │
+    computeStringHash (SHA-256 via Bun.CryptoHasher)        │   │
                                                              │   │
 L0u @koi/errors ────────────────────────────────────────┐   │   │
     KoiRuntimeError                                      │   │   │
                                                          ▼   ▼   ▼
 L2  @koi/middleware-intent-capsule ◄─────────────────────┴───┴───┘
-    imports from L0 + L0u only
+    imports from L0 + L0u + node:crypto (built-in)
     ✗ never imports @koi/engine (L1)
     ✗ never imports peer L2 packages
-    ✗ zero external runtime dependencies
+    ✗ zero external npm dependencies
 ```
 
 ---
 
 ## Related
 
-- [`@koi/crypto-utils`](./crypto-utils.md) — Ed25519 + SHA-256 primitives used by this package
+- [`@koi/hash`](./hash.md) — SHA-256 hashing via `computeStringHash`
+- [`@koi/governance-delegation`](./governance-delegation.md) — Ed25519 pattern reference (same `node:crypto` approach)
 - [`@koi/middleware-task-anchor`](./middleware-task-anchor.md) — keeps task-board state in model attention (complementary, not a substitute)
 - [`@koi/middleware-permissions`](./middleware-permissions.md) — tool-level access control
 - [`@koi/doctor`](./doctor.md) — static analysis rules including `goal-hijack:missing-intent-capsule`
 - [OWASP Top 10 for LLM Applications — ASI01](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
 - Issue [#81](https://github.com/windoliver/koi/issues/81) — implementation tracking
 - Issue [#508](https://github.com/windoliver/koi/issues/508) — DRY violation fixed by `@koi/crypto-utils`
+
+> **Buffer/Uint8Array cast (PR #2099):** `createCapsuleEntry()` wraps `crypto.sign()` and `publicKey.export()` results in explicit `new Uint8Array(...)` casts so DTS builds succeed under `@types/node` 25 strictness (Buffer is no longer assignable to ArrayBufferView directly). Pure type-narrowing — runtime behavior unchanged.

@@ -81,6 +81,7 @@ const EXEMPT: ReadonlySet<string> = new Set([
   // Gateway stack — service/gateway transports, not interactive local TUI wiring.
   // @koi/gateway-http is used by `koi serve`, but is still not part of default TUI assembly.
   "@koi/gateway",
+  "@koi/gateway-canvas",
   "@koi/gateway-http",
   "@koi/gateway-webhook",
   // Delegation/security helpers — require explicit delegation or Nexus configuration.
@@ -100,6 +101,8 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/middleware-ace",
   "@koi/middleware-intent-capsule",
   "@koi/middleware-output-verifier",
+  // Tool disclosure mutates advertised schemas and adds a companion provider; host opt-in needed.
+  "@koi/middleware-tool-disclosure",
   // RLM requires per-request segment-local trust flags and is intentionally hidden from manifest discovery.
   "@koi/middleware-rlm",
   // Sandbox providers require explicit backend/runtime selection; the TUI default uses @koi/sandbox-os.
@@ -251,10 +254,11 @@ async function main(): Promise<void> {
   }
 
   const source = tuiWiring.source;
-  const importRegex = /(?:from|import)\s+["'](@koi\/[^/"']+)/g;
+  const importRegex = /(?:from|import)\s+["'](@koi\/[^/"']+)|import\(\s*["'](@koi\/[^/"']+)/g;
   const cliImports = new Set<string>();
   for (const match of source.matchAll(importRegex)) {
-    if (match[1] !== undefined) cliImports.add(match[1]);
+    const packageName = match[1] ?? match[2];
+    if (packageName !== undefined) cliImports.add(packageName);
   }
 
   // Only check L2 tool/middleware packages (skip infra — they're used

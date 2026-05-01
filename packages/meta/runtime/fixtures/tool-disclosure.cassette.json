@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "cassette-v1",
+  "name": "tool-disclosure",
+  "model": "google/gemini-2.0-flash-001",
+  "recordedAt": 1777623422514,
+  "chunks": [
+    {
+      "kind": "tool_call_start",
+      "toolName": "promote_tools",
+      "callId": "tool_promote_tools_21MCamv0rdy1fy15Vnty"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_promote_tools_21MCamv0rdy1fy15Vnty",
+      "delta": "{\"names\":[\"add_numbers\"]}"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 130,
+      "outputTokens": 7
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_promote_tools_21MCamv0rdy1fy15Vnty"
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "tool_use",
+        "responseId": "gen-1777623422-qopJu5MaKKYsFcukd3Oy",
+        "richContent": [
+          {
+            "kind": "tool_call",
+            "id": "tool_promote_tools_21MCamv0rdy1fy15Vnty",
+            "name": "promote_tools",
+            "arguments": {
+              "names": ["add_numbers"]
+            }
+          }
+        ],
+        "usage": {
+          "inputTokens": 130,
+          "outputTokens": 7
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "8d2934cb9aa96ad93d880ecfb031e1433e0978375fcf1b2b243d5e293d82ef63"
+        }
+      }
+    }
+  ]
+}

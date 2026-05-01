@@ -1,5 +1,5 @@
 import { generateKeyPairSync, sign } from "node:crypto";
-import { agentId } from "@koi/core/ecs";
+import { agentId as toAgentId } from "@koi/core";
 import type { IntentCapsule } from "@koi/core/intent-capsule";
 import { capsuleId } from "@koi/core/intent-capsule";
 import type {
@@ -48,35 +48,8 @@ export function createIntentCapsuleMiddleware(config: IntentCapsuleConfig): KoiM
 
     async onSessionStart(ctx: SessionContext): Promise<void> {
       evictStaleSessions(sessions, resolved.maxTtlMs);
-
-      const mandatePayload = canonicalizeMandatePayload({
-        agentId: ctx.agentId,
-        sessionId: ctx.sessionId as string,
-        systemPrompt: resolved.systemPrompt,
-        objectives: resolved.objectives,
-      });
-
-      const mandateHash = computeStringHash(mandatePayload);
-      const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-      const signature = sign(null, Buffer.from(mandateHash), privateKey).toString("base64");
-      const publicKeyB64 = Buffer.from(publicKey.export({ format: "der", type: "spki" })).toString(
-        "base64",
-      );
-      const now = Date.now();
-      const capsuleAgentId = agentId(ctx.agentId);
-
-      const capsule: IntentCapsule = {
-        id: capsuleId(`${ctx.agentId}:${ctx.sessionId as string}:${now}`),
-        agentId: capsuleAgentId,
-        sessionId: ctx.sessionId,
-        mandateHash,
-        signature,
-        publicKey: publicKeyB64,
-        createdAt: now,
-        version: 1,
-      };
-
-      sessions.set(ctx.sessionId as string, { capsule, createdAt: now });
+      const entry = createCapsuleEntry(ctx, resolved);
+      sessions.set(ctx.sessionId as string, entry);
     },
 
     async wrapModelCall(
@@ -112,6 +85,39 @@ export function createIntentCapsuleMiddleware(config: IntentCapsuleConfig): KoiM
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
+
+function createCapsuleEntry(
+  ctx: SessionContext,
+  resolved: Required<IntentCapsuleConfig>,
+): CapsuleEntry {
+  const mandatePayload = canonicalizeMandatePayload({
+    agentId: ctx.agentId,
+    sessionId: ctx.sessionId as string,
+    systemPrompt: resolved.systemPrompt,
+    objectives: resolved.objectives,
+  });
+  const mandateHash = computeStringHash(mandatePayload);
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  // Buffer.from(string) returns Buffer; cast through Uint8Array satisfies the
+  // ArrayBufferView constraint of crypto.sign() under @types/node 25 strictness.
+  const mandateBytes: Uint8Array = new Uint8Array(Buffer.from(mandateHash, "utf8"));
+  const sigBytes: Uint8Array = new Uint8Array(sign(null, mandateBytes, privateKey));
+  const signature = Buffer.from(sigBytes).toString("base64");
+  const pubKeyDer: Uint8Array = new Uint8Array(publicKey.export({ format: "der", type: "spki" }));
+  const publicKeyB64 = Buffer.from(pubKeyDer).toString("base64");
+  const now = Date.now();
+  const capsule: IntentCapsule = {
+    id: capsuleId(`${ctx.agentId}:${ctx.sessionId as string}:${now}`),
+    agentId: toAgentId(ctx.agentId),
+    sessionId: ctx.sessionId,
+    mandateHash,
+    signature,
+    publicKey: publicKeyB64,
+    createdAt: now,
+    version: 1,
+  };
+  return { capsule, createdAt: now };
+}
 
 async function verifyCapsule(
   ctx: TurnContext,

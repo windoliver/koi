@@ -65,6 +65,30 @@ import { validateFileSystemConfig } from "@koi/runtime";
  *   `local:///etc/config`           → `local:///etc/config` (already absolute)
  *   `gdrive://my-drive`             → `gdrive://my-drive` (not local)
  */
+/**
+ * Symlink-aware containment helper: returns the realpath of the longest
+ * existing prefix of `absPath`, with any not-yet-created suffix appended
+ * verbatim. Used by ACE playbook_path validation to detect a checked-in
+ * symlink (e.g. `.koi -> /elsewhere`) that lexically stays under the
+ * manifest dir but physically escapes it.
+ */
+function realpathOfLongestExistingPrefix(absPath: string): string {
+  const segments = absPath.split(sep);
+  // Walk from the deepest path inward until realpath() succeeds. Whatever
+  // does not yet exist is the file we are about to create — append it back.
+  for (let i = segments.length; i > 0; i--) {
+    const candidate = segments.slice(0, i).join(sep) || sep;
+    try {
+      const real = realpathSync(candidate);
+      const tail = segments.slice(i).join(sep);
+      return tail.length === 0 ? real : `${real}${sep}${tail}`;
+    } catch {
+      // Component does not exist yet — try the parent.
+    }
+  }
+  return absPath;
+}
+
 function absolutizeMountUri(mountUri: string, manifestDir: string): string {
   const prefix = "local://";
   if (!mountUri.startsWith(prefix)) return mountUri;
@@ -399,6 +423,14 @@ export interface ManifestAceConfig {
   readonly maxInjectedTokens: number | undefined;
   readonly minScore: number | undefined;
   readonly lambda: number | undefined;
+  /**
+   * Absolute path to the SQLite playbook store. When set, the TUI host
+   * activates `@koi/playbook-store-sqlite` so playbooks survive process
+   * exit. When omitted, ACE uses the in-memory store (lost at exit).
+   * Relative paths in the manifest are resolved against the manifest dir
+   * at parse time.
+   */
+  readonly playbookPath: string | undefined;
 }
 
 /**
@@ -499,6 +531,10 @@ export async function loadManifestConfig(
   }
 
   const raw = result.value;
+  // Manifest dir for resolving relative paths (e.g. ace.playbook_path).
+  // Available before parsing so per-section parsers can anchor paths
+  // against the manifest, not the CLI shell cwd.
+  const manifestRootDir = dirname(resolvePath(path));
 
   const model = raw.model;
   if (typeof model !== "object" || model === null) {
@@ -614,7 +650,7 @@ export async function loadManifestConfig(
     return delegationResult;
   }
 
-  const aceResult = parseManifestAce(raw.ace);
+  const aceResult = parseManifestAce(raw.ace, manifestRootDir);
   if (!aceResult.ok) {
     return aceResult;
   }
@@ -745,10 +781,12 @@ const ACE_KNOWN_KEYS: ReadonlySet<string> = new Set([
   "max_injected_tokens",
   "min_score",
   "lambda",
+  "playbook_path",
 ]);
 
 function parseManifestAce(
   raw: unknown,
+  manifestDir: string,
 ):
   | { readonly ok: true; readonly value: ManifestAceConfig | undefined }
   | { readonly ok: false; readonly error: string } {
@@ -764,14 +802,6 @@ function parseManifestAce(
   const obj = raw as Record<string, unknown>;
 
   for (const key of Object.keys(obj)) {
-    if (key === "playbook_path") {
-      return {
-        ok: false,
-        error:
-          "manifest.ace.playbook_path is not yet supported; @koi/playbook-store-sqlite has not landed (tracked as #2088 follow-up). " +
-          "Remove the key to use the in-memory store.",
-      };
-    }
     if (!ACE_KNOWN_KEYS.has(key)) {
       return {
         ok: false,
@@ -861,6 +891,60 @@ function parseManifestAce(
     }
   }
 
+  const playbookPathRaw = obj.playbook_path;
+  let playbookPath: string | undefined;
+  if (playbookPathRaw !== undefined) {
+    if (typeof playbookPathRaw !== "string" || playbookPathRaw.trim().length === 0) {
+      return {
+        ok: false,
+        error: `manifest.ace.playbook_path must be a non-empty string (got: ${JSON.stringify(playbookPathRaw)})`,
+      };
+    }
+    // Trust boundary: the manifest is repo-controlled. A checked-in
+    // koi.yaml must NOT be able to point the SQLite store at arbitrary
+    // filesystem locations — `createSqlitePlaybookStore` eagerly creates
+    // parent directories and opens the target with `create: true`, so
+    // honoring an absolute or escaping path would let an untrusted repo
+    // create/overwrite files anywhere `koi tui` can write.
+    //
+    // Policy: only the `:memory:` sentinel and paths that resolve
+    // strictly inside `manifestDir` are accepted. Absolute paths and
+    // any path that escapes via `..` are rejected at parse time.
+    if (playbookPathRaw === ":memory:") {
+      playbookPath = ":memory:";
+    } else if (isAbsolute(playbookPathRaw)) {
+      return {
+        ok: false,
+        error:
+          "manifest.ace.playbook_path must be relative to the manifest directory " +
+          `(got absolute: ${JSON.stringify(playbookPathRaw)}). Use a path inside the repo, ` +
+          'or ":memory:" for an ephemeral store.',
+      };
+    } else {
+      // Resolve symlinks so a checked-in `.koi -> /elsewhere` symlink cannot
+      // bypass the containment check via a path that lexically stays under
+      // manifestDir but physically escapes it. Walk the longest existing
+      // prefix of the resolved path through realpath; the unresolved tail
+      // (the file we are about to create) is appended back.
+      const lexicalResolved = resolvePath(manifestDir, playbookPathRaw);
+      const manifestRoot = realpathSync(resolvePath(manifestDir));
+      const realResolved = realpathOfLongestExistingPrefix(lexicalResolved);
+      const isInside = realResolved === manifestRoot || realResolved.startsWith(manifestRoot + sep);
+      if (!isInside) {
+        return {
+          ok: false,
+          error:
+            "manifest.ace.playbook_path must resolve inside the manifest directory " +
+            "(symlink-aware containment check). " +
+            `Got ${JSON.stringify(playbookPathRaw)} which canonicalizes to ` +
+            `${JSON.stringify(realResolved)} (manifest root: ${JSON.stringify(manifestRoot)}). ` +
+            'Use a path that stays inside the repo, or ":memory:".',
+        };
+      }
+      playbookPath = realResolved;
+    }
+  }
+
   return {
     ok: true,
     value: {
@@ -869,6 +953,7 @@ function parseManifestAce(
       maxInjectedTokens: maxInjectedTokens as number | undefined,
       minScore: minScore as number | undefined,
       lambda: lambda as number | undefined,
+      playbookPath,
     },
   };
 }

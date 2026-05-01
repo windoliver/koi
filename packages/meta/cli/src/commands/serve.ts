@@ -19,6 +19,7 @@ import {
   serviceHealthUrl,
 } from "../service-lifecycle.js";
 import { ExitCode } from "../types.js";
+import { defaultWaitForShutdownSignal } from "./serve-shutdown.js";
 
 export interface ServeDeps {
   readonly waitForShutdownSignal?: (() => Promise<string>) | undefined;
@@ -49,72 +50,92 @@ export async function run(flags: ServeFlags, deps?: ServeDeps): Promise<ExitCode
     return ExitCode.FAILURE;
   }
 
-  let runtimeHandle: ServeRuntimeHandle | undefined;
-  try {
-    runtimeHandle = await (deps?.createRuntime ?? createServeRuntime)(resolved.value, flags);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`koi serve: runtime assembly failed - ${message}\n`);
+  const runtime = await assembleServeRuntime(resolved.value, flags, deps);
+  if (!runtime.ok) {
+    process.stderr.write(`koi serve: ${runtime.error}\n`);
     return ExitCode.FAILURE;
   }
 
-  const gateway = createRuntimeGateway(runtimeHandle.runtime, flags.verbose);
-  const server = createGatewayServer(
-    {
-      bind: `127.0.0.1:${resolved.value.port}`,
-      lockFilePath: resolved.value.lockFilePath,
-    },
-    { gateway },
-  );
-
-  const channel = registerEnvGatewayChannel(server, resolved.value);
-  if (!channel.ok) {
-    process.stderr.write(`koi serve: ${channel.error}\n`);
-    await disposeRuntime(runtimeHandle, flags);
-    return ExitCode.FAILURE;
-  }
-
-  try {
-    const started = await server.start();
-    if (!started.ok) {
-      process.stderr.write(`koi serve: ${started.error.message}\n`);
-      await disposeRuntime(runtimeHandle, flags);
-      return ExitCode.FAILURE;
-    }
-  } catch (err: unknown) {
-    process.stderr.write(`koi serve: gateway start failed - ${formatUnknownError(err)}\n`);
-    await disposeRuntime(runtimeHandle, flags);
+  const started = await startServeGateway(resolved.value, runtime.value.runtime, flags);
+  if (!started.ok) {
+    process.stderr.write(`koi serve: ${started.error}\n`);
+    await disposeRuntime(runtime.value, flags);
     return ExitCode.FAILURE;
   }
 
   writeServeEvent(flags, {
     kind: "serve_started",
     service: resolved.value.serviceName,
-    channel: channel.value,
+    channel: started.value.channel,
     health: serviceHealthUrl(resolved.value),
     manifest: resolved.value.manifestPath,
-    port: server.port(),
+    port: started.value.server.port(),
   });
 
-  const waitForShutdownSignal = deps?.waitForShutdownSignal ?? defaultWaitForShutdownSignal;
-  let signal: string;
-  try {
-    signal = await waitForShutdownSignal();
-  } catch (err: unknown) {
-    process.stderr.write(`koi serve: shutdown wait failed - ${formatUnknownError(err)}\n`);
-    await stopGatewayServer(server);
-    await disposeRuntime(runtimeHandle, flags);
+  const shutdown = await waitForServeShutdown(deps);
+  const stopped = await stopGatewayServer(started.value.server);
+  await disposeRuntime(runtime.value, flags);
+  if (!shutdown.ok) {
+    process.stderr.write(`koi serve: ${shutdown.error}\n`);
     return ExitCode.FAILURE;
   }
-  const stopped = await stopGatewayServer(server);
-  await disposeRuntime(runtimeHandle, flags);
 
   writeServeEvent(flags, {
     kind: "serve_stopped",
     service: resolved.value.serviceName,
-    signal,
+    signal: shutdown.value,
   });
   return stopped ? ExitCode.OK : ExitCode.FAILURE;
+}
+
+type ServeResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: string };
+
+async function assembleServeRuntime(
+  service: ServiceConfig,
+  flags: ServeFlags,
+  deps: ServeDeps | undefined,
+): Promise<ServeResult<ServeRuntimeHandle>> {
+  try {
+    const runtime = await (deps?.createRuntime ?? createServeRuntime)(service, flags);
+    return { ok: true, value: runtime };
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      error: `runtime assembly failed - ${formatUnknownError(err)}`,
+    };
+  }
+}
+
+async function startServeGateway(
+  service: ServiceConfig,
+  runtime: Pick<KoiRuntimeHandle["runtime"], "run">,
+  flags: ServeFlags,
+): Promise<ServeResult<{ readonly server: GatewayServer; readonly channel: string }>> {
+  const gateway = createRuntimeGateway(runtime, flags.verbose);
+  const server = createGatewayServer(
+    { bind: `127.0.0.1:${service.port}`, lockFilePath: service.lockFilePath },
+    { gateway },
+  );
+  const channel = registerEnvGatewayChannel(server, service);
+  if (!channel.ok) return channel;
+  try {
+    const started = await server.start();
+    if (!started.ok) return { ok: false, error: started.error.message };
+  } catch (err: unknown) {
+    return { ok: false, error: `gateway start failed - ${formatUnknownError(err)}` };
+  }
+  return { ok: true, value: { server, channel: channel.value } };
+}
+
+async function waitForServeShutdown(deps: ServeDeps | undefined): Promise<ServeResult<string>> {
+  try {
+    const waitForShutdownSignal = deps?.waitForShutdownSignal ?? defaultWaitForShutdownSignal;
+    return { ok: true, value: await waitForShutdownSignal() };
+  } catch (err: unknown) {
+    return { ok: false, error: `shutdown wait failed - ${formatUnknownError(err)}` };
+  }
 }
 
 async function createServeRuntime(
@@ -365,25 +386,4 @@ function writeServeEvent(
     return;
   }
   process.stderr.write(`koi serve: ${String(event.service)} stopped (${String(event.signal)})\n`);
-}
-
-function defaultWaitForShutdownSignal(): Promise<string> {
-  return new Promise((resolve) => {
-    let onSigint: () => void;
-    let onSigterm: () => void;
-    const cleanup = (): void => {
-      process.removeListener("SIGINT", onSigint);
-      process.removeListener("SIGTERM", onSigterm);
-    };
-    onSigint = (): void => {
-      cleanup();
-      resolve("SIGINT");
-    };
-    onSigterm = (): void => {
-      cleanup();
-      resolve("SIGTERM");
-    };
-    process.once("SIGINT", onSigint);
-    process.once("SIGTERM", onSigterm);
-  });
 }

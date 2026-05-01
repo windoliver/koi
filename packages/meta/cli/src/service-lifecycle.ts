@@ -59,6 +59,23 @@ export interface ResolveServiceOptions {
   readonly cwd?: string | undefined;
 }
 
+interface ServiceManifestParts {
+  readonly manifestPath: string;
+  readonly manifestDir: string;
+  readonly deploy: DeployBlock;
+  readonly agentName: string;
+}
+
+interface ServiceConfigParts extends ServiceManifestParts {
+  readonly platform: ServicePlatform;
+  readonly serviceName: string;
+  readonly launchdLabel: string;
+  readonly stateDir: string;
+  readonly serviceStatePath: string;
+  readonly installed: InstalledServiceState;
+  readonly options: ResolveServiceOptions;
+}
+
 export type ServiceResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: string };
@@ -83,56 +100,86 @@ export async function resolveServiceConfig(
     };
   }
 
-  if (options.validateManifest === true) {
-    const validation = await loadManifestConfig(resolved.path, { skipAuditValidation: true });
-    if (!validation.ok) return { ok: false, error: `invalid manifest — ${validation.error}` };
-  }
-
-  const rawResult = await loadConfig(resolved.path);
-  if (!rawResult.ok) return { ok: false, error: rawResult.error.message };
-
-  const manifestDir = dirname(resolved.path);
-  const raw = rawResult.value as Record<string, unknown>;
-  const deploy = parseDeployBlock(raw.deploy, manifestDir);
-  if (!deploy.ok) return deploy;
-
-  const agentName = parseAgentName(raw.name, manifestDir);
+  const manifest = await readServiceManifestParts(resolved.path, options.validateManifest === true);
+  if (!manifest.ok) return manifest;
   const platform = detectPlatform();
-  const serviceName = resolveServiceName(agentName);
-  const launchdLabel = resolveLaunchdLabel(agentName);
+  const serviceName = resolveServiceName(manifest.value.agentName);
+  const launchdLabel = resolveLaunchdLabel(manifest.value.agentName);
   const stateDir = resolveStateDir(serviceName);
   const serviceStatePath = join(stateDir, "service-state.json");
   const installed =
     options.installedState === "prefer" ? await readInstalledServiceState(serviceStatePath) : {};
-  const system = options.system ?? installed.system ?? deploy.value.system;
-  const port = options.port ?? installed.port ?? deploy.value.port;
-  const logDir = deploy.value.logDir ?? installed.logDir ?? resolveLogDir(platform, serviceName);
-  const serviceDir = resolveServiceDir(platform, system);
-  const serviceFilePath =
-    platform === "linux"
-      ? join(serviceDir, `${serviceName}.service`)
-      : join(serviceDir, `${launchdLabel}.plist`);
 
   return {
     ok: true,
-    value: {
+    value: createServiceConfig({
+      ...manifest.value,
       platform,
-      agentName,
       serviceName,
       launchdLabel,
-      manifestPath: resolved.path,
-      workDir: manifestDir,
-      port,
-      system,
-      restart: deploy.value.restart,
-      restartDelaySec: deploy.value.restartDelaySec,
-      envFile: deploy.value.envFile,
-      logDir,
-      logPath: join(logDir, "service.log"),
       stateDir,
       serviceStatePath,
-      lockFilePath: join(stateDir, "gateway-http.lock"),
-      serviceFilePath,
+      installed,
+      options,
+    }),
+  };
+}
+
+function createServiceConfig(parts: ServiceConfigParts): ServiceConfig {
+  const system = parts.options.system ?? parts.installed.system ?? parts.deploy.system;
+  const port = parts.options.port ?? parts.installed.port ?? parts.deploy.port;
+  const logDir =
+    parts.deploy.logDir ??
+    parts.installed.logDir ??
+    resolveLogDir(parts.platform, parts.serviceName);
+  const serviceDir = resolveServiceDir(parts.platform, system);
+  const serviceFilePath =
+    parts.platform === "linux"
+      ? join(serviceDir, `${parts.serviceName}.service`)
+      : join(serviceDir, `${parts.launchdLabel}.plist`);
+
+  return {
+    platform: parts.platform,
+    agentName: parts.agentName,
+    serviceName: parts.serviceName,
+    launchdLabel: parts.launchdLabel,
+    manifestPath: parts.manifestPath,
+    workDir: parts.manifestDir,
+    port,
+    system,
+    restart: parts.deploy.restart,
+    restartDelaySec: parts.deploy.restartDelaySec,
+    envFile: parts.deploy.envFile,
+    logDir,
+    logPath: join(logDir, "service.log"),
+    stateDir: parts.stateDir,
+    serviceStatePath: parts.serviceStatePath,
+    lockFilePath: join(parts.stateDir, "gateway-http.lock"),
+    serviceFilePath,
+  };
+}
+
+async function readServiceManifestParts(
+  manifestPath: string,
+  validateManifest: boolean,
+): Promise<ServiceResult<ServiceManifestParts>> {
+  if (validateManifest) {
+    const validation = await loadManifestConfig(manifestPath, { skipAuditValidation: true });
+    if (!validation.ok) return { ok: false, error: `invalid manifest — ${validation.error}` };
+  }
+  const rawResult = await loadConfig(manifestPath);
+  if (!rawResult.ok) return { ok: false, error: rawResult.error.message };
+  const manifestDir = dirname(manifestPath);
+  const raw = rawResult.value as Record<string, unknown>;
+  const deploy = parseDeployBlock(raw.deploy, manifestDir);
+  if (!deploy.ok) return deploy;
+  return {
+    ok: true,
+    value: {
+      manifestPath,
+      manifestDir,
+      deploy: deploy.value,
+      agentName: parseAgentName(raw.name, manifestDir),
     },
   };
 }
