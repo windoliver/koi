@@ -8,9 +8,9 @@ L2 package. Wraps Daytona's managed-workspace API as a Koi `SandboxAdapter`, pro
 
 A `SandboxAdapter` whose `create(profile)` returns a `SandboxInstance` running inside a Daytona workspace. Surface:
 
-- `exec(command, args, options)` — run a command, capture stdout/stderr/exitCode/durationMs.
-- `readFile(path)` / `writeFile(path, content)` — workspace file I/O.
-- `destroy()` — close the remote workspace.
+- `exec(command, args, options)` — run a command. `AbortSignal` is forwarded into the SDK and raced locally so callers always see prompt cancellation (`exitCode = 130`).
+- `readFile(path)` / `writeFile(path, content)` — workspace file I/O. Prefers binary-safe `readBytes` / `writeBytes` when the SDK exposes them; otherwise rejects non-UTF-8 writes fail-closed.
+- `destroy()` — close the remote workspace. Idempotent on success, retryable on transient SDK failure, concurrent calls coalesce.
 
 The adapter accepts a pluggable `client` so tests run with no network and so production callers control how `@daytonaio/sdk` (or any other client) is wired in.
 
@@ -61,16 +61,19 @@ Low-level helper for callers that already hold a workspace handle.
 
 ---
 
-## Profile Mapping
+## Profile Mapping (fail-closed)
 
-The minimal v2 adapter ignores `SandboxProfile.filesystem`, `network`, and `nexusMounts`. It honours:
+The hosted backend has no provider-side hook for filesystem allow/deny lists, network deny, or Nexus FUSE mounts yet (those land with `@koi/sandbox-cloud-base` — issue #1379). Until then `create(profile)` **rejects** profiles that ask for any of those fields, rather than silently weakening isolation:
 
-| Profile field | Mapping |
-|---------------|---------|
-| `resources.timeoutMs` | passed to `commands.run({ timeoutMs })` per call |
-| `env` | merged into per-call `envs` |
-
-Provider-side enforcement (filesystem, network) lands with `@koi/sandbox-cloud-base` (issue #1379).
+| Profile request | Behaviour |
+|-----------------|-----------|
+| `network.allow=false` | `create()` throws — refuses to provision |
+| `filesystem.defaultReadAccess="closed"` | `create()` throws |
+| `filesystem.allow{Read,Write}` / `deny{Read,Write}` | `create()` throws |
+| `nexusMounts` (non-empty) | `create()` throws |
+| `env` | forwarded as default per-call `envs` (per-call `env` wins) |
+| `resources.timeoutMs` | forwarded as default per-call `timeoutMs` (per-call wins) |
+| Other resource limits | currently unenforced |
 
 ---
 

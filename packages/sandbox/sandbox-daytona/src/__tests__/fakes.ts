@@ -22,6 +22,8 @@ export interface FakeSandbox extends DaytonaSdkSandbox {
 export interface FakeSandboxOptions {
   readonly runResult?: DaytonaRunResult;
   readonly runError?: Error;
+  readonly runImpl?: (cmd: string, opts: DaytonaRunOpts | undefined) => Promise<DaytonaRunResult>;
+  readonly closeImpl?: () => Promise<void>;
   readonly initialFiles?: ReadonlyMap<string, string>;
 }
 
@@ -36,6 +38,7 @@ export function createFakeSandbox(opts: FakeSandboxOptions = {}): FakeSandbox {
     commands: {
       run: async (cmd: string, runOpts?: DaytonaRunOpts): Promise<DaytonaRunResult> => {
         runCalls.push({ cmd, opts: runOpts });
+        if (opts.runImpl !== undefined) return opts.runImpl(cmd, runOpts);
         if (opts.runError !== undefined) throw opts.runError;
         return opts.runResult ?? { exitCode: 0, stdout: "ok\n", stderr: "" };
       },
@@ -54,6 +57,11 @@ export function createFakeSandbox(opts: FakeSandboxOptions = {}): FakeSandbox {
       { store: fileStore },
     ),
     close: async (): Promise<void> => {
+      if (opts.closeImpl !== undefined) {
+        await opts.closeImpl();
+        closed = true;
+        return;
+      }
       closed = true;
     },
   };

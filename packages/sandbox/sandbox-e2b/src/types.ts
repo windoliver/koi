@@ -12,6 +12,11 @@ export interface E2bRunOpts {
   readonly timeoutMs?: number;
   readonly onStdout?: (data: string) => void;
   readonly onStderr?: (data: string) => void;
+  /**
+   * Abort signal forwarded to the SDK. Callers that wrap `@e2b/sdk` should
+   * map this to whatever the SDK exposes (e.g., killing the remote process).
+   */
+  readonly signal?: AbortSignal;
 }
 
 /** Result of a completed SDK command. */
@@ -29,6 +34,16 @@ export interface E2bSdkSandbox {
   readonly files: {
     readonly read: (path: string) => Promise<string>;
     readonly write: (path: string, content: string) => Promise<void>;
+    /**
+     * Optional binary-safe read. When the SDK wrapper exposes this, the
+     * adapter prefers it over `read` so non-UTF-8 payloads survive intact.
+     */
+    readonly readBytes?: (path: string) => Promise<Uint8Array>;
+    /**
+     * Optional binary-safe write. When the SDK wrapper exposes this, the
+     * adapter prefers it; otherwise non-UTF-8 input is rejected fail-closed.
+     */
+    readonly writeBytes?: (path: string, content: Uint8Array) => Promise<void>;
   };
   readonly kill: () => Promise<void>;
 }

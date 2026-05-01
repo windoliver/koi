@@ -23,7 +23,7 @@ describe("createE2bInstance", () => {
 
     expect(sdk.runCalls).toHaveLength(1);
     const [call] = sdk.runCalls;
-    expect(call?.cmd).toBe("echo 'hello world' 'x'");
+    expect(call?.cmd).toBe("'echo' 'hello world' 'x'");
     expect(call?.opts?.cwd).toBe("/work");
     expect(call?.opts?.envs).toEqual({ FOO: "bar" });
     expect(call?.opts?.timeoutMs).toBe(5000);
@@ -94,5 +94,119 @@ describe("createE2bInstance", () => {
     await expect(instance.exec("ls", [])).rejects.toThrow(/destroyed/);
     await expect(instance.readFile("/a")).rejects.toThrow(/destroyed/);
     await expect(instance.writeFile("/a", new Uint8Array())).rejects.toThrow(/destroyed/);
+  });
+
+  test("exec quotes shell metacharacters in the command name (not just args)", async () => {
+    const sdk = createFakeSandbox();
+    const instance = createE2bInstance(sdk);
+    await instance.exec("/bin/with space; rm -rf /", []);
+    expect(sdk.runCalls[0]?.cmd).toBe("'/bin/with space; rm -rf /'");
+  });
+
+  test("exec forwards AbortSignal to SDK opts", async () => {
+    const sdk = createFakeSandbox();
+    const instance = createE2bInstance(sdk);
+    const ac = new AbortController();
+    await instance.exec("ls", [], { signal: ac.signal });
+    expect(sdk.runCalls[0]?.opts?.signal).toBe(ac.signal);
+  });
+
+  test("exec resolves promptly with exit 130 when aborted mid-flight", async () => {
+    let resolveRun!: (v: { exitCode: number; stdout: string; stderr: string }) => void;
+    const sdk = createFakeSandbox({
+      runImpl: () =>
+        new Promise((resolve) => {
+          resolveRun = resolve;
+        }),
+    });
+    const instance = createE2bInstance(sdk);
+    const ac = new AbortController();
+    const p = instance.exec("ls", [], { signal: ac.signal });
+    // Abort after the SDK call has started.
+    queueMicrotask(() => ac.abort());
+    const result = await p;
+    expect(result.exitCode).toBe(130);
+    expect(result.timedOut).toBe(false);
+    // Drain the still-pending SDK call so the test runner doesn't leak it.
+    resolveRun({ exitCode: 0, stdout: "", stderr: "" });
+  });
+
+  test("destroy stays retryable after a transient SDK failure", async () => {
+    let attempts = 0;
+    const sdk = createFakeSandbox({
+      killImpl: async () => {
+        attempts++;
+        if (attempts === 1) throw new Error("transient network blip");
+      },
+    });
+    const instance = createE2bInstance(sdk);
+    await expect(instance.destroy()).rejects.toThrow(/transient/);
+    expect(sdk.killed()).toBe(false);
+    // Second attempt succeeds — instance must not be locally marked destroyed yet.
+    await instance.destroy();
+    expect(sdk.killed()).toBe(true);
+    expect(attempts).toBe(2);
+  });
+
+  test("readFile prefers SDK readBytes when available (binary-safe)", async () => {
+    const bytes = new Uint8Array([0xff, 0x00, 0xfe, 0x80]);
+    const sdk = {
+      ...createFakeSandbox(),
+      files: {
+        read: async (): Promise<string> => {
+          throw new Error("should not be called");
+        },
+        write: async (): Promise<void> => undefined,
+        readBytes: async (path: string): Promise<Uint8Array> => {
+          expect(path).toBe("/bin");
+          return bytes;
+        },
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    expect(await instance.readFile("/bin")).toEqual(bytes);
+  });
+
+  test("writeFile prefers SDK writeBytes when available (binary-safe)", async () => {
+    const captured: { path?: string; bytes?: Uint8Array } = {};
+    const sdk = {
+      ...createFakeSandbox(),
+      files: {
+        read: async (): Promise<string> => "",
+        write: async (): Promise<void> => {
+          throw new Error("should not be called");
+        },
+        writeBytes: async (path: string, content: Uint8Array): Promise<void> => {
+          captured.path = path;
+          captured.bytes = content;
+        },
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    const payload = new Uint8Array([0xff, 0x00, 0xfe]);
+    await instance.writeFile("/bin", payload);
+    expect(captured.path).toBe("/bin");
+    expect(captured.bytes).toEqual(payload);
+  });
+
+  test("writeFile rejects non-UTF-8 bytes when SDK is text-only (fail closed)", async () => {
+    const sdk = createFakeSandbox();
+    const instance = createE2bInstance(sdk);
+    const invalidUtf8 = new Uint8Array([0xff, 0xfe, 0xfd]);
+    await expect(instance.writeFile("/x", invalidUtf8)).rejects.toThrow(/non-UTF-8/);
+    expect(sdk.files.store.has("/x")).toBe(false);
+  });
+
+  test("concurrent destroy calls coalesce onto one SDK teardown", async () => {
+    let calls = 0;
+    const sdk = createFakeSandbox({
+      killImpl: async () => {
+        calls++;
+        await new Promise((r) => setTimeout(r, 5));
+      },
+    });
+    const instance = createE2bInstance(sdk);
+    await Promise.all([instance.destroy(), instance.destroy(), instance.destroy()]);
+    expect(calls).toBe(1);
   });
 });

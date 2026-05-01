@@ -11,6 +11,11 @@ export interface DaytonaRunOpts {
   readonly timeoutMs?: number;
   readonly onStdout?: (data: string) => void;
   readonly onStderr?: (data: string) => void;
+  /**
+   * Abort signal forwarded to the SDK. Callers that wrap `@daytonaio/sdk`
+   * should map this to whatever the SDK exposes for in-flight cancellation.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface DaytonaRunResult {
@@ -27,6 +32,10 @@ export interface DaytonaSdkSandbox {
   readonly files: {
     readonly read: (path: string) => Promise<string>;
     readonly write: (path: string, content: string) => Promise<void>;
+    /** Optional binary-safe read; preferred over `read` when present. */
+    readonly readBytes?: (path: string) => Promise<Uint8Array>;
+    /** Optional binary-safe write; preferred over `write` when present. */
+    readonly writeBytes?: (path: string, content: Uint8Array) => Promise<void>;
   };
   readonly close: () => Promise<void>;
 }

@@ -22,6 +22,8 @@ export interface FakeSandbox extends E2bSdkSandbox {
 export interface FakeSandboxOptions {
   readonly runResult?: E2bRunResult;
   readonly runError?: Error;
+  readonly runImpl?: (cmd: string, opts: E2bRunOpts | undefined) => Promise<E2bRunResult>;
+  readonly killImpl?: () => Promise<void>;
   readonly initialFiles?: ReadonlyMap<string, string>;
 }
 
@@ -36,6 +38,7 @@ export function createFakeSandbox(opts: FakeSandboxOptions = {}): FakeSandbox {
     commands: {
       run: async (cmd: string, runOpts?: E2bRunOpts): Promise<E2bRunResult> => {
         runCalls.push({ cmd, opts: runOpts });
+        if (opts.runImpl !== undefined) return opts.runImpl(cmd, runOpts);
         if (opts.runError !== undefined) throw opts.runError;
         return opts.runResult ?? { exitCode: 0, stdout: "ok\n", stderr: "" };
       },
@@ -54,6 +57,11 @@ export function createFakeSandbox(opts: FakeSandboxOptions = {}): FakeSandbox {
       { store: fileStore },
     ),
     kill: async (): Promise<void> => {
+      if (opts.killImpl !== undefined) {
+        await opts.killImpl();
+        killed = true;
+        return;
+      }
       killed = true;
     },
   };

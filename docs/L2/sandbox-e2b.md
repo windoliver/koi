@@ -8,9 +8,9 @@ L2 package. Wraps the E2B Cloud Sandbox SDK as a Koi `SandboxAdapter`, producing
 
 A `SandboxAdapter` whose `create(profile)` returns a `SandboxInstance` running on E2B's hosted infrastructure. The instance exposes:
 
-- `exec(command, args, options)` — run a command, capture stdout/stderr/exitCode/durationMs.
-- `readFile(path)` / `writeFile(path, content)` — sandbox file I/O.
-- `destroy()` — kill the remote sandbox.
+- `exec(command, args, options)` — run a command. `AbortSignal` is forwarded into the SDK and also raced locally so callers always see prompt cancellation (`exitCode = 130`).
+- `readFile(path)` / `writeFile(path, content)` — sandbox file I/O. The adapter prefers binary-safe `readBytes` / `writeBytes` when the injected SDK exposes them; otherwise falls back to text mode and **rejects** non-UTF-8 writes (fail-closed) rather than silently corrupting bytes.
+- `destroy()` — kill the remote sandbox. Idempotent on success, retryable on transient SDK failure, and concurrent calls coalesce.
 
 The adapter accepts a pluggable `client` for unit tests (no real network) and falls back to `E2B_API_KEY` from the environment when `apiKey` is omitted.
 
@@ -60,16 +60,21 @@ Low-level helper exposed for adapters that already hold an SDK handle.
 
 ---
 
-## Profile Mapping
+## Profile Mapping (fail-closed)
 
-The minimal v2 adapter ignores `SandboxProfile.filesystem`, `network`, and `nexusMounts`. It honours:
+The hosted backend has no provider-side hook for filesystem allow/deny lists, network deny, or Nexus FUSE mounts yet (those land with `@koi/sandbox-cloud-base` — issue #1379). Until then `create(profile)` **rejects** profiles that ask for any of those fields, rather than silently weakening isolation:
 
-| Profile field | Mapping |
-|---------------|---------|
-| `resources.timeoutMs` | passed to `commands.run({ timeoutMs })` per call |
-| `env` | merged into per-call `envs` |
+| Profile request | Behaviour |
+|-----------------|-----------|
+| `network.allow=false` | `create()` throws — refuses to provision |
+| `filesystem.defaultReadAccess="closed"` | `create()` throws |
+| `filesystem.allow{Read,Write}` / `deny{Read,Write}` | `create()` throws |
+| `nexusMounts` (non-empty) | `create()` throws |
+| `env` | forwarded as default per-call `envs` (per-call `env` wins) |
+| `resources.timeoutMs` | forwarded as default per-call `timeoutMs` (per-call wins) |
+| Other resource limits | currently unenforced |
 
-Unsupported fields don't fail — they're simply ignored in this iteration. Provider-side enforcement (filesystem allowlists, network policy) lands with `@koi/sandbox-cloud-base` (issue #1379).
+Errors include the unsupported field list so callers know exactly what policy was *not* applied.
 
 ---
 
