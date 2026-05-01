@@ -1522,19 +1522,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       );
       process.exit(1);
     }
-    // Issue #2088 — missing sidecar for an ACE-wiring host is a bypass
-    // vector: an attacker (or accidental cleanup) can delete the
-    // sidecar to skip the ACE/audit guards. Operators with legitimate
-    // legacy sessions (created before sidecars existed) can pass
-    // --manifest to re-specify the manifest explicitly.
-    if (resumeMeta.kind === "missing" && flags.manifest === undefined) {
-      process.stderr.write(
-        "koi tui: session provenance sidecar is absent — refusing to resume " +
-          "because the original manifest cannot be verified. Pass --manifest <path> " +
-          "to re-specify (legacy session), or start a fresh session without --resume.\n",
-      );
-      process.exit(1);
-    }
+    // Issue #2088 — pre-snapshot sidecars (and absent sidecars from
+    // sessions created before this build) fall back to the pre-PR
+    // permissive behavior below (re-parse manifestPath when present).
+    // Strict snapshot enforcement only applies to sessions created by
+    // this version, which always write a v2 sidecar with snapshot.
+    // Treat both "missing" and "legacy" as legacy below.
     if (resumeMeta.kind === "ok") {
       // Issue #2088 — when the immutable snapshot says the original
       // session enabled ACE, fail closed without even loading the
@@ -1557,8 +1550,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // fall through to the next outer block; nothing else to verify
       }
     }
-    if (resumeMeta.kind === "ok" && resumeMeta.manifestPath !== undefined) {
-      const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
+    const legacyManifestPath =
+      resumeMeta.kind === "legacy" ? resumeMeta.manifestPath : undefined;
+    if (
+      (resumeMeta.kind === "ok" && resumeMeta.manifestPath !== undefined) ||
+      legacyManifestPath !== undefined
+    ) {
+      const manifestPathToLoad =
+        resumeMeta.kind === "ok"
+          ? (resumeMeta.manifestPath as string)
+          : (legacyManifestPath as string);
+      const resumeAuditResult = await loadManifestConfig(manifestPathToLoad, {
         allowOAuthSchemes: true,
         skipAuditValidation: false,
         skipAuditValidationFor: {
@@ -5570,19 +5572,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             }
             return;
           }
-          if (pickerMeta.kind === "missing") {
-            if (myPickerGeneration === pickerGeneration) {
-              store.dispatch({
-                kind: "add_error",
-                code: "SESSION_RESUME_ERROR",
-                message:
-                  "Could not load session: provenance sidecar is absent. " +
-                  "Legacy sessions without sidecars must be loaded via " +
-                  "`koi tui --resume <id> --manifest <path>` so the original manifest is re-specified.",
-              });
-            }
-            return;
-          }
+          // Both "missing" and "legacy" cases pass through the picker
+          // — they represent pre-snapshot or pre-PR sessions that the
+          // operator should still be able to load. The operator's
+          // current TUI process is already ACE-clean (the resolvedAce
+          // gate above bailed otherwise), so loading a non-snapshotted
+          // transcript matches the pre-PR baseline.
           if (pickerMeta.kind === "ok") {
             // Snapshot fast path: bail without re-parsing if the snapshot
             // already says the original session opted into ACE.

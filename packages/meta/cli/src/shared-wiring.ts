@@ -753,7 +753,7 @@ export async function resumeSessionFromJsonl(
 // cwd-based re-discovery (which is ambiguous when launched from a different dir).
 // ---------------------------------------------------------------------------
 
-const SESSION_META_VERSION = 1 as const;
+const SESSION_META_VERSION = 2 as const;
 
 /**
  * Write session provenance metadata to a sidecar file alongside the JSONL
@@ -813,6 +813,17 @@ export async function writeSessionMeta(
 export type SessionMetaReadResult =
   | { readonly kind: "missing" }
   | {
+      /**
+       * Pre-snapshot sidecar (version 1) or no sidecar at all (v0). The
+       * caller falls back to the pre-PR behavior: if a manifest path
+       * is recorded, re-parse it for ACE/audit decisions; otherwise
+       * apply the pre-PR permissive default. This preserves resume
+       * compatibility for sessions created before the snapshot model.
+       */
+      readonly kind: "legacy";
+      readonly manifestPath: string | undefined;
+    }
+  | {
       readonly kind: "ok";
       readonly manifestPath: string | undefined;
       readonly snapshot: SessionProvenanceSnapshot;
@@ -833,6 +844,20 @@ export async function readSessionMetaResult(
       return { kind: "corrupt", error: "sidecar root is not a JSON object" };
     }
     const meta = parsed as Record<string, unknown>;
+    // Pre-snapshot sidecars (version 1, written by an earlier
+    // build) lack the snapshot field. Honor them as legacy: callers
+    // fall back to re-parsing the manifest path. Only sidecars
+    // tagged with the current version are required to carry the
+    // immutable snapshot.
+    const versionField = meta.version;
+    const isLegacy = versionField !== SESSION_META_VERSION;
+    if (isLegacy) {
+      let legacyPath: string | undefined;
+      if (meta.manifestPath === null) legacyPath = undefined;
+      else if (typeof meta.manifestPath === "string") legacyPath = meta.manifestPath;
+      else return { kind: "legacy", manifestPath: undefined };
+      return { kind: "legacy", manifestPath: legacyPath };
+    }
     // manifestPath may be a string (manifest-governed session) or null
     // (no-manifest session — explicitly recorded so resume can
     // distinguish it from a missing/tampered sidecar). Anything else

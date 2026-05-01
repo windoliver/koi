@@ -743,12 +743,32 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           "Restore a valid sidecar, or start a fresh session.",
       );
     }
-    if (resumeMeta.kind === "missing") {
-      return bail(
-        "session provenance sidecar is absent — refusing to resume because " +
-          "the original manifest cannot be verified, so audit/ACE host-safety " +
-          "constraints cannot be enforced. Restore the sidecar or start a fresh session.",
-      );
+    // "missing" and "legacy" both fall through to the pre-PR
+    // re-parse-manifest path below. This preserves resume access to
+    // sessions created before this build added the snapshot model.
+    if (resumeMeta.kind === "missing" || resumeMeta.kind === "legacy") {
+      const legacyManifestPath =
+        resumeMeta.kind === "legacy" ? resumeMeta.manifestPath : undefined;
+      if (legacyManifestPath !== undefined) {
+        const r = await loadManifestConfig(legacyManifestPath, { skipAuditValidation: true });
+        if (r.ok) {
+          if (r.value.audit !== undefined) {
+            return bail(
+              "original session manifest.audit is not supported on this host. " +
+                "koi start does not wire audit sinks — use koi tui to resume this session, " +
+                "or remove the audit: block from the manifest.",
+            );
+          }
+          if (r.value.ace?.enabled === true) {
+            return bail(
+              "original session manifest.ace.enabled: true is not supported on this host. " +
+                "koi start does not wire ACE — use koi tui to resume this session, " +
+                "or set ace.enabled: false in the manifest.",
+            );
+          }
+        }
+      }
+      // Manifest-free legacy or missing — pre-PR behavior: resume.
     }
     if (resumeMeta.kind === "ok") {
       // Issue #2088 — snapshot fast path. Bail without re-parsing the
