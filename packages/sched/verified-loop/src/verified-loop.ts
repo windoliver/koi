@@ -27,6 +27,15 @@ const DEFAULT_MAX_CONSECUTIVE_FAILURES = 3;
 
 const ITERATOR_RETURN_TIMEOUT_MS = 5_000;
 
+/**
+ * Thrown when the runner's iterator.return() does not settle within the
+ * grace window after abort/timeout. The runner is uncooperative — we must
+ * fail the whole run rather than risk overlapping iterations.
+ */
+class RunnerStuckError extends Error {
+  override readonly name = "RunnerStuckError";
+}
+
 /** Drain an async iterable, racing each next() against an AbortSignal. */
 async function drainWithAbort(
   iterable: AsyncIterable<unknown>,
@@ -41,6 +50,12 @@ async function drainWithAbort(
     signal.addEventListener("abort", () => reject(new Error("Iteration aborted")), { once: true });
   });
 
+  // Use let — justified: capture the drain-loop error (if any) so the
+  // post-cleanup logic can decide whether to re-throw it or replace it
+  // with a RunnerStuckError. We don't use try/finally with `throw` inside
+  // finally (lint forbids; behavior also can't override an in-flight
+  // throw from the try block — finally returns to unwinding).
+  let drainError: unknown;
   try {
     // Use let — justified: loop variable for iterator protocol
     let done = false;
@@ -48,28 +63,44 @@ async function drainWithAbort(
       const result = await Promise.race([iterator.next(), abortPromise]);
       done = result.done === true;
     }
-  } finally {
-    // Race iterator.return() against a short timeout. A consumer adapter
-    // whose return() hangs (or never resolves) must not wedge the loop past
-    // iterationTimeoutMs / stop() — that would defeat the abort guarantee
-    // and leave a scheduler stuck on one bad runner instance.
-    const returnFn = iterator.return;
-    if (returnFn !== undefined) {
-      const cleanup = returnFn.call(iterator).then(
-        () => undefined,
-        () => undefined,
-      );
-      const timeout = new Promise<void>((resolve) => {
-        setTimeout(() => {
-          console.warn(
-            `[verified-loop] iterator.return() did not settle within ${ITERATOR_RETURN_TIMEOUT_MS}ms; abandoning cleanup`,
-          );
-          resolve();
-        }, ITERATOR_RETURN_TIMEOUT_MS).unref?.();
-      });
-      await Promise.race([cleanup, timeout]);
-    }
+  } catch (e: unknown) {
+    drainError = e;
   }
+
+  // Race iterator.return() against a short timeout. A consumer adapter
+  // whose return() hangs (or never resolves) MUST cause a fatal abort:
+  // continuing the loop while the previous runner may still be mutating
+  // the workspace would produce overlapping iterations, duplicate side
+  // effects, and corrupt verification on non-idempotent runners.
+  // Use let — justified: track which branch of the race won.
+  let stuckCleanup = false;
+  const returnFn = iterator.return;
+  if (returnFn !== undefined) {
+    // Use let — justified: race outcome flag.
+    let timedOut = false;
+    const cleanup = returnFn.call(iterator).then(
+      () => undefined,
+      () => undefined,
+    );
+    const timeout = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, ITERATOR_RETURN_TIMEOUT_MS).unref?.();
+    });
+    await Promise.race([cleanup, timeout]);
+    if (timedOut) stuckCleanup = true;
+  }
+
+  if (stuckCleanup) {
+    // Stuck-runner condition deliberately replaces any in-flight abort
+    // rejection: the exact cause matters less than the fact the runner
+    // is uncancellable and the loop must not advance.
+    throw new RunnerStuckError(
+      `VerifiedLoop: runner iterator.return() did not settle within ${ITERATOR_RETURN_TIMEOUT_MS}ms; aborting run to avoid overlapping iterations`,
+    );
+  }
+  if (drainError !== undefined) throw drainError;
 }
 
 /** Create a VerifiedLoop orchestrator. */
@@ -177,6 +208,10 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           const input: EngineInput = { kind: "text", text: promptText, signal: iterSignal };
           await drainWithAbort(config.runIteration(input), iterSignal);
         } catch (e: unknown) {
+          // RunnerStuckError = uncancellable runner; we cannot proceed to
+          // verification or the next iteration without risking overlapping
+          // work. Surface it as a fatal run-level error.
+          if (e instanceof RunnerStuckError) throw e;
           iterError = extractMessage(e);
         }
 

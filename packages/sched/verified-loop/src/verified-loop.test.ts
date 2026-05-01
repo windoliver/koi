@@ -827,33 +827,44 @@ describe("VerifiedLoop.run", () => {
     expect(result.iterations).toBe(1);
   });
 
-  test("does not wedge when runIteration's iterator.return() never resolves after timeout", async () => {
+  test("aborts the run fatally when runIteration's iterator.return() never resolves", async () => {
     // Regression: a runner whose async-iterator return() hangs forever
-    // (consumer-side cleanup bug) would block drainWithAbort's finally
-    // clause and defeat iterationTimeoutMs / stop() — leaving the
-    // scheduler stuck on one bad adapter instance. drainWithAbort now
-    // races return() against a 5s budget and abandons it on timeout.
+    // (consumer cleanup bug or non-cooperative adapter) is treated as
+    // uncancellable. Continuing to verification or the next iteration
+    // while the previous runner may still be mutating the workspace would
+    // produce overlapping work and corrupt non-idempotent runners. Better
+    // to fail the run loudly than silently advance with a zombie.
     await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
 
-    const stuckRunner: RunIterationFn = (_input: EngineInput): AsyncIterable<EngineEvent> => ({
-      [Symbol.asyncIterator]: () => ({
-        next: async () => ({ done: true, value: undefined }),
-        return: () => new Promise(() => {}), // never resolves
-      }),
-    });
+    const stuckRunner: RunIterationFn = (input: EngineInput): AsyncIterable<EngineEvent> => {
+      void input;
+      return {
+        [Symbol.asyncIterator]: () => ({
+          // next() never resolves on its own; iterationTimeoutMs aborts the
+          // race, then drainWithAbort enters its finally cleanup path.
+          next: () => new Promise(() => {}),
+          return: () => new Promise(() => {}), // never resolves
+        }),
+      };
+    };
 
-    // Trigger the finally cleanup path via a short iterationTimeoutMs so
-    // drainWithAbort enters its return() path on every iteration; even with
-    // a hung return(), the run must complete in well under 30s.
     const loop = createVerifiedLoop(
       makeConfig({ runIteration: stuckRunner, iterationTimeoutMs: 100 }),
     );
     const start = performance.now();
-    const result = await loop.run();
+    let threw = false;
+    let message: string | undefined;
+    try {
+      await loop.run();
+    } catch (e: unknown) {
+      threw = true;
+      message = e instanceof Error ? e.message : String(e);
+    }
     const elapsed = performance.now() - start;
-    // 5s return-timeout + slack — must not be ∞.
+    expect(threw).toBe(true);
+    expect(message).toContain("did not settle");
+    // 100ms iteration timeout + 5s return budget + slack.
     expect(elapsed).toBeLessThan(15_000);
-    expect(result.iterations).toBeGreaterThan(0);
   }, 20_000);
 
   test("itemsCompleted referencing an unknown id logs warning and completes the known ones", async () => {
