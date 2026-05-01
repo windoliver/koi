@@ -17,6 +17,17 @@ export interface E2bRunOpts {
    * map this to whatever the SDK exposes (e.g., killing the remote process).
    */
   readonly signal?: AbortSignal;
+  /**
+   * Optional stdin payload. Only forwarded when `E2bSdkSandbox.commands`
+   * declares `supportsStdin = true`; otherwise the adapter rejects callers
+   * that pass `stdin` rather than silently dropping it.
+   */
+  readonly stdin?: string;
+  /**
+   * Optional output cap (bytes). Only forwarded when the SDK declares
+   * `supportsMaxOutputBytes = true`; otherwise rejected fail-closed.
+   */
+  readonly maxOutputBytes?: number;
 }
 
 /** Result of a completed SDK command. */
@@ -24,12 +35,18 @@ export interface E2bRunResult {
   readonly exitCode: number;
   readonly stdout: string;
   readonly stderr: string;
+  /** Optional — set by the SDK when it had to truncate stdout/stderr. */
+  readonly truncated?: boolean;
 }
 
 /** Minimal SDK shape — what the adapter needs from `@e2b/sdk`. */
 export interface E2bSdkSandbox {
   readonly commands: {
     readonly run: (cmd: string, opts?: E2bRunOpts) => Promise<E2bRunResult>;
+    /** Capability flag — `true` when the SDK honours `E2bRunOpts.stdin`. */
+    readonly supportsStdin?: boolean;
+    /** Capability flag — `true` when the SDK honours `maxOutputBytes`. */
+    readonly supportsMaxOutputBytes?: boolean;
   };
   readonly files: {
     readonly read: (path: string) => Promise<string>;

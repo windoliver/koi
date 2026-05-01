@@ -35,6 +35,12 @@ export function detectUnsupportedProfileFields(
     fields.push("nexusMounts");
   }
 
+  // Resource-limit fields the hosted backend cannot enforce yet.
+  const r = profile.resources;
+  if (r.maxMemoryMb !== undefined) fields.push("resources.maxMemoryMb");
+  if (r.maxPids !== undefined) fields.push("resources.maxPids");
+  if (r.maxOpenFiles !== undefined) fields.push("resources.maxOpenFiles");
+
   if (fields.length === 0) return undefined;
   return { fields };
 }

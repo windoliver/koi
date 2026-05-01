@@ -26,6 +26,10 @@ function abortedResult(durationMs: number): SandboxAdapterResult {
  *
  * `defaults` are forwarded into every per-call exec so profile-level `env`
  * and `timeoutMs` are honoured. Per-call options always win.
+ *
+ * Capability gating: callers that pass `stdin` or `maxOutputBytes` get a
+ * fail-closed error when the injected SDK does not advertise support. `readFile`
+ * requires `sdk.files.readBytes`.
  */
 export function createDaytonaInstance(
   sdk: DaytonaSdkSandbox,
@@ -34,15 +38,34 @@ export function createDaytonaInstance(
   let destroyed = false;
   let destroyPending: Promise<void> | undefined;
 
+  function ensureLive(op: string): void {
+    if (destroyed) throw new Error(`sandbox-daytona: instance already destroyed (${op})`);
+    if (destroyPending !== undefined) {
+      throw new Error(`sandbox-daytona: instance is being destroyed (${op})`);
+    }
+  }
+
   return {
     exec: async (
       command: string,
       args: readonly string[],
       options?: SandboxExecOptions,
     ): Promise<SandboxAdapterResult> => {
-      if (destroyed) {
-        throw new Error("sandbox-daytona: instance already destroyed");
+      ensureLive("exec");
+
+      if (options?.stdin !== undefined && sdk.commands.supportsStdin !== true) {
+        throw new Error(
+          "sandbox-daytona: SandboxExecOptions.stdin was provided but the injected SDK " +
+            "does not advertise commands.supportsStdin=true.",
+        );
       }
+      if (options?.maxOutputBytes !== undefined && sdk.commands.supportsMaxOutputBytes !== true) {
+        throw new Error(
+          "sandbox-daytona: SandboxExecOptions.maxOutputBytes was provided but the injected SDK " +
+            "does not advertise commands.supportsMaxOutputBytes=true.",
+        );
+      }
+
       if (options?.signal?.aborted === true) {
         return abortedResult(0);
       }
@@ -63,13 +86,17 @@ export function createDaytonaInstance(
         ...(options?.onStdout !== undefined ? { onStdout: options.onStdout } : {}),
         ...(options?.onStderr !== undefined ? { onStderr: options.onStderr } : {}),
         ...(options?.signal !== undefined ? { signal: options.signal } : {}),
+        ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
+        ...(options?.maxOutputBytes !== undefined
+          ? { maxOutputBytes: options.maxOutputBytes }
+          : {}),
       };
 
       const runPromise = sdk.commands.run(cmd, sdkOpts);
 
       const signal = options?.signal;
       try {
-        let result: { exitCode: number; stdout: string; stderr: string };
+        let result: { exitCode: number; stdout: string; stderr: string; truncated?: boolean };
         if (signal !== undefined) {
           result = await new Promise<typeof result>((resolve, reject) => {
             const onAbort = (): void => {
@@ -102,6 +129,7 @@ export function createDaytonaInstance(
           durationMs,
           timedOut: false,
           oomKilled: false,
+          ...(result.truncated !== undefined ? { truncated: result.truncated } : {}),
         };
       } catch (e: unknown) {
         const durationMs = performance.now() - start;
@@ -119,14 +147,18 @@ export function createDaytonaInstance(
     },
 
     readFile: async (path: string): Promise<Uint8Array> => {
-      if (destroyed) throw new Error("sandbox-daytona: instance already destroyed");
-      if (sdk.files.readBytes !== undefined) return sdk.files.readBytes(path);
-      const content = await sdk.files.read(path);
-      return new TextEncoder().encode(content);
+      ensureLive("readFile");
+      if (sdk.files.readBytes === undefined) {
+        throw new Error(
+          "sandbox-daytona: readFile requires sdk.files.readBytes for binary-safe reads. " +
+            "Inject an SDK wrapper that exposes readBytes.",
+        );
+      }
+      return sdk.files.readBytes(path);
     },
 
     writeFile: async (path: string, content: Uint8Array): Promise<void> => {
-      if (destroyed) throw new Error("sandbox-daytona: instance already destroyed");
+      ensureLive("writeFile");
       if (sdk.files.writeBytes !== undefined) {
         await sdk.files.writeBytes(path, content);
         return;
@@ -147,9 +179,9 @@ export function createDaytonaInstance(
     /**
      * Tear down the remote workspace.
      *
-     * Idempotent on success; on transient SDK failure, `destroyed` stays
-     * `false` so callers can retry. Concurrent calls coalesce onto a single
-     * in-flight teardown.
+     * Once `destroy()` is invoked, all subsequent `exec`/`readFile`/`writeFile`
+     * calls reject — the lifecycle race is closed before the SDK confirms
+     * teardown. Idempotent on success, retryable on transient failure.
      */
     destroy: async (): Promise<void> => {
       if (destroyed) return;

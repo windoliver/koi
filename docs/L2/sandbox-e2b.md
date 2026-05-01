@@ -62,7 +62,7 @@ Low-level helper exposed for adapters that already hold an SDK handle.
 
 ## Profile Mapping (fail-closed)
 
-The hosted backend has no provider-side hook for filesystem allow/deny lists, network deny, or Nexus FUSE mounts yet (those land with `@koi/sandbox-cloud-base` — issue #1379). Until then `create(profile)` **rejects** profiles that ask for any of those fields, rather than silently weakening isolation:
+The hosted backend has no provider-side hook for filesystem allow/deny lists, network deny, Nexus FUSE mounts, or process/memory caps yet (those land with `@koi/sandbox-cloud-base` — issue #1379). Until then `create(profile)` **rejects** profiles that ask for any of those fields, rather than silently weakening isolation:
 
 | Profile request | Behaviour |
 |-----------------|-----------|
@@ -70,11 +70,17 @@ The hosted backend has no provider-side hook for filesystem allow/deny lists, ne
 | `filesystem.defaultReadAccess="closed"` | `create()` throws |
 | `filesystem.allow{Read,Write}` / `deny{Read,Write}` | `create()` throws |
 | `nexusMounts` (non-empty) | `create()` throws |
+| `resources.maxMemoryMb` / `maxPids` / `maxOpenFiles` | `create()` throws |
 | `env` | forwarded as default per-call `envs` (per-call `env` wins) |
 | `resources.timeoutMs` | forwarded as default per-call `timeoutMs` (per-call wins) |
-| Other resource limits | currently unenforced |
 
 Errors include the unsupported field list so callers know exactly what policy was *not* applied.
+
+## Per-call exec capability gating
+
+`SandboxExecOptions.stdin` and `maxOutputBytes` are forwarded only when the injected SDK declares the matching capability flag (`commands.supportsStdin` / `commands.supportsMaxOutputBytes`). When the flag is absent the adapter throws — silently dropping these fields would mean commands hang waiting for stdin or emit unbounded output despite the caller's cap.
+
+`readFile` requires `sdk.files.readBytes`. The text-only fallback would re-encode the SDK's string through `TextEncoder` and corrupt non-UTF-8 content, so we refuse rather than weaken the byte-oriented contract. `writeFile` accepts UTF-8 payloads on text-only SDKs and rejects non-UTF-8 input fail-closed.
 
 ---
 

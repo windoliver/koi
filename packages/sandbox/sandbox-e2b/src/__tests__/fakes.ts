@@ -53,6 +53,17 @@ export function createFakeSandbox(opts: FakeSandboxOptions = {}): FakeSandbox {
         write: async (path: string, content: string): Promise<void> => {
           fileStore.set(path, content);
         },
+        // The default fake exposes binary-safe methods so the byte-oriented
+        // SandboxInstance contract works in tests. Tests that exercise the
+        // text-only fallback build their own SDK shape inline.
+        readBytes: async (path: string): Promise<Uint8Array> => {
+          const value = fileStore.get(path);
+          if (value === undefined) throw new Error(`no such file: ${path}`);
+          return new TextEncoder().encode(value);
+        },
+        writeBytes: async (path: string, content: Uint8Array): Promise<void> => {
+          fileStore.set(path, new TextDecoder().decode(content));
+        },
       },
       { store: fileStore },
     ),

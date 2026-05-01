@@ -27,6 +27,11 @@ function abortedResult(durationMs: number): SandboxAdapterResult {
  * `defaults` are forwarded into every per-call exec so profile-level `env`
  * and `timeoutMs` are honoured even when callers don't repeat them in
  * `SandboxExecOptions`. Per-call options always win over defaults.
+ *
+ * Capability gating: callers that pass `stdin` or `maxOutputBytes` get a
+ * fail-closed error when the injected SDK does not advertise support, rather
+ * than a silent drop. `readFile` likewise requires `sdk.files.readBytes` —
+ * the text-only fallback is non-binary-safe, so it is refused.
  */
 export function createE2bInstance(
   sdk: E2bSdkSandbox,
@@ -35,15 +40,35 @@ export function createE2bInstance(
   let destroyed = false;
   let destroyPending: Promise<void> | undefined;
 
+  function ensureLive(op: string): void {
+    if (destroyed) throw new Error(`sandbox-e2b: instance already destroyed (${op})`);
+    if (destroyPending !== undefined) {
+      throw new Error(`sandbox-e2b: instance is being destroyed (${op})`);
+    }
+  }
+
   return {
     exec: async (
       command: string,
       args: readonly string[],
       options?: SandboxExecOptions,
     ): Promise<SandboxAdapterResult> => {
-      if (destroyed) {
-        throw new Error("sandbox-e2b: instance already destroyed");
+      ensureLive("exec");
+
+      // Capability gating — refuse rather than silently drop.
+      if (options?.stdin !== undefined && sdk.commands.supportsStdin !== true) {
+        throw new Error(
+          "sandbox-e2b: SandboxExecOptions.stdin was provided but the injected SDK " +
+            "does not advertise commands.supportsStdin=true. Use a stdin-capable wrapper.",
+        );
       }
+      if (options?.maxOutputBytes !== undefined && sdk.commands.supportsMaxOutputBytes !== true) {
+        throw new Error(
+          "sandbox-e2b: SandboxExecOptions.maxOutputBytes was provided but the injected SDK " +
+            "does not advertise commands.supportsMaxOutputBytes=true.",
+        );
+      }
+
       if (options?.signal?.aborted === true) {
         return abortedResult(0);
       }
@@ -51,7 +76,6 @@ export function createE2bInstance(
       const start = performance.now();
       const cmd = joinCommand(command, args);
 
-      // Profile defaults; per-call options merged on top (caller wins).
       const mergedEnv =
         defaults.env !== undefined || options?.env !== undefined
           ? { ...(defaults.env ?? {}), ...(options?.env ?? {}) }
@@ -65,16 +89,17 @@ export function createE2bInstance(
         ...(options?.onStdout !== undefined ? { onStdout: options.onStdout } : {}),
         ...(options?.onStderr !== undefined ? { onStderr: options.onStderr } : {}),
         ...(options?.signal !== undefined ? { signal: options.signal } : {}),
+        ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
+        ...(options?.maxOutputBytes !== undefined
+          ? { maxOutputBytes: options.maxOutputBytes }
+          : {}),
       };
 
       const runPromise = sdk.commands.run(cmd, sdkOpts);
 
-      // Race the SDK call against an abort. Even if the SDK ignores `signal`,
-      // the caller sees a prompt cancellation result. The remote process is
-      // best-effort cancelled by whichever side honours the signal first.
       const signal = options?.signal;
       try {
-        let result: { exitCode: number; stdout: string; stderr: string };
+        let result: { exitCode: number; stdout: string; stderr: string; truncated?: boolean };
         if (signal !== undefined) {
           result = await new Promise<typeof result>((resolve, reject) => {
             const onAbort = (): void => {
@@ -107,6 +132,7 @@ export function createE2bInstance(
           durationMs,
           timedOut: false,
           oomKilled: false,
+          ...(result.truncated !== undefined ? { truncated: result.truncated } : {}),
         };
       } catch (e: unknown) {
         const durationMs = performance.now() - start;
@@ -124,22 +150,26 @@ export function createE2bInstance(
     },
 
     readFile: async (path: string): Promise<Uint8Array> => {
-      if (destroyed) throw new Error("sandbox-e2b: instance already destroyed");
-      // Prefer the binary-safe SDK method when the wrapper provides one.
-      if (sdk.files.readBytes !== undefined) return sdk.files.readBytes(path);
-      const content = await sdk.files.read(path);
-      return new TextEncoder().encode(content);
+      ensureLive("readFile");
+      // No text-only fallback: the SandboxInstance contract is byte-oriented.
+      // Re-encoding a string read through TextEncoder would silently corrupt
+      // non-UTF-8 payloads, so refuse rather than weaken the contract.
+      if (sdk.files.readBytes === undefined) {
+        throw new Error(
+          "sandbox-e2b: readFile requires sdk.files.readBytes for binary-safe reads. " +
+            "Inject an SDK wrapper that exposes readBytes.",
+        );
+      }
+      return sdk.files.readBytes(path);
     },
 
     writeFile: async (path: string, content: Uint8Array): Promise<void> => {
-      if (destroyed) throw new Error("sandbox-e2b: instance already destroyed");
+      ensureLive("writeFile");
       if (sdk.files.writeBytes !== undefined) {
         await sdk.files.writeBytes(path, content);
         return;
       }
-      // Fail closed on non-UTF-8 payloads instead of silently corrupting them.
-      // Callers with binary content must inject an SDK wrapper that exposes
-      // `writeBytes` (e.g., one that base64-encodes through the provider API).
+      // Text-mode fallback: only succeeds for UTF-8 payloads.
       let text: string;
       try {
         text = new TextDecoder("utf-8", { fatal: true }).decode(content);
@@ -156,10 +186,10 @@ export function createE2bInstance(
     /**
      * Tear down the remote sandbox.
      *
-     * Idempotent on success: subsequent calls return immediately. On transient
-     * SDK failure, `destroyed` stays `false` so callers can retry — important
-     * for hosted-cloud adapters where stranded sandboxes are billable. Concurrent
-     * calls coalesce onto a single in-flight teardown.
+     * Once `destroy()` is invoked, all subsequent `exec`/`readFile`/`writeFile`
+     * calls reject — the lifecycle race is closed before the SDK confirms
+     * teardown. Idempotent on success; on transient SDK failure, `destroyed`
+     * stays `false` so callers can retry. Concurrent calls coalesce.
      */
     destroy: async (): Promise<void> => {
       if (destroyed) return;

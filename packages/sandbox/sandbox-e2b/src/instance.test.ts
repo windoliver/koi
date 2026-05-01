@@ -148,6 +148,82 @@ describe("createE2bInstance", () => {
     expect(attempts).toBe(2);
   });
 
+  test("exec rejects stdin when SDK does not advertise supportsStdin", async () => {
+    const sdk = createFakeSandbox();
+    const instance = createE2bInstance(sdk);
+    await expect(instance.exec("cat", [], { stdin: "hello" })).rejects.toThrow(/supportsStdin/);
+    expect(sdk.runCalls).toHaveLength(0);
+  });
+
+  test("exec forwards stdin when SDK advertises supportsStdin", async () => {
+    const base = createFakeSandbox();
+    const sdk = { ...base, commands: { ...base.commands, supportsStdin: true } };
+    const instance = createE2bInstance(sdk);
+    await instance.exec("cat", [], { stdin: "payload" });
+    expect(base.runCalls[0]?.opts?.stdin).toBe("payload");
+  });
+
+  test("exec rejects maxOutputBytes when SDK does not advertise support", async () => {
+    const sdk = createFakeSandbox();
+    const instance = createE2bInstance(sdk);
+    await expect(instance.exec("ls", [], { maxOutputBytes: 1024 })).rejects.toThrow(
+      /supportsMaxOutputBytes/,
+    );
+  });
+
+  test("exec surfaces SDK truncated flag when present", async () => {
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        supportsMaxOutputBytes: true,
+        run: async (): Promise<{
+          exitCode: number;
+          stdout: string;
+          stderr: string;
+          truncated?: boolean;
+        }> => ({ exitCode: 0, stdout: "x", stderr: "", truncated: true }),
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    const result = await instance.exec("ls", [], { maxOutputBytes: 10 });
+    expect(result.truncated).toBe(true);
+  });
+
+  test("readFile rejects when SDK exposes no readBytes (no text-only fallback)", async () => {
+    const base = createFakeSandbox({ initialFiles: new Map([["/a", "hi"]]) });
+    // Strip readBytes from the fake to simulate a text-only SDK.
+    const sdk = {
+      ...base,
+      files: {
+        read: base.files.read,
+        write: base.files.write,
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    await expect(instance.exec).toBeDefined();
+    await expect(instance.readFile("/a")).rejects.toThrow(/readBytes/);
+  });
+
+  test("operations during destroyPending reject", async () => {
+    let releaseKill!: () => void;
+    const sdk = createFakeSandbox({
+      killImpl: () =>
+        new Promise<void>((resolve) => {
+          releaseKill = resolve;
+        }),
+    });
+    const instance = createE2bInstance(sdk);
+    const destroyPromise = instance.destroy();
+    // teardown is in flight — concurrent ops must be refused
+    await expect(instance.exec("ls", [])).rejects.toThrow(/being destroyed/);
+    await expect(instance.readFile("/a")).rejects.toThrow(/being destroyed/);
+    await expect(instance.writeFile("/a", new Uint8Array())).rejects.toThrow(/being destroyed/);
+    releaseKill();
+    await destroyPromise;
+  });
+
   test("readFile prefers SDK readBytes when available (binary-safe)", async () => {
     const bytes = new Uint8Array([0xff, 0x00, 0xfe, 0x80]);
     const sdk = {
@@ -190,11 +266,16 @@ describe("createE2bInstance", () => {
   });
 
   test("writeFile rejects non-UTF-8 bytes when SDK is text-only (fail closed)", async () => {
-    const sdk = createFakeSandbox();
+    const base = createFakeSandbox();
+    // Strip the binary methods so the adapter takes the text-only fallback.
+    const sdk = {
+      ...base,
+      files: { read: base.files.read, write: base.files.write },
+    };
     const instance = createE2bInstance(sdk);
     const invalidUtf8 = new Uint8Array([0xff, 0xfe, 0xfd]);
     await expect(instance.writeFile("/x", invalidUtf8)).rejects.toThrow(/non-UTF-8/);
-    expect(sdk.files.store.has("/x")).toBe(false);
+    expect(base.files.store.has("/x")).toBe(false);
   });
 
   test("concurrent destroy calls coalesce onto one SDK teardown", async () => {

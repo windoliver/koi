@@ -63,7 +63,7 @@ Low-level helper for callers that already hold a workspace handle.
 
 ## Profile Mapping (fail-closed)
 
-The hosted backend has no provider-side hook for filesystem allow/deny lists, network deny, or Nexus FUSE mounts yet (those land with `@koi/sandbox-cloud-base` — issue #1379). Until then `create(profile)` **rejects** profiles that ask for any of those fields, rather than silently weakening isolation:
+The hosted backend has no provider-side hook for filesystem allow/deny lists, network deny, Nexus FUSE mounts, or process/memory caps yet (those land with `@koi/sandbox-cloud-base` — issue #1379). Until then `create(profile)` **rejects** profiles that ask for any of those fields:
 
 | Profile request | Behaviour |
 |-----------------|-----------|
@@ -71,9 +71,15 @@ The hosted backend has no provider-side hook for filesystem allow/deny lists, ne
 | `filesystem.defaultReadAccess="closed"` | `create()` throws |
 | `filesystem.allow{Read,Write}` / `deny{Read,Write}` | `create()` throws |
 | `nexusMounts` (non-empty) | `create()` throws |
+| `resources.maxMemoryMb` / `maxPids` / `maxOpenFiles` | `create()` throws |
 | `env` | forwarded as default per-call `envs` (per-call `env` wins) |
 | `resources.timeoutMs` | forwarded as default per-call `timeoutMs` (per-call wins) |
-| Other resource limits | currently unenforced |
+
+## Per-call exec capability gating
+
+`SandboxExecOptions.stdin` and `maxOutputBytes` are forwarded only when the injected SDK declares the matching capability flag (`commands.supportsStdin` / `commands.supportsMaxOutputBytes`). When absent, the adapter throws fail-closed.
+
+`readFile` requires `sdk.files.readBytes` for binary-safe reads. `writeFile` rejects non-UTF-8 bytes when the SDK is text-only.
 
 ---
 

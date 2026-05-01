@@ -11,23 +11,27 @@ export interface DaytonaRunOpts {
   readonly timeoutMs?: number;
   readonly onStdout?: (data: string) => void;
   readonly onStderr?: (data: string) => void;
-  /**
-   * Abort signal forwarded to the SDK. Callers that wrap `@daytonaio/sdk`
-   * should map this to whatever the SDK exposes for in-flight cancellation.
-   */
+  /** Abort signal forwarded to the SDK. */
   readonly signal?: AbortSignal;
+  /** Forwarded only when `commands.supportsStdin === true`; otherwise rejected. */
+  readonly stdin?: string;
+  /** Forwarded only when `commands.supportsMaxOutputBytes === true`; otherwise rejected. */
+  readonly maxOutputBytes?: number;
 }
 
 export interface DaytonaRunResult {
   readonly exitCode: number;
   readonly stdout: string;
   readonly stderr: string;
+  readonly truncated?: boolean;
 }
 
 /** Minimal SDK shape — what the adapter needs from a Daytona workspace handle. */
 export interface DaytonaSdkSandbox {
   readonly commands: {
     readonly run: (cmd: string, opts?: DaytonaRunOpts) => Promise<DaytonaRunResult>;
+    readonly supportsStdin?: boolean;
+    readonly supportsMaxOutputBytes?: boolean;
   };
   readonly files: {
     readonly read: (path: string) => Promise<string>;

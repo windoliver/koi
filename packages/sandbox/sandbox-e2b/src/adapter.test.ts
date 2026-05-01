@@ -69,6 +69,18 @@ describe("createE2bAdapter", () => {
     expect(client.calls).toHaveLength(0);
   });
 
+  test("create() fails closed when profile requests resource limits", async () => {
+    const client = createFakeClient();
+    const result = createE2bAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    const profile: SandboxProfile = {
+      ...openProfile,
+      resources: { maxMemoryMb: 512 },
+    };
+    await expect(result.value.create(profile)).rejects.toThrow(/resources\.maxMemoryMb/);
+    expect(client.calls).toHaveLength(0);
+  });
+
   test("create() fails closed when profile requests nexusMounts", async () => {
     const client = createFakeClient();
     const result = createE2bAdapter({ apiKey: "k", client });

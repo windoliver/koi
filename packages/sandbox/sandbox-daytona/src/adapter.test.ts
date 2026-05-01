@@ -72,6 +72,18 @@ describe("createDaytonaAdapter", () => {
     expect(client.calls).toHaveLength(0);
   });
 
+  test("create() fails closed when profile requests resource limits", async () => {
+    const client = createFakeClient();
+    const result = createDaytonaAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    const profile: SandboxProfile = {
+      ...openProfile,
+      resources: { maxPids: 100 },
+    };
+    await expect(result.value.create(profile)).rejects.toThrow(/resources\.maxPids/);
+    expect(client.calls).toHaveLength(0);
+  });
+
   test("create() fails closed when profile requests nexusMounts", async () => {
     const client = createFakeClient();
     const result = createDaytonaAdapter({ apiKey: "k", client });
