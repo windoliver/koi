@@ -32,6 +32,7 @@ import type {
   EngineInput,
   EngineState,
   KoiError,
+  SessionId,
   SessionPersistence,
   SessionRecord,
 } from "@koi/core";
@@ -299,5 +300,33 @@ async function mergeAndSave(
     return;
   }
   const result = await deps.persistence.saveSession(merged);
-  if (!result.ok) deps.onPersistError(result.error);
+  if (!result.ok) {
+    deps.onPersistError(result.error);
+    return;
+  }
+  // Storage-level CAS doesn't exist on `SessionPersistence.saveSession`, so
+  // we cannot atomically reject a write whose `saveSession` itself stalled
+  // past the timeout. If the generation advanced WHILE this write was in
+  // flight, the late commit may have just resurrected stale state on top of
+  // a newer terminal's clear. Compensate best-effort.
+  await compensateStaleWrite(deps, gen, myGen, merged.sessionId);
+}
+
+async function compensateStaleWrite(
+  deps: WrapStreamDeps,
+  gen: GenRef,
+  myGen: number,
+  sid: SessionId,
+): Promise<void> {
+  if (gen.current === myGen) return;
+  const reload = await deps.persistence.loadSession(sid);
+  if (!reload.ok) return;
+  if (reload.value.lastEngineState === undefined) return;
+  const cleared: SessionRecord = {
+    ...reload.value,
+    lastEngineState: undefined,
+    lastPersistedAt: deps.now(),
+  };
+  const r = await deps.persistence.saveSession(cleared);
+  if (!r.ok) deps.onPersistError(r.error);
 }
