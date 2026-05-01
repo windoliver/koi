@@ -469,6 +469,7 @@ describe("run() — manifest loading", () => {
         instructions: undefined,
         ace: {
           enabled: true,
+          acknowledgeCrossSessionState: true,
           maxInjectedTokens: undefined,
           minScore: undefined,
           lambda: undefined,
@@ -492,6 +493,7 @@ describe("run() — manifest loading", () => {
         instructions: undefined,
         ace: {
           enabled: true,
+          acknowledgeCrossSessionState: true,
           maxInjectedTokens: undefined,
           minScore: undefined,
           lambda: undefined,
@@ -511,6 +513,7 @@ describe("run() — manifest loading", () => {
         instructions: undefined,
         ace: {
           enabled: false,
+          acknowledgeCrossSessionState: false,
           maxInjectedTokens: undefined,
           minScore: undefined,
           lambda: undefined,

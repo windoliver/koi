@@ -957,6 +957,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
     if (!result.ok) return;
     expect(result.value.ace).toEqual({
       enabled: false,
+      acknowledgeCrossSessionState: false,
       maxInjectedTokens: undefined,
       minScore: undefined,
       lambda: undefined,
@@ -971,6 +972,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
+        "  acknowledge_cross_session_state: true",
         "  max_injected_tokens: 800",
         "  min_score: 0.05",
         "  lambda: 0.07",
@@ -981,6 +983,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
     if (!result.ok) return;
     expect(result.value.ace).toEqual({
       enabled: true,
+      acknowledgeCrossSessionState: true,
       maxInjectedTokens: 800,
       minScore: 0.05,
       lambda: 0.07,
@@ -995,6 +998,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
+        "  acknowledge_cross_session_state: true",
         "  min_score: 0.1",
       ].join("\n"),
     );
@@ -1003,6 +1007,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
     if (!result.ok) return;
     expect(result.value.ace).toEqual({
       enabled: true,
+      acknowledgeCrossSessionState: true,
       maxInjectedTokens: undefined,
       minScore: 0.1,
       lambda: undefined,
@@ -1017,6 +1022,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
+        "  acknowledge_cross_session_state: true",
         "  bogus_key: 1",
       ].join("\n"),
     );
@@ -1037,6 +1043,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
+        "  acknowledge_cross_session_state: true",
         "  playbook_path: /tmp/koi-ace.sqlite",
       ].join("\n"),
     );
@@ -1062,6 +1069,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
           "  name: google/gemini-2.0-flash-001",
           "ace:",
           "  enabled: true",
+          "  acknowledge_cross_session_state: true",
           "  playbook_path: ./escape/x.sqlite",
         ].join("\n"),
       );
@@ -1082,6 +1090,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
+        "  acknowledge_cross_session_state: true",
         "  playbook_path: ../escape.sqlite",
       ].join("\n"),
     );
@@ -1098,6 +1107,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
+        "  acknowledge_cross_session_state: true",
         "  playbook_path: ./.koi/ace.sqlite",
       ].join("\n"),
     );
@@ -1116,6 +1126,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
+        "  acknowledge_cross_session_state: true",
         '  playbook_path: ":memory:"',
       ].join("\n"),
     );
@@ -1132,6 +1143,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
+        "  acknowledge_cross_session_state: true",
         '  playbook_path: ""',
       ].join("\n"),
     );
@@ -1158,6 +1170,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
+        "  acknowledge_cross_session_state: true",
         "  max_injected_tokens: 0",
       ].join("\n"),
     );
@@ -1174,6 +1187,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
+        "  acknowledge_cross_session_state: true",
         "  max_injected_tokens: -1",
       ].join("\n"),
     );
@@ -1190,6 +1204,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
+        "  acknowledge_cross_session_state: true",
         "  min_score: 1.5",
       ].join("\n"),
     );
@@ -1206,6 +1221,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
+        "  acknowledge_cross_session_state: true",
         "  lambda: 0",
       ].join("\n"),
     );
@@ -1222,6 +1238,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
+        "  acknowledge_cross_session_state: true",
         "  lambda: -0.01",
       ].join("\n"),
     );
@@ -1229,6 +1246,35 @@ describe("loadManifestConfig: ace block (#2088)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("manifest.ace.lambda must be >= 0");
+  });
+
+  test("rejects enabled: true without acknowledge_cross_session_state", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "ace:", "  enabled: true"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("acknowledge_cross_session_state: true");
+    expect(result.error).toContain("survive conversation resets");
+  });
+
+  test("rejects non-boolean acknowledge_cross_session_state", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        '  acknowledge_cross_session_state: "yes"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain(
+      "manifest.ace.acknowledge_cross_session_state must be a boolean",
+    );
   });
 
   test("rejects non-object ace block", async () => {
@@ -1251,6 +1297,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
     if (!result.ok) return;
     expect(result.value.ace).toEqual({
       enabled: false,
+      acknowledgeCrossSessionState: false,
       maxInjectedTokens: undefined,
       minScore: undefined,
       lambda: undefined,

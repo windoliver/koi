@@ -96,12 +96,19 @@ session loop to record into).
 
 ```yaml
 ace:
-  enabled: true            # boolean — required to opt in
-  max_injected_tokens: 800 # >0; maps to AceConfig.maxInjectedTokens
-  min_score: 0.05          # in [0, 1]; maps to AceConfig.minScore
-  lambda: 0.05             # >0; maps to AceConfig.lambda
-  playbook_path: ./.koi/ace.db  # optional; absolute, manifest-relative, or ":memory:"
+  enabled: true                          # boolean — required to opt in
+  acknowledge_cross_session_state: true  # required when enabled: true (see below)
+  max_injected_tokens: 800               # >0; maps to AceConfig.maxInjectedTokens
+  min_score: 0.05                        # in [0, 1]; maps to AceConfig.minScore
+  lambda: 0.05                           # >0; maps to AceConfig.lambda
+  playbook_path: ./.koi/ace.db           # optional; manifest-relative, or ":memory:"
 ```
+
+`enabled: true` requires `acknowledge_cross_session_state: true`. ACE-learned
+playbooks persist across `/clear` and `/new` within a TUI process — they
+survive conversation resets and are only discarded on process exit. The
+double opt-in makes this trade-off explicit at manifest-load time rather
+than buried in a startup banner.
 
 ### Validation
 
@@ -142,16 +149,37 @@ middleware into the runtime via `extraMiddleware`.
 |----------------|-------|----------|
 | unset          | in-memory | lost on process exit; survives `/clear` and `/new` |
 | `:memory:`     | sqlite (RAM) | lost on process exit |
-| filesystem path | `@koi/playbook-store-sqlite` (WAL, foreign keys) | persists across processes |
+| manifest-relative path | `@koi/playbook-store-sqlite` (WAL, foreign keys) | persists across processes |
 
 When a SQLite store is constructed, the TUI registers a `process.on("exit")`
 hook that calls `store.close()` so WAL is checkpointed cleanly.
+
+### Cross-session state (why `acknowledge_cross_session_state` is required)
+
+ACE intentionally accumulates learned playbooks across sessions in a single
+process — that is how the injection-on-`onSessionStart` loop works. Today the
+runtime cycles the session lifecycle on `/clear` and `/new` instead of
+recreating the whole runtime, so the `PlaybookStore` survives those resets.
+Operators who want a privacy boundary must restart the TUI process (or, with
+a SQLite store on disk, delete the file). The `acknowledge_cross_session_state:
+true` opt-in makes this trade-off explicit at manifest-load time rather than
+buried in a startup banner.
 
 ### Host scope
 
 `koi start` continues to reject `ace.enabled: true` at fresh manifest load —
 single-shot prompts cannot run the consolidation/injection loop. Resume
 paths in `start` likewise inherit `skipManifestDiscovery` semantics.
+
+### Known limitations
+
+- **In-memory trajectory store deliberately omitted.** ACE's `trajectoryStore`
+  is left undefined on the TUI activation path. Without a pruning hook, an
+  in-memory trajectory store would grow for the life of the process.
+  Trajectory consolidation still happens at `onSessionEnd` using the
+  in-process working buffer.
+- **No spawn support.** ACE and the spawn preset stack are mutually exclusive
+  until per-agent partitioning lands.
 
 The full design analysis lives in
 `docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md` (10 review rounds
@@ -163,6 +191,8 @@ of refinement).
 
 | Phase | Adds |
 |-------|------|
+| Per-agent partitioning | Allow ACE alongside the spawn preset stack |
+| `clear()` on `PlaybookStore` | Wire `/clear` and `/new` to reset ACE state in-process |
 | Middleware integration | `KoiMiddleware` with `wrapModelCall` (inject) + `wrapToolCall` (record) + `onSessionEnd` (consolidate) |
 | LLM pipeline | `reflector` + `curator` + `StructuredPlaybook` operations (`add` / `merge` / `prune`) with bullet credit assignment |
 | Promotion gate | Proposal → evaluation → commit/rollback flow; `PlaybookProposalStore` lineage |

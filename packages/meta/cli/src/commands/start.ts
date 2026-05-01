@@ -722,8 +722,14 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
 
   // Persist manifest provenance so future resumes can enforce audit intent
   // against the original session's manifest, not the cwd at resume time.
-  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
-    await writeSessionMeta(SESSIONS_DIR, String(sid), { manifestPath: resolvedManifestPath });
+  if (flags.resume === undefined) {
+    // Always write the sidecar — even for manifest-free sessions —
+    // so resume can distinguish a legitimate no-manifest session
+    // from a tampered/deleted sidecar. koi start rejects ace + audit
+    // at fresh-load, so the snapshot is always { false, false } here.
+    await writeSessionMeta(SESSIONS_DIR, String(sid), {
+      ...(resolvedManifestPath !== undefined ? { manifestPath: resolvedManifestPath } : {}),
+    });
   }
 
   // Resume-path audit check using stored session provenance.
@@ -766,6 +772,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       }
       // Issue #2088 — note: a resume-time ACE rejection was deliberately
       // NOT added here. The fresh-load rejection above suffices for new
+      // sessions; legacy ACE sessions are caught by the storeId guard below.
     }
     // Round 9 finding: a session originally created in koi tui with
     // ace.enabled:true was previously resumable under koi start with no
