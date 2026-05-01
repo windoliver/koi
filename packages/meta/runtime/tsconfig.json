@@ -118,6 +118,7 @@
     { "path": "../../security/permissions" },
     { "path": "../../security/permissions-nexus" },
     { "path": "../../security/redaction" },
+    { "path": "../../lib/skill-distiller" },
     { "path": "../../security/skill-scanner" },
     { "path": "../../lib/skill-tool" },
     { "path": "../../lib/playbook-store-sqlite" },

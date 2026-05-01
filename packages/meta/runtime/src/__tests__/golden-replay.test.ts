@@ -16267,3 +16267,95 @@ describe("Golden: @koi/middleware-intent-capsule", () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Golden: @koi/skill-distiller (no LLM, no cassette — pure pipeline)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Issue #1649 promises auto-distillation of reusable skills from successful
+// task traces, with content-hash dedupe, LRU eviction, and relevance ranking.
+// Exercise the full in-process pipeline with an injected stub LLM:
+//   policy gate → distiller (stub LLM JSON) → store (LRU) → relevance.rank.
+
+describe("Golden: @koi/skill-distiller", () => {
+  test("end-to-end: policy → distill → store → rank surfaces the skill", async () => {
+    const { createDistillationPolicy, createDistiller, createSkillStore, createRelevanceScorer } =
+      await import("@koi/skill-distiller");
+
+    const policy = createDistillationPolicy();
+    const outcome = {
+      traceId: "t-golden-1",
+      verdict: "verified" as const,
+      turnCount: 4,
+      toolCallCount: 2,
+    };
+    expect(policy.shouldDistill(outcome)).toBe(true);
+
+    const llmJson = JSON.stringify({
+      name: "format-pr",
+      description: "Format a PR title and body for review.",
+      triggers: ["format pr", "tidy pr"],
+      parameters: [{ name: "prNumber", description: "PR id", required: true }],
+      toolSequence: ["read_file", "write_file"],
+      expectedInputs: ["pr number"],
+      expectedOutputs: ["formatted markdown"],
+    });
+
+    const distiller = createDistiller({
+      llm: async () => ({ ok: true, value: llmJson }),
+      now: () => 1700000000000,
+    });
+    const trace = {
+      traceId: outcome.traceId,
+      sessionId: "s-golden-1",
+      turns: [
+        { role: "user" as const, text: "format pr 42" },
+        { role: "assistant" as const, toolCalls: [{ name: "read_file", argsJson: "{}" }] },
+        { role: "tool" as const, text: "ok" },
+        { role: "assistant" as const, text: "done" },
+      ],
+    };
+    const distilled = await distiller.distill(trace);
+    expect(distilled.ok).toBe(true);
+    if (!distilled.ok) return;
+
+    const store = createSkillStore({ maxSize: 8 });
+    expect(store.add(distilled.value)).toBe("added");
+
+    const scorer = createRelevanceScorer();
+    const ranked = scorer.rank("please format pr now", store.list());
+    expect(ranked.length).toBe(1);
+    expect(ranked[0]?.record.draft.name).toBe("format-pr");
+    expect(ranked[0]?.score).toBeGreaterThan(0);
+  });
+
+  test("dedupe + LRU eviction: re-add is duplicate; overflow evicts oldest", async () => {
+    const { createSkillStore } = await import("@koi/skill-distiller");
+    const draft = (name: string) => ({
+      draft: {
+        name,
+        description: name,
+        triggers: [],
+        parameters: [],
+        toolSequence: [name],
+        expectedInputs: [],
+        expectedOutputs: [],
+      },
+      source: { traceId: name, timestamp: 0, sourceHash: `src-${name}` },
+      draftHash: `hash-${name}`,
+    });
+
+    const evicted: string[] = [];
+    const store = createSkillStore({
+      maxSize: 2,
+      onEvicted: (r) => evicted.push(r.draft.name),
+    });
+    expect(store.add(draft("alpha"))).toBe("added");
+    expect(store.add(draft("alpha"))).toBe("duplicate");
+    expect(store.add(draft("beta"))).toBe("added");
+    expect(store.add(draft("gamma"))).toBe("added");
+    expect(evicted).toEqual(["alpha"]);
+    expect(store.size()).toBe(2);
+    expect(store.has("alpha")).toBe(false);
+  });
+});
