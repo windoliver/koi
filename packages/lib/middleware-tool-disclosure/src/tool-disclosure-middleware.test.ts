@@ -611,6 +611,41 @@ describe("createToolDisclosureMiddleware", () => {
       expect(out.promoted).toEqual(["tool-3"]);
     });
 
+    test("wrapToolCall against a stale turnId is rejected (turn-binding guard)", async () => {
+      // Regression: if a wrapToolCall arrives with ctx.turnId that does not
+      // match the snapshot's lastTurnId (e.g., a newer wrapModelCall raced
+      // ahead and overwrote state), reject as stale advertisement.
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const sid: SessionId = sessionId("turn-bind");
+      const ctxTurn0 = createMockTurnContext({ session: { sessionId: sid }, turnIndex: 0 });
+      const ctxTurn1 = createMockTurnContext({ session: { sessionId: sid }, turnIndex: 1 });
+
+      // wrapModelCall fires for turn 0 — captures advertisement
+      await mw.wrapModelCall?.(
+        ctxTurn0,
+        { messages: [], tools: descriptors(10) },
+        captureNext().handler,
+      );
+      mw.promoteByNameForSession(sid, ["tool-3"]);
+
+      // Then wrapModelCall fires for turn 1 — overwrites advertisement
+      await mw.wrapModelCall?.(
+        ctxTurn1,
+        { messages: [], tools: descriptors(10) },
+        captureNext().handler,
+      );
+
+      // Now a wrapToolCall arrives bearing turn 0's context — must reject
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      const noop = async (): Promise<ToolResponse> => ({ output: "ok" });
+      const response = await wrap(ctxTurn0, { toolId: "tool-3", input: {} }, noop);
+      const out = response.output as { ok: boolean; error?: { code: string; message: string } };
+      expect(out.ok).toBe(false);
+      expect(out.error?.code).toBe("VALIDATION");
+      expect(out.error?.message).toContain("different turn");
+    });
+
     test("undefined tools clears stale advertised set (no carryover authorization)", async () => {
       // Regression: if a turn omits request.tools, prior knownNames/promoted
       // state must not continue authorizing tools from a previous turn.

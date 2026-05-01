@@ -29,6 +29,7 @@ import type {
   ToolRequest,
   ToolResponse,
   TurnContext,
+  TurnId,
 } from "@koi/core";
 
 /** Default tool count threshold below which disclosure is bypassed. */
@@ -96,6 +97,10 @@ interface SessionState {
   // otherwise turns that omit request.tools would silently re-enable any
   // tool the engine still knows about.
   everAdvertised: boolean;
+  // Turn ID of the wrapModelCall that produced the current snapshot. A
+  // wrapToolCall whose ctx.turnId differs from this is operating against a
+  // stale advertisement (engine race or out-of-order callback) — reject.
+  lastTurnId: TurnId | undefined;
 }
 
 /**
@@ -194,6 +199,7 @@ export function createToolDisclosureMiddleware(
         knownNames: new Set<string>(),
         lastFingerprints: new Map<string, string>(),
         everAdvertised: false,
+        lastTurnId: undefined,
       };
       sessions.set(sid, state);
     }
@@ -241,6 +247,10 @@ export function createToolDisclosureMiddleware(
     state.lastFingerprints = currentFingerprints;
     state.everAdvertised = true;
     return result;
+  }
+
+  function recordAdvertisement(state: SessionState, turnId: TurnId): void {
+    state.lastTurnId = turnId;
   }
 
   function promoteForSession(sid: SessionId, names: readonly string[]): readonly string[] {
@@ -309,10 +319,12 @@ export function createToolDisclosureMiddleware(
         state.promoted = newPromoted;
         state.lastFingerprints = fingerprints;
         state.everAdvertised = true;
+        recordAdvertisement(state, ctx.turnId);
         return next(request);
       }
       const state = getOrCreate(ctx.session.sessionId);
       const disclosed = disclose(state, request.tools);
+      recordAdvertisement(state, ctx.turnId);
       return next({ ...request, tools: disclosed });
     },
 
@@ -371,6 +383,22 @@ export function createToolDisclosureMiddleware(
       // 3. Tool was disclosed and promoted — pass through.
       const state = sessions.get(ctx.session.sessionId);
       if (state?.everAdvertised) {
+        // Turn-binding check: the snapshot must belong to the same turn this
+        // tool call is for. Any drift means an out-of-order callback or a
+        // newer wrapModelCall raced ahead — the call is operating against a
+        // stale advertisement, fail closed.
+        if (state.lastTurnId !== undefined && state.lastTurnId !== ctx.turnId) {
+          return {
+            output: {
+              ok: false,
+              error: {
+                code: "VALIDATION",
+                message: `Tool '${request.toolId}' was advertised in a different turn (${String(state.lastTurnId)}) than the one issuing this call (${String(ctx.turnId)}). The advertised set is stale.`,
+              },
+            },
+            metadata: { error: true, toolId: request.toolId, code: "VALIDATION" },
+          };
+        }
         if (!state.knownNames.has(request.toolId)) {
           return {
             output: {
