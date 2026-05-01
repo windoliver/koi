@@ -122,15 +122,27 @@ export function createTestGate(
       killGroup("SIGKILL");
       // Bound the stderr drain wait. With descendants killed, the pipe
       // should close almost immediately, but a kernel that has not yet
-      // delivered SIGKILL can hold it briefly.
+      // delivered SIGKILL can hold it briefly. If even SIGKILL hasn't
+      // released the stream within the grace window, we have not proven
+      // quiescence — fail the gate rather than advance to the next
+      // iteration with a possibly-still-running subtree.
+      // Use let — justified: race outcome flag.
+      let drainStuck = false;
       const drainGrace = new Promise<string>((resolve) => {
         setTimeout(() => {
-          resolve("[stderr drain exceeded grace]");
+          drainStuck = true;
+          resolve("[stderr drain exceeded grace; subtree may still be alive]");
         }, 1_000).unref?.();
       });
       const stderr = await Promise.race([stderrPromise, drainGrace]);
       clearTimeout(timer);
       if (killTimer !== undefined) clearTimeout(killTimer);
+      if (drainStuck) {
+        return {
+          passed: false,
+          details: `Test gate quiescence failed: stderr still open after SIGKILL (exit ${exitCode}). Subtree may be holding the pipe.`,
+        };
+      }
 
       // Cancellation is a verification failure regardless of exit code. A
       // child that traps SIGTERM and exits 0 (or simply finishes during the

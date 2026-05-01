@@ -135,20 +135,20 @@ async function writePRDIfUnchanged(
   // Random suffix so two concurrent writers don't collide on the same
   // `${path}.tmp` and produce ENOENT instead of a clean CONFLICT.
   const tmpPath = `${path}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
-  // Crash-durable write: open + write + fsync + close on the tmp file
-  // BEFORE rename. Bun.write() returns once the data is in the page
-  // cache, not when it's on disk — a host crash between markDoneMany()
-  // returning success and the kernel flushing would silently lose
-  // committed completion state. fsync the data, then rename, then
-  // fsync the parent directory to make the rename itself durable.
-  const tmpHandle = await open(tmpPath, "w");
   try {
-    await tmpHandle.writeFile(JSON.stringify(newPrd, null, 2));
-    await tmpHandle.sync();
-  } finally {
-    await tmpHandle.close();
-  }
-  try {
+    // Crash-durable write: open + write + fsync + close on the tmp file
+    // BEFORE rename. Bun.write() returns once the data is in the page
+    // cache, not when it's on disk — a host crash between markDoneMany()
+    // returning success and the kernel flushing would silently lose
+    // committed completion state. fsync the data, then rename, then
+    // fsync the parent directory to make the rename itself durable.
+    const tmpHandle = await open(tmpPath, "w");
+    try {
+      await tmpHandle.writeFile(JSON.stringify(newPrd, null, 2));
+      await tmpHandle.sync();
+    } finally {
+      await tmpHandle.close();
+    }
     const file = Bun.file(path);
     const exists = await file.exists();
     if (!exists) {
@@ -170,9 +170,10 @@ async function writePRDIfUnchanged(
     await rename(tmpPath, path);
     // fsync the parent directory so the rename's directory-entry update
     // is also durable. Without this, a crash after rename can leave the
-    // file pointing at the OLD inode on next mount even though the
-    // new bytes are safely on disk. Best-effort: some filesystems
-    // (network mounts, certain FUSE) don't support directory fsync.
+    // file pointing at the OLD inode on next mount even though the new
+    // bytes are safely on disk. Only swallow "operation unsupported"
+    // codes (FUSE, network mounts); real I/O failures still propagate
+    // through the outer catch and become INTERNAL Result errors.
     try {
       const dirHandle = await open(dirname(path), "r");
       try {
@@ -181,10 +182,6 @@ async function writePRDIfUnchanged(
         await dirHandle.close();
       }
     } catch (e: unknown) {
-      // Only swallow "filesystem does not support directory fsync" errors
-      // (FUSE, some network mounts, certain object-store gateways). Real
-      // I/O failures (EIO, ENOSPC, EBADF) must propagate so the caller
-      // does not falsely believe the write was crash-durable.
       const code = (e as { readonly code?: unknown }).code;
       const unsupported =
         code === "EINVAL" || code === "ENOTSUP" || code === "ENOSYS" || code === "EPERM";
@@ -192,14 +189,17 @@ async function writePRDIfUnchanged(
     }
     return { ok: true, value: undefined };
   } catch (e: unknown) {
-    // Best-effort tmp cleanup on any error path so we never leak tmps.
-    await Bun.file(tmpPath)
-      .delete()
-      .catch(() => undefined);
-    throw e;
+    // All low-level FS faults (open, writeFile, sync, rename, dir-fsync)
+    // are converted to a Result so callers can branch on r.ok instead of
+    // having ENOSPC/EIO/EROFS surface as uncaught rejections — every
+    // exported mutator declares Promise<Result<...>> and must honor it.
+    return {
+      ok: false,
+      error: internal(`Failed to write PRD file at ${path}: ${extractMessage(e)}`, e),
+    };
   } finally {
-    // If we returned a CONFLICT result above, the rename never ran and
-    // the tmp is still on disk. Clean it up.
+    // If we returned without renaming (CONFLICT, error, or success
+    // path), make sure no tmp file is left behind.
     if (await Bun.file(tmpPath).exists()) {
       await Bun.file(tmpPath)
         .delete()
@@ -324,7 +324,11 @@ export async function bumpFailureCount(
     ...(shouldSkip ? { skipped: true } : {}),
   };
   const newItems = items.map((item, i) => (i === index ? updated : item));
-  const newPrd: PRDFile = { items: newItems };
+  // Spread `prd` to preserve unknown top-level fields (operator-added
+  // metadata, future schema versions like `version`, scheduling hints).
+  // Reconstructing as `{ items: newItems }` would silently delete them
+  // on the first successful write — irreversible data loss.
+  const newPrd: PRDFile = { ...prd, items: newItems };
 
   const writeResult = await writePRDIfUnchanged(path, raw, newPrd);
   if (!writeResult.ok) return writeResult;
@@ -376,7 +380,11 @@ export async function markSkipped(path: string, itemId: string): Promise<Result<
 
   const updated: PRDItem = { ...target, skipped: true };
   const newItems = items.map((item, i) => (i === index ? updated : item));
-  const newPrd: PRDFile = { items: newItems };
+  // Spread `prd` to preserve unknown top-level fields (operator-added
+  // metadata, future schema versions like `version`, scheduling hints).
+  // Reconstructing as `{ items: newItems }` would silently delete them
+  // on the first successful write — irreversible data loss.
+  const newPrd: PRDFile = { ...prd, items: newItems };
 
   return writePRDIfUnchanged(path, raw, newPrd);
 }
@@ -438,7 +446,11 @@ export async function markDoneMany(
       consecutiveFailureCount: 0,
     };
   });
-  const newPrd: PRDFile = { items: newItems };
+  // Spread `prd` to preserve unknown top-level fields (operator-added
+  // metadata, future schema versions like `version`, scheduling hints).
+  // Reconstructing as `{ items: newItems }` would silently delete them
+  // on the first successful write — irreversible data loss.
+  const newPrd: PRDFile = { ...prd, items: newItems };
 
   return writePRDIfUnchanged(path, raw, newPrd);
 }
@@ -461,7 +473,11 @@ async function updateItem(
 
   const updated = mutate(target);
   const newItems = items.map((item, i) => (i === index ? updated : item));
-  const newPrd: PRDFile = { items: newItems };
+  // Spread `prd` to preserve unknown top-level fields (operator-added
+  // metadata, future schema versions like `version`, scheduling hints).
+  // Reconstructing as `{ items: newItems }` would silently delete them
+  // on the first successful write — irreversible data loss.
+  const newPrd: PRDFile = { ...prd, items: newItems };
 
   return writePRDIfUnchanged(path, raw, newPrd);
 }
