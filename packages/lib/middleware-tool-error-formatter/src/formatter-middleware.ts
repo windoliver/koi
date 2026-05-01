@@ -101,6 +101,48 @@ const MAX_SANITIZE_DEPTH = 64;
 
 const DEPTH_TRUNCATED_MARKER = "[TruncatedDepth]";
 
+/**
+ * Object keys that imply the value is a credential/secret regardless of its
+ * shape. When an object is sanitized, any value under one of these keys is
+ * fully redacted to `[REDACTED]` (string, number, even truthy boolean) rather
+ * than scanned with regex patterns. A short opaque API key, a password, or a
+ * cookie string typically won't match any of the high-entropy regexes — but
+ * the field name alone is enough to know the value is sensitive.
+ *
+ * Match is case-insensitive and snake_case/camelCase tolerant.
+ */
+const SENSITIVE_KEY_PATTERNS: readonly RegExp[] = [
+  /password/i,
+  /passwd/i,
+  /^pwd$/i,
+  /(?:^|_|-)secret(?:s)?(?:$|_|-)/i,
+  /^secret(?:s)?$/i,
+  /(?:^|_|-)token(?:s)?(?:$|_|-)/i,
+  /^token(?:s)?$/i,
+  /authorization/i,
+  /^authn?$/i,
+  /api[_-]?key/i,
+  /access[_-]?key/i,
+  /(?:^|_|-)key(?:s)?(?:$|_|-)/i, // matches privateKey, signing_key, etc.
+  /cookie/i,
+  /session[_-]?id/i,
+  /credentials?/i,
+  /bearer/i,
+  /refresh[_-]?token/i,
+  /access[_-]?token/i,
+  /client[_-]?secret/i,
+  /private[_-]?key/i,
+];
+
+const REDACTED_MARKER = "[REDACTED]";
+
+function isSensitiveKey(key: string): boolean {
+  for (const pattern of SENSITIVE_KEY_PATTERNS) {
+    if (pattern.test(key)) return true;
+  }
+  return false;
+}
+
 function sanitizeJsonValue(value: unknown, patterns: readonly RegExp[]): unknown {
   return sanitizeJsonValueInner(value, patterns, new WeakSet<object>(), 0);
 }
@@ -141,6 +183,14 @@ function sanitizeJsonValueInner(
     seen.add(value);
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      // Key-aware redaction: if the field name implies the value is a
+      // credential, fully redact regardless of its shape (a short opaque
+      // password or token won't match any regex). Null/undefined still
+      // come through as null.
+      if (isSensitiveKey(k) && v !== null && v !== undefined) {
+        out[k] = REDACTED_MARKER;
+        continue;
+      }
       out[k] = sanitizeJsonValueInner(v, patterns, seen, depth + 1);
     }
     return out;

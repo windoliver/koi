@@ -406,9 +406,13 @@ describe("createToolErrorFormatterMiddleware", () => {
         retryable: false,
         context: {
           headers: { authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" },
-          tokens: ["sk-abc123def456ghi789jklmnopqrst", "safe-value"],
+          // values inside arrays under non-sensitive keys still get
+          // string-level regex sanitization
+          values: ["sk-abc123def456ghi789jklmnopqrst", "safe-value"],
           nested: { apiKey: "sk-secretsecretsecretsecretSecret" },
           numeric: 42,
+          // sensitive-key paths get fully redacted regardless of value shape
+          tokens: ["t-short-no-regex-match", "another"],
         },
       };
       const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
@@ -419,12 +423,48 @@ describe("createToolErrorFormatterMiddleware", () => {
       expect(ctx).toBeDefined();
       const headers = ctx.headers as Record<string, unknown>;
       expect(headers.authorization).toBe("[REDACTED]");
-      const tokens = ctx.tokens as readonly string[];
-      expect(tokens[0]).toBe("[REDACTED]");
-      expect(tokens[1]).toBe("safe-value");
+      // 'values' key isn't sensitive, so element-level regex applies
+      const values = ctx.values as readonly string[];
+      expect(values[0]).toBe("[REDACTED]");
+      expect(values[1]).toBe("safe-value");
       const nested = ctx.nested as Record<string, unknown>;
       expect(nested.apiKey).toBe("[REDACTED]");
       expect(ctx.numeric).toBe(42); // non-strings preserved
+      // 'tokens' is a sensitive key — entire value redacted
+      expect(ctx.tokens).toBe("[REDACTED]");
+    });
+
+    test("key-aware redaction: short opaque values under sensitive keys are redacted", async () => {
+      // Regression: regex patterns won't catch short opaque tokens or
+      // password strings. The field NAME is the signal.
+      const wrap = getWrapToolCall();
+      const err = {
+        name: "KoiRuntimeError",
+        code: "EXTERNAL",
+        message: "config",
+        retryable: false,
+        context: {
+          username: "alice",
+          password: "hunter2",
+          api_key: "abc123",
+          cookie: "session=xyz",
+          settings: { client_secret: "deadbeef", timeout: 30 },
+          camelCase: { refreshToken: "x", accessKey: "y" },
+        },
+      };
+      const failing = createFailingToolHandler(err);
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+      const ctx = response.metadata?.context as Record<string, unknown>;
+      expect(ctx.username).toBe("alice");
+      expect(ctx.password).toBe("[REDACTED]");
+      expect(ctx.api_key).toBe("[REDACTED]");
+      expect(ctx.cookie).toBe("[REDACTED]");
+      const settings = ctx.settings as Record<string, unknown>;
+      expect(settings.client_secret).toBe("[REDACTED]");
+      expect(settings.timeout).toBe(30);
+      const camelCase = ctx.camelCase as Record<string, unknown>;
+      expect(camelCase.refreshToken).toBe("[REDACTED]");
+      expect(camelCase.accessKey).toBe("[REDACTED]");
     });
 
     test("KoiError cause is captured (sanitized)", async () => {
