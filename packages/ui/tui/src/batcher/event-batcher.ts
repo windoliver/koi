@@ -1,3 +1,5 @@
+import { isProfilingEnabled, recordHistogram } from "../profiling/profiler.js";
+
 /**
  * EventBatcher — coalesces high-frequency events into render-cadence batches.
  *
@@ -83,6 +85,20 @@ export function createEventBatcher<T>(
   let microtaskPending = false;
   let flushTimer: TimerHandle | null = null;
   let disposed = false;
+  // `let` justified: timestamp of previous flush START — gap is start-to-start,
+  // not end-to-start, so a slow onFlush does not bias the metric upward.
+  let lastFlushStartAt = -1;
+
+  function recordFlushMetrics(batchSize: number, flushStartT: number, onFlushEndT: number): void {
+    recordHistogram("batcher.flush.batchSize", batchSize);
+    recordHistogram("batcher.flush.onFlushMs", onFlushEndT - flushStartT);
+    if (lastFlushStartAt >= 0) {
+      // Start-to-start gap: pure scheduler/coalescing interval, independent
+      // of how long the previous onFlush took.
+      recordHistogram("batcher.flush.gapMs", flushStartT - lastFlushStartAt);
+    }
+    lastFlushStartAt = flushStartT;
+  }
 
   function scheduleFlush(): void {
     if (flushTimer !== null) return; // already scheduled
@@ -94,7 +110,19 @@ export function createEventBatcher<T>(
     if (disposed || buffer.length === 0) return;
     const batch = buffer;
     buffer = [];
-    onFlush(batch); // may throw — intentional: caller sees the error
+    // Disabled-path is hot: skip both performance.now() calls when
+    // profiling is off so the batcher executes its pre-instrumentation
+    // code with zero added work per flush.
+    if (!isProfilingEnabled()) {
+      onFlush(batch); // may throw — intentional: caller sees the error
+      return;
+    }
+    const t0 = performance.now();
+    try {
+      onFlush(batch); // may throw — intentional: caller sees the error
+    } finally {
+      recordFlushMetrics(batch.length, t0, performance.now());
+    }
   }
 
   return {
@@ -120,7 +148,17 @@ export function createEventBatcher<T>(
       microtaskPending = false;
       const batch = buffer;
       buffer = [];
-      onFlush(batch);
+      // Same disabled-path fast skip as flush() — see comment there.
+      if (!isProfilingEnabled()) {
+        onFlush(batch);
+        return;
+      }
+      const t0 = performance.now();
+      try {
+        onFlush(batch);
+      } finally {
+        recordFlushMetrics(batch.length, t0, performance.now());
+      }
     },
 
     dispose(): void {

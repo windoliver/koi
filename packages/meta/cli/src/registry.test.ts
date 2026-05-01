@@ -11,6 +11,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { COMMAND_NAMES } from "./args.js";
 import { COMMAND_LOADERS } from "./registry.js";
 
@@ -30,12 +32,39 @@ describe("COMMAND_LOADERS", () => {
     expect(registryKeys.size).toBe(knownKeys.size);
   });
 
-  test("each loader resolves to a module with a callable run export", async () => {
-    for (const name of COMMAND_NAMES) {
-      const loader = COMMAND_LOADERS[name];
-      const mod = (await loader()) as { run?: unknown };
-      expect(mod).toBeDefined();
-      expect(mod.run).toBeTypeOf("function");
+  test("each loader resolves to a module with a callable run export", () => {
+    const cliRoot = fileURLToPath(new URL("..", import.meta.url));
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `
+          const { COMMAND_NAMES } = await import("./src/args.ts");
+          const { COMMAND_LOADERS } = await import("./src/registry.ts");
+          for (const name of COMMAND_NAMES) {
+            const mod = await COMMAND_LOADERS[name]();
+            if (typeof mod?.run !== "function") {
+              console.error(\`\${name}: expected callable run export\`);
+              process.exit(1);
+            }
+          }
+          process.exit(0);
+        `,
+      ],
+      { cwd: cliRoot, encoding: "utf8", timeout: 45_000 },
+    );
+
+    if (result.status !== 0) {
+      throw new Error(
+        [
+          `command-loader shape probe failed with status ${String(result.status)}`,
+          result.error?.message,
+          result.stdout,
+          result.stderr,
+        ]
+          .filter((part): part is string => part !== undefined && part.length > 0)
+          .join("\n"),
+      );
     }
-  });
+  }, 60_000);
 });

@@ -1,6 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
+
+setDefaultTimeout(15_000);
 
 const BIN = join(import.meta.dir, "bin.ts");
 const FIXTURE_MANIFEST = join(import.meta.dir, "__fixtures__", "minimal.koi.yaml");
@@ -9,15 +11,19 @@ async function runBin(
   args: readonly string[],
   extraEnv?: Readonly<Record<string, string>>,
 ): Promise<{ readonly stdout: string; readonly stderr: string; readonly exitCode: number }> {
+  const env = { ...(process.env as Record<string, string>), ...extraEnv };
+  if (extraEnv?.LOG_FORMAT === undefined) {
+    delete env.LOG_FORMAT;
+  }
   const proc = Bun.spawn(
     ["bun", BIN, ...args],
     extraEnv !== undefined
       ? {
           stdout: "pipe",
           stderr: "pipe",
-          env: { ...(process.env as Record<string, string>), ...extraEnv },
+          env,
         }
-      : { stdout: "pipe", stderr: "pipe" },
+      : { stdout: "pipe", stderr: "pipe", env },
   );
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -49,6 +55,17 @@ describe("bin.ts", () => {
       expect(r.stdout).toContain("start");
       expect(r.stdout).toContain("--version");
       expect(r.stdout).toContain("--help");
+    });
+
+    test("--help labels planned lifecycle commands and lists wired commands", async () => {
+      const r = await runBin(["--help"]);
+      expect(r.exitCode).toBe(0);
+      for (const cmd of ["init", "serve", "logs", "status", "stop", "deploy"]) {
+        expect(r.stdout).toContain(`${cmd}`);
+        expect(r.stdout).toContain("planned");
+      }
+      expect(r.stdout).toContain("dream");
+      expect(r.stdout).toContain("mcp <subcommand>");
     });
 
     test("-h shorthand exits 0 with help", async () => {
@@ -262,10 +279,12 @@ describe("bin.ts", () => {
       "logs",
       "status",
       "doctor",
+      "dream",
       "stop",
       "deploy",
       "plugin",
       "mcp",
+      "bg",
     ] as const;
 
     for (const cmd of SUBCOMMANDS) {

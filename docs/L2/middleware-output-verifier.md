@@ -301,6 +301,7 @@ interface VerifierHandle {
   // Session-scoped rubric override. Default rubric (captured at construction)
   // is immutable; setRubric writes a per-session override that does NOT bleed
   // into other concurrent sessions sharing the same middleware instance.
+  // onSessionEnd clears the override for the completed session.
   readonly setRubric: (sessionId: string, rubric: string) => void;
   readonly clearRubric: (sessionId: string) => void;
   readonly reset: () => void;                    // zero all stats counters
@@ -452,6 +453,7 @@ const { middleware, setRubric } = createOutputVerifierMiddleware({
 setRubric(sessionId, "Formal tone required. No bullet points. Cite sources.");
 // Takes effect on next wrapModelCall/wrapModelStream invocation in THAT
 // session only. Other concurrent sessions continue to use the default rubric.
+// The middleware also drops this override from onSessionEnd(sessionId).
 ```
 
 ### Per-Session Stats Reset

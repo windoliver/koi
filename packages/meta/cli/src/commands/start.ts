@@ -50,7 +50,11 @@ import { loadPolicyFile } from "../policy-file.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
 import { resolveManifestPath } from "../resolve-manifest-path.js";
 import { createKoiRuntime, PolicyLoadError } from "../runtime-factory.js";
-import { readSessionMeta, resumeSessionFromJsonl, writeSessionMeta } from "../shared-wiring.js";
+import {
+  readSessionMetaResult,
+  resumeSessionFromJsonl,
+  writeSessionMeta,
+} from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
 
@@ -510,6 +514,20 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       );
     }
 
+    // Issue #2088: ACE schema is shipped but host activation has not landed
+    // yet. Reject ace.enabled: true at fresh manifest load on every host
+    // (matches backgroundSubprocesses + audit + network/credentials precedent
+    // above). The activation PR will replace this with real wiring.
+    if (manifestResult.value.ace?.enabled === true) {
+      return bail(
+        "manifest.ace.enabled: true is not yet wired in this build " +
+          "(tracked as issue 2088). The schema is shipped but neither koi start " +
+          "nor koi tui activates the middleware yet — set ace.enabled: false or " +
+          "remove the ace: block. The activation PR is the natural place for the " +
+          "host wiring.",
+      );
+    }
+
     // #1777 two-gate trust boundary for nexus backends:
     //   Gate 1 — manifest must declare scope (root + mode in options)
     //   Gate 2 — operator must pass --allow-remote-fs to explicitly
@@ -707,31 +725,109 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
 
   // Persist manifest provenance so future resumes can enforce audit intent
   // against the original session's manifest, not the cwd at resume time.
-  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
-    await writeSessionMeta(SESSIONS_DIR, String(sid), { manifestPath: resolvedManifestPath });
+  if (flags.resume === undefined) {
+    // Always write the sidecar — even for manifest-free sessions —
+    // so resume can distinguish a legitimate no-manifest session
+    // from a tampered/deleted sidecar. koi start rejects ace + audit
+    // at fresh-load, so the snapshot is always { false, false } here.
+    await writeSessionMeta(SESSIONS_DIR, String(sid), {
+      manifestPath: resolvedManifestPath ?? null,
+      snapshot: { aceEnabled: false, auditDeclared: false },
+    });
   }
 
   // Resume-path audit check using stored session provenance.
   // koi start hard-rejects manifest.audit — check the original session's manifest.
   if (flags.resume !== undefined) {
-    const resumeMeta = await readSessionMeta(SESSIONS_DIR, String(sid));
-    if (resumeMeta.manifestPath !== undefined) {
-      const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
-        skipAuditValidation: true,
-      });
-      if (!resumeAuditResult.ok) {
+    const resumeMeta = await readSessionMetaResult(SESSIONS_DIR, String(sid));
+    if (resumeMeta.kind === "corrupt") {
+      return bail(
+        "session provenance sidecar is unreadable or malformed — " +
+          `refusing to resume because original manifest cannot be verified (${resumeMeta.error}). ` +
+          "Restore a valid sidecar, or start a fresh session.",
+      );
+    }
+    // "missing" and "legacy" both fall through to the pre-PR
+    // re-parse-manifest path below. This preserves resume access to
+    // sessions created before this build added the snapshot model.
+    if (resumeMeta.kind === "missing" || resumeMeta.kind === "legacy") {
+      const legacyManifestPath = resumeMeta.kind === "legacy" ? resumeMeta.manifestPath : undefined;
+      if (legacyManifestPath !== undefined) {
+        const r = await loadManifestConfig(legacyManifestPath, { skipAuditValidation: true });
+        if (r.ok) {
+          if (r.value.audit !== undefined) {
+            return bail(
+              "original session manifest.audit is not supported on this host. " +
+                "koi start does not wire audit sinks — use koi tui to resume this session, " +
+                "or remove the audit: block from the manifest.",
+            );
+          }
+          if (r.value.ace?.enabled === true) {
+            return bail(
+              "original session manifest.ace.enabled: true is not supported on this host. " +
+                "koi start does not wire ACE — use koi tui to resume this session, " +
+                "or set ace.enabled: false in the manifest.",
+            );
+          }
+        }
+      }
+      // Manifest-free legacy or missing — pre-PR behavior: resume.
+    }
+    if (resumeMeta.kind === "ok") {
+      // Issue #2088 — snapshot fast path. Bail without re-parsing the
+      // (possibly mutated) manifest when the immutable snapshot at
+      // session creation already proves an unsupported host transition.
+      if (resumeMeta.snapshot?.aceEnabled === true) {
         return bail(
-          "original session manifest cannot be parsed during resume — " +
-            "refusing to start because manifest.audit presence cannot be verified. " +
-            "Fix the manifest to run under koi start, or use koi tui.",
+          "original session ace.enabled: true is not supported on this host " +
+            "(snapshot recorded at session creation). koi start does not wire ACE — " +
+            "use koi tui to resume this session.",
         );
       }
-      if (resumeAuditResult.value.audit !== undefined) {
+      if (resumeMeta.snapshot?.auditDeclared === true) {
         return bail(
-          "original session manifest.audit is not supported on this host. " +
-            "koi start does not wire audit sinks — use koi tui to resume this session, " +
-            "or remove the audit: block from the manifest.",
+          "original session manifest.audit is not supported on this host " +
+            "(snapshot recorded at session creation). koi start does not wire " +
+            "audit sinks — use koi tui to resume this session.",
         );
+      }
+      // Manifest-free original session — snapshot already proves no
+      // ACE/audit; skip the manifest reload + re-derivation below.
+      if (resumeMeta.manifestPath === undefined) {
+        // Fall through to runtime assembly with no further checks.
+      } else {
+        const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
+          skipAuditValidation: true,
+        });
+        if (!resumeAuditResult.ok) {
+          return bail(
+            "original session manifest cannot be parsed during resume — " +
+              "refusing to start because manifest.audit presence cannot be verified. " +
+              "Fix the manifest to run under koi start, or use koi tui.",
+          );
+        }
+        if (resumeAuditResult.value.audit !== undefined) {
+          return bail(
+            "original session manifest.audit is not supported on this host. " +
+              "koi start does not wire audit sinks — use koi tui to resume this session, " +
+              "or remove the audit: block from the manifest.",
+          );
+        }
+        // Issue #2088 — mirror the fresh-load ACE rejection on resume.
+        // ACE is wired only in koi tui; allowing a session whose original
+        // manifest enabled ACE to resume on koi start would silently
+        // degrade (the field is honored on tui, ignored on start). The
+        // broader resume-provenance gap (readSessionMeta() returning {}
+        // for missing/malformed sidecars) means this guard only catches
+        // sessions whose sidecar successfully recorded the manifest path
+        // — that is consistent with the audit guard above.
+        if (resumeAuditResult.value.ace?.enabled === true) {
+          return bail(
+            "original session manifest.ace.enabled: true is not supported on this host. " +
+              "koi start does not wire ACE — use koi tui to resume this session, " +
+              "or set ace.enabled: false in the manifest.",
+          );
+        }
       }
     }
   }

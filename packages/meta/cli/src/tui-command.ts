@@ -94,6 +94,7 @@ import {
 } from "@koi/tui";
 import { BLOCKED_HOST_SUFFIXES, BLOCKED_HOSTS, isBlockedIp } from "@koi/url-safety";
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
+import { resolveAceActivation } from "./ace-activation.js";
 import { mergeGovernanceFlags } from "./args/governance-flags.js";
 import type { TuiFlags } from "./args.js";
 import { formatAtReferencesForModel, resolveAtReferences } from "./at-reference.js";
@@ -117,7 +118,7 @@ import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js"
 import { createSecurityBridge, type SecurityBridge } from "./security-bridge.js";
 import {
   buildScopedCredentials,
-  readSessionMeta,
+  readSessionMetaResult,
   resumeSessionFromJsonl,
   writeSessionMeta,
 } from "./shared-wiring.js";
@@ -1088,6 +1089,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestNetwork: import("./manifest.js").ManifestNetworkConfig | undefined;
   let manifestCredentials: import("./manifest.js").ManifestCredentialsConfig | undefined;
   let manifestLoadPath: string | undefined; // tracks which path was loaded, for TOCTOU revalidation
+  // #2088: built when manifest.ace.enabled === true and the spawn-gate
+  // permits activation. Passed into createKoiRuntime via `ace`.
+  let resolvedAceConfig: import("@koi/middleware-ace").AceConfig | undefined;
   // Mirror start.ts: when resuming without an explicit --manifest, bypass
   // auto-discovery so the cwd manifest cannot silently override the model,
   // stacks, plugins, filesystem scope, or governance of the original session.
@@ -1146,6 +1150,59 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestNetwork = manifestResult.value.network;
     manifestCredentials = manifestResult.value.credentials;
     manifestLoadPath = resolvedManifestPath;
+
+    // Issue #2088 — ACE activation. Spawn isolation is handled in
+    // runtime-factory.ts (`inheritedMiddlewareForChildren` excludes ACE),
+    // so spawn + ACE coexist safely. Resume-provenance gate is handled
+    // by the outer `skipManifestDiscovery` flag — when --resume is used
+    // without --manifest, this block is unreachable. The manifest schema
+    // already required `acknowledge_cross_session_state: true` to allow
+    // `enabled: true`, so /clear and /new survival is documented at load.
+    //
+    // Resume-with-explicit-manifest still flows through this block. Refuse
+    // to attach a fresh ACE store to a resumed transcript: even a freshly
+    // supplied --manifest cannot recover the prior process's PlaybookStore,
+    // so honoring `ace.enabled: true` here would silently drift learning
+    // state from what the transcript implies. Block until #2087 lands.
+    if (flags.resume !== undefined && manifestResult.value.ace?.enabled === true) {
+      process.stderr.write(
+        "koi tui: --resume cannot start with manifest.ace.enabled: true — " +
+          "in-memory playbooks cannot be carried across processes, and attaching " +
+          "a fresh ACE store to an existing transcript would silently drift from " +
+          "the prior session's prompting and learning state. Wait for sqlite-backed " +
+          "playbook persistence (#2087), or omit --resume to start a new ACE session.\n",
+      );
+      process.exit(1);
+    }
+    const aceActivation = resolveAceActivation(manifestResult.value.ace);
+    if (aceActivation.kind === "block") {
+      process.stderr.write(aceActivation.message);
+      process.exit(1);
+    }
+    if (aceActivation.kind === "activate") {
+      // /rewind is provided by the checkpoint preset stack and is in the
+      // default stack set. ACE has no rewind hook today: playbooks
+      // consolidated from a turn the operator subsequently rolls back
+      // remain in the in-memory store and continue to influence later
+      // prompts. That breaks rewind's isolation contract. Refuse to
+      // activate ACE while checkpoint is active; the operator must
+      // explicitly opt out of /rewind to use ACE until a clearable
+      // PlaybookStore lands (#2087).
+      const checkpointActive =
+        manifestStacks === undefined || manifestStacks.includes("checkpoint");
+      if (checkpointActive) {
+        process.stderr.write(
+          "koi tui: ace.enabled: true is incompatible with the checkpoint preset stack. " +
+            "/rewind would discard transcript turns but cannot roll back ACE-learned playbooks, " +
+            "so prompting could still be steered by hidden state derived from rolled-back turns. " +
+            'Explicitly set `stacks:` in the manifest to a list that excludes "checkpoint" to ' +
+            "use ACE today, or wait for a clearable PlaybookStore (#2087).\n",
+        );
+        process.exit(1);
+      }
+      resolvedAceConfig = aceActivation.config;
+      process.stderr.write(aceActivation.message);
+    }
 
     // Fail-closed audit intent enforcement — applies regardless of KOI_ALLOW_MANIFEST_FILE_SINKS.
     // manifest.audit paths are never used as actual file paths (atomic containment
@@ -1429,19 +1486,80 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
 
   // Persist manifest provenance so future resumes can enforce audit intent
   // against the original session's manifest, not the cwd at resume time.
-  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
-    await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), {
-      manifestPath: resolvedManifestPath,
+  // When ACE is activated, the sidecar is the only signal a future
+  // koi start --resume has to refuse the unsupported host transition;
+  // missing it would silently downgrade. Fail closed in that case.
+  if (flags.resume === undefined) {
+    // Always write the sidecar — even for manifest-free sessions —
+    // so resume can distinguish a legitimate no-manifest session
+    // from a tampered/deleted sidecar. manifestPath is null when
+    // no manifest governed this session.
+    const writeResult = await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), {
+      manifestPath: resolvedManifestPath ?? null,
+      snapshot: {
+        aceEnabled: resolvedAceConfig !== undefined,
+        auditDeclared: manifestAudit !== undefined,
+      },
     });
+    if (!writeResult.ok && (resolvedAceConfig !== undefined || manifestAudit !== undefined)) {
+      process.stderr.write(
+        `koi tui: refusing to start because session provenance sidecar could not be written: ${writeResult.error}. ACE-enabled or audit-declared sessions require a recoverable sidecar so future resumes can enforce host-safety constraints. Fix the filesystem (writable sessions directory) and retry.\n`,
+      );
+      process.exit(1);
+    }
   }
 
   // Resume-path audit intent enforcement using stored session provenance.
   // The check mirrors the new-session path but is keyed on the manifest that
   // actually governed the original session, not a cwd rediscovery.
   if (flags.resume !== undefined) {
-    const resumeMeta = await readSessionMeta(SESSIONS_DIR, String(tuiSessionId));
-    if (resumeMeta.manifestPath !== undefined) {
-      const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
+    const resumeMeta = await readSessionMetaResult(SESSIONS_DIR, String(tuiSessionId));
+    if (resumeMeta.kind === "corrupt") {
+      process.stderr.write(
+        "koi tui: session provenance sidecar is unreadable or malformed — " +
+          `refusing to resume because original manifest cannot be verified (${resumeMeta.error}). ` +
+          "Restore a valid sidecar, or start a fresh session without --resume.\n",
+      );
+      process.exit(1);
+    }
+    // Issue #2088 — pre-snapshot sidecars (and absent sidecars from
+    // sessions created before this build) fall back to the pre-PR
+    // permissive behavior below (re-parse manifestPath when present).
+    // Strict snapshot enforcement only applies to sessions created by
+    // this version, which always write a v2 sidecar with snapshot.
+    // Treat both "missing" and "legacy" as legacy below.
+    if (resumeMeta.kind === "ok") {
+      // Issue #2088 — when the immutable snapshot says the original
+      // session enabled ACE, fail closed without even loading the
+      // (possibly mutated) manifest. The snapshot is authoritative
+      // because it was frozen at session creation; reading the file
+      // now would reflect post-creation edits, defeating the guard.
+      if (resumeMeta.snapshot?.aceEnabled === true) {
+        process.stderr.write(
+          "koi tui: original session manifest.ace.enabled: true cannot be resumed — " +
+            "snapshot recorded at session creation. In-memory playbooks from the prior " +
+            "session are unrecoverable; wait for sqlite-backed playbook persistence " +
+            "(#2087), or start a new session with `koi tui` (no --resume).\n",
+        );
+        process.exit(1);
+      }
+      // Manifest-free original session — the snapshot already proved
+      // it didn't enable ACE/audit. Skip manifest reload + audit/scope
+      // checks below by not entering the resumeAuditResult block.
+      if (resumeMeta.manifestPath === undefined) {
+        // fall through to the next outer block; nothing else to verify
+      }
+    }
+    const legacyManifestPath = resumeMeta.kind === "legacy" ? resumeMeta.manifestPath : undefined;
+    if (
+      (resumeMeta.kind === "ok" && resumeMeta.manifestPath !== undefined) ||
+      legacyManifestPath !== undefined
+    ) {
+      const manifestPathToLoad =
+        resumeMeta.kind === "ok"
+          ? (resumeMeta.manifestPath as string)
+          : (legacyManifestPath as string);
+      const resumeAuditResult = await loadManifestConfig(manifestPathToLoad, {
         allowOAuthSchemes: true,
         skipAuditValidation: false,
         skipAuditValidationFor: {
@@ -1451,32 +1569,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         },
       });
       if (!resumeAuditResult.ok) {
-        const allCoveredByEnv =
-          process.env.KOI_AUDIT_NDJSON !== undefined &&
-          process.env.KOI_AUDIT_SQLITE !== undefined &&
-          (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
-        if (!allCoveredByEnv) {
-          process.stderr.write(
-            "koi tui: original session manifest cannot be parsed — " +
-              "refusing to resume because audit intent cannot be verified. " +
-              "Set KOI_AUDIT_NDJSON + KOI_AUDIT_SQLITE + KOI_AUDIT_VIOLATIONS to cover all " +
-              "audit sinks, or pass --manifest to re-specify the manifest explicitly.\n",
-          );
-          process.exit(1);
-        }
-        // gov-15: manifest unparseable and user did not pass --manifest:
-        // we cannot recover the original network/credential scope, so
-        // we must fail-closed rather than resume with open boundaries.
-        // This is a new requirement beyond audit coverage — scope can't
-        // be substituted with env vars the way audit sinks can.
-        if (flags.manifest === undefined) {
-          process.stderr.write(
-            "koi tui: original session manifest cannot be parsed — " +
-              "refusing to resume because network and credential scope cannot be verified. " +
-              "Pass --manifest <path> to re-specify the manifest explicitly.\n",
-          );
-          process.exit(1);
-        }
+        // Issue #2088 — original-manifest parse failure is a hard stop
+        // for ACE continuity. We cannot tell from a broken manifest
+        // whether the original session opted into ACE, and --manifest
+        // cannot re-derive the prior PlaybookStore either way. Bail
+        // before the audit/scope env-coverage escapes below — those
+        // would silently bypass the ACE host-safety guarantee when
+        // the operator supplies any --manifest.
+        process.stderr.write(
+          "koi tui: original session manifest cannot be parsed — " +
+            "refusing to resume because the original session's ace.enabled state " +
+            "cannot be verified, and --manifest cannot recover a prior in-memory " +
+            "PlaybookStore. Restore a parseable manifest at the stored path, or " +
+            "start a new session without --resume.\n",
+        );
+        process.exit(1);
       } else {
         // Happy path: stored manifest parsed OK. Apply network and credential
         // scope from the original session so the resumed session uses the same
@@ -1532,6 +1639,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             }
           }
         }
+      }
+      // Issue #2088 — block resume of ACE-enabled sessions until the
+      // sqlite-backed playbook store (#2087) lands. ACE state lives only
+      // in the original process's PlaybookStore, so re-activating ACE on
+      // resume would start with an empty store while the transcript
+      // implies continuity — silent behavioral drift the operator can't
+      // diagnose. Fail closed unconditionally: --manifest is not an
+      // escape hatch because the operator cannot recover the prior
+      // PlaybookStore even with a matching manifest path.
+      if (resumeAuditResult.ok && resumeAuditResult.value.ace?.enabled === true) {
+        process.stderr.write(
+          "koi tui: original session manifest.ace.enabled: true cannot be resumed — " +
+            "in-memory playbooks from the prior session are unrecoverable, and re-activating " +
+            "ACE with an empty store would silently drift from the original prompting and " +
+            "learning behavior. Wait for sqlite-backed playbook persistence (#2087), or " +
+            "start a new session with `koi tui` (no --resume).\n",
+        );
+        process.exit(1);
       }
     }
   }
@@ -2153,6 +2278,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // on the CREDENTIALS subsystem token AND used by the progressive skill
     // provider to gate skill `requires.credentials` at attach time.
     ...(scopedCredentials !== undefined ? { credentials: scopedCredentials } : {}),
+    // #2088: ACE activation. resolvedAceConfig is built above under the
+    // spawn-gate; on resume without --manifest, manifestResult is never
+    // loaded so resolvedAceConfig stays undefined (resume-provenance gate
+    // by construction). Passes undefined → no middleware installed.
+    ...(resolvedAceConfig !== undefined ? { ace: resolvedAceConfig } : {}),
     // Nexus backend (when resolved above) is passed through so the checkpoint
     // stack stamps the correct backend name and the restore protocol dispatches
     // compensating ops through the right backend. Omitted when undefined —
@@ -4930,6 +5060,36 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             lastResetFailed = false;
             tuiSessionId = newSid;
             viewedSessionId = newSid;
+            // Issue #2088 — persist provenance for the rotated session
+            // so a future --resume / picker load can enforce the same
+            // ACE/audit host-safety checks against this transcript that
+            // they enforce against startup-created sessions. Without
+            // this write, post-/new sessions fall into the missing-
+            // sidecar bypass path on resume.
+            // Always write the rotated session's sidecar — including
+            // for manifest-free sessions — so post-/new sessions remain
+            // resumable under the unconditional sidecar requirement.
+            {
+              const writeResult = await writeSessionMeta(SESSIONS_DIR, newSid as string, {
+                manifestPath: resolvedManifestPath ?? null,
+                snapshot: {
+                  aceEnabled: resolvedAceConfig !== undefined,
+                  auditDeclared: manifestAudit !== undefined,
+                },
+              });
+              if (
+                !writeResult.ok &&
+                (resolvedAceConfig !== undefined || manifestAudit !== undefined)
+              ) {
+                lastResetFailed = true;
+                store.dispatch({
+                  kind: "add_error",
+                  code: "NEW_SESSION_FAILED",
+                  message: `New session failed: ACE-enabled or audit-declared session requires a recoverable provenance sidecar but the write failed: ${writeResult.error}. Restart koi tui to recover.`,
+                });
+                return;
+              }
+            }
             costBridge.setSession(newSid as string, currentModelBox.current, provider);
             governanceBridge?.setSession(newSid as string);
             securityBridge.setSession(newSid as string);
@@ -5379,6 +5539,99 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // `agent:<pid>:<uuid>` ids copied from `koi sessions list`
           // work alongside plain UUIDs minted by this branch.
           const targetSid = sessionId(selectedId);
+
+          // Issue #2088 — when the current TUI process has ACE active,
+          // the in-memory PlaybookStore is process-wide. Picker-loading
+          // any other transcript would run that transcript against
+          // playbooks learned from unrelated sessions — exactly the
+          // cross-session contamination ACE's resume restrictions are
+          // trying to prevent. Refuse all picker loads until a
+          // clearable PlaybookStore lands (#2087).
+          if (resolvedAceConfig !== undefined) {
+            if (myPickerGeneration === pickerGeneration) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SESSION_RESUME_ERROR",
+                message:
+                  "Could not load session: this TUI process has ACE active and " +
+                  "the in-memory playbook store is process-wide, so loading another " +
+                  "transcript would contaminate it with playbooks from unrelated sessions. " +
+                  "Quit and relaunch with `koi tui --resume <id>` (which re-checks ACE provenance).",
+              });
+            }
+            return;
+          }
+          // Issue #2088 — picker-loaded sessions must honor the same
+          // ACE provenance gate as startup --resume. Without this
+          // check, an operator could start ACE-clean and then load a
+          // transcript whose original manifest enabled ACE — the
+          // resumed transcript would then run against a fresh or
+          // contaminated PlaybookStore. Block such loads until
+          // sqlite-backed playbook persistence (#2087) lands.
+          // Use the normalized targetSid for sidecar lookup so
+          // agent:<pid>:<uuid> ids resolve to the same on-disk file
+          // as resumeSessionFromJsonl below. Reading by the raw
+          // selectedId would miss the sidecar and silently fall
+          // through the legacy permissive branch.
+          const pickerMeta = await readSessionMetaResult(SESSIONS_DIR, String(targetSid));
+          if (pickerMeta.kind === "corrupt") {
+            if (myPickerGeneration === pickerGeneration) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SESSION_RESUME_ERROR",
+                message: `Could not load session: provenance sidecar is corrupt (${pickerMeta.error}).`,
+              });
+            }
+            return;
+          }
+          // Legacy sidecars (or missing sidecars from pre-PR sessions)
+          // get the same re-parse-manifest treatment as startup
+          // --resume: if the recorded manifest had ace.enabled: true,
+          // refuse the picker load. This keeps the picker behavior
+          // consistent with --resume for legacy sessions.
+          if (pickerMeta.kind === "legacy" && pickerMeta.manifestPath !== undefined) {
+            const r = await loadManifestConfig(pickerMeta.manifestPath, {
+              skipAuditValidation: true,
+            });
+            if (!r.ok || r.value.ace?.enabled === true) {
+              if (myPickerGeneration === pickerGeneration) {
+                store.dispatch({
+                  kind: "add_error",
+                  code: "SESSION_RESUME_ERROR",
+                  message:
+                    "Could not load session: original manifest had ace.enabled: true (legacy sidecar). " +
+                    "ACE in-memory playbooks cannot be carried across processes; wait for #2087 or quit and restart with --resume <id>.",
+                });
+              }
+              return;
+            }
+          }
+          if (pickerMeta.kind === "ok") {
+            // Snapshot fast path: bail without re-parsing if the snapshot
+            // already says the original session opted into ACE.
+            const aceFromSnapshot = pickerMeta.snapshot?.aceEnabled === true;
+            const aceFromManifest = await (async (): Promise<boolean> => {
+              if (aceFromSnapshot) return true;
+              if (pickerMeta.manifestPath === undefined) return false;
+              const m = await loadManifestConfig(pickerMeta.manifestPath, {
+                skipAuditValidation: true,
+              });
+              return !m.ok || m.value.ace?.enabled === true;
+            })();
+            if (aceFromManifest) {
+              if (myPickerGeneration === pickerGeneration) {
+                store.dispatch({
+                  kind: "add_error",
+                  code: "SESSION_RESUME_ERROR",
+                  message:
+                    "Could not load session: original manifest had ace.enabled: true. " +
+                    "ACE in-memory playbooks cannot be carried across processes; wait for #2087 or quit and restart with --resume <id>.",
+                });
+              }
+              return;
+            }
+          }
+
           const resumeResult = await resumeSessionFromJsonl(
             selectedId,
             jsonlTranscript,

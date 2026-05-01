@@ -17,6 +17,7 @@ import {
   isValidJsonlEntry,
   listSessionSummaries,
   loadSessionSummary,
+  MAX_SUMMARY_BYTES,
   readJsonlLines,
   run,
 } from "./sessions.js";
@@ -219,6 +220,24 @@ describe("loadSessionSummary", () => {
     const result = await loadSessionSummary(path, "a");
     expect(result?.createdAt).toBeGreaterThanOrEqual(before);
     expect(result?.createdAt).toBeLessThanOrEqual(Date.now());
+  });
+
+  test("caps content scanning for very large session files", async () => {
+    const path = join(tmpDir, "large.jsonl");
+    const lines = [makeLine("user", "first", 1000)];
+    const filler = makeLine("assistant", "x".repeat(120), 2000);
+    while (
+      new TextEncoder().encode(`${lines.join("\n")}\n`).byteLength <
+      MAX_SUMMARY_BYTES + 8_192
+    ) {
+      lines.push(filler);
+    }
+    await writeFile(path, `${lines.join("\n")}\n`);
+
+    const result = await loadSessionSummary(path, "a");
+    expect(result?.firstUserMessage).toBe("first");
+    expect(result?.messageCount).toBeGreaterThan(0);
+    expect(result?.messageCount).toBeLessThan(lines.length);
   });
 });
 
