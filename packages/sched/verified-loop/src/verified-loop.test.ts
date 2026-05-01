@@ -827,6 +827,35 @@ describe("VerifiedLoop.run", () => {
     expect(result.iterations).toBe(1);
   });
 
+  test("does not wedge when runIteration's iterator.return() never resolves after timeout", async () => {
+    // Regression: a runner whose async-iterator return() hangs forever
+    // (consumer-side cleanup bug) would block drainWithAbort's finally
+    // clause and defeat iterationTimeoutMs / stop() — leaving the
+    // scheduler stuck on one bad adapter instance. drainWithAbort now
+    // races return() against a 5s budget and abandons it on timeout.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+
+    const stuckRunner: RunIterationFn = (_input: EngineInput): AsyncIterable<EngineEvent> => ({
+      [Symbol.asyncIterator]: () => ({
+        next: async () => ({ done: true, value: undefined }),
+        return: () => new Promise(() => {}), // never resolves
+      }),
+    });
+
+    // Trigger the finally cleanup path via a short iterationTimeoutMs so
+    // drainWithAbort enters its return() path on every iteration; even with
+    // a hung return(), the run must complete in well under 30s.
+    const loop = createVerifiedLoop(
+      makeConfig({ runIteration: stuckRunner, iterationTimeoutMs: 100 }),
+    );
+    const start = performance.now();
+    const result = await loop.run();
+    const elapsed = performance.now() - start;
+    // 5s return-timeout + slack — must not be ∞.
+    expect(elapsed).toBeLessThan(15_000);
+    expect(result.iterations).toBeGreaterThan(0);
+  }, 20_000);
+
   test("itemsCompleted referencing an unknown id logs warning and completes the known ones", async () => {
     await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
 

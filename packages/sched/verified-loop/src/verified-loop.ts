@@ -25,6 +25,8 @@ const DEFAULT_ITERATION_TIMEOUT_MS = 600_000;
 const DEFAULT_GATE_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES = 3;
 
+const ITERATOR_RETURN_TIMEOUT_MS = 5_000;
+
 /** Drain an async iterable, racing each next() against an AbortSignal. */
 async function drainWithAbort(
   iterable: AsyncIterable<unknown>,
@@ -47,7 +49,26 @@ async function drainWithAbort(
       done = result.done === true;
     }
   } finally {
-    await iterator.return?.();
+    // Race iterator.return() against a short timeout. A consumer adapter
+    // whose return() hangs (or never resolves) must not wedge the loop past
+    // iterationTimeoutMs / stop() — that would defeat the abort guarantee
+    // and leave a scheduler stuck on one bad runner instance.
+    const returnFn = iterator.return;
+    if (returnFn !== undefined) {
+      const cleanup = returnFn.call(iterator).then(
+        () => undefined,
+        () => undefined,
+      );
+      const timeout = new Promise<void>((resolve) => {
+        setTimeout(() => {
+          console.warn(
+            `[verified-loop] iterator.return() did not settle within ${ITERATOR_RETURN_TIMEOUT_MS}ms; abandoning cleanup`,
+          );
+          resolve();
+        }, ITERATOR_RETURN_TIMEOUT_MS).unref?.();
+      });
+      await Promise.race([cleanup, timeout]);
+    }
   }
 }
 
@@ -232,13 +253,14 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
             maxConsecutiveFailures,
           );
           if (!bumpResult.ok) {
-            // VALIDATION = the item was completed out-of-band (concurrent run,
+            // CONFLICT = the item was completed out-of-band (concurrent run,
             // hand edit) between selection and failure persistence. The store
             // refuses to write done:true + skipped:true; the loop just moves on
-            // to the next pending item. NOT_FOUND / IO errors remain fatal —
-            // without a working skip budget on disk, a permanently failing
-            // item could be retried indefinitely across runs.
-            if (bumpResult.error.code !== "VALIDATION") {
+            // to the next pending item. NOT_FOUND / VALIDATION (corrupt PRD) /
+            // IO errors remain fatal — without a working skip budget on disk,
+            // a permanently failing item could be retried indefinitely across
+            // runs.
+            if (bumpResult.error.code !== "CONFLICT") {
               throw new Error(
                 `VerifiedLoop: failed to persist failure count for "${current.id}" (${bumpResult.error.code}): ${bumpResult.error.message}`,
               );

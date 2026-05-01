@@ -42,7 +42,53 @@ export async function readLearnings(path: string): Promise<readonly LearningsEnt
     return [];
   }
 
-  return (parsed as LearningsFile).entries;
+  // Validate each entry structurally and drop malformed members. Learnings
+  // are advisory — a single corrupt row (hand edit, partial write) must not
+  // throw inside iterationPrompt or verify and abort the whole run.
+  const rawEntries = (parsed as { readonly entries: readonly unknown[] }).entries;
+  const valid: LearningsEntry[] = [];
+  // Use let — justified: track whether any entries were dropped to log once.
+  let droppedCount = 0;
+  for (const item of rawEntries) {
+    const entry = validateLearningsEntry(item);
+    if (entry === undefined) {
+      droppedCount += 1;
+    } else {
+      valid.push(entry);
+    }
+  }
+  if (droppedCount > 0) {
+    console.warn(
+      `[verified-loop] Dropped ${droppedCount} malformed learnings entry(s) from ${path}`,
+    );
+  }
+  return valid;
+}
+
+/**
+ * Validate one learnings entry. Returns the entry (typed) on success, or
+ * undefined if the row is malformed. Strings inside arrays are filtered to
+ * tolerate a partially corrupt `discovered`/`failed` list.
+ */
+function validateLearningsEntry(item: unknown): LearningsEntry | undefined {
+  if (typeof item !== "object" || item === null) return undefined;
+  const obj = item as Record<string, unknown>;
+  if (typeof obj.iteration !== "number") return undefined;
+  if (typeof obj.timestamp !== "string") return undefined;
+  if (obj.itemId !== undefined && typeof obj.itemId !== "string") return undefined;
+  if (typeof obj.context !== "string") return undefined;
+  if (!Array.isArray(obj.discovered)) return undefined;
+  if (!Array.isArray(obj.failed)) return undefined;
+  const discovered = obj.discovered.filter((s): s is string => typeof s === "string");
+  const failed = obj.failed.filter((s): s is string => typeof s === "string");
+  return {
+    iteration: obj.iteration,
+    timestamp: obj.timestamp,
+    itemId: obj.itemId as string | undefined,
+    discovered,
+    failed,
+    context: obj.context,
+  };
 }
 
 /** Append a learning entry, enforcing the rolling-window cap. */

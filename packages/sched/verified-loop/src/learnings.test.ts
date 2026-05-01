@@ -54,6 +54,47 @@ describe("readLearnings", () => {
     expect(result).toHaveLength(2);
     expect(result[0]?.iteration).toBe(1);
   });
+
+  test("drops malformed entries instead of throwing (advisory contract)", async () => {
+    // Learnings are advisory — a partially corrupt file (hand edit, partial
+    // write, schema change) must not throw inside iterationPrompt or verify
+    // and abort the whole run. Drop bad rows, keep the rest.
+    const good = makeLearning(1);
+    await Bun.write(
+      learningsPath,
+      JSON.stringify({
+        entries: [
+          good,
+          null, // entire row missing
+          { iteration: "two", timestamp: "x", discovered: [], failed: [], context: "" }, // wrong type
+          { iteration: 3, discovered: [], failed: [], context: "" }, // missing timestamp
+          { ...makeLearning(4), discovered: "not-an-array" }, // wrong field shape
+        ],
+      }),
+    );
+    const result = await readLearnings(learningsPath);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.iteration).toBe(1);
+  });
+
+  test("filters non-string members out of discovered/failed arrays", async () => {
+    await Bun.write(
+      learningsPath,
+      JSON.stringify({
+        entries: [
+          {
+            ...makeLearning(1),
+            discovered: ["ok", 42, null, "also-ok"],
+            failed: [{}, "fail-msg"],
+          },
+        ],
+      }),
+    );
+    const result = await readLearnings(learningsPath);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.discovered).toEqual(["ok", "also-ok"]);
+    expect(result[0]?.failed).toEqual(["fail-msg"]);
+  });
 });
 
 describe("appendLearning", () => {

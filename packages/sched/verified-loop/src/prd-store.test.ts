@@ -283,7 +283,7 @@ describe("markSkipped", () => {
     const result = await markSkipped(prdPath, "b");
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.code).toBe("CONFLICT");
     }
     const after = await readPRD(prdPath);
     if (after.ok) {
@@ -492,7 +492,7 @@ describe("bumpFailureCount", () => {
     );
     const result = await bumpFailureCount(prdPath, "a", 2);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+    if (!result.ok) expect(result.error.code).toBe("CONFLICT");
 
     const after = await readPRD(prdPath);
     if (after.ok) {

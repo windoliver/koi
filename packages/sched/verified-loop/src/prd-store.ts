@@ -12,7 +12,7 @@
 
 import { rename } from "node:fs/promises";
 import type { KoiError, Result } from "@koi/core";
-import { notFound, validation } from "@koi/core";
+import { conflict, notFound, validation } from "@koi/core";
 import type { PRDFile, PRDItem } from "./types.js";
 
 /** Read and parse a PRD JSON file. */
@@ -157,9 +157,14 @@ export async function bumpFailureCount(
   // record. markSkipped enforces the same invariant — bumpFailureCount must
   // not be a back door around it.
   if (target.done) {
+    // CONFLICT (not VALIDATION): the input was structurally fine — the item
+    // simply transitioned to done out-of-band between selection and the
+    // failure persistence call. The orchestrator handles this distinct
+    // outcome by skipping the bump rather than treating it as fatal, while
+    // unrelated VALIDATION (e.g. corrupt PRD) still throws.
     return {
       ok: false,
-      error: validation(`Cannot bump failure count on completed item: ${itemId}`),
+      error: conflict(itemId, `Cannot bump failure count on completed item: ${itemId}`),
     };
   }
 
@@ -218,7 +223,7 @@ export async function markSkipped(path: string, itemId: string): Promise<Result<
     return { ok: false, error: notFound(itemId, `PRD item not found: ${itemId}`) };
   }
   if (target.done) {
-    return { ok: false, error: validation(`Cannot skip completed item: ${itemId}`) };
+    return { ok: false, error: conflict(itemId, `Cannot skip completed item: ${itemId}`) };
   }
 
   const updated: PRDItem = { ...target, skipped: true };
