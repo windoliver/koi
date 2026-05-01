@@ -650,6 +650,15 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
     ]);
   });
 
+  test("refuses to open database with user_version newer than CURRENT_SCHEMA_VERSION", () => {
+    const seed = new Database(dbPath, { create: true });
+    seed.run("PRAGMA user_version = 99");
+    seed.close();
+    expect(() => createSqlitePlaybookStore({ path: dbPath })).toThrow(
+      /user_version 99 is newer than this binary/,
+    );
+  });
+
   test("drifted FK targeting wrong column is detected and rebuilt", async () => {
     // Simulate a drifted DB: schema declares FK from proposal_id but to the
     // wrong target column (verdict instead of id). The migration must detect

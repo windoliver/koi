@@ -54,6 +54,19 @@ export function applySchema(db: Database): void {
   } | null;
   const fromVersion = versionRow?.user_version ?? 0;
 
+  // Refuse to open a database from a newer release. Without this guard, the
+  // CREATE TABLE IF NOT EXISTS + repair-migration pipeline below would happily
+  // execute against a forward-versioned DB, and the unconditional rebuild
+  // paths (migrateTrajectoriesToV2, migrateProposalsToV3) would DROP + reinsert
+  // newer columns/constraints into this release's older shape. That is a
+  // silent downgrade-corruption path. Better to fail loudly so operators
+  // upgrade their reader binary.
+  if (fromVersion > CURRENT_SCHEMA_VERSION) {
+    throw new Error(
+      `playbook-store-sqlite: database user_version ${String(fromVersion)} is newer than this binary's CURRENT_SCHEMA_VERSION ${String(CURRENT_SCHEMA_VERSION)} — upgrade the reader to open this database safely`,
+    );
+  }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS trajectory_entries (
       session_id  TEXT    NOT NULL,
