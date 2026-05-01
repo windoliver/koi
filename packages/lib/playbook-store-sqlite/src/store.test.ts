@@ -1318,6 +1318,19 @@ describe("createSqlitePlaybookStore — append-only invariants", () => {
     store.close();
   });
 
+  test("recordProposal rejects baseVersion below current head after head advances", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await seedAnchor(store, "pb-A", 1);
+    await store.structuredPlaybooks.save(spb({ id: "pb-A", version: 2 }));
+    await expect(
+      store.proposals.recordProposal({
+        ...makeProposal("p-stale", "pb-A"),
+        baseVersion: 1,
+      }),
+    ).rejects.toThrow(/does not match current head/);
+    store.close();
+  });
+
   test("recordProposal accepts byte-identical idempotent retry", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
     await seedAnchor(store, "pb-A");

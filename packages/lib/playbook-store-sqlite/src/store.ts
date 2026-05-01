@@ -347,9 +347,9 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       const lineageMax = lineageMaxRow?.v ?? null;
       // Effective head = current head row if present, else lineage MAX as
       // fallback when the head row is missing (e.g. fresh self-heal scenario).
-      // We do NOT take max(current, lineageMax): a stray higher lineage row
-      // from manual repair or historical corruption must not wedge healthy
-      // writes against the live head pointer.
+      // We do NOT take max(current, lineageMax) for monotonic check: a stray
+      // higher lineage row from manual repair or historical corruption must
+      // not wedge healthy writes against the live head pointer.
       const effectiveHead = current?.version ?? lineageMax ?? null;
       if (effectiveHead !== null && pb.version < effectiveHead) {
         throw new Error(
@@ -697,6 +697,9 @@ function createProposalStore(db: Database): PlaybookProposalStore {
   const selectByPlaybook = db.query(
     "SELECT * FROM playbook_proposals WHERE playbook_id = ? ORDER BY created_at, id",
   );
+  const selectStructuredHeadVersion = db.query(
+    "SELECT version FROM structured_playbooks WHERE id = ?",
+  );
 
   return {
     recordProposal: async (p) => {
@@ -713,6 +716,22 @@ function createProposalStore(db: Database): PlaybookProposalStore {
           reflection,
           p.createdAt,
         );
+        if (result.changes > 0) {
+          // baseVersion is the documented optimistic-concurrency anchor.
+          // Reject stale proposals whose anchor is no longer the live head
+          // — the schema FK only proves the version existed at some point,
+          // not that it is current. We check AFTER the insert (instead of
+          // before) so retries land in the content-compare branch below
+          // even after the head advanced; only fresh inserts pay this cost.
+          const headRow = selectStructuredHeadVersion.get(p.playbookId) as {
+            readonly version: number;
+          } | null;
+          if (headRow === null || headRow.version !== p.baseVersion) {
+            throw new Error(
+              `proposal ${p.id} baseVersion ${String(p.baseVersion)} does not match current head ${headRow === null ? "(missing)" : String(headRow.version)} for playbook ${p.playbookId}`,
+            );
+          }
+        }
         if (result.changes === 0) {
           const existing = selectProposalRaw.get(p.id) as {
             readonly operations: string;
