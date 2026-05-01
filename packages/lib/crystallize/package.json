@@ -1,6 +1,6 @@
 {
   "name": "@koi/crystallize",
-  "description": "Pattern detection over agent turn traces — surfaces repeating tool sequences as forge candidates with frequency, subsumption, and quality scoring.",
+  "description": "Pattern detection over agent turn traces — surfaces repeating tool sequences as scored forge candidates.",
   "version": "0.0.0",
   "private": true,
   "type": "module",
