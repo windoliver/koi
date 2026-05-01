@@ -1406,6 +1406,9 @@
       "dependencies": {
         "@koi/core": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/sandbox-conformance": "workspace:*",
+      },
     },
     "packages/sandbox/sandbox-executor": {
       "name": "@koi/sandbox-executor",
@@ -1419,6 +1422,9 @@
       "version": "0.1.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/sandbox-conformance": "workspace:*",
       },
     },
     "packages/sandbox/sandbox-router": {
