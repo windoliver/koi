@@ -798,37 +798,47 @@ export interface SessionMeta {
 
 /**
  * Write session provenance metadata to a sidecar file alongside the JSONL
- * transcript. Non-fatal if the sessions directory does not exist yet — the
- * transcript's first append creates it; a missing sidecar means "no provenance
- * recorded" and the resume audit check silently skips.
+ * transcript. By default best-effort (sessions directory may not exist on
+ * the very first run). For ACE-enabled sessions (round 8 finding), pass
+ * `requireDurable: true` — a write failure throws so the caller can refuse
+ * to start an ACE session that lacks persisted provenance, instead of
+ * silently bypassing every resume guard later.
  */
 export async function writeSessionMeta(
   sessionsDir: string,
   sid: string,
   meta: SessionMeta,
+  options?: { readonly requireDurable?: boolean },
 ): Promise<void> {
+  const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
+  // v2 invariant: ace block is ALWAYS present, set to enabled:false when
+  // the session ran without ACE. A v2 sidecar missing its ace block is
+  // malformed (truncated/corrupted), not "no ACE recorded" — round 6.
+  const aceBlock: SessionAceProvenance = meta.ace ?? {
+    enabled: false,
+    playbookPath: undefined,
+    maxInjectedTokens: undefined,
+    minScore: undefined,
+    lambda: undefined,
+  };
+  const payload = JSON.stringify({
+    version: SESSION_META_VERSION,
+    ...(meta.manifestPath !== undefined ? { manifestPath: meta.manifestPath } : {}),
+    ace: aceBlock,
+  });
   try {
-    const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
-    // v2 invariant: ace block is ALWAYS present, set to enabled:false when
-    // the session ran without ACE. A v2 sidecar missing its ace block is
-    // malformed (truncated/corrupted), not "no ACE recorded" — round 6.
-    const aceBlock: SessionAceProvenance = meta.ace ?? {
-      enabled: false,
-      playbookPath: undefined,
-      maxInjectedTokens: undefined,
-      minScore: undefined,
-      lambda: undefined,
-    };
-    await Bun.write(
-      path,
-      JSON.stringify({
-        version: SESSION_META_VERSION,
-        ...(meta.manifestPath !== undefined ? { manifestPath: meta.manifestPath } : {}),
-        ace: aceBlock,
-      }),
-    );
-  } catch {
-    // Non-fatal: directory may not exist yet on the very first run.
+    await Bun.write(path, payload);
+  } catch (err) {
+    if (options?.requireDurable === true) {
+      throw new Error(
+        `writeSessionMeta: failed to persist session provenance at ${path} — ` +
+          "refusing to continue because resume safety depends on this sidecar. " +
+          `Underlying error: ${(err as Error).message}`,
+        { cause: err },
+      );
+    }
+    // Non-fatal: directory may not exist yet on the very first run, and
+    // non-ACE sessions don't depend on the sidecar for resume integrity.
   }
 }
 

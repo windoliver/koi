@@ -2286,7 +2286,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         ...(aceStoreId !== undefined ? { storeId: aceStoreId } : {}),
       };
     }
-    await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), meta);
+    // Round 8 finding 2: ACE-enabled sessions cannot tolerate a swallowed
+    // sidecar-write failure — a missing sidecar later resumes as "absent"
+    // and silently bypasses every ACE guard. Fail closed if the persist
+    // fails for an ACE session.
+    try {
+      await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), meta, {
+        requireDurable: manifestAceConfig?.enabled === true,
+      });
+    } catch (err) {
+      process.stderr.write(`koi tui: ${(err as Error).message}\n`);
+      if (aceCloseHook !== undefined) aceCloseHook();
+      process.exit(1);
+    }
   }
 
   const runtimeReady = createKoiRuntime({

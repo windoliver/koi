@@ -6,7 +6,16 @@
  */
 
 import { Database } from "bun:sqlite";
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  fsyncSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
 
 import type {
@@ -228,14 +237,124 @@ function acquireWriterLock(dbPath: string): () => void {
     existing.refcount += 1;
     return makeReleaser(lockPath, meta);
   }
-  const fd = openLockExclusive(lockPath, dbPath, /* allowReclaim= */ true);
+  publishLockAtomic(lockPath, meta, dbPath);
+  INPROC_LOCKS.set(lockPath, { refcount: 1 });
+  return makeReleaser(lockPath, meta);
+}
+
+/**
+ * Atomic lock publication: write a fully-populated temp file, fsync it,
+ * then link() into the canonical lock path. linkSync fails with EEXIST if
+ * the target exists, giving the same atomic create-or-fail semantics as
+ * `openSync("wx")` — but a visible `<dbPath>.lock` is *guaranteed* to
+ * contain complete owner metadata, so a crash between openSync and
+ * writeSync (round 8 finding 1) cannot leave a malformed lockfile that
+ * permanently bricks the store.
+ *
+ * If the link fails because a peer holds the canonical path, run the
+ * same reclaim-or-refuse handling as before. EEXIST is the only path
+ * where reclaim might fire.
+ */
+function publishLockAtomic(lockPath: string, meta: LockMetadata, dbPath: string): void {
+  const tmpPath = `${lockPath}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+  const fd = openSync(tmpPath, "wx");
   try {
     writeSync(fd, JSON.stringify(meta));
+    fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
-  INPROC_LOCKS.set(lockPath, { refcount: 1 });
-  return makeReleaser(lockPath, meta);
+  try {
+    linkSync(tmpPath, lockPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "EEXIST") {
+      try {
+        unlinkSync(tmpPath);
+      } catch {}
+      throw err;
+    }
+    // Peer holds the canonical lock. Try reclaim; on success, retry link.
+    try {
+      reclaimOrRefuseLock(lockPath, dbPath);
+      // Reclaim succeeded (lock unlinked). Retry the link exactly once.
+      try {
+        linkSync(tmpPath, lockPath);
+      } catch (linkErr) {
+        // Race: another process raced us to the freshly-cleared slot.
+        if ((linkErr as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new Error(
+            `playbook-store-sqlite: refusing to open ${dbPath} — another process raced ` +
+              "to acquire the writer lock. Concurrent ACE writers against one SQLite file are not supported.",
+          );
+        }
+        throw linkErr;
+      }
+    } finally {
+      try {
+        unlinkSync(tmpPath);
+      } catch {}
+    }
+    return;
+  }
+  try {
+    unlinkSync(tmpPath);
+  } catch {}
+}
+
+/**
+ * Inspect the current lockfile and either unlink it (stale) or throw with
+ * an actionable refusal. A "stale" lock is one of:
+ *  - bootId mismatch (rebooted since the lock was written)
+ *  - PID dead
+ *  - file is empty / unparseable / corrupt (no provable owner exists,
+ *    typical of a crash between create and metadata-write — see round 8)
+ */
+function reclaimOrRefuseLock(lockPath: string, dbPath: string): void {
+  let parsed: LockMetadata | undefined;
+  let raw: string | undefined;
+  try {
+    raw = readFileSync(lockPath, "utf8");
+    parsed = parseLockMetadata(raw);
+  } catch {
+    // Unreadable — treat as corrupt below.
+  }
+  // Same-PID re-open path: handled higher up (INPROC_LOCKS refcount short-
+  // circuits before we get here in normal operation). If we somehow reach
+  // here with parsed.pid === own.pid, treat as stale — the in-proc map is
+  // gone but the lockfile remains.
+  if (parsed?.pid === process.pid) {
+    try {
+      unlinkSync(lockPath);
+    } catch {}
+    return;
+  }
+  const myBootId = readBootId();
+  const bootMismatched =
+    parsed !== undefined &&
+    parsed.bootId !== undefined &&
+    myBootId !== undefined &&
+    !bootIdsMatch(parsed.bootId, myBootId);
+  const pidDead = parsed !== undefined && !isProcessAlive(parsed.pid);
+  // Corrupt/empty lockfile: no parseable owner. This is the crash-between-
+  // create-and-write case. Reclaim — there cannot be a *provable* owner
+  // because no metadata was written. (With atomic publish via temp+link,
+  // this should not happen for our own writes, but legacy crashes from
+  // pre-atomic builds may have left such files behind.)
+  const corrupt = raw !== undefined && raw.trim().length > 0 && parsed === undefined;
+  const empty = raw !== undefined && raw.trim().length === 0;
+  if (parsed !== undefined ? bootMismatched || pidDead : corrupt || empty) {
+    try {
+      unlinkSync(lockPath);
+    } catch {}
+    return;
+  }
+  throw new Error(
+    `playbook-store-sqlite: refusing to open ${dbPath} — another process` +
+      (parsed !== undefined ? ` (pid ${parsed.pid})` : "") +
+      " holds the writer lock. Concurrent ACE writers against one SQLite file are not supported. " +
+      `Stop the other process or remove ${lockPath} if it is stale.`,
+  );
 }
 
 const INPROC_LOCKS = new Map<string, { refcount: number }>();
@@ -284,64 +403,6 @@ function parseLockMetadata(raw: string): LockMetadata | undefined {
   const pid = Number.parseInt(trimmed, 10);
   if (!Number.isFinite(pid) || pid <= 0) return undefined;
   return { pid, bootId: undefined };
-}
-
-function openLockExclusive(lockPath: string, dbPath: string, allowReclaim: boolean): number {
-  try {
-    // "wx" = O_WRONLY | O_CREAT | O_EXCL: atomic create-or-fail.
-    return openSync(lockPath, "wx");
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== "EEXIST" || !allowReclaim) {
-      throw err;
-    }
-    // Lock exists. Reclaim only when we can prove it's stale — PID dead OR
-    // host rebooted since the lock was written (PID-reuse-after-reboot
-    // can't fool us because the boot epoch differs). Same-PID re-open
-    // within one process is allowed (handles share fate). Anything else
-    // is treated as a live writer to avoid ever evicting a real owner.
-    let parsed: LockMetadata | undefined;
-    try {
-      parsed = parseLockMetadata(readFileSync(lockPath, "utf8"));
-    } catch {
-      // Unreadable lock — treat as live to fail closed.
-    }
-    if (parsed?.pid === process.pid) {
-      // Open for write so subsequent writeSync overwrites the same PID.
-      return openSync(lockPath, "w");
-    }
-    const myBootId = readBootId();
-    // Boot mismatch is decisive only when BOTH sides have a real bootId.
-    // If either side is undefined (legacy lock, or platform without
-    // /proc/sys/kernel/random/boot_id), do NOT reclaim on boot grounds —
-    // wall-clock heuristics are unsafe per round-4 review. Operators on
-    // such platforms must remove a stranded .lock by hand if PID-reuse
-    // happens to fool the dead-PID probe.
-    const bootMismatched =
-      parsed !== undefined &&
-      parsed.bootId !== undefined &&
-      myBootId !== undefined &&
-      !bootIdsMatch(parsed.bootId, myBootId);
-    const pidDead = parsed !== undefined && !isProcessAlive(parsed.pid);
-    if (parsed !== undefined && (bootMismatched || pidDead)) {
-      try {
-        unlinkSync(lockPath);
-      } catch {
-        // Race: another process reclaimed first. Fall through; the
-        // re-attempt below will see EEXIST again and refuse.
-      }
-      // Re-attempt exactly once (allowReclaim=false): if a peer raced us to
-      // claim the freshly-unlinked lock, surface the refusal instead of
-      // looping. Their write wins; we refuse cleanly.
-      return openLockExclusive(lockPath, dbPath, /* allowReclaim= */ false);
-    }
-    throw new Error(
-      `playbook-store-sqlite: refusing to open ${dbPath} — another process` +
-        (parsed !== undefined ? ` (pid ${parsed.pid})` : "") +
-        " holds the writer lock. Concurrent ACE writers against one SQLite file are not supported. " +
-        `Stop the other process or remove ${lockPath} if it is stale.`,
-    );
-  }
 }
 
 function isProcessAlive(pid: number): boolean {

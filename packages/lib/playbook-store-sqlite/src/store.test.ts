@@ -1634,6 +1634,22 @@ describe("createSqlitePlaybookStore — writer lock", () => {
     expect(() => createSqlitePlaybookStore({ path: dbPath })).toThrow(/writer lock/);
   });
 
+  test("reclaims an empty lockfile (crash between create and metadata write)", () => {
+    // Round 8: a pre-atomic-publish crash after openSync('wx') but before
+    // writeSync left an empty .lock that bricked the store forever. The
+    // reclaim path now treats empty/corrupt lockfiles as having no
+    // provable owner and reclaims them.
+    writeFileSync(`${dbPath}.lock`, "");
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    store.close();
+  });
+
+  test("reclaims a corrupt (unparseable) lockfile", () => {
+    writeFileSync(`${dbPath}.lock`, "not-json-not-pid");
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    store.close();
+  });
+
   test("removes the lock file on close", () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
     const meta = JSON.parse(readFileSync(`${dbPath}.lock`, "utf8")) as { pid: number };
