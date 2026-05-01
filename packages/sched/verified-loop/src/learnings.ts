@@ -16,20 +16,31 @@ export async function readLearnings(path: string): Promise<readonly LearningsEnt
     return [];
   }
 
-  // Use let — justified: try/catch must reassign across boundaries
-  let raw: string;
-  try {
-    raw = await file.text();
-  } catch {
-    return [];
-  }
+  const raw = await readLearningsRaw(file);
+  if (raw === undefined) return [];
 
+  const parsed = parseLearningsJson(raw, path);
+  if (parsed === undefined) return [];
+
+  return collectValidEntries(parsed, path);
+}
+
+async function readLearningsRaw(file: ReturnType<typeof Bun.file>): Promise<string | undefined> {
+  try {
+    return await file.text();
+  } catch {
+    return undefined;
+  }
+}
+
+function parseLearningsJson(raw: string, path: string): readonly unknown[] | undefined {
+  // Use let — justified: try/catch must reassign across boundaries
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
     console.warn(`[verified-loop] Malformed learnings file, resetting: ${path}`);
-    return [];
+    return undefined;
   }
 
   if (
@@ -39,13 +50,19 @@ export async function readLearnings(path: string): Promise<readonly LearningsEnt
     !Array.isArray((parsed as { readonly entries?: unknown }).entries)
   ) {
     console.warn(`[verified-loop] Learnings file missing 'entries' array, resetting: ${path}`);
-    return [];
+    return undefined;
   }
 
+  return (parsed as { readonly entries: readonly unknown[] }).entries;
+}
+
+function collectValidEntries(
+  rawEntries: readonly unknown[],
+  path: string,
+): readonly LearningsEntry[] {
   // Validate each entry structurally and drop malformed members. Learnings
   // are advisory — a single corrupt row (hand edit, partial write) must not
   // throw inside iterationPrompt or verify and abort the whole run.
-  const rawEntries = (parsed as { readonly entries: readonly unknown[] }).entries;
   const valid: LearningsEntry[] = [];
   // Use let — justified: track whether any entries were dropped to log once.
   let droppedCount = 0;
