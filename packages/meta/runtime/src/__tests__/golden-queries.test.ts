@@ -2663,6 +2663,8 @@ describe("Golden: @koi/middleware-policy-cache", () => {
     const reject = handle.register({
       toolId: "search",
       brickId: "brick-unverified",
+      scope: "agent",
+      agentId: "agent-A",
       verified: false,
       execute: () => ({ action: "allow" }),
     });
@@ -2675,6 +2677,8 @@ describe("Golden: @koi/middleware-policy-cache", () => {
     const accept = handle.register({
       toolId: "search",
       brickId: "brick-verified",
+      scope: "agent",
+      agentId: "agent-A",
       verified: true,
       execute: () => ({ action: "allow" }),
     });
@@ -2687,6 +2691,8 @@ describe("Golden: @koi/middleware-policy-cache", () => {
     handle.register({
       toolId: "search",
       brickId: "brick-1",
+      scope: "agent",
+      agentId: "a",
       verified: true,
       execute: (input) => {
         const q = (input as { readonly q?: unknown }).q;
@@ -2715,9 +2721,12 @@ describe("Golden: @koi/middleware-policy-cache", () => {
       handler,
     );
     expect(executions).toBe(0);
-    const blockedOut = blocked?.output as { readonly error: boolean; readonly message: string };
-    expect(blockedOut.error).toBe(true);
-    expect(blockedOut.message).toContain("Policy blocked");
+    // Canonical block metadata — peers (event-trace, semantic-retry) must
+    // recognize this as a non-execution.
+    expect(blocked?.metadata?.isError).toBe(true);
+    expect(blocked?.metadata?.blockedByHook).toBe(true);
+    expect(blocked?.metadata?.policyDenied).toBe(true);
+    expect(blocked?.metadata?.hookName).toBe("policy-cache");
 
     // non-empty q → allowed, next runs exactly once (cache hit does not change observable result)
     const allowed = await handle.middleware.wrapToolCall?.(
