@@ -233,6 +233,32 @@ describe("extractNgrams", () => {
     expect(map.get("a|b")?.locations).toHaveLength(2);
   });
 
+  test("when duplicate traces differ, keeps the more-complete one (partial-first / full-later)", () => {
+    // A partial snapshot (1 tool call) arrives first, then the finalised
+    // turn (3 tool calls) arrives later with the same composite identity.
+    // Naive first-wins dedup would lose the trailing steps and any
+    // terminal failure recorded in them; merge must prefer the most-
+    // complete copy.
+    const partial = createTrace(0, ["a"]);
+    const complete = createTrace(0, ["a", "b", "c"], [{}, {}, { kind: "error" as const }]);
+    const sequences = extractToolSequences([partial, complete]);
+    expect(sequences).toHaveLength(1);
+    expect(sequences[0]?.steps.map((s) => s.toolId)).toEqual(["a", "b", "c"]);
+    // Final step's failure must be visible — the early partial copy
+    // would have hidden it under first-wins dedup.
+    expect(sequences[0]?.steps[2]?.outcome).toBe("failure");
+  });
+
+  test("when duplicate traces differ, full-first / partial-later keeps the full one", () => {
+    // Symmetric of above: ordering must not matter — the heuristic picks
+    // the most-complete copy regardless of arrival order.
+    const complete = createTrace(0, ["a", "b", "c"]);
+    const partial = createTrace(0, ["a"]);
+    const sequences = extractToolSequences([complete, partial]);
+    expect(sequences).toHaveLength(1);
+    expect(sequences[0]?.steps.map((s) => s.toolId)).toEqual(["a", "b", "c"]);
+  });
+
   test("dedupes input traces with identical (session, agent, turnIndex) — same turn cannot inflate occurrences", () => {
     // Replays, merged windows, or duplicate ingestion can include the same
     // turn twice. Composite identity is the package's stable occurrence id,

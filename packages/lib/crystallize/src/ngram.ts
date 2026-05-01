@@ -163,26 +163,51 @@ function traceLocationKey(trace: TurnTrace): string {
  * occurrences disjoint.
  *
  * Traces with the same composite location `(sessionId, agentId, turnIndex)`
- * are treated as duplicates of one occurrence and deduplicated to the first
- * one seen. Replayed snapshots, merged trace windows, and persisted-state
- * round-trips can all surface the same turn twice; without this dedup the
- * extractor would inflate `occurrences` and cross `minOccurrences`
- * spuriously, since the package's stable occurrence identity is precisely
- * that composite tuple.
+ * are treated as duplicates of one occurrence. Naive first-wins dedup is
+ * unsafe when duplicates aren't byte-identical: a partial snapshot
+ * captured mid-turn followed by the finalised turn would silently lose
+ * the terminal failure event. Instead, when duplicates are detected the
+ * trace with the most `tool_call` events wins (ties broken by total
+ * event count) — that's the most-complete record, and any earlier
+ * partial copy is replaced. This preserves the package's stable
+ * composite-tuple occurrence identity while never under-counting steps
+ * that arrived in a later replay of the same turn.
  */
+function toolCallCount(trace: TurnTrace): number {
+  let n = 0;
+  for (const e of trace.events) if (e.event.kind === "tool_call") n += 1;
+  return n;
+}
+
+function preferMoreComplete(existing: TurnTrace, candidate: TurnTrace): TurnTrace {
+  const existingTools = toolCallCount(existing);
+  const candidateTools = toolCallCount(candidate);
+  if (candidateTools > existingTools) return candidate;
+  if (candidateTools < existingTools) return existing;
+  return candidate.events.length > existing.events.length ? candidate : existing;
+}
+
 export function extractToolSequences(traces: readonly TurnTrace[]): readonly TurnSequence[] {
-  const seen = new Set<string>();
-  const out: TurnSequence[] = [];
+  const byKey = new Map<string, TurnTrace>();
+  const order: string[] = [];
   for (const trace of traces) {
     const key = traceLocationKey(trace);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
+    const existing = byKey.get(key);
+    if (existing === undefined) {
+      byKey.set(key, trace);
+      order.push(key);
+      continue;
+    }
+    byKey.set(key, preferMoreComplete(existing, trace));
+  }
+  return order.map((key) => {
+    // Non-null: every key in `order` was inserted via `byKey.set` above.
+    const trace = byKey.get(key) as TurnTrace;
+    return {
       location: { sessionId: trace.sessionId, agentId: trace.agentId, turnIndex: trace.turnIndex },
       steps: projectTurn(trace),
-    });
-  }
-  return out;
+    };
+  });
 }
 
 /**
