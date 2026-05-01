@@ -84,6 +84,30 @@ describe("createInMemorySurfaceStore", () => {
     expect(fresh.ok).toBe(true);
   });
 
+  test("no-op update (same content) advances etag — stale token rejected", async () => {
+    const store = createInMemorySurfaceStore();
+    const created = await store.create("s1", "v1");
+    if (!created.ok) throw new Error("setup");
+    const oldToken = surfaceEtag(created.value);
+
+    // PATCH with identical content still bumps version → token changes
+    const noop = await store.update("s1", "v1", oldToken);
+    expect(noop.ok).toBe(true);
+    if (!noop.ok) return;
+    expect(noop.value.version).toBe(created.value.version + 1);
+    expect(surfaceEtag(noop.value)).not.toBe(oldToken);
+
+    // Second PATCH with the OLD token must now be rejected
+    const stale = await store.update("s1", "v2", oldToken);
+    expect(stale.ok).toBe(false);
+    if (stale.ok) return;
+    expect(stale.error.code).toBe("CONFLICT");
+
+    // DELETE with the old token must also be rejected
+    const staleDel = await store.delete("s1", undefined, oldToken);
+    expect(staleDel.ok).toBe(false);
+  });
+
   test("update with stale expectedEtag → CONFLICT", async () => {
     const store = createInMemorySurfaceStore();
     await store.create("s1", "v1");
@@ -157,6 +181,30 @@ describe("createInMemorySurfaceStore", () => {
     expect(store.size()).toBe(1);
   });
 
+  test("per-tenant quota — one tenant cannot exhaust create capacity for others", async () => {
+    const store = createInMemorySurfaceStore({
+      maxSurfaces: 100,
+      maxSurfacesPerTenant: 2,
+    });
+    // Alice fills her own quota
+    expect((await store.create("a1", "x", { ownerId: "alice" })).ok).toBe(true);
+    expect((await store.create("a2", "x", { ownerId: "alice" })).ok).toBe(true);
+    const aliceOver = await store.create("a3", "x", { ownerId: "alice" });
+    expect(aliceOver.ok).toBe(false);
+    if (!aliceOver.ok) {
+      expect(aliceOver.error.code).toBe("RESOURCE_EXHAUSTED");
+      expect(aliceOver.error.message).toContain("Per-tenant");
+    }
+
+    // Bob is unaffected — separate quota
+    expect((await store.create("b1", "x", { ownerId: "bob" })).ok).toBe(true);
+    expect((await store.create("b2", "x", { ownerId: "bob" })).ok).toBe(true);
+
+    // Quota replenishes when alice deletes
+    await store.delete("a1", "alice");
+    expect((await store.create("a3", "x", { ownerId: "alice" })).ok).toBe(true);
+  });
+
   test("create at capacity → RESOURCE_EXHAUSTED (no silent eviction)", async () => {
     const store = createInMemorySurfaceStore({ maxSurfaces: 2 });
     await store.create("s1", "v1");
@@ -196,17 +244,20 @@ describe("createInMemorySurfaceStore", () => {
     expect(result.value.ownerId).toBeUndefined();
   });
 
-  test("update with expectedOwnerId atomically rejects cross-owner mutation", async () => {
+  test("update across tenants → NOT_FOUND (tenant-scoped namespace)", async () => {
     const store = createInMemorySurfaceStore();
     await store.create("s1", "v1", { ownerId: "alice" });
 
+    // Mallory's update lookup uses key `mallory:s1` — never collides with
+    // alice's `alice:s1`. Result: NOT_FOUND, not PERMISSION (which would
+    // leak existence in the global-namespace world).
     const wrong = await store.update("s1", "v2", undefined, "mallory");
     expect(wrong.ok).toBe(false);
     if (wrong.ok) return;
-    expect(wrong.error.code).toBe("PERMISSION");
+    expect(wrong.error.code).toBe("NOT_FOUND");
 
-    // Surface untouched
-    const peek = await store.get("s1");
+    // Alice's surface untouched
+    const peek = await store.get("s1", "alice");
     if (!peek.ok) return;
     expect(peek.value.content).toBe("v1");
 
@@ -214,14 +265,16 @@ describe("createInMemorySurfaceStore", () => {
     expect(right.ok).toBe(true);
   });
 
-  test("update with expectedOwnerId on ownerless surface → PERMISSION (fail-closed)", async () => {
+  test("update with ownerId on ownerless surface → NOT_FOUND (separate namespace)", async () => {
     const store = createInMemorySurfaceStore();
-    await store.create("s1", "v1"); // no ownerId
+    await store.create("s1", "v1"); // no ownerId — lives in unowned slot
 
+    // Alice cannot reach the unowned entry; her tenant namespace doesn't
+    // contain "s1".
     const result = await store.update("s1", "v2", undefined, "alice");
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.code).toBe("PERMISSION");
+    expect(result.error.code).toBe("NOT_FOUND");
   });
 
   test("each create produces a fresh generationId; recreate does not reuse", async () => {
@@ -242,16 +295,16 @@ describe("createInMemorySurfaceStore", () => {
     expect(c.value.generationId).toBeGreaterThan(b.value.generationId);
   });
 
-  test("delete with expectedOwnerId atomically rejects cross-owner deletion", async () => {
+  test("delete across tenants is a no-op (tenant-scoped namespace)", async () => {
     const store = createInMemorySurfaceStore();
     await store.create("s1", "v1", { ownerId: "alice" });
 
+    // Mallory's delete looks up `mallory:s1` — not present, idempotent
+    // false. Alice's `alice:s1` is untouched.
     const wrong = await store.delete("s1", "mallory");
-    expect(wrong.ok).toBe(false);
-    if (wrong.ok) return;
-    expect(wrong.error.code).toBe("PERMISSION");
+    expect(wrong).toEqual({ ok: true, value: false });
 
-    expect(await store.has("s1")).toEqual({ ok: true, value: true });
+    expect(await store.has("s1", "alice")).toEqual({ ok: true, value: true });
 
     const right = await store.delete("s1", "alice");
     expect(right).toEqual({ ok: true, value: true });

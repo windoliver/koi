@@ -120,15 +120,20 @@ describe("createCanvasSseManager", () => {
     }
   });
 
-  test("close(surfaceId) → sends deleted event + removes subscribers", () => {
+  test("close(surfaceId) → pure teardown (no embedded deleted event); caller publishes its own", () => {
     const mock = createMockSubscriber();
     sse.subscribe("s1", mock.subscriber);
 
-    sse.close("s1");
-
+    // Caller publishes the public deleted event first…
+    sse.publish("s1", { id: "1", event: "deleted", data: JSON.stringify({ surfaceId: "s1" }) });
     expect(mock.chunks).toHaveLength(1);
-    expect(mock.chunks[0]).toContain("event: deleted");
     expect(mock.chunks[0]).toContain('"surfaceId":"s1"');
+
+    // …then close() tears the bucket down without emitting anything else.
+    // (This decoupling is required so the route layer can use a tenant-
+    //  qualified registry key without leaking it as the wire `surfaceId`.)
+    sse.close("s1");
+    expect(mock.chunks).toHaveLength(1);
     expect(sse.subscriberCount("s1")).toBe(0);
     expect(sse.totalSubscribers()).toBe(0);
   });

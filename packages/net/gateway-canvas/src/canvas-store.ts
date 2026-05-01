@@ -19,6 +19,7 @@ import type { SurfaceEntry, SurfaceStore, SurfaceStoreConfig } from "./types.js"
 
 const DEFAULT_SURFACE_STORE_CONFIG: SurfaceStoreConfig = {
   maxSurfaces: 10_000,
+  maxSurfacesPerTenant: 1_000,
 } as const;
 
 function resourceExhausted(message: string): KoiError {
@@ -33,40 +34,95 @@ function resourceExhausted(message: string): KoiError {
  */
 export function surfaceEtag(entry: {
   readonly generationId: number;
+  readonly version: number;
   readonly contentHash: string;
 }): string {
-  return `${entry.generationId}-${entry.contentHash}`;
+  return `${entry.generationId}-${entry.version}-${entry.contentHash}`;
+}
+
+/**
+ * Defensive clone for entries returned to callers. The store must NEVER
+ * hand out a live reference to its internal map value: a caller mutating
+ * `ownerId`, `contentHash`, `version`, or `metadata` in place would
+ * corrupt the store's CAS/ownership invariants without going through
+ * `update()`. Metadata is shallow-cloned and frozen because it can hold
+ * arbitrary `unknown` shapes.
+ */
+function snapshotEntry(entry: SurfaceEntry): SurfaceEntry {
+  // Deep-clone metadata so callers cannot mutate nested values to corrupt
+  // stored state behind the store's CAS/version invariants. A shallow clone
+  // (`{...entry.metadata}`) leaves nested objects/arrays shared by reference,
+  // letting `entry.metadata.foo.bar = "x"` silently change the stored row
+  // without bumping `version`/`etag`. Bun's runtime structuredClone handles
+  // arbitrary `unknown` shapes (objects, arrays, dates, maps, sets).
+  return Object.freeze({
+    ...entry,
+    ...(entry.metadata !== undefined ? { metadata: structuredClone(entry.metadata) } : {}),
+  });
 }
 
 export function createInMemorySurfaceStore(
   configOverrides?: Partial<SurfaceStoreConfig>,
 ): SurfaceStore {
   const config: SurfaceStoreConfig = { ...DEFAULT_SURFACE_STORE_CONFIG, ...configOverrides };
+  // Tenant-scoped keys prevent cross-tenant `surfaceId` squatting and
+  // existence-probing. Two different agents can hold the same `surfaceId`
+  // independently; the namespace is per-`ownerId`. Unowned entries (no
+  // ownerId) live in their own slot and are unreachable through the
+  // authenticated HTTP API.
   const map = new Map<string, SurfaceEntry>();
+  // Per-tenant counts. Tracked separately from `map` so `create` admission
+  // can enforce the per-tenant quota in O(1) without scanning the whole
+  // store. Decremented on `delete`.
+  const perTenantCount = new Map<string, number>();
   // let: monotonic per-store generation counter; bumped on every create
   let generationCounter = 0;
 
+  // `undefined` (no owner) and `""` (empty-string owner) MUST encode to
+  // distinct keys. Without the leading discriminator byte, an authenticator
+  // that returns `agentId: ""` would alias the ownerless namespace and let
+  // a "blank" tenant read/mutate orphaned rows.
+  function keyOf(id: string, ownerId: string | undefined): string {
+    const tenant = ownerId === undefined ? "\x01" : `\x02${ownerId}`;
+    return `${tenant}\x00${id}`;
+  }
+
+  function tenantOf(ownerId: string | undefined): string {
+    return ownerId === undefined ? "\x01" : `\x02${ownerId}`;
+  }
+
   return {
-    get(id) {
-      const entry = map.get(id);
+    get(id, ownerId) {
+      const entry = map.get(keyOf(id, ownerId));
       if (entry === undefined) {
         return { ok: false, error: notFound(id, `Surface not found: ${id}`) };
       }
       const accessed: SurfaceEntry = { ...entry, lastAccessedAt: Date.now() };
-      map.set(id, accessed);
-      return { ok: true, value: accessed };
+      map.set(keyOf(id, ownerId), accessed);
+      return { ok: true, value: snapshotEntry(accessed) };
     },
 
     create(id, content, options) {
-      const existing = map.get(id);
+      const ownerId = options?.ownerId;
+      const key = keyOf(id, ownerId);
+      const existing = map.get(key);
       if (existing !== undefined) {
-        // Atomic classification: cross-owner collision returns PERMISSION
-        // (route → 404, no existence leak); self-collision returns CONFLICT
-        // (route → 409). No follow-up `get()` needed.
-        if (options?.ownerId !== undefined && existing.ownerId !== options.ownerId) {
-          return { ok: false, error: permission(`Surface owned by another agent: ${id}`) };
-        }
+        // Same-tenant self-collision only — cross-tenant cannot collide
+        // because keys are scoped by `ownerId`. Tenant A creating "home"
+        // does not block tenant B from creating their own "home".
         return { ok: false, error: conflict(id, `Surface already exists: ${id}`) };
+      }
+      // Per-tenant quota first — primary admission control. Without this,
+      // a noisy tenant can fill the global pool and 503 every other tenant.
+      const tenant = tenantOf(ownerId);
+      const tenantCount = perTenantCount.get(tenant) ?? 0;
+      if (tenantCount >= config.maxSurfacesPerTenant) {
+        return {
+          ok: false,
+          error: resourceExhausted(
+            `Per-tenant surface quota reached (${config.maxSurfacesPerTenant}); delete a surface or raise maxSurfacesPerTenant`,
+          ),
+        };
       }
       if (map.size >= config.maxSurfaces) {
         return {
@@ -83,26 +139,32 @@ export function createInMemorySurfaceStore(
         surfaceId: id,
         content,
         contentHash,
-        etag: `${generationCounter}-${contentHash}`,
+        version: 1,
+        etag: `${generationCounter}-1-${contentHash}`,
         generationId: generationCounter,
         createdAt: now,
         updatedAt: now,
         lastAccessedAt: now,
         ...(options?.ownerId !== undefined ? { ownerId: options.ownerId } : {}),
-        ...(options?.metadata !== undefined ? { metadata: options.metadata } : {}),
+        // Deep-clone metadata at ingress so post-create caller mutation
+        // (including mutation of nested objects/arrays) cannot corrupt stored
+        // state behind the store's CAS/version invariants.
+        ...(options?.metadata !== undefined ? { metadata: structuredClone(options.metadata) } : {}),
       };
-      map.set(id, entry);
-      return { ok: true, value: entry };
+      map.set(key, entry);
+      perTenantCount.set(tenant, tenantCount + 1);
+      return { ok: true, value: snapshotEntry(entry) };
     },
 
     update(id, content, expectedEtag, expectedOwnerId) {
-      const existing = map.get(id);
+      const key = keyOf(id, expectedOwnerId);
+      const existing = map.get(key);
       if (existing === undefined) {
         return { ok: false, error: notFound(id, `Surface not found: ${id}`) };
       }
-      // Atomic ownership check: when an owner is specified, the surface must
-      // be owned by that agent. Atomic with the hash precondition below — no
-      // TOCTOU window between owner-check and mutation.
+      // Tenant-scoped lookup means a hit here already proves ownership.
+      // Defense-in-depth assertion in case a durable backend stores
+      // ownerId mutably.
       if (expectedOwnerId !== undefined && existing.ownerId !== expectedOwnerId) {
         return { ok: false, error: permission(`Not the owner of surface: ${id}`) };
       }
@@ -118,22 +180,30 @@ export function createInMemorySurfaceStore(
       const now = Date.now();
       const contentHash =
         content === existing.content ? existing.contentHash : computeStringHash(content);
+      // Bump `version` on every successful update — including no-op updates
+      // where content is unchanged. Without this, a no-op PATCH would not
+      // advance the etag, leaving older If-Match tokens valid against later
+      // writes/deletes (a stale-write acceptance bug).
+      const version = existing.version + 1;
       const updated: SurfaceEntry = {
         ...existing,
         content,
         contentHash,
-        etag: `${existing.generationId}-${contentHash}`,
+        version,
+        etag: `${existing.generationId}-${version}-${contentHash}`,
         updatedAt: now,
         lastAccessedAt: now,
       };
-      map.set(id, updated);
-      return { ok: true, value: updated };
+      map.set(key, updated);
+      return { ok: true, value: snapshotEntry(updated) };
     },
 
     delete(id, expectedOwnerId, expectedEtag) {
-      const existing = map.get(id);
-      // Owner-aware delete: atomic check + remove; missing entry returns false
-      // (idempotent). Owner mismatch returns PERMISSION (mapped to 404 by routes).
+      const key = keyOf(id, expectedOwnerId);
+      const existing = map.get(key);
+      // Tenant-scoped lookup: a miss is genuinely "not present in this
+      // tenant's namespace" → idempotent false. Defense-in-depth ownerId
+      // assertion below.
       if (
         expectedOwnerId !== undefined &&
         existing !== undefined &&
@@ -142,9 +212,9 @@ export function createInMemorySurfaceStore(
         return { ok: false, error: permission(`Not the owner of surface: ${id}`) };
       }
       // Generation fence: the supplied token must match `surfaceEtag()` of
-      // the current entry — i.e. include both `generationId` and content
-      // hash. A delete + recreate with identical content produces a fresh
-      // generation, so stale tokens cannot impersonate the new instance.
+      // the current entry. A delete + recreate with identical content
+      // produces a fresh generation, so stale tokens cannot impersonate
+      // the new instance.
       if (
         expectedEtag !== undefined &&
         existing !== undefined &&
@@ -158,11 +228,18 @@ export function createInMemorySurfaceStore(
           ),
         };
       }
-      return { ok: true, value: map.delete(id) };
+      const removed = map.delete(key);
+      if (removed) {
+        const tenant = tenantOf(expectedOwnerId);
+        const count = perTenantCount.get(tenant) ?? 0;
+        if (count <= 1) perTenantCount.delete(tenant);
+        else perTenantCount.set(tenant, count - 1);
+      }
+      return { ok: true, value: removed };
     },
 
-    has(id) {
-      return { ok: true, value: map.has(id) };
+    has(id, ownerId) {
+      return { ok: true, value: map.has(keyOf(id, ownerId)) };
     },
 
     size(): number {

@@ -11,9 +11,20 @@
 // ---------------------------------------------------------------------------
 
 export function jsonResponse(status: number, body: Record<string, unknown>): Response {
+  // Every JSON response from this gateway is auth- and tenant-dependent
+  // (401/404/409/412/428/503 statuses encode whether the caller's
+  // credentials grant access). Without `private, no-store` + `Vary:
+  // Authorization`, a shared proxy can cache a non-owner's 404 by URL
+  // and replay it to the rightful owner — a stable false-negative on a
+  // private surface. Apply the cache-safety posture uniformly so no
+  // route-level path forgets it.
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "private, no-store",
+      Vary: "Authorization",
+    },
   });
 }
 

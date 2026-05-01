@@ -21,7 +21,8 @@ export interface SurfaceEntry {
   /** Hex content hash. NOT the ETag — see {@link SurfaceEntry.etag}. */
   readonly contentHash: string;
   /**
-   * Generation-aware precondition token: `${generationId}-${contentHash}`.
+   * Generation- and version-aware precondition token:
+   * `${generationId}-${version}-${contentHash}`.
    * This is the value the HTTP layer emits as ETag and compares against
    * `If-Match` / `If-None-Match`. Custom durable backends MUST emit and
    * validate this exact value, not raw `contentHash` — comparing only the
@@ -30,9 +31,22 @@ export interface SurfaceEntry {
    */
   readonly etag: string;
   /**
+   * Per-entry write counter, starts at 1 on `create()` and bumps by 1 on
+   * every successful `update()` — including no-op updates where the new
+   * content equals the old content. Without this, a no-op PATCH would not
+   * advance the etag, leaving stale `If-Match` tokens valid against
+   * subsequent writes/deletes.
+   */
+  readonly version: number;
+  /**
    * Authenticated identity that created the surface. Subsequent writes
-   * (PATCH/DELETE) must be performed by the same `ownerId`. Undefined only
-   * when the server runs without an authenticator (single-tenant mode).
+   * (PATCH/DELETE) must be performed by the same `ownerId`. The HTTP server
+   * always stamps this from the authenticator on `create()` (authentication
+   * is mandatory at construction); the field is optional on the type only
+   * to permit pluggable durable backends that pre-populate rows out of band
+   * — such rows are unreachable through the HTTP API by design (fail-closed)
+   * and must be migrated by the operator, not surfaced to authenticated
+   * callers as orphaned data.
    */
   readonly ownerId?: string | undefined;
   /**
@@ -51,36 +65,43 @@ export interface SurfaceEntry {
 
 export interface SurfaceStoreConfig {
   /**
-   * Soft cap on retained surfaces. When the store is full, `create()` returns
-   * `RESOURCE_EXHAUSTED` rather than silently evicting an unrelated surface.
-   * Operators must explicitly DELETE surfaces (or raise the cap) to make room.
+   * Global cap across all tenants. When reached, `create()` returns
+   * `RESOURCE_EXHAUSTED` (no silent eviction). Should be set high enough
+   * that legitimate usage doesn't hit it; the per-tenant quota
+   * (`maxSurfacesPerTenant`) is the primary admission control.
    */
   readonly maxSurfaces: number;
+  /**
+   * Per-tenant quota. Without this, one noisy tenant can consume the
+   * entire global pool and force every later tenant onto the
+   * `RESOURCE_EXHAUSTED` → 503 path. Default: 1_000.
+   */
+  readonly maxSurfacesPerTenant: number;
 }
 
 /**
  * Pluggable surface persistence. Default in-memory implementation provided.
  * Operations return `T | Promise<T>` so durable backends can plug in.
  *
- * Ownership is enforced inside the store on mutations (`update`, `delete`):
- * passing `expectedOwnerId` makes the backend perform an atomic owner check
- * alongside the hash precondition, closing the TOCTOU window that would
- * otherwise exist between a route-layer ownership read and the mutation.
+ * Storage namespace is **tenant-scoped**: keys are `(ownerId, surfaceId)`.
+ * Two different agents can independently hold the same `surfaceId` — there
+ * is no shared global surfaceId namespace. This prevents cross-tenant
+ * squatting (one tenant reserving "home" for everyone) and existence
+ * probing (POST returning 201 vs 404 to leak whether another tenant owns
+ * an ID).
  *
- * Owner-mismatch returns the `PERMISSION` error code; not-found returns
- * `NOT_FOUND`. Routes should map both to HTTP 404 to avoid leaking existence.
+ * Owner-mismatch (defense-in-depth) returns `PERMISSION`; not-found
+ * returns `NOT_FOUND`. Routes map both to HTTP 404.
  */
 export interface SurfaceStore {
-  readonly get: (id: string) => Result<SurfaceEntry> | Promise<Result<SurfaceEntry>>;
+  readonly get: (
+    id: string,
+    ownerId?: string,
+  ) => Result<SurfaceEntry> | Promise<Result<SurfaceEntry>>;
   /**
-   * Create a new surface. On collision the backend MUST classify atomically:
-   * - if `options.ownerId` is provided and the existing surface is owned by
-   *   a different agent, return `PERMISSION` (route maps to 404 to avoid
-   *   leaking existence to non-owners);
-   * - otherwise (same-owner self-collision, or no owner specified), return
-   *   `CONFLICT`.
-   * The two-step "create then get to learn the owner" pattern is unsafe on
-   * async backends and must be replaced by this atomic classification.
+   * Create a new surface in the `ownerId` tenant's namespace. Collision
+   * (same `(ownerId, id)` pair) returns `CONFLICT`. Cross-tenant collision
+   * is impossible by construction.
    */
   readonly create: (
     id: string,
@@ -122,7 +143,7 @@ export interface SurfaceStore {
     expectedOwnerId?: string,
     expectedEtag?: string,
   ) => Result<boolean> | Promise<Result<boolean>>;
-  readonly has: (id: string) => Result<boolean> | Promise<Result<boolean>>;
+  readonly has: (id: string, ownerId?: string) => Result<boolean> | Promise<Result<boolean>>;
   readonly size: () => number | Promise<number>;
 }
 
@@ -150,11 +171,31 @@ export interface CanvasSseManager {
    * Register a subscriber for a surface's event stream.
    * Returns an unsubscribe function on success.
    * Fails with RATE_LIMIT if per-surface or global limit reached.
+   *
+   * `onClose`, when provided, fires AFTER the subscriber is removed from
+   * the registry — including the path where `close(surfaceId)` tears
+   * down the bucket. The route layer uses this to terminate the
+   * underlying `ReadableStream` so a DELETE'd surface does not leave
+   * clients on a zombie HTTP/2 stream that will never receive another
+   * event (and never frees its socket/fd).
    */
-  readonly subscribe: (surfaceId: string, subscriber: SseSubscriber) => Result<() => void>;
+  readonly subscribe: (
+    surfaceId: string,
+    subscriber: SseSubscriber,
+    onClose?: () => void,
+  ) => Result<() => void>;
   /** Fan out an event to all subscribers for a surface. */
   readonly publish: (surfaceId: string, event: SseEvent) => void;
-  /** Send "deleted" event and remove all subscribers for a surface. */
+  /**
+   * **Teardown only**: drops all subscribers for a surface and clears its
+   * event-id counter. Does NOT emit a `deleted` event — callers MUST
+   * `publish()` the terminal `deleted` event with the public `surfaceId`
+   * BEFORE calling `close()` if they want clients to receive it.
+   *
+   * Embedding a `deleted` event in `close()` would force the registry key
+   * into the wire payload, which leaks tenant-qualified internal keys
+   * when the route layer scopes streams by `(ownerId, surfaceId)`.
+   */
   readonly close: (surfaceId: string) => void;
   /** Stop keep-alive timer and clear all subscribers. */
   readonly dispose: () => void;
@@ -208,8 +249,15 @@ export interface CanvasConfig {
   readonly pathPrefix?: string;
   /** Maximum canvas request body size in bytes. Default: 1_048_576 (1MB). */
   readonly maxBodyBytes?: number;
-  /** Maximum number of stored surfaces. Default: 10_000. */
+  /** Global cap across all tenants. Default: 10_000. */
   readonly maxSurfaces?: number;
+  /**
+   * Per-tenant quota — primary admission control under multi-tenant load.
+   * Without this, a noisy tenant can fill the global pool and force every
+   * later tenant onto the 503 path. Default: 1_000. Should be set so that
+   * `maxSurfacesPerTenant ≤ maxSurfaces`.
+   */
+  readonly maxSurfacesPerTenant?: number;
   /** Maximum SSE subscribers per surface. Default: 100. */
   readonly maxSsePerSurface?: number;
   /** Maximum total SSE subscribers across all surfaces. Default: 10_000. */

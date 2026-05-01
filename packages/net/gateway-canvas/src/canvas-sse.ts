@@ -39,6 +39,12 @@ export function createCanvasSseManager(
 ): CanvasSseManager {
   const config: CanvasSseConfig = { ...DEFAULT_CANVAS_SSE_CONFIG, ...configOverrides };
   const registry = new Map<string, Set<SseSubscriber>>();
+  // Per-subscriber onClose hooks. Stored separately so the public
+  // SseSubscriber type stays a plain function and existing consumers do
+  // not need to change. Hook fires after removal from the registry —
+  // including via `close(surfaceId)` teardown — so the route layer can
+  // terminate the underlying ReadableStream.
+  const closeHooks = new WeakMap<SseSubscriber, () => void>();
   const eventCounters = new Map<string, number>();
   // let: total subscriber count across all surfaces (mutated on subscribe/unsubscribe)
   let total = 0;
@@ -49,6 +55,18 @@ export function createCanvasSseManager(
     return String(counter);
   }
 
+  function fireCloseHook(subscriber: SseSubscriber): void {
+    const hook = closeHooks.get(subscriber);
+    if (hook === undefined) return;
+    closeHooks.delete(subscriber);
+    try {
+      hook();
+    } catch {
+      // Hooks must never escape; a throwing route-side hook would take
+      // down `close()` mid-fanout and leave other subscribers stranded.
+    }
+  }
+
   function removeSubscriber(surfaceId: string, subscriber: SseSubscriber): void {
     const subscribers = registry.get(surfaceId);
     if (subscribers === undefined) return;
@@ -57,6 +75,7 @@ export function createCanvasSseManager(
       if (subscribers.size === 0) {
         registry.delete(surfaceId);
       }
+      fireCloseHook(subscriber);
     }
   }
 
@@ -88,7 +107,7 @@ export function createCanvasSseManager(
   }, config.keepAliveIntervalMs);
 
   return {
-    subscribe(surfaceId, subscriber) {
+    subscribe(surfaceId, subscriber, onClose) {
       if (total >= config.maxTotalSubscribers) {
         return {
           ok: false,
@@ -136,6 +155,7 @@ export function createCanvasSseManager(
         };
       }
       total += 1;
+      if (onClose !== undefined) closeHooks.set(subscriber, onClose);
 
       const unsubscribe = (): void => {
         removeSubscriber(surfaceId, subscriber);
@@ -149,23 +169,30 @@ export function createCanvasSseManager(
     },
 
     close(surfaceId) {
+      // Pure teardown: callers MUST publish a `deleted` event with the
+      // public surfaceId BEFORE calling close(). Embedding `surfaceId`
+      // here would leak the registry key (which is tenant-qualified in
+      // the route layer) to clients on every delete.
+      //
+      // Fires each subscriber's `onClose` hook AFTER removal so the route
+      // layer can terminate the underlying ReadableStream — without this,
+      // a deleted surface leaves clients on a zombie HTTP connection that
+      // will never receive another event and never frees its socket.
       const subscribers = registry.get(surfaceId);
       if (subscribers === undefined) return;
-      const deletedEvent = formatSseEvent({
-        id: nextEventId(surfaceId),
-        event: "deleted",
-        data: JSON.stringify({ surfaceId }),
-      });
-      for (const subscriber of subscribers) {
-        safeDeliver(subscriber, deletedEvent);
-      }
       total -= subscribers.size;
       registry.delete(surfaceId);
       eventCounters.delete(surfaceId);
+      for (const subscriber of subscribers) fireCloseHook(subscriber);
     },
 
     dispose() {
       clearInterval(keepAliveTimer);
+      // Fire close hooks for every live subscriber so consumers (route
+      // ReadableStreams, etc.) terminate cleanly on manager shutdown.
+      for (const subscribers of registry.values()) {
+        for (const subscriber of subscribers) fireCloseHook(subscriber);
+      }
       total = 0;
       registry.clear();
       eventCounters.clear();

@@ -13882,26 +13882,26 @@ describe("Golden: @koi/gateway-canvas", () => {
     expect(created.value.ownerId).toBe("agent-1");
     expect(created.value.metadata).toEqual({ author: "agent" });
 
-    // Duplicate create → CONFLICT
-    const dup = await store.create("dash-1", "<h1>x</h1>");
+    // Same-tenant duplicate create → CONFLICT (tenant-scoped namespace)
+    const dup = await store.create("dash-1", "<h1>x</h1>", { ownerId: "agent-1" });
     expect(dup.ok).toBe(false);
     if (!dup.ok) expect(dup.error.code).toBe("CONFLICT");
 
     // CAS update with matching token succeeds + new token differs
-    const updated = await store.update("dash-1", "<h1>v2</h1>", v1Token);
+    const updated = await store.update("dash-1", "<h1>v2</h1>", v1Token, "agent-1");
     expect(updated.ok).toBe(true);
     if (!updated.ok) return;
     expect(surfaceEtag(updated.value)).not.toBe(v1Token);
 
     // CAS update with stale token → CONFLICT (precondition failed)
-    const stale = await store.update("dash-1", "<h1>v3</h1>", v1Token);
+    const stale = await store.update("dash-1", "<h1>v3</h1>", v1Token, "agent-1");
     expect(stale.ok).toBe(false);
     if (!stale.ok) expect(stale.error.code).toBe("CONFLICT");
 
     // delete returns true once, false thereafter; subsequent get → NOT_FOUND
-    const del = await store.delete("dash-1");
+    const del = await store.delete("dash-1", "agent-1");
     expect(del).toEqual({ ok: true, value: true });
-    const missing = await store.get("dash-1");
+    const missing = await store.get("dash-1", "agent-1");
     expect(missing.ok).toBe(false);
     if (!missing.ok) expect(missing.error.code).toBe("NOT_FOUND");
   });
@@ -13932,7 +13932,13 @@ describe("Golden: @koi/gateway-canvas", () => {
       expect(live[0]).toBe('id: 1\nevent: updated\ndata: {"v":2}\n\n');
       expect(sse.subscriberCount("dash-1")).toBe(1);
 
-      // close emits a "deleted" event then evicts everyone
+      // Caller publishes the public deleted event first; close() is pure
+      // teardown (does NOT embed the registry key as the wire surfaceId).
+      sse.publish("dash-1", {
+        id: "2",
+        event: "deleted",
+        data: JSON.stringify({ surfaceId: "dash-1" }),
+      });
       sse.close("dash-1");
       expect(live).toHaveLength(2);
       expect(live[1]).toContain("event: deleted");
