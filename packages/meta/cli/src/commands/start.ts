@@ -50,7 +50,11 @@ import { loadPolicyFile } from "../policy-file.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
 import { resolveManifestPath } from "../resolve-manifest-path.js";
 import { createKoiRuntime, PolicyLoadError } from "../runtime-factory.js";
-import { readSessionMetaResult, resumeSessionFromJsonl, writeSessionMeta } from "../shared-wiring.js";
+import {
+  readSessionMetaResult,
+  resumeSessionFromJsonl,
+  writeSessionMeta,
+} from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
 
@@ -747,8 +751,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     // re-parse-manifest path below. This preserves resume access to
     // sessions created before this build added the snapshot model.
     if (resumeMeta.kind === "missing" || resumeMeta.kind === "legacy") {
-      const legacyManifestPath =
-        resumeMeta.kind === "legacy" ? resumeMeta.manifestPath : undefined;
+      const legacyManifestPath = resumeMeta.kind === "legacy" ? resumeMeta.manifestPath : undefined;
       if (legacyManifestPath !== undefined) {
         const r = await loadManifestConfig(legacyManifestPath, { skipAuditValidation: true });
         if (r.ok) {
@@ -793,38 +796,38 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       if (resumeMeta.manifestPath === undefined) {
         // Fall through to runtime assembly with no further checks.
       } else {
-      const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
-        skipAuditValidation: true,
-      });
-      if (!resumeAuditResult.ok) {
-        return bail(
-          "original session manifest cannot be parsed during resume — " +
-            "refusing to start because manifest.audit presence cannot be verified. " +
-            "Fix the manifest to run under koi start, or use koi tui.",
-        );
-      }
-      if (resumeAuditResult.value.audit !== undefined) {
-        return bail(
-          "original session manifest.audit is not supported on this host. " +
-            "koi start does not wire audit sinks — use koi tui to resume this session, " +
-            "or remove the audit: block from the manifest.",
-        );
-      }
-      // Issue #2088 — mirror the fresh-load ACE rejection on resume.
-      // ACE is wired only in koi tui; allowing a session whose original
-      // manifest enabled ACE to resume on koi start would silently
-      // degrade (the field is honored on tui, ignored on start). The
-      // broader resume-provenance gap (readSessionMeta() returning {}
-      // for missing/malformed sidecars) means this guard only catches
-      // sessions whose sidecar successfully recorded the manifest path
-      // — that is consistent with the audit guard above.
-      if (resumeAuditResult.value.ace?.enabled === true) {
-        return bail(
-          "original session manifest.ace.enabled: true is not supported on this host. " +
-            "koi start does not wire ACE — use koi tui to resume this session, " +
-            "or set ace.enabled: false in the manifest.",
-        );
-      }
+        const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
+          skipAuditValidation: true,
+        });
+        if (!resumeAuditResult.ok) {
+          return bail(
+            "original session manifest cannot be parsed during resume — " +
+              "refusing to start because manifest.audit presence cannot be verified. " +
+              "Fix the manifest to run under koi start, or use koi tui.",
+          );
+        }
+        if (resumeAuditResult.value.audit !== undefined) {
+          return bail(
+            "original session manifest.audit is not supported on this host. " +
+              "koi start does not wire audit sinks — use koi tui to resume this session, " +
+              "or remove the audit: block from the manifest.",
+          );
+        }
+        // Issue #2088 — mirror the fresh-load ACE rejection on resume.
+        // ACE is wired only in koi tui; allowing a session whose original
+        // manifest enabled ACE to resume on koi start would silently
+        // degrade (the field is honored on tui, ignored on start). The
+        // broader resume-provenance gap (readSessionMeta() returning {}
+        // for missing/malformed sidecars) means this guard only catches
+        // sessions whose sidecar successfully recorded the manifest path
+        // — that is consistent with the audit guard above.
+        if (resumeAuditResult.value.ace?.enabled === true) {
+          return bail(
+            "original session manifest.ace.enabled: true is not supported on this host. " +
+              "koi start does not wire ACE — use koi tui to resume this session, " +
+              "or set ace.enabled: false in the manifest.",
+          );
+        }
       }
     }
   }

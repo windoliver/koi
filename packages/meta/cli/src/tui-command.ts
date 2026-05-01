@@ -1195,7 +1195,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           "koi tui: ace.enabled: true is incompatible with the checkpoint preset stack. " +
             "/rewind would discard transcript turns but cannot roll back ACE-learned playbooks, " +
             "so prompting could still be steered by hidden state derived from rolled-back turns. " +
-            "Explicitly set `stacks:` in the manifest to a list that excludes \"checkpoint\" to " +
+            'Explicitly set `stacks:` in the manifest to a list that excludes "checkpoint" to ' +
             "use ACE today, or wait for a clearable PlaybookStore (#2087).\n",
         );
         process.exit(1);
@@ -1550,8 +1550,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // fall through to the next outer block; nothing else to verify
       }
     }
-    const legacyManifestPath =
-      resumeMeta.kind === "legacy" ? resumeMeta.manifestPath : undefined;
+    const legacyManifestPath = resumeMeta.kind === "legacy" ? resumeMeta.manifestPath : undefined;
     if (
       (resumeMeta.kind === "ok" && resumeMeta.manifestPath !== undefined) ||
       legacyManifestPath !== undefined
@@ -5080,8 +5079,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 store.dispatch({
                   kind: "add_error",
                   code: "NEW_SESSION_FAILED",
-                  message:
-                    `New session failed: ACE-enabled or audit-declared session requires a recoverable provenance sidecar but the write failed: ${writeResult.error}. Restart koi tui to recover.`,
+                  message: `New session failed: ACE-enabled or audit-declared session requires a recoverable provenance sidecar but the write failed: ${writeResult.error}. Restart koi tui to recover.`,
                 });
                 return;
               }

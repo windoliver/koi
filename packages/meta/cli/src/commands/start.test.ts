@@ -226,9 +226,7 @@ mock.module("../shared-wiring.js", () => ({
   resumeSessionFromJsonl: mockResumeSessionFromJsonl,
   writeSessionMeta: mock(async () => {}),
   readSessionMeta: mock(async () => ({})),
-  readSessionMetaResult: mock(
-    async () => ({ kind: "ok", manifestPath: "/tmp/koi.yaml" }) as const,
-  ),
+  readSessionMetaResult: mock(async () => ({ kind: "ok", manifestPath: "/tmp/koi.yaml" }) as const),
   buildCoreMiddleware: mock(() => ({
     permissions: {},
     hook: {},
