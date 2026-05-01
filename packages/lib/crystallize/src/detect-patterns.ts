@@ -59,40 +59,74 @@ function containsContiguous(haystack: readonly ToolStep[], needle: readonly Tool
   return false;
 }
 
-function locationKeyOf(loc: {
-  readonly sessionId: string;
-  readonly agentId: string;
-  readonly turnIndex: number;
-}): string {
-  return JSON.stringify([loc.sessionId, loc.agentId, loc.turnIndex]);
+/**
+ * True when the `longer` candidate covers every concrete window of the
+ * `shorter`, not merely the set of turns the shorter appeared in. For each
+ * shorter window at start `s` in turn T, there must exist a longer window
+ * at start `l` in turn T such that `l <= s` and `l + longerLen >= s +
+ * shorterLen` — i.e. the shorter's window is wholly inside one of the
+ * longer's windows in that turn.
+ *
+ * Required because a single turn can match a shorter pattern multiple
+ * times while the longer pattern matches only once (e.g. `[a,b,c,a,b]`
+ * has two `[a,b]` windows but one `[a,b,c]` window). Turn-level coverage
+ * alone would let the longer pattern erase the shorter despite leaving
+ * one of its in-turn occurrences uncovered.
+ *
+ * Falls back to `false` (do not subsume) when either side lacks
+ * `windowsByTurn` data — that field is only absent on hand-crafted
+ * fixtures, and the conservative answer there is to keep both candidates.
+ */
+function coversEveryWindow(
+  shorter: CrystallizationCandidate,
+  longer: CrystallizationCandidate,
+): boolean {
+  const shorterWindows = shorter.windowsByTurn;
+  const longerWindows = longer.windowsByTurn;
+  if (shorterWindows === undefined || longerWindows === undefined) return false;
+  const slack = longer.ngram.steps.length - shorter.ngram.steps.length;
+  // Caller has already checked shape containment via `containsContiguous`,
+  // so `slack >= 0` is guaranteed when we get here.
+  for (const [turnKey, shortStarts] of shorterWindows) {
+    const longerStarts = longerWindows.get(turnKey);
+    if (longerStarts === undefined) return false;
+    for (const s of shortStarts) {
+      let covered = false;
+      for (const l of longerStarts) {
+        if (l <= s && s <= l + slack) {
+          covered = true;
+          break;
+        }
+      }
+      if (!covered) return false;
+    }
+  }
+  return true;
 }
 
-/**
- * True when every location in `needle` also appears in `haystack`. Required
- * before subsumption can drop the shorter pattern: shape containment alone
- * is not enough — `[a,b]` and `[a,b,c]` may live in disjoint turns and the
- * shorter must survive as an independent candidate.
- */
-function isLocationSubset(
-  needle: readonly CrystallizationCandidate["locations"][number][],
-  haystack: readonly CrystallizationCandidate["locations"][number][],
-): boolean {
-  const seen = new Set(haystack.map(locationKeyOf));
-  for (const loc of needle) if (!seen.has(locationKeyOf(loc))) return false;
-  return true;
+function successRateOf(c: CrystallizationCandidate): number {
+  // Mirrors `computeSuccessRate`: no signal-bearing occurrences → 1.0
+  // (neutral default), so reliability dominance never falsely punishes a
+  // pattern with no captured outcomes.
+  return c.outcomeStats.withOutcome === 0
+    ? 1.0
+    : c.outcomeStats.successes / c.outcomeStats.withOutcome;
 }
 
 /**
  * Drop candidates wholly subsumed by a longer candidate. Subsumption now
  * requires three independent conditions:
  *  - **Shape**: longer contains shorter as a contiguous tool-id subsequence.
- *  - **Coverage**: every location of the shorter is also a location of the
- *    longer. Without this, two patterns that happen to share a substring
- *    but live in different turns would silently delete one another.
- *  - **Quality**: longer's `score` is at least the shorter's. Without this,
- *    a longer composite that always fails on its final step (e.g. a
- *    publish-step that never succeeds) would suppress its healthy
- *    successful prefix from the candidate set.
+ *  - **Occurrence coverage**: every concrete window of the shorter (turn +
+ *    start offset) is wholly contained inside some window of the longer in
+ *    the same turn. Pure turn-level coverage is unsafe — a turn can match
+ *    a shorter pattern multiple times while matching the longer pattern
+ *    only once.
+ *  - **Reliability dominance**: longer's `successRate` is at least the
+ *    shorter's. Aggregate `score` ties are not enough: a longer composite
+ *    that fails 50% of the time can score-tie a healthy 100%-success prefix
+ *    once complexity weight is folded in, and silently bury the safer
+ *    pattern.
  */
 export function filterSubsumed(
   candidates: readonly CrystallizationCandidate[],
@@ -103,8 +137,8 @@ export function filterSubsumed(
         other.ngram.key !== candidate.ngram.key &&
         other.ngram.steps.length > candidate.ngram.steps.length &&
         containsContiguous(other.ngram.steps, candidate.ngram.steps) &&
-        isLocationSubset(candidate.locations, other.locations) &&
-        (other.score ?? 0) >= (candidate.score ?? 0),
+        coversEveryWindow(candidate, other) &&
+        successRateOf(other) >= successRateOf(candidate),
     );
   });
 }
@@ -126,6 +160,7 @@ function buildCandidates(
       detectedAt: firstSeenTimes?.get(entry.ngram.key) ?? now,
       suggestedName: computeSuggestedName(entry.ngram),
       outcomeStats: entry.outcomeStats,
+      windowsByTurn: entry.windowsByTurn,
     };
     raw.push({ ...base, score: computeCrystallizeScore(base, now) });
   }

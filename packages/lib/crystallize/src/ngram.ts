@@ -128,6 +128,14 @@ export function computeNgramKey(steps: readonly ToolStep[]): string {
 interface MutableEntry {
   readonly ngram: ToolNgram;
   readonly locations: TurnLocation[];
+  /**
+   * For each turn the pattern matched, the set of window start indices in
+   * that turn. A pattern can match more than once per turn; subsumption
+   * needs concrete window offsets, not just turn membership, to avoid
+   * deleting a shorter pattern whose extra in-turn occurrences fall
+   * outside any longer pattern's window.
+   */
+  readonly windowsByTurn: Map<string, Set<number>>;
   /** Composite identity of the turn currently being aggregated, or null. */
   pendingLocKey: string | null;
   /** Whether any window in the pending turn had an explicit success step. */
@@ -194,7 +202,12 @@ function freezeEntry(entry: MutableEntry): NgramEntry {
   // Final commit at extraction end; safe to do once per entry.
   commitPending(entry);
   const stats: OutcomeStats = { successes: entry.successes, withOutcome: entry.withOutcome };
-  return { ngram: entry.ngram, locations: entry.locations, outcomeStats: stats };
+  return {
+    ngram: entry.ngram,
+    locations: entry.locations,
+    outcomeStats: stats,
+    windowsByTurn: entry.windowsByTurn,
+  };
 }
 
 /**
@@ -224,6 +237,7 @@ export function extractNgrams(
           entry = {
             ngram: { steps, key },
             locations: [location],
+            windowsByTurn: new Map([[locKey, new Set([start])]]),
             pendingLocKey: locKey,
             pendingHadSuccess: success,
             pendingHadFailure: failure,
@@ -234,6 +248,15 @@ export function extractNgrams(
           accum.set(key, entry);
           continue;
         }
+        // Always record the window's start index for this turn — even on
+        // repeat matches within the same turn — so subsumption can compare
+        // concrete occurrences, not just turn membership.
+        let turnWindows = entry.windowsByTurn.get(locKey);
+        if (turnWindows === undefined) {
+          turnWindows = new Set<number>();
+          entry.windowsByTurn.set(locKey, turnWindows);
+        }
+        turnWindows.add(start);
         if (entry.pendingLocKey === locKey) {
           // Same turn — fold this window's signals into the pending verdict.
           // Failure / validation taint the whole turn; success only counts

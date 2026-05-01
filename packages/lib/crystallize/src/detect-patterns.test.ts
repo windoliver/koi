@@ -7,6 +7,10 @@ import type { CrystallizationCandidate, TurnLocation } from "./types.js";
 const TEST_SESSION = sessionId("test-session");
 const TEST_AGENT = "test-agent";
 
+function locKey(loc: TurnLocation): string {
+  return JSON.stringify([loc.sessionId, loc.agentId, loc.turnIndex]);
+}
+
 function makeCandidate(toolIds: readonly string[], occurrences: number): CrystallizationCandidate {
   const key = toolIds.join("|");
   const locations: TurnLocation[] = Array.from({ length: occurrences }, (_, i) => ({
@@ -14,6 +18,12 @@ function makeCandidate(toolIds: readonly string[], occurrences: number): Crystal
     agentId: TEST_AGENT,
     turnIndex: i,
   }));
+  // Every occurrence is taken to start at offset 0 in its turn — keeps
+  // hand-crafted fixtures simple and lets shape-containing longer patterns
+  // (also at offset 0) cover shorter ones.
+  const windowsByTurn = new Map<string, ReadonlySet<number>>(
+    locations.map((loc) => [locKey(loc), new Set([0])]),
+  );
   return {
     ngram: { steps: toolIds.map((id) => ({ toolId: id })), key },
     occurrences,
@@ -21,6 +31,7 @@ function makeCandidate(toolIds: readonly string[], occurrences: number): Crystal
     detectedAt: 0,
     suggestedName: toolIds.join("-then-"),
     outcomeStats: { successes: 0, withOutcome: 0 },
+    windowsByTurn,
   };
 }
 
@@ -73,29 +84,33 @@ describe("filterSubsumed", () => {
     // [a,b] occurred in turns 0..2 from the test session; [a,b,c] occurred in
     // turns 5..7 (disjoint). Shape contains, count matches, but locations
     // do not — the shorter must survive.
+    const shorterLocs: TurnLocation[] = [0, 1, 2].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
+    const longerLocs: TurnLocation[] = [5, 6, 7].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
     const shorter: CrystallizationCandidate = {
       ngram: { steps: [{ toolId: "a" }, { toolId: "b" }], key: "a|b" },
       occurrences: 3,
-      locations: [0, 1, 2].map((i) => ({
-        sessionId: TEST_SESSION,
-        agentId: TEST_AGENT,
-        turnIndex: i,
-      })),
+      locations: shorterLocs,
       detectedAt: 0,
       suggestedName: "a-then-b",
       outcomeStats: { successes: 0, withOutcome: 0 },
+      windowsByTurn: new Map(shorterLocs.map((loc) => [locKey(loc), new Set([0])])),
     };
     const longer: CrystallizationCandidate = {
       ngram: { steps: [{ toolId: "a" }, { toolId: "b" }, { toolId: "c" }], key: "a|b|c" },
       occurrences: 3,
-      locations: [5, 6, 7].map((i) => ({
-        sessionId: TEST_SESSION,
-        agentId: TEST_AGENT,
-        turnIndex: i,
-      })),
+      locations: longerLocs,
       detectedAt: 0,
       suggestedName: "a-then-b-then-c",
       outcomeStats: { successes: 0, withOutcome: 0 },
+      windowsByTurn: new Map(longerLocs.map((loc) => [locKey(loc), new Set([0])])),
     };
     const kept = filterSubsumed([shorter, longer]);
     expect(kept).toHaveLength(2);
@@ -105,11 +120,14 @@ describe("filterSubsumed", () => {
     // Longer pattern fails on its last step every turn (score 0); shorter
     // prefix succeeds every turn (score > 0). Same locations, same shape
     // containment — quality dominance must veto the subsumption.
-    const sharedLocs = [0, 1, 2].map((i) => ({
+    const sharedLocs: TurnLocation[] = [0, 1, 2].map((i) => ({
       sessionId: TEST_SESSION,
       agentId: TEST_AGENT,
       turnIndex: i,
     }));
+    const sharedWindows = new Map<string, ReadonlySet<number>>(
+      sharedLocs.map((loc) => [locKey(loc), new Set([0])]),
+    );
     const healthy: CrystallizationCandidate = {
       ngram: { steps: [{ toolId: "read" }, { toolId: "parse" }], key: "read|parse" },
       occurrences: 3,
@@ -118,6 +136,7 @@ describe("filterSubsumed", () => {
       suggestedName: "read-then-parse",
       outcomeStats: { successes: 3, withOutcome: 3 },
       score: 6,
+      windowsByTurn: sharedWindows,
     };
     const failing: CrystallizationCandidate = {
       ngram: {
@@ -130,6 +149,7 @@ describe("filterSubsumed", () => {
       suggestedName: "read-then-parse-then-save",
       outcomeStats: { successes: 0, withOutcome: 3 },
       score: 0,
+      windowsByTurn: sharedWindows,
     };
     const kept = filterSubsumed([healthy, failing]);
     const keys = kept.map((c) => c.ngram.key).sort();
@@ -139,11 +159,14 @@ describe("filterSubsumed", () => {
   test("subsumes when shape, coverage, and quality all dominate", () => {
     // Shorter [a,b] only appears as part of [a,b,c]; longer has equal score
     // and identical locations. Subsume the shorter as before.
-    const sharedLocs = [0, 1, 2].map((i) => ({
+    const sharedLocs: TurnLocation[] = [0, 1, 2].map((i) => ({
       sessionId: TEST_SESSION,
       agentId: TEST_AGENT,
       turnIndex: i,
     }));
+    const sharedWindows = new Map<string, ReadonlySet<number>>(
+      sharedLocs.map((loc) => [locKey(loc), new Set([0])]),
+    );
     const shorter: CrystallizationCandidate = {
       ngram: { steps: [{ toolId: "a" }, { toolId: "b" }], key: "a|b" },
       occurrences: 3,
@@ -152,6 +175,7 @@ describe("filterSubsumed", () => {
       suggestedName: "a-then-b",
       outcomeStats: { successes: 3, withOutcome: 3 },
       score: 3,
+      windowsByTurn: sharedWindows,
     };
     const longer: CrystallizationCandidate = {
       ngram: { steps: [{ toolId: "a" }, { toolId: "b" }, { toolId: "c" }], key: "a|b|c" },
@@ -161,9 +185,64 @@ describe("filterSubsumed", () => {
       suggestedName: "a-then-b-then-c",
       outcomeStats: { successes: 3, withOutcome: 3 },
       score: 6,
+      windowsByTurn: sharedWindows,
     };
     const kept = filterSubsumed([shorter, longer]);
     expect(kept.map((c) => c.ngram.key)).toEqual(["a|b|c"]);
+  });
+
+  test("keeps shorter when it has extra in-turn occurrences not covered by the longer", () => {
+    // Trace `[a,b,c,a,b]` repeated across turns: `[a,b]` matches windows at
+    // start 0 and start 3 in each turn, but `[a,b,c]` matches only at start
+    // 0. Turn-level coverage alone would let `[a,b,c]` erase `[a,b]`, yet
+    // the second `[a,b]` window in each turn falls outside the longer
+    // pattern's window. Both candidates must survive.
+    const traces = [
+      createTrace(0, ["a", "b", "c", "a", "b"]),
+      createTrace(1, ["a", "b", "c", "a", "b"]),
+      createTrace(2, ["a", "b", "c", "a", "b"]),
+    ];
+    const candidates = detectPatterns(traces, { minNgramSize: 2, maxNgramSize: 3 }, () => 0);
+    const keys = candidates.map((c) => c.ngram.key).sort();
+    expect(keys).toContain("a|b");
+    expect(keys).toContain("a|b|c");
+  });
+
+  test("requires reliability dominance: flakier longer cannot tie-and-bury healthier shorter", () => {
+    // Equal frequency, equal length-vs-frequency product, but the longer's
+    // success rate is materially lower. Aggregate-score dominance alone
+    // would let `score(longer) >= score(shorter)` and erase the safer
+    // prefix; reliability-first dominance must keep both.
+    const sharedLocs: TurnLocation[] = [0, 1, 2].map((i) => ({
+      sessionId: TEST_SESSION,
+      agentId: TEST_AGENT,
+      turnIndex: i,
+    }));
+    const sharedWindows = new Map<string, ReadonlySet<number>>(
+      sharedLocs.map((loc) => [locKey(loc), new Set([0])]),
+    );
+    const healthyShort: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }], key: "a|b" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b",
+      outcomeStats: { successes: 3, withOutcome: 3 },
+      score: 5,
+      windowsByTurn: sharedWindows,
+    };
+    const flakyLong: CrystallizationCandidate = {
+      ngram: { steps: [{ toolId: "a" }, { toolId: "b" }, { toolId: "c" }], key: "a|b|c" },
+      occurrences: 3,
+      locations: sharedLocs,
+      detectedAt: 0,
+      suggestedName: "a-then-b-then-c",
+      outcomeStats: { successes: 1, withOutcome: 3 },
+      score: 5,
+      windowsByTurn: sharedWindows,
+    };
+    const kept = filterSubsumed([healthyShort, flakyLong]);
+    expect(kept.map((c) => c.ngram.key).sort()).toEqual(["a|b", "a|b|c"]);
   });
 
   test("does not subsume across pipe-key boundaries (regression: substring vs subsequence)", () => {

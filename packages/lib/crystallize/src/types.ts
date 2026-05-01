@@ -75,6 +75,14 @@ export interface NgramEntry {
   readonly ngram: ToolNgram;
   readonly locations: readonly TurnLocation[];
   readonly outcomeStats: OutcomeStats;
+  /**
+   * Per-turn window start indices. A pattern can match multiple windows in
+   * the same turn (e.g. `[a,b]` appears twice in `[a,b,c,a,b]`), and turn-
+   * level coverage alone is insufficient for subsumption — the longer
+   * pattern must cover each *concrete* window of the shorter, not merely
+   * appear in the same turn. Key is the JSON-encoded composite location.
+   */
+  readonly windowsByTurn: ReadonlyMap<string, ReadonlySet<number>>;
 }
 
 /** A detected repeating pattern surfaced as a forge candidate. */
@@ -92,6 +100,15 @@ export interface CrystallizationCandidate {
   readonly outcomeStats: OutcomeStats;
   /** Quality score — higher = better forge candidate. Computed by `computeCrystallizeScore`. */
   readonly score?: number | undefined;
+  /**
+   * Per-turn window start indices forwarded from `NgramEntry`. Subsumption
+   * uses this to verify that a longer candidate covers every concrete
+   * occurrence of a shorter one, not just the set of turns in which the
+   * shorter appears. Optional only for hand-crafted test fixtures —
+   * production candidates always carry this; absence is treated as
+   * "occurrence coverage unknown" and disables subsumption.
+   */
+  readonly windowsByTurn?: ReadonlyMap<string, ReadonlySet<number>>;
 }
 
 /** Configuration for `detectPatterns`. */
