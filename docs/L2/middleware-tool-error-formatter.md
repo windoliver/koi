@@ -122,6 +122,21 @@ On error the middleware returns:
 
 ---
 
+## Guardrail Passthrough
+
+Hard-stop guardrail errors must propagate as throws — converting them into `ToolResponse` would let the engine continue past a deliberate abort. Errors whose `code` is in `passthroughCodes` skip formatting and re-throw.
+
+Default `passthroughCodes`: `["RATE_LIMIT", "PERMISSION"]`.
+
+| Source | Code | Why it must throw |
+|--------|------|------------------|
+| `@koi/middleware-call-limits` (`exitBehavior: "error"`) | `RATE_LIMIT` | Limit breach must terminate the turn |
+| Permissions middleware deny path | `PERMISSION` | System refusal, not a tool failure |
+
+Add codes to the set if your stack uses other guardrail middleware. Pass `[]` to format every error (legacy behavior).
+
+Cancellation is also propagated: if `request.signal.aborted` is true or the caught error is an `AbortError` / `code === "ABORT_ERR"` / `code === "ABORTED"`, the throw re-emerges so the turn runner's cancellation path fires.
+
 ## Failure Modes
 
 | Throw type | Handled |

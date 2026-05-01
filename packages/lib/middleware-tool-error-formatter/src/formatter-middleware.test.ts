@@ -434,6 +434,92 @@ describe("createToolErrorFormatterMiddleware", () => {
     });
   });
 
+  describe("guardrail passthrough", () => {
+    test("RATE_LIMIT KoiError is re-thrown by default (call-limits compat)", async () => {
+      const wrap = getWrapToolCall();
+      const koiError: KoiError = {
+        code: "RATE_LIMIT",
+        message: "limit exceeded",
+        retryable: true,
+      };
+      const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
+
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(KoiRuntimeError);
+    });
+
+    test("PERMISSION KoiError is re-thrown by default", async () => {
+      const wrap = getWrapToolCall();
+      const koiError: KoiError = {
+        code: "PERMISSION",
+        message: "tool denied",
+        retryable: false,
+      };
+      const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
+
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(KoiRuntimeError);
+    });
+
+    test("custom passthroughCodes overrides defaults", async () => {
+      // Empty list = format every error (legacy behavior)
+      const wrap = getWrapToolCall({ passthroughCodes: [] });
+      const koiError: KoiError = {
+        code: "RATE_LIMIT",
+        message: "still formatted",
+        retryable: true,
+      };
+      const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
+
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+      expect(typeof response.output).toBe("string");
+      expect(response.metadata?.error).toBe(true);
+      expect(response.metadata?.code).toBe("RATE_LIMIT");
+    });
+
+    test("custom passthroughCodes can extend coverage", async () => {
+      const wrap = getWrapToolCall({ passthroughCodes: ["TIMEOUT"] });
+      const koiError: KoiError = {
+        code: "TIMEOUT",
+        message: "operation timed out",
+        retryable: true,
+      };
+      const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
+
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(KoiRuntimeError);
+    });
+
+    test("non-passthrough KoiError codes are still formatted", async () => {
+      const wrap = getWrapToolCall();
+      const koiError: KoiError = {
+        code: "EXTERNAL",
+        message: "api fail",
+        retryable: false,
+      };
+      const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
+
+      const response = await wrap(mockCtx, baseToolRequest, failing);
+      expect(typeof response.output).toBe("string");
+      expect(response.metadata?.error).toBe(true);
+    });
+  });
+
   describe("immutability", () => {
     test("original request is not mutated", async () => {
       const wrap = getWrapToolCall();

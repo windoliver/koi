@@ -27,6 +27,21 @@ const DEFAULT_SECRET_PATTERNS: readonly RegExp[] = [
 
 const DEFAULT_MAX_MESSAGE_LENGTH = 1000;
 
+/**
+ * KoiError codes whose throws are propagated rather than formatted. These
+ * represent hard guardrail aborts where converting the throw to a
+ * ToolResponse would silently fail-open:
+ *
+ *   - `RATE_LIMIT`: `@koi/middleware-call-limits` with `exitBehavior: "error"`
+ *     throws this to terminate the turn when the configured limit is hit.
+ *   - `PERMISSION`: deny-by-default permissions middleware uses this code
+ *     when a tool call is rejected and the engine must stop.
+ *
+ * Both codes should never become model-readable "the tool failed" output —
+ * they signal "the system refused", which is a different control flow.
+ */
+const DEFAULT_PASSTHROUGH_CODES: readonly string[] = ["RATE_LIMIT", "PERMISSION"] as const;
+
 const TRUNCATION_SUFFIX = "... (truncated)";
 
 /**
@@ -144,6 +159,7 @@ export function createToolErrorFormatterMiddleware(
   const customFormatter = config?.formatter;
   const maxMessageLength = config?.maxMessageLength ?? DEFAULT_MAX_MESSAGE_LENGTH;
   const secretPatterns = config?.secretPatterns ?? DEFAULT_SECRET_PATTERNS;
+  const passthroughCodes = new Set<string>(config?.passthroughCodes ?? DEFAULT_PASSTHROUGH_CODES);
 
   const capabilityFragment: CapabilityFragment = {
     label: "tool-error-formatter",
@@ -193,6 +209,12 @@ export function createToolErrorFormatterMiddleware(
         // ToolResponse would cause the turn runner to continue with another
         // model call after the user already canceled the turn.
         if (request.signal?.aborted === true || isAbortError(e)) {
+          throw e;
+        }
+        // Hard-stop guardrail errors (rate-limit, permission denial, ...)
+        // also propagate. Formatting them as a model-readable ToolResponse
+        // would let the engine continue past a deliberate abort.
+        if (isKoiError(e) && passthroughCodes.has(e.code)) {
           throw e;
         }
         const customMessage = await tryCustomFormatter(e, request.toolId, request.input);

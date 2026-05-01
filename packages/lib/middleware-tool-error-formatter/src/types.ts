@@ -18,4 +18,16 @@ export interface ToolErrorFormatterConfig {
   readonly maxMessageLength?: number | undefined;
   /** Regex patterns for secrets to sanitize from error messages. */
   readonly secretPatterns?: readonly RegExp[] | undefined;
+  /**
+   * KoiError codes that should propagate as throws instead of being formatted
+   * into a ToolResponse. These represent guardrail / control-flow aborts that
+   * the engine must see as failures (e.g., `RATE_LIMIT` from
+   * `@koi/middleware-call-limits` with `exitBehavior: "error"`, `PERMISSION`
+   * from a deny-by-default permissions middleware).
+   *
+   * Default: `["RATE_LIMIT", "PERMISSION"]`. Pass an empty array to format
+   * every error (the legacy behavior); pass a wider set to harden against
+   * additional guardrail middleware in your stack.
+   */
+  readonly passthroughCodes?: readonly string[] | undefined;
 }
