@@ -226,6 +226,7 @@ mock.module("../shared-wiring.js", () => ({
   resumeSessionFromJsonl: mockResumeSessionFromJsonl,
   writeSessionMeta: mock(async () => {}),
   readSessionMeta: mock(async () => ({})),
+  readSessionMetaResult: mock(async () => ({ kind: "ok", manifestPath: "/tmp/koi.yaml" }) as const),
   buildCoreMiddleware: mock(() => ({
     permissions: {},
     hook: {},
@@ -467,6 +468,7 @@ describe("run() — manifest loading", () => {
         instructions: undefined,
         ace: {
           enabled: true,
+          acknowledgeCrossSessionState: true,
           maxInjectedTokens: undefined,
           minScore: undefined,
           lambda: undefined,
@@ -490,6 +492,7 @@ describe("run() — manifest loading", () => {
         instructions: undefined,
         ace: {
           enabled: true,
+          acknowledgeCrossSessionState: true,
           maxInjectedTokens: undefined,
           minScore: undefined,
           lambda: undefined,
@@ -509,6 +512,7 @@ describe("run() — manifest loading", () => {
         instructions: undefined,
         ace: {
           enabled: false,
+          acknowledgeCrossSessionState: false,
           maxInjectedTokens: undefined,
           minScore: undefined,
           lambda: undefined,
