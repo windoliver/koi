@@ -838,26 +838,71 @@ function createProposalStore(db: Database): PlaybookProposalStore {
     recordEvaluation: async (e) => {
       const metrics = canonicalJson(e.metrics);
       const notes = e.notes ?? null;
+      const checkSameContent = (existing: {
+        readonly verdict: string;
+        readonly metrics: string;
+        readonly notes: string | null;
+        readonly proposal_id: string;
+        readonly evaluated_at: number;
+      }): boolean =>
+        existing.proposal_id === e.proposalId &&
+        existing.verdict === e.verdict &&
+        existing.evaluated_at === e.evaluatedAt &&
+        jsonEqual(existing.metrics, metrics) &&
+        existing.notes === notes;
       db.transaction(() => {
-        const result = insertEval.run(e.id, e.proposalId, e.verdict, metrics, notes, e.evaluatedAt);
-        if (result.changes === 0) {
-          const existing = selectEvalRaw.get(e.id) as {
+        try {
+          const result = insertEval.run(
+            e.id,
+            e.proposalId,
+            e.verdict,
+            metrics,
+            notes,
+            e.evaluatedAt,
+          );
+          if (result.changes === 0) {
+            // Same id collision — compare against the existing row.
+            const existing = selectEvalRaw.get(e.id) as {
+              readonly verdict: string;
+              readonly metrics: string;
+              readonly notes: string | null;
+              readonly proposal_id: string;
+              readonly evaluated_at: number;
+            } | null;
+            if (existing === null || !checkSameContent(existing)) {
+              throw new Error(`evaluation ${e.id} already recorded with different content`);
+            }
+          }
+        } catch (err: unknown) {
+          // UNIQUE(proposal_id) violation: a different evaluation id was
+          // already recorded for this proposal. A retry that regenerated
+          // its evaluation id but reused proposalId should still succeed
+          // when the semantic content matches; otherwise surface a
+          // domain-typed conflict instead of a raw SQLite constraint.
+          const code =
+            typeof err === "object" && err !== null && "code" in err
+              ? (err as { readonly code?: unknown }).code
+              : undefined;
+          if (code !== "SQLITE_CONSTRAINT_UNIQUE") {
+            throw err;
+          }
+          const existingByProposal = db
+            .query(
+              "SELECT verdict, metrics, notes, proposal_id, evaluated_at FROM playbook_evaluations WHERE proposal_id = ?",
+            )
+            .get(e.proposalId) as {
             readonly verdict: string;
             readonly metrics: string;
             readonly notes: string | null;
             readonly proposal_id: string;
             readonly evaluated_at: number;
           } | null;
-          const same =
-            existing !== null &&
-            existing.proposal_id === e.proposalId &&
-            existing.verdict === e.verdict &&
-            existing.evaluated_at === e.evaluatedAt &&
-            jsonEqual(existing.metrics, metrics) &&
-            existing.notes === notes;
-          if (!same) {
-            throw new Error(`evaluation ${e.id} already recorded with different content`);
+          if (existingByProposal === null || !checkSameContent(existingByProposal)) {
+            throw new Error(
+              `evaluation for proposal ${e.proposalId} already recorded with different content`,
+            );
           }
+          // Same content under a different id — treat as idempotent success.
         }
       })();
     },

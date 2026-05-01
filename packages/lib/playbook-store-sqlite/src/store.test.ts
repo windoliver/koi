@@ -627,7 +627,10 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
     await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
     await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
     // Constraint must now fire on duplicate proposal_id from the migrated table.
-    await expect(store.proposals.recordEvaluation(makeEvaluation("e-2", "p-1"))).rejects.toThrow();
+    // Different content under reused proposalId → domain error (constraint-enforced).
+    await expect(
+      store.proposals.recordEvaluation({ ...makeEvaluation("e-2", "p-1"), verdict: "reject" }),
+    ).rejects.toThrow();
     store.close();
   });
 
@@ -1500,6 +1503,24 @@ describe("createSqlitePlaybookStore — append-only invariants", () => {
     await store.proposals.recordProposal(p);
     await store.proposals.recordProposal(p);
     expect((await store.proposals.listProposals("pb-A")).length).toBe(1);
+    store.close();
+  });
+
+  test("recordEvaluation idempotent on regenerated id when proposalId+content match", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await seedAnchor(store, "pb-A");
+    await store.proposals.recordProposal(makeProposal("p-1", "pb-A"));
+    await store.proposals.recordEvaluation(makeEvaluation("e-1", "p-1"));
+    // Retry with NEW evaluation id but SAME proposalId + content — must
+    // succeed (treated as same-content idempotent retry, not raw FK error).
+    await store.proposals.recordEvaluation({ ...makeEvaluation("e-2", "p-1") });
+    // Conflicting content under reused proposalId must surface domain error.
+    await expect(
+      store.proposals.recordEvaluation({
+        ...makeEvaluation("e-3", "p-1"),
+        verdict: "reject",
+      }),
+    ).rejects.toThrow(/already recorded with different content/);
     store.close();
   });
 
