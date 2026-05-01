@@ -52,7 +52,12 @@ const profile = {
   filesystem: { defaultReadAccess: "open" },
   network: { allow: true },
   resources: {},
-  ssh: { host: "remote.example", user: "ci", keyPath: "/etc/koi/ci_id_ed25519" },
+  ssh: {
+    host: "remote.example",
+    user: "ci",
+    keyPath: "/etc/koi/ci_id_ed25519",
+    port: 2222, // optional; defaults to 22
+  },
 };
 
 const instance = await adapter.create(profile);

@@ -53,6 +53,8 @@ export interface SandboxSshTarget {
   readonly user: string;
   /** Absolute path to a private key file readable by the calling process. */
   readonly keyPath: string;
+  /** TCP port. Defaults to 22 when omitted. */
+  readonly port?: number;
 }
 
 /** Declarative sandbox profile — platform-agnostic policy. */

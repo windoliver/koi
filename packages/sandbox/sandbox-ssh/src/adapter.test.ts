@@ -14,12 +14,14 @@ let connectCallCount = 0;
 let endCallCount = 0;
 interface Trace {
   lastCommandLine: string | undefined;
+  lastTargetPort: number | undefined;
 }
-const trace: Trace = { lastCommandLine: undefined };
+const trace: Trace = { lastCommandLine: undefined, lastTargetPort: undefined };
 
 function fakeFactory(controls: StubControls = {}): SshClientFactory {
   return {
-    connect: async (_target) => {
+    connect: async (target) => {
+      trace.lastTargetPort = target.port;
       if (controls.connectError !== undefined) throw controls.connectError;
       connectCallCount++;
       const client: SshClient = {
@@ -115,6 +117,25 @@ describe("createSshAdapter", () => {
     expect(connectCallCount).toBe(2); // re-opened after destroy
     await i2.destroy(); // already closed connection — idempotent end
     await i3.destroy();
+  });
+
+  test("profile.ssh.port is forwarded to the SshClientFactory verbatim", async () => {
+    trace.lastTargetPort = undefined;
+    const adapter = createSshAdapter({ clientFactory: fakeFactory() });
+    const withPort = profile({
+      ssh: { host: "ex.com", user: "user", keyPath: "/tmp/k", port: 12222 },
+    });
+    const instance = await adapter.create(withPort);
+    expect(trace.lastTargetPort ?? -1).toBe(12222);
+    await instance.destroy();
+  });
+
+  test("profile.ssh without port leaves target.port undefined (default-client falls back to 22)", async () => {
+    trace.lastTargetPort = 9999;
+    const adapter = createSshAdapter({ clientFactory: fakeFactory() });
+    const instance = await adapter.create(profile());
+    expect(trace.lastTargetPort).toBeUndefined();
+    await instance.destroy();
   });
 
   test("connect failure surfaces as a typed thrown Error with cause", async () => {

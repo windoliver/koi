@@ -96,11 +96,11 @@ async function connect(target: SshTarget): Promise<SshClient> {
   await new Promise<void>((resolve, reject) => {
     client.on("ready", () => resolve());
     client.on("error", reject);
-    client.connect({
-      host: target.host,
-      username: target.user,
-      privateKey,
-    });
+    const connectOpts =
+      target.port !== undefined
+        ? { host: target.host, username: target.user, port: target.port, privateKey }
+        : { host: target.host, username: target.user, privateKey };
+    client.connect(connectOpts);
   });
 
   return {

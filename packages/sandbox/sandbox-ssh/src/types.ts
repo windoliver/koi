@@ -37,6 +37,8 @@ export interface SshTarget {
   readonly host: string;
   readonly user: string;
   readonly keyPath: string;
+  /** TCP port. Defaults to 22 when omitted. */
+  readonly port?: number;
 }
 
 export interface SshAdapterConfig {
