@@ -1414,6 +1414,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/sandbox/sandbox-router": {
+      "name": "@koi/sandbox-router",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/sched/scheduler": {
       "name": "@koi/scheduler",
       "version": "0.0.0",
@@ -2230,6 +2237,8 @@
     "@koi/sandbox-executor": ["@koi/sandbox-executor@workspace:packages/sandbox/sandbox-executor"],
 
     "@koi/sandbox-os": ["@koi/sandbox-os@workspace:packages/sandbox/sandbox-os"],
+
+    "@koi/sandbox-router": ["@koi/sandbox-router@workspace:packages/sandbox/sandbox-router"],
 
     "@koi/scheduler": ["@koi/scheduler@workspace:packages/sched/scheduler"],
 
