@@ -111,20 +111,31 @@ interface SessionState {
 }
 
 /**
- * Compute a stable identity fingerprint for a tool descriptor. Only fields
- * that affect *execution semantics* are included — name and inputSchema.
- * Presentation fields (description, tags) are intentionally excluded
- * because they routinely churn (tenant-specific wording, dynamic hints,
- * regenerated text) without changing what the tool actually does;
- * including them would revoke valid promotions on benign updates and
- * surface user-visible VALIDATION errors. If a registry needs a tighter
- * binding (e.g., binary identity across same-schema swaps), it should
- * expose an immutable revision and we can extend this to consume it.
+ * Compute a stable identity fingerprint for a tool descriptor.
+ *
+ * Includes:
+ * - `name` and `inputSchema` — execution semantics (a different schema is
+ *   a different tool from the model's perspective).
+ * - `origin` and `server` — provenance fields that pin the *backing
+ *   implementation*. A tenant rotation, MCP-server swap, or registry
+ *   change that surfaces a different tool under the same name+schema
+ *   will change one of these fields and invalidate the prior promotion.
+ *
+ * Excludes:
+ * - `description`, `tags` — presentation fields. They routinely churn
+ *   (tenant-specific wording, dynamic hints, regenerated text) without
+ *   changing what the tool actually does; including them would revoke
+ *   valid promotions on benign updates and surface user-visible
+ *   VALIDATION errors. If a registry needs a tighter binding (e.g.,
+ *   binary identity beyond origin/server), it should expose an immutable
+ *   revision via the descriptor and we can extend this to consume it.
  */
 function fingerprintDescriptor(tool: ToolDescriptor): string {
   return JSON.stringify({
     name: tool.name,
     inputSchema: tool.inputSchema,
+    origin: tool.origin ?? null,
+    server: tool.server ?? null,
   });
 }
 

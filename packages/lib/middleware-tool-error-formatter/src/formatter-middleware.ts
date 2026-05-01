@@ -209,6 +209,34 @@ function sanitizeSecrets(message: string, patterns: readonly RegExp[]): string {
 }
 
 /**
+ * Unforgeable provenance markers for hard-stop signals. Trusted middleware
+ * imports these symbols and tags its thrown errors with them; the formatter
+ * honors symbol-marked errors as authoritative. This closes the marker-
+ * forgery hole where a tool could set `guardrail: true` on its own thrown
+ * Error to abort the turn — symbols are unique per import and a hostile
+ * tool cannot synthesize a value equal to one it didn't import.
+ *
+ * The boolean property markers (`guardrail: true`, `committed: true`,
+ * `internal: true`) remain accepted for ergonomic interop, but trusted
+ * middleware is encouraged to use the symbol form when the threat model
+ * includes hostile/buggy tool code.
+ */
+export const GUARDRAIL_PROVENANCE: unique symbol = Symbol(
+  "@koi/middleware-tool-error-formatter:guardrail",
+);
+export const COMMITTED_PROVENANCE: unique symbol = Symbol(
+  "@koi/middleware-tool-error-formatter:committed",
+);
+export const INTERNAL_PROVENANCE: unique symbol = Symbol(
+  "@koi/middleware-tool-error-formatter:internal",
+);
+
+function hasSymbolMarker(error: unknown, marker: symbol): boolean {
+  if (error === null || typeof error !== "object") return false;
+  return (error as { [k: symbol]: unknown })[marker] === true;
+}
+
+/**
  * True if the value represents a cancellation/abort signal failure.
  *
  * The turn runner short-circuits the loop on aborted signal or AbortError —
@@ -249,6 +277,7 @@ function isAbortError(error: unknown): boolean {
  */
 function isGuardrailError(error: unknown): boolean {
   if (error === null || typeof error !== "object") return false;
+  if (hasSymbolMarker(error, GUARDRAIL_PROVENANCE)) return true;
   if ((error as { guardrail?: unknown }).guardrail === true) return true;
   const ctx = (error as { context?: unknown }).context;
   if (
@@ -276,6 +305,7 @@ function isGuardrailError(error: unknown): boolean {
  */
 function isInternalRuntimeError(error: unknown): boolean {
   if (error === null || typeof error !== "object") return false;
+  if (hasSymbolMarker(error, INTERNAL_PROVENANCE)) return true;
   if ((error as { internal?: unknown }).internal === true) return true;
   const ctx = (error as { context?: unknown }).context;
   if (
@@ -290,6 +320,7 @@ function isInternalRuntimeError(error: unknown): boolean {
 
 function isPostCommitFailure(error: unknown): boolean {
   if (error === null || typeof error !== "object") return false;
+  if (hasSymbolMarker(error, COMMITTED_PROVENANCE)) return true;
   if ((error as { committed?: unknown }).committed === true) return true;
   const ctx = (error as { context?: unknown }).context;
   if (

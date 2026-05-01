@@ -595,6 +595,50 @@ describe("createToolErrorFormatterMiddleware", () => {
     });
   });
 
+  describe("unforgeable symbol provenance", () => {
+    test("GUARDRAIL_PROVENANCE symbol is honored", async () => {
+      const { GUARDRAIL_PROVENANCE } = await import("./formatter-middleware.js");
+      const wrap = getWrapToolCall();
+      const err = Object.assign(new Error("blocked"), { [GUARDRAIL_PROVENANCE]: true });
+      const failing = createFailingToolHandler(err);
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBe(err);
+    });
+
+    test("INTERNAL_PROVENANCE symbol is honored", async () => {
+      const { INTERNAL_PROVENANCE } = await import("./formatter-middleware.js");
+      const wrap = getWrapToolCall();
+      const err = Object.assign(new Error("invariant"), { [INTERNAL_PROVENANCE]: true });
+      const failing = createFailingToolHandler(err);
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBe(err);
+    });
+
+    test("COMMITTED_PROVENANCE symbol is honored", async () => {
+      const { COMMITTED_PROVENANCE } = await import("./formatter-middleware.js");
+      const wrap = getWrapToolCall();
+      const err = Object.assign(new Error("post-commit"), { [COMMITTED_PROVENANCE]: true });
+      const failing = createFailingToolHandler(err);
+      let thrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing);
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect(thrown).toBe(err);
+    });
+  });
+
   describe("internal runtime error propagation", () => {
     test("error with internal:true is re-thrown (operator must see runtime invariant failure)", async () => {
       const wrap = getWrapToolCall();

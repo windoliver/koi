@@ -7,7 +7,10 @@
  */
 
 export {
+  COMMITTED_PROVENANCE,
   createToolErrorFormatterMiddleware,
+  GUARDRAIL_PROVENANCE,
+  INTERNAL_PROVENANCE,
   type ToolErrorFormatterHandle,
 } from "./formatter-middleware.js";
 export type { ToolErrorFormatter, ToolErrorFormatterConfig } from "./types.js";
