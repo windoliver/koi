@@ -392,6 +392,14 @@ export interface ManifestAceConfig {
   readonly maxInjectedTokens: number | undefined;
   readonly minScore: number | undefined;
   readonly lambda: number | undefined;
+  /**
+   * Absolute path to the SQLite playbook store. When set, the TUI host
+   * activates `@koi/playbook-store-sqlite` so playbooks survive process
+   * exit. When omitted, ACE uses the in-memory store (lost at exit).
+   * Relative paths in the manifest are resolved against the manifest dir
+   * at parse time.
+   */
+  readonly playbookPath: string | undefined;
 }
 
 /**
@@ -492,6 +500,10 @@ export async function loadManifestConfig(
   }
 
   const raw = result.value;
+  // Manifest dir for resolving relative paths (e.g. ace.playbook_path).
+  // Available before parsing so per-section parsers can anchor paths
+  // against the manifest, not the CLI shell cwd.
+  const manifestRootDir = dirname(resolvePath(path));
 
   const model = raw.model;
   if (typeof model !== "object" || model === null) {
@@ -607,7 +619,7 @@ export async function loadManifestConfig(
     return delegationResult;
   }
 
-  const aceResult = parseManifestAce(raw.ace);
+  const aceResult = parseManifestAce(raw.ace, manifestRootDir);
   if (!aceResult.ok) {
     return aceResult;
   }
@@ -737,10 +749,12 @@ const ACE_KNOWN_KEYS: ReadonlySet<string> = new Set([
   "max_injected_tokens",
   "min_score",
   "lambda",
+  "playbook_path",
 ]);
 
 function parseManifestAce(
   raw: unknown,
+  manifestDir: string,
 ):
   | { readonly ok: true; readonly value: ManifestAceConfig | undefined }
   | { readonly ok: false; readonly error: string } {
@@ -756,14 +770,6 @@ function parseManifestAce(
   const obj = raw as Record<string, unknown>;
 
   for (const key of Object.keys(obj)) {
-    if (key === "playbook_path") {
-      return {
-        ok: false,
-        error:
-          "manifest.ace.playbook_path is not yet supported; @koi/playbook-store-sqlite has not landed (tracked as #2088 follow-up). " +
-          "Remove the key to use the in-memory store.",
-      };
-    }
     if (!ACE_KNOWN_KEYS.has(key)) {
       return {
         ok: false,
@@ -834,6 +840,24 @@ function parseManifestAce(
     }
   }
 
+  const playbookPathRaw = obj.playbook_path;
+  let playbookPath: string | undefined;
+  if (playbookPathRaw !== undefined) {
+    if (typeof playbookPathRaw !== "string" || playbookPathRaw.trim().length === 0) {
+      return {
+        ok: false,
+        error: `manifest.ace.playbook_path must be a non-empty string (got: ${JSON.stringify(playbookPathRaw)})`,
+      };
+    }
+    // Anchor relative paths against the manifest dir so a checked-in
+    // koi.yaml resolves the same way regardless of shell cwd. Absolute
+    // paths and the special ":memory:" sentinel pass through unchanged.
+    playbookPath =
+      playbookPathRaw === ":memory:" || isAbsolute(playbookPathRaw)
+        ? playbookPathRaw
+        : resolvePath(manifestDir, playbookPathRaw);
+  }
+
   return {
     ok: true,
     value: {
@@ -841,6 +865,7 @@ function parseManifestAce(
       maxInjectedTokens: maxInjectedTokens as number | undefined,
       minScore: minScore as number | undefined,
       lambda: lambda as number | undefined,
+      playbookPath,
     },
   };
 }

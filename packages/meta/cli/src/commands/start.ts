@@ -510,17 +510,18 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       );
     }
 
-    // Issue #2088: ACE schema is shipped but host activation has not landed
-    // yet. Reject ace.enabled: true at fresh manifest load on every host
-    // (matches backgroundSubprocesses + audit + network/credentials precedent
-    // above). The activation PR will replace this with real wiring.
+    // Issue #2088: ACE host activation lives in the TUI host only (per the
+    // design at docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md).
+    // koi start has no spawn-stack/resume-provenance gate equivalent and
+    // is intended as a one-shot non-interactive runner, where playbook
+    // accumulation across runs is not the dogfood target. Reject
+    // ace.enabled: true here so users don't silently get no ACE.
     if (manifestResult.value.ace?.enabled === true) {
       return bail(
-        "manifest.ace.enabled: true is not yet wired in this build " +
-          "(tracked as issue 2088). The schema is shipped but neither koi start " +
-          "nor koi tui activates the middleware yet — set ace.enabled: false or " +
-          "remove the ace: block. The activation PR is the natural place for the " +
-          "host wiring.",
+        "manifest.ace.enabled: true is not supported under koi start " +
+          "(tracked as issue 2088 — TUI-host-only activation). Use koi tui to " +
+          "run with ACE, or set ace.enabled: false / remove the ace: block to " +
+          "run under koi start.",
       );
     }
 

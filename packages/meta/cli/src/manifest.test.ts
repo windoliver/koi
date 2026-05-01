@@ -960,6 +960,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
       maxInjectedTokens: undefined,
       minScore: undefined,
       lambda: undefined,
+      playbookPath: undefined,
     });
   });
 
@@ -983,6 +984,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
       maxInjectedTokens: 800,
       minScore: 0.05,
       lambda: 0.07,
+      playbookPath: undefined,
     });
   });
 
@@ -1004,6 +1006,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
       maxInjectedTokens: undefined,
       minScore: 0.1,
       lambda: undefined,
+      playbookPath: undefined,
     });
   });
 
@@ -1024,21 +1027,68 @@ describe("loadManifestConfig: ace block (#2088)", () => {
     expect(result.error).toContain("bogus_key");
   });
 
-  test("rejects playbook_path with pointer to follow-up issue", async () => {
+  test("accepts absolute playbook_path verbatim", async () => {
     const p = writeManifest(
       [
         "model:",
         "  name: google/gemini-2.0-flash-001",
         "ace:",
         "  enabled: true",
-        "  playbook_path: ~/.koi/ace.sqlite",
+        "  playbook_path: /tmp/koi-ace.sqlite",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.ace?.playbookPath).toBe("/tmp/koi-ace.sqlite");
+  });
+
+  test("anchors relative playbook_path against manifest dir", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        "  playbook_path: ./.koi/ace.sqlite",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.ace?.playbookPath).toBe(`${dir}/.koi/ace.sqlite`);
+  });
+
+  test("accepts :memory: sentinel verbatim", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        '  playbook_path: ":memory:"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.ace?.playbookPath).toBe(":memory:");
+  });
+
+  test("rejects empty playbook_path", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "ace:",
+        "  enabled: true",
+        '  playbook_path: ""',
       ].join("\n"),
     );
     const result = await loadManifestConfig(p);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("manifest.ace.playbook_path");
-    expect(result.error).toContain("@koi/playbook-store-sqlite");
   });
 
   test("rejects non-boolean enabled", async () => {
@@ -1154,6 +1204,7 @@ describe("loadManifestConfig: ace block (#2088)", () => {
       maxInjectedTokens: undefined,
       minScore: undefined,
       lambda: undefined,
+      playbookPath: undefined,
     });
   });
 });

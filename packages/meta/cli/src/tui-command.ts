@@ -1087,6 +1087,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestDelegation: import("./manifest.js").ManifestDelegationConfig | undefined;
   let manifestNetwork: import("./manifest.js").ManifestNetworkConfig | undefined;
   let manifestCredentials: import("./manifest.js").ManifestCredentialsConfig | undefined;
+  let manifestAceConfig: import("./manifest.js").ManifestAceConfig | undefined;
   let manifestLoadPath: string | undefined; // tracks which path was loaded, for TOCTOU revalidation
   // Mirror start.ts: when resuming without an explicit --manifest, bypass
   // auto-discovery so the cwd manifest cannot silently override the model,
@@ -1147,21 +1148,29 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestCredentials = manifestResult.value.credentials;
     manifestLoadPath = resolvedManifestPath;
 
-    // Issue #2088 — manifest.ace.enabled: true is parsed by the schema but
-    // host activation has not landed yet. Fail closed here (mirrors the
-    // koi start rejection in commands/start.ts) so users cannot put
-    // ace.enabled: true in a manifest, see no error, and assume ACE is
-    // running. The activation PR will replace this rejection with real
-    // wiring under the spawn-gate + resume-provenance gate documented in
-    // docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md.
-    if (manifestResult.value.ace?.enabled === true) {
-      process.stderr.write(
-        "koi tui: manifest.ace.enabled: true is not yet wired in this build " +
-          "(tracked as issue 2088). Set ace.enabled: false or remove the ace: " +
-          "block to start the TUI; the activation PR is the natural place for " +
-          "the host wiring.\n",
-      );
-      process.exit(1);
+    // Issue #2088 — ACE host activation in the TUI. Gate per the design at
+    // docs/superpowers/specs/2026-04-30-tui-ace-toml-design.md:
+    //   1. spawn-stack-excluded gate: refuse activation while any spawned
+    //      child agent could read the playbook store. The default
+    //      manifestStacks is undefined (= all stacks active = spawn active),
+    //      so opting in requires an explicit manifest.stacks list.
+    //   2. resume-without-manifest gate: skipManifestDiscovery already
+    //      bypasses manifest loading on bare --resume, so this whole branch
+    //      doesn't execute in that case (manifestResult is unset). Mirrors
+    //      the manifest.audit precedent.
+    // The activation produces an AceConfig that is wired below via
+    // extraMiddleware.
+    manifestAceConfig = manifestResult.value.ace;
+    if (manifestAceConfig?.enabled === true) {
+      const spawnStackActive = manifestStacks === undefined || manifestStacks.includes("spawn");
+      if (spawnStackActive) {
+        process.stderr.write(
+          "koi tui: ace: refusing to activate while spawn stack is active. " +
+            "Set manifest.stacks to a list that excludes 'spawn' (per design " +
+            "doc 2026-04-30-tui-ace-toml-design.md — partitioning is future work).\n",
+        );
+        process.exit(1);
+      }
     }
 
     // Fail-closed audit intent enforcement — applies regardless of KOI_ALLOW_MANIFEST_FILE_SINKS.
@@ -2103,6 +2112,51 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     nexusDelegationProvider = createNexusDelegationProvider({ api: nexusDelegationApi });
   }
 
+  // ---------------------------------------------------------------------------
+  // ACE middleware (issue #2088). Wired through extraMiddleware so the
+  // ACE consolidator/injector run alongside the standard middleware chain.
+  // Stores: SQLite when manifest.ace.playbook_path is set (cross-restart
+  // persistence), in-memory otherwise (lost on process exit). Both flow
+  // through the same middleware factory; only the backing store differs.
+  // ---------------------------------------------------------------------------
+  let aceMiddleware: import("@koi/core").KoiMiddleware | undefined;
+  let aceCloseHook: (() => void) | undefined;
+  if (manifestAceConfig?.enabled === true) {
+    const { createAceMiddleware, createInMemoryPlaybookStore, createInMemoryTrajectoryStore } =
+      await import("@koi/middleware-ace");
+    let playbookStore: import("@koi/ace-types").PlaybookStore;
+    let trajectoryStore: import("@koi/ace-types").TrajectoryStore;
+    if (manifestAceConfig.playbookPath !== undefined) {
+      const { createSqlitePlaybookStore } = await import("@koi/playbook-store-sqlite");
+      const sqliteStore = createSqlitePlaybookStore({ path: manifestAceConfig.playbookPath });
+      playbookStore = sqliteStore.playbooks;
+      trajectoryStore = sqliteStore.trajectories;
+      aceCloseHook = (): void => sqliteStore.close();
+      process.stderr.write(
+        `koi tui: ace: enabled (sqlite ${manifestAceConfig.playbookPath}; survives process exit).\n`,
+      );
+    } else {
+      playbookStore = createInMemoryPlaybookStore();
+      trajectoryStore = createInMemoryTrajectoryStore();
+      process.stderr.write(
+        "koi tui: ace: enabled (in-memory; lost on process exit; survives /clear and /new).\n",
+      );
+    }
+    aceMiddleware = createAceMiddleware({
+      playbookStore,
+      trajectoryStore,
+      ...(manifestAceConfig.maxInjectedTokens !== undefined
+        ? { maxInjectedTokens: manifestAceConfig.maxInjectedTokens }
+        : {}),
+      ...(manifestAceConfig.minScore !== undefined ? { minScore: manifestAceConfig.minScore } : {}),
+      ...(manifestAceConfig.lambda !== undefined ? { lambda: manifestAceConfig.lambda } : {}),
+    });
+  }
+  // Cleanly close the SQLite store on process exit so WAL files flush.
+  if (aceCloseHook !== undefined) {
+    process.on("exit", aceCloseHook);
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -2371,7 +2425,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Activates model-response validation + tool-health tracking with an
     // empty config (observe-only, no validators, no quarantine thresholds).
     ...(process.env.KOI_FEEDBACK_LOOP_ENABLED === "true" ? { feedbackLoop: {} } : {}),
-    extraMiddleware: [securityBridge.middleware],
+    extraMiddleware:
+      aceMiddleware !== undefined
+        ? [securityBridge.middleware, aceMiddleware]
+        : [securityBridge.middleware],
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.

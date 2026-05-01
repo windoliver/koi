@@ -972,6 +972,7 @@
         "koi": "./dist/bin.js",
       },
       "dependencies": {
+        "@koi/ace-types": "workspace:*",
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
         "@koi/artifacts": "workspace:*",
@@ -1008,6 +1009,7 @@
         "@koi/memory": "workspace:*",
         "@koi/memory-fs": "workspace:*",
         "@koi/memory-tools": "workspace:*",
+        "@koi/middleware-ace": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
         "@koi/middleware-call-dedup": "workspace:*",
         "@koi/middleware-call-limits": "workspace:*",
@@ -1033,6 +1035,7 @@
         "@koi/nexus-delegation": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
+        "@koi/playbook-store-sqlite": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/rules-loader": "workspace:*",
