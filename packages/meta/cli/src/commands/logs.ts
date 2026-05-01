@@ -8,7 +8,8 @@ export async function run(flags: CliFlags): Promise<ExitCode> {
   const resolved = await resolveServiceConfig({
     manifest: flags.manifest,
     port: undefined,
-    system: undefined,
+    system: flags.system ? true : undefined,
+    installedState: "prefer",
   });
   if (!resolved.ok) {
     process.stderr.write(`koi logs: ${resolved.error}\n`);

@@ -12,8 +12,9 @@ export async function run(flags: CliFlags): Promise<ExitCode> {
   if (!isStatusFlags(flags)) return ExitCode.FAILURE;
   const resolved = await resolveServiceConfig({
     manifest: flags.manifest,
-    port: undefined,
-    system: undefined,
+    port: flags.port,
+    system: flags.system ? true : undefined,
+    installedState: "prefer",
   });
   if (!resolved.ok) {
     process.stderr.write(`koi status: ${resolved.error}\n`);

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -80,6 +80,7 @@ describe("service lifecycle", () => {
       logDir: "/tmp/koi-logs",
       logPath: "/tmp/koi-logs/service.log",
       stateDir: "/tmp/koi-state",
+      serviceStatePath: "/tmp/koi-state/service-state.json",
       lockFilePath: "/tmp/koi-state/gateway-http.lock",
       serviceFilePath: "/tmp/koi.service",
     };
@@ -98,5 +99,84 @@ describe("service lifecycle", () => {
     expect(plist).toContain("<string>com.koi.review-agent</string>");
     expect(plist).toContain("<string>serve</string>");
     expect(plist).toContain("<string>/tmp/koi-logs/service.log</string>");
+  });
+
+  test("prefers installed state for service inspection commands", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "koi-service-state-"));
+    const prevState = process.env.KOI_STATE_DIR;
+    process.env.KOI_STATE_DIR = join(dir, "state");
+    try {
+      const manifest = join(dir, "koi.yaml");
+      await writeFile(
+        manifest,
+        [
+          "name: State Agent",
+          "model:",
+          "  name: openai:gpt-test",
+          "deploy:",
+          "  system: false",
+        ].join("\n"),
+      );
+
+      const initial = await resolveServiceConfig({
+        manifest,
+        port: 9200,
+        system: true,
+        cwd: dir,
+      });
+      expect(initial.ok).toBe(true);
+      if (!initial.ok) throw new Error(initial.error);
+      await mkdir(initial.value.stateDir, { recursive: true });
+      await writeFile(
+        initial.value.serviceStatePath,
+        JSON.stringify({ version: 1, system: true, port: 9200, logDir: join(dir, "logs") }),
+      );
+
+      const inspected = await resolveServiceConfig({
+        manifest,
+        port: undefined,
+        system: undefined,
+        installedState: "prefer",
+        cwd: dir,
+      });
+      expect(inspected.ok).toBe(true);
+      if (!inspected.ok) throw new Error(inspected.error);
+      expect(inspected.value.system).toBe(true);
+      expect(inspected.value.port).toBe(9200);
+      expect(inspected.value.logDir).toBe(join(dir, "logs"));
+    } finally {
+      if (prevState === undefined) delete process.env.KOI_STATE_DIR;
+      else process.env.KOI_STATE_DIR = prevState;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("maps launchd restart modes", () => {
+    const base: ServiceConfig = {
+      platform: "darwin",
+      agentName: "Review Agent",
+      serviceName: "koi-review-agent",
+      launchdLabel: "com.koi.review-agent",
+      manifestPath: "/repo/koi.yaml",
+      workDir: "/repo",
+      port: 9100,
+      system: false,
+      restart: "no",
+      restartDelaySec: 5,
+      envFile: undefined,
+      logDir: "/tmp/koi-logs",
+      logPath: "/tmp/koi-logs/service.log",
+      stateDir: "/tmp/koi-state",
+      serviceStatePath: "/tmp/koi-state/service-state.json",
+      lockFilePath: "/tmp/koi-state/gateway-http.lock",
+      serviceFilePath: "/tmp/koi.plist",
+    };
+    expect(generateLaunchdPlist(base, ["koi", "serve"])).not.toContain("<key>KeepAlive</key>");
+    expect(generateLaunchdPlist({ ...base, restart: "always" }, ["koi", "serve"])).toContain(
+      "<key>KeepAlive</key>\n  <true/>",
+    );
+    expect(generateLaunchdPlist({ ...base, restart: "on-failure" }, ["koi", "serve"])).toContain(
+      "<key>SuccessfulExit</key>",
+    );
   });
 });

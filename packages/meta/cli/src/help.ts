@@ -123,6 +123,7 @@ Options:
       --manifest <path>  Path to koi.yaml (overrides positional)
   -f, --follow           Follow log output
   -n, --lines <n>        Lines to print (default 50)
+      --system           Read logs for the system-wide service
   -h, --help             Show this help
 `;
 
@@ -133,6 +134,8 @@ Usage:
 
 Options:
       --manifest <path>  Path to koi.yaml (overrides positional)
+  -p, --port <n>         Health port override (1-65535)
+      --system           Inspect the system-wide service
       --timeout <ms>     Connection timeout in milliseconds
       --json             Emit JSON instead of text
   -h, --help             Show this help
@@ -172,6 +175,7 @@ Usage:
 
 Options:
       --manifest <path>  Path to koi.yaml (overrides positional)
+      --system           Stop the system-wide service
   -h, --help             Show this help
 `;
 

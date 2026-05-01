@@ -1,5 +1,5 @@
 import { constants, existsSync } from "node:fs";
-import { access, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { loadConfig } from "@koi/config";
@@ -25,6 +25,7 @@ export interface ServiceConfig {
   readonly logDir: string;
   readonly logPath: string;
   readonly stateDir: string;
+  readonly serviceStatePath: string;
   readonly lockFilePath: string;
   readonly serviceFilePath: string;
 }
@@ -53,6 +54,7 @@ export interface ResolveServiceOptions {
   readonly manifest: string | undefined;
   readonly port: number | undefined;
   readonly system: boolean | undefined;
+  readonly installedState?: "ignore" | "prefer" | undefined;
   readonly validateManifest?: boolean | undefined;
   readonly cwd?: string | undefined;
 }
@@ -98,15 +100,18 @@ export async function resolveServiceConfig(
   const platform = detectPlatform();
   const serviceName = resolveServiceName(agentName);
   const launchdLabel = resolveLaunchdLabel(agentName);
-  const system = options.system ?? deploy.value.system;
-  const port = options.port ?? deploy.value.port;
-  const logDir = deploy.value.logDir ?? resolveLogDir(platform, serviceName);
+  const stateDir = resolveStateDir(serviceName);
+  const serviceStatePath = join(stateDir, "service-state.json");
+  const installed =
+    options.installedState === "prefer" ? await readInstalledServiceState(serviceStatePath) : {};
+  const system = options.system ?? installed.system ?? deploy.value.system;
+  const port = options.port ?? installed.port ?? deploy.value.port;
+  const logDir = deploy.value.logDir ?? installed.logDir ?? resolveLogDir(platform, serviceName);
   const serviceDir = resolveServiceDir(platform, system);
   const serviceFilePath =
     platform === "linux"
       ? join(serviceDir, `${serviceName}.service`)
       : join(serviceDir, `${launchdLabel}.plist`);
-  const stateDir = resolveStateDir(serviceName);
 
   return {
     ok: true,
@@ -125,6 +130,7 @@ export async function resolveServiceConfig(
       logDir,
       logPath: join(logDir, "service.log"),
       stateDir,
+      serviceStatePath,
       lockFilePath: join(stateDir, "gateway-http.lock"),
       serviceFilePath,
     },
@@ -154,6 +160,7 @@ export async function installService(config: ServiceConfig, deps?: ServiceDeps):
     await checked(exec, ["systemctl", ...userFlag, "daemon-reload"], "reload systemd");
     await checked(exec, ["systemctl", ...userFlag, "enable", config.serviceName], "enable service");
     await checked(exec, ["systemctl", ...userFlag, "restart", config.serviceName], "start service");
+    await writeInstalledServiceState(config);
     return;
   }
 
@@ -169,6 +176,7 @@ export async function installService(config: ServiceConfig, deps?: ServiceDeps):
     ["launchctl", "kickstart", "-k", `${domain}/${config.launchdLabel}`],
     "start service",
   );
+  await writeInstalledServiceState(config);
 }
 
 export async function uninstallService(config: ServiceConfig, deps?: ServiceDeps): Promise<void> {
@@ -178,12 +186,14 @@ export async function uninstallService(config: ServiceConfig, deps?: ServiceDeps
     await bestEffort(exec, ["systemctl", ...userFlag, "stop", config.serviceName]);
     await bestEffort(exec, ["systemctl", ...userFlag, "disable", config.serviceName]);
     await rm(config.serviceFilePath, { force: true });
+    await rm(config.serviceStatePath, { force: true });
     await checked(exec, ["systemctl", ...userFlag, "daemon-reload"], "reload systemd");
     return;
   }
 
   await bestEffortBootout(exec, launchdDomain(config.system), config.launchdLabel);
   await rm(config.serviceFilePath, { force: true });
+  await rm(config.serviceStatePath, { force: true });
 }
 
 export async function stopService(config: ServiceConfig, deps?: ServiceDeps): Promise<void> {
@@ -331,11 +341,7 @@ ${args}
   <string>${escapeXml(config.workDir)}</string>
   <key>RunAtLoad</key>
   <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
+${launchdKeepAliveXml(config.restart)}
   <key>ThrottleInterval</key>
   <integer>${config.restartDelaySec}</integer>
   <key>StandardOutPath</key>
@@ -349,6 +355,62 @@ ${envXml}
 </dict>
 </plist>
 `;
+}
+
+interface InstalledServiceState {
+  readonly port?: number | undefined;
+  readonly system?: boolean | undefined;
+  readonly logDir?: string | undefined;
+}
+
+async function readInstalledServiceState(path: string): Promise<InstalledServiceState> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, "utf-8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    const rec = parsed as Record<string, unknown>;
+    return {
+      ...(typeof rec.port === "number" && Number.isInteger(rec.port) ? { port: rec.port } : {}),
+      ...(typeof rec.system === "boolean" ? { system: rec.system } : {}),
+      ...(typeof rec.logDir === "string" && rec.logDir.length > 0 ? { logDir: rec.logDir } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+async function writeInstalledServiceState(config: ServiceConfig): Promise<void> {
+  await mkdir(config.stateDir, { recursive: true });
+  await writeFile(
+    config.serviceStatePath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        serviceName: config.serviceName,
+        platform: config.platform,
+        system: config.system,
+        port: config.port,
+        logDir: config.logDir,
+        serviceFilePath: config.serviceFilePath,
+      },
+      null,
+      2,
+    )}\n`,
+    { mode: 0o600 },
+  );
+}
+
+function launchdKeepAliveXml(restart: ServiceRestart): string {
+  if (restart === "no") return "";
+  if (restart === "always") {
+    return "  <key>KeepAlive</key>\n  <true/>";
+  }
+  return [
+    "  <key>KeepAlive</key>",
+    "  <dict>",
+    "    <key>SuccessfulExit</key>",
+    "    <false/>",
+    "  </dict>",
+  ].join("\n");
 }
 
 interface DeployBlock {

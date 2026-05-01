@@ -210,6 +210,10 @@ describe("parseArgs", () => {
     test("parses manifest positional", () => {
       expect(asFlags(isLogsFlags, ["logs", "./a.yaml"]).manifest).toBe("./a.yaml");
     });
+
+    test("parses --system", () => {
+      expect(asFlags(isLogsFlags, ["logs", "--system"]).system).toBe(true);
+    });
   });
 
   describe("status", () => {
@@ -223,6 +227,14 @@ describe("parseArgs", () => {
 
     test("parses --timeout", () => {
       expect(asFlags(isStatusFlags, ["status", "--timeout", "5000"]).timeout).toBe(5000);
+    });
+
+    test("parses --port / -p", () => {
+      expect(asFlags(isStatusFlags, ["status", "-p", "9200"]).port).toBe(9200);
+    });
+
+    test("parses --system", () => {
+      expect(asFlags(isStatusFlags, ["status", "--system"]).system).toBe(true);
     });
   });
 
@@ -245,6 +257,10 @@ describe("parseArgs", () => {
 
     test("parses manifest", () => {
       expect(asFlags(isStopFlags, ["stop", "./a.yaml"]).manifest).toBe("./a.yaml");
+    });
+
+    test("parses --system", () => {
+      expect(asFlags(isStopFlags, ["stop", "--system"]).system).toBe(true);
     });
   });
 

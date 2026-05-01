@@ -4,11 +4,13 @@ import { typedParseArgs } from "./shared.js";
 export interface StopFlags extends BaseFlags {
   readonly command: "stop";
   readonly manifest: string | undefined;
+  readonly system: boolean;
 }
 
 export function parseStopFlags(rest: readonly string[]): StopFlags {
   type V = {
     readonly manifest: string | undefined;
+    readonly system: boolean | undefined;
     readonly help: boolean | undefined;
     readonly version: boolean | undefined;
   };
@@ -17,6 +19,7 @@ export function parseStopFlags(rest: readonly string[]): StopFlags {
       args: rest,
       options: {
         manifest: { type: "string" },
+        system: { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "V", default: false },
       },
@@ -29,6 +32,7 @@ export function parseStopFlags(rest: readonly string[]): StopFlags {
     version: values.version ?? false,
     help: values.help ?? false,
     manifest: values.manifest ?? positionals[0],
+    system: values.system ?? false,
   };
 }
 

@@ -14,7 +14,8 @@ export async function run(flags: CliFlags): Promise<ExitCode> {
   const resolved = await resolveServiceConfig({
     manifest: flags.manifest,
     port: flags.port,
-    system: flags.system,
+    system: flags.system ? true : undefined,
+    installedState: flags.uninstall ? "prefer" : "ignore",
     validateManifest: !flags.uninstall,
   });
   if (!resolved.ok) {

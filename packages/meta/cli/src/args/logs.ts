@@ -6,6 +6,7 @@ export interface LogsFlags extends BaseFlags {
   readonly manifest: string | undefined;
   readonly follow: boolean;
   readonly lines: number;
+  readonly system: boolean;
 }
 
 export function parseLogsFlags(rest: readonly string[]): LogsFlags {
@@ -13,6 +14,7 @@ export function parseLogsFlags(rest: readonly string[]): LogsFlags {
     readonly manifest: string | undefined;
     readonly follow: boolean | undefined;
     readonly lines: string | undefined;
+    readonly system: boolean | undefined;
     readonly help: boolean | undefined;
     readonly version: boolean | undefined;
   };
@@ -23,6 +25,7 @@ export function parseLogsFlags(rest: readonly string[]): LogsFlags {
         manifest: { type: "string" },
         follow: { type: "boolean", short: "f", default: false },
         lines: { type: "string", short: "n" },
+        system: { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "V", default: false },
       },
@@ -43,6 +46,7 @@ export function parseLogsFlags(rest: readonly string[]): LogsFlags {
       values.lines !== undefined
         ? parseIntFlagSafe("lines", values.lines, 1, Number.MAX_SAFE_INTEGER, skipValidators, 50)
         : 50,
+    system: values.system ?? false,
   };
 }
 
