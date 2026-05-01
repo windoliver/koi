@@ -729,7 +729,14 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // Resume-path audit check using stored session provenance.
   // koi start hard-rejects manifest.audit — check the original session's manifest.
   if (flags.resume !== undefined) {
-    const resumeMeta = await readSessionMeta(SESSIONS_DIR, String(sid));
+    const resumeMetaResult = await readSessionMeta(SESSIONS_DIR, String(sid));
+    if (resumeMetaResult.kind === "malformed") {
+      return bail(
+        `session sidecar is malformed (${resumeMetaResult.reason}) — refusing to resume. ` +
+          "Inspect or remove the .koi-meta.json file to continue.",
+      );
+    }
+    const resumeMeta = resumeMetaResult.kind === "ok" ? resumeMetaResult.meta : {};
     if (resumeMeta.manifestPath !== undefined) {
       const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
         skipAuditValidation: true,

@@ -794,38 +794,67 @@ export async function writeSessionMeta(
 }
 
 /**
- * Read session provenance metadata; returns an empty object if the sidecar is
- * absent, unreadable, or malformed — callers treat this as "no manifest recorded."
+ * Result of reading the session provenance sidecar:
+ *  - { kind: "absent" }  → file doesn't exist (legacy session, never had one)
+ *  - { kind: "ok", meta }  → file parsed successfully
+ *  - { kind: "malformed", reason }  → file exists but couldn't be parsed
+ *
+ * Callers MUST distinguish absent from malformed for fail-closed semantics:
+ * a malformed sidecar on a session that may have had ACE provenance is an
+ * integrity failure, not silent "no provenance recorded". Round 5 finding.
  */
-export async function readSessionMeta(sessionsDir: string, sid: string): Promise<SessionMeta> {
+export type ReadSessionMetaResult =
+  | { readonly kind: "absent" }
+  | { readonly kind: "ok"; readonly meta: SessionMeta }
+  | { readonly kind: "malformed"; readonly reason: string };
+
+/**
+ * Read session provenance metadata. Distinguishes absent (no sidecar at all)
+ * from malformed (sidecar exists but unparseable) so callers can fail closed
+ * on the latter — see ReadSessionMetaResult.
+ */
+export async function readSessionMeta(
+  sessionsDir: string,
+  sid: string,
+): Promise<ReadSessionMetaResult> {
   const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
-  try {
-    const raw = await Bun.file(path).text();
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed !== null && typeof parsed === "object") {
-      const meta = parsed as Record<string, unknown>;
-      const out: { manifestPath?: string; ace?: SessionAceProvenance } = {};
-      if (typeof meta.manifestPath === "string") out.manifestPath = meta.manifestPath;
-      const ace = meta.ace;
-      if (ace !== null && typeof ace === "object") {
-        const a = ace as Record<string, unknown>;
-        if (typeof a.enabled === "boolean") {
-          out.ace = {
-            enabled: a.enabled,
-            playbookPath: typeof a.playbookPath === "string" ? a.playbookPath : undefined,
-            maxInjectedTokens:
-              typeof a.maxInjectedTokens === "number" ? a.maxInjectedTokens : undefined,
-            minScore: typeof a.minScore === "number" ? a.minScore : undefined,
-            lambda: typeof a.lambda === "number" ? a.lambda : undefined,
-          };
-        }
-      }
-      return out;
-    }
-  } catch {
-    // ENOENT or malformed — treat as no provenance
+  const file = Bun.file(path);
+  if (!(await file.exists())) {
+    return { kind: "absent" };
   }
-  return {};
+  let raw: string;
+  try {
+    raw = await file.text();
+  } catch (err) {
+    return { kind: "malformed", reason: `unreadable: ${(err as Error).message}` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return { kind: "malformed", reason: `invalid JSON: ${(err as Error).message}` };
+  }
+  if (parsed === null || typeof parsed !== "object") {
+    return { kind: "malformed", reason: "expected JSON object" };
+  }
+  const meta = parsed as Record<string, unknown>;
+  const out: { manifestPath?: string; ace?: SessionAceProvenance } = {};
+  if (typeof meta.manifestPath === "string") out.manifestPath = meta.manifestPath;
+  const ace = meta.ace;
+  if (ace !== null && typeof ace === "object") {
+    const a = ace as Record<string, unknown>;
+    if (typeof a.enabled === "boolean") {
+      out.ace = {
+        enabled: a.enabled,
+        playbookPath: typeof a.playbookPath === "string" ? a.playbookPath : undefined,
+        maxInjectedTokens:
+          typeof a.maxInjectedTokens === "number" ? a.maxInjectedTokens : undefined,
+        minScore: typeof a.minScore === "number" ? a.minScore : undefined,
+        lambda: typeof a.lambda === "number" ? a.lambda : undefined,
+      };
+    }
+  }
+  return { kind: "ok", meta: out };
 }
 
 // ---------------------------------------------------------------------------

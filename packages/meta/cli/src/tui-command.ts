@@ -119,6 +119,7 @@ import {
   buildScopedCredentials,
   readSessionMeta,
   resumeSessionFromJsonl,
+  type SessionMeta,
   writeSessionMeta,
 } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
@@ -1490,7 +1491,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The check mirrors the new-session path but is keyed on the manifest that
   // actually governed the original session, not a cwd rediscovery.
   if (flags.resume !== undefined) {
-    const resumeMeta = await readSessionMeta(SESSIONS_DIR, String(tuiSessionId));
+    const resumeMetaResult = await readSessionMeta(SESSIONS_DIR, String(tuiSessionId));
+    // Fail closed on malformed sidecar — round 5 finding. A corrupt sidecar
+    // on a session that may have had ACE provenance can't be silently
+    // downgraded to "no provenance recorded".
+    if (resumeMetaResult.kind === "malformed") {
+      process.stderr.write(
+        `koi tui: session sidecar is malformed (${resumeMetaResult.reason}) — refusing to resume. ` +
+          "Inspect or remove the .koi-meta.json file to continue, or start a new session.\n",
+      );
+      process.exit(1);
+    }
+    const resumeMeta: SessionMeta = resumeMetaResult.kind === "ok" ? resumeMetaResult.meta : {};
     if (resumeMeta.manifestPath !== undefined) {
       const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
         allowOAuthSchemes: true,
@@ -1596,6 +1608,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // is still validated.
     if (resumeMeta.ace?.enabled === true) {
       const originalAce = resumeMeta.ace;
+      // Round 5 finding: an ACE-enabled session with no playbook_path used
+      // an in-memory store. That state cannot survive process restart;
+      // resuming would build a fresh empty store under the same session id
+      // and silently diverge. Refuse such resumes — operators must opt
+      // into either a persistent playbook_path or starting a new session.
+      if (originalAce.playbookPath === undefined) {
+        process.stderr.write(
+          "koi tui: original session ran with ace.enabled: true but no playbook_path " +
+            "(in-memory store) — refusing to resume because the in-memory state did not " +
+            "survive process exit. Set ace.playbook_path for cross-restart persistence, " +
+            "or start a new session.\n",
+        );
+        process.exit(1);
+      }
       const currentMatches =
         manifestAceConfig?.enabled === true &&
         manifestAceConfig.playbookPath === originalAce.playbookPath &&

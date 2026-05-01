@@ -225,7 +225,7 @@ mock.module("../shared-wiring.js", () => ({
   mergeUserAndPluginHooks: mock((u: unknown[], _p: unknown[]) => u),
   resumeSessionFromJsonl: mockResumeSessionFromJsonl,
   writeSessionMeta: mock(async () => {}),
-  readSessionMeta: mock(async () => ({})),
+  readSessionMeta: mock(async () => ({ kind: "absent" as const })),
   buildCoreMiddleware: mock(() => ({
     permissions: {},
     hook: {},
