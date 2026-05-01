@@ -115,6 +115,8 @@ export {
   resolveFileSystemAsync,
   validateFileSystemConfig,
 } from "./resolve-filesystem.js";
+export type { RouterAdapterShimOptions } from "./router-adapter-shim.js";
+export { createRouterAdapterShim } from "./router-adapter-shim.js";
 export type { CreateDefaultSandboxRouterOptions } from "./sandbox-router-default.js";
 export { createDefaultSandboxRouter } from "./sandbox-router-default.js";
 // Skills-MCP bridge

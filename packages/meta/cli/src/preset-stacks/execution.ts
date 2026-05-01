@@ -62,7 +62,8 @@ import type {
 import { createSingleToolProvider } from "@koi/core";
 import { createTaskAnchorMiddleware } from "@koi/middleware-task-anchor";
 import { createTurnPreludeMiddleware } from "@koi/middleware-turn-prelude";
-import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
+import { createDefaultSandboxRouter, createRouterAdapterShim } from "@koi/runtime";
+import { mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import type { BashOutputBuffer } from "@koi/tools-bash";
@@ -282,10 +283,30 @@ export const executionStack: PresetStack = {
     const bashElicitAutoApprove =
       (ctx.host?.[BASH_ELICIT_AUTO_APPROVE_HOST_KEY] as boolean | undefined) ?? false;
 
-    // --- OS sandbox (optional — falls back to unsandboxed with denylist) ---
-    const osSandboxResult = createOsAdapter();
-    const sandboxAdapter = osSandboxResult.ok ? osSandboxResult.value : undefined;
-    const sandboxProfile = osSandboxResult.ok
+    // --- Sandbox router (issue #1641) — multi-backend fallback chain.
+    // Auto-probes sandbox-os (always) + sandbox-docker (best-effort).
+    // The router-as-adapter shim lets the existing bash tool call site
+    // remain unchanged; capability matching + priority-ordered fallback
+    // happens transparently inside `sandboxAdapter.create()`.
+    const routerResult = await createDefaultSandboxRouter({ enableDocker: true });
+    const sandboxAdapter = routerResult.ok
+      ? createRouterAdapterShim({
+          router: routerResult.value,
+          onDecision: (decision) => {
+            // Surface the routing decision to the audit/debug channel via
+            // stderr so TUI users can see fallback when it happens. This
+            // is a one-line digest; full decision lives on the
+            // SelectionDecision object for richer consumers.
+            const failed = decision.attempts.filter((a) => !a.ok).map((a) => a.adapter);
+            if (failed.length > 0) {
+              process.stderr.write(
+                `[sandbox-router] selected=${decision.selected.name} after ${failed.length} fallback(s) from [${failed.join(",")}]\n`,
+              );
+            }
+          },
+        })
+      : undefined;
+    const sandboxProfile = routerResult.ok
       ? mergeProfile(restrictiveProfile(), {
           network: { allow: true },
           filesystem: {
@@ -567,7 +588,7 @@ export const executionStack: PresetStack = {
       ],
       exports: {
         [EXECUTION_EXPORTS.bashHandle]: bashHandle,
-        [EXECUTION_EXPORTS.sandboxActive]: osSandboxResult.ok,
+        [EXECUTION_EXPORTS.sandboxActive]: routerResult.ok,
         [EXECUTION_EXPORTS.getBgSignal]: () => bgController.signal,
         [EXECUTION_EXPORTS.hasLiveProcesses]: () => liveSubprocessCount > 0,
         [EXECUTION_EXPORTS.getTaskBoard]: () => taskBoard,

@@ -27,17 +27,32 @@ function execOnce(client: Client, command: string): Promise<SshExecResult> {
       }
       let stdout = "";
       let stderr = "";
-      let exitCode = 0;
+      // exitCode = undefined until the remote signals "exit". If "close" fires
+      // without an exit (e.g., the connection dropped mid-command), reject —
+      // resolving with 0 would silently mask a transport failure.
+      let exitCode: number | undefined;
+      let exitSignal: string | undefined;
       stream.on("data", (chunk: Buffer) => {
         stdout += chunk.toString("utf8");
       });
       stream.stderr.on("data", (chunk: Buffer) => {
         stderr += chunk.toString("utf8");
       });
-      stream.on("exit", (code: number | null) => {
+      stream.on("exit", (code: number | null, signal?: string) => {
         exitCode = code ?? -1;
+        if (signal !== undefined) exitSignal = signal;
       });
       stream.on("close", () => {
+        if (exitCode === undefined) {
+          reject(
+            new Error(
+              `sandbox-ssh: ssh stream closed without exit signal${
+                exitSignal !== undefined ? ` (signal=${exitSignal})` : ""
+              } — connection likely dropped`,
+            ),
+          );
+          return;
+        }
         resolve({ exitCode, stdout, stderr });
       });
       stream.on("error", reject);
@@ -84,9 +99,22 @@ async function sftpWriteFile(client: Client, path: string, data: Uint8Array): Pr
 }
 
 function endClient(client: Client): Promise<void> {
+  // ssh2.Client emits "close" exactly once. If the client already closed
+  // (e.g., a sibling instance ended the same shared connection), our newly
+  // attached listener will never fire. Guard with a short timeout so destroy
+  // is always observable as resolved.
   return new Promise((resolve) => {
-    client.on("close", () => resolve());
-    client.end();
+    const timer = setTimeout(() => resolve(), 200);
+    client.once("close", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    try {
+      client.end();
+    } catch {
+      // Already-ended clients throw on end() — close listener won't fire,
+      // but the timer above will resolve us safely.
+    }
   });
 }
 
