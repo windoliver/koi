@@ -423,10 +423,13 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
             `playbook ${pb.id} version ${String(pb.version)} already committed with different content`,
           );
         }
-        // Self-heal ONLY when the head row is missing AND content matches.
-        // Rebuilding from a stray higher lineage row when a healthy head
-        // exists would silently fast-forward monotonic state.
-        if (current === null) {
+        // Self-heal when the head row is missing OR present at this
+        // exact version (where it could be stale relative to canonical
+        // lineage). Always rebuild from stored snapshot — UPSERT is a
+        // no-op when the head already matches and a repair otherwise.
+        // We do NOT rebuild when current exists at a DIFFERENT version —
+        // that would silently fast-forward (or rewind) the monotonic head.
+        if (current === null || current.version === pb.version) {
           const stored = JSON.parse(existing.snapshot) as StructuredPlaybook;
           upsertCurrent.run(
             stored.id,
@@ -499,9 +502,13 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
                 `cannot remove structured playbook ${id}: ${String(dep.n)} dependent proposal(s) exist; remove proposals/evaluations first`,
               );
             }
-            const r = deleteCurrent.run(id);
-            deleteLineage.run(id);
-            return r.changes > 0;
+            // Return true if EITHER head OR lineage was removed. Returning
+            // false when only lineage rows existed (head missing, lineage
+            // intact) would hide an irreversible destructive change behind
+            // a "not found" result.
+            const headDeleted = deleteCurrent.run(id);
+            const lineageDeleted = deleteLineage.run(id);
+            return headDeleted.changes > 0 || lineageDeleted.changes > 0;
           })
           .immediate();
         return result;

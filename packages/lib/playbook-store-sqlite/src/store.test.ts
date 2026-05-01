@@ -920,6 +920,48 @@ describe("createSqlitePlaybookStore — head-row self-heal", () => {
     reopened.close();
   });
 
+  test("idempotent retry repairs stale head row when lineage matches caller content", async () => {
+    // Regression: head row at v1 has STALE content (corrupted by manual
+    // repair / drift), lineage v1 matches what caller is committing.
+    // Idempotent retry must repair the head, not silently leave bad
+    // content behind.
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, title: "real" }));
+    store.close();
+
+    // Corrupt the head row to "tampered" while lineage v1 keeps "real".
+    const corrupt = new Database(dbPath);
+    corrupt.run("UPDATE structured_playbooks SET title = ? WHERE id = ?", ["tampered", "s1"]);
+    corrupt.close();
+
+    const repaired = createSqlitePlaybookStore({ path: dbPath });
+    expect((await repaired.structuredPlaybooks.get("s1"))?.title).toBe("tampered");
+    // Idempotent retry of "real" must rebuild head from lineage.
+    await repaired.structuredPlaybooks.save(spb({ id: "s1", version: 1, title: "real" }));
+    expect((await repaired.structuredPlaybooks.get("s1"))?.title).toBe("real");
+    repaired.close();
+  });
+
+  test("remove returns true when only lineage existed (head was missing)", async () => {
+    // Regression: in the corrupted state where the head row is gone but
+    // lineage rows remain, remove() must report true (something was
+    // destroyed) rather than false (which falsely implies no-op).
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 1 }));
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 2 }));
+    store.close();
+
+    const corrupt = new Database(dbPath);
+    corrupt.run("DELETE FROM structured_playbooks WHERE id = ?", ["s1"]);
+    corrupt.close();
+
+    const repaired = createSqlitePlaybookStore({ path: dbPath });
+    expect(await repaired.structuredPlaybooks.remove("s1")).toBe(true);
+    expect(await repaired.structuredPlaybooks.getVersion("s1", 1)).toBeUndefined();
+    expect(await repaired.structuredPlaybooks.getVersion("s1", 2)).toBeUndefined();
+    repaired.close();
+  });
+
   test("forward save after head loss clamps watermark against latest lineage snapshot", async () => {
     // Regression: when current is null but lineage has a row with a high
     // watermark, a forward save with a lower watermark must NOT downgrade
