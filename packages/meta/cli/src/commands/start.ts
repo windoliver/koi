@@ -739,7 +739,31 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           "Restore a valid sidecar, or start a fresh session.",
       );
     }
+    if (resumeMeta.kind === "missing") {
+      return bail(
+        "session provenance sidecar is absent — refusing to resume because " +
+          "the original manifest cannot be verified, so audit/ACE host-safety " +
+          "constraints cannot be enforced. Restore the sidecar or start a fresh session.",
+      );
+    }
     if (resumeMeta.kind === "ok") {
+      // Issue #2088 — snapshot fast path. Bail without re-parsing the
+      // (possibly mutated) manifest when the immutable snapshot at
+      // session creation already proves an unsupported host transition.
+      if (resumeMeta.snapshot?.aceEnabled === true) {
+        return bail(
+          "original session ace.enabled: true is not supported on this host " +
+            "(snapshot recorded at session creation). koi start does not wire ACE — " +
+            "use koi tui to resume this session.",
+        );
+      }
+      if (resumeMeta.snapshot?.auditDeclared === true) {
+        return bail(
+          "original session manifest.audit is not supported on this host " +
+            "(snapshot recorded at session creation). koi start does not wire " +
+            "audit sinks — use koi tui to resume this session.",
+        );
+      }
       const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
         skipAuditValidation: true,
       });

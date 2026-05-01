@@ -1492,6 +1492,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   if (flags.resume === undefined && resolvedManifestPath !== undefined) {
     const writeResult = await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), {
       manifestPath: resolvedManifestPath,
+      snapshot: {
+        aceEnabled: resolvedAceConfig !== undefined,
+        auditDeclared: manifestAudit !== undefined,
+      },
     });
     if (!writeResult.ok && resolvedAceConfig !== undefined) {
       process.stderr.write(
@@ -1528,6 +1532,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       process.exit(1);
     }
     if (resumeMeta.kind === "ok") {
+      // Issue #2088 — when the immutable snapshot says the original
+      // session enabled ACE, fail closed without even loading the
+      // (possibly mutated) manifest. The snapshot is authoritative
+      // because it was frozen at session creation; reading the file
+      // now would reflect post-creation edits, defeating the guard.
+      if (resumeMeta.snapshot?.aceEnabled === true) {
+        process.stderr.write(
+          "koi tui: original session manifest.ace.enabled: true cannot be resumed — " +
+            "snapshot recorded at session creation. In-memory playbooks from the prior " +
+            "session are unrecoverable; wait for sqlite-backed playbook persistence " +
+            "(#2087), or start a new session with `koi tui` (no --resume).\n",
+        );
+        process.exit(1);
+      }
       const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
         allowOAuthSchemes: true,
         skipAuditValidation: false,
@@ -5032,6 +5050,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             if (resolvedManifestPath !== undefined) {
               const writeResult = await writeSessionMeta(SESSIONS_DIR, newSid as string, {
                 manifestPath: resolvedManifestPath,
+                snapshot: {
+                  aceEnabled: resolvedAceConfig !== undefined,
+                  auditDeclared: manifestAudit !== undefined,
+                },
               });
               if (!writeResult.ok && resolvedAceConfig !== undefined) {
                 lastResetFailed = true;
@@ -5494,6 +5516,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // work alongside plain UUIDs minted by this branch.
           const targetSid = sessionId(selectedId);
 
+          // Issue #2088 — when the current TUI process has ACE active,
+          // the in-memory PlaybookStore is process-wide. Picker-loading
+          // any other transcript would run that transcript against
+          // playbooks learned from unrelated sessions — exactly the
+          // cross-session contamination ACE's resume restrictions are
+          // trying to prevent. Refuse all picker loads until a
+          // clearable PlaybookStore lands (#2087).
+          if (resolvedAceConfig !== undefined) {
+            if (myPickerGeneration === pickerGeneration) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SESSION_RESUME_ERROR",
+                message:
+                  "Could not load session: this TUI process has ACE active and " +
+                  "the in-memory playbook store is process-wide, so loading another " +
+                  "transcript would contaminate it with playbooks from unrelated sessions. " +
+                  "Quit and relaunch with `koi tui --resume <id>` (which re-checks ACE provenance).",
+              });
+            }
+            return;
+          }
           // Issue #2088 — picker-loaded sessions must honor the same
           // ACE provenance gate as startup --resume. Without this
           // check, an operator could start ACE-clean and then load a
@@ -5526,10 +5569,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             return;
           }
           if (pickerMeta.kind === "ok") {
-            const pickerManifest = await loadManifestConfig(pickerMeta.manifestPath, {
-              skipAuditValidation: true,
-            });
-            if (!pickerManifest.ok || pickerManifest.value.ace?.enabled === true) {
+            // Snapshot fast path: bail without re-parsing if the snapshot
+            // already says the original session opted into ACE.
+            const aceFromSnapshot = pickerMeta.snapshot?.aceEnabled === true;
+            const aceFromManifest = await (async (): Promise<boolean> => {
+              if (aceFromSnapshot) return true;
+              const m = await loadManifestConfig(pickerMeta.manifestPath, {
+                skipAuditValidation: true,
+              });
+              return !m.ok || m.value.ace?.enabled === true;
+            })();
+            if (aceFromManifest) {
               if (myPickerGeneration === pickerGeneration) {
                 store.dispatch({
                   kind: "add_error",

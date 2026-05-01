@@ -763,10 +763,25 @@ const SESSION_META_VERSION = 1 as const;
  * Errors are still swallowed to keep startup non-fatal in adversarial
  * filesystem conditions, but the common cold-start case now persists.
  */
+/**
+ * Snapshot of host-safety-relevant manifest fields, frozen at session
+ * creation. Resume checks read this snapshot rather than re-parsing the
+ * mutable file at `manifestPath` — an attacker (or accidental edit)
+ * can flip `ace.enabled` or remove `audit` after the session was
+ * created, but the snapshot preserves the original contract.
+ */
+export interface SessionProvenanceSnapshot {
+  readonly aceEnabled?: boolean;
+  readonly auditDeclared?: boolean;
+}
+
 export async function writeSessionMeta(
   sessionsDir: string,
   sid: string,
-  meta: { readonly manifestPath?: string },
+  meta: {
+    readonly manifestPath?: string;
+    readonly snapshot?: SessionProvenanceSnapshot;
+  },
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: string }> {
   try {
     const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
@@ -791,7 +806,11 @@ export async function writeSessionMeta(
  */
 export type SessionMetaReadResult =
   | { readonly kind: "missing" }
-  | { readonly kind: "ok"; readonly manifestPath: string }
+  | {
+      readonly kind: "ok";
+      readonly manifestPath: string;
+      readonly snapshot?: SessionProvenanceSnapshot;
+    }
   | { readonly kind: "corrupt"; readonly error: string };
 
 export async function readSessionMetaResult(
@@ -817,7 +836,24 @@ export async function readSessionMetaResult(
       // never wrote a sidecar at all (kind: "missing").
       return { kind: "corrupt", error: "manifestPath field is missing or not a string" };
     }
-    return { kind: "ok", manifestPath: meta.manifestPath };
+    const snap = meta.snapshot;
+    if (snap !== undefined && (snap === null || typeof snap !== "object")) {
+      return { kind: "corrupt", error: "snapshot field is present but not an object" };
+    }
+    const snapshot: SessionProvenanceSnapshot | undefined =
+      snap !== undefined
+        ? {
+            ...(typeof (snap as Record<string, unknown>).aceEnabled === "boolean"
+              ? { aceEnabled: (snap as Record<string, unknown>).aceEnabled as boolean }
+              : {}),
+            ...(typeof (snap as Record<string, unknown>).auditDeclared === "boolean"
+              ? { auditDeclared: (snap as Record<string, unknown>).auditDeclared as boolean }
+              : {}),
+          }
+        : undefined;
+    return snapshot !== undefined
+      ? { kind: "ok", manifestPath: meta.manifestPath, snapshot }
+      : { kind: "ok", manifestPath: meta.manifestPath };
   } catch (err) {
     return { kind: "corrupt", error: err instanceof Error ? err.message : String(err) };
   }
