@@ -988,7 +988,7 @@ Expected: `dist/index.js` and `dist/index.d.ts` created, no errors.
 - [ ] **Step 4: Run full test suite for the package**
 
 ```bash
-bun test --filter @koi/middleware-intent-capsule
+bun run test --filter=@koi/middleware-intent-capsule
 ```
 
 Expected: 18 tests pass (5 canonicalize + 13 middleware).
@@ -1152,7 +1152,7 @@ Expected: `✅ All N L2 runtime dependencies have golden query coverage.`
 - [ ] **Step 3: Run the golden tests**
 
 ```bash
-bun test --filter @koi/runtime packages/meta/runtime/src/__tests__/golden-replay.test.ts
+bun run test --filter=@koi/runtime packages/meta/runtime/src/__tests__/golden-replay.test.ts
 ```
 
 Expected: the 2 new `Golden: @koi/middleware-intent-capsule` tests pass.
@@ -1262,7 +1262,7 @@ git commit -m "docs: update middleware-intent-capsule + runtime docs for v2 wiri
 - [ ] **Step 1: Run all unit tests for the package**
 
 ```bash
-bun test --filter @koi/middleware-intent-capsule
+bun run test --filter=@koi/middleware-intent-capsule
 ```
 
 Expected: 18 tests pass.
