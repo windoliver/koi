@@ -1439,8 +1439,22 @@
         "@modelcontextprotocol/sdk": "1.12.1",
       },
     },
+    "packages/sandbox/sandbox-daytona": {
+      "name": "@koi/sandbox-daytona",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/sandbox/sandbox-docker": {
       "name": "@koi/sandbox-docker",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/sandbox/sandbox-e2b": {
+      "name": "@koi/sandbox-e2b",
       "version": "0.1.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -2287,7 +2301,11 @@
 
     "@koi/runtime": ["@koi/runtime@workspace:packages/meta/runtime"],
 
+    "@koi/sandbox-daytona": ["@koi/sandbox-daytona@workspace:packages/sandbox/sandbox-daytona"],
+
     "@koi/sandbox-docker": ["@koi/sandbox-docker@workspace:packages/sandbox/sandbox-docker"],
+
+    "@koi/sandbox-e2b": ["@koi/sandbox-e2b@workspace:packages/sandbox/sandbox-e2b"],
 
     "@koi/sandbox-executor": ["@koi/sandbox-executor@workspace:packages/sandbox/sandbox-executor"],
 
