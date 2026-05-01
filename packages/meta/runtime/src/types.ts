@@ -496,6 +496,16 @@ export interface RuntimeConfig {
   readonly feedbackLoop?: import("@koi/middleware-feedback-loop").FeedbackLoopConfig | undefined;
 
   /**
+   * Intent-capsule middleware configuration (gov-16 #1883). When provided, wires
+   * `@koi/middleware-intent-capsule` which cryptographically binds the agent's
+   * mandate (system prompt + objectives) at session start with Ed25519 and
+   * verifies it before every model call. Defends against OWASP ASI01 (Agentic
+   * Goal Hijacking). Skipped if a middleware named "intent-capsule" is already
+   * present in `config.middleware`.
+   */
+  readonly intentCapsule?: import("@koi/middleware-intent-capsule").IntentCapsuleConfig | undefined;
+
+  /**
    * ACE (Adaptive Continuous Enhancement) middleware configuration. When
    * provided, wires `@koi/middleware-ace` which records per-session
    * trajectory, consolidates it into versioned playbooks via

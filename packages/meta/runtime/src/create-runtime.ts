@@ -72,6 +72,7 @@ import { createGovernanceMiddleware, GOVERNANCE_MIDDLEWARE_NAME } from "@koi/gov
 import { createAceMiddleware } from "@koi/middleware-ace";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createFeedbackLoopMiddleware } from "@koi/middleware-feedback-loop";
+import { createIntentCapsuleMiddleware } from "@koi/middleware-intent-capsule";
 import { createOtelMiddleware, type OtelMiddlewareConfig } from "@koi/middleware-otel";
 import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
@@ -269,15 +270,32 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         ? [...baseWithGovernance, feedbackLoopMiddleware]
         : baseWithGovernance;
 
+    // Install intent-capsule middleware when config.intentCapsule is provided and not already
+    // present. Priority 290 — cryptographically binds the agent's mandate at session start
+    // and verifies it before every model call (OWASP ASI01 goal-hijack defense, gov-16 #1883).
+    const hasIntentCapsule = new Set(baseWithFeedbackLoop.map((mw) => mw.name)).has(
+      "intent-capsule",
+    );
+    const intentCapsuleMiddleware =
+      config.intentCapsule !== undefined && !hasIntentCapsule
+        ? createIntentCapsuleMiddleware(config.intentCapsule)
+        : undefined;
+    const baseWithIntentCapsule: readonly KoiMiddleware[] =
+      intentCapsuleMiddleware !== undefined
+        ? [...baseWithFeedbackLoop, intentCapsuleMiddleware]
+        : baseWithFeedbackLoop;
+
     // Install ACE middleware when config.ace is provided and not already present.
     // Phase observe / priority 800 — runs after intercept + resolve so injection
     // observes the final systemPrompt and trajectory recording captures the real
     // outcome of every model + tool call. (#1715)
-    const hasAce = new Set(baseWithFeedbackLoop.map((mw) => mw.name)).has("ace");
+    const hasAce = new Set(baseWithIntentCapsule.map((mw) => mw.name)).has("ace");
     const aceMiddleware =
       config.ace !== undefined && !hasAce ? createAceMiddleware(config.ace) : undefined;
     const baseWithAce: readonly KoiMiddleware[] =
-      aceMiddleware !== undefined ? [...baseWithFeedbackLoop, aceMiddleware] : baseWithFeedbackLoop;
+      aceMiddleware !== undefined
+        ? [...baseWithIntentCapsule, aceMiddleware]
+        : baseWithIntentCapsule;
 
     // Install forge-demand detector when config.forgeDemand is provided and not already
     // present. Priority 445 — outer relative to feedback-loop (450) so the detector
