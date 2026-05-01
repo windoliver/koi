@@ -6,6 +6,23 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/playbook-store-sqlite` + ACE manifest activation wired (#2088)**: CLI
+  manifest gains an opt-in `ace:` block (`enabled`, `acknowledge_cross_session_state`,
+  `max_injected_tokens`, `min_score`, `lambda`, `playbook_path`). When `enabled: true`
+  in the TUI host, `tui-command.ts` constructs either an in-memory store or a
+  durable `@koi/playbook-store-sqlite` (manifest-relative path or `:memory:`),
+  threads it into `AceConfig`, and registers a `process.on("exit")` close hook so
+  WAL is checkpointed cleanly. Activation is gated: `koi start` rejects
+  `ace.enabled: true` (single-shot prompts have no session loop), the spawn preset
+  stack is mutually exclusive (`isSpawnStackActive` predicate refuses with exit
+  status 1), and resume paths verify the persisted `SessionAceProvenance` snapshot
+  (frozen at session creation in the v2 sidecar) against the live config — refusing
+  on durable→non-durable downgrade, store-identity mismatch (database file
+  replacement), or deleted-db. Bare `--resume` (no `--manifest`) inherits
+  `skipManifestDiscovery` so resumed sessions never auto-pick up cwd ACE state.
+  Path validation rejects absolute paths and `..` escape via symlink-aware
+  `realpathSync` containment.
+
 - **`@koi/governance-scope` wired (#1882 gov-15)**: CLI manifest gains `network:`
   and `credentials:` blocks. The TUI command translates these into compiled scope
   objects (`compileScopedFs`, `createScopedFetcher`, `createScopedCredentials`)

@@ -732,6 +732,14 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/playbook-store-sqlite": {
+      "name": "@koi/playbook-store-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/ace-types": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/plugins": {
       "name": "@koi/plugins",
       "version": "0.0.0",
@@ -996,6 +1004,7 @@
         "koi": "./dist/bin.js",
       },
       "dependencies": {
+        "@koi/ace-types": "workspace:*",
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
         "@koi/artifacts": "workspace:*",
@@ -1059,6 +1068,7 @@
         "@koi/nexus-delegation": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
+        "@koi/playbook-store-sqlite": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/rules-loader": "workspace:*",
@@ -1214,6 +1224,7 @@
         "@koi/outcome-evaluator": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
+        "@koi/playbook-store-sqlite": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/redaction": "workspace:*",
@@ -2259,6 +2270,8 @@
     "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
 
     "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/security/permissions-nexus"],
+
+    "@koi/playbook-store-sqlite": ["@koi/playbook-store-sqlite@workspace:packages/lib/playbook-store-sqlite"],
 
     "@koi/plugins": ["@koi/plugins@workspace:packages/lib/plugins"],
 

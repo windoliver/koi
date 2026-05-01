@@ -25,6 +25,7 @@ const ENABLED_BARE: ManifestAceConfig = {
   maxInjectedTokens: undefined,
   minScore: undefined,
   lambda: undefined,
+  playbookPath: undefined,
 };
 
 describe("resolveAceActivation — issue #2088", () => {
@@ -41,6 +42,7 @@ describe("resolveAceActivation — issue #2088", () => {
         maxInjectedTokens: undefined,
         minScore: undefined,
         lambda: undefined,
+        playbookPath: undefined,
       },
       STUB_FACTORIES,
     );
@@ -81,6 +83,7 @@ describe("resolveAceActivation — issue #2088", () => {
         maxInjectedTokens: 1200,
         minScore: 0.1,
         lambda: 0.07,
+        playbookPath: undefined,
       },
       STUB_FACTORIES,
     );

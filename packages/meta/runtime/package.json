@@ -123,6 +123,7 @@
     "@koi/settings": "workspace:*",
     "@koi/skill-scanner": "workspace:*",
     "@koi/skill-tool": "workspace:*",
+    "@koi/playbook-store-sqlite": "workspace:*",
     "@koi/skills-runtime": "workspace:*",
     "@koi/snapshot-store-sqlite": "workspace:*",
     "@koi/spawn-tools": "workspace:*",
