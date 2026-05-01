@@ -1276,6 +1276,81 @@ describe("VerifiedLoop.run", () => {
     }
   });
 
+  test("does NOT break a healthy long-running lock based on age alone", async () => {
+    // Regression: an earlier implementation marked any lock older than
+    // 30s as stale before checking PID liveness. Default iteration
+    // timeout is 10 min and gate is 2 min, so a normal long-running
+    // loop would lose exclusivity. Now age is irrelevant — only PID
+    // liveness matters.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+    const lockPath = `${prdPath}.lock`;
+    // Lock held by THIS live process, but timestamped 1 hour ago.
+    await Bun.write(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: "test",
+        owner: "external-owner",
+        acquiredAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      }),
+    );
+    try {
+      const loop = createVerifiedLoop(makeConfig());
+      let threw: Error | undefined;
+      try {
+        await loop.run();
+      } catch (e: unknown) {
+        threw = e as Error;
+      }
+      expect(threw).toBeDefined();
+      expect(threw?.message).toContain("CONFLICT");
+    } finally {
+      await Bun.file(lockPath)
+        .delete()
+        .catch(() => undefined);
+    }
+  });
+
+  test("releasePRDLock does not delete a lock owned by another process", async () => {
+    // Regression: previously releasePRDLock blindly unlinked the
+    // lockfile. If a stale-break ever races a normal exit, coordinator
+    // A would delete coordinator B's live lock on A's own teardown.
+    // Ownership token must be checked.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+    const lockPath = `${prdPath}.lock`;
+    // First runner completes successfully, releasing its lock.
+    const loopA = createVerifiedLoop(makeConfig());
+    await loopA.run();
+    // Now a different external owner takes the lock.
+    await Bun.write(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: "test",
+        owner: "external-owner-token",
+        acquiredAt: new Date().toISOString(),
+      }),
+    );
+    try {
+      // A second runner attempts to start and fails (lock held).
+      const loopB = createVerifiedLoop(makeConfig());
+      let threw: Error | undefined;
+      try {
+        await loopB.run();
+      } catch (e: unknown) {
+        threw = e as Error;
+      }
+      expect(threw).toBeDefined();
+      // Critical: the external lock must still exist with the correct owner.
+      const after = JSON.parse(await Bun.file(lockPath).text()) as { owner: string };
+      expect(after.owner).toBe("external-owner-token");
+    } finally {
+      await Bun.file(lockPath)
+        .delete()
+        .catch(() => undefined);
+    }
+  });
+
   test("breaks a stale lock from a dead PID", async () => {
     // Regression: a crashed coordinator leaves its lock file behind. A
     // restart must be able to take over rather than getting stuck.

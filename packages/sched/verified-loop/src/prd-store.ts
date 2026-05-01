@@ -454,21 +454,24 @@ export async function markDoneMany(
 
 /**
  * Handle returned by acquirePRDLock; pass to releasePRDLock to release.
- * The lock path is exposed so the orchestrator can reference it in
- * log/error messages.
+ * Carries an unguessable owner token so releasePRDLock can verify this
+ * process still owns the lock before unlinking — preventing one
+ * coordinator from accidentally deleting another's live lock if a
+ * stale-break ever races a normal exit.
  */
 export interface PRDLock {
   readonly path: string;
+  readonly owner: string;
 }
-
-const STALE_LOCK_GRACE_MS = 30_000;
 
 /**
  * Acquire an advisory lock on the PRD path. Creates `<prdPath>.lock`
- * with O_EXCL containing the holder's PID + start time. Returns
- * CONFLICT if another live coordinator already holds it. A stale lock
- * (PID dead, file older than STALE_LOCK_GRACE_MS, or unparseable
- * contents) is force-broken and re-acquired.
+ * with O_EXCL containing the holder's PID, host, owner token, and
+ * acquisition time. Returns CONFLICT if a *live* coordinator already
+ * holds it. A lock is broken ONLY when the holder PID is provably
+ * dead (ESRCH) or the lock contents are unparseable — never on age
+ * alone, since healthy long-running iterations would otherwise lose
+ * exclusivity (default iteration timeout is 10 min, gate is 2 min).
  *
  * Lock is process-local: it does NOT survive across hosts. For
  * cross-host exclusion the deployment must front this with a
@@ -476,6 +479,7 @@ const STALE_LOCK_GRACE_MS = 30_000;
  */
 export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, KoiError>> {
   const lockPath = `${prdPath}.lock`;
+  const owner = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
   // Use let — justified: retry once after breaking a stale lock.
   let attempts = 0;
   while (attempts < 2) {
@@ -486,6 +490,7 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
         const payload = JSON.stringify({
           pid: process.pid,
           host: process.env.HOSTNAME ?? "unknown",
+          owner,
           acquiredAt: new Date().toISOString(),
         });
         await handle.writeFile(payload);
@@ -493,7 +498,7 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
       } finally {
         await handle.close();
       }
-      return { ok: true, value: { path: lockPath } };
+      return { ok: true, value: { path: lockPath, owner } };
     } catch (e: unknown) {
       const code = (e as { readonly code?: unknown }).code;
       if (code !== "EEXIST") {
@@ -502,24 +507,21 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
           error: internal(`Failed to acquire PRD lock at ${lockPath}: ${extractMessage(e)}`, e),
         };
       }
-      // Lock exists. Decide if it is stale and can be broken.
+      // Lock exists. Break ONLY if the holder PID is dead or the lock
+      // file is unparseable. Age alone is never sufficient — a normal
+      // run can hold the lock for many minutes.
       // Use let — justified: assigned across try/catch.
       let stale = false;
       try {
         const raw = await readFile(lockPath, "utf8");
-        const meta = JSON.parse(raw) as { pid?: unknown; acquiredAt?: unknown };
-        const ageMs =
-          typeof meta.acquiredAt === "string"
-            ? Date.now() - Date.parse(meta.acquiredAt)
-            : Number.POSITIVE_INFINITY;
-        if (
-          typeof meta.pid !== "number" ||
-          !Number.isFinite(ageMs) ||
-          ageMs > STALE_LOCK_GRACE_MS
-        ) {
+        const meta = JSON.parse(raw) as { pid?: unknown };
+        if (typeof meta.pid !== "number") {
           stale = true;
         } else {
           // process.kill(pid, 0) probes for liveness without signaling.
+          // ESRCH = no such process; EPERM = process exists but we
+          // cannot signal it (different uid). EPERM means alive — do
+          // NOT break the lock in that case.
           try {
             process.kill(meta.pid, 0);
           } catch (probeErr: unknown) {
@@ -550,8 +552,27 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
   };
 }
 
-/** Release a lock previously acquired by acquirePRDLock. Idempotent. */
+/**
+ * Release a lock previously acquired by acquirePRDLock. Idempotent and
+ * ownership-checked: only unlinks the lockfile if its `owner` token
+ * still matches `lock.owner`. Without this, a coordinator A that lost
+ * its lock to a stale-break (e.g., a clock skew or external delete)
+ * and was succeeded by coordinator B would, on its own normal exit,
+ * delete B's live lock — opening a window for a third coordinator C
+ * to start while B is still running.
+ */
 export async function releasePRDLock(lock: PRDLock): Promise<void> {
+  // Use let — justified: assigned across try/catch.
+  let owns = false;
+  try {
+    const raw = await readFile(lock.path, "utf8");
+    const meta = JSON.parse(raw) as { owner?: unknown };
+    owns = meta.owner === lock.owner;
+  } catch {
+    // Lock file already gone or corrupt — nothing to release.
+    return;
+  }
+  if (!owns) return;
   await unlink(lock.path).catch(() => undefined);
 }
 
