@@ -2,6 +2,8 @@
 
 `@koi/middleware-policy-cache` is an L2 middleware that bypasses the model whenever a tool call matches a brick that forge has *already verified and promoted* to policy mode. It runs at `intercept` phase with priority `50` (outer of `permissions` at `100` — lower priority = outer onion = runs first), evaluates a compiled policy executor synchronously, and either lets the call proceed (`allow`) or short-circuits with a canonical block response (`block`). On a `block` hit there is no model round-trip, no permission prompt, and no tool execution.
 
+Scoped at the brick level: `agent` (keyed by concrete `agentId`) and `global`. Capacity overflow uses true LRU — lookups touch entries so frequently-hit deny policies survive promotion churn. The handle exposes `dispose()` for explicit lifecycle teardown so long-lived `StoreChangeNotifier` instances don't leak listeners across runtime cycles.
+
 This package is the v2 restoration of the v1 `middleware-policy-cache`. It is the one optimization that closes the loop between forge verification and runtime: a brick is forged → forge verification certifies it → the optimizer promotes it → this cache short-circuits the model on subsequent calls.
 
 ---
@@ -73,8 +75,9 @@ Three paths invalidate cached entries:
 | Trigger | Mechanism |
 |---|---|
 | Manual revoke | `handle.evict(brickId)` — synchronous, idempotent |
-| Capacity overflow | LRU on `register` when `cache.size >= maxEntries` (default `100`) |
+| Capacity overflow | LRU on `register` when `cache.size >= maxEntries` (default `100`) — see "Capacity eviction is real LRU" |
 | Store change event | Optional `StoreChangeNotifier` subscription evicts on `updated`, `removed`, `quarantined` |
+| Handle teardown | `handle.dispose()` — see "Lifecycle: dispose()" |
 
 The notifier subscription is registered eagerly during factory construction. The unsubscribe function is held in closure so disposal is implicit when the handle is dropped. Notifier callbacks are sync — events of kind `saved` and `promoted` are ignored (saving doesn't invalidate; promotion is what the wiring layer registers in response to).
 
@@ -82,21 +85,26 @@ The cache keeps a reverse index `brickId → cacheKey` so `evict(brickId)` is O(
 
 ## Scope-aware cache identity (owner-keyed)
 
-Forge bricks are scope-aware (`agent` | `zone` | `global` per `ForgeScope` in `@koi/core`). `PolicyEntry` is a discriminated union by `scope`:
+`PolicyEntry` is a discriminated union by `scope`:
 
 | Scope | Required identity | Cache key |
 |---|---|---|
 | `agent` | `agentId: string` | `agent:<agentId>:<toolId>` |
-| `zone` | `zoneId: string` | `zone:<zoneId>:<toolId>` |
 | `global` | — | `global:<toolId>` |
 
 Encoding the **concrete owner** (not just the scope enum) is what gives the cache real tenant isolation: two different agents can both promote a policy for `search` and the cache holds both entries side-by-side. Without owner identity the first promotion would silently shadow every other agent's behavior for the same tool — the exact regression that defeats per-agent forge promotion.
 
-At lookup time the middleware reads `ctx.session.agentId` and (optionally) `ctx.session.metadata.zoneId` and probes scopes in priority order: `agent` (most specific) → `zone` → `global`, matching `ANS_SCOPE_PRIORITY`. An agent-scoped `block` therefore overrides a more permissive zone- or global-scoped policy without removing it; evict the agent entry and the next-most-specific scope takes over.
+At lookup time the middleware reads `ctx.session.agentId` and probes scopes in priority order: `agent` (most specific) → `global`, matching `ANS_SCOPE_PRIORITY`. An agent-scoped `block` overrides a more permissive global-scoped policy without removing it; evict the agent entry and the global takes over.
 
-Hosts that don't model zones simply omit `zoneId` from session metadata — zone-scoped entries are then unreachable but agent and global entries continue to work.
+> **Why no `zone` scope?** `ForgeScope` defines three values (`agent`, `zone`, `global`), but `SessionContext` exposes no first-class zone field. Supporting `scope: "zone"` via opt-in metadata would let zone-scoped denies silently miss in any host that hadn't wired a resolver — exactly the kind of fail-open pattern this restoration was meant to remove. When the runtime threads zone identity through `SessionContext`, add `scope: "zone"` then.
 
-> **Zone-scope wiring requirement.** `SessionContext.metadata` is `{}` in the standard `@koi/runtime` and `@koi/engine` scaffolds today. To make zone-scoped policies match, the host must inject `metadata.zoneId` when building the session — either through `CreateKoiOptions.session.metadata` or via a custom turn-context builder. Until that wiring exists end-to-end, register only `agent`- and `global`-scoped entries; zone entries will silently miss every lookup.
+## Capacity eviction is real LRU
+
+`maxEntries` (default `100`) bounds memory. On overflow the middleware evicts the least-recently-used entry — *not* the oldest by insertion. `wrapToolCall` touches each lookup hit (delete + re-set) so a frequently-hit deny policy registered early in the session survives churn from later promotions. FIFO eviction would be a user-visible enforcement gap: an active deny gets dropped and the tool reopens.
+
+## Lifecycle: `dispose()`
+
+`PolicyCacheHandle.dispose()` releases the `StoreChangeNotifier` subscription (if any) and clears all cache state. It is **idempotent** — safe to call multiple times. Hosts that build a fresh runtime per request, per session, or per worker MUST call `dispose()` before dropping the handle, or every dropped instance will retain its closure on the shared notifier (the in-repo notifier enforces a 64-subscriber cap specifically to catch this leak).
 
 ---
 
@@ -157,6 +165,7 @@ const middleware = handle.middleware;
 - `register(entry: PolicyEntry): Result<void, KoiError>` — verified-only
 - `evict(brickId: string): void` — idempotent
 - `size(): number` — observability
+- `dispose(): void` — release notifier subscription + clear caches; idempotent
 
 ---
 

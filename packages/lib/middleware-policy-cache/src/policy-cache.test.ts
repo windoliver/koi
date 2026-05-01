@@ -9,13 +9,13 @@ import type {
 } from "@koi/core";
 import { createPolicyCacheMiddleware, type PolicyEntry } from "./policy-cache.js";
 
-function ctxFor(agentId: string, zoneId?: string): TurnContext {
+function ctxFor(agentId: string): TurnContext {
   return {
     session: {
       agentId,
       sessionId: "s" as never,
       runId: "r" as never,
-      metadata: zoneId === undefined ? {} : { zoneId },
+      metadata: {},
     },
     turnIndex: 0,
     turnId: "t" as never,
@@ -47,23 +47,6 @@ function makeAgentPolicy(
     toolId,
     brickId,
     verified,
-    execute: () =>
-      decision === "allow" ? { action: "allow" } : { action: "block", reason: "blocked by policy" },
-  };
-}
-
-function makeZonePolicy(
-  zoneId: string,
-  toolId: string,
-  brickId: string,
-  decision: "allow" | "block" = "allow",
-): PolicyEntry {
-  return {
-    scope: "zone",
-    zoneId,
-    toolId,
-    brickId,
-    verified: true,
     execute: () =>
       decision === "allow" ? { action: "allow" } : { action: "block", reason: "blocked by policy" },
   };
@@ -482,52 +465,25 @@ describe("createPolicyCacheMiddleware: scope isolation by concrete owner", () =>
     expect(result.output).toBe("ok");
   });
 
-  test("agent → zone → global precedence at lookup time", async () => {
+  test("agent → global precedence at lookup time", async () => {
     const handle = createPolicyCacheMiddleware();
     handle.register(makeGlobalPolicy("search", "brick-G", "allow"));
-    handle.register(makeZonePolicy("zone-1", "search", "brick-Z", "allow"));
     handle.register(makeAgentPolicy("agent-A", "search", "brick-A", "block"));
 
     const next: ToolHandler = mock(async () => makeResp());
     const wrap = handle.middleware.wrapToolCall;
     if (wrap === undefined) throw new Error("wrapToolCall missing");
 
-    const ctx = ctxFor("agent-A", "zone-1");
+    const ctx = ctxFor("agent-A");
 
     // Agent block wins.
     const r1 = await wrap(ctx, makeReq("search"), next);
     expect(r1.metadata?.policyDenied).toBe(true);
 
     handle.evict("brick-A");
-    // Zone allow wins next.
+    // Global allow wins next.
     const r2 = await wrap(ctx, makeReq("search"), next);
     expect(r2.output).toBe("ok");
-
-    handle.evict("brick-Z");
-    // Global allow wins last.
-    const r3 = await wrap(ctx, makeReq("search"), next);
-    expect(r3.output).toBe("ok");
-  });
-
-  test("zone-scoped entry only matches when ctx.session.metadata.zoneId is present and equal", async () => {
-    const handle = createPolicyCacheMiddleware();
-    handle.register(makeZonePolicy("zone-1", "search", "brick-Z", "block"));
-
-    const next: ToolHandler = mock(async () => makeResp());
-    const wrap = handle.middleware.wrapToolCall;
-    if (wrap === undefined) throw new Error("wrapToolCall missing");
-
-    // No zoneId in ctx → miss.
-    const r1 = await wrap(ctxFor("agent-A"), makeReq("search"), next);
-    expect(r1.output).toBe("ok");
-
-    // Wrong zone → miss.
-    const r2 = await wrap(ctxFor("agent-A", "zone-other"), makeReq("search"), next);
-    expect(r2.output).toBe("ok");
-
-    // Matching zone → block.
-    const r3 = await wrap(ctxFor("agent-A", "zone-1"), makeReq("search"), next);
-    expect(r3.metadata?.policyDenied).toBe(true);
   });
 });
 
@@ -610,5 +566,94 @@ describe("createPolicyCacheMiddleware: capability fragment", () => {
     handle.register(makeAgentPolicy("agent-A", "b", "bb"));
     const frag = handle.middleware.describeCapabilities(CTX);
     expect(frag?.description).toContain("2 tools");
+  });
+});
+
+describe("createPolicyCacheMiddleware: LRU eviction (recency-aware)", () => {
+  test("hot policy survives capacity pressure — lookup bumps recency", async () => {
+    const handle = createPolicyCacheMiddleware({ maxEntries: 2 });
+    handle.register(makeAgentPolicy("agent-A", "hot", "brick-hot", "block"));
+    handle.register(makeAgentPolicy("agent-A", "cold", "brick-cold", "allow"));
+
+    const next: ToolHandler = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+
+    // Touch 'hot' so it becomes most-recently-used (cold is now LRU).
+    await wrap(CTX, makeReq("hot"), next);
+
+    // Insert a third entry — capacity overflow evicts the LRU, which is 'cold'
+    // (NOT 'hot', because the lookup above bumped its recency).
+    handle.register(makeAgentPolicy("agent-A", "new", "brick-new", "allow"));
+    expect(handle.size()).toBe(2);
+
+    // 'hot' deny still enforces — was not evicted despite being registered first.
+    const r = await wrap(CTX, makeReq("hot"), next);
+    expect(r.metadata?.policyDenied).toBe(true);
+
+    // 'cold' is gone — pass through.
+    const r2 = await wrap(CTX, makeReq("cold"), next);
+    expect(r2.output).toBe("ok");
+  });
+});
+
+describe("createPolicyCacheMiddleware: dispose() lifecycle", () => {
+  test("dispose unsubscribes from notifier and clears caches", () => {
+    let unsubscribed = false;
+    let activeListener: ((e: StoreChangeEvent) => void) | undefined;
+    const notifier: StoreChangeNotifier = {
+      notify: () => {},
+      subscribe: (cb) => {
+        activeListener = cb;
+        return () => {
+          unsubscribed = true;
+          activeListener = undefined;
+        };
+      },
+    };
+
+    const handle = createPolicyCacheMiddleware({ notifier });
+    handle.register(makeAgentPolicy("agent-A", "search", "brick-1"));
+    expect(handle.size()).toBe(1);
+
+    handle.dispose();
+    expect(unsubscribed).toBe(true);
+    expect(activeListener).toBeUndefined();
+    expect(handle.size()).toBe(0);
+  });
+
+  test("dispose is idempotent", () => {
+    const notifier: StoreChangeNotifier = {
+      notify: () => {},
+      subscribe: () => () => {},
+    };
+    const handle = createPolicyCacheMiddleware({ notifier });
+    handle.register(makeAgentPolicy("agent-A", "search", "brick-1"));
+    handle.dispose();
+    handle.dispose(); // must not throw
+    expect(handle.size()).toBe(0);
+  });
+
+  test("repeat create/dispose against shared notifier doesn't accumulate listeners", () => {
+    let activeCount = 0;
+    let peakCount = 0;
+    const notifier: StoreChangeNotifier = {
+      notify: () => {},
+      subscribe: () => {
+        activeCount++;
+        peakCount = Math.max(peakCount, activeCount);
+        return () => {
+          activeCount--;
+        };
+      },
+    };
+
+    // Create + dispose 10 instances — should never exceed 1 active subscription.
+    for (let i = 0; i < 10; i++) {
+      const h = createPolicyCacheMiddleware({ notifier });
+      h.dispose();
+    }
+    expect(activeCount).toBe(0);
+    expect(peakCount).toBe(1);
   });
 });
