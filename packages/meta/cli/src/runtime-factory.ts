@@ -108,6 +108,7 @@ import {
 import { createPlanPersistMiddleware } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
+import { createToolErrorFormatterMiddleware } from "@koi/middleware-tool-error-formatter";
 import {
   assertHealthCapable as nexusAssertHealthCapable,
   assertProductionTransport as nexusAssertProductionTransport,
@@ -2274,6 +2275,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // workspace secrets — omitting it is a security regression.
   const exfiltrationGuardMw = createExfiltrationGuardMiddleware();
 
+  // --- @koi/middleware-tool-error-formatter: convert tool throws to model-readable responses ---
+  // Catches throws via wrapToolCall (priority 170, resolve phase) and returns a
+  // formatted ToolResponse so the model can recover instead of the engine surfacing
+  // an opaque crash. Sits INSIDE permissions/exfiltration-guard so guardrail aborts
+  // still propagate as model-visible failures.
+  const toolErrorFormatterMw = createToolErrorFormatterMiddleware().middleware;
+
   // --- Core middleware slots (shared with `koi start`) ---
   // `buildCoreMiddleware` is the single source of truth for the
   // permissions / hook / system-prompt / session-transcript factory
@@ -3855,6 +3863,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       hook: hookMw,
       permissions: permMw,
       exfiltrationGuard: exfiltrationGuardMw,
+      toolErrorFormatter: toolErrorFormatterMw,
       ...(config.currentModelMiddleware !== undefined
         ? { currentModel: config.currentModelMiddleware }
         : {}),
