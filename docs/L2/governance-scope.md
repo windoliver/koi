@@ -81,3 +81,10 @@ compiled scope objects before passing them to tool/provider factories.
   (no network activity for denied requests).
 - `createScopedFs` always rejects on path-resolution error rather than
   falling back to the underlying backend.
+
+## Build configuration
+
+`tsconfig.json` adds `"DOM"` to `lib` so TypeScript can resolve
+`URLPattern` (used by `createScopedFetcher`'s public types). The
+runtime is Bun, which provides `URLPattern` natively; the lib import is
+type-only.
