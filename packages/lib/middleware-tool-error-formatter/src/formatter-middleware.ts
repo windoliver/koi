@@ -270,8 +270,19 @@ export function createToolErrorFormatterMiddleware(
   // a custom pattern must never silently disable redaction of `sk-…` API keys
   // or HTTP `Bearer` tokens. Use `replaceDefaultSecretPatterns: true` to opt
   // out (e.g., a test that needs predictable output).
+  // Non-removable minimum redaction set: even when the caller opts to
+  // replace the default patterns (e.g., for tests with predictable output),
+  // these high-risk credential shapes must always be sanitized. A runtime
+  // misconfiguration cannot silently turn the formatter into a secret-leak
+  // surface for API keys, bearer tokens, or password-bearing connection
+  // strings.
+  const MINIMUM_SECRET_PATTERNS: readonly RegExp[] = [
+    /\bsk-[A-Za-z0-9_-]{20,}/g,
+    /\bBearer\s+[A-Za-z0-9._~+/=-]+/g,
+    /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s@/]+@[^\s"']+/gi,
+  ];
   const secretPatterns: readonly RegExp[] = config?.replaceDefaultSecretPatterns
-    ? (config.secretPatterns ?? [])
+    ? [...MINIMUM_SECRET_PATTERNS, ...(config.secretPatterns ?? [])]
     : [...DEFAULT_SECRET_PATTERNS, ...(config?.secretPatterns ?? [])];
   const passthroughCodes = new Set<string>(config?.passthroughCodes ?? DEFAULT_PASSTHROUGH_CODES);
   const passthroughPredicate = config?.passthroughPredicate;

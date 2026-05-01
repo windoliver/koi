@@ -319,7 +319,7 @@ describe("createToolDisclosureMiddleware", () => {
     test("wrapToolCall routes promote_tools by ctx.session.sessionId", async () => {
       const mw = createToolDisclosureMiddleware({ threshold: 5 });
       mw.notifyCompanionRegistered();
-      const tools = descriptors(10);
+      const tools: readonly ToolDescriptor[] = [...descriptors(10), createPromoteToolDescriptor()];
       const sidA: SessionId = sessionId("a");
       const sidB: SessionId = sessionId("b");
       const ctxA = createMockTurnContext({ session: { sessionId: sidA } });

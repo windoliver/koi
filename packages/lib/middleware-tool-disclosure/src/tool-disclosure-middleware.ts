@@ -328,24 +328,35 @@ export function createToolDisclosureMiddleware(
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      // Only intercept the companion call if the bundle wired our companion
-      // tool. Without notifyCompanionRegistered(), a real tool of that name
-      // owned by the application would be silently hijacked — fail open
-      // instead and let it through to its real handler.
+      // Intercept the companion call only when (a) the bundle wired our
+      // companion tool AND (b) the companion was actually advertised in the
+      // session's latest tool set. The advertised-set gate prevents stale
+      // transcripts, guessed names, or prompt-injected model output from
+      // invoking the helper after a permission/selector layer intentionally
+      // filtered it out for the turn.
       if (request.toolId === promoteToolName && companionToolRegistered) {
-        const validated = validatePromoteInput(request.input, promoteToolName);
-        if (!validated.ok) return validated.response;
+        const sessionState = sessions.get(ctx.session.sessionId);
+        const companionAdvertised =
+          sessionState?.knownNames.has(promoteToolName) === true ||
+          // If the session has never advertised any tool list (no
+          // wrapModelCall has fired yet), allow the companion through —
+          // there is no "current advertised set" to gate against.
+          sessionState?.everAdvertised !== true;
+        if (companionAdvertised) {
+          const validated = validatePromoteInput(request.input, promoteToolName);
+          if (!validated.ok) return validated.response;
 
-        const promoted = promoteForSession(ctx.session.sessionId, validated.names);
-        const result: PromoteResult = {
-          ok: true,
-          promoted,
-          message:
-            promoted.length > 0
-              ? `Promoted ${promoted.length} tool(s): ${promoted.join(", ")}. Full schemas are now available.`
-              : "No tools were promoted. Check the tool names and try again.",
-        };
-        return { output: result };
+          const promoted = promoteForSession(ctx.session.sessionId, validated.names);
+          const result: PromoteResult = {
+            ok: true,
+            promoted,
+            message:
+              promoted.length > 0
+                ? `Promoted ${promoted.length} tool(s): ${promoted.join(", ")}. Full schemas are now available.`
+                : "No tools were promoted. Check the tool names and try again.",
+          };
+          return { output: result };
+        }
       }
 
       // Fail-closed against direct calls when disclosure is active (knownNames

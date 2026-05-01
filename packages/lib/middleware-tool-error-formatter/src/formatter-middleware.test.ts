@@ -299,13 +299,19 @@ describe("createToolErrorFormatterMiddleware", () => {
       expect(output).not.toContain("sk-abc123def456ghi789jklmnopqrst");
     });
 
-    test("replaceDefaultSecretPatterns: true opts out of default merging", async () => {
+    test("replaceDefaultSecretPatterns: true drops MOST defaults but keeps the minimum set", async () => {
+      // The full default pattern set is opt-out for tests with predictable
+      // output, but a minimum set (sk-* / Bearer / connection strings) is
+      // non-removable: a runtime misconfiguration cannot turn the formatter
+      // into a leak surface for high-risk credential shapes.
       const wrap = getWrapToolCall({
         secretPatterns: [/xoxb-[A-Za-z0-9-]+/g],
         replaceDefaultSecretPatterns: true,
       });
       const failing = createFailingToolHandler(
-        new Error("custom xoxb-1-2-3 and default sk-abc123def456ghi789jklmnopqrst"),
+        new Error(
+          "custom xoxb-1-2-3 and sk-abc123def456ghi789jklmnopqrst plus AKIAIOSFODNN7EXAMPLE",
+        ),
       );
 
       const response = await wrap(mockCtx, baseToolRequest, failing);
@@ -315,8 +321,10 @@ describe("createToolErrorFormatterMiddleware", () => {
       if (typeof output !== "string") return;
       // Custom pattern still applied
       expect(output).not.toContain("xoxb-1-2-3");
-      // Defaults bypassed — sk- present in raw output
-      expect(output).toContain("sk-abc123def456ghi789jklmnopqrst");
+      // Minimum-set patterns are non-removable — sk- still redacted
+      expect(output).not.toContain("sk-abc123def456ghi789jklmnopqrst");
+      // But broader defaults (AWS keys, JWTs, etc.) are dropped
+      expect(output).toContain("AKIAIOSFODNN7EXAMPLE");
     });
   });
 
