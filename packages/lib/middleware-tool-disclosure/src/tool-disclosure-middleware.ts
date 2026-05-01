@@ -208,30 +208,52 @@ export function createToolDisclosureMiddleware(
 
     /**
      * Intercept `promote_tools` calls and route them by `ctx.session.sessionId`.
-     * Other tool calls pass straight through. This is what gives the companion
-     * tool session-correct routing without needing a SessionId in `Tool.execute`.
+     * Also fail-closed against direct calls to summary-level tools — their
+     * advertised inputSchema is empty so the engine's argument validation
+     * accepts anything; the model must promote them first so the real schema
+     * is what validates args.
      */
     async wrapToolCall(
       ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      if (request.toolId !== PROMOTE_TOOL_NAME) {
-        return next(request);
-      }
-      const validated = validatePromoteInput(request.input);
-      if (!validated.ok) return validated.response;
+      if (request.toolId === PROMOTE_TOOL_NAME) {
+        const validated = validatePromoteInput(request.input);
+        if (!validated.ok) return validated.response;
 
-      const promoted = promoteForSession(ctx.session.sessionId, validated.names);
-      const result: PromoteResult = {
-        ok: true,
-        promoted,
-        message:
-          promoted.length > 0
-            ? `Promoted ${promoted.length} tool(s): ${promoted.join(", ")}. Full schemas are now available.`
-            : "No tools were promoted. Check the tool names and try again.",
-      };
-      return { output: result };
+        const promoted = promoteForSession(ctx.session.sessionId, validated.names);
+        const result: PromoteResult = {
+          ok: true,
+          promoted,
+          message:
+            promoted.length > 0
+              ? `Promoted ${promoted.length} tool(s): ${promoted.join(", ")}. Full schemas are now available.`
+              : "No tools were promoted. Check the tool names and try again.",
+        };
+        return { output: result };
+      }
+
+      // Reject direct calls to known-but-not-promoted tools. The model saw
+      // these as summaries (inputSchema = {}); without promotion the engine's
+      // arg validation has no real schema to enforce, so we fail-closed here.
+      const state = sessions.get(ctx.session.sessionId);
+      if (state !== undefined && state.knownNames.has(request.toolId)) {
+        if (!state.promoted.has(request.toolId)) {
+          return {
+            output: {
+              ok: false,
+              error: {
+                code: "VALIDATION",
+                message: `Tool '${request.toolId}' is at summary level — call ${PROMOTE_TOOL_NAME}(["${request.toolId}"]) first to load its full schema, then retry.`,
+              },
+            },
+            metadata: { error: true, toolId: request.toolId, code: "VALIDATION" },
+          };
+        }
+      }
+
+      return next(request);
     },
 
     describeCapabilities(ctx: TurnContext): CapabilityFragment | undefined {

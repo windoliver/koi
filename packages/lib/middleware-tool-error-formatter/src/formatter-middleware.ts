@@ -189,7 +189,14 @@ export function createToolErrorFormatterMiddleware(
   const secretPatterns: readonly RegExp[] = config?.replaceDefaultSecretPatterns
     ? (config.secretPatterns ?? [])
     : [...DEFAULT_SECRET_PATTERNS, ...(config?.secretPatterns ?? [])];
-  const passthroughCodes = new Set<string>(config?.passthroughCodes ?? DEFAULT_PASSTHROUGH_CODES);
+  // Caller-supplied codes extend the defaults rather than replacing them —
+  // RATE_LIMIT and PERMISSION must not silently lose their hard-stop status
+  // when a team adds a third guardrail code.
+  const passthroughCodes = new Set<string>(
+    config?.replaceDefaultPassthroughCodes
+      ? (config.passthroughCodes ?? [])
+      : [...DEFAULT_PASSTHROUGH_CODES, ...(config?.passthroughCodes ?? [])],
+  );
   const passthroughPredicate = config?.passthroughPredicate;
 
   const capabilityFragment: CapabilityFragment = {

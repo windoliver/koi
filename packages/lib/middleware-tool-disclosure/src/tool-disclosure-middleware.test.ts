@@ -349,6 +349,78 @@ describe("createToolDisclosureMiddleware", () => {
       expect(t1B && isSummary(t1B)).toBe(true);
     });
 
+    test("direct call to summary-level tool is rejected with VALIDATION", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const tools = descriptors(10);
+      const sid: SessionId = sessionId("session-x");
+      const ctxX = createMockTurnContext({ session: { sessionId: sid } });
+      await mw.wrapModelCall?.(ctxX, { messages: [], tools }, captureNext().handler);
+
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      let nextCalled = false;
+      const noop = async (): Promise<ToolResponse> => {
+        nextCalled = true;
+        return { output: "should not reach" };
+      };
+      const response = await wrap(ctxX, { toolId: "tool-1", input: {} }, noop);
+
+      expect(nextCalled).toBe(false);
+      const out = response.output as { ok: boolean; error?: { code: string; message: string } };
+      expect(out.ok).toBe(false);
+      expect(out.error?.code).toBe("VALIDATION");
+      expect(out.error?.message).toContain(PROMOTE_TOOL_NAME);
+      expect(response.metadata?.error).toBe(true);
+    });
+
+    test("after promotion, direct calls are allowed (next is invoked)", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const tools = descriptors(10);
+      const sid: SessionId = sessionId("session-y");
+      const ctxY = createMockTurnContext({ session: { sessionId: sid } });
+      await mw.wrapModelCall?.(ctxY, { messages: [], tools }, captureNext().handler);
+      mw.promoteByNameForSession(sid, ["tool-1"]);
+
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      let nextCalled = false;
+      const noop = async (): Promise<ToolResponse> => {
+        nextCalled = true;
+        return { output: "ok" };
+      };
+      await wrap(ctxY, { toolId: "tool-1", input: {} }, noop);
+      expect(nextCalled).toBe(true);
+    });
+
+    test("unknown tool names pass through (not our concern)", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      let nextCalled = false;
+      const noop = async (): Promise<ToolResponse> => {
+        nextCalled = true;
+        return { output: "ok" };
+      };
+      await wrap(ctx, { toolId: "never-disclosed", input: {} }, noop);
+      expect(nextCalled).toBe(true);
+    });
+
+    test("below threshold: validation guard does NOT fire (no disclosure happened)", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 50 });
+      const tools = descriptors(10);
+      await mw.wrapModelCall?.(ctx, { messages: [], tools }, captureNext().handler);
+
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      let nextCalled = false;
+      const noop = async (): Promise<ToolResponse> => {
+        nextCalled = true;
+        return { output: "ok" };
+      };
+      await wrap(ctx, { toolId: "tool-1", input: {} }, noop);
+      expect(nextCalled).toBe(true);
+    });
+
     test("promoteByNameForSession returns empty for unknown session", () => {
       const mw = createToolDisclosureMiddleware({ threshold: 5 });
       const promoted = mw.promoteByNameForSession(sessionId("never-touched"), ["foo"]);

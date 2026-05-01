@@ -31,17 +31,20 @@ export interface ToolErrorFormatterConfig {
    */
   readonly replaceDefaultSecretPatterns?: boolean | undefined;
   /**
-   * KoiError codes that should propagate as throws instead of being formatted
-   * into a ToolResponse. These represent guardrail / control-flow aborts that
-   * the engine must see as failures (e.g., `RATE_LIMIT` from
-   * `@koi/middleware-call-limits` with `exitBehavior: "error"`, `PERMISSION`
-   * from a deny-by-default permissions middleware).
-   *
-   * Default: `["RATE_LIMIT", "PERMISSION"]`. Pass an empty array to format
-   * every error (the legacy behavior); pass a wider set to harden against
-   * additional guardrail middleware in your stack.
+   * Additional KoiError codes whose throws propagate instead of being
+   * formatted. Merged with the built-in hard-stop defaults
+   * (`RATE_LIMIT`, `PERMISSION`) so callers cannot silently disable those
+   * guardrails by extending this list. Use `replaceDefaultPassthroughCodes`
+   * to opt out (rare).
    */
   readonly passthroughCodes?: readonly string[] | undefined;
+  /**
+   * When true, `passthroughCodes` REPLACES the built-in defaults
+   * (`RATE_LIMIT`, `PERMISSION`) instead of extending them. Default: false.
+   * Pass `[]` with this flag set to format EVERY error (legacy behavior;
+   * dangerous in production stacks that rely on hard-stop semantics).
+   */
+  readonly replaceDefaultPassthroughCodes?: boolean | undefined;
   /**
    * Optional predicate run for every caught error after the
    * `passthroughCodes` check. Return `true` to re-throw instead of format.

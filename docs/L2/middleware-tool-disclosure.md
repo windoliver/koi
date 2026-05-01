@@ -72,6 +72,33 @@ The bundle factory wires a `promote_tools` Tool that calls `middleware.promoteBy
 
 Tools are only promoted if they exist in the input descriptor list. Unknown names are silently skipped. The companion tool returns the list of names actually promoted.
 
+### Fail-closed enforcement
+
+Above the threshold, undisclosed tools are advertised with `inputSchema: {}`. The engine's argument validator runs against the *advertised* schema, which means an empty schema accepts arbitrary args. To prevent malformed args from reaching the real tool implementation, `wrapToolCall` rejects direct calls to known-but-not-promoted tools with a `VALIDATION` error that tells the model to promote the tool first.
+
+Trace of a successful flow:
+
+```
+1. wrapModelCall: tools=[a,b,c,d,...] → model sees a,b,c,d at summary
+2. model emits tool call: promote_tools(["c"])
+3. wrapToolCall intercepts → c added to session.promoted
+4. wrapModelCall (next turn): c is promoted → full schema sent
+5. model emits tool call: c({foo: "bar"})
+6. wrapToolCall: c in promoted → next(request) → c.execute
+```
+
+Trace of a fail-closed flow:
+
+```
+1. wrapModelCall: tools=[a,b,c,d,...] → model sees summaries
+2. model skips promote_tools and calls c({foo: "bar"}) directly
+3. wrapToolCall: c known but not promoted → returns VALIDATION error
+4. model sees the error, calls promote_tools(["c"])
+5. retry — now allowed
+```
+
+Below the threshold the guard is inert (no disclosure happened — `state.knownNames` is empty for that session).
+
 ### Per-session state
 
 Promotion state is keyed by `SessionId` so concurrent or interleaved sessions sharing one middleware instance cannot corrupt each other. Per-session entries are populated lazily on first `wrapModelCall` (and via `onSessionStart`) and torn down on `onSessionEnd`.

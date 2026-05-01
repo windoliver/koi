@@ -554,38 +554,51 @@ describe("createToolErrorFormatterMiddleware", () => {
       expect(thrown).toBeInstanceOf(KoiRuntimeError);
     });
 
-    test("custom passthroughCodes overrides defaults", async () => {
-      // Empty list = format every error (legacy behavior)
-      const wrap = getWrapToolCall({ passthroughCodes: [] });
-      const koiError: KoiError = {
+    test("custom passthroughCodes EXTEND the defaults", async () => {
+      // RATE_LIMIT must still throw even though caller only specified TIMEOUT
+      const wrap = getWrapToolCall({ passthroughCodes: ["TIMEOUT"] });
+
+      const rateLimitErr: KoiError = {
         code: "RATE_LIMIT",
-        message: "still formatted",
+        message: "still hard-stop",
         retryable: true,
       };
-      const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
+      const failing1 = createFailingToolHandler(new KoiRuntimeError(rateLimitErr));
+      let rlThrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing1);
+      } catch (e: unknown) {
+        rlThrown = e;
+      }
+      expect(rlThrown).toBeInstanceOf(KoiRuntimeError);
 
+      // And the new code also throws
+      const tErr: KoiError = { code: "TIMEOUT", message: "op timed out", retryable: true };
+      const failing2 = createFailingToolHandler(new KoiRuntimeError(tErr));
+      let tThrown: unknown;
+      try {
+        await wrap(mockCtx, baseToolRequest, failing2);
+      } catch (e: unknown) {
+        tThrown = e;
+      }
+      expect(tThrown).toBeInstanceOf(KoiRuntimeError);
+    });
+
+    test("replaceDefaultPassthroughCodes: true opts out of merge", async () => {
+      const wrap = getWrapToolCall({
+        passthroughCodes: [],
+        replaceDefaultPassthroughCodes: true,
+      });
+      const rateLimitErr: KoiError = {
+        code: "RATE_LIMIT",
+        message: "now formatted",
+        retryable: true,
+      };
+      const failing = createFailingToolHandler(new KoiRuntimeError(rateLimitErr));
       const response = await wrap(mockCtx, baseToolRequest, failing);
       expect(typeof response.output).toBe("string");
       expect(response.metadata?.error).toBe(true);
       expect(response.metadata?.code).toBe("RATE_LIMIT");
-    });
-
-    test("custom passthroughCodes can extend coverage", async () => {
-      const wrap = getWrapToolCall({ passthroughCodes: ["TIMEOUT"] });
-      const koiError: KoiError = {
-        code: "TIMEOUT",
-        message: "operation timed out",
-        retryable: true,
-      };
-      const failing = createFailingToolHandler(new KoiRuntimeError(koiError));
-
-      let thrown: unknown;
-      try {
-        await wrap(mockCtx, baseToolRequest, failing);
-      } catch (e: unknown) {
-        thrown = e;
-      }
-      expect(thrown).toBeInstanceOf(KoiRuntimeError);
     });
 
     test("passthroughPredicate can re-throw codes outside the default set", async () => {
