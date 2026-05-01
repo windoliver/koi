@@ -22,10 +22,12 @@
  */
 
 import type {
+  EngineState,
   InboundMessage,
   KoiError,
   Result,
   SessionId,
+  SessionPersistence,
   SessionTranscript,
   TranscriptEntry,
 } from "@koi/core";
@@ -269,4 +271,61 @@ export async function resumeForSession(
   if (!loadResult.ok) return loadResult;
 
   return resumeFromTranscript(loadResult.value.entries);
+}
+
+// ---------------------------------------------------------------------------
+// State-aware resume (issue #1683)
+// ---------------------------------------------------------------------------
+
+export interface ResumeWithStateResult {
+  readonly messages: readonly InboundMessage[];
+  readonly issues: readonly RepairIssue[];
+  /**
+   * Engine state captured at the last cancel terminal, when one was persisted
+   * and the session was found. `undefined` means transcript-only resume —
+   * either the adapter never implemented `saveState`, or the session has not
+   * been cancelled, or no SessionPersistence was supplied.
+   */
+  readonly lastEngineState: EngineState | undefined;
+}
+
+/**
+ * Like `resumeForSession`, but additionally reads `lastEngineState` from a
+ * `SessionPersistence` store so callers can pass it to `EngineAdapter.loadState`
+ * before continuing.
+ *
+ * Falls back gracefully:
+ *   - persistence missing the session (NOT_FOUND) → `lastEngineState: undefined`
+ *   - any other persistence error → returned as the top-level error
+ *   - persistence returns a record with no `lastEngineState` → `undefined`
+ *
+ * Adapters without `loadState` should ignore the field; transcript replay
+ * alone is sufficient for them.
+ */
+export async function resumeWithEngineState(
+  sid: SessionId,
+  transcript: SessionTranscript,
+  persistence: SessionPersistence,
+): Promise<Result<ResumeWithStateResult, KoiError>> {
+  const base = await resumeForSession(sid, transcript);
+  if (!base.ok) return base;
+
+  const sessionResult = await persistence.loadSession(sid);
+  if (!sessionResult.ok) {
+    if (sessionResult.error.code === "NOT_FOUND") {
+      return {
+        ok: true,
+        value: { ...base.value, lastEngineState: undefined },
+      };
+    }
+    return sessionResult;
+  }
+
+  return {
+    ok: true,
+    value: {
+      ...base.value,
+      lastEngineState: sessionResult.value.lastEngineState,
+    },
+  };
 }

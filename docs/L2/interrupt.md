@@ -311,8 +311,20 @@ Per-tool `interruptBehavior` metadata in the manifest is explicitly **not** intr
 
 - **PID-directed `kill -INT <wrapperPid>` does not reach the TUI child.** The `koi tui` launcher re-execs into a browser-build child process. Forwarding SIGINT would double-deliver every terminal Ctrl+C (since the terminal delivers to the whole foreground process group) and depend on a time-based coalesce heuristic. Spawning the child in a separate process group (`detached: true`) would solve the delivery ambiguity but is unsafe for interactive children: a background-pgroup process reading from the controlling tty gets SIGTTIN under job control and freezes, and Bun/Node do not expose `tcsetpgrp` to transfer terminal foreground ownership. Supervisors should use **SIGTERM** for PID-directed termination — the wrapper forwards SIGTERM and escalates to SIGKILL after 10s if the child wedges. Terminal Ctrl+C works normally via process-group delivery.
 - **MCP tools cannot be cancelled mid-flight.** The MCP protocol has no cancel verb. `packages/net/mcp/src/tool-adapter.ts` checks `signal.aborted` before dispatch but cannot interrupt an in-flight remote call. The terminal `done` fires once the MCP call settles.
-- **Durable resume is not supported yet.** Cancelling a session halts it cleanly but does not persist `EngineState`. See #1683 for the resume-from-checkpoint story. Transcript-based resume via `koi resume <sessionId>` (existing `SessionPersistence`) still works for stateless adapters.
 - **Team runtime fan-out cancel is a separate issue.** Spawned sub-agents that detach from the parent signal (deferred / on-demand delivery modes) will continue running after the parent is cancelled.
+
+## Resume after cancel
+
+Cancelling a session halts it cleanly with `done.stopReason === "interrupted"`. To continue from where the cancel landed, callers can wire `EngineAdapter.saveState` / `loadState` through `SessionPersistence`:
+
+| Adapter capability | Resume behavior |
+|---|---|
+| Adapter implements `saveState` + caller supplies `SessionPersistence` | Wrap with `wrapAdapterWithStatePersistence(inner, …)`. On `interrupted` it persists the captured `EngineState` into `SessionPersistence.saveSession` under the supplied record template. On resume, call `resumeWithEngineState(sid, transcript, persistence)` — it returns transcript messages plus the persisted `lastEngineState`. The caller passes the state to `adapter.loadState` before starting the next stream. |
+| Adapter does NOT implement `saveState` | The wrapper passes through unchanged; nothing is written to `SessionPersistence`. Resume falls back to transcript-only via `resumeForSession`. The transcript already records every `tool_result` immediately after the tool returns, so non-idempotent tools are safe under replay — the model sees the prior result and never re-issues the call. |
+
+The wrapper is cancel-only by design (#1683 scope). Continuous (per-turn or periodic) state persistence is intentionally out of scope; v1's `deploy/node` ran a 10s timer for that, and a future change can add the same pattern without breaking this wiring.
+
+Reference: `packages/lib/session/src/persist-engine-state.ts`, `packages/lib/session/src/resume.ts` (`resumeWithEngineState`).
 
 ## Testing
 
