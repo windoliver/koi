@@ -97,15 +97,39 @@ export function createTestGate(
         escalate();
       }, timeoutMs);
 
-      // Await exit FIRST so we can latch `exited` before stderr drain. A
-      // verbose child that exits 0 may still buffer kilobytes of stderr;
-      // an abort during that drain window must not invalidate the result.
+      // Drain stderr concurrently from the moment the child is spawned —
+      // never await proc.exited with the pipe still buffering, or a noisy
+      // child will block on write past the OS pipe buffer (~64KB) and
+      // never reach exit. The drain promise is held live for the entire
+      // lifetime of the gate so it stays under the timeout/abort budget.
+      const stderrPromise = new Response(proc.stderr).text();
       const exitCode = await proc.exited;
+      // Latch `exited` synchronously after proc.exited resolves so a
+      // late abort/timeout that fires while we're still waiting on
+      // stderr drain (e.g., a background descendant inheriting the
+      // stream) cannot retroactively mark a successful run as failed.
       exited = true;
+      ctx.signal.removeEventListener("abort", onAbort);
+      // The child has exited, but a forked descendant may still be
+      // holding stderr open. Bound the post-exit drain wait so we never
+      // hang the loop past timeoutMs — once the child's own writes have
+      // flushed, descendant chatter is not worth waiting for.
+      // Use let — justified: race outcome.
+      let drainTimedOut = false;
+      const drainGrace = new Promise<string>((resolve) => {
+        setTimeout(() => {
+          drainTimedOut = true;
+          resolve("[stderr drain exceeded grace; possibly held by descendant]");
+        }, 1_000).unref?.();
+      });
+      const stderr = await Promise.race([stderrPromise, drainGrace]);
       clearTimeout(timer);
       if (killTimer !== undefined) clearTimeout(killTimer);
-      ctx.signal.removeEventListener("abort", onAbort);
-      const stderr = await new Response(proc.stderr).text();
+      if (drainTimedOut) {
+        // Best-effort: kill any lingering process group so the held-open
+        // stream is released. The exit code is already known.
+        killGroup("SIGKILL");
+      }
 
       // Cancellation is a verification failure regardless of exit code. A
       // child that traps SIGTERM and exits 0 (or simply finishes during the

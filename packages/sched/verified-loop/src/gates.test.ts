@@ -152,6 +152,21 @@ describe("createTestGate pipe handling", () => {
     expect(result.passed).toBe(true);
     expect(elapsed).toBeLessThan(2_500);
   }, 5_000);
+
+  test("does not deadlock when child writes a large amount to stderr", async () => {
+    // Regression: stderr was previously drained AFTER awaiting proc.exited,
+    // so a child writing past the OS pipe buffer (~64KB) on stderr would
+    // block on write before exit and time out. Concurrent drain from spawn
+    // must keep this under a couple hundred ms.
+    const gate = createTestGate(["bash", "-c", "yes hello | head -c 1048576 1>&2; exit 0"], {
+      timeoutMs: 3_000,
+    });
+    const start = performance.now();
+    const result = await gate(makeCtx());
+    const elapsed = performance.now() - start;
+    expect(result.passed).toBe(true);
+    expect(elapsed).toBeLessThan(2_500);
+  }, 5_000);
 });
 
 describe("createTestGate signal handling", () => {
