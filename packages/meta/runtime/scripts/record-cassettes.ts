@@ -92,6 +92,7 @@ import { createAceMiddleware, createInMemoryPlaybookStore } from "@koi/middlewar
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createFeedbackLoopMiddleware } from "@koi/middleware-feedback-loop";
+import { createFsRollbackMiddleware } from "@koi/middleware-fs-rollback";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
@@ -2281,6 +2282,62 @@ async function recordAgentSummarySidecar(fixtures: string, name: string): Promis
     ),
   );
 }
+
+// @koi/middleware-fs-rollback — fs-rollback golden fixture setup.
+// Tool writes a file inside this temp git repo and then throws; the
+// middleware should capture a stash before the call and restore on failure
+// so the working tree is clean after the turn. We initialize a real git
+// repo so `git stash` actually has somewhere to store the snapshot.
+const { mkdtempSync: mkdtempSyncForFsRollback } = await import("node:fs");
+const { tmpdir: tmpDirForFsRollback } = await import("node:os");
+const { join: joinForFsRollback } = await import("node:path");
+const fsRollbackTmpDir = mkdtempSyncForFsRollback(
+  joinForFsRollback(tmpDirForFsRollback(), "koi-golden-fs-rollback-"),
+);
+const fsRollbackInitProc = Bun.spawnSync(["git", "init", "--quiet"], { cwd: fsRollbackTmpDir });
+if (fsRollbackInitProc.exitCode !== 0) {
+  throw new Error("git init failed in fs-rollback fixture");
+}
+Bun.spawnSync(["git", "config", "user.email", "test@test.com"], { cwd: fsRollbackTmpDir });
+Bun.spawnSync(["git", "config", "user.name", "Test"], { cwd: fsRollbackTmpDir });
+// Seed a baseline file + commit so HEAD exists (stash needs a parent commit).
+await Bun.write(`${fsRollbackTmpDir}/baseline.txt`, "untouched\n");
+Bun.spawnSync(["git", "add", "."], { cwd: fsRollbackTmpDir });
+Bun.spawnSync(["git", "commit", "--quiet", "-m", "init"], { cwd: fsRollbackTmpDir });
+
+const fsRollbackHandle = createFsRollbackMiddleware({
+  cwd: fsRollbackTmpDir,
+  protectedTools: ["fs_write_then_fail"],
+});
+
+// Tool that first writes a file (so there's something to roll back), then
+// throws. The fs-rollback middleware must restore the working tree before
+// the throw escapes the wrapToolCall.
+const fsRollbackFailingToolResult = buildTool({
+  name: "fs_write_then_fail",
+  description:
+    "Write content to a file at the given path, then throw to simulate a partial-write failure (test-only).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Absolute file path to write" },
+      content: { type: "string", description: "Text content to write" },
+    },
+    required: ["path", "content"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => {
+    await Bun.write(args.path as string, args.content as string);
+    throw new Error("simulated post-write failure for fs-rollback golden");
+  },
+});
+if (!fsRollbackFailingToolResult.ok) {
+  console.error(
+    `buildTool(fs_write_then_fail) failed: ${fsRollbackFailingToolResult.error.message}`,
+  );
+  process.exit(1);
+}
+const fsRollbackFailingTool = fsRollbackFailingToolResult.value;
 
 const queries: readonly QueryConfig[] = [
   // strict-agentic: exercises @koi/middleware-strict-agentic onBeforeStop gate.
@@ -4599,6 +4656,39 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 2,
   },
 
+  // @koi/middleware-fs-rollback — fs-rollback wraps a protected tool that
+  // first writes a file then throws. The middleware should snapshot before
+  // the call (git stash) and restore on failure so the working tree is
+  // clean after the turn. The trajectory must show a tool failure step plus
+  // an `fs-rollback` middleware span around it.
+  {
+    name: "fs-rollback",
+    prompt: `Use the fs_write_then_fail tool exactly once with path="${fsRollbackTmpDir}/written.txt" and content="will-be-rolled-back". After the tool call, briefly explain in one sentence what happened to the user.`,
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded", "tool.failed"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "fs-write-then-fail",
+        toolName: "fs_write_then_fail",
+        createTool: () => fsRollbackFailingTool,
+      }),
+    ],
+    extraMiddleware: [fsRollbackHandle.middleware],
+    // semantic-retry classifies tool throws as `tool_misuse` and would loop
+    // until budget exhausts, hiding fs-rollback's restore-on-failure span.
+    skipMiddleware: ["semantic-retry"],
+    maxTurns: 2,
+  },
+
   // @koi/middleware-tool-disclosure — tool count above threshold (2) forces
   // summarization. Model must call `promote_tools` to lift `add_numbers`
   // back to a full descriptor before invoking it. Exercises the disclosure
@@ -5489,6 +5579,28 @@ await recordCassette("tool-error-formatter", () =>
       },
     ],
     tools: [failingTool.descriptor],
+  }),
+);
+
+// @koi/middleware-fs-rollback — model invokes the write-then-fail tool. The
+// middleware stashes pre-call, the tool writes the file then throws, and
+// fs-rollback restores the tree before the throw escapes. The second model
+// call explains the partial-write failure to the user.
+await recordCassette("fs-rollback", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: `Use the fs_write_then_fail tool exactly once with path="${fsRollbackTmpDir}/written.txt" and content="will-be-rolled-back". After the tool call, briefly explain in one sentence what happened to the user.`,
+          },
+        ],
+      },
+    ],
+    tools: [fsRollbackFailingTool.descriptor],
   }),
 );
 

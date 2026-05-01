@@ -1,0 +1,494 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "fs-rollback",
+  "agent": {
+    "name": "golden-fs-rollback",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "fs_write_then_fail",
+        "description": "Write content to a file at the given path, then throw to simulate a partial-write failure (test-only)."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:24.429Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:24.430Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-05-01T19:14:24.453Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the fs_write_then_fail tool exactly once with path=\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt\" and content=\"will-be-rolled-back\". After the tool call, briefly explain in one sentence what happened to the user.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 234,
+        "completion_tokens": 66
+      },
+      "duration_ms": 816,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "fs_write_then_fail",
+            "description": "Write content to a file at the given path, then throw to simulate a partial-write failure (test-only)."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "6a37f7dca8345710fcb33c39610ab41021e56f9b981c0c4dad5cd39d5f702571",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-05-01T19:14:28.681Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_fs_write_then_fail_3",
+          "function_name": "fs_write_then_fail",
+          "arguments": {
+            "path": "/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt",
+            "content": "will-be-rolled-back"
+          }
+        }
+      ],
+      "duration_ms": 2,
+      "outcome": "failure",
+      "extra": {
+        "__rich_error": {
+          "text": "simulated post-write failure for fs-rollback golden",
+          "data": {
+            "errorType": "Error"
+          }
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:28.682Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 824.5676249999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1777662865273,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:28.690Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "fs_write_then_fail({\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt\",\"content\":\"will-be-rolled-back\"})",
+      "duration_ms": 3416.9818339999983,
+      "outcome": "failure",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        },
+        "__rich_error": {
+          "text": "simulated post-write failure for fs-rollback golden"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:28.691Z",
+      "model_name": "hook:on-tool-exec",
+      "message": "tool.failed → on-tool-exec",
+      "duration_ms": 5.854583000000275,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.failed",
+        "hookName": "on-tool-exec",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-tool-exec"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:28.692Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 822.1151659999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 1,
+            "allowedCount": 1,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777662865272,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:28.693Z",
+      "model_name": "middleware:permissions",
+      "message": "fs_write_then_fail({\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt\",\"content\":\"will-be-rolled-back\"})",
+      "duration_ms": 3416.402000000002,
+      "outcome": "failure",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "fs_write_then_fail",
+            "resource": "fs_write_then_fail",
+            "toolInput": "{\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt\",\"content\":\"will-be-rolled-back\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1777662868689,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        },
+        "__rich_error": {
+          "text": "simulated post-write failure for fs-rollback golden"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:28.694Z",
+      "model_name": "middleware:fs-rollback",
+      "message": "fs_write_then_fail({\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt\",\"content\":\"will-be-rolled-back\"})",
+      "duration_ms": 3413.9148749999986,
+      "outcome": "failure",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "fs-rollback",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 180,
+        "nextCalled": true,
+        "_original_timestamp": 1777662868688,
+        "__koi": {
+          "identifier": "middleware:fs-rollback"
+        },
+        "__rich_error": {
+          "text": "simulated post-write failure for fs-rollback golden"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:28.695Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 819.0323749999989,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777662865271,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:28.696Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 818.5443750000013,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777662865270,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:28.697Z",
+      "model_name": "middleware:hooks",
+      "message": "fs_write_then_fail({\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt\",\"content\":\"will-be-rolled-back\"})",
+      "duration_ms": 7.416333000001032,
+      "outcome": "failure",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "fs_write_then_fail",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777662868687,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        },
+        "__rich_error": {
+          "text": "simulated post-write failure for fs-rollback golden"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "agent",
+      "timestamp": "2026-05-01T19:14:28.698Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "error: simulated post-write failure for fs-rollback golden",
+      "observation": {
+        "results": [
+          {
+            "content": "The tool attempted to write \"will-be-rolled-back\" to the specified file, but a simulated failure occurred after the write, triggering a rollback.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 334,
+        "completion_tokens": 33
+      },
+      "duration_ms": 808,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "fs_write_then_fail",
+            "description": "Write content to a file at the given path, then throw to simulate a partial-write failure (test-only)."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "6a37f7dca8345710fcb33c39610ab41021e56f9b981c0c4dad5cd39d5f702571",
+        "turnIndex": 1,
+        "_original_timestamp": 1777662868697
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:29.509Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 809.3704589999979,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:29.510Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 809.3342080000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 1,
+            "allowedCount": 1,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777662869508,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:29.511Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 809.023709000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777662869507,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:29.512Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 808.9562079999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777662869506,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-05-01T19:14:29.520Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.16479099999924074,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

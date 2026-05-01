@@ -931,24 +931,40 @@ describe("Golden: @koi/middleware-fs-rollback", () => {
     }
   });
 
-  test("trajectory fixture (cassette replay) records fs-rollback middleware spans on protected tool calls", async () => {
-    const path = `${FIXTURES}/fs-rollback.trajectory.json`;
-    if (!(await Bun.file(path).exists())) {
-      // Trajectory not yet recorded — skip without failing CI on first land.
-      return;
-    }
-    const doc = (await Bun.file(path).json()) as {
+  test("trajectory fixture (cassette replay) records fs-rollback middleware spans plus a failing protected tool step", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/fs-rollback.trajectory.json`).json()) as {
       readonly schema_version: string;
+      readonly session_id: string;
       readonly steps: readonly {
         readonly source?: string;
+        readonly outcome?: string;
         readonly extra?: Record<string, unknown>;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
       }[];
     };
+
     expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("fs-rollback");
+
+    // The fs-rollback middleware must show up as a span around the protected
+    // tool call. Without the span the trajectory cannot prove the middleware
+    // wrapped the call at all.
     const fsrbSpans = doc.steps.filter(
       (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "fs-rollback",
     );
     expect(fsrbSpans.length).toBeGreaterThanOrEqual(1);
+
+    // The protected tool throws after writing — the trajectory must contain
+    // a failure tool step for fs_write_then_fail. That's what triggers the
+    // restore-on-failure branch the middleware exists to exercise.
+    const toolFailures = doc.steps.filter(
+      (s) =>
+        s.source === "tool" &&
+        s.outcome === "failure" &&
+        Array.isArray(s.tool_calls) &&
+        s.tool_calls.some((tc) => tc.function_name === "fs_write_then_fail"),
+    );
+    expect(toolFailures.length).toBeGreaterThanOrEqual(1);
   });
 });
 

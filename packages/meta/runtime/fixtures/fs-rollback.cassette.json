@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "cassette-v1",
+  "name": "fs-rollback",
+  "model": "google/gemini-2.0-flash-001",
+  "recordedAt": 1777662864420,
+  "chunks": [
+    {
+      "kind": "tool_call_start",
+      "toolName": "fs_write_then_fail",
+      "callId": "tool_fs_write_then_fail_rreGabo2kHeJ85ZfzJE7"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_fs_write_then_fail_rreGabo2kHeJ85ZfzJE7",
+      "delta": "{\"content\":\"will-be-rolled-back\",\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt\"}"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 139,
+      "outputTokens": 66
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_fs_write_then_fail_rreGabo2kHeJ85ZfzJE7"
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "tool_use",
+        "responseId": "gen-1777662863-hYH7AcRc641NgCiq51D8",
+        "richContent": [
+          {
+            "kind": "tool_call",
+            "id": "tool_fs_write_then_fail_rreGabo2kHeJ85ZfzJE7",
+            "name": "fs_write_then_fail",
+            "arguments": {
+              "content": "will-be-rolled-back",
+              "path": "/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt"
+            }
+          }
+        ],
+        "usage": {
+          "inputTokens": 139,
+          "outputTokens": 66
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "1697c4ebdf99baa1444ad564dae63740aa416dfb6535ee5a2e7e5c64f262ee80"
+        }
+      }
+    }
+  ]
+}
