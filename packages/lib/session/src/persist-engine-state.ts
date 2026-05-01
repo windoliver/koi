@@ -48,9 +48,13 @@ export interface PersistEngineStateOptions {
    */
   readonly recordTemplate: () => SessionRecordTemplate;
   /**
-   * Fired when persistence fails (saveState throw, saveSession returning an
-   * error). Default: console.error. Cancellation always succeeds — persist
-   * failures must never escalate into a different terminal outcome.
+   * Fired when persistence fails (`saveState` throw, `saveSession` returning
+   * an error, or stale-checkpoint clear failing). Cancellation itself always
+   * succeeds — persist failures never escalate the terminal outcome — so
+   * callers that promise durable resume to their users MUST supply a handler
+   * here and treat its invocation as "checkpoint lost; downgrade UX to
+   * transcript-only resume". The default merely logs to `console.error`,
+   * which is appropriate for tests but NOT for production hosts.
    */
   readonly onPersistError?: (error: KoiError | Error) => void;
   /**
@@ -114,10 +118,24 @@ async function* wrapStreamForCancelPersist(
   deps: WrapStreamDeps,
 ): AsyncIterable<EngineEvent> {
   for await (const event of inner) {
-    yield event;
-    if (event.kind === "done" && event.output.stopReason === "interrupted") {
-      await persistOnInterrupted(deps);
+    // Persist BEFORE yielding the terminal `done` event. Yielding first would
+    // make checkpointing dependent on the consumer pulling the next item — and
+    // production consumers (e.g. headless workers, TUI cancel handlers) break
+    // out of the iteration loop the instant they observe `signal.aborted`, so
+    // they never request a successor. With persist-after-yield, the side
+    // effect would silently disappear under exactly the cancel path this
+    // feature is meant to make durable.
+    if (event.kind === "done") {
+      if (event.output.stopReason === "interrupted") {
+        await persistOnInterrupted(deps);
+      } else {
+        // Successful (non-interrupted) terminal — clear any stale checkpoint
+        // left by a prior cancel on this session so a later crash/resume
+        // cannot resurrect pre-resume state on top of newer transcript turns.
+        await clearStaleCheckpoint(deps);
+      }
     }
+    yield event;
   }
 }
 
@@ -130,14 +148,48 @@ async function persistOnInterrupted(deps: WrapStreamDeps): Promise<void> {
     deps.onPersistError(e instanceof Error ? e : new Error(extractMessage(e)));
     return;
   }
-  const template = deps.recordTemplate();
-  const record: SessionRecord = {
-    ...template,
-    lastEngineState: state,
+  await mergeAndSave(deps, state);
+}
+
+async function clearStaleCheckpoint(deps: WrapStreamDeps): Promise<void> {
+  const sid = deps.recordTemplate().sessionId;
+  const loaded = await deps.persistence.loadSession(sid);
+  if (!loaded.ok) {
+    // NOT_FOUND on a session we never wrote is fine; any other error is logged
+    // but does not block the successful terminal.
+    if (loaded.error.code !== "NOT_FOUND") deps.onPersistError(loaded.error);
+    return;
+  }
+  if (loaded.value.lastEngineState === undefined) return;
+  const cleared: SessionRecord = {
+    ...loaded.value,
+    lastEngineState: undefined,
     lastPersistedAt: deps.now(),
   };
-  const result = await deps.persistence.saveSession(record);
-  if (!result.ok) {
-    deps.onPersistError(result.error);
+  const result = await deps.persistence.saveSession(cleared);
+  if (!result.ok) deps.onPersistError(result.error);
+}
+
+/**
+ * Merge `state` into the existing session row, falling back to the
+ * caller-supplied template only when no row exists. This avoids clobbering
+ * `seq`, `remoteSeq`, `metadata`, and `status` — fields the caller's
+ * template may not have refreshed since the last successful turn — while
+ * still allowing the very first cancel of a new session to create the row.
+ */
+async function mergeAndSave(deps: WrapStreamDeps, state: EngineState): Promise<void> {
+  const template = deps.recordTemplate();
+  const loaded = await deps.persistence.loadSession(template.sessionId);
+  // let: justified — assigned in either branch below.
+  let merged: SessionRecord;
+  if (loaded.ok) {
+    merged = { ...loaded.value, lastEngineState: state, lastPersistedAt: deps.now() };
+  } else if (loaded.error.code === "NOT_FOUND") {
+    merged = { ...template, lastEngineState: state, lastPersistedAt: deps.now() };
+  } else {
+    deps.onPersistError(loaded.error);
+    return;
   }
+  const result = await deps.persistence.saveSession(merged);
+  if (!result.ok) deps.onPersistError(result.error);
 }

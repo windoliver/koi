@@ -10,6 +10,7 @@ import type {
   EngineEvent,
   EngineInput,
   EngineState,
+  KoiError,
   SessionPersistence,
 } from "@koi/core";
 import { agentId, sessionId } from "@koi/core";
@@ -101,7 +102,7 @@ describe("wrapAdapterWithStatePersistence", () => {
     expect(loaded.value.status).toBe("idle");
   });
 
-  test("non-interrupted terminal does NOT persist", async () => {
+  test("non-interrupted terminal on never-written session does NOT create a row", async () => {
     const inner = makeAdapter([completedDone], captured);
     const wrapped = wrapAdapterWithStatePersistence(inner, {
       persistence: store,
@@ -112,6 +113,65 @@ describe("wrapAdapterWithStatePersistence", () => {
     const loaded = await store.loadSession(SID);
     expect(loaded.ok).toBe(false);
     if (!loaded.ok) expect(loaded.error.code).toBe("NOT_FOUND");
+  });
+
+  test("interrupt then successful terminal clears the stale checkpoint", async () => {
+    // Cancel once → row exists with lastEngineState set.
+    const cancelAdapter = makeAdapter([interruptedDone], captured);
+    const cancelWrap = wrapAdapterWithStatePersistence(cancelAdapter, {
+      persistence: store,
+      recordTemplate: template,
+    });
+    for await (const _ of cancelWrap.stream({ kind: "text", text: "hi" }));
+    const afterCancel = await store.loadSession(SID);
+    if (!afterCancel.ok) throw new Error("expected ok");
+    expect(afterCancel.value.lastEngineState).toEqual(captured);
+
+    // Successful turn on the same session → checkpoint must be cleared.
+    const successAdapter = makeAdapter([completedDone], captured);
+    const successWrap = wrapAdapterWithStatePersistence(successAdapter, {
+      persistence: store,
+      recordTemplate: template,
+    });
+    for await (const _ of successWrap.stream({ kind: "text", text: "hi" }));
+    const afterSuccess = await store.loadSession(SID);
+    if (!afterSuccess.ok) throw new Error("expected ok");
+    expect(afterSuccess.value.lastEngineState).toBeUndefined();
+  });
+
+  test("interrupt persistence merges into existing row instead of overwriting unrelated fields", async () => {
+    // Pre-existing row with caller-managed counters and metadata.
+    await store.saveSession({
+      ...template(),
+      seq: 50,
+      remoteSeq: 25,
+      metadata: { route: "vip" },
+      lastPersistedAt: 1,
+    });
+
+    // Wrapper template lags behind (e.g. caller hasn't refreshed since wrap).
+    const staleTemplate = (): SessionRecordTemplate => ({
+      ...template(),
+      seq: 0,
+      remoteSeq: 0,
+      metadata: {},
+    });
+    const inner = makeAdapter([interruptedDone], captured);
+    const wrapped = wrapAdapterWithStatePersistence(inner, {
+      persistence: store,
+      recordTemplate: staleTemplate,
+      now: () => 9_999,
+    });
+    for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
+
+    const loaded = await store.loadSession(SID);
+    if (!loaded.ok) throw new Error("expected ok");
+    expect(loaded.value.lastEngineState).toEqual(captured);
+    expect(loaded.value.lastPersistedAt).toBe(9_999);
+    // Unrelated fields preserved from the existing row.
+    expect(loaded.value.seq).toBe(50);
+    expect(loaded.value.remoteSeq).toBe(25);
+    expect(loaded.value.metadata).toEqual({ route: "vip" });
   });
 
   test("adapter without saveState is returned unchanged (transcript fallback)", async () => {
@@ -171,6 +231,60 @@ describe("wrapAdapterWithStatePersistence", () => {
 
     for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  test("consumer that breaks immediately after `done` still observes a persisted checkpoint", async () => {
+    // Mirrors the production cancel path: workers exit the for-await loop the
+    // moment they see the interrupted terminal and never pull the trailing
+    // sentinel. The wrapper must run its side effect BEFORE yielding `done`.
+    const inner = makeAdapter(
+      [{ kind: "text_delta", delta: "partial" }, interruptedDone],
+      captured,
+    );
+    const wrapped = wrapAdapterWithStatePersistence(inner, {
+      persistence: store,
+      recordTemplate: template,
+    });
+
+    for await (const e of wrapped.stream({ kind: "text", text: "hi" })) {
+      if (e.kind === "done") break; // do NOT pull the next iterator step
+    }
+
+    const loaded = await store.loadSession(SID);
+    if (!loaded.ok) throw new Error("checkpoint missing — persist ran after yield");
+    expect(loaded.value.lastEngineState).toEqual(captured);
+  });
+
+  test("caller can detect checkpoint loss in-band via onPersistError (no stderr scraping)", async () => {
+    // Simulates a transient store outage. The contract is: the cancel still
+    // produces an interrupted terminal AND the supplied callback fires with a
+    // typed error so the host can downgrade the resume UX.
+    const failingStore: SessionPersistence = {
+      ...store,
+      saveSession: async () => ({
+        ok: false,
+        error: { code: "INTERNAL", message: "store offline", retryable: true, context: {} },
+      }),
+    };
+    const inner = makeAdapter([interruptedDone], captured);
+    const errors: Array<KoiError | Error> = [];
+    const wrapped = wrapAdapterWithStatePersistence(inner, {
+      persistence: failingStore,
+      recordTemplate: template,
+      onPersistError: (e) => errors.push(e),
+    });
+
+    const events: EngineEvent[] = [];
+    for await (const e of wrapped.stream({ kind: "text", text: "hi" })) events.push(e);
+
+    expect(events.at(-1)?.kind).toBe("done");
+    expect(errors).toHaveLength(1);
+    const e0 = errors[0];
+    if (e0 !== undefined && "code" in e0) {
+      expect(e0.code).toBe("INTERNAL");
+    } else {
+      throw new Error("expected KoiError");
+    }
   });
 
   test("recordTemplate is invoked at terminal time, not at wrap time", async () => {
