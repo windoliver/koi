@@ -8,8 +8,16 @@ import type { Database } from "bun:sqlite";
  *     UNIQUE(proposal_id). Legacy databases (user_version = 0) are rebuilt:
  *     orphan rows are dropped, duplicates per proposal_id keep the latest by
  *     evaluated_at.
+ *
+ * v2: trajectory_entries primary key changes from
+ *     (session_id, turn_index, identifier) to (session_id, seq), where seq is
+ *     a per-session monotonic counter assigned at append time. The legacy PK
+ *     collapsed multiple same-turn calls to the same tool/model into a single
+ *     row, losing replay/audit fidelity. Legacy rows are migrated by
+ *     assigning seq = ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY
+ *     turn_index, identifier).
  */
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 export function applyPragmas(db: Database, durability: "process" | "os"): void {
   db.run("PRAGMA journal_mode = WAL");
@@ -27,6 +35,7 @@ export function applySchema(db: Database): void {
   db.run(`
     CREATE TABLE IF NOT EXISTS trajectory_entries (
       session_id  TEXT    NOT NULL,
+      seq         INTEGER NOT NULL,
       turn_index  INTEGER NOT NULL,
       timestamp   INTEGER NOT NULL,
       kind        TEXT    NOT NULL,
@@ -35,7 +44,7 @@ export function applySchema(db: Database): void {
       duration_ms INTEGER NOT NULL,
       metadata    TEXT,
       bullet_ids  TEXT,
-      PRIMARY KEY (session_id, turn_index, identifier)
+      PRIMARY KEY (session_id, seq)
     )
   `);
   db.run(
@@ -121,6 +130,9 @@ export function applySchema(db: Database): void {
   // already present, leaving the rebuild to migrateEvaluationsToV1.
   if (fromVersion < 1) {
     migrateEvaluationsToV1(db);
+  }
+  if (fromVersion < 2) {
+    migrateTrajectoriesToV2(db);
   }
   if (fromVersion < CURRENT_SCHEMA_VERSION) {
     db.run(`PRAGMA user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
@@ -284,4 +296,80 @@ function evaluationsConstraintsSatisfied(db: Database): boolean {
 
 function quoteIdentifier(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+interface LegacyTrajectoryRow {
+  readonly session_id: string;
+  readonly turn_index: number;
+  readonly timestamp: number;
+  readonly kind: string;
+  readonly identifier: string;
+  readonly outcome: string;
+  readonly duration_ms: number;
+  readonly metadata: string | null;
+  readonly bullet_ids: string | null;
+}
+
+/**
+ * Migrate trajectory_entries from PK (session_id, turn_index, identifier) to
+ * (session_id, seq). The legacy PK collapsed multiple same-tool calls in one
+ * turn into a single row; the new PK preserves every call as a distinct row.
+ *
+ * No-op when the table already has the `seq` column (CREATE IF NOT EXISTS in
+ * applySchema may have emitted the new shape on a fresh DB).
+ */
+function migrateTrajectoriesToV2(db: Database): void {
+  const cols = db.query("PRAGMA table_info(trajectory_entries)").all() as readonly {
+    readonly name: string;
+  }[];
+  if (cols.length === 0) return;
+  if (cols.some((c) => c.name === "seq")) return;
+
+  const legacyRows = db
+    .query(
+      "SELECT session_id, turn_index, timestamp, kind, identifier, outcome, duration_ms, metadata, bullet_ids FROM trajectory_entries ORDER BY session_id, turn_index, identifier",
+    )
+    .all() as readonly LegacyTrajectoryRow[];
+
+  db.transaction(() => {
+    db.run("DROP TABLE trajectory_entries");
+    db.run(`
+      CREATE TABLE trajectory_entries (
+        session_id  TEXT    NOT NULL,
+        seq         INTEGER NOT NULL,
+        turn_index  INTEGER NOT NULL,
+        timestamp   INTEGER NOT NULL,
+        kind        TEXT    NOT NULL,
+        identifier  TEXT    NOT NULL,
+        outcome     TEXT    NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        metadata    TEXT,
+        bullet_ids  TEXT,
+        PRIMARY KEY (session_id, seq)
+      )
+    `);
+    db.run(
+      "CREATE INDEX IF NOT EXISTS idx_trajectory_entries_session ON trajectory_entries(session_id, turn_index)",
+    );
+    const insert = db.prepare(
+      "INSERT INTO trajectory_entries (session_id, seq, turn_index, timestamp, kind, identifier, outcome, duration_ms, metadata, bullet_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    const seqBySession = new Map<string, number>();
+    for (const r of legacyRows) {
+      const next = (seqBySession.get(r.session_id) ?? 0) + 1;
+      seqBySession.set(r.session_id, next);
+      insert.run(
+        r.session_id,
+        next,
+        r.turn_index,
+        r.timestamp,
+        r.kind,
+        r.identifier,
+        r.outcome,
+        r.duration_ms,
+        r.metadata,
+        r.bullet_ids,
+      );
+    }
+  })();
 }

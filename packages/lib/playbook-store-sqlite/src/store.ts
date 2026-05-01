@@ -166,34 +166,63 @@ function createPlaybookStore(db: Database): PlaybookStore {
   const selectByMinConfidence = db.query("SELECT * FROM playbooks WHERE confidence >= ?");
   const deleteById = db.prepare("DELETE FROM playbooks WHERE id = ?");
 
-  const selectVersionById = db.query("SELECT version FROM playbooks WHERE id = ?");
+  const selectFullById = db.query("SELECT * FROM playbooks WHERE id = ?");
 
   return {
     save: async (pb) => {
-      // Monotonic-version guard: under concurrent writers (or stale retries
-      // from a slow process), an older save must not silently overwrite a
-      // newer learned playbook. Reject any save with version < current.
-      // .immediate() acquires the RESERVED lock at BEGIN so the read-then-
-      // write is serialized against peer writers.
+      // Compare-and-swap on version under concurrent writers:
+      //   - version < current: stale save, reject.
+      //   - version == current: must be byte-identical content (idempotent retry).
+      //     Different content at the same version means two concurrent
+      //     consolidators derived `prev.version + 1` from the same snapshot
+      //     and produced divergent payloads. Accepting either silently loses
+      //     the other's learned state — reject and force the caller to
+      //     re-derive at version + 1.
+      //   - version > current: accept (forward progress).
+      // .immediate() acquires RESERVED lock at BEGIN so the read-then-write
+      // is serialized against peer writers.
+      const incomingTags = canonicalJson(pb.tags);
+      const incomingProvenance = pb.provenance !== undefined ? canonicalJson(pb.provenance) : null;
       db.transaction(() => {
-        const current = selectVersionById.get(pb.id) as { readonly version: number } | null;
-        if (current !== null && pb.version < current.version) {
-          throw new Error(
-            `playbook ${pb.id} cannot save version ${String(pb.version)} below current version ${String(current.version)}`,
-          );
+        const current = selectFullById.get(pb.id) as PlaybookRow | null;
+        if (current !== null) {
+          if (pb.version < current.version) {
+            throw new Error(
+              `playbook ${pb.id} cannot save version ${String(pb.version)} below current version ${String(current.version)}`,
+            );
+          }
+          if (pb.version === current.version) {
+            const sameContent =
+              current.title === pb.title &&
+              current.strategy === pb.strategy &&
+              current.confidence === pb.confidence &&
+              current.source === pb.source &&
+              current.created_at === pb.createdAt &&
+              current.updated_at === pb.updatedAt &&
+              current.session_count === pb.sessionCount &&
+              jsonEqual(current.tags, incomingTags) &&
+              jsonEqual(current.provenance, incomingProvenance);
+            if (!sameContent) {
+              throw new Error(
+                `playbook ${pb.id} version ${String(pb.version)} already committed with different content; re-derive at version ${String(pb.version + 1)}`,
+              );
+            }
+            // Identical retry — no-op.
+            return;
+          }
         }
         upsert.run(
           pb.id,
           pb.title,
           pb.strategy,
-          canonicalJson(pb.tags),
+          incomingTags,
           pb.confidence,
           pb.source,
           pb.createdAt,
           pb.updatedAt,
           pb.sessionCount,
           pb.version,
-          pb.provenance !== undefined ? canonicalJson(pb.provenance) : null,
+          incomingProvenance,
         );
       }).immediate();
     },
@@ -454,33 +483,22 @@ interface TrajectoryRow {
 }
 
 function createTrajectoryStore(db: Database): TrajectoryStore {
-  // Trajectories are append-only evidence with one explicit allowance:
-  // late enrichment of `metadata` / `bulletIds` from null to a value is
-  // permitted via UPDATE. Any other content drift on a duplicate key
-  // (different timestamp/outcome/duration, or rewriting an already-set
-  // metadata field) is rejected so replays cannot tamper with history.
+  // Trajectory rows are an append-only audit log keyed by per-session seq, a
+  // monotonic counter assigned at append time. The legacy PK
+  // (session_id, turn_index, identifier) collapsed legitimate same-tool
+  // repeats inside a single turn — three `fs.read` calls in turn 0 must
+  // round-trip as three rows. Idempotency is the caller's responsibility:
+  // wrap append() in your own transaction or use a fresh batch per attempt.
   const insert = db.prepare(`
     INSERT INTO trajectory_entries
-      (session_id, turn_index, timestamp, kind, identifier, outcome, duration_ms, metadata, bullet_ids)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(session_id, turn_index, identifier) DO NOTHING
+      (session_id, seq, turn_index, timestamp, kind, identifier, outcome, duration_ms, metadata, bullet_ids)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const selectExisting = db.query(
-    "SELECT timestamp, kind, outcome, duration_ms, metadata, bullet_ids FROM trajectory_entries WHERE session_id = ? AND turn_index = ? AND identifier = ?",
-  );
-  // Compare-and-swap: only enrich when both fields are still NULL OR already
-  // equal to the value being written. Defense in depth on top of .immediate()
-  // — if any path were ever to bypass the write lock, this prevents a stale
-  // overwrite from silently winning.
-  const enrichExisting = db.prepare(
-    `UPDATE trajectory_entries
-        SET metadata = ?, bullet_ids = ?
-      WHERE session_id = ? AND turn_index = ? AND identifier = ?
-        AND (metadata IS NULL OR metadata = ?)
-        AND (bullet_ids IS NULL OR bullet_ids = ?)`,
+  const selectMaxSeq = db.query(
+    "SELECT MAX(seq) AS s FROM trajectory_entries WHERE session_id = ?",
   );
   const selectSession = db.query(
-    "SELECT * FROM trajectory_entries WHERE session_id = ? ORDER BY turn_index, identifier",
+    "SELECT * FROM trajectory_entries WHERE session_id = ? ORDER BY seq",
   );
   const selectSessions = db.query(
     "SELECT DISTINCT session_id FROM trajectory_entries ORDER BY session_id LIMIT ?",
@@ -488,12 +506,18 @@ function createTrajectoryStore(db: Database): TrajectoryStore {
 
   return {
     append: async (sessionId, entries) => {
+      // .immediate() acquires RESERVED at BEGIN, so the MAX(seq) read and the
+      // ensuing inserts are serialized against peer writers — concurrent
+      // appends to the same session can't race on the seq counter.
       db.transaction(() => {
+        const maxRow = selectMaxSeq.get(sessionId) as { readonly s: number | null } | null;
+        let next = (maxRow?.s ?? 0) + 1;
         for (const e of entries) {
           const meta = e.metadata !== undefined ? canonicalJson(e.metadata) : null;
           const bullets = e.bulletIds !== undefined ? canonicalJson(e.bulletIds) : null;
-          const result = insert.run(
+          insert.run(
             sessionId,
+            next,
             e.turnIndex,
             e.timestamp,
             e.kind,
@@ -503,60 +527,7 @@ function createTrajectoryStore(db: Database): TrajectoryStore {
             meta,
             bullets,
           );
-          if (result.changes === 0) {
-            // Row already existed. Idempotent if immutable fields match;
-            // metadata / bullet_ids may be enriched once from null to a
-            // value, but never overwritten or downgraded.
-            const existing = selectExisting.get(sessionId, e.turnIndex, e.identifier) as {
-              readonly timestamp: number;
-              readonly kind: string;
-              readonly outcome: string;
-              readonly duration_ms: number;
-              readonly metadata: string | null;
-              readonly bullet_ids: string | null;
-            } | null;
-            if (existing === null) {
-              throw new Error(
-                `trajectory entry (${sessionId}, ${String(e.turnIndex)}, ${e.identifier}) conflict but row missing`,
-              );
-            }
-            const immutableMatches =
-              existing.timestamp === e.timestamp &&
-              existing.kind === e.kind &&
-              existing.outcome === e.outcome &&
-              existing.duration_ms === e.durationMs;
-            // Compare metadata/bullets semantically (canonical re-parse) so
-            // legacy non-canonical rows still match a canonical retry.
-            const metaCompatible =
-              jsonEqual(existing.metadata, meta) || existing.metadata === null || meta === null;
-            const bulletsCompatible =
-              jsonEqual(existing.bullet_ids, bullets) ||
-              existing.bullet_ids === null ||
-              bullets === null;
-            if (!immutableMatches || !metaCompatible || !bulletsCompatible) {
-              throw new Error(
-                `trajectory entry (${sessionId}, ${String(e.turnIndex)}, ${e.identifier}) already recorded with different content`,
-              );
-            }
-            const nextMeta = existing.metadata ?? meta;
-            const nextBullets = existing.bullet_ids ?? bullets;
-            if (nextMeta !== existing.metadata || nextBullets !== existing.bullet_ids) {
-              const enrich = enrichExisting.run(
-                nextMeta,
-                nextBullets,
-                sessionId,
-                e.turnIndex,
-                e.identifier,
-                nextMeta,
-                nextBullets,
-              );
-              if (enrich.changes === 0) {
-                throw new Error(
-                  `trajectory entry (${sessionId}, ${String(e.turnIndex)}, ${e.identifier}) raced with another writer; enrichment rejected`,
-                );
-              }
-            }
-          }
+          next += 1;
         }
       }).immediate();
     },

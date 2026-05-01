@@ -41,9 +41,11 @@ Single `Database` instance is shared across the four sub-stores so a process hol
 ## Schema
 
 ```sql
--- Trajectory entries (append-heavy, partitioned by session_id)
+-- Trajectory entries (append-only audit log, ordered by per-session seq).
+-- Multiple same-tool calls within a single turn each get their own row.
 CREATE TABLE trajectory_entries (
   session_id  TEXT    NOT NULL,
+  seq         INTEGER NOT NULL,    -- per-session monotonic counter
   turn_index  INTEGER NOT NULL,
   timestamp   INTEGER NOT NULL,
   kind        TEXT    NOT NULL,    -- 'model_call' | 'tool_call'
@@ -52,7 +54,7 @@ CREATE TABLE trajectory_entries (
   duration_ms INTEGER NOT NULL,
   metadata    TEXT,                -- JSON, nullable
   bullet_ids  TEXT,                -- JSON array, nullable
-  PRIMARY KEY (session_id, turn_index, identifier)
+  PRIMARY KEY (session_id, seq)
 );
 CREATE INDEX idx_trajectory_entries_session ON trajectory_entries(session_id, turn_index);
 

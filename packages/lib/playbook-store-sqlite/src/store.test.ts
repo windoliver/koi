@@ -175,15 +175,35 @@ describe("createSqlitePlaybookStore — playbooks", () => {
   });
 
   test("rejects stale flat-playbook save (version below current)", async () => {
-    // Regression: in a shared store, a slow process must not silently
-    // overwrite a newer learned playbook with a stale snapshot. Save below
-    // current version is rejected.
     const store = createSqlitePlaybookStore({ path: dbPath });
     await store.playbooks.save(pb({ id: "p", version: 5, strategy: "new" }));
     await expect(
       store.playbooks.save(pb({ id: "p", version: 3, strategy: "old" })),
     ).rejects.toThrow();
     expect((await store.playbooks.get("p"))?.strategy).toBe("new");
+    store.close();
+  });
+
+  test("rejects equal-version flat-playbook save with different content (concurrent consolidators)", async () => {
+    // Regression: two consolidators derive prev.version + 1 from the same
+    // snapshot and produce divergent payloads. The second commit at the same
+    // version must fail loudly, not silently overwrite — caller must
+    // re-derive at version + 1.
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.playbooks.save(pb({ id: "p", version: 2, strategy: "first" }));
+    await expect(
+      store.playbooks.save(pb({ id: "p", version: 2, strategy: "second" })),
+    ).rejects.toThrow(/already committed with different content/);
+    expect((await store.playbooks.get("p"))?.strategy).toBe("first");
+    store.close();
+  });
+
+  test("equal-version flat-playbook save with byte-identical content is idempotent", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    const p = pb({ id: "p", version: 2, strategy: "stable" });
+    await store.playbooks.save(p);
+    await store.playbooks.save(p);
+    expect((await store.playbooks.get("p"))?.strategy).toBe("stable");
     store.close();
   });
 
@@ -423,7 +443,7 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
     const userVersion = after.query("PRAGMA user_version").get() as { user_version: number };
     after.close();
 
-    expect(userVersion.user_version).toBe(1);
+    expect(userVersion.user_version).toBe(2);
     expect(rows.length).toBe(1);
     expect(rows[0]?.id).toBe("e-new");
     expect(rows[0]?.verdict).toBe("promote");
@@ -524,6 +544,61 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
     // Constraint must now fire on duplicate proposal_id from the migrated table.
     await expect(store.proposals.recordEvaluation(makeEvaluation("e-2", "p-1"))).rejects.toThrow();
     store.close();
+  });
+
+  test("v1 → v2 migration assigns per-session seq and preserves all rows", async () => {
+    // Seed a v1 DB with the legacy trajectory_entries shape (PK on
+    // session_id, turn_index, identifier). Two same-turn duplicate rows had to
+    // have different identifiers under v1; migration must repack them under
+    // (session_id, seq) without dropping any row.
+    const seed = new Database(dbPath, { create: true });
+    seed.run("PRAGMA user_version = 1");
+    seed.run(`
+      CREATE TABLE trajectory_entries (
+        session_id  TEXT    NOT NULL,
+        turn_index  INTEGER NOT NULL,
+        timestamp   INTEGER NOT NULL,
+        kind        TEXT    NOT NULL,
+        identifier  TEXT    NOT NULL,
+        outcome     TEXT    NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        metadata    TEXT,
+        bullet_ids  TEXT,
+        PRIMARY KEY (session_id, turn_index, identifier)
+      )
+    `);
+    seed.run(
+      "INSERT INTO trajectory_entries VALUES ('s1', 0, 100, 'tool_call', 'fs.read.1', 'success', 5, NULL, NULL)",
+    );
+    seed.run(
+      "INSERT INTO trajectory_entries VALUES ('s1', 0, 200, 'tool_call', 'fs.read.2', 'success', 7, NULL, NULL)",
+    );
+    seed.run(
+      "INSERT INTO trajectory_entries VALUES ('s2', 0, 50, 'model_call', 'gpt', 'success', 3, NULL, NULL)",
+    );
+    seed.close();
+
+    const migrated = createSqlitePlaybookStore({ path: dbPath });
+    const back1 = await migrated.trajectories.getSession("s1");
+    const back2 = await migrated.trajectories.getSession("s2");
+    migrated.close();
+
+    expect(back1.length).toBe(2);
+    expect(back1.map((e) => e.identifier)).toEqual(["fs.read.1", "fs.read.2"]);
+    expect(back2.length).toBe(1);
+
+    const after = new Database(dbPath, { readonly: true });
+    const seqRows = after
+      .query("SELECT session_id, seq FROM trajectory_entries ORDER BY session_id, seq")
+      .all() as readonly { session_id: string; seq: number }[];
+    const userVersion = after.query("PRAGMA user_version").get() as { user_version: number };
+    after.close();
+    expect(userVersion.user_version).toBe(2);
+    expect(seqRows.map((r) => `${r.session_id}:${String(r.seq)}`)).toEqual([
+      "s1:1",
+      "s1:2",
+      "s2:1",
+    ]);
   });
 
   test("drifted FK targeting wrong column is detected and rebuilt", async () => {
@@ -816,70 +891,27 @@ describe("createSqlitePlaybookStore — append-only invariants", () => {
     store.close();
   });
 
-  test("trajectory append rejects duplicate with different content", async () => {
+  test("trajectory preserves repeated same-tool calls within a single turn", async () => {
+    // Regression: ACE records multiple `fs.read` calls in turn 0 with the same
+    // (turnIndex, identifier). The legacy PK collapsed them into one row;
+    // each call must round-trip as a distinct entry.
     const store = createSqlitePlaybookStore({ path: dbPath });
-    await store.trajectories.append("s1", [makeEntry(0, "x")]);
-    await expect(
-      store.trajectories.append("s1", [{ ...makeEntry(0, "x"), durationMs: 999 }]),
-    ).rejects.toThrow();
-    const back = await store.trajectories.getSession("s1");
-    expect(back.length).toBe(1);
-    expect(back[0]?.durationMs).toBe(12);
-    store.close();
-  });
-
-  test("trajectory append enriches null metadata + bulletIds and persists tail", async () => {
-    const store = createSqlitePlaybookStore({ path: dbPath });
-    await store.trajectories.append("s1", [makeEntry(0, "x")]);
-    // Replay overlaps existing row with metadata enrichment + adds a tail entry.
     await store.trajectories.append("s1", [
-      { ...makeEntry(0, "x"), metadata: { enriched: true }, bulletIds: ["b9"] },
-      makeEntry(1, "y"),
+      { ...makeEntry(0, "fs.read"), timestamp: 100, durationMs: 5 },
+      { ...makeEntry(0, "fs.read"), timestamp: 200, durationMs: 7 },
+      { ...makeEntry(0, "fs.read"), timestamp: 300, durationMs: 9 },
     ]);
     const back = await store.trajectories.getSession("s1");
-    expect(back.length).toBe(2);
-    expect(back[0]?.metadata).toEqual({ enriched: true });
-    expect(back[0]?.bulletIds).toEqual(["b9"]);
-    expect(back[1]?.identifier).toBe("y");
+    expect(back.length).toBe(3);
+    expect(back.map((e) => e.timestamp)).toEqual([100, 200, 300]);
+    expect(back.map((e) => e.durationMs)).toEqual([5, 7, 9]);
     store.close();
   });
 
-  test("concurrent enrichment from two handles cannot silently overwrite", async () => {
-    const a = createSqlitePlaybookStore({ path: dbPath });
-    const b = createSqlitePlaybookStore({ path: dbPath });
-    await a.trajectories.append("s1", [makeEntry(0, "x")]);
-    // Both handles see the row with NULL metadata. Writer A enriches first.
-    await a.trajectories.append("s1", [{ ...makeEntry(0, "x"), metadata: { src: "a" } }]);
-    // Writer B's stale read would have allowed it to write {src:"b"}; the
-    // serialized .immediate() lock + guarded UPDATE must reject the conflict
-    // rather than silently overwriting A's enrichment.
-    await expect(
-      b.trajectories.append("s1", [{ ...makeEntry(0, "x"), metadata: { src: "b" } }]),
-    ).rejects.toThrow();
-    const back = await a.trajectories.getSession("s1");
-    expect(back[0]?.metadata).toEqual({ src: "a" });
-    a.close();
-    b.close();
-  });
-
-  test("trajectory enrichment cannot overwrite an already-set metadata field", async () => {
-    const store = createSqlitePlaybookStore({ path: dbPath });
-    await store.trajectories.append("s1", [{ ...makeEntry(0, "x"), metadata: { v: 1 } }]);
-    await expect(
-      store.trajectories.append("s1", [{ ...makeEntry(0, "x"), metadata: { v: 2 } }]),
-    ).rejects.toThrow();
-    store.close();
-  });
-
-  test("trajectory append accepts byte-identical retry without losing tail", async () => {
+  test("trajectory append preserves write order across batches", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
     await store.trajectories.append("s1", [makeEntry(0, "x"), makeEntry(1, "y")]);
-    // Replay overlaps prefix [0,x] then adds new tail [2,z]
-    await store.trajectories.append("s1", [
-      makeEntry(0, "x"),
-      makeEntry(1, "y"),
-      makeEntry(2, "z"),
-    ]);
+    await store.trajectories.append("s1", [makeEntry(2, "z")]);
     const back = await store.trajectories.getSession("s1");
     expect(back.map((e) => e.identifier)).toEqual(["x", "y", "z"]);
     store.close();
