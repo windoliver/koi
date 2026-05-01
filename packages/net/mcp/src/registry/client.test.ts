@@ -42,6 +42,28 @@ describe("createRegistryClient.searchServers", () => {
     expect(captured).toMatch(/search=foo(\+|%20)bar%2Fbaz/);
   });
 
+  test("unwraps the { server } envelope inside servers[]", async () => {
+    const client = createRegistryClient({
+      fetch: mockFetch(
+        () =>
+          new Response(
+            JSON.stringify({
+              servers: [
+                {
+                  server: { name: "io.example/wrapped", description: "x", version: "1.0.0" },
+                  _meta: {},
+                },
+              ],
+            }),
+            { status: 200 },
+          ),
+      ),
+    });
+    const result = await client.searchServers({ query: "x" });
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.servers[0]?.name).toBe("io.example/wrapped");
+  });
+
   test("returns parsed results with nextCursor", async () => {
     const client = createRegistryClient({
       fetch: mockFetch(
@@ -144,6 +166,28 @@ describe("createRegistryClient.getServer", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("NOT_FOUND");
+  });
+
+  test("unwraps the { server, _meta } envelope returned by the hosted registry", async () => {
+    const client = createRegistryClient({
+      fetch: mockFetch(
+        () =>
+          new Response(
+            JSON.stringify({
+              server: {
+                name: "io.example/wrapped",
+                description: "wrapped",
+                version: "1.0.0",
+              },
+              _meta: { "io.modelcontextprotocol.registry/official": { isLatest: true } },
+            }),
+            { status: 200 },
+          ),
+      ),
+    });
+    const result = await client.getServer("io.example/wrapped");
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.name).toBe("io.example/wrapped");
   });
 
   test("returns parsed server detail on 200", async () => {

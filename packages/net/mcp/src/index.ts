@@ -114,7 +114,11 @@ export type {
   RegistryServer,
   RegistryTransportRef,
 } from "./registry/schema.js";
-export { registrySearchResponseSchema, registryServerSchema } from "./registry/schema.js";
+export {
+  registrySearchResponseSchema,
+  registryServerResponseSchema,
+  registryServerSchema,
+} from "./registry/schema.js";
 // Resolver
 export type { McpResolver, McpResolverOptions, McpServerFailure } from "./resolver.js";
 export { createMcpResolver } from "./resolver.js";

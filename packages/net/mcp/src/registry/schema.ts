@@ -45,8 +45,22 @@ export const registryServerSchema: z.ZodType<RegistryServer> = z.object({
   _meta: z.record(z.string(), z.unknown()).optional(),
 });
 
+/**
+ * The hosted registry wraps each server detail in `{ server, _meta }`.
+ * Both the search list and the get-by-name endpoint use this envelope.
+ * We accept either the wrapped or unwrapped form so older test fixtures
+ * keep working.
+ */
+const registryServerEnvelopeSchema = z.union([
+  z.object({ server: registryServerSchema, _meta: z.record(z.string(), z.unknown()).optional() }),
+  registryServerSchema,
+]);
+
+export const registryServerResponseSchema: z.ZodType<RegistryServer> =
+  registryServerEnvelopeSchema.transform((value) => ("server" in value ? value.server : value));
+
 export const registrySearchResponseSchema: z.ZodType<RegistrySearchResponse> = z.object({
-  servers: z.array(registryServerSchema),
+  servers: z.array(registryServerResponseSchema),
   metadata: z
     .object({
       count: z.number().optional(),

@@ -12,7 +12,7 @@ import { RETRYABLE_DEFAULTS } from "@koi/core";
 import {
   type RegistryServer,
   registrySearchResponseSchema,
-  registryServerSchema,
+  registryServerResponseSchema,
 } from "./schema.js";
 
 export const DEFAULT_REGISTRY_BASE_URL = "https://registry.modelcontextprotocol.io";
@@ -71,7 +71,7 @@ export function createRegistryClient(options: RegistryClientOptions = {}): Regis
     if (!fetched.ok) return fetched;
     const parsed = await parseJsonAsync(fetched.value, url);
     if (!parsed.ok) return parsed;
-    return safeParse(registryServerSchema, parsed.value, url);
+    return safeParse(registryServerResponseSchema, parsed.value, url);
   }
 
   return { searchServers, getServer };
