@@ -1,0 +1,899 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "tool-disclosure",
+  "agent": {
+    "name": "golden-tool-disclosure",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "promote_tools",
+        "description": "Load full tool schemas for the named tools. Call this before using a tool whose inputSchema is empty (summary-level). Returns the list of successfully promoted tool names."
+      },
+      {
+        "name": "add_numbers",
+        "description": "Add two numbers together"
+      },
+      {
+        "name": "echo_text",
+        "description": "Echo a text string back to the caller."
+      },
+      {
+        "name": "uppercase_text",
+        "description": "Uppercase a text string."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.751Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.752Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-05-01T06:39:16.754Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the add_numbers tool to compute 3+4. The tool may be summarized; if so, call promote_tools with names=[\"add_numbers\"] first to lift it to its full schema, then call add_numbers. Report the result.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 277,
+        "completion_tokens": 7
+      },
+      "duration_ms": 594,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "promote_tools",
+            "description": "Load full tool schemas for the named tools. Call this before using a tool whose inputSchema is empty (summary-level). Returns the list of successfully promoted tool names."
+          },
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          },
+          {
+            "name": "echo_text",
+            "description": "Echo a text string back to the caller."
+          },
+          {
+            "name": "uppercase_text",
+            "description": "Uppercase a text string."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "4ca899444422d059125041be52080c9502d997c87fb0b53260408cb498359938",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:17.353Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 596.0657079999992,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:17.356Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "promote_tools({\"names\":[\"add_numbers\"]})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 1.088582999999744,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "promote_tools",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:17.357Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 596.0348750000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 4,
+            "allowedCount": 4,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777617557352,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:17.358Z",
+      "model_name": "middleware:permissions",
+      "message": "promote_tools({\"names\":[\"add_numbers\"]})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.587416000000303,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "promote_tools",
+            "resource": "promote_tools",
+            "toolInput": "{\"names\":[\"add_numbers\"]}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1777617557355,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:17.359Z",
+      "model_name": "middleware:tool-disclosure",
+      "message": "promote_tools({\"names\":[\"add_numbers\"]})",
+      "observation": {
+        "results": [
+          {
+            "content": "blocked"
+          }
+        ]
+      },
+      "duration_ms": 0.4384169999993901,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "tool-disclosure",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 800,
+        "nextCalled": false,
+        "_original_timestamp": 1777617557354,
+        "__koi": {
+          "identifier": "middleware:tool-disclosure"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:17.360Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 595.8899169999995,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777617557351,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:17.361Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 595.8418750000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777617557350,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:17.362Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 595.6864590000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777617557349,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "agent",
+      "timestamp": "2026-05-01T06:39:17.363Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"ok\":true,\"promoted\":[],\"message\":\"No tools were promoted. Check the tool names and try again.\"}",
+      "observation": {
+        "results": [
+          {
+            "content": "It seems the tool was already promoted.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 324,
+        "completion_tokens": 16
+      },
+      "duration_ms": 912,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "promote_tools",
+            "description": "Load full tool schemas for the named tools. Call this before using a tool whose inputSchema is empty (summary-level). Returns the list of successfully promoted tool names."
+          },
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          },
+          {
+            "name": "echo_text",
+            "description": "Echo a text string back to the caller."
+          },
+          {
+            "name": "uppercase_text",
+            "description": "Uppercase a text string."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "4ca899444422d059125041be52080c9502d997c87fb0b53260408cb498359938",
+        "turnIndex": 1,
+        "_original_timestamp": 1777617557359
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "tool",
+      "timestamp": "2026-05-01T06:39:18.277Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_add_numbers_12",
+          "function_name": "add_numbers",
+          "arguments": {
+            "b": 4,
+            "a": 3
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_add_numbers_12",
+            "content": "{\"result\":7}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.280Z",
+      "model_name": "hook:on-tool-exec",
+      "message": "tool.succeeded → on-tool-exec",
+      "duration_ms": 1.7917919999999867,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-tool-exec",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-tool-exec"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.281Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 912.9999590000007,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1777617558276,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.284Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "add_numbers({\"b\":4,\"a\":3})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 2.5196249999999054,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "add_numbers",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.285Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 912.9722500000007,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 4,
+            "allowedCount": 4,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777617558275,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.286Z",
+      "model_name": "middleware:permissions",
+      "message": "add_numbers({\"b\":4,\"a\":3})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 2.47333400000025,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "add_numbers",
+            "resource": "add_numbers",
+            "toolInput": "{\"b\":4,\"a\":3}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1777617558283,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.287Z",
+      "model_name": "middleware:tool-disclosure",
+      "message": "add_numbers({\"b\":4,\"a\":3})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 2.432958000000326,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "tool-disclosure",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 800,
+        "nextCalled": true,
+        "_original_timestamp": 1777617558282,
+        "__koi": {
+          "identifier": "middleware:tool-disclosure"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.288Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 912.8402500000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777617558274,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.289Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 912.8075839999992,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777617558273,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.290Z",
+      "model_name": "middleware:hooks",
+      "message": "add_numbers({\"b\":4,\"a\":3})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 2.3787499999998545,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "add_numbers",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          },
+          {
+            "event": "tool.succeeded",
+            "toolId": "add_numbers",
+            "toolOutput": "{\"result\":7}",
+            "aggregated": "continue",
+            "hooks": [
+              {
+                "name": "on-tool-exec",
+                "decision": "continue",
+                "durationMs": 1.7917919999999867
+              }
+            ]
+          }
+        ],
+        "_original_timestamp": 1777617558281,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.291Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 912.7416669999993,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777617558272,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.292Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "add_numbers({\"b\":4,\"a\":3})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.30883300000004965,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777617558279,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "agent",
+      "timestamp": "2026-05-01T06:39:18.293Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"result\":7}",
+      "observation": {
+        "results": [
+          {
+            "content": "The result of 3+4 is 7."
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 352,
+        "completion_tokens": 11
+      },
+      "duration_ms": 468,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 5,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "promote_tools",
+            "description": "Load full tool schemas for the named tools. Call this before using a tool whose inputSchema is empty (summary-level). Returns the list of successfully promoted tool names."
+          },
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          },
+          {
+            "name": "echo_text",
+            "description": "Echo a text string back to the caller."
+          },
+          {
+            "name": "uppercase_text",
+            "description": "Uppercase a text string."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "4ca899444422d059125041be52080c9502d997c87fb0b53260408cb498359938",
+        "turnIndex": 2,
+        "_original_timestamp": 1777617558286
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.759Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 478.45145799999955,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 26,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.760Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 478.42762499999935,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 4,
+            "allowedCount": 4,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777617558758,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 27,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.761Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 478.31216700000004,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777617558757,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 28,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.762Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 478.2873749999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777617558756,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 29,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.763Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 478.2210409999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777617558755,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 30,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:18.764Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.012291000000004715,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "_original_timestamp": 1777617558761,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

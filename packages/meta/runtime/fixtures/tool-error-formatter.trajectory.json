@@ -1,0 +1,598 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "tool-error-formatter",
+  "agent": {
+    "name": "golden-tool-error-formatter",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "fragile_lookup",
+        "description": "Look up a record by id. Throws on every call (always-failing tool for tests)."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:15.447Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:15.448Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-05-01T06:39:15.469Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the fragile_lookup tool with id='abc-123'. After the tool call, briefly explain what happened to the user (one sentence).",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 181,
+        "completion_tokens": 10
+      },
+      "duration_ms": 536,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "fragile_lookup",
+            "description": "Look up a record by id. Throws on every call (always-failing tool for tests)."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "6a1f4bc58a9ca6fa7f5d1f840dde71c86af751f90f15f1ae13d57fe0e6dd79d4",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-05-01T06:39:16.017Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_fragile_lookup_3",
+          "function_name": "fragile_lookup",
+          "arguments": {
+            "id": "abc-123"
+          }
+        }
+      ],
+      "duration_ms": 1,
+      "outcome": "failure",
+      "extra": {
+        "__rich_error": {
+          "text": "upstream service timed out after 30s",
+          "data": {
+            "errorType": "Error"
+          }
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.018Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 551.455708,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1777617556016,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.027Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "fragile_lookup({\"id\":\"abc-123\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 12.72558299999946,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "fragile_lookup",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.028Z",
+      "model_name": "hook:on-tool-exec",
+      "message": "tool.failed → on-tool-exec",
+      "duration_ms": 7.326625000000604,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.failed",
+        "hookName": "on-tool-exec",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-tool-exec"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.029Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 548.9775000000004,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 1,
+            "allowedCount": 1,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777617556015,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.030Z",
+      "model_name": "middleware:permissions",
+      "message": "fragile_lookup({\"id\":\"abc-123\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 11.841833000000406,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "fragile_lookup",
+            "resource": "fragile_lookup",
+            "toolInput": "{\"id\":\"abc-123\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1777617556026,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.031Z",
+      "model_name": "middleware:tool-error-formatter",
+      "message": "fragile_lookup({\"id\":\"abc-123\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 9.571375000000444,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "tool-error-formatter",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 170,
+        "nextCalled": true,
+        "_original_timestamp": 1777617556025,
+        "__koi": {
+          "identifier": "middleware:tool-error-formatter"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.032Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 544.4282919999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777617556014,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.033Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 544.0008750000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777617556013,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.034Z",
+      "model_name": "middleware:hooks",
+      "message": "fragile_lookup({\"id\":\"abc-123\"})",
+      "duration_ms": 6.187417000000096,
+      "outcome": "failure",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "fragile_lookup",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777617556022,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        },
+        "__rich_error": {
+          "text": "upstream service timed out after 30s"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.035Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 543.4215410000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777617556012,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.036Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "fragile_lookup({\"id\":\"abc-123\"})",
+      "duration_ms": 2.706000000000131,
+      "outcome": "failure",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777617556019,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        },
+        "__rich_error": {
+          "text": "upstream service timed out after 30s"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "agent",
+      "timestamp": "2026-05-01T06:39:16.040Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Tool 'fragile_lookup' failed: upstream service timed out after 30s",
+      "observation": {
+        "results": [
+          {
+            "content": "The fragile_lookup tool failed because the upstream service timed out.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 264,
+        "completion_tokens": 14
+      },
+      "duration_ms": 597,
+      "outcome": "retry",
+      "extra": {
+        "totalMessages": 4,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "fragile_lookup",
+            "description": "Look up a record by id. Throws on every call (always-failing tool for tests)."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "6a1f4bc58a9ca6fa7f5d1f840dde71c86af751f90f15f1ae13d57fe0e6dd79d4",
+        "turnIndex": 1,
+        "retryOfTurn": 0,
+        "retryAttempt": 1,
+        "retryReason": "Tool call failed: fragile_lookup",
+        "retryFailureClass": "tool_misuse"
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.642Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 598.7480829999995,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.643Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 598.7033339999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 1,
+            "allowedCount": 1,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777617556641,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.644Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 598.3871250000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777617556640,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.645Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 598.3289169999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777617556639,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.646Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 598.241,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "action": "rewrite",
+            "rewriteKind": "add_context",
+            "failureClass": "tool_misuse",
+            "retryCount": 1,
+            "budgetRemaining": 2,
+            "requestModified": true,
+            "messageCount": 4,
+            "failureHistory": [
+              {
+                "failureClass": "tool_misuse",
+                "succeeded": false
+              }
+            ]
+          }
+        ],
+        "_original_timestamp": 1777617556638,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-05-01T06:39:16.647Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.14791599999989558,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "_original_timestamp": 1777617556644,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

@@ -95,6 +95,8 @@
     "@koi/middleware-report": "workspace:*",
     "@koi/middleware-strict-agentic": "workspace:*",
     "@koi/middleware-task-anchor": "workspace:*",
+    "@koi/middleware-tool-disclosure": "workspace:*",
+    "@koi/middleware-tool-error-formatter": "workspace:*",
     "@koi/middleware-turn-ack": "workspace:*",
     "@koi/middleware-turn-prelude": "workspace:*",
     "@koi/outcome-evaluator": "workspace:*",

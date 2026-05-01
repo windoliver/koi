@@ -107,6 +107,11 @@ import {
 } from "@koi/middleware-semantic-retry";
 import { createStrictAgenticMiddleware } from "@koi/middleware-strict-agentic";
 import { createTaskAnchorMiddleware } from "@koi/middleware-task-anchor";
+import {
+  createPromoteToolDescriptor,
+  createToolDisclosureBundle,
+} from "@koi/middleware-tool-disclosure";
+import { createToolErrorFormatterMiddleware } from "@koi/middleware-tool-error-formatter";
 import { createTurnPreludeMiddleware } from "@koi/middleware-turn-prelude";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { ProviderAdapter } from "@koi/model-router";
@@ -255,6 +260,70 @@ if (!addToolResult.ok) {
   process.exit(1);
 }
 const addTool = addToolResult.value;
+
+// @koi/middleware-tool-error-formatter — always-failing tool used by the
+// tool-error-formatter golden. The middleware should catch the throw and
+// return a formatted ToolResponse so the model can see the error and recover.
+const failingToolResult = buildTool({
+  name: "fragile_lookup",
+  description: "Look up a record by id. Throws on every call (always-failing tool for tests).",
+  inputSchema: {
+    type: "object",
+    properties: { id: { type: "string", description: "Record id" } },
+    required: ["id"],
+  },
+  origin: "primordial",
+  execute: async (_args: JsonObject): Promise<unknown> => {
+    throw new Error("upstream service timed out after 30s");
+  },
+});
+if (!failingToolResult.ok) {
+  console.error(`buildTool(fragile_lookup) failed: ${failingToolResult.error.message}`);
+  process.exit(1);
+}
+const failingTool = failingToolResult.value;
+
+// @koi/middleware-tool-disclosure — bundle wires the disclosure middleware to
+// its companion `promote_tools` tool. Threshold of 2 forces summarization with
+// the small tool set used by the tool-disclosure golden query.
+const disclosureBundle = createToolDisclosureBundle({ threshold: 2 });
+
+// Two extra tools (alongside add_numbers) so the disclosure threshold of 2 fires.
+const echoToolResult = buildTool({
+  name: "echo_text",
+  description: "Echo a text string back to the caller.",
+  inputSchema: {
+    type: "object",
+    properties: { text: { type: "string" } },
+    required: ["text"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => ({ echoed: args.text }),
+});
+if (!echoToolResult.ok) {
+  console.error(`buildTool(echo_text) failed: ${echoToolResult.error.message}`);
+  process.exit(1);
+}
+const echoTool = echoToolResult.value;
+
+const upperToolResult = buildTool({
+  name: "uppercase_text",
+  description: "Uppercase a text string.",
+  inputSchema: {
+    type: "object",
+    properties: { text: { type: "string" } },
+    required: ["text"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => ({
+    result: String(args.text).toUpperCase(),
+  }),
+});
+if (!upperToolResult.ok) {
+  console.error(`buildTool(uppercase_text) failed: ${upperToolResult.error.message}`);
+  process.exit(1);
+}
+const upperTool = upperToolResult.value;
 
 // @koi/tool-exec — exercised by the tool-exec-code-use golden. The LLM calls
 // execute_code with a small TS script that calls add_numbers twice through
@@ -4435,6 +4504,77 @@ const queries: readonly QueryConfig[] = [
     ],
   },
 
+  // @koi/middleware-tool-error-formatter — always-failing tool throws,
+  // middleware catches the throw and returns a formatted ToolResponse.
+  // The model sees the error message and explains what happened to the user
+  // instead of the turn aborting on an unhandled tool error.
+  {
+    name: "tool-error-formatter",
+    prompt:
+      "Use the fragile_lookup tool with id='abc-123'. After the tool call, briefly explain what happened to the user (one sentence).",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded", "tool.failed"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "fragile-lookup",
+        toolName: "fragile_lookup",
+        createTool: () => failingTool,
+      }),
+    ],
+    extraMiddleware: [createToolErrorFormatterMiddleware().middleware],
+    maxTurns: 2,
+  },
+
+  // @koi/middleware-tool-disclosure — tool count above threshold (2) forces
+  // summarization. Model must call `promote_tools` to lift `add_numbers`
+  // back to a full descriptor before invoking it. Exercises the disclosure
+  // bundle (middleware + companion tool).
+  {
+    name: "tool-disclosure",
+    prompt:
+      'Use the add_numbers tool to compute 3+4. The tool may be summarized; if so, call promote_tools with names=["add_numbers"] first to lift it to its full schema, then call add_numbers. Report the result.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      ...disclosureBundle.providers,
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+      createSingleToolProvider({
+        name: "echo-text",
+        toolName: "echo_text",
+        createTool: () => echoTool,
+      }),
+      createSingleToolProvider({
+        name: "uppercase-text",
+        toolName: "uppercase_text",
+        createTool: () => upperTool,
+      }),
+    ],
+    extraMiddleware: [disclosureBundle.middleware],
+    maxTurns: 4,
+  },
+
   // @koi/scheduler + @koi/scheduler-provider — scheduler_submit + scheduler_query flow.
   // Submits a delayed task (1 hour) so it stays pending during the test, then queries.
   {
@@ -5253,6 +5393,59 @@ await recordCassette("loop-until-pass", () =>
           },
         ],
       },
+    ],
+  }),
+);
+
+// @koi/middleware-tool-error-formatter — model invokes the always-failing
+// tool, sees the formatted error in the tool result, and explains in text.
+await recordCassette("tool-error-formatter", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: "Use the fragile_lookup tool with id='abc-123'. After the tool call, briefly explain what happened to the user (one sentence).",
+          },
+        ],
+      },
+    ],
+    tools: [failingTool.descriptor],
+  }),
+);
+
+// @koi/middleware-tool-disclosure — model promotes add_numbers from summary
+// to full descriptor, then calls it. Tools advertised here include the
+// promote_tools companion descriptor + the three ordinary tools.
+await recordCassette("tool-disclosure", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: 'Use the add_numbers tool to compute 3+4. The tool may be summarized; if so, call promote_tools with names=["add_numbers"] first to lift it to its full schema, then call add_numbers. Report the result.',
+          },
+        ],
+      },
+    ],
+    tools: [
+      // Summary-level descriptors mirror what the disclosure middleware would
+      // emit during a real turn (above-threshold tool count). The model must
+      // promote a tool before calling it.
+      { name: "add_numbers", description: "Add two numbers together", inputSchema: {} },
+      { name: "echo_text", description: "Echo a text string back to the caller.", inputSchema: {} },
+      {
+        name: "uppercase_text",
+        description: "Uppercase a text string.",
+        inputSchema: {},
+      },
+      createPromoteToolDescriptor(),
     ],
   }),
 );

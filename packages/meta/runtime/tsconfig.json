@@ -83,6 +83,8 @@
     { "path": "../../lib/middleware-rlm" },
     { "path": "../../lib/middleware-report" },
     { "path": "../../lib/middleware-task-anchor" },
+    { "path": "../../lib/middleware-tool-disclosure" },
+    { "path": "../../lib/middleware-tool-error-formatter" },
     { "path": "../../lib/middleware-turn-ack" },
     { "path": "../../security/middleware-exfiltration-guard" },
     { "path": "../../lib/middleware-otel" },
