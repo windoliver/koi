@@ -102,6 +102,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/sandbox-executor",
   "@koi/sandbox-os",
   "@koi/sandbox-router",
+  "@koi/sandbox-ssh",
   "@koi/session",
   "@koi/skill-tool",
   "@koi/skills-runtime",
