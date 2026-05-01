@@ -431,6 +431,28 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
         // that would silently fast-forward (or rewind) the monotonic head.
         if (current === null || current.version === pb.version) {
           const stored = JSON.parse(existing.snapshot) as StructuredPlaybook;
+          // Watermark monotonicity on idempotent retry: lastReflectedStepIndex
+          // is stripped from the content compare so retries with higher
+          // reflection progress don't false-fail as "different content", but
+          // we must still PROMOTE the higher watermark into the head row.
+          // Otherwise a retry that observed steps 0-100 would silently lose
+          // its progress to a prior commit that only saw steps 0-20, causing
+          // duplicate reflection work after restart.
+          const storedWatermark = stored.lastReflectedStepIndex ?? null;
+          const promotedWatermark =
+            storedWatermark === null
+              ? incomingWatermark
+              : incomingWatermark === null
+                ? storedWatermark
+                : Math.max(storedWatermark, incomingWatermark);
+          // Promoted watermark is written ONLY to the mutable head row.
+          // structured_playbook_versions.snapshot is append-only audit
+          // state - mutating it would let a later proposal/rollback
+          // anchored to base_version=N observe a different snapshot than
+          // the one originally committed at that version. On head loss,
+          // the lineage snapshot's stored watermark becomes the recovery
+          // floor; callers who need the promoted value to survive head
+          // loss must re-run the retry against the rebuilt head.
           upsertCurrent.run(
             stored.id,
             stored.title,
@@ -440,7 +462,7 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
             stored.createdAt,
             stored.updatedAt,
             stored.sessionCount,
-            stored.lastReflectedStepIndex ?? null,
+            promotedWatermark,
             stored.version,
             stored.provenance !== undefined ? canonicalJson(stored.provenance) : null,
           );
@@ -596,10 +618,19 @@ function createTrajectoryStore(db: Database): TrajectoryStore {
     "SELECT * FROM trajectory_entries WHERE session_id = ? ORDER BY seq",
   );
   const selectSessions = db.query(
-    "SELECT session_id FROM trajectory_sessions ORDER BY session_id LIMIT ?",
+    "SELECT session_id FROM trajectory_sessions ORDER BY last_activity_at DESC, session_id ASC LIMIT ?",
   );
+  const selectSessionsBefore = db.query(
+    "SELECT session_id FROM trajectory_sessions WHERE last_activity_at < ? ORDER BY last_activity_at DESC, session_id ASC LIMIT ?",
+  );
+  // Upsert last_activity_at to MAX(existing, incoming) so the recency
+  // signal advances on every append. INSERT OR REPLACE would clobber the
+  // existing row entirely (and any FKs to it), so we use ON CONFLICT to
+  // do an in-place max-update.
   const insertSession = db.prepare(
-    "INSERT OR IGNORE INTO trajectory_sessions(session_id) VALUES (?)",
+    `INSERT INTO trajectory_sessions(session_id, last_activity_at) VALUES (?, ?)
+     ON CONFLICT(session_id) DO UPDATE SET last_activity_at =
+       MAX(last_activity_at, excluded.last_activity_at)`,
   );
 
   return {
@@ -609,9 +640,14 @@ function createTrajectoryStore(db: Database): TrajectoryStore {
       // can't race on the seq counter. Empty appends still record the
       // session so listSessions() can enumerate it (matches in-memory
       // baseline where opening a session before the first entry leaves it
-      // visible).
+      // visible). Use the BATCH MAX timestamp (not min) so a mixed batch
+      // with timestamps {1000, 3000} stores 3000 — otherwise before=2500
+      // would erroneously include a session whose later activity is past
+      // the cursor.
+      const batchActivity =
+        entries.length > 0 ? Math.max(...entries.map((e) => e.timestamp)) : Date.now();
       db.transaction(() => {
-        insertSession.run(sessionId);
+        insertSession.run(sessionId, batchActivity);
         if (entries.length === 0) return;
         const maxRow = selectMaxSeq.get(sessionId) as { readonly s: number | null } | null;
         let next = (maxRow?.s ?? 0) + 1;
@@ -640,7 +676,11 @@ function createTrajectoryStore(db: Database): TrajectoryStore {
     },
     listSessions: async (options) => {
       const limit = options?.limit ?? 1_000_000;
-      const rows = selectSessions.all(limit) as readonly { readonly session_id: string }[];
+      const before = options?.before;
+      const rows =
+        before !== undefined
+          ? (selectSessionsBefore.all(before, limit) as readonly { readonly session_id: string }[])
+          : (selectSessions.all(limit) as readonly { readonly session_id: string }[]);
       return rows.map((r) => r.session_id);
     },
   };

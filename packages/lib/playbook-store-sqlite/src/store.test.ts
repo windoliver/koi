@@ -338,6 +338,41 @@ describe("createSqlitePlaybookStore — trajectories", () => {
     reopened.close();
   });
 
+  test("listSessions activity advances on every append (later append moves session forward)", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.trajectories.append("a", [{ ...makeEntry(0, "x"), timestamp: 1000 }]);
+    await store.trajectories.append("b", [{ ...makeEntry(0, "x"), timestamp: 2000 }]);
+    expect(await store.trajectories.listSessions()).toEqual(["b", "a"]);
+    // a now appends a fresher entry — must move ahead of b in recency order.
+    await store.trajectories.append("a", [{ ...makeEntry(1, "y"), timestamp: 3000 }]);
+    expect(await store.trajectories.listSessions()).toEqual(["a", "b"]);
+    store.close();
+  });
+
+  test("listSessions stores BATCH MAX timestamp, not min (mixed-timestamp batch)", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.trajectories.append("mixed", [
+      { ...makeEntry(0, "x"), timestamp: 1000 },
+      { ...makeEntry(1, "y"), timestamp: 3000 },
+    ]);
+    // Before cursor at 2500 must NOT include "mixed" — its last activity is 3000.
+    expect(await store.trajectories.listSessions({ before: 2500 })).toEqual([]);
+    // Before cursor at 3500 includes it (3000 < 3500).
+    expect(await store.trajectories.listSessions({ before: 3500 })).toEqual(["mixed"]);
+    store.close();
+  });
+
+  test("listSessions orders by created_at DESC and honors before cursor", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.trajectories.append("old", [{ ...makeEntry(0, "x"), timestamp: 1000 }]);
+    await store.trajectories.append("mid", [{ ...makeEntry(0, "x"), timestamp: 2000 }]);
+    await store.trajectories.append("new", [{ ...makeEntry(0, "x"), timestamp: 3000 }]);
+    expect(await store.trajectories.listSessions()).toEqual(["new", "mid", "old"]);
+    expect(await store.trajectories.listSessions({ before: 2500 })).toEqual(["mid", "old"]);
+    expect(await store.trajectories.listSessions({ before: 2500, limit: 1 })).toEqual(["mid"]);
+    store.close();
+  });
+
   test("preserves metadata + bulletIds", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
     const e: TrajectoryEntry = {
@@ -491,7 +526,7 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
     const userVersion = after.query("PRAGMA user_version").get() as { user_version: number };
     after.close();
 
-    expect(userVersion.user_version).toBe(4);
+    expect(userVersion.user_version).toBe(5);
     expect(rows.length).toBe(1);
     expect(rows[0]?.id).toBe("e-new");
     expect(rows[0]?.verdict).toBe("promote");
@@ -642,12 +677,39 @@ describe("createSqlitePlaybookStore — schema migration v0 → v1", () => {
       .all() as readonly { session_id: string; seq: number }[];
     const userVersion = after.query("PRAGMA user_version").get() as { user_version: number };
     after.close();
-    expect(userVersion.user_version).toBe(4);
+    expect(userVersion.user_version).toBe(5);
     expect(seqRows.map((r) => `${r.session_id}:${String(r.seq)}`)).toEqual([
       "s1:1",
       "s1:2",
       "s2:1",
     ]);
+  });
+
+  test("v4 → v5 upgrade adds trajectory_sessions.created_at via ALTER", async () => {
+    const seed = new Database(dbPath, { create: true });
+    seed.run("CREATE TABLE trajectory_sessions (session_id TEXT PRIMARY KEY)");
+    seed.run(
+      "CREATE TABLE trajectory_entries (session_id TEXT, seq INTEGER, turn_index INTEGER, timestamp INTEGER, kind TEXT, identifier TEXT, outcome TEXT, duration_ms INTEGER, metadata TEXT, bullet_ids TEXT, PRIMARY KEY(session_id, seq))",
+    );
+    seed.run("INSERT INTO trajectory_sessions(session_id) VALUES ('legacy-empty')");
+    seed.run(
+      "INSERT INTO trajectory_entries(session_id, seq, turn_index, timestamp, kind, identifier, outcome, duration_ms) VALUES ('legacy-with-entries', 1, 0, 1234, 'tool_call', 'x', 'success', 5)",
+    );
+    seed.run("PRAGMA user_version = 4");
+    seed.close();
+
+    const upgraded = new Database(dbPath);
+    const cols = upgraded.query("PRAGMA table_info(trajectory_sessions)").all() as readonly {
+      readonly name: string;
+    }[];
+    upgraded.close();
+    expect(cols.some((c) => c.name === "created_at")).toBe(false);
+
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    const sessions = await store.trajectories.listSessions();
+    expect(sessions).toContain("legacy-empty");
+    expect(sessions).toContain("legacy-with-entries");
+    store.close();
   });
 
   test("refuses to open database with user_version newer than CURRENT_SCHEMA_VERSION", () => {
@@ -1030,6 +1092,44 @@ describe("createSqlitePlaybookStore — head-row self-heal", () => {
     ).rejects.toThrow(/different content/);
     expect(await repaired.structuredPlaybooks.get("s1")).toBeUndefined();
     repaired.close();
+  });
+
+  test("same-version idempotent retry promotes watermark in head WITHOUT mutating lineage snapshot", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(
+      spb({ id: "s1", version: 1, lastReflectedStepIndex: 20, title: "v1" }),
+    );
+    await store.structuredPlaybooks.save(
+      spb({ id: "s1", version: 1, lastReflectedStepIndex: 100, title: "v1" }),
+    );
+    expect((await store.structuredPlaybooks.get("s1"))?.lastReflectedStepIndex).toBe(100);
+    store.close();
+    // Lineage snapshot at v1 must remain immutable: the promotion lives only
+    // in the mutable head row. Reading the raw stored snapshot must show the
+    // ORIGINAL committed watermark (20), not the promoted value (100).
+    const audit = new Database(dbPath);
+    const row = audit
+      .query(
+        "SELECT snapshot FROM structured_playbook_versions WHERE playbook_id = 's1' AND version = 1",
+      )
+      .get() as { readonly snapshot: string };
+    audit.close();
+    const stored = JSON.parse(row.snapshot) as { lastReflectedStepIndex?: number };
+    expect(stored.lastReflectedStepIndex).toBe(20);
+  });
+
+  test("same-version idempotent retry promotes higher lastReflectedStepIndex", async () => {
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(
+      spb({ id: "s1", version: 1, lastReflectedStepIndex: 20, title: "v1" }),
+    );
+    // Second writer derives same v1 content but observed steps through 100.
+    // Idempotent retry must not silently drop the higher progress marker.
+    await store.structuredPlaybooks.save(
+      spb({ id: "s1", version: 1, lastReflectedStepIndex: 100, title: "v1" }),
+    );
+    expect((await store.structuredPlaybooks.get("s1"))?.lastReflectedStepIndex).toBe(100);
+    store.close();
   });
 
   test("self-heal rebuilds head from stored snapshot after watermark was clamped", async () => {

@@ -30,8 +30,22 @@ import type { Database } from "bun:sqlite";
  *     a session that was opened but never wrote an entry would disappear
  *     across reopens. Migration populates trajectory_sessions from
  *     DISTINCT trajectory_entries.session_id so existing data is preserved.
+ *
+ * v5: trajectory_sessions gains last_activity_at column so listSessions
+ *     can honor the TrajectoryStore.before contract and return sessions
+ *     in deterministic recency order. Without this, the SQLite backend
+ *     ordered lexically by session_id and silently ignored before -
+ *     paginating UUID-keyed sessions returned arbitrary slices.
+ *     last_activity_at is updated to MAX(existing, batch max timestamp)
+ *     on every append so long-lived active sessions don't get paged
+ *     behind stale sessions, and a session whose first batch contains
+ *     timestamps {1000, 3000} stores 3000 (not 1000) so before filters
+ *     don't return sessions with activity past the cursor.
+ *     Migration backfills last_activity_at from MAX(trajectory_entries
+ *     .timestamp) per session, falling back to current epoch ms for
+ *     empty sessions.
  */
-const CURRENT_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_VERSION = 5;
 
 export function applyPragmas(db: Database, durability: "process" | "os"): void {
   db.run("PRAGMA journal_mode = WAL");
@@ -88,9 +102,13 @@ export function applySchema(db: Database): void {
 
   db.run(`
     CREATE TABLE IF NOT EXISTS trajectory_sessions (
-      session_id TEXT PRIMARY KEY
+      session_id TEXT    PRIMARY KEY,
+      last_activity_at INTEGER NOT NULL DEFAULT 0
     )
   `);
+  // Index creation deferred to migrateSessionTimestampsToV5 because a v4
+  // database has trajectory_sessions WITHOUT created_at — creating the
+  // index here would error before the column is added by ALTER.
 
   db.run(`
     CREATE TABLE IF NOT EXISTS playbooks (
@@ -193,6 +211,7 @@ export function applySchema(db: Database): void {
   migrateTrajectoriesToV2(db);
   migrateProposalsToV3(db);
   migrateSessionsToV4(db);
+  migrateSessionTimestampsToV5(db);
   if (fromVersion < CURRENT_SCHEMA_VERSION) {
     db.run(`PRAGMA user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
   }
@@ -709,6 +728,54 @@ function migrateSessionsToV4(db: Database): void {
   db.transaction(() => {
     db.run(
       "INSERT OR IGNORE INTO trajectory_sessions(session_id) SELECT DISTINCT session_id FROM trajectory_entries",
+    );
+  }).immediate();
+}
+
+/**
+ * Backfill trajectory_sessions.last_activity_at from the LATEST entry
+ * timestamp per session so listSessions returns sessions in deterministic
+ * recency order and the before cursor cannot include sessions whose
+ * latest activity is past the cutoff. Sessions with no entries (e.g. an
+ * append(sid, []) that never appended again) get current epoch ms - the
+ * only signal available.
+ *
+ * No-op when every row already has a non-zero last_activity_at.
+ */
+function migrateSessionTimestampsToV5(db: Database): void {
+  const tableInfo = db
+    .query("SELECT name FROM sqlite_master WHERE type='table' AND name='trajectory_sessions'")
+    .get() as { readonly name: string } | null;
+  if (tableInfo === null) return;
+  const cols = db.query("PRAGMA table_info(trajectory_sessions)").all() as readonly {
+    readonly name: string;
+  }[];
+  // CREATE TABLE IF NOT EXISTS is a no-op on a pre-existing v4 table, so
+  // databases already at user_version=4 will be missing the new column.
+  // Add it via ALTER TABLE before backfilling — without this, every
+  // upgraded v4 DB would be marked v5 while listSessions queries fail on
+  // the missing column.
+  if (!cols.some((c) => c.name === "last_activity_at")) {
+    db.run(
+      "ALTER TABLE trajectory_sessions ADD COLUMN last_activity_at INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_trajectory_sessions_activity ON trajectory_sessions(last_activity_at, session_id)",
+  );
+  const stale = db
+    .query("SELECT COUNT(*) AS n FROM trajectory_sessions WHERE last_activity_at = 0")
+    .get() as { readonly n: number };
+  if (stale.n === 0) return;
+  db.transaction(() => {
+    db.run(
+      `UPDATE trajectory_sessions
+       SET last_activity_at = COALESCE(
+         (SELECT MAX(timestamp) FROM trajectory_entries WHERE session_id = trajectory_sessions.session_id),
+         ?
+       )
+       WHERE last_activity_at = 0`,
+      [Date.now()],
     );
   }).immediate();
 }
