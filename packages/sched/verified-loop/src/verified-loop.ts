@@ -7,6 +7,7 @@
 
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { extractMessage } from "@koi/errors";
+import { GateQuiescenceError } from "./gates.js";
 import { appendLearning, readLearnings } from "./learnings.js";
 import {
   acquirePRDLock,
@@ -443,6 +444,9 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           // Use let — justified: try/catch must reassign across boundaries.
           let gatePromise: Promise<VerificationResult>;
           try {
+            // GateQuiescenceError thrown synchronously from verify()
+            // must propagate as fatal — see the catch path on the
+            // race below for the async-throw equivalent.
             gatePromise = Promise.resolve(
               config.verify({
                 iteration: i,
@@ -481,6 +485,12 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
               };
             }
           } catch (e: unknown) {
+            // GateQuiescenceError = the gate's subprocess tree could
+            // not be proven dead. Continuing to the next iteration
+            // would let leftover children mutate the workspace under
+            // overlapping verification — exactly what the loop is
+            // supposed to prevent. Surface as fatal.
+            if (e instanceof GateQuiescenceError) throw e;
             // Gate timed out or aborted. The gate's promise is still in
             // flight unless it cooperatively settles after seeing
             // gateSignal abort. Wait for quiescence with a bounded grace

@@ -11,6 +11,17 @@
 import { isAbsolute, resolve } from "node:path";
 import type { GateContext, VerificationFn, VerificationResult } from "./types.js";
 
+/**
+ * Thrown by createTestGate when a verifier subprocess cannot be proven
+ * quiescent (descendants still holding stderr open after SIGKILL +
+ * grace). The orchestrator catches this in the verify path and
+ * surfaces it as a fatal run-level error — overlapping subprocess
+ * trees across iterations would corrupt the workspace.
+ */
+export class GateQuiescenceError extends Error {
+  override readonly name = "GateQuiescenceError";
+}
+
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 /** Create a gate that runs a shell command and passes on exit code 0. */
@@ -136,10 +147,14 @@ export function createTestGate(
       clearTimeout(timer);
       if (killTimer !== undefined) clearTimeout(killTimer);
       if (drainStuck) {
-        return {
-          passed: false,
-          details: `Test gate quiescence failed: stderr still open after SIGKILL (exit ${exitCode}). Subtree may be holding the pipe.`,
-        };
+        // Fatal — not a recoverable verification miss. Returning
+        // passed:false would let the orchestrator advance to the next
+        // iteration with potentially-live descendants from THIS gate
+        // still mutating the workspace, defeating the entire purpose
+        // of the quiescence check. Throw so the run aborts.
+        throw new GateQuiescenceError(
+          `Test gate quiescence failed: stderr still open ${1_000}ms after leader exit (exit ${exitCode}). Subtree may still be alive; aborting run to avoid overlapping side effects.`,
+        );
       }
 
       // Cancellation is a verification failure regardless of exit code. A

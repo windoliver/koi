@@ -568,10 +568,14 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
       // Use let — justified: assigned across try/catch boundary.
       let metaReadable = false;
       // Use let — justified: declared before try, assigned inside.
-      let parsedMeta: { heartbeatAt?: unknown; pid?: unknown } | undefined;
+      let parsedMeta: { heartbeatAt?: unknown; pid?: unknown; released?: unknown } | undefined;
       try {
         const raw = await readFile(lockPath, "utf8");
-        parsedMeta = JSON.parse(raw) as { heartbeatAt?: unknown; pid?: unknown };
+        parsedMeta = JSON.parse(raw) as {
+          heartbeatAt?: unknown;
+          pid?: unknown;
+          released?: unknown;
+        };
         metaReadable = true;
       } catch {
         // Unreadable / corrupt lock file. Two cases to distinguish:
@@ -593,6 +597,10 @@ export async function acquirePRDLock(prdPath: string): Promise<Result<PRDLock, K
         }
       }
       if (metaReadable && parsedMeta !== undefined) {
+        // Released sentinel from a prior owner's normal exit. Safe to
+        // break and recreate — the prior owner has already given up
+        // the lock and pointed us at it.
+        if (parsedMeta.released === true) stale = true;
         const heartbeatMs =
           typeof parsedMeta.heartbeatAt === "string"
             ? Date.parse(parsedMeta.heartbeatAt)
@@ -693,24 +701,45 @@ export async function refreshPRDLock(lock: PRDLock): Promise<boolean> {
 }
 
 /**
- * Release a lock previously acquired by acquirePRDLock. Idempotent and
- * inode-checked: only unlinks the lockfile if its inode still matches
- * the inode we captured at acquire time. Without this check, a
- * coordinator A whose lock was stale-broken and replaced by B would,
- * on its own normal exit, delete B's live lock — opening a window
- * for a third coordinator C to start while B is still running.
+ * Release a lock previously acquired by acquirePRDLock. Race-free with
+ * respect to a successor coordinator stealing the lockfile path:
+ * writes a `released: true` sentinel into the file via the held
+ * FileHandle (truncate + pwrite, atomic-ish) and closes the handle.
  *
- * Also closes the held FileHandle in all cases (whether or not we
- * still own the lock) to prevent fd leaks.
+ * The sentinel content goes to our original inode. If a successor
+ * unlinked our lock and created a new one at the same path, our
+ * write targets the orphaned inode and never touches theirs — so we
+ * can never accidentally release someone else's live lock.
+ *
+ * acquirePRDLock treats a `released:true` payload at the path as
+ * stale and breaks it on the next attempt, so a normal lifecycle
+ * is: acquire → ... → release-with-sentinel → next acquire breaks
+ * the released file and takes over.
+ *
+ * Idempotent: handles already-closed/released locks safely.
  */
 export async function releasePRDLock(lock: PRDLock): Promise<void> {
+  try {
+    const payload = JSON.stringify({
+      owner: lock.owner,
+      released: true,
+      releasedAt: new Date().toISOString(),
+    });
+    await lock.handle.truncate(0);
+    await lock.handle.write(payload, 0, "utf8");
+  } catch {
+    // Handle already closed / fs error — best-effort.
+  }
+  // Best-effort path unlink to keep the directory tidy. Inode-checked
+  // so we only remove a file that still points at OUR inode (any
+  // successor's inode will differ and we leave it alone).
   try {
     const pathStat = await stat(lock.path);
     if (pathStat.ino === lock.inode) {
       await unlink(lock.path).catch(() => undefined);
     }
   } catch {
-    // Path missing — already released by stale-break or never existed.
+    // Path missing — already released or never existed.
   }
   await lock.handle.close().catch(() => undefined);
 }
