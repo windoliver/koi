@@ -6,13 +6,8 @@
  */
 
 import { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-
-function sha256Hex(input: string): string {
-  return createHash("sha256").update(input).digest("hex");
-}
 
 import type {
   Playbook,
@@ -317,6 +312,9 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
     "SELECT last_reflected_step_index FROM structured_playbooks WHERE id = ?",
   );
   const deleteCurrent = db.prepare("DELETE FROM structured_playbooks WHERE id = ?");
+  const deleteLineage = db.prepare(
+    "DELETE FROM structured_playbook_versions WHERE playbook_id = ?",
+  );
 
   const save = async (pb: StructuredPlaybook): Promise<void> => {
     // .immediate() acquires the SQLite RESERVED lock at BEGIN, so concurrent
@@ -375,34 +373,36 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       const snapshot = canonicalJson(normalized);
       const existing = selectVersion.get(pb.id, pb.version) as { readonly snapshot: string } | null;
       if (existing !== null) {
-        // Idempotent retry only when the snapshot is semantically equal AND
-        // it targets the current head. Re-canonicalize stored vs incoming so
-        // legacy non-canonical rows still match. Comparison ignores
-        // provenance.committedAt (which is normalized to server time on every
-        // write) by stripping it from both sides before comparing.
+        // Self-heal path: if lineage is intact but the head row is missing
+        // or points at a different version (manual repair, partial-failure
+        // crash), rebuild the head row directly from the STORED snapshot —
+        // not from the caller-normalized payload. The stored snapshot is
+        // authoritative; recomputing from caller payload would re-normalize
+        // watermarks against a missing head and produce a downgraded row,
+        // tripping the idempotency comparison and blocking recovery.
+        if (current === null || current.version !== pb.version) {
+          const stored = JSON.parse(existing.snapshot) as StructuredPlaybook;
+          upsertCurrent.run(
+            stored.id,
+            stored.title,
+            canonicalJson(stored.sections),
+            canonicalJson(stored.tags),
+            stored.source,
+            stored.createdAt,
+            stored.updatedAt,
+            stored.sessionCount,
+            stored.lastReflectedStepIndex ?? null,
+            stored.version,
+            stored.provenance !== undefined ? canonicalJson(stored.provenance) : null,
+          );
+          return;
+        }
+        // Head present at this version — caller payload must be
+        // semantically equal to the stored snapshot (modulo
+        // provenance.committedAt which is normalized server-side).
         if (!jsonEqual(stripProvenanceTime(existing.snapshot), stripProvenanceTime(snapshot))) {
           throw new Error(
             `playbook ${pb.id} version ${String(pb.version)} already committed with different content`,
-          );
-        }
-        // Self-heal: if lineage is intact but the head row is missing or
-        // points at a different version (manual repair, partial-failure
-        // crash), rebuild it from the canonical snapshot. Otherwise an
-        // idempotent retry would silently report success while `get(id)`
-        // still returned undefined or stale state.
-        if (current === null || current.version !== pb.version) {
-          upsertCurrent.run(
-            pb.id,
-            pb.title,
-            canonicalJson(pb.sections),
-            canonicalJson(pb.tags),
-            pb.source,
-            pb.createdAt,
-            pb.updatedAt,
-            pb.sessionCount,
-            monotonicWatermark,
-            pb.version,
-            normalizedProvenance !== undefined ? canonicalJson(normalizedProvenance) : null,
           );
         }
         return;
@@ -437,12 +437,16 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       return filterByTags(rows, options?.tags);
     },
     remove: async (id) => {
-      // Soft-delete: drop the head row only, preserve structured_playbook_versions.
-      // Lineage is the audit trail for AGP rollback; destructive deletion would
-      // make rollback impossible after a mistaken remove. An admin-only purge
-      // path can be added later if a legitimate need to erase lineage emerges.
-      const r = deleteCurrent.run(id);
-      return r.changes > 0;
+      // Hard-delete: drop both the head row and all lineage rows in one
+      // transaction. Matches the in-memory baseline contract (`data.delete`)
+      // — callers expect remove() to actually remove. Rollback before
+      // remove() must be performed explicitly via `getVersion()`+`save()`.
+      const result = db.transaction(() => {
+        const r = deleteCurrent.run(id);
+        deleteLineage.run(id);
+        return r.changes > 0;
+      })();
+      return result;
     },
     getVersion: async (id, version) => {
       const row = selectVersion.get(id, version) as { readonly snapshot: string } | null;
@@ -493,12 +497,12 @@ function createTrajectoryStore(db: Database): TrajectoryStore {
   // monotonic counter assigned at append time. Multiple same-tool calls
   // within a single turn round-trip as distinct rows.
   //
-  // Batch dedup: `trajectory_append_log` records a content hash of every
-  // committed batch. A retry that presents the byte-identical entries array
-  // (after canonicalization) short-circuits as a no-op, so a caller in
-  // unknown-commit-state can safely retry without duplicating audit
-  // evidence. A genuinely repeated batch with the same bytes is treated as
-  // the same event.
+  // Append is NOT idempotent: a legitimate second batch with identical
+  // contents must persist as additional rows (e.g. the same fs.read sequence
+  // genuinely repeated in a later turn block). Callers that need retry
+  // dedup after an unknown-commit-state failure must coordinate that
+  // themselves (idempotency token, caller-side log, etc.). Matches the
+  // in-memory baseline `[...prev, ...entries]` semantics.
   const insert = db.prepare(`
     INSERT INTO trajectory_entries
       (session_id, seq, turn_index, timestamp, kind, identifier, outcome, duration_ms, metadata, bullet_ids)
@@ -513,38 +517,14 @@ function createTrajectoryStore(db: Database): TrajectoryStore {
   const selectSessions = db.query(
     "SELECT DISTINCT session_id FROM trajectory_entries ORDER BY session_id LIMIT ?",
   );
-  const insertBatchHash = db.prepare(
-    "INSERT INTO trajectory_append_log (session_id, batch_hash, appended_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-  );
 
   return {
     append: async (sessionId, entries) => {
       if (entries.length === 0) return;
-      // Deterministic content hash over the canonicalized batch. Any
-      // difference in the entries array (order, value, presence) yields a
-      // different hash, so legitimate "different" batches are not collapsed.
-      const batchHash = sha256Hex(
-        canonicalJson(
-          entries.map((e) => ({
-            turnIndex: e.turnIndex,
-            timestamp: e.timestamp,
-            kind: e.kind,
-            identifier: e.identifier,
-            outcome: e.outcome,
-            durationMs: e.durationMs,
-            metadata: e.metadata ?? null,
-            bulletIds: e.bulletIds ?? null,
-          })),
-        ),
-      );
-      // .immediate() acquires RESERVED at BEGIN so the dedup check, MAX(seq)
-      // read, and ensuing inserts all serialize against peer writers.
+      // .immediate() acquires RESERVED at BEGIN so the MAX(seq) read and
+      // ensuing inserts serialize against peer writers — concurrent appends
+      // can't race on the seq counter.
       db.transaction(() => {
-        const claim = insertBatchHash.run(sessionId, batchHash, Date.now());
-        if (claim.changes === 0) {
-          // Same batch already committed — short-circuit as no-op.
-          return;
-        }
         const maxRow = selectMaxSeq.get(sessionId) as { readonly s: number | null } | null;
         let next = (maxRow?.s ?? 0) + 1;
         for (const e of entries) {

@@ -20,11 +20,9 @@ import type { Database } from "bun:sqlite";
  * v3: playbook_proposals gains composite FK
  *     (playbook_id, base_version) -> structured_playbook_versions(playbook_id, version)
  *     so a proposal can never claim ancestry on a nonexistent playbook
- *     version. Without this anchor, downstream promotion/rollback can't prove
- *     what snapshot was actually reviewed. Adds new
- *     `trajectory_append_log` table for caller-transparent dedup of
- *     byte-identical replayed batches: append() hashes the entries and
- *     short-circuits when the same hash was already recorded for this session.
+ *     version. Without this anchor, downstream promotion/rollback can't
+ *     prove what snapshot was actually reviewed. Migration quarantines
+ *     orphan proposals + their evaluations to *_quarantine_v3 tables.
  */
 const CURRENT_SCHEMA_VERSION = 3;
 
@@ -124,18 +122,6 @@ export function applySchema(db: Database): void {
   db.run(
     "CREATE INDEX IF NOT EXISTS idx_playbook_proposals_playbook ON playbook_proposals(playbook_id, created_at)",
   );
-
-  // Per-session batch dedup: idempotent retry of the same byte-identical
-  // entries array short-circuits without inserting duplicates. Caller can
-  // safely retry an append after an unknown-commit-state failure.
-  db.run(`
-    CREATE TABLE IF NOT EXISTS trajectory_append_log (
-      session_id   TEXT    NOT NULL,
-      batch_hash   TEXT    NOT NULL,
-      appended_at  INTEGER NOT NULL,
-      PRIMARY KEY (session_id, batch_hash)
-    )
-  `);
 
   // FK to playbook_proposals.id rejects orphan evaluations (must reference an
   // existing proposal). UNIQUE(proposal_id) enforces one evaluation per

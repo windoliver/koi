@@ -115,15 +115,6 @@ CREATE TABLE playbook_proposals (
 );
 CREATE INDEX idx_playbook_proposals_playbook ON playbook_proposals(playbook_id, created_at);
 
--- Per-session dedup log. append() hashes the canonicalized batch and
--- short-circuits when the same hash is already recorded for this session,
--- so a caller in unknown-commit-state can safely retry an append.
-CREATE TABLE trajectory_append_log (
-  session_id   TEXT    NOT NULL,
-  batch_hash   TEXT    NOT NULL,
-  appended_at  INTEGER NOT NULL,
-  PRIMARY KEY (session_id, batch_hash)
-);
 
 -- Append-only evaluations (one per proposal_id, but enforced at app layer)
 CREATE TABLE playbook_evaluations (

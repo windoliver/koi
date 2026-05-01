@@ -280,18 +280,16 @@ describe("createSqlitePlaybookStore — structured playbooks + lineage", () => {
     store.close();
   });
 
-  test("remove preserves lineage (audit trail intact)", async () => {
-    // Regression: remove() must not destroy structured_playbook_versions.
-    // Lineage is the AGP rollback audit trail; a mistaken delete must remain
-    // recoverable via getVersion.
+  test("remove is destructive (head + lineage cleared, matches in-memory baseline)", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
     await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, title: "v1" }));
     await store.structuredPlaybooks.save(spb({ id: "s1", version: 2, title: "v2" }));
     expect(await store.structuredPlaybooks.remove("s1")).toBe(true);
     expect(await store.structuredPlaybooks.get("s1")).toBeUndefined();
-    // Lineage is still readable for forensic/rollback purposes.
-    expect((await store.structuredPlaybooks.getVersion("s1", 1))?.title).toBe("v1");
-    expect((await store.structuredPlaybooks.getVersion("s1", 2))?.title).toBe("v2");
+    // Hard-delete: lineage must be cleared too, so a removed playbook
+    // cannot be silently resurrected via getVersion.
+    expect(await store.structuredPlaybooks.getVersion("s1", 1)).toBeUndefined();
+    expect(await store.structuredPlaybooks.getVersion("s1", 2)).toBeUndefined();
     store.close();
   });
 });
@@ -794,6 +792,45 @@ describe("createSqlitePlaybookStore — head-row self-heal", () => {
     repaired.close();
   });
 
+  test("self-heal rebuilds head from stored snapshot after watermark was clamped", async () => {
+    // Regression: when an earlier save server-clamped lastReflectedStepIndex
+    // upward, the canonical stored snapshot has a watermark the caller can
+    // no longer reproduce by re-normalizing against a missing head row.
+    // Self-heal must rebuild from the STORED snapshot, not the caller
+    // payload, so recovery succeeds even when the original payload's
+    // watermark was below the persisted clamp.
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    // First save establishes a high watermark.
+    await store.structuredPlaybooks.save(
+      spb({ id: "s1", version: 1, lastReflectedStepIndex: 100, title: "v1" }),
+    );
+    // Second save at v2 with a LOW watermark — server clamps to max(100, 5) = 100.
+    const lowWatermark = spb({
+      id: "s1",
+      version: 2,
+      lastReflectedStepIndex: 5,
+      title: "v2",
+    });
+    await store.structuredPlaybooks.save(lowWatermark);
+    expect((await store.structuredPlaybooks.get("s1"))?.lastReflectedStepIndex).toBe(100);
+    store.close();
+
+    // Simulate corruption: drop the head row. Lineage v2 still has
+    // watermark=100 (server-clamped); caller's payload has watermark=5.
+    const corrupt = new Database(dbPath);
+    corrupt.run("DELETE FROM structured_playbooks WHERE id = ?", ["s1"]);
+    corrupt.close();
+
+    const repaired = createSqlitePlaybookStore({ path: dbPath });
+    // Idempotent retry of the original low-watermark payload must self-heal
+    // from the stored snapshot, NOT throw "different content".
+    await repaired.structuredPlaybooks.save(lowWatermark);
+    const restored = await repaired.structuredPlaybooks.get("s1");
+    expect(restored?.lastReflectedStepIndex).toBe(100);
+    expect(restored?.version).toBe(2);
+    repaired.close();
+  });
+
   test("retry rebuilds missing head row when lineage is intact", async () => {
     const store = createSqlitePlaybookStore({ path: dbPath });
     const base = spb({ id: "s1", version: 1, title: "v1" });
@@ -1024,15 +1061,17 @@ describe("createSqlitePlaybookStore — append-only invariants", () => {
     store.close();
   });
 
-  test("trajectory append dedups byte-identical batch retry", async () => {
-    // Regression: a caller in unknown-commit-state must be able to retry the
-    // same batch without duplicating audit evidence.
+  test("trajectory append persists legitimate identical-content repeats", async () => {
+    // Regression: append is NOT idempotent — a legitimate second batch with
+    // identical contents must persist as additional rows. Caller-side retry
+    // dedup is the caller's responsibility.
     const store = createSqlitePlaybookStore({ path: dbPath });
     const batch = [makeEntry(0, "x"), makeEntry(1, "y")];
     await store.trajectories.append("s1", batch);
     await store.trajectories.append("s1", batch);
     const back = await store.trajectories.getSession("s1");
-    expect(back.map((e) => e.identifier)).toEqual(["x", "y"]);
+    expect(back.length).toBe(4);
+    expect(back.map((e) => e.identifier)).toEqual(["x", "y", "x", "y"]);
     store.close();
   });
 
