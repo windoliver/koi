@@ -56,6 +56,12 @@ async function drainWithAbort(
   // finally (lint forbids; behavior also can't override an in-flight
   // throw from the try block — finally returns to unwinding).
   let drainError: unknown;
+  // Use let — justified: track whether the drain ended naturally
+  // (done:true) vs. via abort/exception. Cleanup is only enforced on
+  // early exit; a post-EOF return() can be a no-op or destructive cleanup
+  // for some adapters, and turning that into a fatal run-level error
+  // would break compatible runners on the happy path.
+  let exitedEarly = false;
   try {
     // Use let — justified: loop variable for iterator protocol
     let done = false;
@@ -65,18 +71,17 @@ async function drainWithAbort(
     }
   } catch (e: unknown) {
     drainError = e;
+    exitedEarly = true;
   }
 
-  // Race iterator.return() against a short timeout. A consumer adapter
-  // whose return() hangs (or never resolves) MUST cause a fatal abort:
-  // continuing the loop while the previous runner may still be mutating
-  // the workspace would produce overlapping iterations, duplicate side
-  // effects, and corrupt verification on non-idempotent runners.
+  // Cleanup semantics only apply on early exit (abort/exception). Stuck or
+  // rejected return() is dangerous only when the runner may still be doing
+  // work — on natural EOF, it isn't.
   // Use let — justified: track race outcome and capture cleanup rejection.
   let stuckCleanup = false;
   let cleanupError: unknown;
   const returnFn = iterator.return;
-  if (returnFn !== undefined) {
+  if (exitedEarly && returnFn !== undefined) {
     // Use let — justified: race outcome flag.
     let timedOut = false;
     // Capture rejections separately from successes — a runner that signals
@@ -223,11 +228,13 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
 
         // Use let — justified: mutable error tracking across try/catch
         let iterError: string | undefined;
+        // Construct iterSignal in outer scope so we can check `.aborted`
+        // after the drain to decide whether the iteration's work is trusted.
+        const iterSignal = AbortSignal.any([
+          abortController.signal,
+          AbortSignal.timeout(iterationTimeoutMs),
+        ]);
         try {
-          const iterSignal = AbortSignal.any([
-            abortController.signal,
-            AbortSignal.timeout(iterationTimeoutMs),
-          ]);
           const input: EngineInput = { kind: "text", text: promptText, signal: iterSignal };
           await drainWithAbort(config.runIteration(input), iterSignal);
         } catch (e: unknown) {
@@ -238,31 +245,45 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           iterError = extractMessage(e);
         }
 
-        // Use let — justified: mutable gate result across try/catch
+        // Use let — justified: mutable gate result.
         let gateResult: VerificationResult;
-        const gateSignal = AbortSignal.any([
-          abortController.signal,
-          AbortSignal.timeout(gateTimeoutMs),
-        ]);
-        try {
-          const gatePromise = config.verify({
-            iteration: i,
-            currentItem: current,
-            workingDir,
-            iterationRecords: [...iterationRecords],
-            learnings,
-            remainingItems,
-            completedItems,
-            signal: gateSignal,
-          });
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            gateSignal.addEventListener("abort", () => reject(new Error("Gate timed out")), {
-              once: true,
+        if (iterSignal.aborted) {
+          // The iteration was aborted or timed out. Skip verify entirely:
+          // a stale workspace can satisfy a file gate (passed:true) and
+          // falsely mark the item done despite the runner being cut short.
+          // Whether this counts against the per-item failure budget is
+          // decided below by the `cancelled` check (loop-level abort = no).
+          gateResult = {
+            passed: false,
+            details: iterError
+              ? `Iteration aborted/timed out before verification could run: ${iterError}`
+              : "Iteration aborted/timed out before verification could run",
+          };
+        } else {
+          const gateSignal = AbortSignal.any([
+            abortController.signal,
+            AbortSignal.timeout(gateTimeoutMs),
+          ]);
+          try {
+            const gatePromise = config.verify({
+              iteration: i,
+              currentItem: current,
+              workingDir,
+              iterationRecords: [...iterationRecords],
+              learnings,
+              remainingItems,
+              completedItems,
+              signal: gateSignal,
             });
-          });
-          gateResult = await Promise.race([gatePromise, timeoutPromise]);
-        } catch (e: unknown) {
-          gateResult = { passed: false, details: `Gate error: ${extractMessage(e)}` };
+            const timeoutPromise = new Promise<never>((_, reject) => {
+              gateSignal.addEventListener("abort", () => reject(new Error("Gate timed out")), {
+                once: true,
+              });
+            });
+            gateResult = await Promise.race([gatePromise, timeoutPromise]);
+          } catch (e: unknown) {
+            gateResult = { passed: false, details: `Gate error: ${extractMessage(e)}` };
+          }
         }
 
         // Operator-stop / external-abort is NOT a verification failure. Do not

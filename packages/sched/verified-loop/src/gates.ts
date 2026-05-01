@@ -136,6 +136,9 @@ export function createTestGate(
  */
 export function createFileGate(path: string, match: string | RegExp): VerificationFn {
   return async (ctx: GateContext): Promise<VerificationResult> => {
+    if (ctx.signal.aborted) {
+      return { passed: false, details: "File gate skipped: aborted before start" };
+    }
     const resolvedPath = isAbsolute(path) ? path : resolve(ctx.workingDir, path);
     const file = Bun.file(resolvedPath);
     const exists = await file.exists();

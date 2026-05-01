@@ -844,6 +844,72 @@ describe("VerifiedLoop.run", () => {
     expect(result.iterations).toBe(1);
   });
 
+  test("does not call iterator.return() after natural EOF (compat with strict adapters)", async () => {
+    // Regression: drainWithAbort previously called iterator.return() even
+    // after done:true. Many adapter iterators only define meaningful
+    // return() behavior for early termination — a post-EOF return() may
+    // reject or destructively cleanup. That would fail otherwise-clean
+    // runs as RunnerStuckError.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+
+    let returnCalled = false;
+    const eofRejectingRunner: RunIterationFn = (input: EngineInput): AsyncIterable<EngineEvent> => {
+      void input;
+      return {
+        [Symbol.asyncIterator]: () => ({
+          next: async () => ({ done: true, value: undefined }),
+          return: async () => {
+            returnCalled = true;
+            throw new Error("post-EOF cleanup not supported");
+          },
+        }),
+      };
+    };
+
+    const loop = createVerifiedLoop(makeConfig({ runIteration: eofRejectingRunner }));
+    const result = await loop.run();
+    expect(returnCalled).toBe(false);
+    expect(result.completed).toEqual(["a"]);
+  });
+
+  test("does not commit work when an iteration is aborted/timed out", async () => {
+    // Regression: iterError was recorded but verify() still ran and
+    // unconditionally persisted completion when passed:true. A file gate
+    // checking stale workspace state could mark the item done despite the
+    // runner being cut short. Aborted/timed-out iterations must skip
+    // verify entirely and treat the result as a hard failure.
+    await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
+
+    const stuckRunner: RunIterationFn = (input: EngineInput): AsyncIterable<EngineEvent> => {
+      void input;
+      return {
+        [Symbol.asyncIterator]: () => ({
+          next: () => new Promise(() => {}),
+          return: async () => ({ done: true, value: undefined }),
+        }),
+      };
+    };
+
+    let verifyCalled = false;
+    const loop = createVerifiedLoop(
+      makeConfig({
+        runIteration: stuckRunner,
+        iterationTimeoutMs: 100,
+        verify: async () => {
+          verifyCalled = true;
+          // Even if the gate were called, this would falsely report success.
+          return { passed: true };
+        },
+        // Force termination so the test doesn't loop maxIterations × 100ms.
+        maxIterations: 1,
+      }),
+    );
+    const result = await loop.run();
+    expect(verifyCalled).toBe(false);
+    expect(result.completed).toEqual([]);
+    expect(result.iterationRecords[0]?.gateResult.passed).toBe(false);
+  }, 5_000);
+
   test("aborts the run fatally when iterator.return() rejects during cleanup", async () => {
     // Regression: a runner that signals cleanup failure (return() rejects)
     // is just as dangerous as one that hangs — we cannot assume side
@@ -856,7 +922,10 @@ describe("VerifiedLoop.run", () => {
       void input;
       return {
         [Symbol.asyncIterator]: () => ({
-          next: async () => ({ done: true, value: undefined }),
+          // next() never resolves — iterationTimeoutMs aborts the drain
+          // and triggers the cleanup path. The return() rejection during
+          // this early-exit cleanup must be fatal.
+          next: () => new Promise(() => {}),
           return: async () => {
             throw new Error("cleanup failed: subprocess unreachable");
           },
@@ -864,7 +933,9 @@ describe("VerifiedLoop.run", () => {
       };
     };
 
-    const loop = createVerifiedLoop(makeConfig({ runIteration: rejectingRunner }));
+    const loop = createVerifiedLoop(
+      makeConfig({ runIteration: rejectingRunner, iterationTimeoutMs: 100 }),
+    );
     let threw = false;
     let message: string | undefined;
     try {
