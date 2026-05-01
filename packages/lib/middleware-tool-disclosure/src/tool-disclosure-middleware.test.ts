@@ -392,7 +392,8 @@ describe("createToolDisclosureMiddleware", () => {
       expect(nextCalled).toBe(true);
     });
 
-    test("unknown tool names pass through (not our concern)", async () => {
+    test("unknown tool names pass through when disclosure is NOT active", async () => {
+      // No wrapModelCall has happened — knownNames is empty, the guard is inert.
       const mw = createToolDisclosureMiddleware({ threshold: 5 });
       const wrap = mw.wrapToolCall;
       if (!wrap) throw new Error("wrapToolCall missing");
@@ -403,6 +404,74 @@ describe("createToolDisclosureMiddleware", () => {
       };
       await wrap(ctx, { toolId: "never-disclosed", input: {} }, noop);
       expect(nextCalled).toBe(true);
+    });
+
+    test("unknown tool names are REJECTED when disclosure is active", async () => {
+      // wrapModelCall above threshold populates knownNames; an unknown toolId
+      // (guessed, stale, leaked) must be rejected — the model never saw it.
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const sid: SessionId = sessionId("guard-active");
+      const ctxX = createMockTurnContext({ session: { sessionId: sid } });
+      await mw.wrapModelCall?.(
+        ctxX,
+        { messages: [], tools: descriptors(10) },
+        captureNext().handler,
+      );
+
+      const wrap = mw.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+      let nextCalled = false;
+      const noop = async (): Promise<ToolResponse> => {
+        nextCalled = true;
+        return { output: "should not reach" };
+      };
+      const response = await wrap(ctxX, { toolId: "leaked-name", input: {} }, noop);
+      expect(nextCalled).toBe(false);
+      const out = response.output as { ok: boolean; error?: { code: string; message: string } };
+      expect(out.ok).toBe(false);
+      expect(out.error?.code).toBe("VALIDATION");
+      expect(out.error?.message).toContain("not in the currently advertised tool set");
+    });
+
+    test("promotion is dropped when a previously-promoted tool name leaves the tool set", async () => {
+      const mw = createToolDisclosureMiddleware({ threshold: 5 });
+      const sid: SessionId = sessionId("churn");
+      const ctxC = createMockTurnContext({ session: { sessionId: sid } });
+
+      // Turn 1: tools = [tool-0..tool-9]; promote tool-3
+      await mw.wrapModelCall?.(
+        ctxC,
+        { messages: [], tools: descriptors(10) },
+        captureNext().handler,
+      );
+      mw.promoteByNameForSession(sid, ["tool-3"]);
+
+      // Turn 2: tool list churns — tool-3 is gone, replaced by tool-x
+      const newTools: readonly ToolDescriptor[] = [
+        descriptor("tool-0"),
+        descriptor("tool-1"),
+        descriptor("tool-2"),
+        descriptor("tool-4"),
+        descriptor("tool-5"),
+        descriptor("tool-6"),
+        descriptor("tool-7"),
+        descriptor("tool-x"),
+        descriptor("tool-y"),
+        descriptor("tool-z"),
+      ];
+      // tool-3 is intentionally absent
+      const seen = captureNext();
+      await mw.wrapModelCall?.(ctxC, { messages: [], tools: newTools }, seen.handler);
+
+      // tool-3's promotion must be dropped — tool-3 is not in the new tool set,
+      // so a re-disclosure that re-introduces tool-3 should NOT auto-emit it
+      // at full schema.
+      const newReintroduced: readonly ToolDescriptor[] = [...descriptors(10)];
+      const seen2 = captureNext();
+      await mw.wrapModelCall?.(ctxC, { messages: [], tools: newReintroduced }, seen2.handler);
+
+      const t3 = (seen2.seen.request?.tools ?? []).find((t) => t.name === "tool-3");
+      expect(t3 && isSummary(t3)).toBe(true);
     });
 
     test("stale disclosure state is cleared when tool count drops below threshold", async () => {

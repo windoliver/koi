@@ -163,6 +163,13 @@ export function createToolDisclosureMiddleware(
         result.push(summarize(tool));
       }
     }
+    // Drop promotions for names no longer in the current tool list. A tool
+    // descriptor that was previously promoted may have been swapped, retired,
+    // or replaced by a different implementation under the same name (selector
+    // middleware, tenant rotation). Re-promotion is the safe gate.
+    for (const name of state.promoted) {
+      if (!names.has(name)) state.promoted.delete(name);
+    }
     state.knownNames = names;
     return result;
   }
@@ -243,11 +250,30 @@ export function createToolDisclosureMiddleware(
         return { output: result };
       }
 
-      // Reject direct calls to known-but-not-promoted tools. The model saw
-      // these as summaries (inputSchema = {}); without promotion the engine's
-      // arg validation has no real schema to enforce, so we fail-closed here.
+      // Fail-closed against direct calls when disclosure is active (knownNames
+      // is populated — the immediately preceding above-threshold model call
+      // disclosed a tool set):
+      //
+      // 1. Tool not in the disclosed set at all (guessed / stale / leaked
+      //    name) — reject; the model never saw this tool in the current turn
+      //    so it has no business calling it.
+      // 2. Tool was disclosed at summary level and not promoted — reject;
+      //    inputSchema:{} can't validate args, so the call is unsafe.
+      // 3. Tool was disclosed and promoted — pass through.
       const state = sessions.get(ctx.session.sessionId);
-      if (state !== undefined && state.knownNames.has(request.toolId)) {
+      if (state !== undefined && state.knownNames.size > 0) {
+        if (!state.knownNames.has(request.toolId)) {
+          return {
+            output: {
+              ok: false,
+              error: {
+                code: "VALIDATION",
+                message: `Tool '${request.toolId}' is not in the currently advertised tool set for this session.`,
+              },
+            },
+            metadata: { error: true, toolId: request.toolId, code: "VALIDATION" },
+          };
+        }
         if (!state.promoted.has(request.toolId)) {
           return {
             output: {
