@@ -16,6 +16,9 @@
     "lint": "biome check .",
     "test": "bun test"
   },
+  "engines": {
+    "bun": ">=1.3.0"
+  },
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*"
