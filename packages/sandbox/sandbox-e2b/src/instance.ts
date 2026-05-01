@@ -14,16 +14,32 @@ function joinCommand(command: string, args: readonly string[]): string {
 }
 
 /**
- * Byte-accurate truncation. `String.slice` cuts UTF-16 code units, which can
- * leave the result longer than the byte budget for multibyte content. Encode
- * to bytes, slice at the byte boundary, then decode (non-fatal so a partial
- * codepoint at the boundary is replaced rather than throwing).
+ * Byte-accurate truncation that respects UTF-8 codepoint boundaries.
+ *
+ * `String.slice` cuts UTF-16 code units; decoding a partial codepoint with
+ * `fatal: false` substitutes U+FFFD whose 3-byte encoding can re-inflate past
+ * the budget. Instead we walk back over any trailing continuation bytes so the
+ * cut always lands on a complete codepoint boundary, then decode.
  */
+function trimToUtf8Boundary(bytes: Uint8Array, maxBytes: number): Uint8Array {
+  if (bytes.byteLength <= maxBytes) return bytes;
+  let cut = maxBytes;
+  // If the first excluded byte is a continuation (10xxxxxx), the slice ends
+  // mid-codepoint. Walk back until that byte is a leading byte or ASCII.
+  while (cut > 0) {
+    const b = bytes[cut];
+    if (b === undefined || (b & 0xc0) !== 0x80) break;
+    cut--;
+  }
+  return bytes.slice(0, cut);
+}
+
 function sliceByBytes(s: string, maxBytes: number): { text: string; truncated: boolean } {
   const bytes = new TextEncoder().encode(s);
   if (bytes.byteLength <= maxBytes) return { text: s, truncated: false };
+  const trimmed = trimToUtf8Boundary(bytes, maxBytes);
   return {
-    text: new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, maxBytes)),
+    text: new TextDecoder("utf-8").decode(trimmed),
     truncated: true,
   };
 }
@@ -64,17 +80,31 @@ function createOutputBudget(cap: number): OutputBudget {
       return;
     }
     const bytes = encoder.encode(data);
-    const take = Math.min(bytes.byteLength, state.remaining);
-    const chunk = bytes.slice(0, take);
-    if (target === "stdout") {
-      stdoutChunks.push(chunk);
-      stdoutBytes += take;
-    } else {
-      stderrChunks.push(chunk);
-      stderrBytes += take;
+    if (bytes.byteLength <= state.remaining) {
+      // Fits entirely — append as-is.
+      if (target === "stdout") {
+        stdoutChunks.push(bytes);
+        stdoutBytes += bytes.byteLength;
+      } else {
+        stderrChunks.push(bytes);
+        stderrBytes += bytes.byteLength;
+      }
+      state.remaining -= bytes.byteLength;
+      return;
     }
-    state.remaining -= take;
-    if (take < bytes.byteLength) state.truncated = true;
+    // Doesn't fit — trim to the last complete UTF-8 codepoint that fits in budget.
+    const trimmed = trimToUtf8Boundary(bytes, state.remaining);
+    if (trimmed.byteLength > 0) {
+      if (target === "stdout") {
+        stdoutChunks.push(trimmed);
+        stdoutBytes += trimmed.byteLength;
+      } else {
+        stderrChunks.push(trimmed);
+        stderrBytes += trimmed.byteLength;
+      }
+      state.remaining -= trimmed.byteLength;
+    }
+    state.truncated = true;
   }
 
   function resolve(target: "stdout" | "stderr", sdkFallback: string): string {
@@ -182,6 +212,19 @@ export function createE2bInstance(
         );
       }
 
+      // Pre-aborted signals must never reach the SDK — otherwise a caller that
+      // cancels before dispatch could still trigger a remote side effect.
+      if (options?.signal?.aborted === true) {
+        return {
+          exitCode: 130,
+          stdout: "",
+          stderr: "",
+          durationMs: 0,
+          timedOut: false,
+          oomKilled: false,
+        };
+      }
+
       const start = performance.now();
       const cmd = joinCommand(command, args);
 
@@ -237,7 +280,10 @@ export function createE2bInstance(
           oomKilled: false,
           ...(truncated ? { truncated: true as const } : {}),
         };
-        if (options?.signal?.aborted === true) {
+        // Re-read `aborted` here — TS narrows after the pre-abort guard, but
+        // the signal could have aborted *during* the SDK call.
+        const abortedNow: boolean = options?.signal?.aborted ?? false;
+        if (abortedNow) {
           return { exitCode: 130, ...baseResult };
         }
         return { exitCode: result.exitCode, ...baseResult };

@@ -49,6 +49,40 @@ describe("createDaytonaInstance", () => {
     expect(result.exitCode).toBe(130);
   });
 
+  test("exec short-circuits with exit 130 when signal is pre-aborted (no SDK call)", async () => {
+    const base = createFakeSandbox();
+    const sdk = { ...base, commands: { ...base.commands, supportsAbort: true } };
+    const instance = createDaytonaInstance(sdk);
+    const ac = new AbortController();
+    ac.abort();
+    const result = await instance.exec("ls", [], { signal: ac.signal });
+    expect(result.exitCode).toBe(130);
+    expect(base.runCalls).toHaveLength(0);
+  });
+
+  test("exec truncates multibyte UTF-8 output without replacement-char inflation", async () => {
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        supportsMaxOutputBytes: true,
+        run: async (): Promise<import("./types.js").DaytonaRunResult> => ({
+          exitCode: 0,
+          stdout: "🌊🌊🌊🌊",
+          stderr: "",
+        }),
+      },
+    };
+    const instance = createDaytonaInstance(sdk);
+    for (const cap of [1, 2, 3, 5, 7]) {
+      const result = await instance.exec("ls", [], { maxOutputBytes: cap });
+      expect(new TextEncoder().encode(result.stdout).byteLength).toBeLessThanOrEqual(cap);
+      expect(result.stdout.includes("�")).toBe(false);
+      expect(result.truncated).toBe(true);
+    }
+  });
+
   test("exec rejects fail-closed when signal provided but SDK has no supportsAbort", async () => {
     const sdk = createFakeSandbox();
     const instance = createDaytonaInstance(sdk);

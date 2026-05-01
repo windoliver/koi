@@ -88,6 +88,17 @@ describe("createE2bInstance", () => {
     expect(result.exitCode).toBe(130);
   });
 
+  test("exec short-circuits with exit 130 when signal is pre-aborted (no SDK call)", async () => {
+    const base = createFakeSandbox();
+    const sdk = { ...base, commands: { ...base.commands, supportsAbort: true } };
+    const instance = createE2bInstance(sdk);
+    const ac = new AbortController();
+    ac.abort();
+    const result = await instance.exec("ls", [], { signal: ac.signal });
+    expect(result.exitCode).toBe(130);
+    expect(base.runCalls).toHaveLength(0);
+  });
+
   test("exec rejects fail-closed when signal provided but SDK has no supportsAbort", async () => {
     const sdk = createFakeSandbox();
     const instance = createE2bInstance(sdk);
@@ -234,7 +245,10 @@ describe("createE2bInstance", () => {
     expect(result.truncated).toBe(true);
   });
 
-  test("exec truncates multibyte UTF-8 output at the byte boundary", async () => {
+  test("exec truncates multibyte UTF-8 output at the byte boundary (no replacement-char inflation)", async () => {
+    // 4 wave emoji = 4 bytes each in UTF-8 (16 bytes). Cap at 1 byte: trimming
+    // must drop the partial codepoint entirely (returning ""), not insert
+    // U+FFFD which would re-inflate to 3 bytes.
     const base = createFakeSandbox();
     const sdk = {
       ...base,
@@ -249,10 +263,15 @@ describe("createE2bInstance", () => {
       },
     };
     const instance = createE2bInstance(sdk);
-    const result = await instance.exec("ls", [], { maxOutputBytes: 7 });
-    // Byte length must be <= cap (might be less if a multibyte boundary forced a smaller cut)
-    expect(new TextEncoder().encode(result.stdout).byteLength).toBeLessThanOrEqual(7);
-    expect(result.truncated).toBe(true);
+    for (const cap of [1, 2, 3, 5, 7]) {
+      const result = await instance.exec("ls", [], { maxOutputBytes: cap });
+      const outBytes = new TextEncoder().encode(result.stdout).byteLength;
+      // Byte-accurate budget: must NEVER exceed the cap, even with multibyte cuts.
+      expect(outBytes).toBeLessThanOrEqual(cap);
+      // U+FFFD (3 bytes) must not appear from truncation.
+      expect(result.stdout.includes("�")).toBe(false);
+      expect(result.truncated).toBe(true);
+    }
   });
 
   test("exec truncates oversized SDK output locally and reports truncated=true", async () => {

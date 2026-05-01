@@ -12,13 +12,22 @@ function joinCommand(command: string, args: readonly string[]): string {
   return [command, ...args].map(quoteArg).join(" ");
 }
 
+function trimToUtf8Boundary(bytes: Uint8Array, maxBytes: number): Uint8Array {
+  if (bytes.byteLength <= maxBytes) return bytes;
+  let cut = maxBytes;
+  while (cut > 0) {
+    const b = bytes[cut];
+    if (b === undefined || (b & 0xc0) !== 0x80) break;
+    cut--;
+  }
+  return bytes.slice(0, cut);
+}
+
 function sliceByBytes(s: string, maxBytes: number): { text: string; truncated: boolean } {
   const bytes = new TextEncoder().encode(s);
   if (bytes.byteLength <= maxBytes) return { text: s, truncated: false };
-  return {
-    text: new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, maxBytes)),
-    truncated: true,
-  };
+  const trimmed = trimToUtf8Boundary(bytes, maxBytes);
+  return { text: new TextDecoder("utf-8").decode(trimmed), truncated: true };
 }
 
 interface OutputBudget {
@@ -44,17 +53,29 @@ function createOutputBudget(cap: number): OutputBudget {
       return;
     }
     const bytes = encoder.encode(data);
-    const take = Math.min(bytes.byteLength, state.remaining);
-    const chunk = bytes.slice(0, take);
-    if (target === "stdout") {
-      stdoutChunks.push(chunk);
-      stdoutBytes += take;
-    } else {
-      stderrChunks.push(chunk);
-      stderrBytes += take;
+    if (bytes.byteLength <= state.remaining) {
+      if (target === "stdout") {
+        stdoutChunks.push(bytes);
+        stdoutBytes += bytes.byteLength;
+      } else {
+        stderrChunks.push(bytes);
+        stderrBytes += bytes.byteLength;
+      }
+      state.remaining -= bytes.byteLength;
+      return;
     }
-    state.remaining -= take;
-    if (take < bytes.byteLength) state.truncated = true;
+    const trimmed = trimToUtf8Boundary(bytes, state.remaining);
+    if (trimmed.byteLength > 0) {
+      if (target === "stdout") {
+        stdoutChunks.push(trimmed);
+        stdoutBytes += trimmed.byteLength;
+      } else {
+        stderrChunks.push(trimmed);
+        stderrBytes += trimmed.byteLength;
+      }
+      state.remaining -= trimmed.byteLength;
+    }
+    state.truncated = true;
   }
 
   function resolve(target: "stdout" | "stderr", sdkFallback: string): string {
@@ -151,6 +172,18 @@ export function createDaytonaInstance(
         );
       }
 
+      // Pre-aborted signal must never reach the SDK.
+      if (options?.signal?.aborted === true) {
+        return {
+          exitCode: 130,
+          stdout: "",
+          stderr: "",
+          durationMs: 0,
+          timedOut: false,
+          oomKilled: false,
+        };
+      }
+
       const start = performance.now();
       const cmd = joinCommand(command, args);
 
@@ -198,7 +231,8 @@ export function createDaytonaInstance(
           oomKilled: false,
           ...(truncated ? { truncated: true as const } : {}),
         };
-        if (options?.signal?.aborted === true) {
+        const abortedNow: boolean = options?.signal?.aborted ?? false;
+        if (abortedNow) {
           return { exitCode: 130, ...baseResult };
         }
         return { exitCode: result.exitCode, ...baseResult };
