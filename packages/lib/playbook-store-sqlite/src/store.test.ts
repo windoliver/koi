@@ -920,6 +920,30 @@ describe("createSqlitePlaybookStore — head-row self-heal", () => {
     reopened.close();
   });
 
+  test("self-heal rejects conflicting payload when head is missing (no silent lost-update)", async () => {
+    // Regression: when lineage has v=N and the head row is missing,
+    // submitting a DIFFERENT payload at v=N must throw, not silently
+    // restore the stored snapshot and report success. The watermark and
+    // provenance.committedAt are server-normalized so they are stripped
+    // from the comparison, but caller-controlled fields (title, sections,
+    // etc.) must match.
+    const store = createSqlitePlaybookStore({ path: dbPath });
+    await store.structuredPlaybooks.save(spb({ id: "s1", version: 1, title: "real" }));
+    store.close();
+
+    // Drop head row but keep lineage.
+    const corrupt = new Database(dbPath);
+    corrupt.run("DELETE FROM structured_playbooks WHERE id = ?", ["s1"]);
+    corrupt.close();
+
+    const repaired = createSqlitePlaybookStore({ path: dbPath });
+    await expect(
+      repaired.structuredPlaybooks.save(spb({ id: "s1", version: 1, title: "tampered" })),
+    ).rejects.toThrow(/different content/);
+    expect(await repaired.structuredPlaybooks.get("s1")).toBeUndefined();
+    repaired.close();
+  });
+
   test("self-heal rebuilds head from stored snapshot after watermark was clamped", async () => {
     // Regression: when an earlier save server-clamped lastReflectedStepIndex
     // upward, the canonical stored snapshot has a watermark the caller can

@@ -53,26 +53,32 @@ function canonicalJson(value: unknown): string {
  * non-canonical encoding.
  */
 /**
- * Strip `provenance.committedAt` from a canonicalized snapshot string so two
- * idempotent retries compare equal even when the second retry will be
- * normalized to a different server commit time. Returns the input unchanged
- * if it doesn't contain a provenance object.
+ * Strip server-normalized fields from a canonicalized snapshot so two
+ * idempotent retries compare equal even after the server applies its
+ * normalizations. Removes:
+ *   - `provenance.committedAt` (server-stamped commit time)
+ *   - `lastReflectedStepIndex` (server-clamped to max(current, incoming) for
+ *     watermark monotonicity)
+ * A caller cannot reproduce these server-controlled values on a retry, so
+ * direct equality on the canonical snapshot would falsely report content
+ * drift. Comparing the *caller-controlled* fields is the right invariant.
  */
-function stripProvenanceTime(snapshotJson: string): string {
+function stripServerNormalizedFields(snapshotJson: string): string {
   try {
-    const parsed = JSON.parse(snapshotJson) as { provenance?: { committedAt?: number } };
-    if (parsed.provenance !== undefined) {
-      const { committedAt: _ignored, ...rest } = parsed.provenance;
-      // If `committedAt` was the only populated field, drop the provenance
-      // key entirely so a retry whose provenance is just a timestamp compares
-      // equal to a stored row with no provenance.
+    const parsed = JSON.parse(snapshotJson) as {
+      provenance?: { committedAt?: number };
+      lastReflectedStepIndex?: number;
+    };
+    const { lastReflectedStepIndex: _w, ...withoutWatermark } = parsed;
+    if (withoutWatermark.provenance !== undefined) {
+      const { committedAt: _ignored, ...rest } = withoutWatermark.provenance;
       if (Object.keys(rest).length === 0) {
-        const { provenance: _p, ...withoutProv } = parsed;
+        const { provenance: _p, ...withoutProv } = withoutWatermark;
         return canonicalJson(withoutProv);
       }
-      return canonicalJson({ ...parsed, provenance: rest });
+      return canonicalJson({ ...withoutWatermark, provenance: rest });
     }
-    return canonicalJson(parsed);
+    return canonicalJson(withoutWatermark);
   } catch {
     return snapshotJson;
   }
@@ -376,13 +382,25 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       const snapshot = canonicalJson(normalized);
       const existing = selectVersion.get(pb.id, pb.version) as { readonly snapshot: string } | null;
       if (existing !== null) {
-        // Self-heal ONLY when the head row is missing entirely. Rebuilding
-        // from a stray higher lineage row would silently fast-forward the
-        // visible head past its current monotonic position, which is exactly
-        // the corruption this store guards against. If a head exists at a
-        // different version, the lineage row at pb.version is either an
-        // older legitimate snapshot (idempotency check below applies) or a
-        // stray from corruption — do not promote it back to head.
+        // Whether or not the head row is present, the caller payload at an
+        // already-committed lineage version must be semantically equal to
+        // the stored snapshot (modulo provenance.committedAt which is
+        // normalized server-side). A divergent payload is rejected loudly
+        // — silent self-heal on missing head with mismatched content would
+        // be a lost-update bug.
+        if (
+          !jsonEqual(
+            stripServerNormalizedFields(existing.snapshot),
+            stripServerNormalizedFields(snapshot),
+          )
+        ) {
+          throw new Error(
+            `playbook ${pb.id} version ${String(pb.version)} already committed with different content`,
+          );
+        }
+        // Self-heal ONLY when the head row is missing AND content matches.
+        // Rebuilding from a stray higher lineage row when a healthy head
+        // exists would silently fast-forward monotonic state.
         if (current === null) {
           const stored = JSON.parse(existing.snapshot) as StructuredPlaybook;
           upsertCurrent.run(
@@ -397,15 +415,6 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
             stored.lastReflectedStepIndex ?? null,
             stored.version,
             stored.provenance !== undefined ? canonicalJson(stored.provenance) : null,
-          );
-          return;
-        }
-        // Head exists. The caller payload at the same lineage version must
-        // be semantically equal to the stored snapshot (modulo
-        // provenance.committedAt which is normalized server-side).
-        if (!jsonEqual(stripProvenanceTime(existing.snapshot), stripProvenanceTime(snapshot))) {
-          throw new Error(
-            `playbook ${pb.id} version ${String(pb.version)} already committed with different content`,
           );
         }
         return;
