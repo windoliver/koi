@@ -2650,3 +2650,82 @@ describe("Golden: @koi/governance-scope", () => {
     expect(innerCalled).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-policy-cache (2 queries)
+// ---------------------------------------------------------------------------
+
+import { createPolicyCacheMiddleware } from "@koi/middleware-policy-cache";
+
+describe("Golden: @koi/middleware-policy-cache", () => {
+  test("verified-only gate: register rejects unverified entries (deterministic)", () => {
+    const handle = createPolicyCacheMiddleware();
+    const reject = handle.register({
+      toolId: "search",
+      brickId: "brick-unverified",
+      verified: false,
+      execute: () => ({ action: "allow" }),
+    });
+    expect(reject.ok).toBe(false);
+    if (!reject.ok) {
+      expect(reject.error.code).toBe("VALIDATION");
+    }
+    expect(handle.size()).toBe(0);
+
+    const accept = handle.register({
+      toolId: "search",
+      brickId: "brick-verified",
+      verified: true,
+      execute: () => ({ action: "allow" }),
+    });
+    expect(accept.ok).toBe(true);
+    expect(handle.size()).toBe(1);
+  });
+
+  test("cache-hit short-circuits before model: block decision skips next handler", async () => {
+    const handle = createPolicyCacheMiddleware();
+    handle.register({
+      toolId: "search",
+      brickId: "brick-1",
+      verified: true,
+      execute: (input) => {
+        const q = (input as { readonly q?: unknown }).q;
+        return typeof q === "string" && q.length > 0
+          ? { action: "allow" }
+          : { action: "block", reason: "empty q" };
+      },
+    });
+
+    const ctx = {
+      session: { sessionId: "policy-cache-golden", agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+
+    let executions = 0;
+    const handler: import("@koi/core/middleware").ToolHandler = async () => {
+      executions++;
+      return { output: "tool ran" };
+    };
+
+    // empty q → blocked, next never called
+    const blocked = await handle.middleware.wrapToolCall?.(
+      ctx,
+      { toolId: "search", input: { q: "" } },
+      handler,
+    );
+    expect(executions).toBe(0);
+    const blockedOut = blocked?.output as { readonly error: boolean; readonly message: string };
+    expect(blockedOut.error).toBe(true);
+    expect(blockedOut.message).toContain("Policy blocked");
+
+    // non-empty q → allowed, next runs exactly once (cache hit does not change observable result)
+    const allowed = await handle.middleware.wrapToolCall?.(
+      ctx,
+      { toolId: "search", input: { q: "hi" } },
+      handler,
+    );
+    expect(executions).toBe(1);
+    expect(allowed?.output).toBe("tool ran");
+  });
+});

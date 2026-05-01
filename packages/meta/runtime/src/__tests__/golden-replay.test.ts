@@ -15445,6 +15445,52 @@ describe("Golden: @koi/middleware-call-dedup", () => {
   });
 });
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-policy-cache (2 standalone queries, no LLM)
+//
+// Validates the verified-only promotion gate and that cache hits short-circuit
+// before reaching the next handler. Full short-circuit semantics are covered
+// by the package's own tests.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-policy-cache", () => {
+  test("middleware shape: policy-cache@intercept/150 with wrapToolCall and describeCapabilities", async () => {
+    const { createPolicyCacheMiddleware } = await import("@koi/middleware-policy-cache");
+    const handle = createPolicyCacheMiddleware({ maxEntries: 8 });
+    expect(handle.middleware.name).toBe("policy-cache");
+    expect(handle.middleware.priority).toBe(150);
+    expect(handle.middleware.phase).toBe("intercept");
+    expect(typeof handle.middleware.wrapToolCall).toBe("function");
+    expect(typeof handle.middleware.describeCapabilities).toBe("function");
+  });
+
+  test("verified-only gate: register({verified:false}) rejects with VALIDATION; verified entries accepted", async () => {
+    const { createPolicyCacheMiddleware } = await import("@koi/middleware-policy-cache");
+    const handle = createPolicyCacheMiddleware();
+
+    const reject = handle.register({
+      toolId: "search",
+      brickId: "b-unverified",
+      verified: false,
+      execute: () => ({ action: "allow" }),
+    });
+    expect(reject.ok).toBe(false);
+    if (!reject.ok) {
+      expect(reject.error.code).toBe("VALIDATION");
+      expect(reject.error.retryable).toBe(false);
+    }
+    expect(handle.size()).toBe(0);
+
+    const accept = handle.register({
+      toolId: "search",
+      brickId: "b-verified",
+      verified: true,
+      execute: () => ({ action: "allow" }),
+    });
+    expect(accept.ok).toBe(true);
+    expect(handle.size()).toBe(1);
+  });
+});
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/middleware-reflex (3 standalone queries, no LLM)
 // ---------------------------------------------------------------------------
 
