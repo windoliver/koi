@@ -5572,12 +5572,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             }
             return;
           }
-          // Both "missing" and "legacy" cases pass through the picker
-          // — they represent pre-snapshot or pre-PR sessions that the
-          // operator should still be able to load. The operator's
-          // current TUI process is already ACE-clean (the resolvedAce
-          // gate above bailed otherwise), so loading a non-snapshotted
-          // transcript matches the pre-PR baseline.
+          // Legacy sidecars (or missing sidecars from pre-PR sessions)
+          // get the same re-parse-manifest treatment as startup
+          // --resume: if the recorded manifest had ace.enabled: true,
+          // refuse the picker load. This keeps the picker behavior
+          // consistent with --resume for legacy sessions.
+          if (pickerMeta.kind === "legacy" && pickerMeta.manifestPath !== undefined) {
+            const r = await loadManifestConfig(pickerMeta.manifestPath, {
+              skipAuditValidation: true,
+            });
+            if (!r.ok || r.value.ace?.enabled === true) {
+              if (myPickerGeneration === pickerGeneration) {
+                store.dispatch({
+                  kind: "add_error",
+                  code: "SESSION_RESUME_ERROR",
+                  message:
+                    "Could not load session: original manifest had ace.enabled: true (legacy sidecar). " +
+                    "ACE in-memory playbooks cannot be carried across processes; wait for #2087 or quit and restart with --resume <id>.",
+                });
+              }
+              return;
+            }
+          }
           if (pickerMeta.kind === "ok") {
             // Snapshot fast path: bail without re-parsing if the snapshot
             // already says the original session opted into ACE.
