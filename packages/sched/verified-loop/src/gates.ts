@@ -75,27 +75,37 @@ export function createTestGate(
       // explicitly cancelled verification.
       let aborted = false;
       let timedOut = false;
+      // Use let — justified: latched once the child has exited so a late
+      // abort/timeout (fired while we're still draining stderr) cannot
+      // retroactively mark a successfully-completed run as failed.
+      let exited = false;
       const escalate = (): void => {
         killGroup("SIGTERM");
         killTimer = setTimeout(() => killGroup("SIGKILL"), 1_000);
       };
 
       const onAbort = (): void => {
+        if (exited) return;
         aborted = true;
         escalate();
       };
       ctx.signal.addEventListener("abort", onAbort, { once: true });
 
       const timer = setTimeout(() => {
+        if (exited) return;
         timedOut = true;
         escalate();
       }, timeoutMs);
 
-      // Drain stderr concurrently — never await proc.exited with a pipe still buffering.
-      const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+      // Await exit FIRST so we can latch `exited` before stderr drain. A
+      // verbose child that exits 0 may still buffer kilobytes of stderr;
+      // an abort during that drain window must not invalidate the result.
+      const exitCode = await proc.exited;
+      exited = true;
       clearTimeout(timer);
       if (killTimer !== undefined) clearTimeout(killTimer);
       ctx.signal.removeEventListener("abort", onAbort);
+      const stderr = await new Response(proc.stderr).text();
 
       // Cancellation is a verification failure regardless of exit code. A
       // child that traps SIGTERM and exits 0 (or simply finishes during the
