@@ -18,6 +18,14 @@ export {
   SUPPORTED_EVENT_KINDS,
 } from "@koi/debug";
 export type {
+  ChannelRegistration,
+  Gateway,
+  GatewayFrame,
+  GatewayServer,
+  Session,
+} from "@koi/gateway-http";
+export { createGatewayServer } from "@koi/gateway-http";
+export type {
   IterationRecord as LoopIterationRecord,
   LoopEvent,
   LoopRuntime,

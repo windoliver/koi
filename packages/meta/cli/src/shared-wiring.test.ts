@@ -6,6 +6,7 @@ import type { HookConfig } from "@koi/core";
 import type { McpServerConfig } from "@koi/mcp";
 import {
   __setUserHooksConfigPathForTests,
+  __setUserMcpHomeDirForTests,
   buildCoreProviders,
   buildPluginMcpSetup,
   buildScopedCredentials,
@@ -36,6 +37,18 @@ function agentHook(name: string): HookConfig {
 // ---------------------------------------------------------------------------
 
 describe("loadUserMcpSetup", () => {
+  let fakeMcpHome: string;
+
+  beforeEach(() => {
+    fakeMcpHome = mkdtempSync(join(tmpdir(), "koi-user-mcp-home-"));
+    __setUserMcpHomeDirForTests(fakeMcpHome);
+  });
+
+  afterEach(() => {
+    __setUserMcpHomeDirForTests(undefined);
+    rmSync(fakeMcpHome, { recursive: true, force: true });
+  });
+
   test("returns undefined when .mcp.json is absent", async () => {
     const cwd = mkTempCwd();
     const setup = await loadUserMcpSetup(cwd, undefined);
@@ -86,6 +99,20 @@ describe("loadUserMcpSetup", () => {
   test("handles parent cwd without write access (non-existent)", async () => {
     const setup = await loadUserMcpSetup("/nonexistent-dir-for-koi-test", undefined);
     expect(setup).toBeUndefined();
+  });
+
+  test("falls back to the user MCP config when project config is absent", async () => {
+    const cwd = mkTempCwd();
+    mkdirSync(join(fakeMcpHome, ".koi"), { recursive: true });
+    writeMcpJson(join(fakeMcpHome, ".koi"), {
+      mcpServers: {
+        userExample: { command: "/bin/echo", args: ["hi"] },
+      },
+    });
+    const setup = await loadUserMcpSetup(cwd, undefined);
+    expect(setup).toBeDefined();
+    expect(setup?.provider).toBeDefined();
+    setup?.dispose();
   });
 
   test("skips when .mcp.json points at a directory, not a file", async () => {

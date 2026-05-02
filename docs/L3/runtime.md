@@ -6,6 +6,16 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 `@koi/mcp` registry-discovery surface (#1646): added `RegistryClient`, `RegistryCache`, `installMcpServer`, `uninstallMcpServer`, `pickPackageForInstall`, and `clearAllOAuthState` to the public API to support the new `koi mcp search/info/install/uninstall` CLI subcommands. Behavioral changes inside the existing surface: install verification runs verify-before-commit (no `.mcp.json` mutation until verify succeeds); OAuth tracking uses a per-server cleanup index with `withTrackedWrite` so cleanup and concurrent token/DCR-client writes serialize on the index lock (closes a credential-orphan race that could leave live OAuth material behind after uninstall/rollback); registry remote URLs are SSRF-checked (HTTPS-only outside loopback, RFC1918/link-local/CGNAT/multicast IP literals refused); `.mcp.json` reads reject malformed `mcpServers` shapes before any mutation. No new cassette/trajectory — registry discovery is plain HTTP without LLM tools — but the @koi/mcp lifecycle middleware that already participates in golden replays is unaffected.
 
+Review fix sync: `@koi/middleware-intent-capsule` remains an optional runtime
+dependency, but now has standalone golden coverage in `golden-replay.test.ts`.
+The assertion exercises the public middleware contract without an LLM cassette:
+session start signs the mandate, `wrapModelCall` verifies and injects the signed
+mandate message when configured, and `onSessionEnd` removes the capsule so later
+calls fail closed with `capsule_not_found`. The CLI wiring gate also now documents
+the runtime-only/optional packages that are intentionally not default TUI imports:
+external-agent discovery/monitor/procfs sidecars, HTTP gateway ingress,
+programmatic-only RLM, ACE/intent-capsule opt-in middleware, and non-default
+sandbox providers.
 
 `@koi/playbook-store-sqlite` wired (#2088): added as a dependency of `@koi/runtime` to provide a durable, cross-process backend for ACE playbooks. The store uses WAL + foreign-keys + busy_timeout PRAGMAs, PRAGMA `user_version`-based migrations (currently v7 with a `store_identity` singleton table for resume-time file-replacement detection), and a single-writer file lock with atomic temp+link publish, kernel-bootId-aware crash recovery (Linux), in-process refcount for multi-handle reuse, and dead-PID reclamation. Surfaced through the L2 `PlaybookStore` contract from `@koi/ace-types`; the runtime itself does not auto-instantiate — the CLI's TUI activation path constructs the store when `ace.playbook_path` is set in the manifest. Two standalone golden queries cover migration to v7 and lock acquire/release semantics. No cassette trajectory recorded — pure persistence with no LLM-callable tool surface.
 
